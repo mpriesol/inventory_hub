@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).resolve().parents[1] / ".env"),
         env_prefix="",
         case_sensitive=False,
         extra="ignore",   # <-- kritické: ignoruj neznáme položky v .env
