@@ -2,19 +2,10 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any
-import json, os
+import json
+from inventory_hub import settings
 
-def _data_root() -> Path:
-    env = os.environ.get("INVENTORY_DATA_ROOT")
-    if env:
-        p = Path(env).expanduser()
-        p.mkdir(parents=True, exist_ok=True)
-        return p.resolve()
-    p = Path.cwd() / "inventory-data"
-    p.mkdir(parents=True, exist_ok=True)
-    return p.resolve()
-
-DATA_ROOT = _data_root()
+DATA_ROOT = settings.INVENTORY_DATA_ROOT
 
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
@@ -26,6 +17,10 @@ def _read_json(p: Path) -> Dict[str, Any]:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+def _read_json_strict(p: Path) -> Dict[str, Any]:
+    text = p.read_text(encoding="utf-8")
+    return json.loads(text)
 
 def _atomic_write(path: Path, data: Dict[str, Any]) -> None:
     _ensure_dir(path.parent)
@@ -102,6 +97,10 @@ def load_shop(shop: str, write_back_on_load: bool = False) -> Dict[str, Any]:
     if write_back_on_load and raw != norm:
         _atomic_write(shop_path(shop), norm)
     return norm
+
+def load_shop_strict(shop: str) -> Dict[str, Any]:
+    raw = _read_json_strict(shop_path(shop))
+    return _norm_shop(raw)
 
 def save_shop(shop: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     cur = load_shop(shop)
