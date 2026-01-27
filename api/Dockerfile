@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY inventory_hub /app/inventory_hub
-COPY pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
+COPY api/inventory_hub /app/inventory_hub
+COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000
 CMD ["uvicorn", "inventory_hub.main:app", "--host", "0.0.0.0", "--port", "8000"]
