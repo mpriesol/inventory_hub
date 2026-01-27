@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+export const API_BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
 
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {

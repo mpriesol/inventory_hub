@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Modal } from "../../components/ui/Modal";
 
-const API_BASE: string = (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
+const API_BASE: string = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
 
 type EffShop = { using_export?: { url?: string|null; path?: string|null } };
 type FileMeta = { mtime?: string|null; size?: number|null };

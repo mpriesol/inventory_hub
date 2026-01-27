@@ -19,7 +19,9 @@ import HistoryModal from "./HistoryModal";
 
 import ReceivingPanel from "@/features/receiving/ReceivingPanel";
 
-const API_BASE: string = (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
+
+const API_BASE: string = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
+
 
 type Props = {
   supplier: string;         // napr. "paul-lange"

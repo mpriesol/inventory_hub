@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 
-const API_BASE: string = (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
+const API_BASE: string = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
 
 type Eff = { using_feed?: { key?: string|null; mode?: "remote"|"local"|null; url?: string|null; path?: string|null } };
 type FileItem = { path: string; name?: string; mtime?: string|null };
