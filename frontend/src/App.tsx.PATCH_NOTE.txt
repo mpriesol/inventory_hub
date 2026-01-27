@@ -1,0 +1,5 @@
+// Minimal change: make sure InvoicesPanel receives `shop` prop.
+// Find the line with:
+//   <InvoicesPanel supplier={supplier} defaultMonths={3} />
+// Replace with:
+//   <InvoicesPanel supplier={supplier} shop={shop} defaultMonths={3} />

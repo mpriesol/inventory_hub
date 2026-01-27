@@ -1,0 +1,34 @@
+﻿# OS
+.DS_Store
+Thumbs.db
+
+# Node
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local env/secrets
+.env
+.env.*
+*.local
+
+# Build artifacts
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# backups / temp
+*.bak
+*.bak_*
+* - Copy*.py

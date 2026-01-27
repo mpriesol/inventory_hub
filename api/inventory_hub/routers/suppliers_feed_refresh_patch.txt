@@ -1,0 +1,70 @@
+
+# --- DROP-IN for routers/suppliers.py: inside @router.post("/suppliers/{supplier}/feeds/refresh") ---
+from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates  # add import at top
+
+@router.post("/suppliers/{supplier}/feeds/refresh")
+def refresh_feeds(
+    supplier: str,
+    source: Optional[str] = Query(None, description="products/stock/prices (default = current_key)"),
+    body: Optional[Dict[str, Any]] = Body(None),
+):
+    cfg = load_supplier_config(supplier)
+    key, fs = _select_feed(cfg, source)
+    override_url = None
+    if isinstance(body, dict):
+        override_url = body.get("source_url")
+
+    sup_root = _supplier_root(supplier)
+    xml_dir = sup_root / "feeds" / "xml"
+    conv_dir = sup_root / "feeds" / "converted"
+    xml_dir.mkdir(parents=True, exist_ok=True)
+    conv_dir.mkdir(parents=True, exist_ok=True)
+
+    # choose source
+    chosen_kind = "remote"
+    if override_url:
+        url = override_url
+        chosen_kind = "override"
+    elif fs.mode == "local" and fs.local_path:
+        url = fs.local_path
+        chosen_kind = "local"
+    else:
+        url = fs.remote.url
+
+    # fetch/save raw XML
+    if chosen_kind in ("remote","override"):
+        import requests, datetime as dt
+        r = requests.get(url, timeout=180, verify=True)
+        r.raise_for_status()
+        stem = Path(url).name.rsplit(".",1)[0] or "feed"
+        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        xml_path = xml_dir / f"{stem}_{ts}.xml"
+        xml_path.write_bytes(r.content)
+    else:
+        p = Path(url)
+        if not p.is_file():
+            raise HTTPException(400, detail=f"Local feed not found: {url}")
+        xml_path = p
+
+    # derive converted filename: SAME stem as XML (no extra _ts), .csv
+    stem = xml_path.stem.split("_")[0] if "_" in xml_path.stem else xml_path.stem
+    csv_path = conv_dir / f"{stem}.csv"
+
+    # price coeffs from adapter_settings if provided
+    price_coeffs = (cfg.adapter_settings or {}).get("price_coefficients", {})  # type: ignore[attr-defined]
+    vat = int((cfg.adapter_settings or {}).get("vat", 23))                     # type: ignore[attr-defined]
+    category = (cfg.adapter_settings or {}).get("default_category", "K00090")  # type: ignore[attr-defined]
+    prefix = (cfg.adapter_settings or {}).get("product_code_prefix", "PL-")    # type: ignore[attr-defined]
+
+    rows = convert_xml_to_upgates(xml_path, csv_path, price_coeffs=price_coeffs, vat=vat, default_category=category, prefix=prefix)
+
+    return {
+        "ok": True,
+        "supplier": supplier,
+        "using": {"kind": chosen_kind, "key": key, "url": url},
+        "saved": {
+            "xml": str(xml_path.relative_to(sup_root).as_posix()) if xml_path.is_relative_to(sup_root) else str(xml_path),
+            "csv": str(csv_path.relative_to(sup_root).as_posix()),
+            "rows": rows,
+        },
+    }
