@@ -17,6 +17,8 @@ import {
   SuppliersPage,
   ShopsPage,
   SettingsPage,
+  InvoicesPage,
+  InvoiceDetailPage,
 } from './pages';
 
 function App() {
@@ -26,6 +28,10 @@ function App() {
         <Route element={<Layout />}>
           {/* Dashboard */}
           <Route path="/" element={<DashboardPage />} />
+
+          {/* Invoices - between Dashboard and Receiving */}
+          <Route path="/invoices" element={<InvoicesPage />} />
+          <Route path="/invoices/:invoiceId" element={<InvoiceDetailPage />} />
 
           {/* Receiving */}
           <Route path="/receiving" element={<ReceivingPage />} />

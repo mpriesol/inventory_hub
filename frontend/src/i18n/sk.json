@@ -38,6 +38,7 @@
   },
   "nav": {
     "dashboard": "Prehľad",
+    "invoices": "Faktúry",
     "receiving": "Príjem",
     "stock": "Sklad",
     "products": "Produkty",
