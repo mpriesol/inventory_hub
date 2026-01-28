@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle, Upload, ExternalLink, CheckCircle, XCircle } from 'lucide-react';
+import { 
+  Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle, 
+  Upload, Download, ExternalLink, XCircle, CheckCircle 
+} from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { StatusBadge } from '../components/ui/Badge.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
@@ -13,9 +16,10 @@ interface RefreshResult {
   downloaded: number;
   skipped: number;
   failed: number;
-  pages: number;
-  errors: string[];
-  log_files: string[];
+  pages?: number;
+  errors?: string[];
+  log_files?: string[];
+  message?: string;
 }
 
 interface InvoiceDisplay {
@@ -27,7 +31,6 @@ interface InvoiceDisplay {
   status: 'new' | 'in_progress' | 'processed';
   progress?: string;
   csvPath: string;
-  // For in_progress
   currentSessionId?: string;
   pausedAt?: string;
   pauseStats?: {
@@ -79,10 +82,10 @@ export function ReceivingPage() {
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Refresh state
+  // Refresh from web state
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState<RefreshResult | null>(null);
-  const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   // Upload state
   const [uploading, setUploading] = useState(false);
@@ -94,7 +97,6 @@ export function ReceivingPage() {
       try {
         const data = await listSuppliers();
         setSuppliers(data);
-        // Use code field from SupplierSummary
         if (data.length > 0 && !data.find(s => s.code === supplier)) {
           setSupplier(data[0].code);
         }
@@ -113,7 +115,6 @@ export function ReceivingPage() {
         setError(null);
         const data = await getInvoicesIndex(supplier);
         
-        // Transform to display format - show new and in_progress
         const displayInvoices: InvoiceDisplay[] = (data.items || [])
           .filter(inv => inv.status === 'new' || inv.status === 'in_progress')
           .map(inv => ({
@@ -131,19 +132,15 @@ export function ReceivingPage() {
             pausedAt: inv.paused_at,
             pauseStats: inv.pause_stats,
           }))
-          // Sort: in_progress first, then by date
           .sort((a, b) => {
             if (a.status === 'in_progress' && b.status !== 'in_progress') return -1;
             if (a.status !== 'in_progress' && b.status === 'in_progress') return 1;
             return 0;
           })
           .slice(0, 20);
-        
         setInvoices(displayInvoices);
       } catch (err) {
-        console.error('Failed to load invoices:', err);
         setError('Nepodarilo sa načítať faktúry');
-        setInvoices([]);
       } finally {
         setLoading(false);
       }
@@ -151,37 +148,31 @@ export function ReceivingPage() {
     loadInvoices();
   }, [supplier]);
 
-  const pendingCount = invoices.length;
+  const pendingCount = invoices.filter(inv => inv.status === 'new').length;
   const inProgressCount = invoices.filter(inv => inv.status === 'in_progress').length;
 
-  const handleStartReceiving = async () => {
-    if (!selectedInvoice) return;
-    
-    const invoice = invoices.find(inv => inv.id === selectedInvoice);
-    if (!invoice) return;
-
-    try {
+  const handleStartReceiving = async (invoice: InvoiceDisplay) => {
+    if (invoice.status === 'in_progress') {
+      setResuming(true);
+    } else {
       setCreating(true);
-      setError(null);
-      
-      // Check if this is a resume or new session
+    }
+    setSelectedInvoice(invoice.id);
+    
+    try {
       if (invoice.status === 'in_progress' && invoice.currentSessionId) {
-        // Resume existing session
-        setResuming(true);
-        const resumed = await resumeReceiving(supplier, invoice.currentSessionId);
-        
-        navigate(`/receiving/${resumed.invoice_no}`, {
+        const session = await resumeReceiving(invoice.currentSessionId);
+        navigate(`/receiving/${invoice.number}`, {
           state: { 
-            sessionId: resumed.session_id,
+            sessionId: invoice.currentSessionId,
             supplier,
-            lines: resumed.lines,
+            lines: session.lines,
+            stats: session.stats,
             isResumed: true,
           }
         });
       } else {
-        // Create new session
         const session = await createReceivingSession(supplier, invoice.number);
-        
         navigate(`/receiving/${session.invoice_no}`, {
           state: { 
             sessionId: session.session_id,
@@ -199,11 +190,11 @@ export function ReceivingPage() {
     }
   };
 
-  const handleRefresh = async () => {
+  // Refresh invoice list from local index
+  const handleRefreshList = async () => {
     setLoading(true);
-    setRefreshResult(null);
-    setRefreshMessage(null);
     setError(null);
+    setSuccessMessage(null);
     try {
       const data = await getInvoicesIndex(supplier);
       const displayInvoices: InvoiceDisplay[] = (data.items || [])
@@ -237,31 +228,45 @@ export function ReceivingPage() {
     }
   };
 
-  // Download invoices from supplier (web scraping)
-  const handleDownloadInvoices = async () => {
+  // Download invoices from supplier website (Playwright/web scraping)
+  const handleDownloadFromWeb = async () => {
     setRefreshing(true);
     setRefreshResult(null);
-    setRefreshMessage(null);
     setError(null);
+    setSuccessMessage(null);
     
     try {
-      const result = await refreshInvoices(supplier);
-      setRefreshResult(result as RefreshResult);
+      const result = await refreshInvoices(supplier) as RefreshResult;
+      setRefreshResult(result);
       
-      const { downloaded, skipped, failed, errors, ok } = result as RefreshResult;
-      const summary = `Stiahnuté: ${downloaded}, Preskočené: ${skipped}, Zlyhané: ${failed}`;
+      // Check if ok is explicitly false or if there are errors
+      const hasErrors = result.ok === false || (result.errors && result.errors.length > 0) || result.failed > 0;
       
-      if (!ok || failed > 0 || (errors && errors.length > 0)) {
-        const errorMsg = errors?.length ? `\n${errors.join('\n')}` : '';
-        setError(`${summary}${errorMsg}`);
+      if (hasErrors) {
+        // Build error message
+        const parts: string[] = [];
+        parts.push(`Stiahnuté: ${result.downloaded || 0}, Preskočené: ${result.skipped || 0}, Zlyhané: ${result.failed || 0}`);
+        
+        if (result.errors && result.errors.length > 0) {
+          // Show first error, truncated if too long
+          const firstError = result.errors[0];
+          const shortError = firstError.length > 200 ? firstError.substring(0, 200) + '...' : firstError;
+          parts.push(shortError);
+        }
+        
+        setError(parts.join('\n'));
       } else {
-        setRefreshMessage(summary);
+        // Success
+        setSuccessMessage(`Stiahnuté: ${result.downloaded || 0}, Preskočené: ${result.skipped || 0}`);
       }
       
-      // Reload invoice list
-      await handleRefresh();
+      // Reload invoice list regardless of result
+      await handleRefreshList();
+      
     } catch (err: any) {
-      setError(`Zlyhalo sťahovanie faktúr: ${err.message || err}`);
+      // HTTP-level error
+      setError(`Zlyhalo sťahovanie: ${err.message || String(err)}`);
+      setRefreshResult({ ok: false, downloaded: 0, skipped: 0, failed: 0, errors: [String(err)] });
     } finally {
       setRefreshing(false);
     }
@@ -278,15 +283,15 @@ export function ReceivingPage() {
     
     setUploading(true);
     setError(null);
-    setRefreshMessage(null);
+    setSuccessMessage(null);
     
     try {
       await uploadInvoice(supplier, file);
-      setRefreshMessage(`Faktúra "${file.name}" bola úspešne nahratá`);
+      setSuccessMessage(`Faktúra "${file.name}" bola úspešne nahratá`);
       // Reload invoice list
-      await handleRefresh();
+      await handleRefreshList();
     } catch (err: any) {
-      setError(`Zlyhalo nahrávanie: ${err.message || err}`);
+      setError(`Zlyhalo nahrávanie: ${err.message || String(err)}`);
     } finally {
       setUploading(false);
       // Reset file input
@@ -337,20 +342,20 @@ export function ReceivingPage() {
           </Button>
           <Button 
             variant="secondary" 
-            onClick={handleDownloadInvoices} 
+            onClick={handleDownloadFromWeb} 
             disabled={refreshing}
           >
-            <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+            <Download size={16} className={refreshing ? 'animate-spin' : ''} />
             {refreshing ? 'Sťahujem...' : 'Stiahnuť z webu'}
           </Button>
-          <Button variant="ghost" onClick={handleRefresh} disabled={loading}>
+          <Button variant="ghost" onClick={handleRefreshList} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
           </Button>
         </div>
       </div>
 
-      {/* Success message */}
-      {refreshMessage && (
+      {/* Success Message */}
+      {successMessage && (
         <div
           className="p-4 rounded-lg border flex items-start gap-3"
           style={{
@@ -361,8 +366,8 @@ export function ReceivingPage() {
         >
           <CheckCircle size={20} className="flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <span>{refreshMessage}</span>
-            {/* Log file links */}
+            <span>{successMessage}</span>
+            {/* Log file links on success */}
             {refreshResult?.log_files && refreshResult.log_files.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {refreshResult.log_files.map((logPath, i) => (
@@ -375,12 +380,18 @@ export function ReceivingPage() {
                     style={{ color: 'inherit' }}
                   >
                     <ExternalLink size={12} />
-                    Log #{i + 1}
+                    Zobraziť log
                   </a>
                 ))}
               </div>
             )}
           </div>
+          <button 
+            onClick={() => setSuccessMessage(null)}
+            className="p-1 hover:opacity-70"
+          >
+            <XCircle size={16} />
+          </button>
         </div>
       )}
 
@@ -394,7 +405,7 @@ export function ReceivingPage() {
             color: 'var(--color-error)',
           }}
         >
-          <XCircle size={20} className="flex-shrink-0 mt-0.5" />
+          <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <pre className="whitespace-pre-wrap text-sm font-sans">{error}</pre>
             {/* Log file links even on error */}
@@ -416,6 +427,12 @@ export function ReceivingPage() {
               </div>
             )}
           </div>
+          <button 
+            onClick={() => { setError(null); setRefreshResult(null); }}
+            className="p-1 hover:opacity-70"
+          >
+            <XCircle size={16} />
+          </button>
         </div>
       )}
 
@@ -432,6 +449,9 @@ export function ReceivingPage() {
           onChange={(e) => {
             setSupplier(e.target.value);
             setSelectedInvoice(null);
+            setError(null);
+            setSuccessMessage(null);
+            setRefreshResult(null);
           }}
           className="w-48"
         >
@@ -463,6 +483,11 @@ export function ReceivingPage() {
             style={{ color: 'var(--color-text-secondary)' }}
           >
             Čakajúce faktúry ({pendingCount})
+            {inProgressCount > 0 && (
+              <span className="ml-2 text-yellow-500">
+                + {inProgressCount} rozpracované
+              </span>
+            )}
           </h2>
         </div>
 
@@ -474,6 +499,15 @@ export function ReceivingPage() {
               style={{ color: 'var(--color-accent)' }} 
             />
           </div>
+        ) : invoices.length === 0 ? (
+          <div className="p-8 text-center">
+            <p style={{ color: 'var(--color-text-tertiary)' }}>
+              Žiadne čakajúce faktúry
+            </p>
+            <p className="text-sm mt-2" style={{ color: 'var(--color-text-tertiary)' }}>
+              Skúste stiahnuť faktúry z webu alebo nahrať manuálne
+            </p>
+          </div>
         ) : (
           <div
             className="divide-y"
@@ -481,20 +515,19 @@ export function ReceivingPage() {
           >
             {invoices.map((inv) => {
               const isSelected = selectedInvoice === inv.id;
-
+              const isInProgress = inv.status === 'in_progress';
+              
               return (
                 <div
                   key={inv.id}
-                  onClick={() => setSelectedInvoice(inv.id)}
-                  className="p-4 cursor-pointer transition-all"
+                  className={`p-4 cursor-pointer transition-colors ${isSelected ? 'ring-2 ring-inset' : ''}`}
                   style={{
-                    backgroundColor: isSelected
-                      ? 'var(--color-accent-subtle)'
+                    backgroundColor: isSelected 
+                      ? 'var(--color-accent-subtle)' 
                       : 'transparent',
-                    borderLeft: isSelected
-                      ? '3px solid var(--color-accent)'
-                      : '3px solid transparent',
+                    ringColor: isSelected ? 'var(--color-accent)' : 'transparent',
                   }}
+                  onClick={() => setSelectedInvoice(inv.id)}
                   onMouseEnter={(e) => {
                     if (!isSelected) {
                       e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)';
@@ -507,137 +540,66 @@ export function ReceivingPage() {
                   }}
                 >
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      {/* Selection indicator */}
-                      <div
-                        className="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0"
-                        style={{
-                          borderColor: isSelected
-                            ? 'var(--color-accent)'
-                            : inv.status === 'in_progress'
-                            ? 'var(--color-info)'
-                            : 'var(--color-text-tertiary)',
-                          backgroundColor: isSelected
-                            ? 'var(--color-accent)'
-                            : inv.status === 'in_progress'
-                            ? 'var(--color-info-subtle)'
-                            : 'transparent',
-                        }}
-                      >
-                        {isSelected && (
-                          <Check
-                            size={12}
-                            style={{ color: 'var(--color-text-inverse)' }}
-                          />
-                        )}
-                        {!isSelected && inv.status === 'in_progress' && (
-                          <Play
-                            size={10}
-                            style={{ color: 'var(--color-info)' }}
-                          />
-                        )}
-                      </div>
-
+                    <div className="flex items-center gap-4">
                       <div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="font-medium"
-                            style={{
-                              fontFamily: 'var(--font-mono)',
-                              color: 'var(--color-text-primary)',
-                            }}
-                          >
-                            {inv.number}
-                          </span>
-                          {inv.status === 'in_progress' && (
-                            <span
-                              className="text-xs px-2 py-0.5 rounded-full"
-                              style={{
-                                backgroundColor: 'var(--color-info-subtle)',
-                                color: 'var(--color-info)',
-                              }}
-                            >
-                              Rozpracovaná
-                            </span>
-                          )}
+                        <div 
+                          className="font-medium"
+                          style={{ color: 'var(--color-text-primary)' }}
+                        >
+                          {inv.number}
                         </div>
-                        <div
-                          className="text-sm mt-0.5 flex items-center gap-2"
+                        <div 
+                          className="text-sm"
                           style={{ color: 'var(--color-text-tertiary)' }}
                         >
-                          <span>{inv.date}</span>
-                          {inv.status === 'in_progress' && inv.pausedAt && (
-                            <>
-                              <span>•</span>
-                              <span>Pozastavené {formatRelativeTime(inv.pausedAt)}</span>
-                            </>
-                          )}
-                          {inv.status === 'in_progress' && inv.progress && (
-                            <>
-                              <span>•</span>
-                              <span style={{ color: 'var(--color-info)' }}>{inv.progress} položiek</span>
-                            </>
-                          )}
+                          {inv.date}
                         </div>
                       </div>
+                      
+                      {isInProgress && (
+                        <StatusBadge variant="warning">
+                          Rozpracované {inv.progress}
+                        </StatusBadge>
+                      )}
                     </div>
-
-                    <StatusBadge
-                      status={inv.status === 'in_progress' ? 'partial' : inv.status === 'new' ? 'pending' : inv.status}
-                      label={
-                        inv.status === 'new'
-                          ? 'Nová'
-                          : inv.status === 'in_progress'
-                          ? `${inv.progress || 'Rozpracovaná'}`
-                          : 'Dokončená'
-                      }
-                    />
+                    
+                    <div className="flex items-center gap-3">
+                      {isInProgress && inv.pausedAt && (
+                        <span 
+                          className="text-xs"
+                          style={{ color: 'var(--color-text-tertiary)' }}
+                        >
+                          Pozastavené {formatRelativeTime(inv.pausedAt)}
+                        </span>
+                      )}
+                      
+                      <Button
+                        variant={isInProgress ? "primary" : "secondary"}
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleStartReceiving(inv);
+                        }}
+                        disabled={creating || resuming}
+                      >
+                        {isInProgress ? (
+                          <>
+                            <PlayCircle size={14} />
+                            {resuming && selectedInvoice === inv.id ? 'Načítavam...' : 'Pokračovať'}
+                          </>
+                        ) : (
+                          <>
+                            <Play size={14} />
+                            {creating && selectedInvoice === inv.id ? 'Spúšťam...' : 'Spustiť príjem'}
+                          </>
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </div>
               );
             })}
-
-            {invoices.length === 0 && !loading && (
-              <div
-                className="p-8 text-center"
-                style={{ color: 'var(--color-text-tertiary)' }}
-              >
-                <AlertCircle
-                  size={32}
-                  className="mx-auto mb-2"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                />
-                <div>Žiadne čakajúce faktúry</div>
-              </div>
-            )}
           </div>
-        )}
-      </div>
-
-      {/* Actions */}
-      <div className="flex justify-end gap-3">
-        <Button variant="secondary" onClick={() => navigate('/')}>
-          Späť
-        </Button>
-        {selectedInvoice && invoices.find(inv => inv.id === selectedInvoice)?.status === 'in_progress' ? (
-          <Button
-            variant="primary"
-            onClick={handleStartReceiving}
-            disabled={!selectedInvoice || creating || resuming}
-            loading={resuming}
-          >
-            <PlayCircle size={16} />
-            Pokračovať v príjme →
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            onClick={handleStartReceiving}
-            disabled={!selectedInvoice || creating}
-            loading={creating}
-          >
-            Začať príjem →
-          </Button>
         )}
       </div>
     </div>
