@@ -1,0 +1,179 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "refresh": "Refresh",
+    "upload": "Upload",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "back": "Back",
+    "next": "Next",
+    "confirm": "Confirm",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "warning": "Warning",
+    "yes": "Yes",
+    "no": "No",
+    "search": "Search",
+    "filter": "Filter",
+    "export": "Export",
+    "import": "Import",
+    "settings": "Settings",
+    "validate": "Validate",
+    "testUrl": "Test URL"
+  },
+  "status": {
+    "new": "New",
+    "in_progress": "In Progress",
+    "processed": "Processed",
+    "skipped": "Skipped",
+    "failed": "Failed",
+    "active": "Active",
+    "inactive": "Inactive",
+    "configured": "Configured",
+    "not_configured": "Not Configured"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "receiving": "Receiving",
+    "stock": "Stock",
+    "products": "Products",
+    "suppliers": "Suppliers",
+    "shops": "Shops",
+    "settings": "Settings"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "totalProducts": "Total Products",
+    "lowStock": "Low Stock",
+    "openOrders": "Open Orders",
+    "inventoryValue": "Inventory Value",
+    "pendingInvoices": "Pending Invoices",
+    "syncStatus": "Sync Status",
+    "recentActivity": "Recent Activity"
+  },
+  "receiving": {
+    "title": "Goods Receiving",
+    "subtitle": "Process supplier invoices",
+    "selectSupplier": "Select supplier",
+    "selectInvoice": "Select invoice",
+    "pendingInvoices": "Pending Invoices",
+    "inProgress": "In Progress",
+    "startReceiving": "Start Receiving",
+    "resumeReceiving": "Resume",
+    "noInvoices": "No pending invoices",
+    "invoice": "Invoice",
+    "date": "Date",
+    "items": "Items",
+    "progress": "Progress"
+  },
+  "suppliers": {
+    "title": "Suppliers",
+    "subtitle": "Manage suppliers and their configurations",
+    "newSupplier": "New Supplier",
+    "editSupplier": "Edit Supplier",
+    "supplierCode": "Supplier Code",
+    "supplierName": "Supplier Name",
+    "productPrefix": "Product Prefix",
+    "downloadStrategy": "Download Strategy",
+    "noSuppliers": "No suppliers yet",
+    "addFirstSupplier": "Add your first supplier to start working with invoices",
+    "tabs": {
+      "general": "General",
+      "feeds": "Feeds",
+      "invoices": "Invoices",
+      "mapping": "Mapping",
+      "json": "JSON",
+      "history": "History"
+    },
+    "feeds": {
+      "title": "Feeds",
+      "products": "Feed: Products",
+      "productsDesc": "XML/CSV feed for importing new products and updating information",
+      "stock": "Feed: Stock",
+      "stockDesc": "XML/CSV feed for synchronizing stock levels",
+      "mode": "Mode",
+      "modeRemote": "Remote (URL)",
+      "modeLocal": "Local file",
+      "url": "Feed URL",
+      "localPath": "File path",
+      "auth": "Authentication",
+      "authNone": "None",
+      "authBasic": "Basic Auth",
+      "authBearer": "Bearer Token",
+      "authForm": "Form Login"
+    },
+    "invoices": {
+      "title": "Invoices",
+      "layout": "Folder structure",
+      "layoutFlat": "Flat (all in one)",
+      "layoutYearly": "By year",
+      "monthsBack": "Months back",
+      "strategy": "Download strategy",
+      "strategyManual": "Manual upload",
+      "strategyWeb": "Web scraping",
+      "strategyApi": "API",
+      "strategyDisabled": "Disabled",
+      "uploadInvoice": "Upload invoice",
+      "loginCredentials": "Login credentials",
+      "loginUrl": "Login URL",
+      "username": "Username",
+      "password": "Password"
+    },
+    "mapping": {
+      "title": "Invoice column mapping",
+      "description": "Enter column names from invoices for this supplier",
+      "productCode": "Product Code (SKU)",
+      "ean": "EAN / Barcode",
+      "productName": "Product Name",
+      "quantity": "Quantity",
+      "priceExVat": "Price ex VAT",
+      "priceIncVat": "Price inc VAT",
+      "postprocess": "Postprocess settings",
+      "priceSource": "Price source"
+    },
+    "history": {
+      "title": "History",
+      "noHistory": "No history yet",
+      "historyHint": "History will be created after saving changes",
+      "versions": "config versions",
+      "view": "View",
+      "restore": "Restore",
+      "restoreConfirm": "Are you sure you want to restore this version?",
+      "newest": "Newest"
+    },
+    "validation": {
+      "configValid": "Configuration is valid",
+      "issuesFound": "Issues found",
+      "feedUrlReachable": "Feed URL reachable",
+      "feedUrlNotReachable": "Feed URL not reachable",
+      "loginUrlReachable": "Login URL reachable",
+      "loginUrlNotReachable": "Login URL not reachable"
+    }
+  },
+  "stock": {
+    "title": "Stock",
+    "subtitle": "Inventory management"
+  },
+  "products": {
+    "title": "Products",
+    "subtitle": "Product catalog management"
+  },
+  "shops": {
+    "title": "Shops",
+    "subtitle": "Sales channel management"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "System configuration",
+    "language": "Language",
+    "theme": "Theme"
+  },
+  "language": {
+    "sk": "Slovenčina",
+    "en": "English"
+  }
+}

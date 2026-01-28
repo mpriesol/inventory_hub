@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { setLanguage, getLanguage } from '../../i18n';
 import {
   LayoutDashboard,
   PackageCheck,
@@ -9,28 +11,41 @@ import {
   ShoppingCart,
   Settings,
   ChevronRight,
+  Globe,
 } from 'lucide-react';
 
 interface NavItem {
   id: string;
-  name: string;
+  nameKey: string;
   href: string;
   icon: React.ElementType;
   badge?: number | null;
 }
 
 const navigation: NavItem[] = [
-  { id: 'dashboard', name: 'Dashboard', href: '/', icon: LayoutDashboard, badge: null },
-  { id: 'receiving', name: 'Receiving', href: '/receiving', icon: PackageCheck, badge: 3 },
-  { id: 'products', name: 'Products', href: '/products', icon: Package, badge: null },
-  { id: 'stock', name: 'Stock', href: '/stock', icon: BarChart3, badge: 23 },
-  { id: 'suppliers', name: 'Suppliers', href: '/suppliers', icon: Factory, badge: null },
-  { id: 'shops', name: 'Shops', href: '/shops', icon: ShoppingCart, badge: null },
-  { id: 'settings', name: 'Settings', href: '/settings', icon: Settings, badge: null },
+  { id: 'dashboard', nameKey: 'nav.dashboard', href: '/', icon: LayoutDashboard, badge: null },
+  { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: 3 },
+  { id: 'products', nameKey: 'nav.products', href: '/products', icon: Package, badge: null },
+  { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: 23 },
+  { id: 'suppliers', nameKey: 'nav.suppliers', href: '/suppliers', icon: Factory, badge: null },
+  { id: 'shops', nameKey: 'nav.shops', href: '/shops', icon: ShoppingCart, badge: null },
+  { id: 'settings', nameKey: 'nav.settings', href: '/settings', icon: Settings, badge: null },
 ];
 
 export function Sidebar() {
   const location = useLocation();
+  const { t, i18n } = useTranslation();
+  const [currentLang, setCurrentLang] = useState(getLanguage());
+
+  useEffect(() => {
+    setCurrentLang(i18n.language);
+  }, [i18n.language]);
+
+  const toggleLanguage = () => {
+    const newLang = currentLang === 'sk' ? 'en' : 'sk';
+    setLanguage(newLang);
+    setCurrentLang(newLang);
+  };
 
   const isActive = (href: string) => {
     if (href === '/') {
@@ -111,7 +126,7 @@ export function Sidebar() {
               }}
             >
               <Icon size={18} />
-              <span className="flex-1">{item.name}</span>
+              <span className="flex-1">{t(item.nameKey)}</span>
               {item.badge !== null && item.badge > 0 && (
                 <span
                   className="text-xs px-1.5 py-0.5 rounded-full"
@@ -131,6 +146,38 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Language Toggle */}
+      <div
+        className="px-3 py-2 border-t"
+        style={{ borderColor: 'var(--color-border-subtle)' }}
+      >
+        <button
+          onClick={toggleLanguage}
+          className="flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm transition-colors"
+          style={{ color: 'var(--color-text-secondary)' }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = 'var(--color-bg-secondary)';
+            e.currentTarget.style.color = 'var(--color-text-primary)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'transparent';
+            e.currentTarget.style.color = 'var(--color-text-secondary)';
+          }}
+        >
+          <Globe size={18} />
+          <span className="flex-1 text-left">{t('settings.language')}</span>
+          <span
+            className="text-xs px-2 py-0.5 rounded font-medium"
+            style={{
+              backgroundColor: 'var(--color-accent-subtle)',
+              color: 'var(--color-accent)',
+            }}
+          >
+            {currentLang.toUpperCase()}
+          </span>
+        </button>
+      </div>
 
       {/* User Section */}
       <div

@@ -11,8 +11,11 @@ from fastapi import APIRouter, HTTPException, Body, Query
 from inventory_hub.settings import settings
 from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.adapters.paul_lange_web import (
-    LoginConfig, refresh_invoices_web, prepare_from_invoice
+    LoginConfig, 
+    refresh_invoices_web as paul_lange_refresh_invoices_web, 
+    prepare_from_invoice
 )
+from inventory_hub.adapters import northfinder_web
 
 router = APIRouter(tags=["invoices"])
 
@@ -258,19 +261,17 @@ def _enrich_with_history(invoices: List[Dict[str, Any]], supplier: str) -> None:
 # -----------------------------
 # Routes: refresh / prepare / index / reindex / history
 # -----------------------------
-@router.post("/suppliers/{supplier}/invoices/refresh")
-def invoices_refresh(
-    supplier: str,
-    months_back: Optional[int] = Query(None),
-) -> Dict[str, Any]:
-    cfg = load_supplier_config(supplier)
-    strat = _cfg_get(cfg, "invoices", "download", "strategy")
-    if not strat:
-        raise HTTPException(status_code=400, detail="Supplier config missing invoices.download.strategy")
 
-    if strat != "paul-lange-web":
-        raise HTTPException(400, detail=f"Unsupported strategy: {strat}")
+# Strategy dispatch table
+INVOICE_STRATEGIES = {
+    "paul-lange-web": "paul_lange",
+    "northfinder-web": "northfinder",
+    "manual": "manual",
+}
 
+
+def _dispatch_paul_lange(cfg: Dict, data_root: Path, supplier: str, months_back: int):
+    """Paul-Lange web scraping strategy"""
     web = _cfg_get(cfg, "invoices", "download", "web") or None
     if not web:
         raise HTTPException(400, detail="Missing invoices.download.web config")
@@ -288,10 +289,50 @@ def invoices_refresh(
         cookie=_cfg_get(login, "cookie", default="") or "",
         insecure_all=bool(_cfg_get(login, "insecure_all", default=False)),
     )
-    mb = int(months_back or _cfg_get(cfg, "invoices", "months_back_default", default=6) or 3)
+    return paul_lange_refresh_invoices_web(data_root, supplier, lc, months_back=months_back)
 
+
+def _dispatch_northfinder(cfg: Dict, data_root: Path, supplier: str, months_back: int):
+    """Northfinder Playwright-based web strategy"""
+    return northfinder_web.refresh_invoices_web(
+        data_root=data_root,
+        supplier_code=supplier,
+        supplier_config=cfg,
+        months_back=months_back,
+    )
+
+
+@router.post("/suppliers/{supplier}/invoices/refresh")
+def invoices_refresh(
+    supplier: str,
+    months_back: Optional[int] = Query(None),
+) -> Dict[str, Any]:
+    cfg = load_supplier_config(supplier)
+    strat = _cfg_get(cfg, "invoices", "download", "strategy")
+    if not strat:
+        raise HTTPException(status_code=400, detail="Supplier config missing invoices.download.strategy")
+
+    mb = int(months_back or _cfg_get(cfg, "invoices", "months_back_default", default=6) or 3)
     data_root = Path(settings.INVENTORY_DATA_ROOT).expanduser()
-    res = refresh_invoices_web(data_root, supplier, lc, months_back=mb)
+
+    # Strategy dispatch
+    if strat == "paul-lange-web":
+        res = _dispatch_paul_lange(cfg, data_root, supplier, mb)
+    elif strat == "northfinder-web":
+        res = _dispatch_northfinder(cfg, data_root, supplier, mb)
+    elif strat == "manual":
+        # Manual strategy - just return empty result, no auto-download
+        return {
+            "ok": True,
+            "downloaded": 0,
+            "skipped": 0,
+            "failed": 0,
+            "pages": 0,
+            "log_files": [],
+            "message": "Manual strategy - no auto-download"
+        }
+    else:
+        raise HTTPException(400, detail=f"Unsupported strategy: {strat}")
 
     # carry-over processed
     prev_map = _load_prev_index_map(supplier)

@@ -4,7 +4,7 @@ import { Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle } from 'lucide
 import { Button } from '../components/ui/Button.new';
 import { StatusBadge } from '../components/ui/Badge.new';
 import { getInvoicesIndex, type InvoiceIndexItem } from '../api/invoices';
-import { getSuppliers, type Supplier } from '../api/dashboard';
+import { listSuppliers, type SupplierSummary } from '../api/suppliers';
 import { createReceivingSession, resumeReceiving } from '../api/receiving';
 
 interface InvoiceDisplay {
@@ -60,7 +60,7 @@ function formatRelativeTime(isoDate: string | null): string {
 export function ReceivingPage() {
   const navigate = useNavigate();
   const [selectedInvoice, setSelectedInvoice] = useState<string | null>(null);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierSummary[]>([]);
   const [supplier, setSupplier] = useState('paul-lange');
   const [invoices, setInvoices] = useState<InvoiceDisplay[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,10 +72,11 @@ export function ReceivingPage() {
   useEffect(() => {
     async function loadSuppliers() {
       try {
-        const data = await getSuppliers();
+        const data = await listSuppliers();
         setSuppliers(data);
-        if (data.length > 0 && !data.find(s => s.supplier_code === supplier)) {
-          setSupplier(data[0].supplier_code);
+        // Use code field from SupplierSummary
+        if (data.length > 0 && !data.find(s => s.code === supplier)) {
+          setSupplier(data[0].code);
         }
       } catch (err) {
         console.error('Failed to load suppliers:', err);
@@ -272,7 +273,7 @@ export function ReceivingPage() {
           className="w-48"
         >
           {suppliers.map(s => (
-            <option key={s.supplier_code} value={s.supplier_code}>
+            <option key={s.code} value={s.code}>
               {s.name}
             </option>
           ))}

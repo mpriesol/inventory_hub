@@ -13,7 +13,7 @@ export interface SupplierSummary {
   product_prefix: string;
   invoice_count: number;
   feed_mode: 'remote' | 'local' | 'none';
-  download_strategy: 'web' | 'manual' | 'api' | 'disabled' | 'paul-lange-web';
+  download_strategy: 'web' | 'manual' | 'api' | 'disabled' | 'paul-lange-web' | 'northfinder-web';
   last_invoice_date: string | null;
   last_feed_sync: string | null;
 }

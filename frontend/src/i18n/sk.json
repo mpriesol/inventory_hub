@@ -1,0 +1,179 @@
+{
+  "common": {
+    "save": "Uložiť",
+    "cancel": "Zrušiť",
+    "close": "Zavrieť",
+    "refresh": "Obnoviť",
+    "upload": "Nahrať",
+    "delete": "Zmazať",
+    "edit": "Upraviť",
+    "add": "Pridať",
+    "back": "Späť",
+    "next": "Ďalej",
+    "confirm": "Potvrdiť",
+    "loading": "Načítavam...",
+    "error": "Chyba",
+    "success": "Úspech",
+    "warning": "Upozornenie",
+    "yes": "Áno",
+    "no": "Nie",
+    "search": "Hľadať",
+    "filter": "Filter",
+    "export": "Export",
+    "import": "Import",
+    "settings": "Nastavenia",
+    "validate": "Validovať",
+    "testUrl": "Test URL"
+  },
+  "status": {
+    "new": "Nový",
+    "in_progress": "Rozpracované",
+    "processed": "Spracované",
+    "skipped": "Preskočené",
+    "failed": "Zlyhalo",
+    "active": "Aktívny",
+    "inactive": "Neaktívny",
+    "configured": "Nakonfigurované",
+    "not_configured": "Nenakonfigurované"
+  },
+  "nav": {
+    "dashboard": "Prehľad",
+    "receiving": "Príjem",
+    "stock": "Sklad",
+    "products": "Produkty",
+    "suppliers": "Dodávatelia",
+    "shops": "Obchody",
+    "settings": "Nastavenia"
+  },
+  "dashboard": {
+    "title": "Prehľad",
+    "totalProducts": "Celkom produktov",
+    "lowStock": "Nízky stav",
+    "openOrders": "Otvorené objednávky",
+    "inventoryValue": "Hodnota skladu",
+    "pendingInvoices": "Čakajúce faktúry",
+    "syncStatus": "Stav synchronizácie",
+    "recentActivity": "Posledná aktivita"
+  },
+  "receiving": {
+    "title": "Príjem tovaru",
+    "subtitle": "Spracovanie dodávateľských faktúr",
+    "selectSupplier": "Vyberte dodávateľa",
+    "selectInvoice": "Vyberte faktúru",
+    "pendingInvoices": "Čakajúce faktúry",
+    "inProgress": "Rozpracované",
+    "startReceiving": "Spustiť príjem",
+    "resumeReceiving": "Pokračovať",
+    "noInvoices": "Žiadne čakajúce faktúry",
+    "invoice": "Faktúra",
+    "date": "Dátum",
+    "items": "Položky",
+    "progress": "Progres"
+  },
+  "suppliers": {
+    "title": "Dodávatelia",
+    "subtitle": "Správa dodávateľov a ich konfigurácií",
+    "newSupplier": "Nový dodávateľ",
+    "editSupplier": "Upraviť dodávateľa",
+    "supplierCode": "Kód dodávateľa",
+    "supplierName": "Názov dodávateľa",
+    "productPrefix": "Prefix produktov",
+    "downloadStrategy": "Stratégia sťahovania",
+    "noSuppliers": "Zatiaľ žiadni dodávatelia",
+    "addFirstSupplier": "Pridajte prvého dodávateľa pre začatie práce s faktúrami",
+    "tabs": {
+      "general": "Obecné",
+      "feeds": "Feedy",
+      "invoices": "Faktúry",
+      "mapping": "Mapovanie",
+      "json": "JSON",
+      "history": "História"
+    },
+    "feeds": {
+      "title": "Feedy",
+      "products": "Feed: Produkty",
+      "productsDesc": "XML/CSV feed pre import nových produktov a aktualizáciu informácií",
+      "stock": "Feed: Sklad",
+      "stockDesc": "XML/CSV feed pre synchronizáciu stavov zásob",
+      "mode": "Režim",
+      "modeRemote": "Remote (URL)",
+      "modeLocal": "Lokálny súbor",
+      "url": "URL feedu",
+      "localPath": "Cesta k súboru",
+      "auth": "Autentifikácia",
+      "authNone": "Žiadna",
+      "authBasic": "Basic Auth",
+      "authBearer": "Bearer Token",
+      "authForm": "Form Login"
+    },
+    "invoices": {
+      "title": "Faktúry",
+      "layout": "Štruktúra priečinkov",
+      "layoutFlat": "Plochá (všetky v jednom)",
+      "layoutYearly": "Podľa rokov",
+      "monthsBack": "Mesiace dozadu",
+      "strategy": "Stratégia sťahovania",
+      "strategyManual": "Manuálny upload",
+      "strategyWeb": "Web scraping",
+      "strategyApi": "API",
+      "strategyDisabled": "Vypnuté",
+      "uploadInvoice": "Nahrať faktúru",
+      "loginCredentials": "Prihlasovacie údaje",
+      "loginUrl": "Login URL",
+      "username": "Používateľské meno",
+      "password": "Heslo"
+    },
+    "mapping": {
+      "title": "Mapovanie stĺpcov faktúry",
+      "description": "Zadajte názvy stĺpcov vo faktúrach od tohto dodávateľa",
+      "productCode": "Kód produktu (SKU)",
+      "ean": "EAN / Čiarový kód",
+      "productName": "Názov produktu",
+      "quantity": "Množstvo",
+      "priceExVat": "Cena bez DPH",
+      "priceIncVat": "Cena s DPH",
+      "postprocess": "Postprocess nastavenia",
+      "priceSource": "Zdroj ceny"
+    },
+    "history": {
+      "title": "História",
+      "noHistory": "Zatiaľ žiadna história",
+      "historyHint": "História sa vytvorí po prvom uložení zmien",
+      "versions": "verzií konfigurácie",
+      "view": "Zobraziť",
+      "restore": "Obnoviť",
+      "restoreConfirm": "Naozaj chcete obnoviť túto verziu?",
+      "newest": "Najnovšia"
+    },
+    "validation": {
+      "configValid": "Konfigurácia je platná",
+      "issuesFound": "Nájdené problémy",
+      "feedUrlReachable": "Feed URL dostupná",
+      "feedUrlNotReachable": "Feed URL nedostupná",
+      "loginUrlReachable": "Login URL dostupná",
+      "loginUrlNotReachable": "Login URL nedostupná"
+    }
+  },
+  "stock": {
+    "title": "Sklad",
+    "subtitle": "Správa skladových zásob"
+  },
+  "products": {
+    "title": "Produkty",
+    "subtitle": "Správa produktového katalógu"
+  },
+  "shops": {
+    "title": "Obchody",
+    "subtitle": "Správa predajných kanálov"
+  },
+  "settings": {
+    "title": "Nastavenia",
+    "subtitle": "Konfigurácia systému",
+    "language": "Jazyk",
+    "theme": "Téma"
+  },
+  "language": {
+    "sk": "Slovenčina",
+    "en": "English"
+  }
+}

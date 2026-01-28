@@ -807,18 +807,20 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords }: T
 }
 
 function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
-  const currentKey = config.feeds?.current_key || 'products';
   const sources = config.feeds?.sources || {};
-  const currentSource = sources[currentKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
-
-  const updateSource = (updates: any) => {
+  
+  // Ensure both products and stock exist
+  const feedKeys = ['products', 'stock'];
+  
+  const updateSource = (feedKey: string, updates: any) => {
+    const currentSource = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
     updateConfig((cfg) => ({
       ...cfg,
       feeds: {
         ...cfg.feeds,
         sources: {
           ...cfg.feeds?.sources,
-          [currentKey]: {
+          [feedKey]: {
             ...currentSource,
             ...updates,
           },
@@ -827,159 +829,186 @@ function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
     }));
   };
 
-  return (
-    <div className="space-y-6 max-w-2xl">
-      <div>
-        <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-          Aktívny feed
-        </label>
-        <select
-          value={currentKey}
-          onChange={(e) =>
-            updateConfig((cfg) => ({ ...cfg, feeds: { ...cfg.feeds, current_key: e.target.value } }))
-          }
-          className="w-full"
-        >
-          {Object.keys(sources).map((key) => (
-            <option key={key} value={key}>
-              {key}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-          Režim
-        </label>
-        <select
-          value={currentSource.mode || 'remote'}
-          onChange={(e) => updateSource({ mode: e.target.value })}
-          className="w-full"
-        >
-          <option value="remote">Remote (URL)</option>
-          <option value="local">Lokálny súbor</option>
-        </select>
-      </div>
-
-      {currentSource.mode === 'remote' && (
-        <>
+  const FeedCard = ({ feedKey, label, description }: { feedKey: string; label: string; description: string }) => {
+    const source = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
+    
+    return (
+      <div
+        className="p-4 rounded-lg border space-y-4"
+        style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}
+      >
+        <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-              URL feedu
-            </label>
-            <input
-              type="text"
-              value={currentSource.remote?.url || ''}
-              onChange={(e) =>
-                updateSource({ remote: { ...currentSource.remote, url: e.target.value } })
-              }
-              placeholder="https://..."
-              className="w-full font-mono text-sm"
-            />
+            <h4 className="font-medium" style={{ color: 'var(--color-text-primary)' }}>
+              {label}
+            </h4>
+            <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+              {description}
+            </p>
           </div>
+          <span
+            className={`px-2 py-0.5 rounded-full text-xs ${
+              source.remote?.url ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'
+            }`}
+          >
+            {source.remote?.url ? 'Nakonfigurovaný' : 'Nenakonfigurovaný'}
+          </span>
+        </div>
 
-          <div>
-            <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-              Autentifikácia
-            </label>
-            <select
-              value={currentSource.remote?.auth?.mode || 'none'}
-              onChange={(e) =>
-                updateSource({
-                  remote: {
-                    ...currentSource.remote,
-                    auth: { ...currentSource.remote?.auth, mode: e.target.value },
-                  },
-                })
-              }
-              className="w-full"
-            >
-              <option value="none">Žiadna</option>
-              <option value="basic">Basic Auth</option>
-              <option value="bearer">Bearer Token</option>
-              <option value="form">Form Login</option>
-            </select>
-          </div>
+        <div>
+          <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+            Režim
+          </label>
+          <select
+            value={source.mode || 'remote'}
+            onChange={(e) => updateSource(feedKey, { mode: e.target.value })}
+            className="w-full"
+          >
+            <option value="remote">Remote (URL)</option>
+            <option value="local">Lokálny súbor</option>
+          </select>
+        </div>
 
-          {currentSource.remote?.auth?.mode === 'basic' && (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                  Username
-                </label>
-                <input
-                  type="text"
-                  value={currentSource.remote?.auth?.basic_user || ''}
-                  onChange={(e) =>
-                    updateSource({
-                      remote: {
-                        ...currentSource.remote,
-                        auth: { ...currentSource.remote?.auth, basic_user: e.target.value },
-                      },
-                    })
-                  }
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                  Heslo
-                </label>
-                <input
-                  type={showPasswords ? 'text' : 'password'}
-                  value={currentSource.remote?.auth?.basic_pass || ''}
-                  onChange={(e) =>
-                    updateSource({
-                      remote: {
-                        ...currentSource.remote,
-                        auth: { ...currentSource.remote?.auth, basic_pass: e.target.value },
-                      },
-                    })
-                  }
-                  className="w-full"
-                />
-              </div>
-            </div>
-          )}
-
-          {currentSource.remote?.auth?.mode === 'bearer' && (
+        {source.mode === 'remote' && (
+          <>
             <div>
               <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                Token
+                URL feedu
               </label>
               <input
-                type={showPasswords ? 'text' : 'password'}
-                value={currentSource.remote?.auth?.token || ''}
+                type="text"
+                value={source.remote?.url || ''}
                 onChange={(e) =>
-                  updateSource({
-                    remote: {
-                      ...currentSource.remote,
-                      auth: { ...currentSource.remote?.auth, token: e.target.value },
-                    },
-                  })
+                  updateSource(feedKey, { remote: { ...source.remote, url: e.target.value } })
                 }
+                placeholder="https://..."
                 className="w-full font-mono text-sm"
               />
             </div>
-          )}
-        </>
-      )}
 
-      {currentSource.mode === 'local' && (
-        <div>
-          <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-            Cesta k súboru
-          </label>
-          <input
-            type="text"
-            value={currentSource.local_path || ''}
-            onChange={(e) => updateSource({ local_path: e.target.value })}
-            placeholder="/path/to/feed.xml"
-            className="w-full font-mono text-sm"
-          />
-        </div>
-      )}
+            <div>
+              <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                Autentifikácia
+              </label>
+              <select
+                value={source.remote?.auth?.mode || 'none'}
+                onChange={(e) =>
+                  updateSource(feedKey, {
+                    remote: {
+                      ...source.remote,
+                      auth: { ...source.remote?.auth, mode: e.target.value },
+                    },
+                  })
+                }
+                className="w-full"
+              >
+                <option value="none">Žiadna</option>
+                <option value="basic">Basic Auth</option>
+                <option value="bearer">Bearer Token</option>
+                <option value="form">Form Login</option>
+              </select>
+            </div>
+
+            {source.remote?.auth?.mode === 'basic' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                    Username
+                  </label>
+                  <input
+                    type="text"
+                    value={source.remote?.auth?.basic_user || ''}
+                    onChange={(e) =>
+                      updateSource(feedKey, {
+                        remote: {
+                          ...source.remote,
+                          auth: { ...source.remote?.auth, basic_user: e.target.value },
+                        },
+                      })
+                    }
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                    Heslo
+                  </label>
+                  <input
+                    type={showPasswords ? 'text' : 'password'}
+                    value={source.remote?.auth?.basic_pass || ''}
+                    onChange={(e) =>
+                      updateSource(feedKey, {
+                        remote: {
+                          ...source.remote,
+                          auth: { ...source.remote?.auth, basic_pass: e.target.value },
+                        },
+                      })
+                    }
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            )}
+
+            {source.remote?.auth?.mode === 'bearer' && (
+              <div>
+                <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                  Token
+                </label>
+                <input
+                  type={showPasswords ? 'text' : 'password'}
+                  value={source.remote?.auth?.token || ''}
+                  onChange={(e) =>
+                    updateSource(feedKey, {
+                      remote: {
+                        ...source.remote,
+                        auth: { ...source.remote?.auth, token: e.target.value },
+                      },
+                    })
+                  }
+                  className="w-full font-mono text-sm"
+                />
+              </div>
+            )}
+          </>
+        )}
+
+        {source.mode === 'local' && (
+          <div>
+            <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+              Cesta k súboru
+            </label>
+            <input
+              type="text"
+              value={source.local_path || ''}
+              onChange={(e) => updateSource(feedKey, { local_path: e.target.value })}
+              placeholder="/path/to/feed.xml"
+              className="w-full font-mono text-sm"
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
+        Nakonfigurujte oba feedy pre tohto dodávateľa. Feed produktov slúži na import nových produktov,
+        feed skladu na synchronizáciu stavov zásob.
+      </p>
+
+      <FeedCard
+        feedKey="products"
+        label="Feed: Produkty"
+        description="XML/CSV feed pre import nových produktov a aktualizáciu informácií"
+      />
+
+      <FeedCard
+        feedKey="stock"
+        label="Feed: Sklad"
+        description="XML/CSV feed pre synchronizáciu stavov zásob"
+      />
     </div>
   );
 }
