@@ -303,10 +303,10 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
     else:
         download = invoices.get('download', {})
         strategy = download.get('strategy', '')
-        if strategy not in ('', 'web', 'manual', 'api', 'disabled', 'paul-lange-web'):
+        if strategy not in ('', 'web', 'manual', 'api', 'disabled', 'paul-lange-web', 'northfinder-web'):
             warnings.append(f"Unknown download strategy: '{strategy}'")
         
-        if strategy in ('web', 'paul-lange-web'):
+        if strategy in ('web', 'paul-lange-web', 'northfinder-web'):
             web = download.get('web', {})
             login = web.get('login', {})
             if not login.get('login_url'):
@@ -568,7 +568,7 @@ async def upload_invoice(
     file: UploadFile = File(...),
     invoice_number: Optional[str] = Query(default=None, description="Override invoice number")
 ):
-    """Upload invoice file (CSV or PDF) manually"""
+    """Upload invoice file (CSV, XLSX, XLS, or PDF) manually"""
     if not supplier_path(supplier).exists():
         raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
     
@@ -582,13 +582,17 @@ async def upload_invoice(
             detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
         )
     
+    # Determine target directory
     if ext == '.pdf':
         target_dir = _invoices_pdf_dir(supplier)
+    elif ext in ('.xlsx', '.xls'):
+        target_dir = _invoices_raw_dir(supplier)
     else:
         target_dir = _invoices_csv_dir(supplier)
     
     target_dir.mkdir(parents=True, exist_ok=True)
     
+    # Build filename
     if invoice_number:
         safe_number = re.sub(r'[^a-zA-Z0-9\-_]', '', invoice_number)
         filename = f"{safe_number}{ext}"
@@ -605,29 +609,85 @@ async def upload_invoice(
     content = await file.read()
     target_path.write_bytes(content)
     
-    if ext == '.csv':
-        _update_invoice_index(supplier, filename)
+    csv_path = None
+    
+    # Handle XLSX/XLS - convert to CSV
+    if ext in ('.xlsx', '.xls'):
+        try:
+            from inventory_hub.adapters.northfinder_xlsx_parser import parse_xlsx_to_csv
+            
+            csv_filename = Path(filename).stem + '.csv'
+            csv_dir = _invoices_csv_dir(supplier)
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            csv_full_path = csv_dir / csv_filename
+            
+            result = parse_xlsx_to_csv(target_path, csv_full_path)
+            if result["success"]:
+                csv_path = f"suppliers/{supplier}/invoices/csv/{csv_filename}"
+                # Update index with CSV
+                _update_invoice_index_map(supplier, csv_filename, csv_path, target_path)
+        except ImportError:
+            pass  # No XLSX parser available
+        except Exception as e:
+            # Log but don't fail - raw file is still saved
+            import logging
+            logging.warning(f"Failed to convert XLSX to CSV: {e}")
+    elif ext == '.csv':
+        csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
+        _update_invoice_index_map(supplier, filename, csv_path, None)
     
     return {
         "success": True,
         "filename": filename,
         "path": str(target_path.relative_to(DATA_ROOT)),
+        "csv_path": csv_path,
         "size_bytes": len(content)
     }
 
 
-def _update_invoice_index(supplier: str, filename: str) -> None:
-    """Add new invoice to index"""
+def _invoices_raw_dir(supplier: str) -> Path:
+    """Get raw invoices directory (for XLSX/XLS files)"""
+    return _supplier_dir(supplier) / "invoices" / "raw"
+
+
+def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_path: Optional[Path]) -> None:
+    """
+    Add new invoice to index using canonical map format.
+    Format: { "<invoice_id>": { entry }, ... }
+    """
     index_path = _index_path(supplier)
     
+    # Load existing index
     if index_path.exists():
         try:
             data = json.loads(index_path.read_text(encoding='utf-8'))
         except Exception:
-            data = {"invoices": []}
+            data = {}
     else:
-        data = {"invoices": []}
+        data = {}
     
+    # Normalize old list format to map
+    if isinstance(data, dict) and "invoices" in data and isinstance(data["invoices"], list):
+        new_data = {}
+        for i, inv in enumerate(data["invoices"]):
+            if isinstance(inv, dict):
+                key = str(inv.get("invoice_id") or inv.get("number") or f"inv_{i}")
+                new_data[key] = inv
+        data = new_data
+    elif isinstance(data, list):
+        new_data = {}
+        for i, inv in enumerate(data):
+            if isinstance(inv, dict):
+                key = str(inv.get("invoice_id") or inv.get("number") or f"inv_{i}")
+                new_data[key] = inv
+        data = new_data
+    elif not isinstance(data, dict):
+        data = {}
+    
+    # Filter out meta keys
+    data = {k: v for k, v in data.items() if isinstance(v, dict)}
+    
+    # Build invoice entry
     stem = Path(filename).stem
     invoice_date = None
     match = re.search(r'F?(\d{4})(\d{2})(\d{2})', stem)
@@ -637,20 +697,26 @@ def _update_invoice_index(supplier: str, filename: str) -> None:
         except Exception:
             pass
     
-    csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
-    existing = [inv for inv in data.get('invoices', []) if inv.get('csv_path') != csv_path]
+    # Use stem as invoice_id
+    invoice_id = stem
     
-    existing.append({
-        "invoice_number": stem,
-        "date": invoice_date or datetime.now().strftime('%Y-%m-%d'),
+    entry = {
+        "supplier": supplier,
+        "invoice_id": invoice_id,
+        "number": stem,
+        "issue_date": invoice_date or datetime.now().strftime('%Y-%m-%d'),
         "csv_path": csv_path,
         "status": "new",
-        "uploaded_at": datetime.now(timezone.utc).isoformat()
-    })
+        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+    }
     
-    data['invoices'] = existing
-    data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    if raw_path and raw_path.exists():
+        entry["raw_path"] = str(raw_path.relative_to(DATA_ROOT))
     
+    # Add/update entry
+    data[invoice_id] = entry
+    
+    # Save index
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
 

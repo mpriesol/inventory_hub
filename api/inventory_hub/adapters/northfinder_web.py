@@ -450,22 +450,51 @@ class NorthfinderInvoiceDownloader:
             return False
     
     def _load_existing_index(self) -> Dict[str, Any]:
-        """Load existing invoice index"""
-        if self.index_path.exists():
-            try:
-                data = json.loads(self.index_path.read_text(encoding="utf-8"))
-                # Normalize to dict format
-                if isinstance(data, list):
-                    return {"invoices": data, "updated_at": None}
-                return data
-            except Exception:
-                pass
-        return {"invoices": [], "updated_at": None}
+        """
+        Load existing invoice index.
+        Returns a dict mapping invoice_id -> entry (canonical format).
+        """
+        if not self.index_path.exists():
+            return {}
+        
+        try:
+            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        
+        # Already a mapping: { "<invoice_id>": {entry}, ... }
+        if isinstance(data, dict):
+            # Legacy format: {"invoices": [...], "updated_at": ...}
+            if "invoices" in data and isinstance(data["invoices"], list):
+                out: Dict[str, Any] = {}
+                for i, it in enumerate(data["invoices"]):
+                    if not isinstance(it, dict):
+                        continue
+                    key = str(it.get("invoice_id") or it.get("row_id") or it.get("number") or f"nf_{i}")
+                    out[key] = it
+                return out
+            
+            # Filter out non-entry values (updated_at, etc.)
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
+        
+        # Legacy: list of entries
+        if isinstance(data, list):
+            out: Dict[str, Any] = {}
+            for i, it in enumerate(data):
+                if not isinstance(it, dict):
+                    continue
+                key = str(it.get("invoice_id") or it.get("row_id") or it.get("number") or f"nf_{i}")
+                out[key] = it
+            return out
+        
+        return {}
     
     def _save_index(self, index: Dict[str, Any]) -> None:
-        """Save invoice index"""
-        index["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self.index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        """Save invoice index as dict mapping invoice_id -> entry (canonical format)."""
+        self.index_path.write_text(
+            json.dumps(index, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
     
     def refresh(self) -> RefreshResult:
         """
@@ -487,15 +516,9 @@ class NorthfinderInvoiceDownloader:
         try:
             logger.info(f"Starting Northfinder invoice refresh for {self.supplier_code}")
             
-            # Load existing index
+            # Load existing index (now a dict mapping invoice_id -> entry)
             index = self._load_existing_index()
-            existing_numbers = set()
-            inv_list = index.get("invoices", [])
-            if isinstance(inv_list, dict):
-                inv_list = list(inv_list.values())
-            for inv in inv_list:
-                if isinstance(inv, dict) and inv.get("number"):
-                    existing_numbers.add(inv["number"])
+            existing_numbers = {v.get("number") for v in index.values() if isinstance(v, dict) and v.get("number")}
             
             # Fetch invoice list
             invoice_list = self._fetch_invoice_list()
@@ -519,11 +542,11 @@ class NorthfinderInvoiceDownloader:
                     logger.info(f"Skipping {inv_number} - already downloaded")
                     self.result.skipped += 1
                     
-                    # Still ensure it's in index
-                    if inv_number not in existing_numbers:
+                    # Still ensure it's in index (use row_id as key)
+                    invoice_id = str(row_id)
+                    if invoice_id not in index:
                         index_entry = self._build_index_entry(inv, xlsx_path, csv_path, pdf_path)
-                        if isinstance(index.get("invoices"), list):
-                            index["invoices"].append(index_entry)
+                        index[invoice_id] = index_entry
                         existing_numbers.add(inv_number)
                     continue
                 
@@ -565,10 +588,10 @@ class NorthfinderInvoiceDownloader:
                         logger.error(f"Failed to convert XLSX: {parse_result['error']}")
                         self.result.errors.append(f"XLSX conversion failed for {inv_number}: {parse_result['error']}")
                     
-                    # Add to index
+                    # Add to index (use row_id as key)
+                    invoice_id = str(row_id)
                     index_entry = self._build_index_entry(inv, xlsx_path, csv_path, pdf_path if pdf_downloaded else None)
-                    if isinstance(index.get("invoices"), list):
-                        index["invoices"].append(index_entry)
+                    index[invoice_id] = index_entry
                     existing_numbers.add(inv_number)
                     
                 except Exception as e:
@@ -579,7 +602,7 @@ class NorthfinderInvoiceDownloader:
             # Save updated index
             self._save_index(index)
             
-            self.result.invoices = index.get("invoices", [])
+            self.result.invoices = list(index.values())
             self.result.log_files = [str(log_path.relative_to(self.data_root))]
             
             logger.info(

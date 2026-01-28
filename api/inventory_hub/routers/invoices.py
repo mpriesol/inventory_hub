@@ -375,12 +375,15 @@ def invoices_refresh(
         else:
             idx_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # Return with errors info - ok is false if there were failures
+    errors = getattr(res, "errors", []) or []
     return {
-        "ok": True,
+        "ok": (res.failed == 0 and len(errors) == 0),
         "downloaded": res.downloaded,
         "skipped": res.skipped,
         "failed": res.failed,
         "pages": res.pages,
+        "errors": errors,
         "log_files": res.log_files,
     }
 

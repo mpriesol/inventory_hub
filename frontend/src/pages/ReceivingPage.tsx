@@ -1,11 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle } from 'lucide-react';
+import { Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle, Upload, ExternalLink, CheckCircle, XCircle } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { StatusBadge } from '../components/ui/Badge.new';
-import { getInvoicesIndex, type InvoiceIndexItem } from '../api/invoices';
-import { listSuppliers, type SupplierSummary } from '../api/suppliers';
+import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
+import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
 import { createReceivingSession, resumeReceiving } from '../api/receiving';
+import { API_BASE } from '../api/client';
+
+interface RefreshResult {
+  ok: boolean;
+  downloaded: number;
+  skipped: number;
+  failed: number;
+  pages: number;
+  errors: string[];
+  log_files: string[];
+}
 
 interface InvoiceDisplay {
   id: string;
@@ -67,6 +78,15 @@ export function ReceivingPage() {
   const [creating, setCreating] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<RefreshResult | null>(null);
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
+  
+  // Upload state
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load suppliers
   useEffect(() => {
@@ -181,6 +201,9 @@ export function ReceivingPage() {
 
   const handleRefresh = async () => {
     setLoading(true);
+    setRefreshResult(null);
+    setRefreshMessage(null);
+    setError(null);
     try {
       const data = await getInvoicesIndex(supplier);
       const displayInvoices: InvoiceDisplay[] = (data.items || [])
@@ -207,7 +230,6 @@ export function ReceivingPage() {
         })
         .slice(0, 20);
       setInvoices(displayInvoices);
-      setError(null);
     } catch (err) {
       setError('Nepodarilo sa obnoviť zoznam');
     } finally {
@@ -215,8 +237,76 @@ export function ReceivingPage() {
     }
   };
 
+  // Download invoices from supplier (web scraping)
+  const handleDownloadInvoices = async () => {
+    setRefreshing(true);
+    setRefreshResult(null);
+    setRefreshMessage(null);
+    setError(null);
+    
+    try {
+      const result = await refreshInvoices(supplier);
+      setRefreshResult(result as RefreshResult);
+      
+      const { downloaded, skipped, failed, errors, ok } = result as RefreshResult;
+      const summary = `Stiahnuté: ${downloaded}, Preskočené: ${skipped}, Zlyhané: ${failed}`;
+      
+      if (!ok || failed > 0 || (errors && errors.length > 0)) {
+        const errorMsg = errors?.length ? `\n${errors.join('\n')}` : '';
+        setError(`${summary}${errorMsg}`);
+      } else {
+        setRefreshMessage(summary);
+      }
+      
+      // Reload invoice list
+      await handleRefresh();
+    } catch (err: any) {
+      setError(`Zlyhalo sťahovanie faktúr: ${err.message || err}`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Manual file upload
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setUploading(true);
+    setError(null);
+    setRefreshMessage(null);
+    
+    try {
+      await uploadInvoice(supplier, file);
+      setRefreshMessage(`Faktúra "${file.name}" bola úspešne nahratá`);
+      // Reload invoice list
+      await handleRefresh();
+    } catch (err: any) {
+      setError(`Zlyhalo nahrávanie: ${err.message || err}`);
+    } finally {
+      setUploading(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,.xlsx,.xls,.pdf"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -236,23 +326,96 @@ export function ReceivingPage() {
             Vyber faktúru pre spracovanie príjmu na sklad.
           </p>
         </div>
-        <Button variant="secondary" onClick={handleRefresh} disabled={loading}>
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          Obnoviť
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button 
+            variant="secondary" 
+            onClick={handleUploadClick} 
+            disabled={uploading}
+          >
+            <Upload size={16} className={uploading ? 'animate-pulse' : ''} />
+            {uploading ? 'Nahrávam...' : 'Nahrať faktúru'}
+          </Button>
+          <Button 
+            variant="secondary" 
+            onClick={handleDownloadInvoices} 
+            disabled={refreshing}
+          >
+            <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? 'Sťahujem...' : 'Stiahnuť z webu'}
+          </Button>
+          <Button variant="ghost" onClick={handleRefresh} disabled={loading}>
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          </Button>
+        </div>
       </div>
+
+      {/* Success message */}
+      {refreshMessage && (
+        <div
+          className="p-4 rounded-lg border flex items-start gap-3"
+          style={{
+            backgroundColor: 'rgba(34, 197, 94, 0.1)',
+            borderColor: 'rgb(34, 197, 94)',
+            color: 'rgb(34, 197, 94)',
+          }}
+        >
+          <CheckCircle size={20} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span>{refreshMessage}</span>
+            {/* Log file links */}
+            {refreshResult?.log_files && refreshResult.log_files.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {refreshResult.log_files.map((logPath, i) => (
+                  <a
+                    key={i}
+                    href={`${API_BASE}/files/download?relpath=${encodeURIComponent(logPath)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs underline hover:no-underline"
+                    style={{ color: 'inherit' }}
+                  >
+                    <ExternalLink size={12} />
+                    Log #{i + 1}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && (
         <div
-          className="p-4 rounded-lg border"
+          className="p-4 rounded-lg border flex items-start gap-3"
           style={{
             backgroundColor: 'var(--color-error-subtle)',
             borderColor: 'var(--color-error)',
             color: 'var(--color-error)',
           }}
         >
-          {error}
+          <XCircle size={20} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <pre className="whitespace-pre-wrap text-sm font-sans">{error}</pre>
+            {/* Log file links even on error */}
+            {refreshResult?.log_files && refreshResult.log_files.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {refreshResult.log_files.map((logPath, i) => (
+                  <a
+                    key={i}
+                    href={`${API_BASE}/files/download?relpath=${encodeURIComponent(logPath)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs underline hover:no-underline"
+                    style={{ color: 'inherit' }}
+                  >
+                    <ExternalLink size={12} />
+                    Zobraziť log
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
