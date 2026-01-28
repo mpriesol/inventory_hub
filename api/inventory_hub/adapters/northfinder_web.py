@@ -203,6 +203,9 @@ class NorthfinderInvoiceDownloader:
         
         Returns:
             Storage state dict with cookies and localStorage
+        
+        Raises:
+            RuntimeError: If blocked by Cloudflare or login fails
         """
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("Playwright not installed. Run: pip install playwright && playwright install chromium")
@@ -211,12 +214,44 @@ class NorthfinderInvoiceDownloader:
         
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             page = context.new_page()
             
             try:
-                # Navigate to login page
-                page.goto(self.config.login_url, wait_until="networkidle", timeout=30000)
+                # Navigate to login page with longer timeout
+                logger.info(f"Navigating to {self.config.login_url}")
+                page.goto(self.config.login_url, wait_until="domcontentloaded", timeout=60000)
+                
+                # Check for Cloudflare challenge
+                page_title = page.title() or ""
+                page_html = page.content()
+                
+                is_cloudflare_blocked = (
+                    "just a moment" in page_title.lower() or
+                    "cloudflare" in page_title.lower() or
+                    "cf-turnstile" in page_html.lower() or
+                    "challenge-platform" in page_html.lower() or
+                    "cdn-cgi/challenge" in page_html.lower() or
+                    "cf-mitigated" in page_html.lower()
+                )
+                
+                if is_cloudflare_blocked:
+                    # Save diagnostics
+                    self._save_cloudflare_diagnostics(page, "login_blocked")
+                    raise RuntimeError(
+                        "Blocked by Cloudflare Turnstile challenge. "
+                        "The VPS IP is blocked. Options:\n"
+                        "1) Ask Northfinder to allowlist your VPS IP\n"
+                        "2) Use manual invoice upload instead\n"
+                        "3) Login from a different network and export storage_state.json"
+                    )
+                
+                logger.info(f"Page loaded, title: {page_title}")
+                
+                # Wait a bit for any JS to load
+                page.wait_for_timeout(2000)
                 
                 # Accept cookies if dialog appears
                 try:
@@ -227,17 +262,37 @@ class NorthfinderInvoiceDownloader:
                 except Exception:
                     pass  # Cookie dialog may not appear
                 
+                # Check if login form exists
+                user_field = page.locator(self.config.user_selector)
+                if user_field.count() == 0:
+                    self._save_cloudflare_diagnostics(page, "no_login_form")
+                    raise RuntimeError(
+                        f"Login form not found. Page title: '{page_title}'. "
+                        "Possible Cloudflare block or page structure changed."
+                    )
+                
                 # Fill login form
-                page.locator(self.config.user_selector).fill(self.config.username)
+                logger.info("Filling login form...")
+                user_field.fill(self.config.username)
                 page.locator(self.config.pass_selector).fill(self.config.password)
                 
                 # Submit
                 page.locator(self.config.submit_selector).first.click()
                 
-                # Wait for navigation (should redirect after login)
-                page.wait_for_load_state("networkidle", timeout=15000)
+                # Wait for navigation with timeout
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception as e:
+                    self._save_cloudflare_diagnostics(page, "post_login_timeout")
+                    raise RuntimeError(f"Timeout after login submit: {e}")
                 
-                # Check if login successful by looking for login form absence or dashboard presence
+                # Check for Cloudflare again after login attempt
+                page_html = page.content()
+                if "cf-turnstile" in page_html.lower() or "challenge-platform" in page_html.lower():
+                    self._save_cloudflare_diagnostics(page, "post_login_cloudflare")
+                    raise RuntimeError("Cloudflare challenge appeared after login attempt")
+                
+                # Check if login successful
                 current_url = page.url
                 if "login" in current_url.lower():
                     # Still on login page - check for error message
@@ -248,7 +303,9 @@ class NorthfinderInvoiceDownloader:
                             error_text = error_el.first.text_content() or ""
                     except Exception:
                         pass
-                    raise RuntimeError(f"Login failed: {error_text or 'Unknown error'}")
+                    
+                    self._save_cloudflare_diagnostics(page, "login_failed")
+                    raise RuntimeError(f"Login failed: {error_text or 'Still on login page after submit'}")
                 
                 logger.info(f"Login successful, current URL: {current_url}")
                 
@@ -258,6 +315,24 @@ class NorthfinderInvoiceDownloader:
                 
             finally:
                 browser.close()
+    
+    def _save_cloudflare_diagnostics(self, page, prefix: str) -> None:
+        """Save screenshot and HTML for debugging Cloudflare issues"""
+        try:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Save screenshot
+            screenshot_path = self.logs_dir / f"{prefix}_{ts}.png"
+            page.screenshot(path=str(screenshot_path))
+            logger.info(f"Saved diagnostic screenshot: {screenshot_path}")
+            
+            # Save HTML
+            html_path = self.logs_dir / f"{prefix}_{ts}.html"
+            html_path.write_text(page.content(), encoding="utf-8")
+            logger.info(f"Saved diagnostic HTML: {html_path}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save diagnostics: {e}")
     
     def _check_authenticated(self, session: requests.Session) -> bool:
         """Check if session is authenticated by fetching a protected page"""
@@ -508,6 +583,13 @@ class NorthfinderInvoiceDownloader:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = self.logs_dir / f"invoices_refresh_{ts}.log"
         
+        # Always set log_files (even if we fail early)
+        try:
+            log_relpath = str(log_path.relative_to(self.data_root))
+        except ValueError:
+            log_relpath = str(log_path)
+        self.result.log_files = [log_relpath]
+        
         # Setup file logging
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
@@ -516,7 +598,7 @@ class NorthfinderInvoiceDownloader:
         try:
             logger.info(f"Starting Northfinder invoice refresh for {self.supplier_code}")
             
-            # Load existing index (now a dict mapping invoice_id -> entry)
+            # Load existing index (now returns dict mapping invoice_id -> entry)
             index = self._load_existing_index()
             existing_numbers = {v.get("number") for v in index.values() if isinstance(v, dict) and v.get("number")}
             
@@ -603,7 +685,6 @@ class NorthfinderInvoiceDownloader:
             self._save_index(index)
             
             self.result.invoices = list(index.values())
-            self.result.log_files = [str(log_path.relative_to(self.data_root))]
             
             logger.info(
                 f"Refresh complete: downloaded={self.result.downloaded}, "

@@ -48,6 +48,9 @@ from inventory_hub.routers.receiving import router as receiving_router_legacy
 # v12 FINAL: PostgreSQL-backed receiving
 from inventory_hub.routers.receiving_db import router as receiving_router_db
 from inventory_hub.database import init_db, close_db, check_db_health
+from inventory_hub.routers.invoices_unified import router as invoices_unified_router
+
+
 
 # ---------------------------------------------------------
 # Logging setup
@@ -121,6 +124,7 @@ app.include_router(suppliers_router)
 app.include_router(logs_router)
 app.include_router(logs_global_router)
 app.include_router(imports_router)
+app.include_router(invoices_unified_router)
 
 # Receiving: Use PostgreSQL-backed router if enabled, otherwise legacy JSON
 if settings.USE_POSTGRES:

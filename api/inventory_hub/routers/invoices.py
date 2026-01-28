@@ -375,16 +375,21 @@ def invoices_refresh(
         else:
             idx_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Return with errors info - ok is false if there were failures
+    # Extract errors and log_files from result
     errors = getattr(res, "errors", []) or []
+    log_files = getattr(res, "log_files", []) or []
+    
+    # ok is false if there were failures or errors
+    is_ok = (res.failed == 0 and len(errors) == 0)
+    
     return {
-        "ok": (res.failed == 0 and len(errors) == 0),
+        "ok": is_ok,
         "downloaded": res.downloaded,
         "skipped": res.skipped,
         "failed": res.failed,
-        "pages": res.pages,
+        "pages": getattr(res, "pages", 0),
         "errors": errors,
-        "log_files": res.log_files,
+        "log_files": log_files,
     }
 
 @router.post("/runs/prepare")

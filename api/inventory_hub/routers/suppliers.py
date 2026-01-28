@@ -550,7 +550,7 @@ async def validate_supplier_config(
         
         invoices = cfg.get('invoices', {})
         download = invoices.get('download', {})
-        if download.get('strategy') in ('web', 'paul-lange-web'):
+        if download.get('strategy') in ('web', 'paul-lange-web', 'northfinder-web'):
             web = download.get('web', {})
             login = web.get('login', {})
             login_url = login.get('login_url', '')
@@ -560,6 +560,39 @@ async def validate_supplier_config(
                     result.warnings.append(f"Login URL not reachable: {login_url}")
     
     return result
+
+
+def _sanitize_filename(filename: str) -> str:
+    """
+    Sanitize filename - remove spaces, special chars, quotes.
+    Convert spaces to underscores, keep only safe characters.
+    """
+    # Get stem and extension
+    stem = Path(filename).stem
+    ext = Path(filename).suffix.lower()
+    
+    # Replace spaces with underscores
+    stem = stem.replace(' ', '_')
+    
+    # Remove quotes and other problematic chars
+    stem = re.sub(r'[\'"\(\)\[\]<>:;,!@#$%^&*+=|\\/?]', '', stem)
+    
+    # Replace multiple underscores with single
+    stem = re.sub(r'_+', '_', stem)
+    
+    # Trim underscores from start/end
+    stem = stem.strip('_')
+    
+    # Limit length
+    if len(stem) > 100:
+        stem = stem[:100]
+    
+    return f"{stem}{ext}"
+
+
+def _invoices_raw_dir(supplier: str) -> Path:
+    """Get raw invoices directory (for XLSX/XLS files)"""
+    return _supplier_dir(supplier) / "invoices" / "raw"
 
 
 @router.post("/suppliers/{supplier}/upload-invoice")
@@ -582,7 +615,7 @@ async def upload_invoice(
             detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
         )
     
-    # Determine target directory
+    # Determine target directory based on file type
     if ext == '.pdf':
         target_dir = _invoices_pdf_dir(supplier)
     elif ext in ('.xlsx', '.xls'):
@@ -592,17 +625,18 @@ async def upload_invoice(
     
     target_dir.mkdir(parents=True, exist_ok=True)
     
-    # Build filename
+    # Build sanitized filename
     if invoice_number:
         safe_number = re.sub(r'[^a-zA-Z0-9\-_]', '', invoice_number)
         filename = f"{safe_number}{ext}"
     else:
-        filename = file.filename
+        # Sanitize original filename - removes spaces, quotes, etc.
+        filename = _sanitize_filename(file.filename)
     
     target_path = target_dir / filename
     if target_path.exists():
         ts = datetime.now().strftime('%Y%m%d%H%M%S')
-        stem = target_path.stem
+        stem = Path(filename).stem
         filename = f"{stem}_{ts}{ext}"
         target_path = target_dir / filename
     
@@ -624,12 +658,11 @@ async def upload_invoice(
             result = parse_xlsx_to_csv(target_path, csv_full_path)
             if result["success"]:
                 csv_path = f"suppliers/{supplier}/invoices/csv/{csv_filename}"
-                # Update index with CSV
+                # Update index with CSV using map format
                 _update_invoice_index_map(supplier, csv_filename, csv_path, target_path)
         except ImportError:
             pass  # No XLSX parser available
         except Exception as e:
-            # Log but don't fail - raw file is still saved
             import logging
             logging.warning(f"Failed to convert XLSX to CSV: {e}")
     elif ext == '.csv':
@@ -643,11 +676,6 @@ async def upload_invoice(
         "csv_path": csv_path,
         "size_bytes": len(content)
     }
-
-
-def _invoices_raw_dir(supplier: str) -> Path:
-    """Get raw invoices directory (for XLSX/XLS files)"""
-    return _supplier_dir(supplier) / "invoices" / "raw"
 
 
 def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_path: Optional[Path]) -> None:
@@ -684,13 +712,14 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
     elif not isinstance(data, dict):
         data = {}
     
-    # Filter out meta keys
+    # Filter out meta keys (like "updated_at")
     data = {k: v for k, v in data.items() if isinstance(v, dict)}
     
     # Build invoice entry
     stem = Path(filename).stem
     invoice_date = None
-    match = re.search(r'F?(\d{4})(\d{2})(\d{2})', stem)
+    # Try to extract date from filename (pattern: YYYYMMDD or YYYY_MM_DD or DD_MM_YYYY)
+    match = re.search(r'(\d{4})[\-_]?(\d{2})[\-_]?(\d{2})', stem)
     if match:
         try:
             invoice_date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
@@ -719,6 +748,12 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
     # Save index
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def _update_invoice_index(supplier: str, filename: str) -> None:
+    """Add new invoice to index (legacy - redirects to map version)"""
+    csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
+    _update_invoice_index_map(supplier, filename, csv_path, None)
 
 
 @router.delete("/suppliers/{supplier}")
