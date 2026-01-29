@@ -478,6 +478,12 @@ class Reservation(TimestampMixin, Base):
 # ============================================================================
 
 class ReceivingSession(TimestampMixin, Base):
+
+# ============================================================================
+# 24. RECEIVING SESSIONS (Extended with Invoice Management fields)
+# ============================================================================
+
+class ReceivingSession(TimestampMixin, Base):
     __tablename__ = "receiving_sessions"
     
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -507,6 +513,23 @@ class ReceivingSession(TimestampMixin, Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
     session_data: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     
+    # === Invoice Management Extension (from 002_invoice_management.sql) ===
+    # Payment tracking
+    payment_status: Mapped[str] = mapped_column(String(20), default="unpaid", nullable=False)
+    due_date: Mapped[Optional[date]] = mapped_column(Date)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+    
+    # VAT handling
+    vat_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("23.00"), nullable=False)
+    vat_included: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    total_without_vat: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+    computed_vat: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+    total_with_vat: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+    
+    # Supplier info cache
+    supplier_country: Mapped[Optional[str]] = mapped_column(String(2))
+    
     # Relationships
     supplier: Mapped["Supplier"] = relationship(back_populates="receiving_sessions")
     warehouse: Mapped["Warehouse"] = relationship(back_populates="receiving_sessions")
@@ -518,11 +541,13 @@ class ReceivingSession(TimestampMixin, Base):
         Index("idx_receiving_source_hash", "supplier_id", "source_hash", unique=True,
               postgresql_where="source_hash IS NOT NULL"),
         Index("idx_receiving_status", "status"),
+        Index("idx_receiving_sessions_payment", "payment_status"),
+        Index("idx_receiving_sessions_due_date", "due_date"),
     )
 
 
 # ============================================================================
-# 25. RECEIVING LINES (with NOT NULL line_number)
+# 25. RECEIVING LINES (Extended with Invoice Management fields)
 # ============================================================================
 
 class ReceivingLine(TimestampMixin, Base):
@@ -543,11 +568,25 @@ class ReceivingLine(TimestampMixin, Base):
     total_price_original: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     match_method: Mapped[Optional[str]] = mapped_column(String(50))
-    # line_fingerprint is GENERATED in PostgreSQL - we compute it here
+    
+    # === Invoice Management Extension (from 002_invoice_management.sql) ===
+    # VAT per line
+    vat_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    unit_price_with_vat: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    total_price_with_vat: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+    
+    # Product matching
+    is_new_product: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    matched_supplier_product_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("supplier_products.id", ondelete="SET NULL"))
+    
+    # Product image caching
+    product_image_url: Mapped[Optional[str]] = mapped_column(Text)
+    product_image_cached_path: Mapped[Optional[str]] = mapped_column(Text)
     
     # Relationships
     session: Mapped["ReceivingSession"] = relationship(back_populates="lines")
     product: Mapped[Optional["Product"]] = relationship()
+    matched_supplier_product: Mapped[Optional["SupplierProduct"]] = relationship()
     scan_events: Mapped[List["ScanEvent"]] = relationship(back_populates="receiving_line")
     
     @property
@@ -560,12 +599,14 @@ class ReceivingLine(TimestampMixin, Base):
         CheckConstraint("ordered_qty > 0", name="chk_ordered_qty_positive"),
         CheckConstraint("received_qty >= 0", name="chk_received_qty_non_negative"),
         CheckConstraint("line_number > 0", name="chk_line_number_positive"),
-        # v12 FINAL: Unique line per session
         UniqueConstraint("session_id", "line_number", name="idx_receiving_lines_session_line"),
         Index("idx_receiving_lines_session", "session_id"),
         Index("idx_receiving_lines_product", "product_id"),
         Index("idx_receiving_lines_ean", "ean", postgresql_where="ean IS NOT NULL"),
         Index("idx_receiving_lines_supplier_sku", "supplier_sku", postgresql_where="supplier_sku IS NOT NULL"),
+        Index("idx_receiving_lines_new_product", "session_id", postgresql_where="is_new_product = true"),
+        Index("idx_receiving_lines_supplier_product", "matched_supplier_product_id", 
+              postgresql_where="matched_supplier_product_id IS NOT NULL"),
     )
 
 

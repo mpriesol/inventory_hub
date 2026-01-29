@@ -1,36 +1,62 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
-  FileText,
-  Building2,
-  Calendar,
-  Package,
+  Download,
+  Edit,
+  Trash2,
+  AlertCircle,
   CheckCircle,
   Clock,
-  AlertCircle,
-  CreditCard,
-  Download,
   RefreshCw,
-  Search,
-  Link as LinkIcon,
-  PlusCircle,
-  Image,
-  ExternalLink,
+  Package,
+  Building2,
+  Calendar,
+  FileText,
+  Save,
+  X,
 } from 'lucide-react';
 
 const API_BASE = (import.meta.env.VITE_API_BASE || '/api').replace(/\/$/, '');
 
+// ============================================================================
 // Types
-interface Supplier {
+// ============================================================================
+
+interface InvoiceLine {
   id: number;
-  code: string;
-  name: string;
+  line_number: number;
+  ean: string | null;
+  supplier_sku: string | null;
+  product_name: string | null;
+  quantity: number;
+  unit: string;
+  unit_price: number | null;
+  discount_percent: number | null;
+  total_price: number | null;
+  vat_rate: number | null;
+  unit_price_with_vat: number | null;
+  total_price_with_vat: number | null;
+  matched_product_id: number | null;
+  product_sku: string | null;
+  product_name_matched: string | null;
+  matched_supplier_product_id: number | null;
+  supplier_product_name: string | null;
+  supplier_product_images: string[] | null;
+  is_new_product: boolean;
 }
 
-interface Invoice {
+interface InvoiceDetail {
   id: number;
-  invoice_number: string;
+  supplier_id: number;
+  supplier_code: string;
+  supplier_name: string;
+  original_filename: string;
+  stored_filename: string;
+  file_path: string;
+  file_type: string;
+  invoice_number: string | null;
   invoice_date: string | null;
   due_date: string | null;
   currency: string;
@@ -40,67 +66,26 @@ interface Invoice {
   total_with_vat: number | null;
   vat_rate: number;
   vat_included: boolean;
+  items_count: number;
   payment_status: 'unpaid' | 'partial' | 'paid';
   paid_at: string | null;
   paid_amount: number | null;
+  is_parsed: boolean;
+  parse_error: string | null;
+  receiving_session_id: number | null;
   receiving_status: string;
-  items_count: number;
-  supplier: Supplier;
-  warehouse: { id: number; code: string; name: string };
-  invoice_file_path: string | null;
+  notes: string | null;
   is_overdue: boolean;
   days_until_due: number | null;
   created_at: string;
   updated_at: string;
-}
-
-interface InvoiceLine {
-  id: number;
-  line_number: number;
-  ean: string | null;
-  supplier_sku: string | null;
-  description: string | null;
-  ordered_qty: number;
-  received_qty: number;
-  unit_price: number | null;
-  total_price: number | null;
-  unit_price_with_vat: number | null;
-  total_price_with_vat: number | null;
-  vat_rate: number | null;
-  status: string;
-  is_new_product: boolean;
-  product_image_url: string | null;
-  product: {
-    id: number;
-    sku: string;
-    name: string;
-    brand: string | null;
-  } | null;
-  supplier_product: {
-    id: number;
-    name: string;
-    images: string[];
-    purchase_price: number | null;
-  } | null;
-  match_method: string | null;
-}
-
-interface InvoiceStats {
-  total_lines: number;
-  matched_products: number;
-  new_products: number;
-  pending_lines: number;
-  matched_lines: number;
-  partial_lines: number;
-}
-
-interface InvoiceDetailResponse {
-  invoice: Invoice;
   lines: InvoiceLine[];
-  stats: InvoiceStats;
 }
 
+// ============================================================================
 // Helpers
+// ============================================================================
+
 const formatCurrency = (amount: number | null, currency = 'EUR'): string => {
   if (amount === null || amount === undefined) return '—';
   return new Intl.NumberFormat('sk-SK', {
@@ -128,7 +113,10 @@ const formatDateTime = (dateStr: string | null): string => {
   }
 };
 
+// ============================================================================
 // Components
+// ============================================================================
+
 const PaymentStatusBadge: React.FC<{ status: string; isOverdue: boolean }> = ({
   status,
   isOverdue,
@@ -136,7 +124,7 @@ const PaymentStatusBadge: React.FC<{ status: string; isOverdue: boolean }> = ({
   if (isOverdue) {
     return (
       <span
-        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium"
+        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium"
         style={{
           backgroundColor: 'var(--color-error-subtle)',
           color: 'var(--color-error)',
@@ -175,7 +163,7 @@ const PaymentStatusBadge: React.FC<{ status: string; isOverdue: boolean }> = ({
 
   return (
     <span
-      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium"
+      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium"
       style={{ backgroundColor: style.bg, color: style.color }}
     >
       {style.icon}
@@ -184,467 +172,574 @@ const PaymentStatusBadge: React.FC<{ status: string; isOverdue: boolean }> = ({
   );
 };
 
-const LineStatusBadge: React.FC<{ status: string; isNew: boolean }> = ({ status, isNew }) => {
-  if (isNew) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
-        style={{
-          backgroundColor: 'var(--color-info-subtle)',
-          color: 'var(--color-info)',
-        }}
-      >
-        <PlusCircle size={12} />
-        Nový produkt
-      </span>
-    );
-  }
-
-  const styles: Record<string, { bg: string; color: string }> = {
-    matched: { bg: 'var(--color-success-subtle)', color: 'var(--color-success)' },
-    partial: { bg: 'var(--color-warning-subtle)', color: 'var(--color-warning)' },
-    pending: { bg: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' },
-    overage: { bg: 'var(--color-error-subtle)', color: 'var(--color-error)' },
-  };
-
-  const labels: Record<string, string> = {
-    matched: 'Prijaté',
-    partial: 'Čiastočne',
-    pending: 'Čaká',
-    overage: 'Naviac',
-  };
-
-  const style = styles[status] || styles.pending;
-
-  return (
-    <span
-      className="px-2 py-1 rounded-full text-xs font-medium"
-      style={{ backgroundColor: style.bg, color: style.color }}
-    >
-      {labels[status] || status}
-    </span>
-  );
-};
-
+// ============================================================================
 // Main Component
+// ============================================================================
+
 export function InvoiceDetailPage() {
-  const { invoiceId } = useParams<{ invoiceId: string }>();
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const [data, setData] = useState<InvoiceDetailResponse | null>(null);
+  const [invoice, setInvoice] = useState<InvoiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [updating, setUpdating] = useState(false);
-  const [lineFilter, setLineFilter] = useState('');
+  
+  // Edit mode
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    invoice_number: '',
+    invoice_date: '',
+    due_date: '',
+    total_amount: '',
+    vat_rate: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
 
-  // Fetch invoice detail
+  // Fetch invoice
   useEffect(() => {
-    const fetchDetail = async () => {
-      if (!invoiceId) return;
-
+    const fetchInvoice = async () => {
+      if (!id) return;
+      
       setLoading(true);
       setError(null);
 
       try {
-        const res = await fetch(`${API_BASE}/invoices/${invoiceId}`);
+        const res = await fetch(`${API_BASE}/invoices/${id}`);
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          if (res.status === 404) {
+            throw new Error('Faktúra nebola nájdená');
+          }
+          throw new Error(`HTTP ${res.status}`);
         }
 
-        const result = await res.json();
-        setData(result);
-      } catch (e: any) {
-        setError(e.message || 'Chyba pri načítaní faktúry');
+        const data: InvoiceDetail = await res.json();
+        setInvoice(data);
+        
+        // Initialize edit form
+        setEditForm({
+          invoice_number: data.invoice_number || '',
+          invoice_date: data.invoice_date || '',
+          due_date: data.due_date || '',
+          total_amount: data.total_amount?.toString() || '',
+          vat_rate: data.vat_rate?.toString() || '23',
+          notes: data.notes || '',
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to fetch invoice');
       } finally {
         setLoading(false);
       }
     };
 
-    fetchDetail();
-  }, [invoiceId]);
+    fetchInvoice();
+  }, [id]);
 
-  // Update payment status
-  const updatePaymentStatus = async (newStatus: 'unpaid' | 'partial' | 'paid') => {
-    if (!data || updating) return;
-
-    setUpdating(true);
+  // Handle save
+  const handleSave = async () => {
+    if (!invoice) return;
+    
+    setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/invoices/${invoiceId}/payment`, {
+      const res = await fetch(`${API_BASE}/invoices/${invoice.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoice_number: editForm.invoice_number || null,
+          invoice_date: editForm.invoice_date || null,
+          due_date: editForm.due_date || null,
+          total_amount: editForm.total_amount ? parseFloat(editForm.total_amount) : null,
+          vat_rate: editForm.vat_rate ? parseFloat(editForm.vat_rate) : null,
+          notes: editForm.notes || null,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to save');
+      }
+
+      // Refresh
+      const refreshRes = await fetch(`${API_BASE}/invoices/${invoice.id}`);
+      if (refreshRes.ok) {
+        setInvoice(await refreshRes.json());
+      }
+      
+      setEditing(false);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Handle payment status change
+  const handlePaymentChange = async (newStatus: 'unpaid' | 'partial' | 'paid') => {
+    if (!invoice) return;
+    
+    try {
+      const res = await fetch(`${API_BASE}/invoices/${invoice.id}/payment`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payment_status: newStatus }),
       });
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        throw new Error('Failed to update payment status');
       }
 
-      const result = await res.json();
-      setData({
-        ...data,
-        invoice: {
-          ...data.invoice,
-          payment_status: result.payment_status,
-          paid_at: result.paid_at,
-          paid_amount: result.paid_amount,
-        },
-      });
-    } catch (e: any) {
-      console.error('Failed to update payment status:', e);
-    } finally {
-      setUpdating(false);
+      // Refresh
+      const refreshRes = await fetch(`${API_BASE}/invoices/${invoice.id}`);
+      if (refreshRes.ok) {
+        setInvoice(await refreshRes.json());
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Update failed');
     }
   };
 
-  // Filter lines
-  const filteredLines = data?.lines.filter((line) => {
-    if (!lineFilter) return true;
-    const search = lineFilter.toLowerCase();
-    return (
-      line.ean?.toLowerCase().includes(search) ||
-      line.supplier_sku?.toLowerCase().includes(search) ||
-      line.description?.toLowerCase().includes(search) ||
-      line.product?.sku.toLowerCase().includes(search) ||
-      line.product?.name.toLowerCase().includes(search)
-    );
-  }) || [];
+  // Handle delete
+  const handleDelete = async () => {
+    if (!invoice) return;
+    
+    if (!confirm('Naozaj chcete zmazať túto faktúru?')) return;
+    
+    try {
+      const res = await fetch(`${API_BASE}/invoices/${invoice.id}?delete_file=true`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to delete');
+      }
+
+      navigate('/invoices');
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
 
   if (loading) {
     return (
-      <div className="p-6 flex items-center justify-center h-64">
-        <RefreshCw className="animate-spin mr-2" size={24} style={{ color: 'var(--color-accent)' }} />
+      <div className="flex items-center justify-center py-20">
+        <RefreshCw className="animate-spin mr-2" size={24} />
         <span style={{ color: 'var(--color-text-secondary)' }}>Načítavam...</span>
       </div>
     );
   }
 
-  if (error || !data) {
+  if (error) {
     return (
-      <div className="p-6">
+      <div className="space-y-4">
+        <Link
+          to="/invoices"
+          className="inline-flex items-center gap-2 text-sm"
+          style={{ color: 'var(--color-text-secondary)' }}
+        >
+          <ArrowLeft size={16} />
+          Späť na zoznam
+        </Link>
         <div
           className="p-4 rounded-xl flex items-center gap-3"
           style={{ backgroundColor: 'var(--color-error-subtle)', color: 'var(--color-error)' }}
         >
           <AlertCircle size={20} />
-          {error || 'Faktúra nenájdená'}
+          {error}
         </div>
-        <Link
-          to="/invoices"
-          className="inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-lg"
-          style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-primary)' }}
-        >
-          <ArrowLeft size={16} />
-          Späť na zoznam
-        </Link>
       </div>
     );
   }
 
-  const { invoice, lines, stats } = data;
+  if (!invoice) return null;
+
+  const inputStyle: React.CSSProperties = {
+    backgroundColor: 'var(--color-bg-primary)',
+    border: '1px solid var(--color-border-subtle)',
+    borderRadius: '8px',
+    padding: '8px 12px',
+    color: 'var(--color-text-primary)',
+    width: '100%',
+  };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
           <Link
             to="/invoices"
-            className="inline-flex items-center gap-1 text-sm mb-2 hover:underline"
-            style={{ color: 'var(--color-text-secondary)' }}
+            className="p-2 rounded-lg hover:bg-opacity-80"
+            style={{ backgroundColor: 'var(--color-bg-secondary)' }}
           >
-            <ArrowLeft size={14} />
-            Späť na faktúry
+            <ArrowLeft size={20} style={{ color: 'var(--color-text-secondary)' }} />
           </Link>
-          <h1
-            className="text-2xl font-semibold flex items-center gap-3"
-            style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}
+          <div>
+            <h1 className="text-2xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
+              {invoice.invoice_number || invoice.original_filename}
+            </h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+              {invoice.supplier_name} • {formatDate(invoice.invoice_date)}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <a
+            href={`${API_BASE}/invoices/${invoice.id}/download`}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg"
+            style={{
+              backgroundColor: 'var(--color-bg-secondary)',
+              color: 'var(--color-text-primary)',
+              border: '1px solid var(--color-border-subtle)',
+            }}
           >
-            <FileText size={28} />
-            Faktúra {invoice.invoice_number}
-          </h1>
-          <p className="mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-            {invoice.supplier.name}
-          </p>
-        </div>
-
-        <PaymentStatusBadge status={invoice.payment_status} isOverdue={invoice.is_overdue} />
-      </div>
-
-      {/* Info Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Invoice Info */}
-        <div
-          className="p-4 rounded-xl"
-          style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-        >
-          <div className="flex items-center gap-2 mb-3" style={{ color: 'var(--color-text-secondary)' }}>
-            <FileText size={16} />
-            <span className="text-sm font-medium">Údaje faktúry</span>
-          </div>
-          <dl className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Číslo:</dt>
-              <dd className="font-mono">{invoice.invoice_number}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Dátum:</dt>
-              <dd>{formatDate(invoice.invoice_date)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Splatnosť:</dt>
-              <dd style={{ color: invoice.is_overdue ? 'var(--color-error)' : 'inherit' }}>
-                {formatDate(invoice.due_date)}
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Vytvorené:</dt>
-              <dd>{formatDateTime(invoice.created_at)}</dd>
-            </div>
-          </dl>
-        </div>
-
-        {/* Amounts */}
-        <div
-          className="p-4 rounded-xl"
-          style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-        >
-          <div className="flex items-center gap-2 mb-3" style={{ color: 'var(--color-text-secondary)' }}>
-            <CreditCard size={16} />
-            <span className="text-sm font-medium">Sumy</span>
-          </div>
-          <dl className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Bez DPH:</dt>
-              <dd className="font-mono">{formatCurrency(invoice.total_without_vat, invoice.currency)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>DPH ({invoice.vat_rate}%):</dt>
-              <dd className="font-mono">{formatCurrency(invoice.vat_amount, invoice.currency)}</dd>
-            </div>
-            <div
-              className="flex justify-between pt-2 border-t font-medium"
-              style={{ borderColor: 'var(--color-border-subtle)' }}
+            <Download size={16} />
+            Stiahnuť
+          </a>
+          {!editing ? (
+            <button
+              onClick={() => setEditing(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg"
+              style={{
+                backgroundColor: 'var(--color-accent)',
+                color: 'var(--color-bg-primary)',
+              }}
             >
-              <dt>S DPH:</dt>
-              <dd className="font-mono">{formatCurrency(invoice.total_with_vat || invoice.total_amount, invoice.currency)}</dd>
-            </div>
-            {!invoice.vat_included && (
-              <div className="text-xs pt-2" style={{ color: 'var(--color-warning)' }}>
-                ⚠️ Reverse charge – DPH bude dopočítané
-              </div>
-            )}
-          </dl>
-        </div>
-
-        {/* Payment & Actions */}
-        <div
-          className="p-4 rounded-xl"
-          style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-        >
-          <div className="flex items-center gap-2 mb-3" style={{ color: 'var(--color-text-secondary)' }}>
-            <CheckCircle size={16} />
-            <span className="text-sm font-medium">Stav platby</span>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex gap-2">
+              <Edit size={16} />
+              Upraviť
+            </button>
+          ) : (
+            <>
               <button
-                onClick={() => updatePaymentStatus('unpaid')}
-                disabled={updating || invoice.payment_status === 'unpaid'}
-                className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                style={{
-                  backgroundColor:
-                    invoice.payment_status === 'unpaid'
-                      ? 'var(--color-accent-subtle)'
-                      : 'var(--color-bg-tertiary)',
-                  color:
-                    invoice.payment_status === 'unpaid' ? 'var(--color-accent)' : 'var(--color-text-secondary)',
-                  border:
-                    invoice.payment_status === 'unpaid'
-                      ? '1px solid var(--color-accent)'
-                      : '1px solid var(--color-border-subtle)',
-                }}
-              >
-                Neuhradené
-              </button>
-              <button
-                onClick={() => updatePaymentStatus('paid')}
-                disabled={updating || invoice.payment_status === 'paid'}
-                className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                style={{
-                  backgroundColor:
-                    invoice.payment_status === 'paid'
-                      ? 'var(--color-success-subtle)'
-                      : 'var(--color-bg-tertiary)',
-                  color:
-                    invoice.payment_status === 'paid' ? 'var(--color-success)' : 'var(--color-text-secondary)',
-                  border:
-                    invoice.payment_status === 'paid'
-                      ? '1px solid var(--color-success)'
-                      : '1px solid var(--color-border-subtle)',
-                }}
-              >
-                Uhradené
-              </button>
-            </div>
-
-            {invoice.paid_at && (
-              <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                Uhradené: {formatDateTime(invoice.paid_at)}
-                {invoice.paid_amount && ` • ${formatCurrency(invoice.paid_amount, invoice.currency)}`}
-              </div>
-            )}
-
-            {invoice.invoice_file_path && (
-              <a
-                href={`${API_BASE}/files/download?relpath=${encodeURIComponent(invoice.invoice_file_path)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                onClick={() => setEditing(false)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg"
                 style={{
                   backgroundColor: 'var(--color-bg-tertiary)',
                   color: 'var(--color-text-primary)',
-                  border: '1px solid var(--color-border-subtle)',
                 }}
               >
-                <Download size={14} />
-                Stiahnuť PDF
-              </a>
+                <X size={16} />
+                Zrušiť
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg disabled:opacity-50"
+                style={{
+                  backgroundColor: 'var(--color-success)',
+                  color: 'white',
+                }}
+              >
+                <Save size={16} />
+                {saving ? 'Ukladám...' : 'Uložiť'}
+              </button>
+            </>
+          )}
+          <button
+            onClick={handleDelete}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg"
+            style={{
+              backgroundColor: 'var(--color-error-subtle)',
+              color: 'var(--color-error)',
+            }}
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </div>
+
+      {/* Main info */}
+      <div className="grid grid-cols-3 gap-6">
+        {/* Left column - Invoice info */}
+        <div
+          className="col-span-2 p-6 rounded-xl"
+          style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
+        >
+          <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--color-text-primary)' }}>
+            Informácie o faktúre
+          </h2>
+          
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                Číslo faktúry
+              </label>
+              {editing ? (
+                <input
+                  type="text"
+                  value={editForm.invoice_number}
+                  onChange={(e) => setEditForm({ ...editForm, invoice_number: e.target.value })}
+                  style={inputStyle}
+                />
+              ) : (
+                <div style={{ color: 'var(--color-text-primary)' }}>
+                  {invoice.invoice_number || '—'}
+                </div>
+              )}
+            </div>
+            
+            <div>
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                Dodávateľ
+              </label>
+              <div className="flex items-center gap-2" style={{ color: 'var(--color-text-primary)' }}>
+                <Building2 size={16} style={{ color: 'var(--color-text-tertiary)' }} />
+                {invoice.supplier_name}
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                Dátum vystavenia
+              </label>
+              {editing ? (
+                <input
+                  type="date"
+                  value={editForm.invoice_date}
+                  onChange={(e) => setEditForm({ ...editForm, invoice_date: e.target.value })}
+                  style={inputStyle}
+                />
+              ) : (
+                <div className="flex items-center gap-2" style={{ color: 'var(--color-text-primary)' }}>
+                  <Calendar size={16} style={{ color: 'var(--color-text-tertiary)' }} />
+                  {formatDate(invoice.invoice_date)}
+                </div>
+              )}
+            </div>
+            
+            <div>
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                Splatnosť
+              </label>
+              {editing ? (
+                <input
+                  type="date"
+                  value={editForm.due_date}
+                  onChange={(e) => setEditForm({ ...editForm, due_date: e.target.value })}
+                  style={inputStyle}
+                />
+              ) : (
+                <div className="flex items-center gap-2" style={{ color: invoice.is_overdue ? 'var(--color-error)' : 'var(--color-text-primary)' }}>
+                  <Calendar size={16} style={{ color: 'var(--color-text-tertiary)' }} />
+                  {formatDate(invoice.due_date)}
+                  {invoice.days_until_due !== null && (
+                    <span className="text-xs" style={{ color: invoice.is_overdue ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
+                      ({invoice.days_until_due > 0 ? `${invoice.days_until_due} dní` : invoice.days_until_due === 0 ? 'dnes' : `${Math.abs(invoice.days_until_due)} dní po`})
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                Celková suma
+              </label>
+              {editing ? (
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editForm.total_amount}
+                  onChange={(e) => setEditForm({ ...editForm, total_amount: e.target.value })}
+                  style={inputStyle}
+                />
+              ) : (
+                <div className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                  {formatCurrency(invoice.total_with_vat || invoice.total_amount, invoice.currency)}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                DPH sadzba
+              </label>
+              {editing ? (
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editForm.vat_rate}
+                  onChange={(e) => setEditForm({ ...editForm, vat_rate: e.target.value })}
+                  style={inputStyle}
+                />
+              ) : (
+                <div style={{ color: 'var(--color-text-primary)' }}>
+                  {invoice.vat_rate}% {invoice.vat_included ? '(zahrnutá)' : '(nezahrnutá)'}
+                </div>
+              )}
+            </div>
+
+            <div className="col-span-2">
+              <label className="block text-sm mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                Poznámky
+              </label>
+              {editing ? (
+                <textarea
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  rows={3}
+                  style={inputStyle}
+                />
+              ) : (
+                <div style={{ color: 'var(--color-text-secondary)' }}>
+                  {invoice.notes || '—'}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* File info */}
+          <div className="mt-6 pt-4 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
+            <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
+              <FileText size={14} />
+              <span>{invoice.original_filename}</span>
+              <span>•</span>
+              <span>Typ: {invoice.file_type.toUpperCase()}</span>
+              <span>•</span>
+              <span>Nahraté: {formatDateTime(invoice.created_at)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Right column - Status */}
+        <div className="space-y-4">
+          {/* Payment status */}
+          <div
+            className="p-6 rounded-xl"
+            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
+          >
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--color-text-tertiary)' }}>
+              Stav platby
+            </h3>
+            <PaymentStatusBadge status={invoice.payment_status} isOverdue={invoice.is_overdue} />
+            
+            <div className="mt-4 flex gap-2">
+              {invoice.payment_status !== 'paid' && (
+                <button
+                  onClick={() => handlePaymentChange('paid')}
+                  className="text-xs px-3 py-1.5 rounded"
+                  style={{
+                    backgroundColor: 'var(--color-success-subtle)',
+                    color: 'var(--color-success)',
+                  }}
+                >
+                  Označiť ako uhradené
+                </button>
+              )}
+              {invoice.payment_status === 'paid' && (
+                <button
+                  onClick={() => handlePaymentChange('unpaid')}
+                  className="text-xs px-3 py-1.5 rounded"
+                  style={{
+                    backgroundColor: 'var(--color-bg-tertiary)',
+                    color: 'var(--color-text-secondary)',
+                  }}
+                >
+                  Označiť ako neuhradené
+                </button>
+              )}
+            </div>
+
+            {invoice.paid_at && (
+              <div className="mt-3 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                Uhradené: {formatDateTime(invoice.paid_at)}
+              </div>
             )}
           </div>
-        </div>
-      </div>
 
-      {/* Lines Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-        <div
-          className="p-3 rounded-lg text-center"
-          style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-        >
-          <div className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)' }}>
-            {stats.total_lines}
+          {/* Receiving status */}
+          <div
+            className="p-6 rounded-xl"
+            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
+          >
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--color-text-tertiary)' }}>
+              Stav príjmu
+            </h3>
+            <div className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
+              {invoice.receiving_status === 'not_started' ? 'Nezačatý' : 
+               invoice.receiving_status === 'in_progress' ? 'Prebieha' :
+               invoice.receiving_status === 'completed' ? 'Dokončený' : invoice.receiving_status}
+            </div>
+            {invoice.receiving_session_id && (
+              <Link
+                to={`/receiving/${invoice.receiving_session_id}`}
+                className="mt-2 text-xs inline-block"
+                style={{ color: 'var(--color-accent)' }}
+              >
+                Zobraziť príjem →
+              </Link>
+            )}
           </div>
-          <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            Položiek
-          </div>
-        </div>
-        <div
-          className="p-3 rounded-lg text-center"
-          style={{ backgroundColor: 'var(--color-success-subtle)' }}
-        >
-          <div className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-success)' }}>
-            {stats.matched_products}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--color-success)' }}>
-            Spárované
-          </div>
-        </div>
-        <div
-          className="p-3 rounded-lg text-center"
-          style={{ backgroundColor: 'var(--color-info-subtle)' }}
-        >
-          <div className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-info)' }}>
-            {stats.new_products}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--color-info)' }}>
-            Nové produkty
-          </div>
-        </div>
-        <div
-          className="p-3 rounded-lg text-center"
-          style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-        >
-          <div className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)' }}>
-            {stats.pending_lines}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            Čaká na príjem
-          </div>
-        </div>
-        <div
-          className="p-3 rounded-lg text-center"
-          style={{ backgroundColor: 'var(--color-success-subtle)' }}
-        >
-          <div className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-success)' }}>
-            {stats.matched_lines}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--color-success)' }}>
-            Prijaté
-          </div>
-        </div>
-        <div
-          className="p-3 rounded-lg text-center"
-          style={{ backgroundColor: 'var(--color-warning-subtle)' }}
-        >
-          <div className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-warning)' }}>
-            {stats.partial_lines}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--color-warning)' }}>
-            Čiastočne
+
+          {/* Summary */}
+          <div
+            className="p-6 rounded-xl"
+            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
+          >
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--color-text-tertiary)' }}>
+              Súhrn
+            </h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span style={{ color: 'var(--color-text-tertiary)' }}>Položky:</span>
+                <span style={{ color: 'var(--color-text-primary)' }}>{invoice.items_count}</span>
+              </div>
+              {invoice.total_without_vat && (
+                <div className="flex justify-between">
+                  <span style={{ color: 'var(--color-text-tertiary)' }}>Bez DPH:</span>
+                  <span style={{ color: 'var(--color-text-primary)' }}>{formatCurrency(invoice.total_without_vat, invoice.currency)}</span>
+                </div>
+              )}
+              {invoice.vat_amount && (
+                <div className="flex justify-between">
+                  <span style={{ color: 'var(--color-text-tertiary)' }}>DPH:</span>
+                  <span style={{ color: 'var(--color-text-primary)' }}>{formatCurrency(invoice.vat_amount, invoice.currency)}</span>
+                </div>
+              )}
+              <div className="flex justify-between pt-2 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
+                <span style={{ color: 'var(--color-text-tertiary)' }}>Celkom:</span>
+                <span className="font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                  {formatCurrency(invoice.total_with_vat || invoice.total_amount, invoice.currency)}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Lines Table */}
+      {/* Lines table */}
       <div
         className="rounded-xl overflow-hidden"
         style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
       >
-        {/* Search */}
         <div className="p-4 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
-          <div className="relative max-w-md">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            />
-            <input
-              type="text"
-              placeholder="Hľadať podľa EAN, kódu, názvu..."
-              value={lineFilter}
-              onChange={(e) => setLineFilter(e.target.value)}
-              className="w-full pl-9"
-            />
-          </div>
+          <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+            Položky faktúry ({invoice.lines.length})
+          </h2>
         </div>
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ backgroundColor: 'var(--color-bg-tertiary)' }}>
-                <th className="px-4 py-3 text-left font-medium w-12" style={{ color: 'var(--color-text-secondary)' }}>
-                  #
-                </th>
-                <th className="px-4 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Produkt
-                </th>
-                <th className="px-4 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  EAN / Kód
-                </th>
-                <th className="px-4 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Obj. / Prij.
-                </th>
-                <th className="px-4 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Cena
-                </th>
-                <th className="px-4 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Celkom
-                </th>
-                <th className="px-4 py-3 text-center font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Stav
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredLines.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {lineFilter ? 'Žiadne položky vyhovujúce filtru' : 'Žiadne položky'}
-                  </td>
+        
+        {invoice.lines.length === 0 ? (
+          <div className="p-8 text-center" style={{ color: 'var(--color-text-tertiary)' }}>
+            <Package size={32} className="mx-auto mb-2" />
+            <p>Žiadne položky</p>
+            <p className="text-sm mt-1">Faktúra ešte nebola spracovaná alebo nemá položky</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ backgroundColor: 'var(--color-bg-tertiary)' }}>
+                  <th className="px-4 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>#</th>
+                  <th className="px-4 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>EAN</th>
+                  <th className="px-4 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>Kód</th>
+                  <th className="px-4 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>Názov</th>
+                  <th className="px-4 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>Množstvo</th>
+                  <th className="px-4 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>Cena/ks</th>
+                  <th className="px-4 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>Celkom</th>
+                  <th className="px-4 py-3 text-center font-medium" style={{ color: 'var(--color-text-secondary)' }}>Stav</th>
                 </tr>
-              ) : (
-                filteredLines.map((line) => (
+              </thead>
+              <tbody>
+                {invoice.lines.map((line) => (
                   <tr
                     key={line.id}
                     className="border-t"
@@ -653,88 +748,61 @@ export function InvoiceDetailPage() {
                     <td className="px-4 py-3" style={{ color: 'var(--color-text-tertiary)' }}>
                       {line.line_number}
                     </td>
+                    <td className="px-4 py-3 font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                      {line.ean || '—'}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                      {line.supplier_sku || '—'}
+                    </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-start gap-3">
-                        {/* Image */}
-                        {(line.product_image_url || line.supplier_product?.images?.[0]) ? (
-                          <img
-                            src={line.product_image_url || line.supplier_product?.images?.[0]}
-                            alt=""
-                            className="w-10 h-10 rounded object-cover"
-                            style={{ backgroundColor: 'var(--color-bg-tertiary)' }}
-                          />
-                        ) : (
-                          <div
-                            className="w-10 h-10 rounded flex items-center justify-center"
-                            style={{ backgroundColor: 'var(--color-bg-tertiary)' }}
-                          >
-                            <Image size={16} style={{ color: 'var(--color-text-tertiary)' }} />
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium truncate" title={line.description || ''}>
-                            {line.description || '—'}
-                          </div>
-                          {line.product ? (
-                            <div className="flex items-center gap-1 text-xs mt-0.5" style={{ color: 'var(--color-success)' }}>
-                              <LinkIcon size={10} />
-                              <span className="font-mono">{line.product.sku}</span>
-                              {line.product.name && (
-                                <span style={{ color: 'var(--color-text-tertiary)' }}>
-                                  — {line.product.name}
-                                </span>
-                              )}
-                            </div>
-                          ) : line.supplier_product ? (
-                            <div className="flex items-center gap-1 text-xs mt-0.5" style={{ color: 'var(--color-info)' }}>
-                              <Package size={10} />
-                              <span>Z feedu: {line.supplier_product.name}</span>
-                            </div>
-                          ) : null}
-                        </div>
+                      <div style={{ color: 'var(--color-text-primary)' }}>
+                        {line.product_name || '—'}
                       </div>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs">
-                      {line.ean && (
-                        <div title="EAN">{line.ean}</div>
-                      )}
-                      {line.supplier_sku && (
-                        <div style={{ color: 'var(--color-text-tertiary)' }} title="Kód dodávateľa">
-                          {line.supplier_sku}
+                      {line.matched_product_id && (
+                        <div className="text-xs mt-0.5" style={{ color: 'var(--color-success)' }}>
+                          ✓ Prepojené: {line.product_sku}
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      <span>{line.ordered_qty}</span>
-                      <span style={{ color: 'var(--color-text-tertiary)' }}> / </span>
-                      <span
-                        style={{
-                          color:
-                            line.received_qty >= line.ordered_qty
-                              ? 'var(--color-success)'
-                              : line.received_qty > 0
-                              ? 'var(--color-warning)'
-                              : 'inherit',
-                        }}
-                      >
-                        {line.received_qty}
-                      </span>
+                    <td className="px-4 py-3 text-right" style={{ color: 'var(--color-text-primary)' }}>
+                      {line.quantity} {line.unit}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {formatCurrency(line.unit_price_with_vat || line.unit_price, invoice.currency)}
+                    <td className="px-4 py-3 text-right font-mono" style={{ color: 'var(--color-text-secondary)' }}>
+                      {line.unit_price ? formatCurrency(line.unit_price, invoice.currency) : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {formatCurrency(line.total_price_with_vat || line.total_price, invoice.currency)}
+                    <td className="px-4 py-3 text-right font-mono" style={{ color: 'var(--color-text-primary)' }}>
+                      {line.total_price ? formatCurrency(line.total_price, invoice.currency) : '—'}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <LineStatusBadge status={line.status} isNew={line.is_new_product} />
+                      {line.matched_product_id ? (
+                        <span
+                          className="px-2 py-1 rounded text-xs"
+                          style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}
+                        >
+                          Prepojené
+                        </span>
+                      ) : line.is_new_product ? (
+                        <span
+                          className="px-2 py-1 rounded text-xs"
+                          style={{ backgroundColor: 'var(--color-warning-subtle)', color: 'var(--color-warning)' }}
+                        >
+                          Nový
+                        </span>
+                      ) : (
+                        <span
+                          className="px-2 py-1 rounded text-xs"
+                          style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-tertiary)' }}
+                        >
+                          Neprepojené
+                        </span>
+                      )}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
