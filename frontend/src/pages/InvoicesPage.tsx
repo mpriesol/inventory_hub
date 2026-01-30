@@ -310,17 +310,32 @@ export function InvoicesPage() {
     setSearchParams(params);
   }, [debouncedFilters, setSearchParams]);
 
-  // Fetch suppliers
+  // Fetch suppliers from main suppliers endpoint (not invoices/suppliers)
+  // This returns ALL configured suppliers from filesystem configs
   useEffect(() => {
     const fetchSuppliers = async () => {
       try {
-        const res = await fetch(`${API_BASE}/invoices/suppliers`);
+        // Use /api/suppliers - reads from filesystem supplier configs
+        const res = await fetch(`${API_BASE}/suppliers`);
+        console.log('[InvoicesPage] Suppliers response status:', res.status);
+        
         if (res.ok) {
           const data = await res.json();
-          setSuppliers(data.suppliers || []);
+          console.log('[InvoicesPage] Suppliers data:', data);
+          
+          // Handle both array and object response formats
+          const supplierList = Array.isArray(data) ? data : (data.suppliers || data.items || []);
+          
+          if (supplierList.length === 0) {
+            console.warn('[InvoicesPage] No suppliers found! Check if supplier configs exist in inventory-data/suppliers/*/config.json');
+          }
+          
+          setSuppliers(supplierList);
+        } else {
+          console.error('[InvoicesPage] Failed to fetch suppliers:', res.status, await res.text());
         }
       } catch (e) {
-        console.error('Failed to fetch suppliers:', e);
+        console.error('[InvoicesPage] Error fetching suppliers:', e);
       }
     };
     fetchSuppliers();
@@ -918,12 +933,22 @@ export function InvoicesPage() {
                   }}
                 >
                   <option value="">Vyberte dodávateľa</option>
+                  {suppliers.length === 0 && (
+                    <option value="" disabled>
+                      (Žiadni dodávatelia - skontrolujte konfiguráciu)
+                    </option>
+                  )}
                   {suppliers.map((s) => (
                     <option key={s.code} value={s.code}>
                       {s.name}
                     </option>
                   ))}
                 </select>
+                {suppliers.length === 0 && (
+                  <p className="text-xs mt-1" style={{ color: 'var(--color-warning)' }}>
+                    Tip: Skontrolujte či existujú supplier configs v inventory-data/suppliers/*/config.json
+                  </p>
+                )}
               </div>
 
               {/* File */}
