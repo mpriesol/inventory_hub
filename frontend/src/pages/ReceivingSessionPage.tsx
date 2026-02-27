@@ -16,6 +16,7 @@ import {
   type FinalizeResult,
   type PauseResult
 } from '../api/receiving';
+import { ReceivingResultsModal } from "../components/ReceivingResultsModal";
 
 export function ReceivingSessionPage() {
   const { invoiceId } = useParams();
@@ -64,6 +65,7 @@ export function ReceivingSessionPage() {
   const [editQty, setEditQty] = useState<string>('');
   const [editNote, setEditNote] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [showCsvModal, setShowCsvModal] = useState(false);
   
   // Bulk actions
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -291,16 +293,10 @@ export function ReceivingSessionPage() {
       setFinalizeResult(result);
       
       // Show success state for 2 seconds then navigate
+      // Po 2s zobraz CSV modal namiesto presmerovanie
       setTimeout(() => {
-        navigate('/', { 
-          state: { 
-            notification: {
-              type: 'success',
-              message: result.message,
-            }
-          } 
-        });
-      }, 2500);
+        setShowCsvModal(true);
+      }, 2000);
     } catch (err) {
       console.error('Finalize failed:', err);
       setError('Nepodarilo sa dokončiť príjem. Skúste to znova.');
@@ -1176,6 +1172,16 @@ export function ReceivingSessionPage() {
           </div>
         </div>
       )}
+      {showCsvModal && (
+              <ReceivingResultsModal
+                supplier={supplier}
+                invoiceId={`${supplier}:${invoiceId}`}
+                onClose={() => {
+                  setShowCsvModal(false);
+                  navigate('/receiving');
+                }}
+              />
+            )}      
     </div>
   );
 }

@@ -28,7 +28,7 @@ from inventory_hub.db_models_ext import (
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.config_io import load_supplier as load_supplier_config
 
-router = APIRouter(prefix="/receiving", tags=["Receiving"])
+router = APIRouter(tags=["Receiving"])
 
 # ============================================================================
 # CSV Parsing Helpers (from original receiving.py)
@@ -210,7 +210,7 @@ class SessionSummaryResponse(BaseModel):
 # Endpoints
 # ============================================================================
 
-@router.post("/suppliers/{supplier_code}/sessions", response_model=CreateSessionResponse)
+@router.post("/suppliers/{supplier_code}/receiving/sessions", response_model=CreateSessionResponse)
 async def create_session(
     supplier_code: str,
     request: CreateSessionRequest,
@@ -335,7 +335,7 @@ async def create_session(
     )
 
 
-@router.post("/sessions/{session_id}/scan", response_model=ScanResponse)
+@router.post("/receiving/sessions/{session_id}/scan, response_model=ScanResponse)
 async def scan_code(
     session_id: int,
     request: ScanRequest,
@@ -445,7 +445,7 @@ async def scan_code(
     )
 
 
-@router.get("/sessions/{session_id}/summary", response_model=SessionSummaryResponse)
+@router.get("/receiving/sessions/{session_id}/summary", response_model=SessionSummaryResponse)
 async def get_session_summary(
     session_id: int,
     db: AsyncSession = Depends(get_session),
@@ -505,7 +505,7 @@ async def get_session_summary(
     )
 
 
-@router.post("/sessions/{session_id}/finalize")
+@router.post("/receiving/sessions/{session_id}/finalize")
 async def finalize_session(
     session_id: int,
     db: AsyncSession = Depends(get_session),
@@ -553,7 +553,7 @@ async def finalize_session(
     }
 
 
-@router.post("/sessions/{session_id}/pause")
+@router.post("/receiving/sessions/{session_id}/pause")
 async def pause_session(
     session_id: int,
     db: AsyncSession = Depends(get_session),
@@ -574,7 +574,7 @@ async def pause_session(
     return {"session_id": session.id, "status": "paused"}
 
 
-@router.post("/sessions/{session_id}/resume")
+@router.post("/receiving/sessions/{session_id}/resume")
 async def resume_session(
     session_id: int,
     db: AsyncSession = Depends(get_session),
@@ -595,7 +595,7 @@ async def resume_session(
     return {"session_id": session.id, "status": "in_progress"}
 
 
-@router.get("/suppliers/{supplier_code}/sessions")
+@router.get("/suppliers/{supplier_code}/receiving/sessions")
 async def list_sessions(
     supplier_code: str,
     status: Optional[str] = None,

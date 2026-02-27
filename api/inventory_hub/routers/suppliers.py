@@ -10,6 +10,7 @@ import re
 import json
 import shutil
 import hashlib
+import requests as _requests_module
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -24,6 +25,8 @@ from inventory_hub.config_io import (
     supplier_path,
     DATA_ROOT,
 )
+
+from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
 
 router = APIRouter(tags=["suppliers"])
 
@@ -783,3 +786,121 @@ def delete_supplier(supplier: str, confirm: bool = Query(default=False)):
         "message": f"Supplier '{supplier}' moved to deleted folder",
         "restore_path": str(deleted_path.relative_to(DATA_ROOT))
     }
+
+def _feed_url_and_auth(cfg: Dict[str, Any]) -> tuple:
+    """Vráti (url, auth_cfg) pre products feed z config.json"""
+    feeds = cfg.get("feeds", {})
+    key = feeds.get("current_key", "products")
+    source = feeds.get("sources", {}).get(key, {})
+    mode = source.get("mode", "remote")
+    if mode == "local":
+        return source.get("local_path", ""), None
+    remote = source.get("remote", {})
+    url = remote.get("url", "")
+    auth = remote.get("auth", {})
+    return url, auth
+
+
+def _apply_auth(session: "requests.Session", auth: Optional[Dict]) -> None:
+    """Nastav autentifikáciu na requests.Session podľa auth config."""
+    if not auth:
+        return
+    mode = auth.get("mode", "none")
+    if mode == "basic":
+        u = auth.get("basic_user") or auth.get("username", "")
+        p = auth.get("basic_pass") or auth.get("password", "")
+        session.auth = (u, p)
+    elif mode == "token" and auth.get("token"):
+        hdr = auth.get("header_name", "Authorization")
+        session.headers[hdr] = auth["token"]
+    elif mode == "cookie" and auth.get("cookie"):
+        for part in auth["cookie"].split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                session.cookies.set(k.strip(), v.strip())
+
+
+# ---- endpoint ----
+
+@router.post("/suppliers/{supplier}/feeds/refresh")
+def refresh_supplier_feed(
+    supplier: str,
+    source_url: Optional[str] = Query(None, description="Prepíše URL z configu"),
+) -> Dict[str, Any]:
+    """
+    Stiahni XML feed dodávateľa, ulož do feeds/xml/ a konvertuj do feeds/converted/.
+    URL a auth sa berú z config.json dodávateľa (feeds.sources.products).
+    """
+    import requests as _req
+    from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
+
+    cfg = io_load_supplier(supplier, write_back_on_load=False)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
+
+    url, auth = _feed_url_and_auth(cfg)
+    if source_url:
+        url = source_url
+        auth = None
+
+    if not url:
+        raise HTTPException(status_code=400, detail="Feed URL nie je nakonfigurovaná v config.json")
+
+    sup_dir = _supplier_dir(supplier)
+    xml_dir = sup_dir / "feeds" / "xml"
+    conv_dir = sup_dir / "feeds" / "converted"
+    xml_dir.mkdir(parents=True, exist_ok=True)
+    conv_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stiahni XML
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        sess = _req.Session()
+        sess.headers["User-Agent"] = "InventoryHub/1.0"
+        _apply_auth(sess, auth)
+        resp = sess.get(url, timeout=120, verify=False)
+        resp.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Chyba pri sťahovaní feedu: {e}")
+
+    # Ulož XML
+    stem = Path(url.split("?")[0]).stem or "feed"
+    xml_path = xml_dir / f"{stem}_{ts}.xml"
+    xml_path.write_bytes(resp.content)
+
+    # Konvertuj → CSV
+    adapter = cfg.get("adapter_settings", {})
+    price_coeffs = adapter.get("price_coefficients", {})
+    vat = int(adapter.get("vat", 23))
+    category = adapter.get("default_category", "K00090")
+    prefix = (
+        adapter.get("mapping", {}).get("postprocess", {}).get("product_code_prefix", "")
+        or adapter.get("product_code_prefix", "")
+    )
+
+    csv_path = conv_dir / f"{stem}_{ts}.csv"
+    try:
+        rows = convert_xml_to_upgates(
+            xml_path, csv_path,
+            price_coeffs=price_coeffs,
+            vat=vat,
+            default_category=category,
+            prefix=prefix,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chyba pri konverzii XML: {e}")
+
+    # Ulož timestamp poslednej synchronizácie do configu
+    cfg["last_feed_sync"] = datetime.now(timezone.utc).isoformat()
+    io_save_supplier(supplier, cfg)
+
+    return {
+        "ok": True,
+        "supplier": supplier,
+        "url": url,
+        "xml_saved": xml_path.relative_to(sup_dir).as_posix(),
+        "csv_saved": csv_path.relative_to(sup_dir).as_posix(),
+        "rows_converted": rows,
+    }
+
