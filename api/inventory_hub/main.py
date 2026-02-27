@@ -418,3 +418,4 @@ def files_stat(relpath: str = Query(..., description="Relatívna cesta v rámci 
         "size": st.st_size,
         "mtime": st.st_mtime,
         "mtime_iso": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+    }
