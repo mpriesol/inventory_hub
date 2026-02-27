@@ -10,6 +10,8 @@ hub.biketrek.sk {
   }
 
   handle {
-    reverse_proxy frontend:80
+    root * /srv
+    try_files {path} /index.html
+    file_server
   }
 }

@@ -124,14 +124,14 @@ def _list_supplier_codes() -> List[str]:
     root = _suppliers_root()
     if not root.exists():
         return []
-    
+
     codes = []
     for item in root.iterdir():
         if item.is_dir() and not item.name.startswith('.'):
             cfg_path = item / "config.json"
             if cfg_path.exists():
                 codes.append(item.name)
-    
+
     return sorted(codes)
 
 
@@ -148,7 +148,7 @@ def _get_last_invoice_date(supplier: str) -> Optional[str]:
     index_path = _index_path(supplier)
     if not index_path.exists():
         return None
-    
+
     try:
         data = json.loads(index_path.read_text(encoding='utf-8'))
         invoices = data.get('invoices', [])
@@ -158,7 +158,7 @@ def _get_last_invoice_date(supplier: str) -> Optional[str]:
                 return sorted_inv[0].get('date')
     except Exception:
         pass
-    
+
     return None
 
 
@@ -198,15 +198,15 @@ def _save_to_history(supplier: str, current_cfg: Dict[str, Any]) -> None:
     """Save current config to history before overwriting"""
     history_dir = _history_dir(supplier)
     history_dir.mkdir(parents=True, exist_ok=True)
-    
+
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')
     history_file = history_dir / f"{ts}.json"
-    
+
     history_file.write_text(
         json.dumps(current_cfg, ensure_ascii=False, indent=2),
         encoding='utf-8'
     )
-    
+
     _cleanup_old_history(supplier)
 
 
@@ -215,13 +215,13 @@ def _cleanup_old_history(supplier: str) -> None:
     history_dir = _history_dir(supplier)
     if not history_dir.exists():
         return
-    
+
     files = sorted(
         [f for f in history_dir.iterdir() if f.suffix == '.json'],
         key=lambda x: x.name,
         reverse=True
     )
-    
+
     for old_file in files[MAX_HISTORY_VERSIONS:]:
         try:
             old_file.unlink()
@@ -234,26 +234,26 @@ def _list_history(supplier: str) -> List[SupplierHistoryEntry]:
     history_dir = _history_dir(supplier)
     if not history_dir.exists():
         return []
-    
+
     entries = []
     for f in sorted(history_dir.iterdir(), reverse=True):
         if f.suffix != '.json':
             continue
-        
+
         try:
             ts_str = f.stem
             ts = datetime.strptime(ts_str, '%Y-%m-%dT%H-%M-%S')
             iso_ts = ts.isoformat() + 'Z'
         except Exception:
             iso_ts = f.stem
-        
+
         entries.append(SupplierHistoryEntry(
             version=f.stem,
             timestamp=iso_ts,
             size_bytes=f.stat().st_size,
             changes_summary=None
         ))
-    
+
     return entries
 
 
@@ -262,7 +262,7 @@ def _load_history_version(supplier: str, version: str) -> Dict[str, Any]:
     history_file = _history_dir(supplier) / f"{version}.json"
     if not history_file.exists():
         raise HTTPException(status_code=404, detail=f"History version '{version}' not found")
-    
+
     try:
         return json.loads(history_file.read_text(encoding='utf-8'))
     except Exception as e:
@@ -273,7 +273,7 @@ async def _validate_url(url: str, timeout: float = 5.0) -> bool:
     """Validate URL is reachable"""
     if not url or not url.startswith(('http://', 'https://')):
         return False
-    
+
     try:
         import httpx
         async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
@@ -287,7 +287,7 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
     """Validate config structure and required fields"""
     errors = []
     warnings = []
-    
+
     feeds = cfg.get('feeds', {})
     if not isinstance(feeds, dict):
         errors.append("'feeds' must be an object")
@@ -295,11 +295,11 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
         sources = feeds.get('sources', {})
         if not isinstance(sources, dict):
             errors.append("'feeds.sources' must be an object")
-        
+
         current_key = feeds.get('current_key', '')
         if current_key and current_key not in sources:
             warnings.append(f"'feeds.current_key' ({current_key}) not found in sources")
-    
+
     invoices = cfg.get('invoices', {})
     if not isinstance(invoices, dict):
         errors.append("'invoices' must be an object")
@@ -308,7 +308,7 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
         strategy = download.get('strategy', '')
         if strategy not in ('', 'web', 'manual', 'api', 'disabled', 'paul-lange-web', 'northfinder-web'):
             warnings.append(f"Unknown download strategy: '{strategy}'")
-        
+
         if strategy in ('web', 'paul-lange-web', 'northfinder-web'):
             web = download.get('web', {})
             login = web.get('login', {})
@@ -316,11 +316,11 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
                 warnings.append("Web strategy requires 'login_url' to be set")
             if not login.get('username'):
                 warnings.append("Web strategy requires 'username' to be set")
-    
+
     adapter = cfg.get('adapter_settings', {})
     if not isinstance(adapter, dict):
         errors.append("'adapter_settings' must be an object")
-    
+
     return ValidationResult(
         valid=len(errors) == 0,
         errors=errors,
@@ -337,11 +337,11 @@ def list_suppliers() -> List[SupplierSummary]:
     """List all configured suppliers with summary info"""
     codes = _list_supplier_codes()
     summaries = []
-    
+
     for code in codes:
         try:
             cfg = io_load_supplier(code, write_back_on_load=False)
-            
+
             summaries.append(SupplierSummary(
                 code=code,
                 name=_get_supplier_name(cfg, code),
@@ -363,7 +363,7 @@ def list_suppliers() -> List[SupplierSummary]:
                 feed_mode="none",
                 download_strategy="disabled",
             ))
-    
+
     return summaries
 
 
@@ -371,16 +371,16 @@ def list_suppliers() -> List[SupplierSummary]:
 def create_supplier(req: SupplierCreateRequest) -> Dict[str, Any]:
     """Create new supplier with basic config"""
     code = _sanitize_code(req.code)
-    
+
     if not code:
         raise HTTPException(status_code=400, detail="Invalid supplier code")
-    
+
     supplier_dir = _supplier_dir(code)
     config_path = supplier_path(code)
-    
+
     if config_path.exists():
         raise HTTPException(status_code=409, detail=f"Supplier '{code}' already exists")
-    
+
     supplier_dir.mkdir(parents=True, exist_ok=True)
     (supplier_dir / "invoices" / "csv").mkdir(parents=True, exist_ok=True)
     (supplier_dir / "invoices" / "pdf").mkdir(parents=True, exist_ok=True)
@@ -388,7 +388,7 @@ def create_supplier(req: SupplierCreateRequest) -> Dict[str, Any]:
     (supplier_dir / "feeds" / "converted").mkdir(parents=True, exist_ok=True)
     (supplier_dir / "imports" / "upgates").mkdir(parents=True, exist_ok=True)
     (supplier_dir / "config_history").mkdir(parents=True, exist_ok=True)
-    
+
     initial_config = {
         "name": req.name,
         "is_active": True,
@@ -466,7 +466,7 @@ def create_supplier(req: SupplierCreateRequest) -> Dict[str, Any]:
             }
         }
     }
-    
+
     return io_save_supplier(code, initial_config)
 
 
@@ -485,14 +485,14 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
     """Update supplier configuration with automatic history backup"""
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON")
-    
+
     try:
         current_cfg = io_load_supplier(supplier, write_back_on_load=False)
         if current_cfg:
             _save_to_history(supplier, current_cfg)
     except Exception:
         pass
-    
+
     return io_save_supplier(supplier, payload or {})
 
 
@@ -501,7 +501,7 @@ def get_supplier_history(supplier: str) -> List[SupplierHistoryEntry]:
     """Get config version history for supplier"""
     if not supplier_path(supplier).exists():
         raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
-    
+
     return _list_history(supplier)
 
 
@@ -515,14 +515,14 @@ def get_supplier_history_version(supplier: str, version: str) -> Dict[str, Any]:
 def restore_supplier_version(supplier: str, version: str) -> Dict[str, Any]:
     """Restore supplier config from history version"""
     old_cfg = _load_history_version(supplier, version)
-    
+
     try:
         current_cfg = io_load_supplier(supplier, write_back_on_load=False)
         if current_cfg:
             _save_to_history(supplier, current_cfg)
     except Exception:
         pass
-    
+
     return io_save_supplier(supplier, old_cfg)
 
 
@@ -535,9 +535,9 @@ async def validate_supplier_config(
     cfg = io_load_supplier(supplier, write_back_on_load=False)
     if not cfg:
         raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
-    
+
     result = _validate_config_syntax(cfg)
-    
+
     if check_urls:
         feeds = cfg.get('feeds', {})
         current_key = feeds.get('current_key', 'products')
@@ -550,7 +550,7 @@ async def validate_supplier_config(
                 result.feed_url_reachable = await _validate_url(feed_url)
                 if not result.feed_url_reachable:
                     result.warnings.append(f"Feed URL not reachable: {feed_url}")
-        
+
         invoices = cfg.get('invoices', {})
         download = invoices.get('download', {})
         if download.get('strategy') in ('web', 'paul-lange-web', 'northfinder-web'):
@@ -561,7 +561,7 @@ async def validate_supplier_config(
                 result.login_url_reachable = await _validate_url(login_url)
                 if not result.login_url_reachable:
                     result.warnings.append(f"Login URL not reachable: {login_url}")
-    
+
     return result
 
 
@@ -573,23 +573,23 @@ def _sanitize_filename(filename: str) -> str:
     # Get stem and extension
     stem = Path(filename).stem
     ext = Path(filename).suffix.lower()
-    
+
     # Replace spaces with underscores
     stem = stem.replace(' ', '_')
-    
+
     # Remove quotes and other problematic chars
     stem = re.sub(r'[\'"\(\)\[\]<>:;,!@#$%^&*+=|\\/?]', '', stem)
-    
+
     # Replace multiple underscores with single
     stem = re.sub(r'_+', '_', stem)
-    
+
     # Trim underscores from start/end
     stem = stem.strip('_')
-    
+
     # Limit length
     if len(stem) > 100:
         stem = stem[:100]
-    
+
     return f"{stem}{ext}"
 
 
@@ -607,17 +607,17 @@ async def upload_invoice(
     """Upload invoice file (CSV, XLSX, XLS, or PDF) manually"""
     if not supplier_path(supplier).exists():
         raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
-    
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
+
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_INVOICE_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
         )
-    
+
     # Determine target directory based on file type
     if ext == '.pdf':
         target_dir = _invoices_pdf_dir(supplier)
@@ -625,9 +625,9 @@ async def upload_invoice(
         target_dir = _invoices_raw_dir(supplier)
     else:
         target_dir = _invoices_csv_dir(supplier)
-    
+
     target_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Build sanitized filename
     if invoice_number:
         safe_number = re.sub(r'[^a-zA-Z0-9\-_]', '', invoice_number)
@@ -635,29 +635,29 @@ async def upload_invoice(
     else:
         # Sanitize original filename - removes spaces, quotes, etc.
         filename = _sanitize_filename(file.filename)
-    
+
     target_path = target_dir / filename
     if target_path.exists():
         ts = datetime.now().strftime('%Y%m%d%H%M%S')
         stem = Path(filename).stem
         filename = f"{stem}_{ts}{ext}"
         target_path = target_dir / filename
-    
+
     content = await file.read()
     target_path.write_bytes(content)
-    
+
     csv_path = None
-    
+
     # Handle XLSX/XLS - convert to CSV
     if ext in ('.xlsx', '.xls'):
         try:
             from inventory_hub.adapters.northfinder_xlsx_parser import parse_xlsx_to_csv
-            
+
             csv_filename = Path(filename).stem + '.csv'
             csv_dir = _invoices_csv_dir(supplier)
             csv_dir.mkdir(parents=True, exist_ok=True)
             csv_full_path = csv_dir / csv_filename
-            
+
             result = parse_xlsx_to_csv(target_path, csv_full_path)
             if result["success"]:
                 csv_path = f"suppliers/{supplier}/invoices/csv/{csv_filename}"
@@ -671,7 +671,7 @@ async def upload_invoice(
     elif ext == '.csv':
         csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
         _update_invoice_index_map(supplier, filename, csv_path, None)
-    
+
     return {
         "success": True,
         "filename": filename,
@@ -687,7 +687,7 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
     Format: { "<invoice_id>": { entry }, ... }
     """
     index_path = _index_path(supplier)
-    
+
     # Load existing index
     if index_path.exists():
         try:
@@ -696,7 +696,7 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
             data = {}
     else:
         data = {}
-    
+
     # Normalize old list format to map
     if isinstance(data, dict) and "invoices" in data and isinstance(data["invoices"], list):
         new_data = {}
@@ -714,10 +714,10 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
         data = new_data
     elif not isinstance(data, dict):
         data = {}
-    
+
     # Filter out meta keys (like "updated_at")
     data = {k: v for k, v in data.items() if isinstance(v, dict)}
-    
+
     # Build invoice entry
     stem = Path(filename).stem
     invoice_date = None
@@ -728,10 +728,10 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
             invoice_date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
         except Exception:
             pass
-    
+
     # Use stem as invoice_id
     invoice_id = stem
-    
+
     entry = {
         "supplier": supplier,
         "invoice_id": invoice_id,
@@ -741,13 +741,13 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
         "status": "new",
         "downloaded_at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     if raw_path and raw_path.exists():
         entry["raw_path"] = str(raw_path.relative_to(DATA_ROOT))
-    
+
     # Add/update entry
     data[invoice_id] = entry
-    
+
     # Save index
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -763,24 +763,24 @@ def _update_invoice_index(supplier: str, filename: str) -> None:
 def delete_supplier(supplier: str, confirm: bool = Query(default=False)):
     """Delete supplier (soft delete - moves to .deleted folder)"""
     supplier_dir = _supplier_dir(supplier)
-    
+
     if not supplier_dir.exists():
         raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
-    
+
     if not confirm:
         raise HTTPException(
             status_code=400,
             detail="Add ?confirm=true to confirm deletion"
         )
-    
+
     deleted_root = _suppliers_root() / ".deleted"
     deleted_root.mkdir(parents=True, exist_ok=True)
-    
+
     ts = datetime.now().strftime('%Y%m%d%H%M%S')
     deleted_path = deleted_root / f"{supplier}_{ts}"
-    
+
     shutil.move(str(supplier_dir), str(deleted_path))
-    
+
     return {
         "success": True,
         "message": f"Supplier '{supplier}' moved to deleted folder",
@@ -903,4 +903,3 @@ def refresh_supplier_feed(
         "csv_saved": csv_path.relative_to(sup_dir).as_posix(),
         "rows_converted": rows,
     }
-

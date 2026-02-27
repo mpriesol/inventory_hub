@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:16
-    restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
@@ -14,19 +13,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+    networks:
+      - hubnet
 
   redis:
     image: redis:7
-    restart: unless-stopped
     volumes:
       - redis_data:/data
+    networks:
+      - hubnet
 
   api:
     image: ghcr.io/mpriesol/inventory-hub-api:main
-    restart: unless-stopped
     environment:
       INVENTORY_DATA_ROOT: /data/inventory-data
-      USE_POSTGRES: "true"
+      USE_POSTGRES: "false"
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_NAME: ${DB_NAME}
@@ -37,12 +38,19 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      hubnet:
+        aliases:
+          - api
 
-  frontend:
+  # one-shot builder: copies dist -> ./caddy/site
+  frontend-build:
     image: ghcr.io/mpriesol/inventory-hub-frontend:main
-    restart: unless-stopped
-    depends_on:
-      - api
+    volumes:
+      - ./caddy/site:/site
+    command: sh -c "cp -r /usr/share/nginx/html/* /site/"
+    networks:
+      - hubnet
 
   caddy:
     image: caddy:2
@@ -51,15 +59,21 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/site:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - api
-      - frontend
+    networks:
+      - hubnet
 
 volumes:
   pg_data:
   redis_data:
   caddy_data:
   caddy_config:
+
+networks:
+  hubnet:
+    name: inventory-hub-net
