@@ -144,7 +144,7 @@ def _shop_latest_export(shop_code: str) -> Path:
     Štandardizované miesto pre shop export:
     inventory-data/shop-exports/{shop_code}/latest.csv
     """
-    return settings.INVENTORY_DATA_ROOT / "shop-exports" / shop_code / "latest.csv"
+    return settings.INVENTORY_DATA_ROOT / "shops" / shop_code / "latest.csv"
 
 def _ensure_parent(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -418,4 +418,3 @@ def files_stat(relpath: str = Query(..., description="Relatívna cesta v rámci 
         "size": st.st_size,
         "mtime": st.st_mtime,
         "mtime_iso": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-    }

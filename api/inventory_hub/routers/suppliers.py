@@ -903,3 +903,4 @@ def refresh_supplier_feed(
         "csv_saved": csv_path.relative_to(sup_dir).as_posix(),
         "rows_converted": rows,
     }
+
