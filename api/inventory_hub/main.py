@@ -167,16 +167,6 @@ async def health():
             result["status"] = "degraded"
     return result
 
-@app.get("/suppliers")
-def get_suppliers():
-    return list(SUPPLIERS.values())
-
-@app.post("/suppliers")
-def create_supplier(s: SupplierIn):
-    if s.supplier_code in SUPPLIERS:
-        raise HTTPException(400, detail="supplier_code already exists")
-    SUPPLIERS[s.supplier_code] = SupplierOut(**s.model_dump())
-    return SUPPLIERS[s.supplier_code]
 
 @app.get("/suppliers/{supplier_code}/files")
 def supplier_files(supplier_code: str, area: str, months_back: int = 3):
