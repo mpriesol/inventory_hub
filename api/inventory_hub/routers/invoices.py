@@ -16,6 +16,12 @@ from inventory_hub.adapters.paul_lange_web import (
     prepare_from_invoice
 )
 from inventory_hub.adapters import northfinder_web
+from pydantic import BaseModel
+
+class NotePayload(BaseModel):
+    note: str
+    status: Optional[str] = None  # ak chceš zároveň zmeniť status
+
 
 router = APIRouter(tags=["invoices"])
 
@@ -956,3 +962,45 @@ def enriched_preview(
         out_rows.append(base)
 
     return {"columns": out_headers, "rows": out_rows}
+
+
+@router.get("/suppliers/{supplier}/invoices/{invoice_no}/note")
+def invoice_get_note(supplier: str, invoice_no: str):
+    """Vráti poznámku a status faktúry z index.latest.json."""
+    idx_path = _index_latest_path(supplier)
+    idx = _load_json(idx_path)
+    invoice_id = f"{supplier}:{invoice_no}"
+    entry = (idx or {}).get(invoice_id) or {}
+    return {
+        "invoice_id": invoice_id,
+        "note": entry.get("note", ""),
+        "status": entry.get("status", "new"),
+    }
+
+
+@router.post("/suppliers/{supplier}/invoices/{invoice_no}/note")
+def invoice_set_note(supplier: str, invoice_no: str, payload: NotePayload):
+    """Uloží poznámku (a voliteľne status) do index.latest.json."""
+    idx_path = _index_latest_path(supplier)
+    idx = _load_json(idx_path)
+    if not isinstance(idx, dict):
+        idx = {}
+
+    invoice_id = f"{supplier}:{invoice_no}"
+    entry = idx.get(invoice_id) or {
+        "invoice_id": invoice_id,
+        "number": invoice_no,
+        "supplier": supplier,
+        "status": "new",
+    }
+    entry["note"] = payload.note
+    if payload.status:
+        entry["status"] = payload.status
+    idx[invoice_id] = entry
+
+    tmp = idx_path.with_suffix(".tmp")
+    idx_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(idx_path)
+
+    return {"ok": True, "invoice_id": invoice_id, "note": payload.note, "status": entry["status"]}

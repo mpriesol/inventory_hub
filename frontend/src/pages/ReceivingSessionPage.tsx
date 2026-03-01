@@ -1,12 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Camera, Check, X, Loader2, List, AlertTriangle, Pause, Edit2, CheckCircle, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Camera, Check, X, Loader2, List, AlertTriangle, Edit2, CheckCircle, RotateCcw, MessageSquare } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { 
   scanCode as scanCodeApi, 
   getReceivingSummary, 
   finalizeReceiving,
-  pauseReceiving,
   setLineQuantity,
   acceptAllItems,
   resetAllItems,
@@ -14,9 +13,9 @@ import {
   type ReceivingSummary,
   type ScanResult,
   type FinalizeResult,
-  type PauseResult
 } from '../api/receiving';
 import { ReceivingResultsModal } from "../components/ReceivingResultsModal";
+import { API_BASE } from '../api/client';
 
 export function ReceivingSessionPage() {
   const { invoiceId } = useParams();
@@ -24,7 +23,6 @@ export function ReceivingSessionPage() {
   const location = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Get session data from navigation state
   const state = location.state as { 
     sessionId?: string; 
     supplier?: string; 
@@ -57,8 +55,10 @@ export function ReceivingSessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null);
-  const [pausing, setPausing] = useState(false);
-  const [pauseResult, setPauseResult] = useState<PauseResult | null>(null);
+
+  // Poznámka k faktúre
+  const [invoiceNote, setInvoiceNote] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
   
   // Edit modal state
   const [editingLine, setEditingLine] = useState<{ index: number; line: ReceivingLine } | null>(null);
@@ -70,25 +70,20 @@ export function ReceivingSessionPage() {
   // Bulk actions
   const [bulkLoading, setBulkLoading] = useState(false);
   
-  // Check if this is a resumed session
   const isResumed = (location.state as any)?.isResumed || false;
   const [showLines, setShowLines] = useState(false);
 
-  // Calculate progress
   const total = stats.matched + stats.partial + stats.pending;
   const progress = total > 0 ? Math.round((stats.matched / total) * 100) : 0;
 
   useEffect(() => {
-    // Auto-focus input
     inputRef.current?.focus();
-    
-    // If no session ID, redirect back
     if (!sessionId && !state?.lines) {
       navigate('/receiving');
     }
   }, [sessionId, navigate, state]);
 
-  // Load summary if we have session
+  // Load summary
   useEffect(() => {
     if (sessionId) {
       getReceivingSummary(supplier, sessionId)
@@ -100,6 +95,31 @@ export function ReceivingSessionPage() {
     }
   }, [sessionId, supplier]);
 
+  // Load existing note
+  useEffect(() => {
+    if (!invoiceId || !supplier) return;
+    fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.note) setInvoiceNote(data.note); })
+      .catch(() => {});
+  }, [invoiceId, supplier]);
+
+  const saveNote = async (note: string) => {
+    if (!invoiceId) return;
+    setSavingNote(true);
+    try {
+      await fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+      });
+    } catch (e) {
+      console.error('Failed to save note:', e);
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
   const handleScan = async () => {
     if (!scannedCode.trim() || !sessionId) return;
 
@@ -109,7 +129,6 @@ export function ReceivingSessionPage() {
     try {
       const result: ScanResult = await scanCodeApi(supplier, sessionId, scannedCode, quantity);
       
-      // Update last scan display
       if (result.line) {
         setLastScan({
           code: scannedCode,
@@ -130,10 +149,8 @@ export function ReceivingSessionPage() {
         });
       }
 
-      // Update stats
       setStats(result.summary);
 
-      // Update lines if we have the line
       if (result.line) {
         setLines(prev => prev.map(l => 
           l.scm === result.line?.scm || l.ean === result.line?.ean 
@@ -154,13 +171,10 @@ export function ReceivingSessionPage() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleScan();
-    }
+    if (e.key === 'Enter') handleScan();
   };
 
   const handleFinalizeClick = () => {
-    // Show confirmation if there are unfinished items
     if (stats.pending > 0 || stats.partial > 0) {
       setShowConfirmModal(true);
     } else {
@@ -168,42 +182,12 @@ export function ReceivingSessionPage() {
     }
   };
 
-  const handlePause = async () => {
-    if (!sessionId) return;
-
-    setPausing(true);
-    setError(null);
-
-    try {
-      const result = await pauseReceiving(supplier, sessionId);
-      setPauseResult(result);
-      
-      // Show success state for 2 seconds then navigate
-      setTimeout(() => {
-        navigate('/receiving', { 
-          state: { 
-            notification: {
-              type: 'info',
-              message: result.message,
-            }
-          } 
-        });
-      }, 2000);
-    } catch (err) {
-      console.error('Pause failed:', err);
-      setError('Nepodarilo sa uložiť stav príjmu');
-      setPausing(false);
-    }
-  };
-
-  // Open edit modal for a line
   const openEditModal = (index: number, line: ReceivingLine) => {
     setEditingLine({ index, line });
     setEditQty(line.received_qty.toString());
     setEditNote('');
   };
 
-  // Save manual edit
   const handleSaveEdit = async () => {
     if (!editingLine || !sessionId) return;
 
@@ -220,7 +204,6 @@ export function ReceivingSessionPage() {
         editNote || undefined
       );
 
-      // Update local state
       setLines(prev => prev.map((l, i) => 
         i === editingLine.index ? result.line : l
       ));
@@ -234,20 +217,14 @@ export function ReceivingSessionPage() {
     }
   };
 
-  // Set to ordered quantity
   const handleSetToOrdered = () => {
-    if (editingLine) {
-      setEditQty(editingLine.line.ordered_qty.toString());
-    }
+    if (editingLine) setEditQty(editingLine.line.ordered_qty.toString());
   };
 
-  // Bulk accept all
   const handleAcceptAll = async () => {
     if (!sessionId) return;
-
     setBulkLoading(true);
     setError(null);
-
     try {
       const result = await acceptAllItems(supplier, sessionId, true);
       setLines(result.lines);
@@ -260,15 +237,11 @@ export function ReceivingSessionPage() {
     }
   };
 
-  // Reset all
   const handleResetAll = async () => {
     if (!sessionId) return;
-    
     if (!confirm('Naozaj chcete vynulovať všetky prijaté množstvá?')) return;
-
     setBulkLoading(true);
     setError(null);
-
     try {
       const result = await resetAllItems(supplier, sessionId);
       setLines(result.lines);
@@ -284,6 +257,11 @@ export function ReceivingSessionPage() {
   const doFinalize = async () => {
     if (!sessionId) return;
 
+    // Uložiť poznámku pred dokončením
+    if (invoiceNote.trim()) {
+      await saveNote(invoiceNote.trim());
+    }
+
     setFinalizing(true);
     setError(null);
     setShowConfirmModal(false);
@@ -292,8 +270,6 @@ export function ReceivingSessionPage() {
       const result = await finalizeReceiving(supplier, sessionId);
       setFinalizeResult(result);
       
-      // Show success state for 2 seconds then navigate
-      // Po 2s zobraz CSV modal namiesto presmerovanie
       setTimeout(() => {
         setShowCsvModal(true);
       }, 2000);
@@ -336,26 +312,15 @@ export function ReceivingSessionPage() {
           <div>
             <h1
               className="text-xl font-semibold"
-              style={{
-                fontFamily: 'var(--font-display)',
-                color: 'var(--color-text-primary)',
-              }}
+              style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}
             >
               Príjem:{' '}
-              <span
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  color: 'var(--color-accent)',
-                }}
-              >
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>
                 {invoiceId}
               </span>
             </h1>
             {sessionId && (
-              <div 
-                className="text-xs mt-0.5"
-                style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}
-              >
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
                 Session: {sessionId}
               </div>
             )}
@@ -384,13 +349,9 @@ export function ReceivingSessionPage() {
       {/* Main Scanning Area */}
       <div
         className="rounded-xl border p-8"
-        style={{
-          backgroundColor: 'var(--color-bg-secondary)',
-          borderColor: 'var(--color-border-subtle)',
-        }}
+        style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}
       >
         <div className="max-w-md mx-auto text-center">
-          {/* Scan Icon */}
           <div
             className="w-20 h-20 rounded-2xl border-2 border-dashed flex items-center justify-center mx-auto"
             style={{
@@ -402,20 +363,13 @@ export function ReceivingSessionPage() {
             <Camera size={32} />
           </div>
 
-          <h2
-            className="text-lg font-medium mt-4"
-            style={{ color: 'var(--color-text-primary)' }}
-          >
+          <h2 className="text-lg font-medium mt-4" style={{ color: 'var(--color-text-primary)' }}>
             Naskenuj čiarový kód
           </h2>
-          <p
-            className="text-sm mt-1"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          >
+          <p className="text-sm mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
             Použi skener alebo zadaj kód manuálne
           </p>
 
-          {/* Input */}
           <div className="mt-6 flex gap-2">
             <input
               ref={inputRef}
@@ -439,12 +393,8 @@ export function ReceivingSessionPage() {
             </Button>
           </div>
 
-          {/* Quantity */}
           <div className="flex items-center justify-center gap-4 mt-4">
-            <label
-              className="flex items-center gap-2 text-sm"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
+            <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               Množstvo:
               <input
                 type="number"
@@ -479,44 +429,22 @@ export function ReceivingSessionPage() {
               {statusColors[lastScan.status]?.icon || '?'}
             </div>
             <div className="flex-1">
-              <div
-                className="text-sm font-medium uppercase"
-                style={{ color: statusColors[lastScan.status]?.border || statusColors.unknown.border }}
-              >
+              <div className="text-sm font-medium uppercase" style={{ color: statusColors[lastScan.status]?.border || statusColors.unknown.border }}>
                 {statusColors[lastScan.status]?.label || 'Neznáme'}
               </div>
-              <div
-                className="text-sm mt-0.5"
-                style={{ color: 'var(--color-text-primary)' }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    color: 'var(--color-text-secondary)',
-                  }}
-                >
+              <div className="text-sm mt-0.5" style={{ color: 'var(--color-text-primary)' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>
                   {lastScan.code}
                 </span>
                 {lastScan.sku && (
-                  <>
-                    {' → '}
-                    <span style={{ fontFamily: 'var(--font-mono)' }}>
-                      {lastScan.sku}
-                    </span>
-                  </>
+                  <>{' → '}<span style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.sku}</span></>
                 )}
-                <span
-                  className="ml-2"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                >
+                <span className="ml-2" style={{ color: 'var(--color-text-secondary)' }}>
                   "{lastScan.product}"
                 </span>
               </div>
               {lastScan.expected > 0 && (
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
+                <div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
                   Prijaté: {lastScan.received}/{lastScan.expected} (+{quantity} práve teraz)
                 </div>
               )}
@@ -528,31 +456,16 @@ export function ReceivingSessionPage() {
       {/* Progress */}
       <div
         className="rounded-xl border p-4"
-        style={{
-          backgroundColor: 'var(--color-bg-secondary)',
-          borderColor: 'var(--color-border-subtle)',
-        }}
+        style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}
       >
         <div className="flex items-center justify-between mb-3">
-          <span
-            className="text-sm"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            Priebeh
-          </span>
-          <span
-            className="text-sm font-medium"
-            style={{ color: 'var(--color-text-primary)' }}
-          >
+          <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>Priebeh</span>
+          <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
             {progress}% dokončené
           </span>
         </div>
 
-        {/* Progress Bar */}
-        <div
-          className="h-2 rounded-full overflow-hidden"
-          style={{ backgroundColor: 'var(--color-bg-primary)' }}
-        >
+        <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--color-bg-primary)' }}>
           <div
             className="h-full transition-all"
             style={{
@@ -562,31 +475,22 @@ export function ReceivingSessionPage() {
           />
         </div>
 
-        {/* Stats */}
         <div className="flex items-center justify-between mt-4 text-sm">
           <div className="flex items-center gap-1">
             <span style={{ color: 'var(--color-success)' }}>✓</span>
-            <span style={{ color: 'var(--color-text-secondary)' }}>
-              {stats.matched} Kompletné
-            </span>
+            <span style={{ color: 'var(--color-text-secondary)' }}>{stats.matched} Kompletné</span>
           </div>
           <div className="flex items-center gap-1">
             <span style={{ color: 'var(--color-info)' }}>◐</span>
-            <span style={{ color: 'var(--color-text-secondary)' }}>
-              {stats.partial} Čiastočné
-            </span>
+            <span style={{ color: 'var(--color-text-secondary)' }}>{stats.partial} Čiastočné</span>
           </div>
           <div className="flex items-center gap-1">
             <span style={{ color: 'var(--color-text-tertiary)' }}>○</span>
-            <span style={{ color: 'var(--color-text-secondary)' }}>
-              {stats.pending} Čakajúce
-            </span>
+            <span style={{ color: 'var(--color-text-secondary)' }}>{stats.pending} Čakajúce</span>
           </div>
           <div className="flex items-center gap-1">
             <span style={{ color: 'var(--color-error)' }}>!</span>
-            <span style={{ color: 'var(--color-text-secondary)' }}>
-              {stats.overage + stats.unexpected} Problémy
-            </span>
+            <span style={{ color: 'var(--color-text-secondary)' }}>{stats.overage + stats.unexpected} Problémy</span>
           </div>
         </div>
       </div>
@@ -595,20 +499,13 @@ export function ReceivingSessionPage() {
       {showLines && (
         <div
           className="rounded-xl border overflow-hidden"
-          style={{
-            backgroundColor: 'var(--color-bg-secondary)',
-            borderColor: 'var(--color-border-subtle)',
-          }}
+          style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}
         >
-          {/* Bulk Actions Header */}
-          <div 
+          <div
             className="px-4 py-3 border-b flex items-center justify-between"
             style={{ borderColor: 'var(--color-border-subtle)' }}
           >
-            <span 
-              className="text-sm font-medium"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
+            <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
               {lines.length} položiek
             </span>
             <div className="flex gap-2">
@@ -616,10 +513,7 @@ export function ReceivingSessionPage() {
                 onClick={handleAcceptAll}
                 disabled={bulkLoading || stats.pending === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-                style={{
-                  backgroundColor: 'var(--color-success-subtle)',
-                  color: 'var(--color-success)',
-                }}
+                style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}
               >
                 <CheckCircle size={14} />
                 Prijať všetko ({stats.pending})
@@ -628,10 +522,7 @@ export function ReceivingSessionPage() {
                 onClick={handleResetAll}
                 disabled={bulkLoading || (stats.matched === 0 && stats.partial === 0)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-                style={{
-                  backgroundColor: 'var(--color-bg-tertiary)',
-                  color: 'var(--color-text-secondary)',
-                }}
+                style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}
               >
                 <RotateCcw size={14} />
                 Resetovať
@@ -644,10 +535,7 @@ export function ReceivingSessionPage() {
               <thead>
                 <tr
                   className="border-b sticky top-0"
-                  style={{
-                    backgroundColor: 'var(--color-bg-primary)',
-                    borderColor: 'var(--color-border-subtle)',
-                  }}
+                  style={{ backgroundColor: 'var(--color-bg-primary)', borderColor: 'var(--color-border-subtle)' }}
                 >
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>SKU</th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Názov</th>
@@ -659,25 +547,19 @@ export function ReceivingSessionPage() {
               </thead>
               <tbody className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
                 {lines.map((line, idx) => (
-                  <tr 
+                  <tr
                     key={idx}
                     className="cursor-pointer transition-colors"
                     style={{ backgroundColor: 'transparent' }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = 'transparent';
-                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
                     onClick={() => openEditModal(idx, line)}
                   >
                     <td className="px-4 py-2 text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>
                       {line.product_code || line.scm}
                     </td>
                     <td className="px-4 py-2 text-sm" style={{ color: 'var(--color-text-primary)' }}>
-                      <div className="truncate max-w-xs" title={line.title}>
-                        {line.title}
-                      </div>
+                      <div className="truncate max-w-xs" title={line.title}>{line.title}</div>
                     </td>
                     <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>
                       {line.ordered_qty}
@@ -697,10 +579,7 @@ export function ReceivingSessionPage() {
                       </span>
                     </td>
                     <td className="px-4 py-2 text-center">
-                      <Edit2 
-                        size={14} 
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      />
+                      <Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} />
                     </td>
                   </tr>
                 ))}
@@ -712,60 +591,34 @@ export function ReceivingSessionPage() {
 
       {/* Edit Line Modal */}
       {editingLine && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ backgroundColor: 'rgba(0, 0, 0, 0.7)' }}
           onClick={() => setEditingLine(null)}
         >
           <div
             className="rounded-xl border p-6 max-w-md w-full animate-slide-in-bottom"
-            style={{
-              backgroundColor: 'var(--color-bg-secondary)',
-              borderColor: 'var(--color-border-subtle)',
-            }}
+            style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3
-              className="text-lg font-semibold"
-              style={{
-                fontFamily: 'var(--font-display)',
-                color: 'var(--color-text-primary)',
-              }}
-            >
+            <h3 className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}>
               Upraviť prijaté množstvo
             </h3>
             
-            {/* Product Info */}
-            <div 
-              className="mt-4 p-3 rounded-lg"
-              style={{ backgroundColor: 'var(--color-bg-primary)' }}
-            >
-              <div 
-                className="text-sm font-medium"
-                style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}
-              >
+            <div className="mt-4 p-3 rounded-lg" style={{ backgroundColor: 'var(--color-bg-primary)' }}>
+              <div className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>
                 {editingLine.line.product_code || editingLine.line.scm}
               </div>
-              <div 
-                className="text-sm mt-1"
-                style={{ color: 'var(--color-text-secondary)' }}
-              >
+              <div className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
                 {editingLine.line.title}
               </div>
-              <div 
-                className="text-xs mt-2"
-                style={{ color: 'var(--color-text-tertiary)' }}
-              >
+              <div className="text-xs mt-2" style={{ color: 'var(--color-text-tertiary)' }}>
                 Objednané: <strong>{editingLine.line.ordered_qty}</strong> ks
               </div>
             </div>
 
-            {/* Quantity Input */}
             <div className="mt-4">
-              <label 
-                className="text-sm font-medium"
-                style={{ color: 'var(--color-text-secondary)' }}
-              >
+              <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
                 Prijaté množstvo
               </label>
               <div className="flex gap-2 mt-2">
@@ -782,22 +635,15 @@ export function ReceivingSessionPage() {
                 <button
                   onClick={handleSetToOrdered}
                   className="px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-                  style={{
-                    backgroundColor: 'var(--color-accent-subtle)',
-                    color: 'var(--color-accent)',
-                  }}
+                  style={{ backgroundColor: 'var(--color-accent-subtle)', color: 'var(--color-accent)' }}
                 >
                   = {editingLine.line.ordered_qty}
                 </button>
               </div>
             </div>
 
-            {/* Note */}
             <div className="mt-4">
-              <label 
-                className="text-sm font-medium"
-                style={{ color: 'var(--color-text-secondary)' }}
-              >
+              <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
                 Poznámka (voliteľné)
               </label>
               <input
@@ -809,207 +655,91 @@ export function ReceivingSessionPage() {
               />
             </div>
 
-            {/* Actions */}
             <div className="flex justify-end gap-3 mt-6">
-              <Button
-                variant="secondary"
-                onClick={() => setEditingLine(null)}
-              >
-                Zrušiť
-              </Button>
-              <Button
-                variant="primary"
-                onClick={handleSaveEdit}
-                loading={savingEdit}
-              >
-                Uložiť
-              </Button>
+              <Button variant="secondary" onClick={() => setEditingLine(null)}>Zrušiť</Button>
+              <Button variant="primary" onClick={handleSaveEdit} loading={savingEdit}>Uložiť</Button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Poznámka k faktúre */}
+      <div
+        className="rounded-xl border p-4"
+        style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}
+      >
+        <label
+          className="flex items-center gap-2 text-sm font-medium mb-2"
+          style={{ color: 'var(--color-text-secondary)' }}
+        >
+          <MessageSquare size={14} />
+          Poznámka k faktúre
+          {savingNote && (
+            <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+              <Loader2 size={10} className="inline animate-spin mr-1" />
+              ukladám...
+            </span>
+          )}
+        </label>
+        <textarea
+          value={invoiceNote}
+          onChange={(e) => setInvoiceNote(e.target.value)}
+          onBlur={(e) => saveNote(e.target.value.trim())}
+          placeholder="Napr. 3 položky nedodané, reklamácia na ..."
+          className="w-full py-2 px-3 rounded-lg text-sm resize-none"
+          rows={2}
+          style={{
+            backgroundColor: 'var(--color-bg-primary)',
+            borderColor: 'var(--color-border-subtle)',
+            border: '1px solid',
+            color: 'var(--color-text-primary)',
+          }}
+        />
+      </div>
+
       {/* Actions */}
       <div className="flex justify-between">
-        <Button 
-          variant="secondary" 
-          onClick={() => setShowLines(!showLines)}
-        >
+        <Button variant="secondary" onClick={() => setShowLines(!showLines)}>
           <List size={16} />
           {showLines ? 'Skryť položky' : 'Zobraziť položky'}
         </Button>
         
-        <div className="flex gap-3">
-          <Button 
-            variant="ghost" 
-            onClick={handlePause}
-            loading={pausing}
-            disabled={!sessionId || pausing || finalizing}
-          >
-            <Pause size={16} />
-            Uložiť a prerušiť
-          </Button>
-          <Button 
-            variant="success" 
-            onClick={handleFinalizeClick}
-            loading={finalizing}
-            disabled={!sessionId || finalizing || pausing}
-          >
-            <Check size={16} />
-            Dokončiť príjem
-          </Button>
-        </div>
-      </div>
-
-      {/* Pause Success Screen */}
-      {pauseResult && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ backgroundColor: 'rgba(0, 0, 0, 0.8)' }}
+        <Button
+          variant="success"
+          onClick={handleFinalizeClick}
+          loading={finalizing}
+          disabled={!sessionId || finalizing}
         >
-          <div
-            className="rounded-xl border p-8 max-w-lg w-full text-center animate-slide-in-bottom"
-            style={{
-              backgroundColor: 'var(--color-bg-secondary)',
-              borderColor: 'var(--color-info)',
-            }}
-          >
-            <div
-              className="w-16 h-16 rounded-full flex items-center justify-center mx-auto"
-              style={{
-                backgroundColor: 'var(--color-info-subtle)',
-                color: 'var(--color-info)',
-              }}
-            >
-              <Pause size={32} />
-            </div>
-            <h2
-              className="text-xl font-semibold mt-4"
-              style={{
-                fontFamily: 'var(--font-display)',
-                color: 'var(--color-text-primary)',
-              }}
-            >
-              Príjem uložený
-            </h2>
-            <p
-              className="text-sm mt-2"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              Faktúra <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{pauseResult.invoice_no}</strong> bola pozastavená.
-            </p>
-            <p
-              className="text-sm mt-1"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              Môžete pokračovať neskôr tam, kde ste skončili.
-            </p>
-
-            {/* Stats Summary */}
-            <div
-              className="mt-6 p-4 rounded-lg grid grid-cols-3 gap-4"
-              style={{ backgroundColor: 'var(--color-bg-primary)' }}
-            >
-              <div>
-                <div
-                  className="text-xl font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-success)',
-                  }}
-                >
-                  {pauseResult.stats.received_complete}
-                </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Kompletných
-                </div>
-              </div>
-              <div>
-                <div
-                  className="text-xl font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-info)',
-                  }}
-                >
-                  {pauseResult.stats.received_partial}
-                </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Čiastočných
-                </div>
-              </div>
-              <div>
-                <div
-                  className="text-xl font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-text-secondary)',
-                  }}
-                >
-                  {pauseResult.stats.not_received}
-                </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Zostáva
-                </div>
-              </div>
-            </div>
-
-            <p
-              className="text-xs mt-4"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              Presmerovanie na zoznam faktúr...
-            </p>
-          </div>
-        </div>
-      )}
+          <Check size={16} />
+          Dokončiť príjem
+        </Button>
+      </div>
 
       {/* Confirmation Modal */}
       {showConfirmModal && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ backgroundColor: 'rgba(0, 0, 0, 0.7)' }}
         >
           <div
             className="rounded-xl border p-6 max-w-md w-full animate-slide-in-bottom"
-            style={{
-              backgroundColor: 'var(--color-bg-secondary)',
-              borderColor: 'var(--color-border-subtle)',
-            }}
+            style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}
           >
             <div className="flex items-start gap-4">
               <div
                 className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
-                style={{
-                  backgroundColor: 'var(--color-warning-subtle)',
-                  color: 'var(--color-warning)',
-                }}
+                style={{ backgroundColor: 'var(--color-warning-subtle)', color: 'var(--color-warning)' }}
               >
                 <AlertTriangle size={20} />
               </div>
               <div>
                 <h3
                   className="text-lg font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-text-primary)',
-                  }}
+                  style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}
                 >
                   Potvrdiť dokončenie
                 </h3>
-                <p
-                  className="text-sm mt-2"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                >
+                <p className="text-sm mt-2" style={{ color: 'var(--color-text-secondary)' }}>
                   Niektoré položky nie sú úplne prijaté:
                 </p>
                 <ul className="mt-3 space-y-1 text-sm">
@@ -1024,25 +754,36 @@ export function ReceivingSessionPage() {
                     </li>
                   )}
                 </ul>
-                <p
-                  className="text-sm mt-3"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                >
+
+                {/* Poznámka aj v confirm modali */}
+                <div className="mt-4">
+                  <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+                    Poznámka k nedodaným položkám (voliteľné)
+                  </label>
+                  <textarea
+                    value={invoiceNote}
+                    onChange={(e) => setInvoiceNote(e.target.value)}
+                    placeholder="Napr. 3 položky nedodané, objednané znovu..."
+                    className="w-full mt-2 py-2 px-3 rounded-lg text-sm resize-none"
+                    rows={2}
+                    style={{
+                      backgroundColor: 'var(--color-bg-primary)',
+                      border: '1px solid var(--color-border-subtle)',
+                      color: 'var(--color-text-primary)',
+                    }}
+                  />
+                </div>
+
+                <p className="text-sm mt-3" style={{ color: 'var(--color-text-secondary)' }}>
                   Naozaj chcete dokončiť príjem?
                 </p>
               </div>
             </div>
             <div className="flex justify-end gap-3 mt-6">
-              <Button
-                variant="secondary"
-                onClick={() => setShowConfirmModal(false)}
-              >
+              <Button variant="secondary" onClick={() => setShowConfirmModal(false)}>
                 Pokračovať v skenovaní
               </Button>
-              <Button
-                variant="primary"
-                onClick={doFinalize}
-              >
+              <Button variant="primary" onClick={doFinalize}>
                 Áno, dokončiť
               </Button>
             </div>
@@ -1052,97 +793,55 @@ export function ReceivingSessionPage() {
 
       {/* Success Screen */}
       {finalizeResult && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ backgroundColor: 'rgba(0, 0, 0, 0.8)' }}
         >
           <div
             className="rounded-xl border p-8 max-w-lg w-full text-center animate-slide-in-bottom"
-            style={{
-              backgroundColor: 'var(--color-bg-secondary)',
-              borderColor: 'var(--color-success)',
-            }}
+            style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-success)' }}
           >
             <div
               className="w-16 h-16 rounded-full flex items-center justify-center mx-auto"
-              style={{
-                backgroundColor: 'var(--color-success-subtle)',
-                color: 'var(--color-success)',
-              }}
+              style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}
             >
               <Check size={32} />
             </div>
             <h2
               className="text-xl font-semibold mt-4"
-              style={{
-                fontFamily: 'var(--font-display)',
-                color: 'var(--color-text-primary)',
-              }}
+              style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}
             >
               Príjem dokončený!
             </h2>
-            <p
-              className="text-sm mt-2"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              Faktúra <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{finalizeResult.invoice_no}</strong> bola úspešne spracovaná.
+            <p className="text-sm mt-2" style={{ color: 'var(--color-text-secondary)' }}>
+              Faktúra{' '}
+              <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>
+                {finalizeResult.invoice_no}
+              </strong>{' '}
+              bola úspešne spracovaná.
             </p>
 
-            {/* Stats Summary */}
             <div
               className="mt-6 p-4 rounded-lg grid grid-cols-2 gap-4"
               style={{ backgroundColor: 'var(--color-bg-primary)' }}
             >
               <div>
-                <div
-                  className="text-2xl font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-success)',
-                  }}
-                >
+                <div className="text-2xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-success)' }}>
                   {finalizeResult.received_items_count}
                 </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Prijatých položiek
-                </div>
+                <div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Prijatých položiek</div>
               </div>
               <div>
-                <div
-                  className="text-2xl font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-text-primary)',
-                  }}
-                >
+                <div className="text-2xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}>
                   {Math.round(finalizeResult.total_received)}
                 </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Celkom kusov
-                </div>
+                <div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Celkom kusov</div>
               </div>
               <div>
-                <div
-                  className="text-2xl font-semibold"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    color: 'var(--color-success)',
-                  }}
-                >
+                <div className="text-2xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-success)' }}>
                   {finalizeResult.stats.received_complete}
                 </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Kompletných
-                </div>
+                <div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Kompletných</div>
               </div>
               <div>
                 <div
@@ -1154,34 +853,27 @@ export function ReceivingSessionPage() {
                 >
                   {finalizeResult.stats.not_received}
                 </div>
-                <div
-                  className="text-xs mt-1"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  Neprijatých
-                </div>
+                <div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Neprijatých</div>
               </div>
             </div>
 
-            <p
-              className="text-xs mt-4"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              Presmerovanie na dashboard...
+            <p className="text-xs mt-4" style={{ color: 'var(--color-text-tertiary)' }}>
+              Načítavam výsledky...
             </p>
           </div>
         </div>
       )}
+
       {showCsvModal && (
-              <ReceivingResultsModal
-                supplier={supplier}
-                invoiceId={`${supplier}:${invoiceId}`}
-                onClose={() => {
-                  setShowCsvModal(false);
-                  navigate('/receiving');
-                }}
-              />
-            )}      
+        <ReceivingResultsModal
+          supplier={supplier}
+          invoiceId={`${supplier}:${invoiceId}`}
+          onClose={() => {
+            setShowCsvModal(false);
+            navigate('/receiving');
+          }}
+        />
+      )}
     </div>
   );
 }

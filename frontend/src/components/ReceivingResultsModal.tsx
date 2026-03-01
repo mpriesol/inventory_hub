@@ -1,13 +1,4 @@
 // frontend/src/components/ReceivingResultsModal.tsx
-//
-// Editovateľná tabuľka pre 3 výstupné CSV súbory po spracovaní faktúry.
-// Stĺpce sú konfigurovateľné – ukladajú sa do localStorage per-tab.
-// Použitie:
-//   <ReceivingResultsModal
-//     supplier="paul-lange"
-//     invoiceId="paul-lange:F2025060682"
-//     onClose={() => setOpen(false)}
-//   />
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
@@ -71,13 +62,11 @@ function loadColVis(supplier: string, tab: Tab, cols: string[]): ColVisibility {
     const raw = localStorage.getItem(storageKey(supplier, tab));
     if (raw) {
       const saved: ColVisibility = JSON.parse(raw);
-      // merge so that new columns default to true
       const merged: ColVisibility = {};
       cols.forEach((c) => { merged[c] = saved[c] !== undefined ? saved[c] : true; });
       return merged;
     }
   } catch { /* ignore */ }
-  // default: first 8 cols visible, rest hidden
   const vis: ColVisibility = {};
   cols.forEach((c, i) => { vis[c] = i < 8; });
   return vis;
@@ -87,7 +76,6 @@ function saveColVis(supplier: string, tab: Tab, vis: ColVisibility) {
   try { localStorage.setItem(storageKey(supplier, tab), JSON.stringify(vis)); } catch { /* ignore */ }
 }
 
-// Odstráni Upgates [] závorky pre zobrazenie
 function displayCol(col: string) {
   return col.replace(/^\[/, "").replace(/\]$/, "").replace(/^PARAMETER „/, "").replace(/"$/, "");
 }
@@ -106,13 +94,50 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
   const [colVis, setColVis] = useState<ColVisibility>({});
   const [showColPicker, setShowColPicker] = useState(false);
 
-  // editácia bunky
   const [editCell, setEditCell] = useState<EditCell | null>(null);
   const [editValue, setEditValue] = useState("");
   const editInputRef = useRef<HTMLInputElement>(null);
 
-  // filter
   const [filterText, setFilterText] = useState("");
+
+  // ── Poznámka k faktúre ────────────────────────────────────────────────────
+  const invoiceNo = invoiceId.split(":").pop() ?? invoiceId;
+  const [note, setNote] = useState("");
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteInput, setNoteInput] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+
+  // Načítaj poznámku
+  useEffect(() => {
+    fetch(`${API}/suppliers/${supplier}/invoices/${invoiceNo}/note`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.note) {
+          setNote(data.note);
+          setNoteInput(data.note);
+        }
+      })
+      .catch(() => {});
+  }, [supplier, invoiceNo]);
+
+  const handleSaveNote = async () => {
+    setSavingNote(true);
+    try {
+      const r = await fetch(`${API}/suppliers/${supplier}/invoices/${invoiceNo}/note`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: noteInput }),
+      });
+      if (r.ok) {
+        setNote(noteInput);
+        setEditingNote(false);
+      }
+    } catch (e) {
+      console.error("Failed to save note:", e);
+    } finally {
+      setSavingNote(false);
+    }
+  };
 
   // ── Spusti prípravu (prepare_legacy) ─────────────────────────────────────
 
@@ -146,7 +171,6 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
     }
   }, [supplier, shop, invoiceId]);
 
-  // Spusti hneď po otvorení
   useEffect(() => { runPrepare(); }, [runPrepare]);
 
   // ── Načítaj CSV dáta pre aktívny tab ─────────────────────────────────────
@@ -155,7 +179,7 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
     if (!prepResult) return;
     const outputPath = prepResult.outputs[tabOutputKey[activeTab]];
     if (!outputPath) return;
-    if (csvData[activeTab]) return; // už načítané
+    if (csvData[activeTab]) return;
 
     setLoadingCsv(true);
     const relpath = outputPath.replace(/^data\//, "");
@@ -168,14 +192,12 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
       .finally(() => setLoadingCsv(false));
   }, [prepResult, activeTab, csvData]);
 
-  // Nastavenie viditeľnosti stĺpcov pri načítaní nových dát
   useEffect(() => {
     const data = csvData[activeTab];
     if (!data) return;
     setColVis(loadColVis(supplier, activeTab, data.columns));
   }, [csvData, activeTab, supplier]);
 
-  // Focus na input pri editácii
   useEffect(() => {
     if (editCell) editInputRef.current?.focus();
   }, [editCell]);
@@ -282,14 +304,61 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
         style={{ width: "96vw", height: "92vh", maxWidth: 1600 }}
       >
         {/* ── Header ── */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[#2a2a2a]">
-          <div>
-            <span className="text-white font-semibold text-base">Výsledky príjmu</span>
-            <span className="ml-3 text-[#888] text-sm font-mono">{invoiceId}</span>
+        <div className="flex items-start justify-between px-5 py-3 border-b border-[#2a2a2a] gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3">
+              <span className="text-white font-semibold text-base">Výsledky príjmu</span>
+              <span className="text-[#888] text-sm font-mono">{invoiceId}</span>
+            </div>
+
+            {/* Poznámka */}
+            <div className="mt-2">
+              {editingNote ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={noteInput}
+                    onChange={(e) => setNoteInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleSaveNote(); if (e.key === "Escape") { setEditingNote(false); setNoteInput(note); } }}
+                    placeholder="Zadaj poznámku k faktúre..."
+                    className="flex-1 px-3 py-1 bg-[#252525] border border-amber-500 rounded-lg text-sm text-white placeholder-[#555] focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleSaveNote}
+                    disabled={savingNote}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs rounded-lg"
+                  >
+                    {savingNote ? "..." : "Uložiť"}
+                  </button>
+                  <button
+                    onClick={() => { setEditingNote(false); setNoteInput(note); }}
+                    className="px-3 py-1 bg-[#333] hover:bg-[#444] text-[#aaa] text-xs rounded-lg"
+                  >
+                    Zrušiť
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setEditingNote(true)}
+                  className="flex items-center gap-2 text-xs hover:text-white transition-colors group"
+                  style={{ color: note ? "#aaa" : "#555" }}
+                >
+                  <span>📝</span>
+                  <span className="italic">
+                    {note || "Pridať poznámku k faktúre..."}
+                  </span>
+                  <span className="opacity-0 group-hover:opacity-100 text-[#666] not-italic">
+                    ✎
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
+
           <button
             onClick={onClose}
-            className="text-[#888] hover:text-white text-xl leading-none px-2"
+            className="text-[#888] hover:text-white text-xl leading-none px-2 flex-shrink-0"
           >
             ✕
           </button>
@@ -343,7 +412,6 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
 
               {/* Toolbar napravo */}
               <div className="ml-auto flex items-center gap-2 pb-1">
-                {/* Filter */}
                 <input
                   value={filterText}
                   onChange={(e) => setFilterText(e.target.value)}
@@ -351,7 +419,6 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
                   className="px-3 py-1 bg-[#252525] border border-[#333] rounded-lg text-sm text-white placeholder-[#555] w-44 focus:outline-none focus:border-amber-500"
                 />
 
-                {/* Stĺpce */}
                 <div className="relative">
                   <button
                     onClick={() => setShowColPicker((v) => !v)}
@@ -385,7 +452,6 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
                   )}
                 </div>
 
-                {/* Download */}
                 <button
                   onClick={downloadCsv}
                   disabled={!csvData[activeTab]}
