@@ -464,7 +464,7 @@ def prepare_from_invoice(
     pending_csv   = out_dir / f"{inv_stem}_pending_{datestr}.csv"
 
     existing_header  = ["[PRODUCT_CODE]", "[STOCK]", "[AVAILABILITY]",
-                        '[META "original_product_code"]', '[META "validation_required"]',
+                        '[META „original_product_code"]', '[META „validation_required"]',
                         INVOICE_META_COL]
     new_header       = xheader
     unmatched_header = ["SCM", "PRODUCT_CODE", "QTY", "REASON"]
@@ -532,8 +532,8 @@ def prepare_from_invoice(
             row[ix_avail_new] = "Na sklade"
 
         _, idxmap_meta = _ensure_meta_columns(new_header)
-        row[idxmap_meta['[META "original_product_code"]']] = scm
-        row[idxmap_meta['[META "validation_required"]']] = "1"
+        row[idxmap_meta['[META „original_product_code"]']] = scm
+        row[idxmap_meta['[META „validation_required"]']] = "1"
         row[idxmap_meta[INVOICE_META_COL]] = inv_stem
 
         for col_name in zero_cols_new:
