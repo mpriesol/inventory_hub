@@ -555,7 +555,7 @@ def invoices_csv_outputs(supplier: str, invoice: str):
 
 # ── Enriched preview ──────────────────────────────────────────────────────────
 
-_SHOP_PRICE_CANDIDATES = ["PRICE_WITH_VAT „Predvolené"", "[PRICE_WITH_VAT „Predvolené"]"]
+_SHOP_PRICE_CANDIDATES = ["PRICE_WITH_VAT „Predvolené“", "[PRICE_WITH_VAT „Predvolené“]"]
 _SHOP_BUY_CANDIDATES   = ["PRICE_BUY", "[PRICE_BUY]", "BUY_PRICE", "CENA_NAKUP"]
 
 def _shops_latest_csv(shop: str) -> Path:
@@ -644,7 +644,7 @@ def enriched_preview(
 
     ean_hdr = "[EAN]"
     add_cols = [
-        "TITLE", "IMAGES", "[PRICE_WITH_VAT „Predvolené"]", "PRICE_BUY",
+        "TITLE", "IMAGES", "[PRICE_WITH_VAT „Predvolené“]", "PRICE_BUY",
         "INVOICE_UNIT_PRICE_EUR", "BUY_DELTA_EUR", "PRICE_DELTA_EUR",
         "PROFIT_VS_INVOICE_EUR", "PROFIT_VS_INVOICE_PCT",
         ean_hdr, "SHOP_STOCK_CURRENT", "INVOICE_QTY", "STOCK_DELTA", "STOCK_AFTER",
@@ -692,7 +692,7 @@ def enriched_preview(
             if c in src_headers: continue
             if   c == "TITLE":                           base.append(title)
             elif c == "IMAGES":                          base.append(images)
-            elif c == "[PRICE_WITH_VAT „Predvolené"]":   base.append(shop_price_text or "")
+            elif c == "[PRICE_WITH_VAT „Predvolené“]":   base.append(shop_price_text or "")
             elif c == "PRICE_BUY":                       base.append(shop_buy_text or "")
             elif c == "INVOICE_UNIT_PRICE_EUR":          base.append(f"{inv_unit_eur:.2f} €" if inv_unit_eur else "")
             elif c == "BUY_DELTA_EUR":                   base.append(fmt_sign(buy_delta_eur, inv_unit_eur or shop_buy_eur))
