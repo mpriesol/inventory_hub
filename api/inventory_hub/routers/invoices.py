@@ -207,10 +207,10 @@ def _load_prev_index_map(supplier: str) -> Dict[str, Dict[str, Any]]:
         return mp
     try:
         data = json.loads(idx.read_text(encoding="utf-8"))
-        for it in data.get("invoices", []):
-            key = it.get("invoice_id") or f"{supplier}:{it.get('number')}"
-            if key:
-                mp[str(key)] = it
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    mp[k] = v
     except Exception:
         pass
     return mp
@@ -442,8 +442,8 @@ def invoice_save_received_items(supplier: str, invoice_no: str, payload: Receive
 
 # ── Routes: prepare_legacy (hlavný endpoint pre ReceivingResultsModal) ────────
 
-@router.post("/runs/prepare_legacy")
-def run_prepare_legacy(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+@router.post("/runs/prepare")
+def run_prepare(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """
     Pripraví CSV pre Upgates import.
     Automaticky načíta received_items ak boli uložené cez /received-items.
@@ -555,7 +555,7 @@ def invoices_csv_outputs(supplier: str, invoice: str):
 
 # ── Enriched preview ──────────────────────────────────────────────────────────
 
-_SHOP_PRICE_CANDIDATES = ["PRICE_WITH_VAT „Predvolené“", "[PRICE_WITH_VAT „Predvolené“]"]
+_SHOP_PRICE_CANDIDATES = ["[PRICE_WITH_VAT „Predvolené“]", "[PRICE_WITH_VAT „Predvolené“]"]
 _SHOP_BUY_CANDIDATES   = ["PRICE_BUY", "[PRICE_BUY]", "BUY_PRICE", "CENA_NAKUP"]
 
 def _shops_latest_csv(shop: str) -> Path:

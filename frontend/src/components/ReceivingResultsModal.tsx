@@ -156,7 +156,7 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
         shop_ref: shop,
         invoice_relpath: `suppliers/${supplier}/invoices/csv/${invoiceId.split(":").pop()}.csv`,
       };
-      const r = await fetch(`${API}/runs/prepare_legacy`, {
+      const r = await fetch(`${API}/runs/prepare`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
