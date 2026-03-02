@@ -154,7 +154,8 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
       const body = {
         supplier_ref: supplier,
         shop_ref: shop,
-        invoice_relpath: `suppliers/${supplier}/invoices/csv/${invoiceId.split(":").pop()}.csv`,
+        //invoice_relpath: `suppliers/${supplier}/invoices/csv/${invoiceId.split(":").pop()}.csv`,
+        invoice_relpath: `invoices/csv/${invoiceId.split(":").pop()}.csv`
       };
       const r = await fetch(`${API}/runs/prepare`, {
         method: "POST",
