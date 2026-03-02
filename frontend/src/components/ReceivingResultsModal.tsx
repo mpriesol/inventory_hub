@@ -11,7 +11,7 @@ interface CsvData {
   rows: string[][];
 }
 
-type Tab = "updates" | "new" | "unmatched";
+type Tab = "updates" | "new" | "unmatched" | "pending";
 
 interface ColVisibility {
   [col: string]: boolean;
@@ -24,11 +24,12 @@ interface EditCell {
 
 interface PrepareResult {
   run_id: string;
-  stats: { existing_rows: number; new_rows: number; unmatched_rows: number };
+  stats: { existing_rows: number; new_rows: number; unmatched_rows: number; pending_rows: number };
   outputs: {
     existing: string | null;
     new: string | null;
     unmatched: string | null;
+    pending: string | null;
   };
 }
 
@@ -45,12 +46,14 @@ const tabLabel: Record<Tab, string> = {
   updates: "Aktualizácia skladu",
   new: "Nové produkty",
   unmatched: "Nenájdené",
+  pending: "Nespracované",
 };
 
 const tabOutputKey: Record<Tab, keyof PrepareResult["outputs"]> = {
   updates: "existing",
   new: "new",
   unmatched: "unmatched",
+  pending: "pending",
 };
 
 function storageKey(supplier: string, tab: Tab) {
@@ -293,6 +296,7 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
     updates: stats?.existing_rows ?? 0,
     new: stats?.new_rows ?? 0,
     unmatched: stats?.unmatched_rows ?? 0,
+    pending: stats?.pending_rows ?? 0,
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -387,7 +391,7 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
           <>
             {/* ── Tabs ── */}
             <div className="flex items-center gap-1 px-5 pt-3 border-b border-[#2a2a2a]">
-              {(["updates", "new", "unmatched"] as Tab[]).map((tab) => (
+              {(["updates", "new", "unmatched", "pending"] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => { setActiveTab(tab); setFilterText(""); }}
@@ -402,6 +406,8 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
                     className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
                       tab === "unmatched"
                         ? "bg-red-900/50 text-red-400"
+                        : tab === "pending"
+                        ? "bg-orange-900/50 text-orange-400"
                         : "bg-[#333] text-[#aaa]"
                     }`}
                   >
@@ -473,7 +479,11 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
                 </div>
               ) : !prepResult.outputs[tabOutputKey[activeTab]] ? (
                 <div className="flex items-center justify-center h-full text-[#555] text-sm">
-                  {activeTab === "unmatched" ? "Žiadne nenájdené produkty 🎉" : "Žiadne záznamy"}
+                  {activeTab === "unmatched"
+                    ? "Žiadne nenájdené produkty 🎉"
+                    : activeTab === "pending"
+                    ? "Všetky položky boli spracované 🎉"
+                    : "Žiadne záznamy"}
                 </div>
               ) : !csvData[activeTab] ? (
                 <div className="flex items-center justify-center h-full text-[#888] animate-pulse">

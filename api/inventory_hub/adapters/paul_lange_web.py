@@ -359,10 +359,26 @@ def _parse_invoice_csv(path: Path):
                 items.append((scm, qty if qty > 0 else 1))
     return items
 
-def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relpath: str, use_invoice_qty: bool = True):
+def prepare_from_invoice(
+    data_root: Path,
+    supplier: str,
+    shop: str,
+    invoice_relpath: str,
+    use_invoice_qty: bool = True,
+    received_overrides: Optional[Dict[str, Any]] = None,
+):
     """
-    Process selected invoice into three CSVs (updates_existing, new_products, unmatched).
-    Adds/uses META columns with smart quotes and idempotency via [META „stock_updated_by_invoices“].
+    Process invoice into CSVs for Upgates import.
+
+    received_overrides – dict keyed by raw SCM (no PL- prefix):
+        { "3576175": {"qty": 5, "done": True}, ... }
+
+    Rules when provided:
+      - qty == 0              -> skip completely (not in any CSV)
+      - qty > 0, done == True -> updates/new CSV (stock updated, META stamped)
+      - qty > 0, done == False-> pending CSV (not imported yet)
+
+    When not provided: all invoice items processed (backward compat).
     """
     sup_root = data_root / "suppliers" / supplier
     inv_path = sup_root / invoice_relpath
@@ -373,28 +389,44 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
     if not upg_csv.exists():
         raise FileNotFoundError(f"Upgates export missing: shops/{shop}/latest.csv")
 
-    # find converted feed
     conv_dir_new = sup_root / "feeds" / "converted"
     conv_dir_old = sup_root / "feeds_converted"
     candidates = []
     if conv_dir_new.exists(): candidates += sorted(conv_dir_new.glob("*.csv"))
     if conv_dir_old.exists(): candidates += sorted(conv_dir_old.glob("*.csv"))
     if not candidates:
-        raise FileNotFoundError("No converted feed found (looked in feeds/converted and feeds_converted).")
+        raise FileNotFoundError("No converted feed found.")
     xml_converted_csv = candidates[-1]
 
-    # parse invoice
     inv_items = _parse_invoice_csv(inv_path)
     if not inv_items:
-        return {"existing": 0, "new": 0, "unmatched": 0, "invoice_items": 0, "outputs": {}}
+        return {"existing": 0, "new": 0, "unmatched": 0, "pending": 0, "invoice_items": 0, "outputs": {}}
 
-    # aggregate qty per SCM
-    increments: Dict[str, int] = {}
+    # Build ordered qty lookup
+    ordered_qty_map: Dict[str, int] = {}
     for scm, qty in inv_items:
-        inc = qty if use_invoice_qty else 1
-        increments[scm] = increments.get(scm, 0) + inc
+        ordered_qty_map[scm] = ordered_qty_map.get(scm, 0) + qty
 
-    # load Upgates export
+    # Determine what to process vs. put in pending
+    pending_pre: List[Tuple[str, int, int]] = []  # (scm, received, ordered)
+
+    if received_overrides is not None:
+        increments: Dict[str, int] = {}
+        for scm, data in received_overrides.items():
+            qty = int(data.get("qty") or 0)
+            done = bool(data.get("done", False))
+            if qty <= 0:
+                continue  # never received -> skip completely
+            ordered = ordered_qty_map.get(scm, qty)
+            if done:
+                increments[scm] = qty if use_invoice_qty else 1
+            else:
+                pending_pre.append((scm, qty, ordered))
+    else:
+        increments = {}
+        for scm, qty in inv_items:
+            increments[scm] = increments.get(scm, 0) + (qty if use_invoice_qty else 1)
+
     upg_data, upg_header = _load_upgates_export(upg_csv)
     idx_code  = _find_col_idx(upg_header, "[PRODUCT_CODE]")
     idx_stock = _find_col_idx(upg_header, "[STOCK]")
@@ -403,7 +435,6 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
     if idx_code is None or idx_stock is None or idx_avail is None:
         raise RuntimeError("Upgates export must have [PRODUCT_CODE], [STOCK], [AVAILABILITY].")
 
-    # load converted XML feed (for NEW products)
     with open(xml_converted_csv, "r", encoding="utf-8-sig", errors="ignore", newline="") as fxml:
         xreader = csv.reader(fxml, delimiter=";")
         xheader = next(xreader)
@@ -411,7 +442,6 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
         x_idx_code = _find_col_idx(xheader, "[PRODUCT_CODE]")
         if x_idx_code is None:
             raise RuntimeError("Converted XML CSV is missing [PRODUCT_CODE].")
-
         xml_map: Dict[str, List[str]] = {}
         for row in xreader:
             if len(row) < len(xheader):
@@ -419,7 +449,6 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
             code = (row[x_idx_code] or "").strip()
             if not code:
                 continue
-            # map under both keys: raw and PL- prefixed
             xml_map[code] = row
             if not code.upper().startswith("PL-"):
                 xml_map[f"PL-{code}"] = row
@@ -432,97 +461,81 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
     updates_csv   = out_dir / f"{inv_stem}_updates_existing_{datestr}.csv"
     new_csv       = out_dir / f"{inv_stem}_new_products_{datestr}.csv"
     unmatched_csv = out_dir / f"{inv_stem}_unmatched_{datestr}.csv"
+    pending_csv   = out_dir / f"{inv_stem}_pending_{datestr}.csv"
 
-    # headers
-    existing_header = ["[PRODUCT_CODE]", "[STOCK]", "[AVAILABILITY]",
-                       '[META „original_product_code“]', '[META „validation_required“]',
-                       INVOICE_META_COL]
-    new_header = xheader
-    unmatched_header = ["SCM","PRODUCT_CODE","QTY","REASON"]
+    existing_header  = ["[PRODUCT_CODE]", "[STOCK]", "[AVAILABILITY]",
+                        '[META "original_product_code"]', '[META "validation_required"]',
+                        INVOICE_META_COL]
+    new_header       = xheader
+    unmatched_header = ["SCM", "PRODUCT_CODE", "QTY", "REASON"]
+    pending_header   = ["SCM", "PRODUCT_CODE", "QTY_ORDERED", "QTY_RECEIVED"]
 
-    existing_rows: List[List[str]] = []
-    new_rows: List[List[str]] = []
+    existing_rows:  List[List[str]] = []
+    new_rows:       List[List[str]] = []
     unmatched_rows: List[List[str]] = []
+    pending_rows:   List[List[str]] = [
+        [scm, f"PL-{scm}", str(ordered), str(received)]
+        for scm, received, ordered in pending_pre
+    ]
 
     existing_count = new_count = unmatched_count = 0
     total_items = 0
 
-    # zero flags for NEW products if present
     zero_cols_new = [
         "[NEW_YN]","[SPECIAL_YN]","[SELLOUT_YN]",
-        '[LABEL_ACTIVE_YN „Akcia“]','[LABEL_ACTIVE_YN „Výpredaj“]',
-        '[LABEL_ACTIVE_YN „Odporúčané“]','[LABEL_ACTIVE_YN „Tip“]','[LABEL_ACTIVE_YN „Sezónne“]',
-        '["LABEL_ACTIVE_YN „Akcia“"]','["LABEL_ACTIVE_YN „Výpredaj“"]',
-        '["LABEL_ACTIVE_YN „Odporúčané“"]','["LABEL_ACTIVE_YN „Tip“"]','["LABEL_ACTIVE_YN „Sezónne“"]',
+        '[LABEL_ACTIVE_YN "Akcia"]','[LABEL_ACTIVE_YN "Vypredaj"]',
+        '[LABEL_ACTIVE_YN "Odporucane"]','[LABEL_ACTIVE_YN "Tip"]','[LABEL_ACTIVE_YN "Sezonné"]',
     ]
 
     for scm, inc in increments.items():
         total_items += inc
         code = f"PL-{scm}".strip()
 
-        # EXISTING in Upgates export -> update stock + append invoice to META
         if code in upg_data:
             src_row = upg_data[code]
-
-            # idempotency: skip if this invoice already applied
             already = [x.strip() for x in (src_row.get(INVOICE_META_COL, "") or "").split(";") if x.strip()]
             if inv_stem in already:
                 unmatched_rows.append([scm, code, str(inc), f"invoice {inv_stem} already applied"])
                 unmatched_count += 1
                 continue
-
             try:
                 current_stock = int(re.sub(r"[^0-9-]", "", src_row.get("[STOCK]", "")) or "0")
             except Exception:
                 current_stock = 0
             new_stock = max(0, current_stock + inc)
-
-            # extend meta with this invoice id
             new_meta_val = ";".join(filter(None, [src_row.get(INVOICE_META_COL, "").strip(), inv_stem]))
-
             existing_rows.append([code, str(new_stock), "Na sklade", scm, "0", new_meta_val])
             existing_count += 1
             continue
 
-        # NEW product -> lookup in feed (works for raw and PL- thanks to xml_map mapping)
         row = xml_map.get(code)
         if row is None:
             unmatched_rows.append([scm, code, str(inc), "not found in Upgates export nor in XML feed"])
             unmatched_count += 1
             continue
 
-        # clone and pad
         row = row[:]
         if len(row) < len(new_header):
             row = row + [""] * (len(new_header) - len(row))
 
-        # force PRODUCT_CODE = PL-<scm> (normalize)
         ix_code = _find_col_idx(new_header, "[PRODUCT_CODE]")
         if ix_code is not None:
             row[ix_code] = code
-
-        # IMAGES: '|' -> ';'
         ix_img = _find_col_idx(new_header, "[IMAGES]")
         if ix_img is not None and row[ix_img]:
             row[ix_img] = row[ix_img].replace("|", ";")
-
-        # STOCK = invoice qty
         ix_stock_new = _find_col_idx(new_header, "[STOCK]")
         if ix_stock_new is not None:
             row[ix_stock_new] = str(inc)
-
-        # AVAILABILITY = Na sklade
         ix_avail_new = _find_col_idx(new_header, "[AVAILABILITY]")
         if ix_avail_new is not None:
             row[ix_avail_new] = "Na sklade"
 
-        # META fields
         _, idxmap_meta = _ensure_meta_columns(new_header)
-        row[idxmap_meta['[META „original_product_code“]']] = scm
-        row[idxmap_meta['[META „validation_required“]']] = "1"
+        row[idxmap_meta['[META "original_product_code"]']] = scm
+        row[idxmap_meta['[META "validation_required"]']] = "1"
         row[idxmap_meta[INVOICE_META_COL]] = inv_stem
 
-        # zero label/special flags if columns exist
         for col_name in zero_cols_new:
             ix = _find_col_idx(new_header, col_name)
             if ix is not None and ix < len(row):
@@ -531,7 +544,6 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
         new_rows.append(row)
         new_count += 1
 
-    # writers
     def _wcsv(path: Path, header: List[str], rows: List[List[str]]):
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f, delimiter=";", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
@@ -539,18 +551,21 @@ def prepare_from_invoice(data_root: Path, supplier: str, shop: str, invoice_relp
             for r in rows:
                 w.writerow(r)
 
-    if existing_rows: _wcsv(updates_csv, existing_header, existing_rows)
-    if new_rows:      _wcsv(new_csv, new_header, new_rows)
-    if unmatched_rows:_wcsv(unmatched_csv, unmatched_header, unmatched_rows)
+    if existing_rows:  _wcsv(updates_csv,  existing_header,  existing_rows)
+    if new_rows:       _wcsv(new_csv,       new_header,       new_rows)
+    if unmatched_rows: _wcsv(unmatched_csv, unmatched_header, unmatched_rows)
+    if pending_rows:   _wcsv(pending_csv,   pending_header,   pending_rows)
 
     return {
-        "existing": existing_count,
-        "new": new_count,
-        "unmatched": unmatched_count,
+        "existing":      existing_count,
+        "new":           new_count,
+        "unmatched":     unmatched_count,
+        "pending":       len(pending_rows),
         "invoice_items": total_items,
         "outputs": {
-            "updates_existing": str(updates_csv.relative_to(sup_root).as_posix()) if existing_rows else None,
-            "new_products":    str(new_csv.relative_to(sup_root).as_posix()) if new_rows else None,
-            "unmatched":       str(unmatched_csv.relative_to(sup_root).as_posix()) if unmatched_rows else None,
+            "existing":  str(updates_csv.relative_to(sup_root).as_posix())   if existing_rows  else None,
+            "new":       str(new_csv.relative_to(sup_root).as_posix())       if new_rows       else None,
+            "unmatched": str(unmatched_csv.relative_to(sup_root).as_posix()) if unmatched_rows else None,
+            "pending":   str(pending_csv.relative_to(sup_root).as_posix())   if pending_rows   else None,
         }
     }

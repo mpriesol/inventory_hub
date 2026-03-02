@@ -5,7 +5,6 @@ import {
   Upload, Download, ExternalLink, XCircle, CheckCircle, FileText
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
-import { StatusBadge } from '../components/ui/Badge.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
 import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
 import { createReceivingSession, resumeReceiving } from '../api/receiving';
@@ -534,14 +533,26 @@ export function ReceivingPage() {
                       </div>
 
                       {isInProgress && (
-                        <StatusBadge variant="warning">
+                        <span
+                          className="text-xs px-2 py-0.5 rounded-full font-medium"
+                          style={{
+                            backgroundColor: 'var(--color-warning-subtle)',
+                            color: 'var(--color-warning)',
+                          }}
+                        >
                           Prebieha {inv.progress}
-                        </StatusBadge>
+                        </span>
                       )}
                       {isProcessed && (
-                        <StatusBadge variant="success">
+                        <span
+                          className="text-xs px-2 py-0.5 rounded-full font-medium"
+                          style={{
+                            backgroundColor: 'var(--color-success-subtle)',
+                            color: 'var(--color-success)',
+                          }}
+                        >
                           Dokončené
-                        </StatusBadge>
+                        </span>
                       )}
                     </div>
 
