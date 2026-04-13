@@ -218,3 +218,13 @@ COMMENT ON COLUMN uploaded_invoices.is_parsed IS 'True if invoice content was su
 -- ============================================================================
 -- END OF MIGRATION
 -- ============================================================================
+
+-- Add 'not_started' to receiving_status enum (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'not_started' 
+                   AND enumtypid = 'receiving_status'::regtype) THEN
+        ALTER TYPE receiving_status ADD VALUE 'not_started' BEFORE 'new';
+    END IF;
+END
+$$;

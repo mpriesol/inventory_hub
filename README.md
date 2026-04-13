@@ -1,209 +1,139 @@
-# Invoice Module v2 - FINAL
+# Inventory Hub
 
-## Čo obsahuje
+Interný systém na správu skladových zásob pre BikeTrek / xTrek e-shop.
 
-### 1. Seed Script: `scripts/seed_suppliers.sh`
-- Vytvorí supplier config files v `inventory-data/suppliers/*/config.json`
-- API `/api/suppliers` číta z týchto filesystem configs
-- **SPUSTI TOTO PRVÉ** ak dropdown dodávateľov je prázdny
+## Čo to robí
 
-### 2. SQL Migrácia: `infra/db-init/003_uploaded_invoices.sql`
-- Nová tabuľka `uploaded_invoices` - pre zoznam faktúr (nezávislé od receiving_sessions)
-- Nová tabuľka `uploaded_invoice_lines` - pre položky faktúr
-- View `v_uploaded_invoices` s computed fields (is_overdue, days_until_due, receiving_status)
-- **DÔLEŽITÉ**: receiving_session_id je NULL až kým nespustíš "Príjem"
+- **Faktúry** — upload a správa faktúr od dodávateľov (PDF, CSV, XLSX), server-side filtrovanie, platobné stavy
+- **Príjem tovaru** — skenovanie EAN kódov, porovnanie objednaného vs. prijatého množstva, finalizácia do skladu
+- **Dodávatelia** — konfigurácia, automatické sťahovanie XML feedov, B2B portál scraping (Playwright)
+- **Produkty** — katalóg s multi-EAN podporou (jeden produkt = viacero čiarových kódov)
+- **Sklad** — stavy, pohyby (imutabilný ledger), rezervácie
+- **Upgates sync** — generovanie CSV pre import do e-shopu
 
-### 3. Backend: `api/inventory_hub/routers/invoices_unified.py`
-- `POST /invoices/upload` - upload ľubovoľného formátu (PDF, CSV, XLSX, DOC...)
-- `GET /invoices` - server-side filtrovanie (pre filter row)
-- `GET /invoices/{id}` - detail faktúry s položkami
-- `GET /invoices/{id}/download` - stiahnutie originálneho súboru
-- `PATCH /invoices/{id}` - manuálne úpravy
-- `DELETE /invoices/{id}` - zmazanie
+## Tech stack
 
-### 4. Frontend: `frontend/src/pages/InvoicesPage.tsx`
-- **Filter row** priamo v tabuľke (Upgates štýl)
-- Upload modal s formulárom
-- Download link pre každú faktúru
-- Debounced server-side filtre (400ms)
-- Zachovaný dark/amber dizajn
+| | |
+|--|--|
+| **Backend** | FastAPI, Python 3.12, SQLAlchemy 2 (async), asyncpg |
+| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS v4 |
+| **Databáza** | PostgreSQL 16 |
+| **Infra** | Docker Compose, Caddy 2 (auto HTTPS), Redis 7 |
+| **Automatizácia** | Playwright (B2B portál scraping) |
 
-### 5. Frontend: `frontend/src/pages/InvoiceDetailPage.tsx`
-- Detail faktúry
-- Zoznam položiek (ak sú vyparsované)
-- Editácia metadát
-- Prepojenie na produkty
+## Spustenie (lokálny vývoj)
 
----
+### Prerekvizity
+- Python 3.11+
+- Node.js 20+
+- PostgreSQL 16
 
-## Deployment
+### Backend
+```bash
+cd api
+pip install -r requirements.txt
 
-### 1. Skopírovať súbory na VPS
+# Premenné prostredia
+export INVENTORY_DATA_ROOT=./inventory-data
+export USE_POSTGRES=true
+export DB_HOST=localhost DB_PORT=5432 DB_NAME=inventory_hub DB_USER=postgres DB_PASSWORD=postgres
+
+uvicorn inventory_hub.main:app --reload --port 8000
+```
+
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev    # http://localhost:5173
+```
+
+### Databáza
+```bash
+psql -d inventory_hub -f infra/db-init/001_schema.sql
+psql -d inventory_hub -f infra/db-init/002_invoice_management.sql
+psql -d inventory_hub -f infra/db-init/003_uploaded_invoices.sql
+
+# Seed dodávateľov
+psql -d inventory_hub -c "INSERT INTO suppliers (code, name) VALUES
+  ('paul-lange', 'Paul-Lange'),
+  ('northfinder', 'Northfinder')
+ON CONFLICT (code) DO NOTHING;"
+```
+
+## Produkčný deploy
+
+Systém beží na VPS (`hub.biketrek.sk`) cez Docker Compose.
+
+```
+/opt/inventory-hub/          # Docker Compose + config
+/opt/inventory-data/         # Aplikačné dáta (suppliers, shops)
+```
 
 ```bash
-cd /opt/inventory-hub/current
+cd /opt/inventory-hub
+docker compose up -d
 
-# Seed script (DÔLEŽITÉ!)
-cp scripts/seed_suppliers.sh ./
-
-# SQL migrácia
-cp infra/db-init/003_uploaded_invoices.sql infra/db-init/
-
-# Backend router
-cp api/inventory_hub/routers/invoices_unified.py api/inventory_hub/routers/
-
-# Frontend
-cp frontend/src/pages/InvoicesPage.tsx frontend/src/pages/
-cp frontend/src/pages/InvoiceDetailPage.tsx frontend/src/pages/
+# Health check
+curl https://hub.biketrek.sk/api/health
 ```
 
-### 2. Seed supplier configs (DÔLEŽITÉ!)
+### API dokumentácia
 
-Projekt používa **filesystem configs** pre suppliers (nie DB tabuľku).
-API `/api/suppliers` číta z `inventory-data/suppliers/*/config.json`.
+- **Swagger UI:** https://hub.biketrek.sk/api/docs
+- **ReDoc:** https://hub.biketrek.sk/api/redoc
 
-```bash
-# Skopíruj seed script
-cp scripts/seed_suppliers.sh /opt/inventory-hub/current/
-
-# Spusti seed (vytvorí config.json pre všetkých dodávateľov)
-dcp exec api bash /opt/inventory-hub/current/seed_suppliers.sh
-
-# Alternatívne priamo na hoste:
-INVENTORY_DATA_ROOT=/data/inventory-data bash seed_suppliers.sh
-```
-
-Overenie:
-```bash
-# Skontroluj či existujú configs
-ls -la /data/inventory-data/suppliers/
-
-# Test API
-curl -s https://hub.biketrek.sk/api/suppliers | jq '.[].code'
-```
-
-### 3. Aplikovať SQL migráciu (uploaded_invoices tabuľka)
-
-```bash
-# Najprv migrácia pre uploaded_invoices tabuľku
-dcp exec -T postgres psql -v ON_ERROR_STOP=1 \
-  -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -f /docker-entrypoint-initdb.d/003_uploaded_invoices.sql
-```
-
-Overenie:
-```bash
-# Skontroluj či existuje uploaded_invoices tabuľka
-dcp exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "SELECT column_name FROM information_schema.columns WHERE table_name='uploaded_invoices';"
-```
-
-### 3. Pridať router do main.py
-
-V `api/inventory_hub/main.py` pridať:
-```python
-from inventory_hub.routers.invoices_unified import router as invoices_unified_router
-
-# Niekde pod ostatné include_router:
-app.include_router(invoices_unified_router)
-```
-
-### 4. Pridať route do frontendu
-
-V `frontend/src/App.tsx` (alebo router config) pridať:
-```tsx
-import { InvoicesPage } from './pages/InvoicesPage';
-import { InvoiceDetailPage } from './pages/InvoiceDetailPage';
-
-// V routes:
-<Route path="/invoices" element={<InvoicesPage />} />
-<Route path="/invoices/:id" element={<InvoiceDetailPage />} />
-```
-
-### 5. Rebuild
-
-```bash
-# Backend
-dcp up -d --build api
-
-# Frontend
-cd frontend && npm run build && cd ..
-dcp restart caddy
-
-# Logy
-dcp logs --tail=100 api
-```
-
----
-
-## Test
-
-```bash
-# 1. Test suppliers (NAJPRV TOTO - mal by vrátiť 9 dodávateľov)
-curl -s https://hub.biketrek.sk/api/suppliers | jq '.[].code'
-
-# Ak vráti prázdne pole, spusti seed:
-# dcp exec api bash /opt/inventory-hub/current/seed_suppliers.sh
-
-# 2. Test upload
-curl -X POST https://hub.biketrek.sk/api/invoices/upload \
-  -F "supplier_code=paul-lange" \
-  -F "file=@FA_paullange.pdf"
-
-# 3. Test list
-curl -s "https://hub.biketrek.sk/api/invoices?page=1&page_size=10" | jq '.items | length'
-
-# 4. Test download
-curl -I "https://hub.biketrek.sk/api/invoices/1/download"
-```
-
----
-
-## Štruktúra úložiska súborov
+## Štruktúra projektu
 
 ```
-/data/inventory-data/suppliers/
-├── paul-lange/
-│   └── invoices/
-│       └── raw/
-│           └── 2026/
-│               └── 01/
-│                   ├── FA_2025072207.pdf
-│                   └── FA_2025072208.xlsx
-├── northfinder/
-│   └── invoices/
-│       └── raw/
-│           └── 2026/
-│               └── 01/
-│                   └── ...
+api/
+├── inventory_hub/
+│   ├── main.py                   # FastAPI app
+│   ├── database.py               # PostgreSQL pool
+│   ├── config_io.py              # Filesystem config I/O
+│   ├── routers/
+│   │   ├── invoices_unified.py   # CRUD faktúr (DB)
+│   │   ├── receiving_db.py       # Príjem tovaru (DB)
+│   │   ├── suppliers.py          # Dodávatelia (filesystem)
+│   │   ├── shops.py              # E-shopy
+│   │   └── ...
+│   └── adapters/                 # Per-supplier parsery
+│       ├── paul_lange_v1.py
+│       └── northfinder_web.py
+frontend/
+├── src/
+│   ├── pages/                    # Stránky (Dashboard, Invoices, Receiving, ...)
+│   ├── features/                 # Feature komponenty
+│   ├── components/               # Shared UI
+│   └── api/                      # API client
+infra/
+├── docker-compose.prod.yml
+├── Caddyfile
+└── db-init/                      # SQL migrácie (001-003)
 ```
 
----
+## Dátový model
 
-## Filter Row Parameters
+Systém používa **dva zdroje dát**:
 
-| Parameter | Popis |
-|-----------|-------|
-| `f_invoice_number` | Číslo faktúry alebo názov súboru (ILIKE) |
-| `f_supplier` | Dodávateľ - meno alebo kód (ILIKE) |
-| `date_from`, `date_to` | Dátum vystavenia od/do |
-| `due_from`, `due_to` | Splatnosť od/do |
-| `f_amount_min`, `f_amount_max` | Suma min/max |
-| `f_items_min`, `f_items_max` | Položky min/max |
-| `f_currency` | Mena (EUR, CZK...) |
-| `payment_status` | unpaid / partial / paid |
-| `receiving_status` | not_started / new / in_progress / completed |
-| `is_overdue` | true / false |
+**PostgreSQL** — dodávatelia, produkty (multi-EAN), faktúry, receiving sessions, skladové pohyby, objednávky. 30+ tabuliek.
 
----
+**Filesystem** — konfigurácia dodávateľov (`config.json`), súbory faktúr (PDF/CSV), XML feedy, logy, Upgates CSV výstupy.
 
-## Poznámky
+> Dodávatelia musia byť evidovaní na oboch miestach — filesystem config pre konfiguráciu + DB tabuľka pre relácie.
 
-1. **Suppliers sú filesystem-based** - API `/api/suppliers` číta z `inventory-data/suppliers/*/config.json`
-2. **Ak dropdown "Dodávateľ" je prázdny** - spusti `seed_suppliers.sh` (vytvára config.json súbory)
-3. **Upload modal** používa `/api/suppliers` endpoint
-4. **Upload** ukladá súbory do: `suppliers/{code}/invoices/raw/{year}/{month}/`
-5. **Faktúra sa zobrazí** hneď po uploade (v tabuľke `uploaded_invoices`)
-6. **receiving_session** sa vytvorí až keď spustíš "Príjem" v inom tabe
-7. **Parsing** zatiaľ neimplementovaný - položky treba pridať manuálne alebo dorobiť parser pre konkrétneho dodávateľa
-8. **Manuálne úpravy** - možné cez PATCH endpoint alebo UI
+## Dodávatelia
+
+| Kód | Názov | Adaptér | Feed |
+|-----|-------|---------|------|
+| `paul-lange` | Paul-Lange | paul_lange_v1 | XML (remote) |
+| `northfinder` | Northfinder | northfinder_web | Playwright B2B |
+| `ariga` | Ariga | manual | — |
+| `husky` | Husky SK | manual | — |
+| `sloger` | Sloger | manual | — |
+| `spokey` | Spokey | manual | — |
+| `vertone` | Vertone | manual | — |
+| `warmpeace` | Warmpeace | manual | — |
+| `zookee` | Zookee | manual | — |
+
+Podrobná dokumentácia: [`docs/OVERVIEW.md`](docs/OVERVIEW.md)

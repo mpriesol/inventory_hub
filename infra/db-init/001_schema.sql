@@ -43,7 +43,7 @@ CREATE TYPE movement_type AS ENUM (
     'TRANSFER_IN', 'TRANSFER_OUT', 'WRITE_OFF', 'INITIAL'
 );
 
-CREATE TYPE receiving_status AS ENUM ('new', 'in_progress', 'paused', 'completed', 'cancelled');
+CREATE TYPE receiving_status AS ENUM ('not_started', 'new', 'in_progress', 'paused', 'completed', 'cancelled');
 CREATE TYPE inventory_count_status AS ENUM ('draft', 'in_progress', 'review', 'finalized', 'cancelled');
 CREATE TYPE inventory_count_type AS ENUM ('full', 'partial', 'cycle', 'spot');
 
