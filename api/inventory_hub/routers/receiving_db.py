@@ -179,72 +179,161 @@ class CreateSessionRequest(BaseModel):
     warehouse_code: Optional[str] = None
 
 
-class CreateSessionResponse(BaseModel):
-    session_id: int
-    invoice_number: str
-    total_lines: int
-    lines: List[Dict[str, Any]]
-
-
 class ScanRequest(BaseModel):
     code: str
     qty: float = 1.0
     scanned_by: str = "scanner"
 
 
-class ScanResponse(BaseModel):
-    status: str
-    line: Optional[Dict[str, Any]]
-    summary: Dict[str, int]
+class SetQtyRequest(BaseModel):
+    line_index: int
+    received_qty: float
+    note: Optional[str] = None
 
 
-class SessionSummaryResponse(BaseModel):
-    session_id: int
-    invoice_number: str
-    status: str
-    lines: List[Dict[str, Any]]
-    summary: Dict[str, int]
+class AcceptAllRequest(BaseModel):
+    only_pending: bool = True
+
+
+class FinalizeRequest(BaseModel):
+    force: bool = False
 
 
 # ============================================================================
-# Endpoints
+# Shared helpers
 # ============================================================================
 
-@router.post("/suppliers/{supplier_code}/receiving/sessions", response_model=CreateSessionResponse)
+def _status_for(received: Decimal, ordered: Decimal) -> str:
+    if received <= 0:
+        return "pending"
+    if received < ordered:
+        return "partial"
+    if received == ordered:
+        return "matched"
+    return "overage"
+
+
+def _line_dict(line: ReceivingLine, prefix: str) -> Dict[str, Any]:
+    """
+    Serialize ReceivingLine.
+
+    Canonical names: supplier_sku, description, line_number.
+    Backward-compatible aliases for the frontend contract: scm, title.
+    """
+    product_code = f"{prefix}{line.supplier_sku}" if line.supplier_sku else None
+    return {
+        "line_number": line.line_number,
+        "ean": line.ean or "",
+        "supplier_sku": line.supplier_sku or "",
+        "scm": line.supplier_sku or "",              # alias (frontend)
+        "product_code": product_code,
+        "description": line.description or "",
+        "title": line.description or "",             # alias (frontend)
+        "ordered_qty": float(line.ordered_qty),
+        "received_qty": float(line.received_qty),
+        "unit_price": float(line.unit_price) if line.unit_price is not None else None,
+        "status": line.status,
+        "product_id": line.product_id,
+        "match_method": line.match_method,
+    }
+
+
+def _lines_sorted(session: ReceivingSession) -> List[ReceivingLine]:
+    return sorted(session.lines, key=lambda x: x.line_number)
+
+
+def _summary_counts(session: ReceivingSession, unexpected: int = 0) -> Dict[str, int]:
+    return {
+        "matched": sum(1 for ln in session.lines if ln.status == "matched"),
+        "partial": sum(1 for ln in session.lines if ln.status == "partial"),
+        "pending": sum(1 for ln in session.lines if ln.status == "pending"),
+        "overage": sum(1 for ln in session.lines if ln.status == "overage"),
+        "unexpected": unexpected,
+    }
+
+
+async def _count_unexpected(db: AsyncSession, session_id: int) -> int:
+    # flush first so scan events added in this transaction are visible
+    await db.flush()
+    stmt = select(func.count()).where(
+        ScanEvent.receiving_session_id == session_id,
+        ScanEvent.receiving_line_id == None,  # noqa: E711
+        ScanEvent.status == ScanStatus.active,
+        ScanEvent.match_method.is_distinct_from("manual"),
+    )
+    result = await db.execute(stmt)
+    return result.scalar() or 0
+
+
+async def _count_scans(db: AsyncSession, session_id: int) -> int:
+    await db.flush()
+    stmt = select(func.count()).where(
+        ScanEvent.receiving_session_id == session_id,
+        ScanEvent.status == ScanStatus.active,
+    )
+    result = await db.execute(stmt)
+    return result.scalar() or 0
+
+
+async def _get_supplier(db: AsyncSession, supplier_code: str) -> Supplier:
+    stmt = select(Supplier).where(Supplier.code == supplier_code)
+    result = await db.execute(stmt)
+    supplier = result.scalar_one_or_none()
+    if not supplier:
+        raise HTTPException(404, detail=f"Supplier not found: {supplier_code}")
+    return supplier
+
+
+async def _get_session_for_supplier(
+    db: AsyncSession, supplier_code: str, session_id: int
+) -> ReceivingSession:
+    stmt = (
+        select(ReceivingSession)
+        .options(selectinload(ReceivingSession.lines))
+        .options(selectinload(ReceivingSession.supplier))
+        .where(ReceivingSession.id == session_id)
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    if not session or session.supplier.code != supplier_code:
+        raise HTTPException(404, detail="Session not found")
+    return session
+
+
+ACTIVE_STATUSES = (ReceivingStatus.new, ReceivingStatus.in_progress, ReceivingStatus.paused)
+
+
+# ============================================================================
+# Endpoints — canonical contract: /suppliers/{supplier_code}/receiving/...
+# ============================================================================
+
+@router.post("/suppliers/{supplier_code}/receiving/sessions")
 async def create_session(
     supplier_code: str,
     request: CreateSessionRequest,
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Create a new receiving session from invoice CSV.
-
-    Parses the invoice, creates session and lines in database.
-    """
+    """Create a new receiving session from invoice CSV (lines stored in DB)."""
     invoice_no = _invoice_no_from_id(request.invoice_id)
     invoice_csv = _invoice_csv_path(supplier_code, invoice_no)
 
     if not invoice_csv.exists():
         raise HTTPException(404, detail=f"Invoice CSV not found: {invoice_csv}")
 
-    # Get supplier
-    stmt = select(Supplier).where(Supplier.code == supplier_code)
-    result = await db.execute(stmt)
-    supplier = result.scalar_one_or_none()
-    if not supplier:
-        raise HTTPException(404, detail=f"Supplier not found: {supplier_code}")
+    supplier = await _get_supplier(db, supplier_code)
 
-    # Get warehouse
+    # Warehouse
     if request.warehouse_code:
         stmt = select(Warehouse).where(Warehouse.code == request.warehouse_code)
     else:
-        stmt = select(Warehouse).where(Warehouse.is_default == True)
+        stmt = select(Warehouse).where(Warehouse.is_default == True)  # noqa: E712
     result = await db.execute(stmt)
     warehouse = result.scalar_one_or_none()
     if not warehouse:
         raise HTTPException(404, detail="Warehouse not found")
 
-    # Check if session already exists
+    # Schema enforces ONE session per (supplier, invoice) via uq_receiving_invoice.
+    # Active session -> resume it; completed session -> use the reopen endpoint.
     stmt = select(ReceivingSession).where(
         ReceivingSession.supplier_id == supplier.id,
         ReceivingSession.invoice_number == invoice_no,
@@ -252,15 +341,21 @@ async def create_session(
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing:
-        raise HTTPException(409, detail=f"Session already exists for invoice {invoice_no}")
+        if existing.status in ACTIVE_STATUSES:
+            raise HTTPException(
+                409,
+                detail=f"Active session already exists for invoice {invoice_no} (session_id={existing.id}) — resume it",
+            )
+        raise HTTPException(
+            409,
+            detail=f"Invoice {invoice_no} already has a finished session (session_id={existing.id}) — use reopen",
+        )
 
-    # Parse CSV
     try:
         rows = _parse_invoice_csv(invoice_csv)
     except Exception as e:
         raise HTTPException(400, detail=f"Failed to parse CSV: {e}")
 
-    # Create session
     session = ReceivingSession(
         supplier_id=supplier.id,
         warehouse_id=warehouse.id,
@@ -272,13 +367,11 @@ async def create_session(
     db.add(session)
     await db.flush()
 
-    # Create lines
     prefix = _product_code_prefix(supplier_code)
     identifier_service = ProductIdentifierService(db)
 
-    lines_data = []
+    lines_out: List[Dict[str, Any]] = []
     for line_number, row in enumerate(rows, start=1):
-        # Try to match product
         product = None
         match_method = None
 
@@ -289,9 +382,7 @@ async def create_session(
 
         if not product and row["supplier_sku"]:
             product = await identifier_service.find_product_by_identifier(
-                row["supplier_sku"],
-                IdentifierType.supplier_sku,
-                supplier.id
+                row["supplier_sku"], IdentifierType.supplier_sku, supplier.id
             )
             if product:
                 match_method = "supplier_sku"
@@ -310,54 +401,34 @@ async def create_session(
             match_method=match_method,
         )
         db.add(line)
-
-        lines_data.append({
-            "line_number": line_number,
-            "ean": row["ean"],
-            "supplier_sku": row["supplier_sku"],
-            "product_code": f"{prefix}{row['supplier_sku']}" if row["supplier_sku"] else None,
-            "description": row["description"],
-            "ordered_qty": float(row["ordered_qty"]),
-            "received_qty": 0.0,
-            "unit_price": float(row["unit_price"]) if row["unit_price"] else None,
-            "status": "pending",
-            "matched": product is not None,
-            "match_method": match_method,
-        })
+        lines_out.append(_line_dict(line, prefix))
 
     await db.flush()
 
-    return CreateSessionResponse(
-        session_id=session.id,
-        invoice_number=invoice_no,
-        total_lines=len(rows),
-        lines=lines_data,
-    )
+    return {
+        "session_id": session.id,
+        "invoice_number": invoice_no,   # canonical
+        "invoice_no": invoice_no,       # alias (frontend)
+        "total_lines": len(rows),
+        "lines": lines_out,
+    }
 
 
-@router.post("/receiving/sessions/{session_id}/scan", response_model=ScanResponse)
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/scan")
 async def scan_code(
+    supplier_code: str,
     session_id: int,
     request: ScanRequest,
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Process barcode scan during receiving.
+    """Process a barcode scan: match EAN first, then supplier SKU."""
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
 
-    Matches scanned code to invoice line and updates received quantity.
-    """
-    # Get session with lines
-    stmt = (
-        select(ReceivingSession)
-        .options(selectinload(ReceivingSession.lines))
-        .where(ReceivingSession.id == session_id)
-    )
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(404, detail="Session not found")
+    if session.status == ReceivingStatus.paused:
+        raise HTTPException(400, detail="Session is paused — resume it first")
+    if session.status == ReceivingStatus.completed:
+        raise HTTPException(400, detail="Session already finalized")
 
-    # Update status if first scan
     if session.status == ReceivingStatus.new:
         session.status = ReceivingStatus.in_progress
         session.started_at = datetime.utcnow()
@@ -365,36 +436,26 @@ async def scan_code(
     code = (request.code or "").strip()
     qty = Decimal(str(request.qty))
 
-    # Find matching line
+    # 1) EAN match, 2) supplier SKU match
     matched_line: Optional[ReceivingLine] = None
-    for line in session.lines:
+    for line in _lines_sorted(session):
         if code and line.ean and line.ean.strip() == code:
             matched_line = line
             break
-        if code and line.supplier_sku and line.supplier_sku.strip() == code:
-            matched_line = line
-            break
+    if not matched_line:
+        for line in _lines_sorted(session):
+            if code and line.supplier_sku and line.supplier_sku.strip() == code:
+                matched_line = line
+                break
 
-    # Create scan event
     identifier_service = ProductIdentifierService(db)
     product = await identifier_service.find_product_by_barcode(code)
 
     scan_status = "unexpected"
     if matched_line:
         matched_line.received_qty += qty
-
-        if matched_line.received_qty <= Decimal("0"):
-            scan_status = "pending"
-            matched_line.status = "pending"
-        elif matched_line.received_qty < matched_line.ordered_qty:
-            scan_status = "partial"
-            matched_line.status = "partial"
-        elif matched_line.received_qty == matched_line.ordered_qty:
-            scan_status = "matched"
-            matched_line.status = "matched"
-        else:
-            scan_status = "overage"
-            matched_line.status = "overage"
+        matched_line.status = _status_for(matched_line.received_qty, matched_line.ordered_qty)
+        scan_status = matched_line.status
 
     scan_event = ScanEvent(
         session_type=ScanSessionType.receiving,
@@ -412,187 +473,368 @@ async def scan_code(
     )
     db.add(scan_event)
 
-    # Calculate summary
-    summary = {
-        "matched": sum(1 for ln in session.lines if ln.status == "matched"),
-        "partial": sum(1 for ln in session.lines if ln.status == "partial"),
-        "pending": sum(1 for ln in session.lines if ln.status == "pending"),
-        "overage": sum(1 for ln in session.lines if ln.status == "overage"),
-        "unexpected": 0,  # Will count from scan events
+    unexpected = await _count_unexpected(db, session.id)
+    prefix = _product_code_prefix(supplier_code)
+
+    return {
+        "status": scan_status,
+        "line": _line_dict(matched_line, prefix) if matched_line else None,
+        "summary": _summary_counts(session, unexpected),
     }
 
-    # Count unexpected scans
-    stmt = select(func.count()).where(
-        ScanEvent.receiving_session_id == session.id,
-        ScanEvent.receiving_line_id == None,
-        ScanEvent.status == ScanStatus.active,
-    )
-    result = await db.execute(stmt)
-    summary["unexpected"] = result.scalar() or 0
 
-    return ScanResponse(
-        status=scan_status,
-        line={
-            "line_number": matched_line.line_number,
-            "ean": matched_line.ean,
-            "supplier_sku": matched_line.supplier_sku,
-            "description": matched_line.description,
-            "ordered_qty": float(matched_line.ordered_qty),
-            "received_qty": float(matched_line.received_qty),
-            "status": matched_line.status,
-        } if matched_line else None,
-        summary=summary,
-    )
-
-
-@router.get("/receiving/sessions/{session_id}/summary", response_model=SessionSummaryResponse)
+@router.get("/suppliers/{supplier_code}/receiving/sessions/{session_id}/summary")
 async def get_session_summary(
+    supplier_code: str,
     session_id: int,
     db: AsyncSession = Depends(get_session),
 ):
     """Get receiving session summary with all lines."""
-    stmt = (
-        select(ReceivingSession)
-        .options(selectinload(ReceivingSession.lines))
-        .options(selectinload(ReceivingSession.supplier))
-        .where(ReceivingSession.id == session_id)
-    )
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(404, detail="Session not found")
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    prefix = _product_code_prefix(supplier_code)
+    unexpected = await _count_unexpected(db, session.id)
 
-    prefix = _product_code_prefix(session.supplier.code)
-
-    lines_data = []
-    for line in sorted(session.lines, key=lambda x: x.line_number):
-        lines_data.append({
-            "line_number": line.line_number,
-            "ean": line.ean,
-            "supplier_sku": line.supplier_sku,
-            "product_code": f"{prefix}{line.supplier_sku}" if line.supplier_sku else None,
-            "description": line.description,
-            "ordered_qty": float(line.ordered_qty),
-            "received_qty": float(line.received_qty),
-            "unit_price": float(line.unit_price) if line.unit_price else None,
-            "status": line.status,
-            "product_id": line.product_id,
-        })
-
-    summary = {
-        "matched": sum(1 for ln in session.lines if ln.status == "matched"),
-        "partial": sum(1 for ln in session.lines if ln.status == "partial"),
-        "pending": sum(1 for ln in session.lines if ln.status == "pending"),
-        "overage": sum(1 for ln in session.lines if ln.status == "overage"),
-        "unexpected": 0,
+    return {
+        "session_id": session.id,
+        "invoice_number": session.invoice_number,  # canonical
+        "invoice_no": session.invoice_number,      # alias (frontend)
+        "status": session.status.value,
+        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "summary": _summary_counts(session, unexpected),
     }
 
-    # Count unexpected scans
-    stmt = select(func.count()).where(
-        ScanEvent.receiving_session_id == session.id,
-        ScanEvent.receiving_line_id == None,
-        ScanEvent.status == ScanStatus.active,
-    )
-    result = await db.execute(stmt)
-    summary["unexpected"] = result.scalar() or 0
 
-    return SessionSummaryResponse(
-        session_id=session.id,
-        invoice_number=session.invoice_number,
-        status=session.status.value,
-        lines=lines_data,
-        summary=summary,
-    )
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/set-qty")
+async def set_line_quantity(
+    supplier_code: str,
+    session_id: int,
+    request: SetQtyRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """Manually set received quantity for a line. line_index is 0-based index in the sorted lines array."""
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    if session.status == ReceivingStatus.completed:
+        raise HTTPException(400, detail="Session already finalized")
+
+    lines = _lines_sorted(session)
+    if request.line_index < 0 or request.line_index >= len(lines):
+        raise HTTPException(400, detail="Invalid line_index")
+
+    line = lines[request.line_index]
+    old_qty = line.received_qty
+    new_qty = Decimal(str(request.received_qty))
+    line.received_qty = new_qty
+    line.status = _status_for(new_qty, line.ordered_qty)
+
+    if session.status == ReceivingStatus.new:
+        session.status = ReceivingStatus.in_progress
+        session.started_at = datetime.utcnow()
+
+    db.add(ScanEvent(
+        session_type=ScanSessionType.receiving,
+        receiving_session_id=session.id,
+        receiving_line_id=line.id,
+        scanned_code=line.ean or line.supplier_sku or "",
+        quantity=new_qty - old_qty,
+        match_method="manual",
+        status=ScanStatus.active,
+        scanned_by="manual_edit",
+    ))
+
+    unexpected = await _count_unexpected(db, session.id)
+    prefix = _product_code_prefix(supplier_code)
+    return {
+        "success": True,
+        "line": _line_dict(line, prefix),
+        "summary": _summary_counts(session, unexpected),
+    }
 
 
-@router.post("/receiving/sessions/{session_id}/finalize")
-async def finalize_session(
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/accept-all")
+async def accept_all_items(
+    supplier_code: str,
+    session_id: int,
+    request: AcceptAllRequest = Body(default=AcceptAllRequest()),
+    db: AsyncSession = Depends(get_session),
+):
+    """Mark items as fully received (received_qty = ordered_qty)."""
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    if session.status == ReceivingStatus.completed:
+        raise HTTPException(400, detail="Session already finalized")
+
+    updated = 0
+    for line in _lines_sorted(session):
+        if request.only_pending and line.status != "pending":
+            continue
+        if line.received_qty != line.ordered_qty and line.ordered_qty > 0:
+            line.received_qty = line.ordered_qty
+            line.status = "matched"
+            updated += 1
+
+    if updated and session.status == ReceivingStatus.new:
+        session.status = ReceivingStatus.in_progress
+        session.started_at = datetime.utcnow()
+
+    unexpected = await _count_unexpected(db, session.id)
+    prefix = _product_code_prefix(supplier_code)
+    return {
+        "success": True,
+        "updated_count": updated,
+        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "summary": _summary_counts(session, unexpected),
+        "message": f"Accepted {updated} items",
+    }
+
+
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/reset-all")
+async def reset_all_items(
+    supplier_code: str,
     session_id: int,
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Finalize receiving session.
+    """Reset all received quantities to 0."""
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    if session.status == ReceivingStatus.completed:
+        raise HTTPException(400, detail="Session already finalized")
 
-    Marks session as completed and prepares data for stock movements.
+    updated = 0
+    for line in session.lines:
+        if line.received_qty != 0:
+            line.received_qty = Decimal("0")
+            updated += 1
+        line.status = "pending"
+
+    unexpected = await _count_unexpected(db, session.id)
+    prefix = _product_code_prefix(supplier_code)
+    return {
+        "success": True,
+        "updated_count": updated,
+        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "summary": _summary_counts(session, unexpected),
+        "message": f"Reset {updated} items",
+    }
+
+
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/finalize")
+async def finalize_session(
+    supplier_code: str,
+    session_id: int,
+    request: FinalizeRequest = Body(default=FinalizeRequest()),
+    db: AsyncSession = Depends(get_session),
+):
     """
-    stmt = (
-        select(ReceivingSession)
-        .options(selectinload(ReceivingSession.lines))
-        .options(selectinload(ReceivingSession.supplier))
-        .where(ReceivingSession.id == session_id)
-    )
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(404, detail="Session not found")
+    Finalize receiving session (idempotency guard: cannot finalize twice).
+
+    NOTE / TODO: stock_movements + stock_balances are NOT written yet.
+    This requires a product-matching policy decision (what to do with lines
+    that have no product_id). See project plan.
+    """
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
 
     if session.status == ReceivingStatus.completed:
         raise HTTPException(400, detail="Session already finalized")
 
+    lines = _lines_sorted(session)
+    pending = sum(1 for ln in lines if ln.status == "pending")
+    if pending and not request.force:
+        raise HTTPException(
+            400,
+            detail=f"{pending} lines not received. Use force=true to finalize anyway.",
+        )
+
+    total_scans = await _count_scans(db, session.id)
+    unexpected = await _count_unexpected(db, session.id)
+
     session.status = ReceivingStatus.completed
     session.finished_at = datetime.utcnow()
 
-    # Prepare output
-    prefix = _product_code_prefix(session.supplier.code)
-    selected_codes = []
-    edits = {}
+    stats = {
+        "total_lines": len(lines),
+        "received_complete": sum(1 for ln in lines if ln.status == "matched"),
+        "received_partial": sum(1 for ln in lines if ln.status == "partial"),
+        "received_overage": sum(1 for ln in lines if ln.status == "overage"),
+        "not_received": sum(1 for ln in lines if ln.status == "pending"),
+        "total_scans": total_scans,
+        "unexpected_scans": unexpected,
+    }
 
-    for line in session.lines:
-        if line.received_qty > 0:
-            pc = f"{prefix}{line.supplier_sku}" if line.supplier_sku else None
-            if pc:
-                selected_codes.append(pc)
-                edits[pc] = {"INVOICE_QTY": str(int(line.received_qty) if line.received_qty == int(line.received_qty) else line.received_qty)}
+    total_ordered = sum(float(ln.ordered_qty) for ln in lines)
+    total_received = sum(float(ln.received_qty) for ln in lines)
+    received_count = sum(1 for ln in lines if ln.received_qty > 0)
 
     return {
+        "success": True,
+        "invoice_number": session.invoice_number,  # canonical
+        "invoice_no": session.invoice_number,      # alias (frontend)
         "session_id": session.id,
-        "invoice_number": session.invoice_number,
-        "status": "completed",
-        "selected_product_codes": selected_codes,
-        "edits": edits,
+        "completed_at": session.finished_at.isoformat(),
+        "stats": stats,
+        "total_ordered": total_ordered,
+        "total_received": total_received,
+        "received_items_count": received_count,
+        "stock_movements_created": False,  # TODO: not implemented yet
+        "message": f"Príjem faktúry {session.invoice_number} dokončený",
     }
 
 
-@router.post("/receiving/sessions/{session_id}/pause")
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/pause")
 async def pause_session(
+    supplier_code: str,
     session_id: int,
     db: AsyncSession = Depends(get_session),
 ):
     """Pause receiving session."""
-    stmt = select(ReceivingSession).where(ReceivingSession.id == session_id)
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(404, detail="Session not found")
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
 
     if session.status not in (ReceivingStatus.new, ReceivingStatus.in_progress):
-        raise HTTPException(400, detail=f"Cannot pause session in status {session.status}")
+        raise HTTPException(400, detail=f"Cannot pause session in status {session.status.value}")
 
     session.status = ReceivingStatus.paused
     session.paused_at = datetime.utcnow()
 
-    return {"session_id": session.id, "status": "paused"}
+    total_scans = await _count_scans(db, session.id)
+    lines = list(session.lines)
+    stats = {
+        "total_lines": len(lines),
+        "received_complete": sum(1 for ln in lines if ln.status == "matched"),
+        "received_partial": sum(1 for ln in lines if ln.status == "partial"),
+        "not_received": sum(1 for ln in lines if ln.status == "pending"),
+        "total_scans": total_scans,
+    }
+
+    return {
+        "success": True,
+        "invoice_number": session.invoice_number,
+        "invoice_no": session.invoice_number,
+        "session_id": session.id,
+        "paused_at": session.paused_at.isoformat(),
+        "stats": stats,
+        "message": "Session paused",
+    }
 
 
-@router.post("/receiving/sessions/{session_id}/resume")
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/resume")
 async def resume_session(
+    supplier_code: str,
     session_id: int,
     db: AsyncSession = Depends(get_session),
 ):
-    """Resume paused receiving session."""
-    stmt = select(ReceivingSession).where(ReceivingSession.id == session_id)
+    """Resume paused receiving session; returns lines + scan history."""
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
+
+    if session.status != ReceivingStatus.paused:
+        raise HTTPException(400, detail=f"Cannot resume session in status {session.status.value}")
+
+    session.status = ReceivingStatus.in_progress
+    resumed_at = datetime.utcnow()
+
+    stmt = (
+        select(ScanEvent)
+        .where(ScanEvent.receiving_session_id == session.id, ScanEvent.status == ScanStatus.active)
+        .order_by(ScanEvent.scanned_at.asc())
+    )
+    result = await db.execute(stmt)
+    scans = [
+        {
+            "ts": ev.scanned_at.isoformat() if ev.scanned_at else None,
+            "code": ev.scanned_code,
+            "qty": float(ev.quantity),
+            "status": ev.match_method or "scan",
+        }
+        for ev in result.scalars().all()
+    ]
+
+    prefix = _product_code_prefix(supplier_code)
+    return {
+        "session_id": session.id,
+        "invoice_number": session.invoice_number,
+        "invoice_no": session.invoice_number,
+        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "scans": scans,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "resumed_at": resumed_at.isoformat(),
+    }
+
+
+@router.get("/suppliers/{supplier_code}/invoices/{invoice_no}/active-session")
+async def get_active_session(
+    supplier_code: str,
+    invoice_no: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """Return the active (new/in_progress/paused) session for an invoice, if any."""
+    supplier = await _get_supplier(db, supplier_code)
+
+    stmt = (
+        select(ReceivingSession)
+        .options(selectinload(ReceivingSession.lines))
+        .where(
+            ReceivingSession.supplier_id == supplier.id,
+            ReceivingSession.invoice_number == invoice_no,
+            ReceivingSession.status.in_(ACTIVE_STATUSES),
+        )
+        .order_by(ReceivingSession.created_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+
+    if not session:
+        return {"has_session": False, "session": None}
+
+    scans_count = await _count_scans(db, session.id)
+    return {
+        "has_session": True,
+        "session": {
+            "session_id": session.id,
+            "created_at": session.created_at.isoformat() if session.created_at else None,
+            "is_paused": session.status == ReceivingStatus.paused,
+            "paused_at": session.paused_at.isoformat() if session.paused_at else None,
+            "lines_count": len(session.lines),
+            "scans_count": scans_count,
+            "stats": {
+                "matched": sum(1 for ln in session.lines if ln.status == "matched"),
+                "partial": sum(1 for ln in session.lines if ln.status == "partial"),
+                "pending": sum(1 for ln in session.lines if ln.status == "pending"),
+            },
+        },
+    }
+
+
+@router.post("/suppliers/{supplier_code}/invoices/{invoice_no}/reopen")
+async def reopen_invoice(
+    supplier_code: str,
+    invoice_no: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Reopen the most recent completed session for an invoice.
+
+    Safe today because finalize does not write stock movements yet.
+    Once stock movements are implemented, reopen must be blocked (or must
+    create compensating movements) when movements exist for the session.
+    """
+    supplier = await _get_supplier(db, supplier_code)
+
+    stmt = (
+        select(ReceivingSession)
+        .where(
+            ReceivingSession.supplier_id == supplier.id,
+            ReceivingSession.invoice_number == invoice_no,
+            ReceivingSession.status == ReceivingStatus.completed,
+        )
+        .order_by(ReceivingSession.finished_at.desc())
+        .limit(1)
+    )
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(404, detail="Session not found")
-
-    if session.status != ReceivingStatus.paused:
-        raise HTTPException(400, detail=f"Cannot resume session in status {session.status}")
+        raise HTTPException(404, detail="No completed session found for this invoice")
 
     session.status = ReceivingStatus.in_progress
-    session.paused_at = None
+    session.finished_at = None
 
-    return {"session_id": session.id, "status": "in_progress"}
+    return {"success": True, "message": f"Session {session.id} reopened for invoice {invoice_no}"}
 
 
 @router.get("/suppliers/{supplier_code}/receiving/sessions")
@@ -603,25 +845,17 @@ async def list_sessions(
     db: AsyncSession = Depends(get_session),
 ):
     """List receiving sessions for supplier."""
-    # Get supplier
-    stmt = select(Supplier).where(Supplier.code == supplier_code)
-    result = await db.execute(stmt)
-    supplier = result.scalar_one_or_none()
-    if not supplier:
-        raise HTTPException(404, detail=f"Supplier not found: {supplier_code}")
+    supplier = await _get_supplier(db, supplier_code)
 
-    # Build query
     stmt = (
         select(ReceivingSession)
         .where(ReceivingSession.supplier_id == supplier.id)
         .order_by(ReceivingSession.created_at.desc())
         .limit(limit)
     )
-
     if status:
         try:
-            status_enum = ReceivingStatus(status)
-            stmt = stmt.where(ReceivingSession.status == status_enum)
+            stmt = stmt.where(ReceivingSession.status == ReceivingStatus(status))
         except ValueError:
             pass
 
@@ -632,6 +866,7 @@ async def list_sessions(
         {
             "session_id": s.id,
             "invoice_number": s.invoice_number,
+            "invoice_no": s.invoice_number,
             "status": s.status.value,
             "total_lines": s.total_lines,
             "created_at": s.created_at.isoformat() if s.created_at else None,

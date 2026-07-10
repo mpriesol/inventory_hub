@@ -182,7 +182,7 @@ export function ReceivingPage() {
     
     try {
       if (invoice.status === 'in_progress' && invoice.currentSessionId) {
-        const session = await resumeReceiving(invoice.currentSessionId);
+        const session = await resumeReceiving(supplier, invoice.currentSessionId);
         navigate(`/receiving/${invoice.number}`, {
           state: { 
             sessionId: invoice.currentSessionId,

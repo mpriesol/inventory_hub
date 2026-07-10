@@ -86,6 +86,7 @@ app = FastAPI(
     version="12.0.0",  # v12 FINAL
     description="BikeTrek/xTrek Inventory Management - Multi-EAN Support",
     lifespan=lifespan,
+    root_path=os.environ.get("ROOT_PATH", ""),
 )
 app.add_middleware(
     CORSMiddleware,

@@ -16,7 +16,7 @@ from sqlalchemy import (
     Enum as SQLEnum, Computed, func
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY, ENUM as PGEnum
 
 from inventory_hub.database import Base
 from inventory_hub.db_models import (
@@ -509,7 +509,10 @@ class ReceivingSession(TimestampMixin, Base):
     
     # === Invoice Management Extension (from 002_invoice_management.sql) ===
     # Payment tracking
-    payment_status: Mapped[str] = mapped_column(String(20), default="unpaid", nullable=False)
+    payment_status: Mapped[str] = mapped_column(
+        PGEnum("unpaid", "partial", "paid", name="payment_status", create_type=False),
+        default="unpaid", nullable=False,
+    )
     due_date: Mapped[Optional[date]] = mapped_column(Date)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))

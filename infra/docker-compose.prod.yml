@@ -27,7 +27,8 @@ services:
     image: ghcr.io/mpriesol/inventory-hub-api:main
     environment:
       INVENTORY_DATA_ROOT: /data/inventory-data
-      USE_POSTGRES: "false"
+      USE_POSTGRES: "true"
+      ROOT_PATH: /api
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_NAME: ${DB_NAME}

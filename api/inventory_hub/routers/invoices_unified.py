@@ -29,7 +29,9 @@ router = APIRouter(prefix="/invoices", tags=["Invoice Management"])
 # Constants
 # ============================================================================
 
-INVOICE_STORAGE_BASE = Path("/data/inventory-data/suppliers")
+from inventory_hub.settings import settings
+
+INVOICE_STORAGE_BASE = Path(settings.INVENTORY_DATA_ROOT) / "suppliers"
 ALLOWED_EXTENSIONS = {'.pdf', '.csv', '.xlsx', '.xls', '.doc', '.docx', '.xml', '.txt', '.jpg', '.jpeg', '.png'}
 
 # ============================================================================
