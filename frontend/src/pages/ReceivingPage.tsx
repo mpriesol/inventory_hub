@@ -7,7 +7,7 @@ import {
 import { Button } from '../components/ui/Button.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
 import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
-import { createReceivingSession, resumeReceiving } from '../api/receiving';
+import { createReceivingSession, resumeReceiving, reopenInvoice } from '../api/receiving';
 import { API_BASE } from '../api/client';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 
@@ -569,17 +569,37 @@ export function ReceivingPage() {
                       )}
 
                       {isProcessed ? (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setModalInvoice(inv);
-                          }}
-                        >
-                          <FileText size={14} />
-                          Zobraziť výsledky
-                        </Button>
+                        <>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setModalInvoice(inv);
+                            }}
+                          >
+                            <FileText size={14} />
+                            Zobraziť výsledky
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (!window.confirm(`Znovu otvoriť faktúru ${inv.number} pre príjem?`)) return;
+                              try {
+                                const res = await reopenInvoice(supplier, inv.number);
+                                setSuccessMessage(res.message || `Faktúra ${inv.number} znovu otvorená`);
+                                await handleRefreshList();
+                              } catch (err: any) {
+                                setError(err?.message || 'Nepodarilo sa znovu otvoriť faktúru');
+                              }
+                            }}
+                          >
+                            <PlayCircle size={14} />
+                            Znovu otvoriť
+                          </Button>
+                        </>
                       ) : (
                         <Button
                           variant={isInProgress ? 'primary' : 'secondary'}

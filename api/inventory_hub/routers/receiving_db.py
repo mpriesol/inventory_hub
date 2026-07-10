@@ -27,6 +27,7 @@ from inventory_hub.db_models_ext import (
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.config_io import load_supplier as load_supplier_config
+from inventory_hub.routers.receiving import _update_invoice_status
 
 router = APIRouter(tags=["Receiving"])
 
@@ -662,6 +663,24 @@ async def finalize_session(
     total_received = sum(float(ln.received_qty) for ln in lines)
     received_count = sum(1 for ln in lines if ln.received_qty > 0)
 
+    # Sync filesystem invoice index (UI tabs Nové/Prebieha/Dokončené read it)
+    try:
+        _update_invoice_status(supplier_code, session.invoice_number, "processed", {
+            "processed_at": session.finished_at.isoformat(),
+            "receiving_session_id": str(session.id),
+            "receiving_stats": {
+                "total_lines": stats["total_lines"],
+                "received_complete": stats["received_complete"],
+                "received_partial": stats["received_partial"],
+                "not_received": stats["not_received"],
+            },
+            "current_session_id": None,
+            "paused_at": None,
+            "pause_stats": None,
+        })
+    except Exception:
+        pass
+
     return {
         "success": True,
         "invoice_number": session.invoice_number,  # canonical
@@ -701,6 +720,16 @@ async def pause_session(
         "not_received": sum(1 for ln in lines if ln.status == "pending"),
         "total_scans": total_scans,
     }
+
+    # Sync filesystem invoice index (UI tabs Nové/Prebieha/Dokončené read it)
+    try:
+        _update_invoice_status(supplier_code, session.invoice_number, "in_progress", {
+            "current_session_id": str(session.id),
+            "paused_at": session.paused_at.isoformat(),
+            "pause_stats": stats,
+        })
+    except Exception:
+        pass
 
     return {
         "success": True,
@@ -808,7 +837,13 @@ async def reopen_invoice(
     db: AsyncSession = Depends(get_session),
 ):
     """
-    Reopen the most recent completed session for an invoice.
+    Mark a processed invoice as not finished so it can be received again.
+
+    - If a completed DB session exists: put it into 'paused' (resumable via
+      the standard resume flow) and mark the invoice index as in_progress
+      with current_session_id.
+    - If no DB session exists (invoice processed via legacy flow): just flip
+      the invoice index back to 'new' so a fresh session can be created.
 
     Safe today because finalize does not write stock movements yet.
     Once stock movements are implemented, reopen must be blocked (or must
@@ -818,6 +853,7 @@ async def reopen_invoice(
 
     stmt = (
         select(ReceivingSession)
+        .options(selectinload(ReceivingSession.lines))
         .where(
             ReceivingSession.supplier_id == supplier.id,
             ReceivingSession.invoice_number == invoice_no,
@@ -828,13 +864,51 @@ async def reopen_invoice(
     )
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(404, detail="No completed session found for this invoice")
 
-    session.status = ReceivingStatus.in_progress
-    session.finished_at = None
+    if session:
+        session.status = ReceivingStatus.paused
+        session.finished_at = None
+        session.paused_at = datetime.utcnow()
 
-    return {"success": True, "message": f"Session {session.id} reopened for invoice {invoice_no}"}
+        lines = list(session.lines)
+        total_scans = await _count_scans(db, session.id)
+        stats = {
+            "total_lines": len(lines),
+            "received_complete": sum(1 for ln in lines if ln.status == "matched"),
+            "received_partial": sum(1 for ln in lines if ln.status == "partial"),
+            "not_received": sum(1 for ln in lines if ln.status == "pending"),
+            "total_scans": total_scans,
+        }
+        try:
+            _update_invoice_status(supplier_code, invoice_no, "in_progress", {
+                "reopened_at": datetime.utcnow().isoformat(),
+                "processed_at": None,
+                "receiving_stats": None,
+                "current_session_id": str(session.id),
+                "paused_at": session.paused_at.isoformat(),
+                "pause_stats": stats,
+            })
+        except Exception:
+            pass
+        return {
+            "success": True,
+            "session_id": session.id,
+            "message": f"Faktúra {invoice_no} znovu otvorená — pokračuj v príjme (session {session.id}).",
+        }
+
+    # No DB session — legacy-processed invoice; reset index to 'new'
+    updated = _update_invoice_status(supplier_code, invoice_no, "new", {
+        "reopened_at": datetime.utcnow().isoformat(),
+        "processed_at": None,
+        "receiving_session_id": None,
+        "receiving_stats": None,
+        "current_session_id": None,
+        "paused_at": None,
+        "pause_stats": None,
+    })
+    if not updated:
+        raise HTTPException(404, detail="Invoice not found (no DB session, not in index)")
+    return {"success": True, "message": f"Faktúra {invoice_no} znovu otvorená pre príjem."}
 
 
 @router.get("/suppliers/{supplier_code}/receiving/sessions")
