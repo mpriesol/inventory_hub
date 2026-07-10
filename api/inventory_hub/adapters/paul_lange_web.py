@@ -563,9 +563,12 @@ def prepare_from_invoice(
         "pending":       len(pending_rows),
         "invoice_items": total_items,
         "outputs": {
-            "existing":  str(updates_csv.relative_to(sup_root).as_posix())   if existing_rows  else None,
-            "new":       str(new_csv.relative_to(sup_root).as_posix())       if new_rows       else None,
-            "unmatched": str(unmatched_csv.relative_to(sup_root).as_posix()) if unmatched_rows else None,
-            "pending":   str(pending_csv.relative_to(sup_root).as_posix())   if pending_rows   else None,
+            # Convention: "data/<path relative to INVENTORY_DATA_ROOT>" —
+            # consumed by /files/preview (frontend strips "data/") and by
+            # csv-outputs (_strip_data_prefix + resolve against data root).
+            "existing":  f"data/{updates_csv.relative_to(data_root).as_posix()}"   if existing_rows  else None,
+            "new":       f"data/{new_csv.relative_to(data_root).as_posix()}"       if new_rows       else None,
+            "unmatched": f"data/{unmatched_csv.relative_to(data_root).as_posix()}" if unmatched_rows else None,
+            "pending":   f"data/{pending_csv.relative_to(data_root).as_posix()}"   if pending_rows   else None,
         }
     }

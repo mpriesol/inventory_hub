@@ -93,6 +93,7 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
   const [activeTab, setActiveTab] = useState<Tab>("updates");
   const [csvData, setCsvData] = useState<Partial<Record<Tab, CsvData>>>({});
   const [loadingCsv, setLoadingCsv] = useState(false);
+  const [csvError, setCsvError] = useState<Record<string, string>>({});
 
   const [colVis, setColVis] = useState<ColVisibility>({});
   const [showColPicker, setShowColPicker] = useState(false);
@@ -192,7 +193,10 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
       .then((data: { columns: string[]; rows: string[][] }) => {
         setCsvData((prev) => ({ ...prev, [activeTab]: data }));
       })
-      .catch((e) => console.error("CSV preview error:", e))
+      .catch((e) => {
+        console.error("CSV preview error:", e);
+        setCsvError((prev) => ({ ...prev, [activeTab]: String(e) }));
+      })
       .finally(() => setLoadingCsv(false));
   }, [prepResult, activeTab, csvData]);
 
@@ -487,9 +491,15 @@ export function ReceivingResultsModal({ supplier, invoiceId, shop = "biketrek", 
                     : "Žiadne záznamy"}
                 </div>
               ) : !csvData[activeTab] ? (
-                <div className="flex items-center justify-center h-full text-[#888] animate-pulse">
-                  Načítavam CSV…
-                </div>
+                csvError[activeTab] ? (
+                  <div className="flex items-center justify-center h-full text-red-400 text-sm">
+                    Nepodarilo sa načítať CSV ({csvError[activeTab]})
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-[#888] animate-pulse">
+                    Načítavam CSV…
+                  </div>
+                )
               ) : (
                 <table className="w-full text-xs border-collapse" style={{ tableLayout: "fixed" }}>
                   <colgroup>
