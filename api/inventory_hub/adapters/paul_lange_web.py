@@ -574,8 +574,8 @@ def prepare_from_invoice(
             row[ix_avail_new] = "Na sklade"
 
         _, idxmap_meta = _ensure_meta_columns(new_header)
-        row[idxmap_meta['[META „original_product_code"]']] = scm
-        row[idxmap_meta['[META „validation_required"]']] = "1"
+        row[idxmap_meta['[META „original_product_code“]']] = scm
+        row[idxmap_meta['[META „validation_required“]']] = "1"
         row[idxmap_meta[INVOICE_META_COL]] = inv_stem
 
         for col_name in zero_cols_new:
