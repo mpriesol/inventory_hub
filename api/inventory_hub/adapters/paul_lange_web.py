@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import csv, datetime as dt, hashlib, json, re
@@ -34,6 +34,7 @@ class RefreshResult:
     failed: int
     pages: int
     log_files: List[str]
+    errors: List[str] = field(default_factory=list)
 
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
@@ -57,7 +58,21 @@ def _find_col_idx(header: List[str], target: str) -> Optional[int]:
             return i
     return None
 
-def build_session(cfg: LoginConfig) -> requests.Session:
+def _looks_like_login_page(html_text: str) -> bool:
+    t = (html_text or "").lower()
+    return 'type="password"' in t or "type='password'" in t
+
+
+def build_session(cfg: LoginConfig, log_dir: Optional[Path] = None) -> requests.Session:
+    def _log(name: str, text: str) -> None:
+        if log_dir is None:
+            return
+        try:
+            _ensure_dir(log_dir)
+            (log_dir / name).write_text(text, encoding="utf-8", errors="ignore")
+        except Exception:
+            pass
+
     s = requests.Session()
     s.headers.update({
         "User-Agent": CHROME_UA,
@@ -77,6 +92,7 @@ def build_session(cfg: LoginConfig) -> requests.Session:
     if cfg.mode == "form" and cfg.login_url:
         r = s.get(cfg.login_url, timeout=30, verify=not cfg.insecure_all, allow_redirects=True)
         r.raise_for_status()
+        _log("last_login_page.html", r.text)
         soup = BeautifulSoup(r.text, "html.parser")
         form = soup.find("form")
         action = cfg.login_url
@@ -123,6 +139,13 @@ def build_session(cfg: LoginConfig) -> requests.Session:
             pr = s.post(action_url, data=payload, headers=headers, timeout=30, allow_redirects=True,
                         verify=not cfg.insecure_all)
         pr.raise_for_status()
+        _log("last_login_response.html", pr.text)
+        if _looks_like_login_page(pr.text):
+            raise RuntimeError(
+                "Prihlásenie zlyhalo — server po odoslaní mena a hesla vrátil znova "
+                "prihlasovací formulár. Over prihlasovacie údaje v config.json "
+                "(detail v logs/last_login_response.html)."
+            )
     return s
 
 def enumerate_invoice_pages(html_text: str, base_url: str) -> List[str]:
@@ -201,7 +224,12 @@ def refresh_invoices_web(data_root: Path, supplier: str, login: LoginConfig, mon
     dir_logs = sup_root / "logs"
     _ensure_dir(dir_csv); _ensure_dir(dir_logs)
 
-    session = build_session(login)
+    try:
+        session = build_session(login, log_dir=dir_logs)
+    except RuntimeError as e:
+        return RefreshResult(0, 0, 0, 0,
+                             ["logs/last_login_page.html", "logs/last_login_response.html"],
+                             errors=[str(e)])
 
     today = dt.date.today()
     date_from = (today - dt.timedelta(days=30 * months_back)).strftime("%Y-%m-%d")
@@ -210,6 +238,13 @@ def refresh_invoices_web(data_root: Path, supplier: str, login: LoginConfig, mon
     r = session.get(list_url, timeout=60, verify=not login.insecure_all)
     r.raise_for_status()
     (dir_logs / "last_invoice_list.html").write_text(r.text, encoding="utf-8", errors="ignore")
+
+    if _looks_like_login_page(r.text):
+        return RefreshResult(0, 0, 0, 1, ["logs/last_invoice_list.html"], errors=[
+            "Prihlásenie neprešlo — stránka so zoznamom faktúr vrátila prihlasovací "
+            "formulár (session sa nezachovala alebo účet nemá prístup k faktúram). "
+            "Detail v logs/last_invoice_list.html."
+        ])
 
     pages = enumerate_invoice_pages(r.text, r.url)
     all_links: List[Tuple[str, str]] = []
@@ -223,6 +258,13 @@ def refresh_invoices_web(data_root: Path, supplier: str, login: LoginConfig, mon
     for href, fn in all_links:
         uniq[fn] = href
     links = [(url, fn) for fn, url in uniq.items()]
+
+    if not links:
+        return RefreshResult(0, 0, 0, len(pages), ["logs/last_invoice_list.html"], errors=[
+            "Prihlásenie prebehlo, ale v zozname faktúr sa nenašli žiadne odkazy "
+            "na CSV — buď v danom období nie sú faktúry, alebo Paul-Lange zmenil "
+            "štruktúru stránky. Detail v logs/last_invoice_list.html."
+        ])
 
     downloaded = skipped = failed = 0
     try:
