@@ -25,78 +25,54 @@ export interface ActivityItem {
   details?: Record<string, any>;
 }
 
-// Get dashboard overview stats
-// For now, we aggregate from existing endpoints
+// Get dashboard overview stats — real numbers from DB (/stock/summary)
+// plus real pending invoices from the invoice index.
 export async function getDashboardStats(): Promise<DashboardStats> {
+  const empty: DashboardStats = {
+    totalProducts: 0,
+    lowStockCount: 0,
+    openOrders: 0,
+    inventoryValue: 0,
+    pendingInvoices: 0,
+    syncStatus: { percentage: 0, lastSync: null, shopsConnected: 0 },
+  };
+
+  let pendingInvoices = 0;
   try {
-    // Get invoices from paul-lange and count only unprocessed ones
     const invoicesRes = await getInvoicesIndex('paul-lange');
-    const pendingInvoices = (invoicesRes?.items || [])
+    pendingInvoices = (invoicesRes?.items || [])
       .filter(inv => inv.status !== 'processed')
       .length;
+  } catch (error) {
+    console.error('Failed to fetch invoices index:', error);
+  }
 
-    // TODO: When we have PostgreSQL, these will come from real endpoints
-    // For now, return mock data combined with real pending invoices
+  try {
+    const summary = await fetchJSON<{
+      products_total: number;
+      inventory_value: number;
+      low_stock_count: number;
+    }>(`${API_BASE}/stock/summary`);
     return {
-      totalProducts: 1247,
-      lowStockCount: 23,
-      openOrders: 8,
-      inventoryValue: 45320,
+      ...empty,
+      totalProducts: summary.products_total,
+      lowStockCount: summary.low_stock_count,
+      inventoryValue: summary.inventory_value,
       pendingInvoices,
-      syncStatus: {
-        percentage: 98,
-        lastSync: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-        shopsConnected: 2,
-      },
+      // openOrders / syncStatus: no orders module and no Upgates API sync
+      // exist yet — keep honest zeros instead of fake numbers.
     };
   } catch (error) {
-    console.error('Failed to fetch dashboard stats:', error);
-    // Return defaults on error
-    return {
-      totalProducts: 0,
-      lowStockCount: 0,
-      openOrders: 0,
-      inventoryValue: 0,
-      pendingInvoices: 0,
-      syncStatus: {
-        percentage: 0,
-        lastSync: null,
-        shopsConnected: 0,
-      },
-    };
+    console.error('Failed to fetch stock summary:', error);
+    return { ...empty, pendingInvoices };
   }
 }
 
-// Get recent activity
+// Get recent activity — no backend activity log exists yet.
+// Returns empty list (UI shows "no activity") instead of fake entries.
+// TODO: implement real audit feed (sync_log / receiving sessions / uploads).
 export async function getRecentActivity(): Promise<ActivityItem[]> {
-  // TODO: Implement real activity log from backend
-  // For now return mock data
-  return [
-    {
-      id: '1',
-      timestamp: new Date().toISOString(),
-      type: 'receiving',
-      message: 'Príjem dokončený: F2026010234 (45 položiek)',
-    },
-    {
-      id: '2',
-      timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-      type: 'sync',
-      message: 'Sklad synchronizovaný do BikeTrek (1,247 produktov)',
-    },
-    {
-      id: '3',
-      timestamp: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-      type: 'invoice',
-      message: 'Nová faktúra indexovaná: F2026010235',
-    },
-    {
-      id: '4',
-      timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-      type: 'count',
-      message: 'Inventúra dokončená (odchýlka: 3 položky)',
-    },
-  ];
+  return [];
 }
 
 // Suppliers list

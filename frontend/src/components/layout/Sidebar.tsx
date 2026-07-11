@@ -26,9 +26,9 @@ interface NavItem {
 const navigation: NavItem[] = [
   { id: 'dashboard', nameKey: 'nav.dashboard', href: '/', icon: LayoutDashboard, badge: null },
   { id: 'invoices', nameKey: 'nav.invoices', href: '/invoices', icon: FileText, badge: null },
-  { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: 3 },
+  { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: null },
   { id: 'products', nameKey: 'nav.products', href: '/products', icon: Package, badge: null },
-  { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: 23 },
+  { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: null },
   { id: 'suppliers', nameKey: 'nav.suppliers', href: '/suppliers', icon: Factory, badge: null },
   { id: 'shops', nameKey: 'nav.shops', href: '/shops', icon: ShoppingCart, badge: null },
   { id: 'settings', nameKey: 'nav.settings', href: '/settings', icon: Settings, badge: null },

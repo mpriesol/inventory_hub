@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, Download, RefreshCw, AlertTriangle } from 'lucide-react';
 import { StatsCard } from '../components/ui/StatsCard';
 import { Button } from '../components/ui/Button.new';
+import { getStockItems, getStockSummary, type StockSummary } from '../api/stock';
 
 interface StockItem {
   sku: string;
@@ -15,40 +16,63 @@ interface StockItem {
   lowStock: boolean;
 }
 
-// Mock data
-const mockStockItems: StockItem[] = [
-  { sku: 'PL-ESHRM500', name: 'Shimano Deore XT RD-M8100', brand: 'Shimano', onHand: 45, reserved: 3, available: 42, avgCost: 89.50, lowStock: false },
-  { sku: 'PL-ESHRM510', name: 'Shimano SLX RD-M7100', brand: 'Shimano', onHand: 12, reserved: 0, available: 12, avgCost: 65.00, lowStock: false },
-  { sku: 'PL-ESLZ001', name: 'Lazer Genesis MIPS Helmet', brand: 'Lazer', onHand: 3, reserved: 2, available: 1, avgCost: 142.00, lowStock: true },
-  { sku: 'PL-ORTAN01', name: 'Ortlieb Seat-Pack 16.5L', brand: 'Ortlieb', onHand: 28, reserved: 5, available: 23, avgCost: 156.00, lowStock: false },
-  { sku: 'PL-ORTAN02', name: 'Ortlieb Frame-Pack RC', brand: 'Ortlieb', onHand: 0, reserved: 0, available: 0, avgCost: 98.00, lowStock: true },
-  { sku: 'PL-PROHB01', name: 'PRO Discover Handlebar Bag', brand: 'PRO', onHand: 15, reserved: 1, available: 14, avgCost: 78.00, lowStock: false },
-  { sku: 'PL-SRMOT01', name: 'Motorex Chain Lube Dry', brand: 'Motorex', onHand: 67, reserved: 0, available: 67, avgCost: 12.50, lowStock: false },
-  { sku: 'PL-ESLZ002', name: 'Lazer Strada KinetiCore', brand: 'Lazer', onHand: 5, reserved: 3, available: 2, avgCost: 89.00, lowStock: true },
-];
-
 export function StockPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  
+
   const [search, setSearch] = useState('');
   const [lowStockOnly, setLowStockOnly] = useState(searchParams.get('filter') === 'low');
-  const [items] = useState<StockItem[]>(mockStockItems);
+  const [items, setItems] = useState<StockItem[]>([]);
+  const [summary, setSummary] = useState<StockSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [apiItems, apiSummary] = await Promise.all([getStockItems(), getStockSummary()]);
+        if (cancelled) return;
+        setItems(apiItems.map((it) => ({
+          sku: it.sku,
+          name: it.name,
+          brand: it.brand,
+          onHand: it.on_hand,
+          reserved: it.reserved,
+          available: it.available,
+          avgCost: it.avg_cost,
+          lowStock: it.low_stock,
+        })));
+        setSummary(apiSummary);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || 'Nepodarilo sa načítať sklad');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const brands = Array.from(new Set(items.map((i) => i.brand).filter(Boolean))).sort();
+  const [brandFilter, setBrandFilter] = useState('');
 
   const filteredItems = items.filter((item) => {
-    const matchesSearch = !search || 
+    const matchesSearch = !search ||
       item.sku.toLowerCase().includes(search.toLowerCase()) ||
       item.name.toLowerCase().includes(search.toLowerCase()) ||
       item.brand.toLowerCase().includes(search.toLowerCase());
-    
+
+    const matchesBrand = !brandFilter || item.brand === brandFilter;
     const matchesLowStock = !lowStockOnly || item.lowStock;
-    
-    return matchesSearch && matchesLowStock;
+
+    return matchesSearch && matchesBrand && matchesLowStock;
   });
 
-  const totalValue = items.reduce((sum, item) => sum + item.onHand * item.avgCost, 0);
-  const lowStockCount = items.filter(item => item.lowStock).length;
-  const totalReserved = items.reduce((sum, item) => sum + item.reserved, 0);
+  const totalValue = summary?.inventory_value ?? 0;
+  const lowStockCount = summary?.low_stock_count ?? 0;
+  const totalReserved = summary?.reserved_total ?? 0;
 
   return (
     <div className="space-y-6">
@@ -72,11 +96,11 @@ export function StockPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary">
+          <Button variant="secondary" disabled title="Pripravujeme — export reálneho skladu">
             <Download size={16} />
             Export CSV
           </Button>
-          <Button variant="primary">
+          <Button variant="primary" disabled title="Pripravujeme — synchronizácia s Upgates">
             <RefreshCw size={16} />
             Synchronizovať
           </Button>
@@ -92,7 +116,7 @@ export function StockPage() {
         />
         <StatsCard
           icon="📦"
-          value={items.length.toString()}
+          value={(summary?.products_total ?? 0).toString()}
           label="Produktov"
         />
         <StatsCard
@@ -131,11 +155,11 @@ export function StockPage() {
         <select className="w-40">
           <option value="">Všetky kategórie</option>
         </select>
-        <select className="w-40">
+        <select className="w-40" value={brandFilter} onChange={(e) => setBrandFilter(e.target.value)}>
           <option value="">Všetky značky</option>
-          <option value="shimano">Shimano</option>
-          <option value="lazer">Lazer</option>
-          <option value="ortlieb">Ortlieb</option>
+          {brands.map((b) => (
+            <option key={b} value={b}>{b}</option>
+          ))}
         </select>
         <label
           className="flex items-center gap-2 text-sm cursor-pointer"
@@ -307,7 +331,23 @@ export function StockPage() {
           </tbody>
         </table>
 
-        {filteredItems.length === 0 && (
+        {loading && (
+          <div className="p-8 text-center" style={{ color: 'var(--color-text-tertiary)' }}>
+            Načítavam sklad…
+          </div>
+        )}
+        {!loading && error && (
+          <div className="p-8 text-center" style={{ color: 'var(--color-error)' }}>
+            {error}
+          </div>
+        )}
+        {!loading && !error && items.length === 0 && (
+          <div className="p-8 text-center" style={{ color: 'var(--color-text-tertiary)' }}>
+            Sklad je zatiaľ prázdny. Skladové zásoby sa naplnia po zapnutí zápisu
+            skladových pohybov pri príjme faktúr a synchronizácii s Upgates.
+          </div>
+        )}
+        {!loading && !error && items.length > 0 && filteredItems.length === 0 && (
           <div
             className="p-8 text-center"
             style={{ color: 'var(--color-text-tertiary)' }}

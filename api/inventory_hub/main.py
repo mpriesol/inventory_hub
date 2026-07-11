@@ -130,6 +130,8 @@ app.include_router(invoices_unified_router)
 # Receiving: Use PostgreSQL-backed router if enabled, otherwise legacy JSON
 if settings.USE_POSTGRES:
     app.include_router(receiving_router_db)
+    from inventory_hub.routers.stock import router as stock_router
+    app.include_router(stock_router)
 else:
     app.include_router(receiving_router_legacy)
 
