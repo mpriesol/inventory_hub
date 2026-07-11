@@ -23,6 +23,8 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<UpgatesImportResult | null>(null);
+  const [updateExisting, setUpdateExisting] = useState(false);
+  const [includeStock, setIncludeStock] = useState(true);
 
   const loadPreview = async () => {
     setLoading(true);
@@ -60,11 +62,14 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   };
 
   const handleImport = async () => {
-    if (selected.size === 0) return;
+    if (selected.size === 0 && !updateExisting) return;
     setImporting(true);
     setError(null);
     try {
-      const res = await importUpgatesProducts(shop, Array.from(selected));
+      const res = await importUpgatesProducts(shop, Array.from(selected), {
+        updateExisting,
+        includeStock,
+      });
       setResult(res);
       onImported();
       await loadPreview();
@@ -185,19 +190,38 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
 
         {/* Footer */}
         <div
-          className="flex items-center justify-between px-5 py-4 border-t"
+          className="flex items-center justify-between gap-4 px-5 py-4 border-t"
           style={{ borderColor: 'var(--color-border-subtle)' }}
         >
-          <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            Importujú sa len identifikačné údaje (kódy, EAN, varianty). Popisy a ceny zostávajú v Upgates.
-          </span>
+          <div className="flex flex-col gap-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeStock}
+                onChange={(e) => setIncludeStock(e.target.checked)}
+              />
+              Importovať aj skladové zásoby (len produkty bez skladových pohybov)
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={updateExisting}
+                onChange={(e) => setUpdateExisting(e.target.checked)}
+              />
+              Aktualizovať aj existujúce produkty (obsah, parametre — bez skladu)
+            </label>
+          </div>
           <Button
             variant="primary"
             onClick={handleImport}
-            disabled={importing || loading || selected.size === 0}
+            disabled={importing || loading || (selected.size === 0 && !updateExisting)}
           >
             <Download size={16} />
-            {importing ? 'Importujem…' : `Importovať vybrané (${selected.size})`}
+            {importing
+              ? 'Importujem…'
+              : updateExisting && selected.size === 0
+              ? 'Aktualizovať existujúce'
+              : `Importovať vybrané (${selected.size})`}
           </Button>
         </div>
       </div>

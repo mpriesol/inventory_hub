@@ -22,20 +22,36 @@ export interface UpgatesPreview {
 
 export interface UpgatesImportResult {
   shop: string;
-  imported_products: number;
-  imported_variants: number;
+  created_products: number;
+  created_variants: number;
+  updated_products: number;
+  content_saved: number;
+  stock_initialized: number;
   skipped: { code: string; reason: string }[];
   message: string;
+}
+
+export interface UpgatesImportOptions {
+  updateExisting?: boolean;
+  includeStock?: boolean;
 }
 
 export async function getUpgatesPreview(shop: string): Promise<UpgatesPreview> {
   return fetchJSON<UpgatesPreview>(`${API_BASE}/shops/${encodeURIComponent(shop)}/upgates/products/preview`);
 }
 
-export async function importUpgatesProducts(shop: string, codes: string[]): Promise<UpgatesImportResult> {
+export async function importUpgatesProducts(
+  shop: string,
+  codes: string[],
+  opts: UpgatesImportOptions = {},
+): Promise<UpgatesImportResult> {
   return fetchJSON<UpgatesImportResult>(`${API_BASE}/shops/${encodeURIComponent(shop)}/upgates/products/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ codes }),
+    body: JSON.stringify({
+      codes,
+      update_existing: !!opts.updateExisting,
+      include_stock: opts.includeStock !== false,
+    }),
   });
 }

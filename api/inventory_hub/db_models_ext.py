@@ -801,3 +801,29 @@ class SyncLog(Base):
         Index("idx_sync_log_type", "sync_type", "target_code"),
         Index("idx_sync_log_started", "started_at"),
     )
+
+
+# ============================================================================
+# SHOP PRODUCT CONTENT (vault of complete pulled product payloads)
+# ============================================================================
+
+class ShopProductContent(TimestampMixin, Base):
+    """
+    Complete raw product payload pulled from a shop (Upgates API), one row
+    per shop + external (parent) product code. Lossless source for
+    transferring products to another shop (xTrek/Upgates, Atomer export).
+    """
+    __tablename__ = "shop_product_content"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    shop_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("shops.id", ondelete="CASCADE"), nullable=False)
+    external_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    pulled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    shop: Mapped["Shop"] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("shop_id", "external_code", name="uq_shop_product_content"),
+        Index("idx_shop_product_content_shop", "shop_id"),
+    )

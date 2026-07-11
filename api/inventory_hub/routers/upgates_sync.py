@@ -2,38 +2,49 @@
 """
 "Stiahnuť z Upgates" — pull products from an Upgates shop into the local DB.
 
-Flow (per approved design):
-1. GET  /shops/{shop}/upgates/products/preview
-   Fetches all products from the Upgates API, compares with the local DB
-   and returns which product codes are NEW (not yet in DB).
-2. POST /shops/{shop}/upgates/products/import  {"codes": [...]} or {"all": true}
-   Imports the selected products:
-   - product with variants -> ProductGroup + one Product row PER VARIANT
-     (the scanner reads variant EANs, so a variant is our stock unit)
-   - simple product -> one Product row
-   - provenance: created_from_source = 'upgates:{shop}'
-   - EANs -> product_identifiers
-   - shop_products row per Product (external/variant/parent code, pulled
-     availability/stock snapshot, last_pull_at)
-   Descriptions/prices stay owned by Upgates — we import identity only.
+Import scope (per approved design):
+- COMPLETE raw product payload (descriptions, images incl. titles, prices,
+  metas, SEO, labels, parameters, variants...) is stored losslessly in
+  shop_product_content — the vault used later for transferring products to
+  another shop (xTrek on Upgates, Atomer export).
+- Structured fields with a proper home are also written:
+  products.name/brand/weight_g, variant parameters ->
+  product_variant_attributes (created if missing), EAN ->
+  product_identifiers, main image -> product_groups.main_image_url,
+  main price -> shop_products.shop_price, availability/stock snapshot ->
+  shop_products.
+- NEW products: everything, optionally including local stock
+  (include_stock, default true) -> INITIAL stock movement + balance.
+- EXISTING products (update_existing=true): everything EXCEPT local stock;
+  stock is written only with include_stock AND only when the product has
+  no stock movements yet (protects the ledger from being overwritten).
 
-Local stock_balances are NOT touched: local DB is the source of truth for
-our stock; the Upgates STOCK value is stored only as shop_products.shop_stock
-(pulled snapshot).
+Endpoints:
+  GET  /shops/{shop}/upgates/products/preview
+  POST /shops/{shop}/upgates/products/import
+       body: {"codes": [...] | "all": true,
+              "update_existing": bool = false,
+              "include_stock": bool = true}
+  GET  /shops/{shop}/upgates/status
 """
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.database import get_session
-from inventory_hub.db_models import Product, ProductGroup, Shop, IdentifierType
-from inventory_hub.db_models_ext import ShopProduct
+from inventory_hub.db_models import (
+    Product, ProductGroup, Shop, Warehouse, MovementType,
+)
+from inventory_hub.db_models_ext import (
+    ShopProduct, ShopProductContent, ProductVariantAttribute,
+    StockMovement, StockBalance,
+)
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.upgates import (
     UpgatesClient, UpgatesError, product_title, variant_params_text, first_ean,
@@ -50,6 +61,14 @@ async def _get_shop(db: AsyncSession, shop_code: str) -> Shop:
     if not shop:
         raise HTTPException(404, detail=f"Shop not found in DB: {shop_code}")
     return shop
+
+
+async def _default_warehouse(db: AsyncSession) -> Warehouse:
+    result = await db.execute(select(Warehouse).where(Warehouse.is_default == True))  # noqa: E712
+    wh = result.scalar_one_or_none()
+    if not wh:
+        raise HTTPException(500, detail="No default warehouse in DB")
+    return wh
 
 
 def _fetch_upgates_products(shop_code: str) -> List[Dict[str, Any]]:
@@ -71,16 +90,80 @@ async def _known_skus(db: AsyncSession, skus: List[str]) -> set:
 
 
 def _all_codes_of(p: Dict[str, Any]) -> List[str]:
-    """Product code + all variant codes (these become our products.sku)."""
+    """Product code + all variant codes (these are our products.sku)."""
     codes = []
-    variants = p.get("variants") or []
-    if variants:
-        for v in variants:
-            if isinstance(v, dict) and v.get("code"):
-                codes.append(str(v["code"]))
+    for v in p.get("variants") or []:
+        if isinstance(v, dict) and v.get("code"):
+            codes.append(str(v["code"]))
     if p.get("code"):
         codes.append(str(p["code"]))
     return codes
+
+
+def _variant_params(v: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """[(name, value), ...] tolerant to per-language value lists."""
+    out: List[Tuple[str, str]] = []
+    for prm in v.get("parameters") or []:
+        if not isinstance(prm, dict):
+            continue
+        name = prm.get("name")
+        if isinstance(name, list):
+            name = next((x.get("name") or x.get("value") for x in name if isinstance(x, dict)), None)
+        val = prm.get("value")
+        if isinstance(val, list):
+            val = next((x.get("value") for x in val if isinstance(x, dict) and x.get("value")), None)
+        if name and val:
+            out.append((str(name)[:100], str(val)[:255]))
+    return out
+
+
+def _main_image_url(p: Dict[str, Any]) -> Optional[str]:
+    images = p.get("images") or []
+    for img in images:
+        if isinstance(img, dict) and img.get("main_yn") and img.get("url"):
+            return str(img["url"])
+    for img in images:
+        if isinstance(img, dict) and img.get("url"):
+            return str(img["url"])
+    return None
+
+
+def _main_price(obj: Dict[str, Any]) -> Optional[Decimal]:
+    """First price_with_vat found in the prices structure (tolerant)."""
+    def walk(node: Any):
+        if isinstance(node, dict):
+            for key in ("price_with_vat", "price"):
+                if key in node and node[key] not in (None, ""):
+                    try:
+                        return Decimal(str(node[key]))
+                    except Exception:
+                        pass
+            for v in node.values():
+                r = walk(v)
+                if r is not None:
+                    return r
+        elif isinstance(node, list):
+            for v in node:
+                r = walk(v)
+                if r is not None:
+                    return r
+        return None
+    return walk(obj.get("prices"))
+
+
+def _weight_g(obj: Dict[str, Any]) -> Optional[int]:
+    w = obj.get("weight")
+    try:
+        return int(Decimal(str(w))) if w not in (None, "") else None
+    except Exception:
+        return None
+
+
+def _to_decimal(val: Any) -> Optional[Decimal]:
+    try:
+        return Decimal(str(val)) if val not in (None, "") else None
+    except Exception:
+        return None
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────
@@ -108,12 +191,11 @@ async def preview_upgates_products(
         if any(c in known for c in codes):
             known_count += 1
             continue
-        variants = p.get("variants") or []
         new_items.append({
             "code": str(p.get("code") or ""),
             "title": product_title(p),
             "manufacturer": p.get("manufacturer") or "",
-            "variants_count": len(variants),
+            "variants_count": len(p.get("variants") or []),
             "availability": p.get("availability") or "",
             "stock": p.get("stock"),
         })
@@ -133,132 +215,229 @@ async def import_upgates_products(
     payload: Dict[str, Any] = Body(default={}),
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Import selected products from Upgates into the local DB.
-    Body: {"codes": ["CODE1", ...]} or {"all": true}.
-    Idempotent: already-imported codes are skipped and reported.
-    """
+    """Import/update products from Upgates. See module docstring for scope."""
     shop = await _get_shop(db, shop_code)
+    warehouse = await _default_warehouse(db)
+
     wanted_codes = payload.get("codes") or []
     import_all = bool(payload.get("all"))
-    if not wanted_codes and not import_all:
-        raise HTTPException(400, detail="Zadaj 'codes' alebo 'all': true")
+    update_existing = bool(payload.get("update_existing", False))
+    include_stock = bool(payload.get("include_stock", True))
+    if not wanted_codes and not import_all and not update_existing:
+        raise HTTPException(400, detail="Zadaj 'codes', 'all': true alebo 'update_existing': true")
 
     upgates_products = _fetch_upgates_products(shop_code)
     by_code = {str(p.get("code")): p for p in upgates_products if p.get("code")}
+
+    all_skus: List[str] = []
+    for p in upgates_products:
+        all_skus.extend(_all_codes_of(p))
+    known = await _known_skus(db, all_skus)
+
+    def is_known(p: Dict[str, Any]) -> bool:
+        return any(c in known for c in _all_codes_of(p))
 
     if import_all:
         selected = list(by_code.values())
         missing: List[str] = []
     else:
-        selected, missing = [], []
-        for c in wanted_codes:
-            if c in by_code:
-                selected.append(by_code[c])
-            else:
-                missing.append(c)
+        selected = [by_code[c] for c in wanted_codes if c in by_code]
+        missing = [c for c in wanted_codes if c not in by_code]
+        if update_existing:
+            chosen = {str(p.get("code")) for p in selected}
+            selected += [p for p in by_code.values() if is_known(p) and str(p.get("code")) not in chosen]
 
     identifier_service = ProductIdentifierService(db)
     now = datetime.utcnow()
     source = f"upgates:{shop_code}"
 
-    imported_products = 0
-    imported_variants = 0
+    stats = {"created_products": 0, "created_variants": 0, "updated_products": 0,
+             "content_saved": 0, "stock_initialized": 0}
     skipped: List[Dict[str, str]] = [{"code": c, "reason": "not found in Upgates"} for c in missing]
 
-    async def _create_product_row(
-        sku: str, name: str, brand: str,
-        group_id: Optional[int],
-        ean: str,
-        parent_code: Optional[str],
-        variant_code: Optional[str],
-        availability: str,
-        stock_val: Any,
-        price_val: Any = None,
-    ) -> bool:
-        existing = (await db.execute(select(Product).where(Product.sku == sku))).scalar_one_or_none()
+    async def _save_content(parent_code: str, p: Dict[str, Any]) -> None:
+        existing = (await db.execute(select(ShopProductContent).where(
+            ShopProductContent.shop_id == shop.id,
+            ShopProductContent.external_code == parent_code,
+        ))).scalar_one_or_none()
         if existing:
-            return False
-        product = Product(
-            sku=sku,
-            name=(name or sku)[:500],
-            brand=(brand or None),
-            group_id=group_id,
-            created_from_source=source,
-        )
-        db.add(product)
+            existing.data = p
+            existing.pulled_at = now
+        else:
+            db.add(ShopProductContent(shop_id=shop.id, external_code=parent_code, data=p, pulled_at=now))
         await db.flush()
+        stats["content_saved"] += 1
+
+    async def _upsert_attributes(product_id: int, params: List[Tuple[str, str]]) -> None:
+        if not params:
+            return
+        await db.execute(delete(ProductVariantAttribute).where(
+            ProductVariantAttribute.product_id == product_id))
+        for order, (name, value) in enumerate(params):
+            db.add(ProductVariantAttribute(
+                product_id=product_id, attribute_name=name,
+                attribute_value=value, display_order=order))
+        await db.flush()
+
+    async def _init_stock(product: Product, stock_val: Any, unit_price: Optional[Decimal]) -> bool:
+        """INITIAL movement + balance. Only when the product has no movements yet."""
+        qty = _to_decimal(stock_val)
+        if qty is None or qty <= 0:
+            return False
+        cnt = (await db.execute(select(func.count()).where(
+            StockMovement.product_id == product.id))).scalar() or 0
+        if cnt:
+            skipped.append({"code": product.sku,
+                            "reason": "stock not imported — product already has stock movements"})
+            return False
+        balance = (await db.execute(select(StockBalance).where(
+            StockBalance.product_id == product.id,
+            StockBalance.warehouse_id == warehouse.id))).scalar_one_or_none()
+        if balance is None:
+            balance = StockBalance(product_id=product.id, warehouse_id=warehouse.id)
+            db.add(balance)
+            await db.flush()
+        avg = unit_price if unit_price is not None else Decimal("0")
+        movement = StockMovement(
+            idempotency_key=f"upgates-init:{shop.id}:{product.id}",
+            product_id=product.id, warehouse_id=warehouse.id,
+            movement_type=MovementType.INITIAL, quantity=qty,
+            unit_cost=unit_price,
+            reference_type="upgates_import", reference_id=product.sku,
+            reference_source=source,
+            balance_after=qty, avg_cost_after=avg, created_by="upgates_import",
+        )
+        db.add(movement)
+        await db.flush()
+        balance.qty_on_hand = qty
+        balance.avg_cost = avg
+        balance.total_value = qty * avg
+        balance.last_movement_at = now
+        balance.last_movement_id = movement.id
+        stats["stock_initialized"] += 1
+        return True
+
+    async def _upsert_shop_product(product: Product, parent_code: str,
+                                   variant_code: Optional[str], obj: Dict[str, Any]) -> None:
+        sp = (await db.execute(select(ShopProduct).where(
+            ShopProduct.shop_id == shop.id, ShopProduct.product_id == product.id,
+        ))).scalar_one_or_none()
+        if sp is None:
+            sp = ShopProduct(shop_id=shop.id, product_id=product.id)
+            db.add(sp)
+        sp.external_code = parent_code
+        sp.variant_code = variant_code
+        sp.parent_code = parent_code if variant_code else None
+        sp.is_variant = variant_code is not None
+        sp.shop_availability = str(obj.get("availability") or "") or None
+        sp.shop_stock = _to_decimal(obj.get("stock"))
+        price = _main_price(obj)
+        if price is not None:
+            sp.shop_price = price
+        sp.last_pull_at = now
+        await db.flush()
+
+    async def _upsert_product_row(
+        sku: str, name: str, brand: str, group_id: Optional[int],
+        obj: Dict[str, Any], parent_code: str, variant_code: Optional[str],
+        params: List[Tuple[str, str]],
+    ) -> Tuple[Product, bool]:
+        product = (await db.execute(select(Product).where(Product.sku == sku))).scalar_one_or_none()
+        created = product is None
+        if created:
+            product = Product(sku=sku, created_from_source=source)
+            db.add(product)
+        # Content fields refresh on both create and update (Upgates owns content)
+        product.name = (name or sku)[:500]
+        product.brand = brand or product.brand
+        if group_id:
+            product.group_id = group_id
+        w = _weight_g(obj)
+        if w is not None:
+            product.weight_g = w
+        await db.flush()
+
+        ean = first_ean(obj)
         if ean:
             try:
-                await identifier_service.add_identifier(product.id, ean, is_primary=True)
+                await identifier_service.add_identifier(product.id, ean, is_primary=created)
             except Exception:
-                pass  # EAN attached to another product — leave for validation
-        try:
-            stock_dec = Decimal(str(stock_val)) if stock_val not in (None, "") else None
-        except Exception:
-            stock_dec = None
-        db.add(ShopProduct(
-            shop_id=shop.id,
-            product_id=product.id,
-            external_code=parent_code or sku,
-            variant_code=variant_code,
-            parent_code=parent_code,
-            is_variant=variant_code is not None,
-            shop_availability=(availability or None),
-            shop_stock=stock_dec,
-            last_pull_at=now,
-        ))
-        await db.flush()
-        return True
+                pass  # already attached (to this or another product)
+        await _upsert_attributes(product.id, params)
+        await _upsert_shop_product(product, parent_code, variant_code, obj)
+        return product, created
 
     for p in selected:
         code = str(p.get("code"))
         title = product_title(p)
         brand = str(p.get("manufacturer") or "")
+        known_product = is_known(p)
+
+        if known_product and not update_existing and not import_all:
+            # explicit codes may include known ones; without update_existing skip
+            skipped.append({"code": code, "reason": "already in DB (update_existing=false)"})
+            continue
+        if known_product and import_all and not update_existing:
+            skipped.append({"code": code, "reason": "already in DB (update_existing=false)"})
+            continue
+
+        await _save_content(code, p)
         variants = [v for v in (p.get("variants") or []) if isinstance(v, dict) and v.get("code")]
 
         if variants:
-            group = (await db.execute(select(ProductGroup).where(ProductGroup.code == code))).scalar_one_or_none()
+            group = (await db.execute(select(ProductGroup).where(
+                ProductGroup.code == code))).scalar_one_or_none()
             if not group:
                 group = ProductGroup(code=code, name=title[:500], brand=brand or None)
                 db.add(group)
                 await db.flush()
+            group.name = title[:500]
+            group.brand = brand or group.brand
+            img = _main_image_url(p)
+            if img:
+                group.main_image_url = img
+
             created_any = False
             for v in variants:
                 vcode = str(v["code"])
+                params = _variant_params(v)
                 ptxt = variant_params_text(v)
                 vname = f"{title} – {ptxt}" if ptxt else f"{title} – {vcode}"
-                created = await _create_product_row(
+                product, created = await _upsert_product_row(
                     sku=vcode, name=vname, brand=brand, group_id=group.id,
-                    ean=first_ean(v), parent_code=code, variant_code=vcode,
-                    availability=str(v.get("availability") or ""),
-                    stock_val=v.get("stock"),
+                    obj=v, parent_code=code, variant_code=vcode, params=params,
                 )
                 if created:
-                    imported_variants += 1
+                    stats["created_variants"] += 1
                     created_any = True
+                if include_stock:
+                    await _init_stock(product, v.get("stock"), _main_price(v) or _main_price(p))
             if created_any:
-                imported_products += 1
-            else:
-                skipped.append({"code": code, "reason": "all variants already in DB"})
+                stats["created_products"] += 1
+            elif known_product:
+                stats["updated_products"] += 1
         else:
-            created = await _create_product_row(
+            product, created = await _upsert_product_row(
                 sku=code, name=title, brand=brand, group_id=None,
-                ean=first_ean(p), parent_code=None, variant_code=None,
-                availability=str(p.get("availability") or ""),
-                stock_val=p.get("stock"),
+                obj=p, parent_code=code, variant_code=None, params=[],
             )
             if created:
-                imported_products += 1
+                stats["created_products"] += 1
             else:
-                skipped.append({"code": code, "reason": "already in DB"})
+                stats["updated_products"] += 1
+            if include_stock:
+                await _init_stock(product, p.get("stock"), _main_price(p))
 
     return {
         "shop": shop_code,
-        "imported_products": imported_products,
-        "imported_variants": imported_variants,
+        **stats,
         "skipped": skipped,
-        "message": f"Importovaných {imported_products} produktov ({imported_variants} variantov) z Upgates",
+        "message": (
+            f"Nové: {stats['created_products']} produktov "
+            f"({stats['created_variants']} variantov), "
+            f"aktualizované: {stats['updated_products']}, "
+            f"sklad inicializovaný: {stats['stock_initialized']}"
+        ),
     }
 
 
