@@ -4,6 +4,7 @@ import { Search, Download, RefreshCw, AlertTriangle } from 'lucide-react';
 import { StatsCard } from '../components/ui/StatsCard';
 import { Button } from '../components/ui/Button.new';
 import { getStockItems, getStockSummary, type StockSummary } from '../api/stock';
+import { UpgatesImportModal } from '../components/UpgatesImportModal';
 
 interface StockItem {
   sku: string;
@@ -26,34 +27,32 @@ export function StockPage() {
   const [summary, setSummary] = useState<StockSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [upgatesModalOpen, setUpgatesModalOpen] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [apiItems, apiSummary] = await Promise.all([getStockItems(), getStockSummary()]);
-        if (cancelled) return;
-        setItems(apiItems.map((it) => ({
-          sku: it.sku,
-          name: it.name,
-          brand: it.brand,
-          onHand: it.on_hand,
-          reserved: it.reserved,
-          available: it.available,
-          avgCost: it.avg_cost,
-          lowStock: it.low_stock,
-        })));
-        setSummary(apiSummary);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Nepodarilo sa načítať sklad');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  const loadData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [apiItems, apiSummary] = await Promise.all([getStockItems(), getStockSummary()]);
+      setItems(apiItems.map((it) => ({
+        sku: it.sku,
+        name: it.name,
+        brand: it.brand,
+        onHand: it.on_hand,
+        reserved: it.reserved,
+        available: it.available,
+        avgCost: it.avg_cost,
+        lowStock: it.low_stock,
+      })));
+      setSummary(apiSummary);
+    } catch (e: any) {
+      setError(e?.message || 'Nepodarilo sa načítať sklad');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadData(); }, []);
 
   const brands = Array.from(new Set(items.map((i) => i.brand).filter(Boolean))).sort();
   const [brandFilter, setBrandFilter] = useState('');
@@ -100,9 +99,9 @@ export function StockPage() {
             <Download size={16} />
             Export CSV
           </Button>
-          <Button variant="primary" disabled title="Pripravujeme — synchronizácia s Upgates">
+          <Button variant="primary" onClick={() => setUpgatesModalOpen(true)}>
             <RefreshCw size={16} />
-            Synchronizovať
+            Stiahnuť z Upgates
           </Button>
         </div>
       </div>
@@ -374,6 +373,13 @@ export function StockPage() {
           </Button>
         </div>
       </div>
+      {upgatesModalOpen && (
+        <UpgatesImportModal
+          shop="biketrek"
+          onClose={() => setUpgatesModalOpen(false)}
+          onImported={loadData}
+        />
+      )}
     </div>
   );
 }
