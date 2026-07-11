@@ -20,10 +20,11 @@ from inventory_hub.database import get_session
 from inventory_hub.settings import settings
 from inventory_hub.db_models import (
     Product, ProductIdentifier, IdentifierType, Supplier, Warehouse,
-    ReceivingStatus
+    ReceivingStatus, MovementType, SupplierProduct
 )
 from inventory_hub.db_models_ext import (
-    ReceivingSession, ReceivingLine, ScanEvent, ScanSessionType, ScanStatus
+    ReceivingSession, ReceivingLine, ScanEvent, ScanSessionType, ScanStatus,
+    StockMovement, StockBalance
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.config_io import load_supplier as load_supplier_config
@@ -302,6 +303,153 @@ async def _get_session_for_supplier(
 
 
 ACTIVE_STATUSES = (ReceivingStatus.new, ReceivingStatus.in_progress, ReceivingStatus.paused)
+
+
+async def _ensure_product_for_line(
+    db: AsyncSession,
+    supplier: Supplier,
+    line: ReceivingLine,
+    prefix: str,
+    invoice_no: str,
+    identifier_service: ProductIdentifierService,
+) -> tuple[Optional[Product], bool, Optional[str]]:
+    """
+    Return (product, created, skip_reason) for a receiving line.
+
+    Order: re-match by EAN -> re-match by supplier SKU -> lookup by SKU
+    (product may exist without identifiers) -> auto-create with provenance
+    created_from_source='invoice:<no>' (approved decision: new products on
+    an invoice are created automatically at finalize).
+    """
+    ean = (line.ean or "").strip()
+    sku_raw = (line.supplier_sku or "").strip()
+
+    if ean:
+        product = await identifier_service.find_product_by_barcode(ean)
+        if product:
+            return product, False, None
+    if sku_raw:
+        product = await identifier_service.find_product_by_identifier(
+            sku_raw, IdentifierType.supplier_sku, supplier.id
+        )
+        if product:
+            return product, False, None
+
+    if not sku_raw and not ean:
+        return None, False, "no supplier SKU and no EAN on line"
+
+    product_sku = f"{prefix}{sku_raw}" if sku_raw else f"{prefix}EAN-{ean}"
+    result = await db.execute(select(Product).where(Product.sku == product_sku))
+    product = result.scalar_one_or_none()
+    created = False
+
+    if not product:
+        product = Product(
+            sku=product_sku,
+            supplier_id=supplier.id,
+            name=(line.description or product_sku)[:500],
+            created_from_source=f"invoice:{invoice_no}",
+            validation_required=True,
+            validation_reason="auto-created from receiving finalize",
+        )
+        db.add(product)
+        await db.flush()
+        created = True
+
+    # Attach identifiers so future scans/imports match this product.
+    if ean:
+        try:
+            await identifier_service.add_identifier(product.id, ean, is_primary=created)
+        except Exception:
+            pass  # e.g. EAN already attached elsewhere — matching above would have found it
+    if sku_raw:
+        try:
+            await identifier_service.add_identifier(
+                product.id, sku_raw, IdentifierType.supplier_sku, supplier_id=supplier.id
+            )
+        except Exception:
+            pass
+
+    # supplier_products link (unique per supplier+sku)
+    if sku_raw:
+        existing_sp = await db.execute(select(SupplierProduct).where(
+            SupplierProduct.supplier_id == supplier.id,
+            SupplierProduct.supplier_sku == sku_raw,
+        ))
+        if existing_sp.scalar_one_or_none() is None:
+            db.add(SupplierProduct(
+                supplier_id=supplier.id,
+                supplier_sku=sku_raw,
+                ean=ean or None,
+                name=(line.description or product_sku)[:500],
+                purchase_price=line.unit_price,
+            ))
+            await db.flush()
+
+    return product, created, None
+
+
+async def _write_stock_for_line(
+    db: AsyncSession,
+    session: ReceivingSession,
+    line: ReceivingLine,
+    product: Product,
+    supplier_code: str,
+) -> StockMovement:
+    """
+    Append immutable RECEIVING_IN stock movement and update stock balance
+    (weighted-average cost) in the same transaction. Idempotent via
+    unique idempotency_key per (session, line).
+    """
+    qty = line.received_qty
+    unit_cost = line.unit_price
+
+    result = await db.execute(select(StockBalance).where(
+        StockBalance.product_id == product.id,
+        StockBalance.warehouse_id == session.warehouse_id,
+    ))
+    balance = result.scalar_one_or_none()
+    if balance is None:
+        balance = StockBalance(product_id=product.id, warehouse_id=session.warehouse_id)
+        db.add(balance)
+        await db.flush()
+
+    old_qty = balance.qty_on_hand or Decimal("0")
+    old_avg = balance.avg_cost or Decimal("0")
+    new_qty = old_qty + qty
+    if unit_cost is not None and new_qty > 0:
+        new_avg = ((old_qty * old_avg) + (qty * unit_cost)) / new_qty
+    else:
+        new_avg = old_avg
+
+    now = datetime.utcnow()
+    movement = StockMovement(
+        idempotency_key=f"receiving:{session.id}:{line.id}",
+        product_id=product.id,
+        warehouse_id=session.warehouse_id,
+        movement_type=MovementType.RECEIVING_IN,
+        quantity=qty,
+        unit_cost=unit_cost,
+        reference_type="receiving_session",
+        reference_id=str(session.id),
+        reference_source=f"{supplier_code}:{session.invoice_number}",
+        balance_after=new_qty,
+        avg_cost_after=new_avg,
+        created_by="receiving",
+    )
+    db.add(movement)
+    await db.flush()
+
+    balance.qty_on_hand = new_qty
+    balance.avg_cost = new_avg
+    balance.total_value = new_qty * new_avg
+    if unit_cost is not None:
+        balance.last_purchase_price = unit_cost
+        balance.last_purchase_at = now
+    balance.last_movement_at = now
+    balance.last_movement_id = movement.id
+
+    return movement
 
 
 # ============================================================================
@@ -626,9 +774,10 @@ async def finalize_session(
     """
     Finalize receiving session (idempotency guard: cannot finalize twice).
 
-    NOTE / TODO: stock_movements + stock_balances are NOT written yet.
-    This requires a product-matching policy decision (what to do with lines
-    that have no product_id). See project plan.
+    Writes the stock ledger transactionally:
+    - auto-creates products for unmatched lines (created_from_source='invoice:...')
+    - appends RECEIVING_IN stock_movements (idempotency_key per session+line)
+    - updates stock_balances with weighted-average cost
     """
     session = await _get_session_for_supplier(db, supplier_code, session_id)
 
@@ -645,6 +794,36 @@ async def finalize_session(
 
     total_scans = await _count_scans(db, session.id)
     unexpected = await _count_unexpected(db, session.id)
+
+    # ── Stock write: movements (immutable ledger) + balances ──────────────
+    supplier = await _get_supplier(db, supplier_code)
+    prefix = _product_code_prefix(supplier_code)
+    identifier_service = ProductIdentifierService(db)
+
+    movements_created = 0
+    products_created = 0
+    skipped_lines: List[Dict[str, Any]] = []
+
+    for line in lines:
+        if line.received_qty <= 0:
+            continue
+        product = None
+        if line.product_id:
+            product = await db.get(Product, line.product_id)
+        if product is None:
+            product, created, skip_reason = await _ensure_product_for_line(
+                db, supplier, line, prefix, session.invoice_number, identifier_service
+            )
+            if product is None:
+                skipped_lines.append({"line_number": line.line_number, "reason": skip_reason})
+                continue
+            if created:
+                products_created += 1
+            line.product_id = product.id
+            if not line.match_method:
+                line.match_method = "auto_created"
+        await _write_stock_for_line(db, session, line, product, supplier_code)
+        movements_created += 1
 
     session.status = ReceivingStatus.completed
     session.finished_at = datetime.utcnow()
@@ -691,7 +870,10 @@ async def finalize_session(
         "total_ordered": total_ordered,
         "total_received": total_received,
         "received_items_count": received_count,
-        "stock_movements_created": False,  # TODO: not implemented yet
+        "stock_movements_created": movements_created > 0,
+        "movements_created": movements_created,
+        "products_created": products_created,
+        "skipped_lines": skipped_lines,
         "message": f"Príjem faktúry {session.invoice_number} dokončený",
     }
 
@@ -841,13 +1023,10 @@ async def reopen_invoice(
 
     - If a completed DB session exists: put it into 'paused' (resumable via
       the standard resume flow) and mark the invoice index as in_progress
-      with current_session_id.
+      with current_session_id. Blocked if the session already wrote stock
+      movements (re-finalizing would double the stock).
     - If no DB session exists (invoice processed via legacy flow): just flip
       the invoice index back to 'new' so a fresh session can be created.
-
-    Safe today because finalize does not write stock movements yet.
-    Once stock movements are implemented, reopen must be blocked (or must
-    create compensating movements) when movements exist for the session.
     """
     supplier = await _get_supplier(db, supplier_code)
 
@@ -866,6 +1045,23 @@ async def reopen_invoice(
     session = result.scalar_one_or_none()
 
     if session:
+        movements_cnt = (await db.execute(
+            select(func.count()).where(
+                StockMovement.reference_type == "receiving_session",
+                StockMovement.reference_id == str(session.id),
+            )
+        )).scalar() or 0
+        if movements_cnt:
+            raise HTTPException(
+                409,
+                detail=(
+                    f"Faktúru {invoice_no} nemožno znovu otvoriť — príjem už zapísal "
+                    f"{movements_cnt} skladových pohybov (session {session.id}). "
+                    "Opakované dokončenie by zdvojilo sklad. Ak treba korekciu, "
+                    "použi skladovú úpravu (adjustment), nie reopen."
+                ),
+            )
+
         session.status = ReceivingStatus.paused
         session.finished_at = None
         session.paused_at = datetime.utcnow()

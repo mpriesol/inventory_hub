@@ -411,9 +411,10 @@ class SupplierFeedItemRaw(Base):
 # 8. SUPPLIER PRODUCTS
 # ============================================================================
 
-class SupplierProduct(TimestampMixin, Base):
+class SupplierProduct(Base):
     __tablename__ = "supplier_products"
-    # Note: updated_at uses onupdate, not created_at trigger
+    # Note: table has first_seen_at/last_seen_at/updated_at, NO created_at
+    # (do not inherit TimestampMixin — its created_at column doesn't exist in DB)
     
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     supplier_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False)
@@ -442,6 +443,9 @@ class SupplierProduct(TimestampMixin, Base):
     last_seen_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("supplier_feed_runs.id", ondelete="SET NULL"))
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
     
     # Relationships
     supplier: Mapped["Supplier"] = relationship(back_populates="supplier_products")
