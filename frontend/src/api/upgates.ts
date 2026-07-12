@@ -27,6 +27,8 @@ export interface UpgatesImportResult {
   updated_products: number;
   content_saved: number;
   stock_initialized: number;
+  ean_conflicts: number;
+  ean_conflict_details: { sku: string; ean: string }[];
   skipped: { code: string; reason: string }[];
   message: string;
 }

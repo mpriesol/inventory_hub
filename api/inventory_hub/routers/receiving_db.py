@@ -357,16 +357,20 @@ async def _ensure_product_for_line(
         created = True
 
     # Attach identifiers so future scans/imports match this product.
+    # SAVEPOINT (begin_nested): a unique-index conflict (duplicate EAN in
+    # source data) must roll back only this insert, not the whole finalize.
     if ean:
         try:
-            await identifier_service.add_identifier(product.id, ean, is_primary=created)
+            async with db.begin_nested():
+                await identifier_service.add_identifier(product.id, ean, is_primary=created)
         except Exception:
-            pass  # e.g. EAN already attached elsewhere — matching above would have found it
+            pass  # EAN already attached elsewhere — reported by validation later
     if sku_raw:
         try:
-            await identifier_service.add_identifier(
-                product.id, sku_raw, IdentifierType.supplier_sku, supplier_id=supplier.id
-            )
+            async with db.begin_nested():
+                await identifier_service.add_identifier(
+                    product.id, sku_raw, IdentifierType.supplier_sku, supplier_id=supplier.id
+                )
         except Exception:
             pass
 

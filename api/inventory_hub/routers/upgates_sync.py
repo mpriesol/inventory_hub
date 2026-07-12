@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.database import get_session
 from inventory_hub.db_models import (
-    Product, ProductGroup, Shop, Warehouse, MovementType,
+    Product, ProductGroup, Shop, Warehouse, MovementType, ProductIdentifier,
 )
 from inventory_hub.db_models_ext import (
     ShopProduct, ShopProductContent, ProductVariantAttribute,
@@ -166,6 +166,39 @@ def _to_decimal(val: Any) -> Optional[Decimal]:
         return None
 
 
+async def _add_identifier_safe(
+    db: AsyncSession,
+    identifier_service: ProductIdentifierService,
+    product_id: int,
+    value: str,
+    is_primary: bool = False,
+) -> bool:
+    """
+    Add an identifier without ever poisoning the outer transaction.
+
+    Real shop data contains duplicate EANs (e.g. the same EAN on two colour
+    variants). EAN/UPC values are globally unique in our DB, so a plain
+    insert would raise and abort the whole import transaction. We pre-check
+    the exact value and additionally guard the insert with a SAVEPOINT
+    (begin_nested), so any residual conflict rolls back only this one insert.
+    Returns True if added, False if skipped.
+    """
+    value = (value or "").strip()
+    if not value:
+        return False
+    existing = (await db.execute(
+        select(ProductIdentifier.id).where(ProductIdentifier.value == value).limit(1)
+    )).scalar_one_or_none()
+    if existing is not None:
+        return False
+    try:
+        async with db.begin_nested():
+            await identifier_service.add_identifier(product_id, value, is_primary=is_primary)
+        return True
+    except Exception:
+        return False
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 @router.get("/{shop_code}/upgates/products/preview")
@@ -252,7 +285,8 @@ async def import_upgates_products(
     source = f"upgates:{shop_code}"
 
     stats = {"created_products": 0, "created_variants": 0, "updated_products": 0,
-             "content_saved": 0, "stock_initialized": 0}
+             "content_saved": 0, "stock_initialized": 0, "ean_conflicts": 0}
+    ean_conflicts: List[Dict[str, str]] = []
     skipped: List[Dict[str, str]] = [{"code": c, "reason": "not found in Upgates"} for c in missing]
 
     async def _save_content(parent_code: str, p: Dict[str, Any]) -> None:
@@ -341,7 +375,10 @@ async def import_upgates_products(
         sku: str, name: str, brand: str, group_id: Optional[int],
         obj: Dict[str, Any], parent_code: str, variant_code: Optional[str],
         params: List[Tuple[str, str]],
-    ) -> Tuple[Product, bool]:
+    ) -> Tuple[Optional[Product], bool]:
+        if len(sku) > 100:
+            skipped.append({"code": sku[:100], "reason": "SKU longer than 100 chars — skipped"})
+            return None, False
         product = (await db.execute(select(Product).where(Product.sku == sku))).scalar_one_or_none()
         created = product is None
         if created:
@@ -349,7 +386,7 @@ async def import_upgates_products(
             db.add(product)
         # Content fields refresh on both create and update (Upgates owns content)
         product.name = (name or sku)[:500]
-        product.brand = brand or product.brand
+        product.brand = (brand or product.brand or "")[:100] or None
         if group_id:
             product.group_id = group_id
         w = _weight_g(obj)
@@ -359,10 +396,11 @@ async def import_upgates_products(
 
         ean = first_ean(obj)
         if ean:
-            try:
-                await identifier_service.add_identifier(product.id, ean, is_primary=created)
-            except Exception:
-                pass  # already attached (to this or another product)
+            added = await _add_identifier_safe(db, identifier_service, product.id, ean, is_primary=created)
+            if not added:
+                stats["ean_conflicts"] += 1
+                if len(ean_conflicts) < 100:
+                    ean_conflicts.append({"sku": sku, "ean": ean})
         await _upsert_attributes(product.id, params)
         await _upsert_shop_product(product, parent_code, variant_code, obj)
         return product, created
@@ -388,11 +426,11 @@ async def import_upgates_products(
             group = (await db.execute(select(ProductGroup).where(
                 ProductGroup.code == code))).scalar_one_or_none()
             if not group:
-                group = ProductGroup(code=code, name=title[:500], brand=brand or None)
+                group = ProductGroup(code=code, name=title[:500], brand=(brand or "")[:100] or None)
                 db.add(group)
                 await db.flush()
             group.name = title[:500]
-            group.brand = brand or group.brand
+            group.brand = (brand or group.brand or "")[:100] or None
             img = _main_image_url(p)
             if img:
                 group.main_image_url = img
@@ -407,6 +445,8 @@ async def import_upgates_products(
                     sku=vcode, name=vname, brand=brand, group_id=group.id,
                     obj=v, parent_code=code, variant_code=vcode, params=params,
                 )
+                if product is None:
+                    continue
                 if created:
                     stats["created_variants"] += 1
                     created_any = True
@@ -421,6 +461,8 @@ async def import_upgates_products(
                 sku=code, name=title, brand=brand, group_id=None,
                 obj=p, parent_code=code, variant_code=None, params=[],
             )
+            if product is None:
+                continue
             if created:
                 stats["created_products"] += 1
             else:
@@ -428,16 +470,23 @@ async def import_upgates_products(
             if include_stock:
                 await _init_stock(product, p.get("stock"), _main_price(p))
 
+    msg = (
+        f"Nové: {stats['created_products']} produktov "
+        f"({stats['created_variants']} variantov), "
+        f"aktualizované: {stats['updated_products']}, "
+        f"sklad inicializovaný: {stats['stock_initialized']}"
+    )
+    if stats["ean_conflicts"]:
+        msg += (
+            f" · ⚠ {stats['ean_conflicts']} duplicitných EAN preskočených "
+            f"(EAN patrí inému produktu — oprav v Upgates)"
+        )
     return {
         "shop": shop_code,
         **stats,
+        "ean_conflict_details": ean_conflicts,
         "skipped": skipped,
-        "message": (
-            f"Nové: {stats['created_products']} produktov "
-            f"({stats['created_variants']} variantov), "
-            f"aktualizované: {stats['updated_products']}, "
-            f"sklad inicializovaný: {stats['stock_initialized']}"
-        ),
+        "message": msg,
     }
 
 
