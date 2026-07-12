@@ -27,7 +27,7 @@ export function StockPage() {
   const [summary, setSummary] = useState<StockSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [upgatesModalOpen, setUpgatesModalOpen] = useState(false);
+  const [upgatesShop, setUpgatesShop] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -99,9 +99,17 @@ export function StockPage() {
             <Download size={16} />
             Export CSV
           </Button>
-          <Button variant="primary" onClick={() => setUpgatesModalOpen(true)}>
+          <Button variant="primary" onClick={() => setUpgatesShop('biketrek')}>
             <RefreshCw size={16} />
-            Stiahnuť z Upgates
+            Stiahnuť z Upgates (BikeTrek)
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setUpgatesShop('xtrek')}
+            title="xTrek zatiaľ nie je na Upgates — funkčné po migrácii"
+          >
+            <RefreshCw size={16} />
+            Stiahnuť z Upgates (xTrek)
           </Button>
         </div>
       </div>
@@ -373,10 +381,10 @@ export function StockPage() {
           </Button>
         </div>
       </div>
-      {upgatesModalOpen && (
+      {upgatesShop && (
         <UpgatesImportModal
-          shop="biketrek"
-          onClose={() => setUpgatesModalOpen(false)}
+          shop={upgatesShop}
+          onClose={() => setUpgatesShop(null)}
           onImported={loadData}
         />
       )}

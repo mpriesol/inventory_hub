@@ -4,6 +4,7 @@
 import { API_BASE, fetchJSON } from "./client";
 
 export interface UpgatesNewProduct {
+  key: string;
   code: string;
   title: string;
   manufacturer: string;
@@ -16,8 +17,12 @@ export interface UpgatesPreview {
   shop: string;
   total_in_upgates: number;
   already_in_db: number;
+  without_any_code: number;
   new_count: number;
   new_products: UpgatesNewProduct[];
+  catalog_source: 'cache' | 'api';
+  catalog_pulled_at: string;
+  catalog_age_s: number;
 }
 
 export interface UpgatesImportResult {
@@ -38,8 +43,10 @@ export interface UpgatesImportOptions {
   includeStock?: boolean;
 }
 
-export async function getUpgatesPreview(shop: string): Promise<UpgatesPreview> {
-  return fetchJSON<UpgatesPreview>(`${API_BASE}/shops/${encodeURIComponent(shop)}/upgates/products/preview`);
+export async function getUpgatesPreview(shop: string, refresh = false): Promise<UpgatesPreview> {
+  return fetchJSON<UpgatesPreview>(
+    `${API_BASE}/shops/${encodeURIComponent(shop)}/upgates/products/preview${refresh ? '?refresh=true' : ''}`,
+  );
 }
 
 export async function importUpgatesProducts(

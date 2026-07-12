@@ -26,14 +26,14 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [updateExisting, setUpdateExisting] = useState(false);
   const [includeStock, setIncludeStock] = useState(true);
 
-  const loadPreview = async () => {
+  const loadPreview = async (refresh = false) => {
     setLoading(true);
     setError(null);
-    setResult(null);
+    if (refresh) setResult(null);
     try {
-      const data = await getUpgatesPreview(shop);
+      const data = await getUpgatesPreview(shop, refresh);
       setPreview(data);
-      setSelected(new Set(data.new_products.map((p) => p.code)));
+      setSelected(new Set(data.new_products.map((p) => p.key)));
     } catch (e: any) {
       setError(e?.message || 'Nepodarilo sa načítať produkty z Upgates');
     } finally {
@@ -41,7 +41,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
     }
   };
 
-  useEffect(() => { loadPreview(); /* eslint-disable-next-line */ }, [shop]);
+  useEffect(() => { loadPreview(false); /* eslint-disable-next-line */ }, [shop]);
 
   const allChecked = useMemo(
     () => !!preview && preview.new_products.length > 0 && selected.size === preview.new_products.length,
@@ -58,7 +58,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
 
   const toggleAll = () => {
     if (!preview) return;
-    setSelected(allChecked ? new Set() : new Set(preview.new_products.map((p) => p.code)));
+    setSelected(allChecked ? new Set() : new Set(preview.new_products.map((p) => p.key)));
   };
 
   const handleImport = async () => {
@@ -98,16 +98,30 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
         >
           <div>
             <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-              Stiahnuť z Upgates
+              Stiahnuť z Upgates ({shop})
             </h2>
             <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-              Shop: {shop}
-              {preview && ` · v Upgates: ${preview.total_in_upgates} · už v databáze: ${preview.already_in_db} · nové: ${preview.new_count}`}
+              {preview && `V Upgates: ${preview.total_in_upgates} · už v databáze: ${preview.already_in_db} · nové: ${preview.new_count}`}
+              {preview && preview.without_any_code > 0 && ` · bez kódu: ${preview.without_any_code}`}
+              {preview && (preview.catalog_source === 'cache'
+                ? ` · katalóg z cache (${Math.round(preview.catalog_age_s / 60)} min)`
+                : ' · katalóg čerstvo stiahnutý')}
             </p>
           </div>
-          <button onClick={onClose} style={{ color: 'var(--color-text-tertiary)' }}>
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-3">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => loadPreview(true)}
+              disabled={loading || importing}
+              title="Stiahne čerstvý katalóg z Upgates API (~1 call na 100 produktov)"
+            >
+              <RefreshCw size={14} /> Obnoviť z Upgates
+            </Button>
+            <button onClick={onClose} style={{ color: 'var(--color-text-tertiary)' }}>
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
@@ -164,12 +178,12 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               </thead>
               <tbody className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
                 {preview.new_products.map((p) => (
-                  <tr key={p.code} className="cursor-pointer" onClick={() => toggle(p.code)}>
+                  <tr key={p.key} className="cursor-pointer" onClick={() => toggle(p.key)}>
                     <td className="px-2 py-2">
                       <input
                         type="checkbox"
-                        checked={selected.has(p.code)}
-                        onChange={() => toggle(p.code)}
+                        checked={selected.has(p.key)}
+                        onChange={() => toggle(p.key)}
                         onClick={(e) => e.stopPropagation()}
                       />
                     </td>

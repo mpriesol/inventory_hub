@@ -29,8 +29,10 @@ Endpoints:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -38,6 +40,7 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.database import get_session
+from inventory_hub.settings import settings
 from inventory_hub.db_models import (
     Product, ProductGroup, Shop, Warehouse, MovementType, ProductIdentifier,
 )
@@ -71,12 +74,85 @@ async def _default_warehouse(db: AsyncSession) -> Warehouse:
     return wh
 
 
-def _fetch_upgates_products(shop_code: str) -> List[Dict[str, Any]]:
+# ── Catalog cache ────────────────────────────────────────────────────────
+# A full Upgates listing costs ~1 API call per 100 products (17 calls for
+# ~1700 products) and API calls are billed. We cache the pulled catalog on
+# disk per shop; import and post-import refresh read the cache (0 calls).
+# A fresh pull happens only when the cache is older than the TTL or the
+# user explicitly asks for it (refresh=true).
+
+PREVIEW_CACHE_TTL_S = 600     # preview reuses cache up to 10 min old
+IMPORT_CACHE_TTL_S = 1800     # import reuses cache up to 30 min old
+
+
+def _cache_path(shop_code: str) -> Path:
+    return Path(settings.INVENTORY_DATA_ROOT) / "shops" / shop_code / "cache" / "upgates_products.json"
+
+
+def _cache_load(shop_code: str) -> Optional[Dict[str, Any]]:
+    path = _cache_path(shop_code)
+    try:
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _cache_save(shop_code: str, products: List[Dict[str, Any]]) -> None:
+    path = _cache_path(shop_code)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "pulled_at": datetime.utcnow().isoformat(),
+            "products": products,
+        }, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cache_age_s(cache: Dict[str, Any]) -> Optional[int]:
+    try:
+        pulled = datetime.fromisoformat(cache["pulled_at"])
+        return int((datetime.utcnow() - pulled).total_seconds())
+    except Exception:
+        return None
+
+
+def _fetch_upgates_products(
+    shop_code: str, ttl_s: int, force_refresh: bool = False,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Return (products, meta). meta: source cache/api, pulled_at, cache_age_s."""
+    if not force_refresh:
+        cache = _cache_load(shop_code)
+        if cache:
+            age = _cache_age_s(cache)
+            if age is not None and age <= ttl_s:
+                return cache.get("products") or [], {
+                    "source": "cache", "pulled_at": cache.get("pulled_at"), "cache_age_s": age,
+                }
     try:
         client = UpgatesClient.from_shop(shop_code)
-        return list(client.iter_products())
+        products = list(client.iter_products())
     except UpgatesError as e:
         raise HTTPException(502, detail=str(e))
+    _cache_save(shop_code, products)
+    return products, {"source": "api", "pulled_at": datetime.utcnow().isoformat(), "cache_age_s": 0}
+
+
+def _product_key(p: Dict[str, Any]) -> str:
+    """
+    Stable selection key for an Upgates product. Real data contains products
+    with an EMPTY parent code whose variants do have codes — key falls back
+    to the first variant code so such products can be listed and imported.
+    """
+    code = str(p.get("code") or "").strip()
+    if code:
+        return code
+    for v in p.get("variants") or []:
+        if isinstance(v, dict) and str(v.get("code") or "").strip():
+            return str(v["code"]).strip()
+    return ""
 
 
 async def _known_skus(db: AsyncSession, skus: List[str]) -> set:
@@ -204,11 +280,16 @@ async def _add_identifier_safe(
 @router.get("/{shop_code}/upgates/products/preview")
 async def preview_upgates_products(
     shop_code: str,
+    refresh: bool = False,
     db: AsyncSession = Depends(get_session),
 ):
-    """Compare Upgates products with local DB; list products not yet imported."""
+    """Compare Upgates products with local DB; list products not yet imported.
+
+    refresh=false reuses the on-disk catalog cache (0 API calls) when it is
+    younger than PREVIEW_CACHE_TTL_S; refresh=true forces a fresh pull."""
     await _get_shop(db, shop_code)
-    upgates_products = _fetch_upgates_products(shop_code)
+    upgates_products, meta = _fetch_upgates_products(
+        shop_code, ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh)
 
     all_skus: List[str] = []
     for p in upgates_products:
@@ -217,15 +298,19 @@ async def preview_upgates_products(
 
     new_items: List[Dict[str, Any]] = []
     known_count = 0
+    no_key_count = 0
     for p in upgates_products:
-        codes = _all_codes_of(p)
-        if not codes:
+        key = _product_key(p)
+        if not key:
+            no_key_count += 1
             continue
+        codes = _all_codes_of(p)
         if any(c in known for c in codes):
             known_count += 1
             continue
         new_items.append({
-            "code": str(p.get("code") or ""),
+            "key": key,
+            "code": str(p.get("code") or "") or key,
             "title": product_title(p),
             "manufacturer": p.get("manufacturer") or "",
             "variants_count": len(p.get("variants") or []),
@@ -237,8 +322,12 @@ async def preview_upgates_products(
         "shop": shop_code,
         "total_in_upgates": len(upgates_products),
         "already_in_db": known_count,
+        "without_any_code": no_key_count,
         "new_count": len(new_items),
         "new_products": new_items,
+        "catalog_source": meta["source"],
+        "catalog_pulled_at": meta["pulled_at"],
+        "catalog_age_s": meta["cache_age_s"],
     }
 
 
@@ -259,8 +348,12 @@ async def import_upgates_products(
     if not wanted_codes and not import_all and not update_existing:
         raise HTTPException(400, detail="Zadaj 'codes', 'all': true alebo 'update_existing': true")
 
-    upgates_products = _fetch_upgates_products(shop_code)
-    by_code = {str(p.get("code")): p for p in upgates_products if p.get("code")}
+    upgates_products, meta = _fetch_upgates_products(shop_code, ttl_s=IMPORT_CACHE_TTL_S)
+    by_code = {}
+    for p in upgates_products:
+        k = _product_key(p)
+        if k:
+            by_code[k] = p
 
     all_skus: List[str] = []
     for p in upgates_products:
@@ -277,8 +370,8 @@ async def import_upgates_products(
         selected = [by_code[c] for c in wanted_codes if c in by_code]
         missing = [c for c in wanted_codes if c not in by_code]
         if update_existing:
-            chosen = {str(p.get("code")) for p in selected}
-            selected += [p for p in by_code.values() if is_known(p) and str(p.get("code")) not in chosen]
+            chosen = {_product_key(p) for p in selected}
+            selected += [p for p in by_code.values() if is_known(p) and _product_key(p) not in chosen]
 
     identifier_service = ProductIdentifierService(db)
     now = datetime.utcnow()
@@ -406,7 +499,7 @@ async def import_upgates_products(
         return product, created
 
     for p in selected:
-        code = str(p.get("code"))
+        code = _product_key(p)
         title = product_title(p)
         brand = str(p.get("manufacturer") or "")
         known_product = is_known(p)
