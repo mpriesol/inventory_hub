@@ -592,3 +592,164 @@ async def upgates_connection_status(shop_code: str, db: AsyncSession = Depends(g
         return client.check_connection()
     except UpgatesError as e:
         raise HTTPException(502, detail=str(e))
+
+
+# ============================================================================
+# PUSH: upload products from local DB into a target shop (BikeTrek / xTrek)
+# ============================================================================
+
+SERVER_ASSIGNED_KEYS = {"product_id", "url", "urls", "admin_url", "seo_url"}
+VARIANT_SERVER_KEYS = {"variant_id", "product_id", "url"}
+
+
+def _build_push_payload(content: Dict[str, Any], local_stock: Dict[str, float]) -> Dict[str, Any]:
+    """
+    Upgates product payload for POST /products, built from the vault content.
+    Server-assigned identifiers are stripped; stock values are replaced by
+    LOCAL stock (local DB is the source of truth for quantities).
+    """
+    p = {k: v for k, v in content.items() if k not in SERVER_ASSIGNED_KEYS}
+    code = str(p.get("code") or "")
+    if code in local_stock:
+        p["stock"] = local_stock[code]
+    variants = []
+    for v in p.get("variants") or []:
+        if not isinstance(v, dict):
+            continue
+        nv = {k: x for k, x in v.items() if k not in VARIANT_SERVER_KEYS}
+        vcode = str(nv.get("code") or "")
+        if vcode in local_stock:
+            nv["stock"] = local_stock[vcode]
+        variants.append(nv)
+    if variants:
+        p["variants"] = variants
+    return p
+
+
+@router.post("/{shop_code}/upgates/products/push")
+async def push_products_to_shop(
+    shop_code: str,
+    payload: Dict[str, Any] = Body(default={}),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Upload selected local products into the target shop via Upgates API
+    (POST /products, batches of max 100 per request per API docs).
+
+    Body: {"skus": ["PL-ABC", ...]}
+    Content source: shop_product_content vault (pulled from any shop).
+    Products without vault content (e.g. created from an invoice and not
+    yet listed anywhere) are skipped with a reason. Stock values sent are
+    the LOCAL stock balances. Raw request/response of every batch is
+    logged to shops/{shop}/logs/ for diagnosis.
+    """
+    shop = await _get_shop(db, shop_code)
+    skus: List[str] = payload.get("skus") or []
+    if not skus:
+        raise HTTPException(400, detail="Zadaj 'skus'")
+
+    try:
+        client = UpgatesClient.from_shop(shop_code)
+    except UpgatesError as e:
+        raise HTTPException(502, detail=str(e))
+
+    # Resolve SKUs -> parent external codes + collect local stock per sku
+    parents: Dict[str, Dict[str, Any]] = {}   # parent_code -> vault data
+    local_stock: Dict[str, float] = {}
+    skipped: List[Dict[str, str]] = []
+    resolved_products: Dict[str, List[Product]] = {}  # parent -> local products
+
+    for sku in skus:
+        product = (await db.execute(select(Product).where(Product.sku == sku))).scalar_one_or_none()
+        if not product:
+            skipped.append({"sku": sku, "reason": "nie je v lokálnej DB"})
+            continue
+        sp = (await db.execute(select(ShopProduct).where(
+            ShopProduct.product_id == product.id).limit(1))).scalar_one_or_none()
+        parent = (sp.parent_code or sp.external_code) if sp else None
+        if not parent:
+            skipped.append({"sku": sku, "reason": "bez obsahu — produkt zatiaľ nie je zalistovaný v žiadnom shope (vznikol z faktúry)"})
+            continue
+        if parent not in parents:
+            content = (await db.execute(select(ShopProductContent).where(
+                ShopProductContent.external_code == parent).limit(1))).scalar_one_or_none()
+            if not content or not isinstance(content.data, dict):
+                skipped.append({"sku": sku, "reason": f"chýba uložený obsah pre {parent} — spusti Stiahnuť z Upgates"})
+                continue
+            parents[parent] = content.data
+            # Map ALL local sibling variants of this parent — the push sends
+            # the complete product incl. every variant, so every local row
+            # must get a target-shop mapping.
+            siblings = (await db.execute(
+                select(Product)
+                .join(ShopProduct, ShopProduct.product_id == Product.id)
+                .where((ShopProduct.parent_code == parent) | (ShopProduct.external_code == parent))
+                .distinct()
+            )).scalars().all()
+            resolved_products[parent] = list(siblings)
+        if not any(pr.id == product.id for pr in resolved_products.get(parent, [])):
+            resolved_products.setdefault(parent, []).append(product)
+        bal = (await db.execute(select(func.coalesce(func.sum(StockBalance.qty_on_hand), 0)).where(
+            StockBalance.product_id == product.id))).scalar()
+        local_stock[sku] = float(bal or 0)
+
+    # Duplicate-target guard: skip parents already mapped in the target shop
+    to_send: List[Dict[str, Any]] = []
+    for parent, data in parents.items():
+        existing = (await db.execute(select(ShopProduct.id).where(
+            ShopProduct.shop_id == shop.id,
+            ShopProduct.external_code == parent).limit(1))).scalar_one_or_none()
+        if existing is not None:
+            skipped.append({"sku": parent, "reason": f"už existuje v shope {shop_code}"})
+            continue
+        to_send.append(_build_push_payload(data, local_stock))
+
+    now = datetime.utcnow()
+    pushed = 0
+    batches: List[Dict[str, Any]] = []
+    log_dir = Path(settings.INVENTORY_DATA_ROOT) / "shops" / shop_code / "logs"
+
+    for i in range(0, len(to_send), 100):
+        batch = to_send[i:i + 100]
+        try:
+            resp = client.post("products", {"products": batch})
+        except UpgatesError as e:
+            batches.append({"batch": i // 100 + 1, "sent": len(batch), "error": str(e)})
+            continue
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / f"upgates_push_batch{i // 100 + 1}.json").write_text(
+                json.dumps({"request": {"products": batch}, "response": resp},
+                           ensure_ascii=False, indent=2)[:2_000_000], encoding="utf-8")
+        except Exception:
+            pass
+        msgs = resp.get("messages") or []
+        batches.append({"batch": i // 100 + 1, "sent": len(batch), "messages": msgs})
+        # Optimistic mapping for sent parents without error messages
+        sent_codes = {str(p.get("code")) for p in batch}
+        error_codes = {str(m.get("code")) for m in msgs if isinstance(m, dict) and m.get("code")}
+        for parent in sent_codes - error_codes:
+            for product in resolved_products.get(parent, []):
+                sp = (await db.execute(select(ShopProduct).where(
+                    ShopProduct.shop_id == shop.id,
+                    ShopProduct.product_id == product.id).limit(1))).scalar_one_or_none()
+                if sp is None:
+                    db.add(ShopProduct(
+                        shop_id=shop.id, product_id=product.id,
+                        external_code=parent,
+                        variant_code=product.sku if product.sku != parent else None,
+                        parent_code=parent if product.sku != parent else None,
+                        is_variant=product.sku != parent,
+                        last_pull_at=now,
+                    ))
+            pushed += 1
+    await db.flush()
+
+    return {
+        "shop": shop_code,
+        "pushed_products": pushed,
+        "skipped": skipped,
+        "batches": batches,
+        "message": f"Odoslaných {pushed} produktov do {shop_code}"
+                   + (f", preskočených {len(skipped)}" if skipped else ""),
+    }

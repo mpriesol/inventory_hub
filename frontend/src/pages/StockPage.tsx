@@ -4,6 +4,7 @@ import { Search, Download, RefreshCw, AlertTriangle } from 'lucide-react';
 import { StatsCard } from '../components/ui/StatsCard';
 import { Button } from '../components/ui/Button.new';
 import { getStockItems, getStockSummary, type StockSummary } from '../api/stock';
+import { pushProductsToShop } from '../api/upgates';
 import { UpgatesImportModal } from '../components/UpgatesImportModal';
 
 interface StockItem {
@@ -17,6 +18,8 @@ interface StockItem {
   lowStock: boolean;
 }
 
+const deaccent = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
 export function StockPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -28,6 +31,9 @@ export function StockPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [upgatesShop, setUpgatesShop] = useState<string | null>(null);
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
+  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
+  const [bulkPushing, setBulkPushing] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -58,10 +64,11 @@ export function StockPage() {
   const [brandFilter, setBrandFilter] = useState('');
 
   const filteredItems = items.filter((item) => {
+    const q = deaccent(search);
     const matchesSearch = !search ||
-      item.sku.toLowerCase().includes(search.toLowerCase()) ||
-      item.name.toLowerCase().includes(search.toLowerCase()) ||
-      item.brand.toLowerCase().includes(search.toLowerCase());
+      deaccent(item.sku).includes(q) ||
+      deaccent(item.name).includes(q) ||
+      deaccent(item.brand).includes(q);
 
     const matchesBrand = !brandFilter || item.brand === brandFilter;
     const matchesLowStock = !lowStockOnly || item.lowStock;
@@ -185,6 +192,48 @@ export function StockPage() {
       </div>
 
       {/* Table */}
+
+      {selectedSkus.size > 0 && (
+        <div
+          className="flex items-center gap-3 mb-3 rounded-lg border px-4 py-2"
+          style={{ borderColor: 'var(--color-accent)', backgroundColor: 'var(--color-bg-secondary)' }}
+        >
+          <span className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
+            Vybraných: {selectedSkus.size}
+          </span>
+          {['biketrek', 'xtrek'].map((shop) => (
+            <Button
+              key={shop}
+              variant="secondary"
+              size="sm"
+              disabled={bulkPushing !== null}
+              onClick={async () => {
+                setBulkPushing(shop);
+                setBulkMsg(null);
+                try {
+                  const res = await pushProductsToShop(shop, Array.from(selectedSkus));
+                  setBulkMsg(res.message + (res.skipped.length ? ` — napr.: ${res.skipped[0].sku}: ${res.skipped[0].reason}` : ''));
+                  setSelectedSkus(new Set());
+                  await loadData();
+                } catch (e: any) {
+                  setBulkMsg(e?.message || 'Upload zlyhal');
+                } finally {
+                  setBulkPushing(null);
+                }
+              }}
+            >
+              {bulkPushing === shop ? 'Nahrávam…' : `Upload do ${shop}`}
+            </Button>
+          ))}
+          <button className="text-xs underline" style={{ color: 'var(--color-text-tertiary)' }} onClick={() => setSelectedSkus(new Set())}>
+            Zrušiť výber
+          </button>
+        </div>
+      )}
+      {bulkMsg && (
+        <div className="mb-3 text-sm" style={{ color: 'var(--color-text-secondary)' }}>{bulkMsg}</div>
+      )}
+
       <div
         className="rounded-xl border overflow-hidden"
         style={{
@@ -201,6 +250,19 @@ export function StockPage() {
                 borderColor: 'var(--color-border-subtle)',
               }}
             >
+              <th className="w-8 px-3 py-3">
+                <input
+                  type="checkbox"
+                  checked={filteredItems.length > 0 && filteredItems.every((i) => selectedSkus.has(i.sku))}
+                  onChange={() => {
+                    setSelectedSkus((prev) =>
+                      filteredItems.every((i) => prev.has(i.sku))
+                        ? new Set()
+                        : new Set(filteredItems.map((i) => i.sku)),
+                    );
+                  }}
+                />
+              </th>
               <th
                 className="text-left px-4 py-3 text-xs font-medium uppercase tracking-wider"
                 style={{ color: 'var(--color-text-tertiary)' }}
@@ -261,7 +323,19 @@ export function StockPage() {
                   e.currentTarget.style.backgroundColor = 'transparent';
                 }}
                 onClick={() => navigate(`/products/${item.sku}`)}
+                data-row-sku={item.sku}
               >
+                <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedSkus.has(item.sku)}
+                    onChange={() => setSelectedSkus((prev) => {
+                      const next = new Set(prev);
+                      next.has(item.sku) ? next.delete(item.sku) : next.add(item.sku);
+                      return next;
+                    })}
+                  />
+                </td>
                 <td className="px-4 py-3">
                   <span
                     className="text-sm"

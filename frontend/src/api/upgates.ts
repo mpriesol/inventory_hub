@@ -64,3 +64,19 @@ export async function importUpgatesProducts(
     }),
   });
 }
+
+export interface UpgatesPushResult {
+  shop: string;
+  pushed_products: number;
+  skipped: { sku: string; reason: string }[];
+  batches: any[];
+  message: string;
+}
+
+export async function pushProductsToShop(shop: string, skus: string[]): Promise<UpgatesPushResult> {
+  return fetchJSON<UpgatesPushResult>(`${API_BASE}/shops/${encodeURIComponent(shop)}/upgates/products/push`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skus }),
+  });
+}

@@ -30,3 +30,25 @@ export async function getStockItems(): Promise<StockItem[]> {
 export async function getStockSummary(): Promise<StockSummary> {
   return fetchJSON<StockSummary>(`${API_BASE}/stock/summary`);
 }
+
+export interface ProductDetail {
+  sku: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  weight_g: number | null;
+  created_from_source: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  validation_required: boolean;
+  group: { code: string; name: string } | null;
+  image_url: string | null;
+  attributes: { name: string; value: string }[];
+  identifiers: { type: string; value: string; is_primary: boolean }[];
+  stock: { on_hand: number; reserved: number; available: number; avg_cost: number | null };
+  shops: { shop: string; external_code: string; variant_code: string | null; shop_availability: string | null; shop_stock: number | null; last_pull_at: string | null }[];
+}
+
+export async function getProductDetail(sku: string): Promise<ProductDetail> {
+  return fetchJSON<ProductDetail>(`${API_BASE}/stock/product/${encodeURIComponent(sku)}`);
+}

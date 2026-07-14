@@ -42,6 +42,7 @@ function App() {
 
           {/* Products */}
           <Route path="/products" element={<ProductsPage />} />
+          <Route path="/products/:sku" element={<ProductDetailPage />} />
 
           {/* Suppliers */}
           <Route path="/suppliers" element={<SuppliersPage />} />

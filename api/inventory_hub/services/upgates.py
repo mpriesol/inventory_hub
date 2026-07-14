@@ -102,6 +102,25 @@ class UpgatesClient:
             self._log("upgates_last_messages.json", msgs)
         return data
 
+    def post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            r = self.session.post(url, json=payload, timeout=self.timeout, verify=self.verify_ssl)
+        except requests.RequestException as e:
+            raise UpgatesError(f"Upgates API nedostupné: {e}") from e
+        if r.status_code in (401, 403):
+            raise UpgatesError(
+                f"Upgates API odmietlo prihlásenie (HTTP {r.status_code}). "
+                "Over upgates_login / upgates_api_key v konfigurácii shopu."
+            )
+        if r.status_code >= 400:
+            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}")
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"raw": r.text[:1000]}
+        return data
+
     # ── Products ─────────────────────────────────────────────────────────
 
     def iter_products(self, page_size: int = 100) -> Iterator[Dict[str, Any]]:
