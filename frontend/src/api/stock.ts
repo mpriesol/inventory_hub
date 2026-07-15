@@ -5,6 +5,7 @@ import { API_BASE, fetchJSON } from "./client";
 
 export interface StockItem {
   sku: string;
+  image_url: string | null;
   name: string;
   brand: string;
   on_hand: number;

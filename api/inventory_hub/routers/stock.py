@@ -21,6 +21,37 @@ from inventory_hub.db_models_ext import StockBalance
 router = APIRouter(prefix="/stock", tags=["stock"])
 
 
+async def _image_urls_by_product(db: AsyncSession) -> Dict[int, str]:
+    """
+    product_id -> main image URL, resolved in TWO set-based queries
+    (no per-row JSON parsing in Python):
+    1. main image per external_code straight from the JSONB vault,
+    2. product_id -> external/parent code mapping from shop_products.
+    """
+    from sqlalchemy import text
+    img_rows = await db.execute(text("""
+        SELECT external_code,
+               COALESCE(
+                 (SELECT img->>'url'
+                    FROM jsonb_array_elements(data->'images') img
+                   WHERE (img->>'main_yn')::boolean IS TRUE
+                   LIMIT 1),
+                 data->'images'->0->>'url'
+               ) AS url
+          FROM shop_product_content
+    """))
+    url_by_code = {r.external_code: r.url for r in img_rows if r.url}
+
+    from inventory_hub.db_models_ext import ShopProduct as _SP
+    sp_rows = await db.execute(select(_SP.product_id, _SP.external_code, _SP.parent_code))
+    out: Dict[int, str] = {}
+    for pid, ext, parent in sp_rows.all():
+        code = parent or ext
+        if pid not in out and code in url_by_code:
+            out[pid] = url_by_code[code]
+    return out
+
+
 @router.get("/items")
 async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str, Any]]:
     """
@@ -29,6 +60,7 @@ async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str,
     """
     stmt = (
         select(
+            Product.id,
             Product.sku,
             Product.name,
             Product.brand,
@@ -43,6 +75,7 @@ async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str,
         .order_by(Product.sku)
     )
     result = await db.execute(stmt)
+    images = await _image_urls_by_product(db)
 
     items: List[Dict[str, Any]] = []
     for row in result.all():
@@ -51,6 +84,7 @@ async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str,
         min_qty = float(row.min_quantity or 0)
         items.append({
             "sku": row.sku,
+            "image_url": images.get(row.id),
             "name": row.name,
             "brand": row.brand or "",
             "on_hand": on_hand,

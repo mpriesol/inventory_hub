@@ -19,6 +19,7 @@ import {
   SettingsPage,
   InvoicesPage,
   InvoiceDetailPage,
+  ProductDetailPage,
 } from './pages';
 
 function App() {

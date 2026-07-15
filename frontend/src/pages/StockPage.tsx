@@ -6,9 +6,11 @@ import { Button } from '../components/ui/Button.new';
 import { getStockItems, getStockSummary, type StockSummary } from '../api/stock';
 import { pushProductsToShop } from '../api/upgates';
 import { UpgatesImportModal } from '../components/UpgatesImportModal';
+import { ProductThumb, ProductHoverCard, ProductDetailModal } from '../components/product/ProductDisplay';
 
 interface StockItem {
   sku: string;
+  imageUrl: string | null;
   name: string;
   brand: string;
   onHand: number;
@@ -34,6 +36,9 @@ export function StockPage() {
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const [bulkPushing, setBulkPushing] = useState<string | null>(null);
+  const [showImages, setShowImages] = useState<boolean>(() => localStorage.getItem('stock_show_images') === '1');
+  const [detailSku, setDetailSku] = useState<string | null>(null);
+  const toggleImages = (v: boolean) => { setShowImages(v); localStorage.setItem('stock_show_images', v ? '1' : '0'); };
 
   const loadData = async () => {
     setLoading(true);
@@ -189,6 +194,10 @@ export function StockPage() {
           />
           Len nízky stav
         </label>
+        <label className="flex items-center gap-2 cursor-pointer text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+          <input type="checkbox" checked={showImages} onChange={(e) => toggleImages(e.target.checked)} />
+          Zobraziť obrázky
+        </label>
       </div>
 
       {/* Table */}
@@ -263,6 +272,7 @@ export function StockPage() {
                   }}
                 />
               </th>
+              {showImages && <th className="w-14 px-3 py-3" />}
               <th
                 className="text-left px-4 py-3 text-xs font-medium uppercase tracking-wider"
                 style={{ color: 'var(--color-text-tertiary)' }}
@@ -322,7 +332,7 @@ export function StockPage() {
                 onMouseLeave={(e) => {
                   e.currentTarget.style.backgroundColor = 'transparent';
                 }}
-                onClick={() => navigate(`/products/${item.sku}`)}
+                onClick={() => setDetailSku(item.sku)}
                 data-row-sku={item.sku}
               >
                 <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
@@ -336,6 +346,11 @@ export function StockPage() {
                     })}
                   />
                 </td>
+                {showImages && (
+                  <td className="px-3 py-2">
+                    <ProductThumb url={item.imageUrl} name={item.name} size={40} />
+                  </td>
+                )}
                 <td className="px-4 py-3">
                   <span
                     className="text-sm"
@@ -351,7 +366,9 @@ export function StockPage() {
                   className="px-4 py-3 text-sm"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {item.name}
+                  <ProductHoverCard item={{ sku: item.sku, name: item.name, brand: item.brand, image_url: item.imageUrl, onHand: item.onHand, available: item.available }}>
+                    {item.name}
+                  </ProductHoverCard>
                 </td>
                 <td
                   className="px-4 py-3 text-sm"
@@ -455,6 +472,9 @@ export function StockPage() {
           </Button>
         </div>
       </div>
+      {detailSku && (
+        <ProductDetailModal sku={detailSku} onClose={() => setDetailSku(null)} />
+      )}
       {upgatesShop && (
         <UpgatesImportModal
           shop={upgatesShop}

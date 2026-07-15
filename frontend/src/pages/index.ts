@@ -6,3 +6,4 @@ export { SuppliersPage } from './SuppliersPage';
 export { InvoicesPage } from './InvoicesPage';
 export { InvoiceDetailPage } from './InvoiceDetailPage';
 export { ProductsPage, ShopsPage, SettingsPage } from './PlaceholderPages';
+export { ProductDetailPage } from './ProductDetailPage';
