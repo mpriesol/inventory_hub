@@ -51,3 +51,22 @@ jobs:
             ghcr.io/mpriesol/inventory-hub-frontend:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+      needs: build-and-push
+      runs-on: ubuntu-latest
+      steps:
+        - name: Deploy to hub.biketrek.sk
+          uses: appleboy/ssh-action@v1.2.0
+          with:
+            host: ${{ secrets.DEPLOY_HOST }}
+            username: ${{ secrets.DEPLOY_USER }}
+            key: ${{ secrets.DEPLOY_SSH_KEY }}
+            script_stop: true
+            script: |
+              cd /opt/inventory-hub
+              docker compose pull
+              docker compose up -d --force-recreate api frontend-build caddy
+              sleep 5
+              curl -sf https://hub.biketrek.sk/api/health
+              docker image prune -f
