@@ -249,3 +249,22 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     detail = await catalog.catalog_detail(db, "paul-lange", item.id, shop=shop.code)
                     self.assertEqual(detail["variants"][0].shop_url, expected)
                     self.assertTrue(detail["product"].shop_active)
+
+    async def test_local_mixed_case_match_agrees_with_listing_filter_without_remote_cache(self):
+        await self.refresh()
+        async with self.sessions() as db:
+            item = (await catalog.catalog_page(db, "paul-lange", code="A-001")).items[0].product
+            product = Product(sku=item.shop_code.lower(), name=item.name)
+            shop = Shop(code="case-shop", name="Case shop", platform="upgates")
+            db.add_all([product, shop])
+            await db.flush()
+            db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code=item.shop_code.lower(), is_listed=True))
+            db.add(ShopProductContent(shop_id=shop.id, external_code=item.shop_code.lower(), data={
+                "descriptions": [{"language": "sk", "url": "https://shop.example.test/p/mixed-case"}]}))
+            await db.commit()
+            page = await catalog.catalog_page(db, "paul-lange", shop="case-shop", listing="listed")
+            self.assertEqual(page.total_items, 1)
+            self.assertTrue(page.items[0].product.listed)
+            self.assertEqual(page.items[0].product.shop_url, "https://shop.example.test/p/mixed-case")
+            self.assertTrue((await catalog.catalog_detail(db, "paul-lange", item.id, shop="case-shop"))["product"].listed)
+            self.assertEqual((await catalog.catalog_selection(db, "paul-lange", shop="case-shop", listing="unlisted")).total, 2)

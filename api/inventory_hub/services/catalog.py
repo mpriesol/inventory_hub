@@ -275,7 +275,7 @@ async def listed_codes(db: AsyncSession, shop_code: str | None) -> set[str]:
                             .join(ShopProduct, ShopProduct.product_id == Product.id)
                             .join(Shop, Shop.id == ShopProduct.shop_id)
                             .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True)))).all()
-    return {code for row in rows for code in row if code}
+    return {code.casefold() for row in rows for code in row if code}
 
 
 def _http_url(value) -> str | None:
@@ -385,7 +385,7 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
     data = {p.id: p for p in (await db.scalars(select(SupplierProduct).where(SupplierProduct.id.in_(ids)))).all()} if ids else {}
     items = []
     for key, group_ids in selected:
-        products = [public_product(data[id], listed=(data[id].attributes["catalog"]["shop_code"] in known)) for id in group_ids]
+        products = [public_product(data[id], listed=(data[id].attributes["catalog"]["shop_code"].casefold() in known)) for id in group_ids]
         for product in products:
             product.shop_matches = index.matches(product)
             product.listed = product.listed or bool(product.shop_matches)
@@ -431,14 +431,14 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
     if row is None:
         raise CatalogError("catalog_product_missing", "Product was not found in this supplier catalog", 404)
     known = await listed_codes(db, shop)
-    product = public_product(row, detail=True, listed=row.attributes["catalog"]["shop_code"] in known)
+    product = public_product(row, detail=True, listed=row.attributes["catalog"]["shop_code"].casefold() in known)
     variants = []
     if include_variants and row.supplier_group_code:
         siblings = (await db.scalars(select(SupplierProduct).where(
             SupplierProduct.source_feed_id == row.source_feed_id,
             SupplierProduct.supplier_group_code == row.supplier_group_code,
             SupplierProduct.is_active.is_(True)).order_by(SupplierProduct.supplier_sku))).all()
-        variants = [public_product(p, detail=True, listed=p.attributes["catalog"]["shop_code"] in known) for p in siblings]
+        variants = [public_product(p, detail=True, listed=p.attributes["catalog"]["shop_code"].casefold() in known) for p in siblings]
         variants.sort(key=variant_sort_key)
     index = await asyncio.to_thread(cached_identities, shop)
     for item in [product, *variants]:
