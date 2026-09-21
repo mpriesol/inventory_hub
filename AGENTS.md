@@ -36,11 +36,14 @@ There are two data stores. PostgreSQL holds relational business data; the filesy
 
 1. Read the request, `OVERVIEW.md`, and only the relevant implementation files.
 2. Inspect `git status` before editing and preserve unrelated user changes.
-3. State assumptions when the requirement is ambiguous or could affect prices, stock, invoices, identifiers, or production data.
-4. Implement the smallest coherent change. Avoid opportunistic refactors and generated backup copies.
-5. Add or update tests when a test harness exists. If no harness covers the area, run the strongest safe checks available and clearly report the gap.
-6. Review the final diff for secrets, unrelated changes, unsafe migrations, duplicated logic, and backward compatibility.
-7. Finish with a short report: what changed, files changed, checks run, remaining risks, and any manual steps.
+3. Before editing, propose a short change plan naming the files and intended behavior. Wait for explicit approval when the change could affect shared UI/design, database schema, API contracts, production behavior, or when several reasonable implementations exist.
+4. State assumptions when the requirement is ambiguous or could affect prices, stock, invoices, identifiers, or production data.
+5. Implement the smallest coherent change. Avoid opportunistic refactors and generated backup copies.
+6. Do not rename or move variables, functions, files, routes, components, or database fields unless the requested change requires it or the user explicitly approves it.
+7. Do not reformat unrelated code, change shared design tokens/components for a local UI task, or optimize working code without explicit approval. Put optional cleanup in a separate proposal, not in the feature diff.
+8. Add or update tests when a test harness exists. If no harness covers the area, run the strongest safe checks available and clearly report the gap.
+9. Review the final diff for secrets, unrelated changes, unsafe migrations, duplicated logic, and backward compatibility.
+10. Finish with a short report: what changed, files changed, checks run, remaining risks, and any manual steps.
 
 ## Required validation
 
