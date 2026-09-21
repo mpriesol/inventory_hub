@@ -283,7 +283,7 @@ def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool
                 pass
         full = refresh or full_at is None or started - full_at >= timedelta(hours=24)
         products = {} if full else dict(saved["products"])
-        params = {} if full else {"last_update_time_from": (datetime.fromisoformat(saved["checked_at"]) - timedelta(minutes=5)).isoformat()}
+        params = {} if full else {"last_update_time_from": (datetime.fromisoformat(saved["checked_at"]) - timedelta(minutes=5)).isoformat(timespec="seconds")}
         rows = _pages(client, "products/simple", "products", params)
         for product in rows:
             if not isinstance(product, dict) or (product.get("product_id") is None and not product.get("code")):

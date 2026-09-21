@@ -67,6 +67,7 @@ class ShopCacheTests(unittest.TestCase):
         self.client.get.assert_not_called()
 
     def test_incremental_check_preserves_unchanged_items_and_replaces_changed_variants(self):
+        self.current = self.current.replace(microsecond=876543)
         first = {"product_id": 1, "code": "PARENT", "variants": [{"code": "V1", "ean": "0001"}]}
         second = {"product_id": 2, "code": "UNCHANGED", "ean": "0002"}
         self.client.get.side_effect = [
@@ -81,7 +82,8 @@ class ShopCacheTests(unittest.TestCase):
         self.assertEqual(changed["mode"], "changes")
         self.assertEqual(changed["full_checked_at"], initial["full_checked_at"])
         params = self.client.get.call_args.args[1]
-        self.assertEqual(datetime.fromisoformat(params["last_update_time_from"]), datetime.fromisoformat(initial["checked_at"]) - timedelta(minutes=5))
+        self.assertEqual(params["last_update_time_from"], "2026-01-01T11:55:00+00:00")
+        self.assertLessEqual(datetime.fromisoformat(params["last_update_time_from"]), datetime.fromisoformat(initial["checked_at"]) - timedelta(minutes=5))
         self.assertEqual(self.client.get.call_count, 3, "Full scan takes two pages; the next check fetches one changed page")
 
     def test_full_check_removes_deleted_products_and_failed_pages_do_not_advance_checkpoint(self):
