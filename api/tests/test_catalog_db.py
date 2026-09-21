@@ -1,0 +1,152 @@
+"""PostgreSQL integration tests. Dedicated, ephemeral localhost test DB only."""
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+import asyncpg
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.pool import NullPool
+
+from catalog_fixtures import FakeUpgates, xml_item
+from inventory_hub import config_io
+from inventory_hub.catalog_types import ShopImportPreviewRequest
+from inventory_hub.db_models import Product, Shop, SupplierFeedRun, SupplierProduct
+from inventory_hub.db_models_ext import ShopProduct
+from inventory_hub.services import catalog, catalog_import
+
+TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
+
+
+@unittest.skipUnless(TEST_URL, "Set CATALOG_TEST_DATABASE_URL to an isolated localhost *_catalog_test DB")
+class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        parsed = urlsplit(TEST_URL)
+        if parsed.hostname not in ("localhost", "127.0.0.1") or not parsed.path.endswith("_catalog_test"):
+            raise RuntimeError("Catalog tests require a dedicated localhost *_catalog_test database")
+        self.schema = "catalog_test_" + uuid4().hex
+        connection = await asyncpg.connect(TEST_URL)
+        try:
+            await connection.execute(f'CREATE SCHEMA "{self.schema}"')
+            await connection.execute(f'SET search_path TO "{self.schema}"')
+            root = Path(__file__).resolve().parents[2]
+            for name in ("001_schema.sql", "004_shop_product_content.sql"):
+                await connection.execute((root / "infra" / "db-init" / name).read_text())
+        finally:
+            await connection.close()
+        # Each test gets a fresh namespace. The CI service is discarded after the job.
+        self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1), poolclass=NullPool,
+                                         connect_args={"server_settings": {"search_path": self.schema}})
+        self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, autoflush=False)
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.patcher = patch.object(config_io, "DATA_ROOT", self.root)
+        self.patcher.start()
+        self.feed = self.root / "fixture.xml"
+        cfg_path = config_io.supplier_path("paul-lange")
+        cfg_path.parent.mkdir(parents=True)
+        cfg_path.write_text(json.dumps({"name": "Test supplier", "feeds": {"sources": {"products": {"mode": "local", "local_path": str(self.feed)}}},
+            "adapter_settings": {"vat": 23, "mapping": {"postprocess": {"product_code_prefix": "PL-"}}}}))
+        self.write_feed(xml_item(), xml_item("A-002", "Modrá prilba", ean="00012346"), xml_item("A-003", "Červené rukavice", ean="00012347"))
+
+    async def asyncTearDown(self):
+        self.patcher.stop()
+        self.temp.cleanup()
+        await self.engine.dispose()
+
+    def write_feed(self, *items):
+        self.feed.write_text("<SHOP>" + "".join(items) + "</SHOP>", encoding="utf-8")
+
+    async def refresh(self):
+        async with self.sessions() as db:
+            result = await catalog.refresh_catalog(db, "paul-lange")
+            await db.commit()
+            return result
+
+    async def test_search_without_accents_partial_code_ean_and_all_pages(self):
+        await self.refresh()
+        async with self.sessions() as db:
+            page = await catalog.catalog_page(db, "paul-lange", q="CERVEN", page_size=1)
+            self.assertEqual((page.total_items, page.pages, len(page.items)), (2, 2, 1))
+            ids = await catalog.catalog_selection(db, "paul-lange", q="CERVEN")
+            self.assertEqual(len(ids.ids), 2)
+            self.assertEqual((await catalog.catalog_page(db, "paul-lange", ean="00012345")).total_items, 1)
+            self.assertEqual((await catalog.catalog_page(db, "paul-lange", ean="12345")).total_items, 0)
+            self.assertEqual((await catalog.catalog_page(db, "paul-lange", code="m-a-002")).total_items, 1)
+            self.assertEqual((await catalog.catalog_page(db, "paul-lange", q="%_")).total_items, 0)
+            self.assertEqual((await catalog.catalog_page(db, "paul-lange")).total_items, 3)
+            detail = await catalog.catalog_detail(db, "paul-lange", ids.ids[0])
+            self.assertIn("<SHOPITEM>", detail["source_xml"])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_refresh_is_atomic_keeps_ids_and_rejects_stale_selection(self):
+        first = await self.refresh()
+        async with self.sessions() as db:
+            initial = await catalog.catalog_selection(db, "paul-lange")
+        self.write_feed(xml_item(name="Aktualizovaná prilba"))
+        second = await self.refresh()
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        async with self.sessions() as db:
+            page = await catalog.catalog_page(db, "paul-lange")
+            self.assertEqual(page.total_items, 1)
+            id = page.items[0].product.id
+            self.assertIn(id, initial.ids)
+            with self.assertRaises(catalog.CatalogError):
+                await catalog.selected_products(db, "paul-lange", "products", [id], first["run_id"])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)), 3)
+        self.feed.write_text("<SHOP><broken>")
+        with self.assertRaises(catalog.CatalogError):
+            await self.refresh()
+        async with self.sessions() as db:
+            page = await catalog.catalog_page(db, "paul-lange")
+            self.assertEqual(page.run_id, second["run_id"])
+            self.assertEqual(page.items[0].product.name, "Aktualizovaná prilba")
+            self.assertEqual((await catalog.catalog_status(db, "paul-lange"))["status"], "failed")
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierFeedRun)), 3)
+
+    async def test_explicit_groups_expand_and_filter_without_guessing(self):
+        self.write_feed(xml_item(extra="<ITEMGROUP_ID>G1</ITEMGROUP_ID>"), xml_item("A-002", "Modrá prilba", extra="<ITEMGROUP_ID>G1</ITEMGROUP_ID>", ean="00012346"))
+        await self.refresh()
+        async with self.sessions() as db:
+            grouped = await catalog.catalog_page(db, "paul-lange")
+            self.assertEqual((grouped.total, grouped.total_items), (1, 2))
+            self.assertTrue(grouped.items[0].is_group)
+            self.assertEqual(len(grouped.items[0].variants), 2)
+            filtered = await catalog.catalog_page(db, "paul-lange", q="modra")
+            self.assertEqual(filtered.items[0].variants_count, 1)
+            self.assertEqual(len((await catalog.catalog_detail(db, "paul-lange", filtered.items[0].product.id))["variants"]), 2)
+            self.assertEqual((await catalog.catalog_page(db, "paul-lange", grouped=False)).total, 2)
+
+    async def test_preview_and_local_registration_do_not_change_stock(self):
+        await self.refresh()
+        path = config_io.shop_path("test-shop")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"upgates_api_base_url": "https://test.example.com/api/v2", "upgates_login": "fixture", "upgates_api_key": "fixture"}))
+        client = FakeUpgates()
+        async with self.sessions() as db:
+            db.add(Shop(code="test-shop", name="Test shop", platform="upgates"))
+            await db.commit()
+            page = await catalog.catalog_page(db, "paul-lange")
+            id = page.items[0].product.id
+            with patch.object(catalog_import.UpgatesClient, "from_shop", return_value=client):
+                preview = await catalog_import.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[id], run_id=page.run_id))
+            self.assertEqual(preview.items[0].status, "ready")
+            self.assertEqual(client.sent, [])
+            product = (await catalog.selected_products(db, "paul-lange", "products", [id]))[0]
+            item = preview.items[0].model_dump()
+            remote = {**item["payload"], "product_id": 101}
+            await catalog_import.register_created(db, "test-shop", item, {id: product}, remote)
+            await db.commit()
+            await catalog_import.register_created(db, "test-shop", item, {id: product}, remote)
+            await db.commit()
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 1)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_balances")), 0)
+            self.assertTrue((await catalog.catalog_page(db, "paul-lange", shop="test-shop", listing="listed")).items[0].product.listed)

@@ -5,6 +5,8 @@ export interface Supplier {
   adapter?: string;
 }
 
+export type { CatalogProduct, CatalogRow, CatalogPage, CatalogStatus, CatalogDetail, ImportOptions, TargetOptions, ImportPreview, ImportResult } from './api/catalog';
+
 export interface ListedFile {
   name: string;
   href?: string;

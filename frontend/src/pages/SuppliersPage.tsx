@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   Package,
   Plus,
@@ -54,9 +55,11 @@ import {
 interface SupplierCardProps {
   supplier: SupplierSummary;
   onEdit: (code: string) => void;
+  onCatalog: (code: string) => void;
 }
 
-function SupplierCard({ supplier, onEdit }: SupplierCardProps) {
+function SupplierCard({ supplier, onEdit, onCatalog }: SupplierCardProps) {
+  const { t } = useTranslation();
   const strategyLabels: Record<string, string> = {
     'paul-lange-web': 'Auto-download',
     'web': 'Web scraping',
@@ -135,6 +138,10 @@ function SupplierCard({ supplier, onEdit }: SupplierCardProps) {
           <span>Posledná faktúra: {supplier.last_invoice_date}</span>
         )}
       </div>
+      <Button variant="secondary" size="sm" className="mt-4" icon={<Package size={14} />}
+        onClick={(event) => { event.stopPropagation(); onCatalog(supplier.code); }}>
+        {t('catalog.openCatalog')}
+      </Button>
     </div>
   );
 }
@@ -1605,7 +1612,7 @@ export function SuppliersPage() {
       {!loading && suppliers.length > 0 && (
         <div className="grid gap-4">
           {suppliers.map((supplier) => (
-            <SupplierCard key={supplier.code} supplier={supplier} onEdit={handleEdit} />
+            <SupplierCard key={supplier.code} supplier={supplier} onEdit={handleEdit} onCatalog={(code) => navigate(`/suppliers/${encodeURIComponent(code)}/catalog`)} />
           ))}
         </div>
       )}
