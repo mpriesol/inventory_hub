@@ -62,8 +62,8 @@ jobs:
             host: ${{ secrets.DEPLOY_HOST }}
             username: ${{ secrets.DEPLOY_USER }}
             key: ${{ secrets.DEPLOY_SSH_KEY }}
-            script_stop: true
             script: |
+              set -eu
               cd /opt/inventory-hub
               if [ ! -f ai-content.env ]; then
                 install -m 600 /dev/null ai-content.env
