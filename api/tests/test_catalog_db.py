@@ -182,7 +182,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 detail = await catalog.catalog_detail(db, "northfinder", listed.items[0].product.id, shop="test-shop")
                 self.assertEqual([p.id for p in detail["variants"]], [p.id for p in page.items[0].variants])
                 self.assertTrue(detail["product"].listed)
-            client.products = {"NF-G-1": {"code": "NF-G-1", "variants": []}}
+            client.products = {"NF-G-N": {"code": "NF-G-N", "variants": []}}
             catalog_import.checked_remote_identities("test-shop", client, refresh=True)
             self.assertEqual((await catalog.catalog_selection(db, "northfinder", shop="test-shop", listing="listed")).total, 3)
             self.assertEqual((await catalog.catalog_selection(db, "northfinder", shop="test-shop", listing="unlisted")).total, 0)
