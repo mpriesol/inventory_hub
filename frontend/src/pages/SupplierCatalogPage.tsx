@@ -164,12 +164,12 @@ export function SupplierCatalogPage() {
     } catch (e: any) { setError(e.code || 'request_failed'); }
     finally { setSelecting(false); }
   }
-  async function prepare() {
+  async function prepare(salePriceOverrides?: Record<number, string>) {
     setPreparing(true); setError(''); setImportError('');
     try {
-      const next = await catalogRequest<ImportPreview>(`/shops/${encodeURIComponent(shop)}/import/preview`, { supplier, feed_key: feed, product_ids: [...selected], run_id: snapshot.current, options, refresh_shop: fullShopCheck });
+      const next = await catalogRequest<ImportPreview>(`/shops/${encodeURIComponent(shop)}/import/preview`, { supplier, feed_key: feed, product_ids: [...selected], run_id: snapshot.current, options, refresh_shop: salePriceOverrides ? false : fullShopCheck, sale_price_overrides: salePriceOverrides || {} });
       setPreview(next); setResult(null); setJobId(''); setDialog(true);
-    } catch (e: any) { setError(e.code || 'request_failed'); }
+    } catch (e: any) { salePriceOverrides ? setImportError(e.code || 'request_failed') : setError(e.code || 'request_failed'); }
     finally { setPreparing(false); }
   }
   async function confirm(retry = false) {
@@ -230,10 +230,10 @@ export function SupplierCatalogPage() {
       {data?.items.length ? <CatalogTable rows={data.items} selected={selected} onToggle={toggle} onDetail={setDetail} busy={busy} showPrice={showPrice} showAvailability={showAvailability} /> : !loading && <div className="catalog-empty"><Package size={36} /><h2>{t(data?.run_id ? 'catalog.noResults' : 'catalog.startDownload')}</h2><p>{t(data?.run_id ? 'catalog.noResultsHelp' : 'catalog.startDownloadHelp')}</p></div>}
       {!!data?.pages && <div className="catalog-pagination"><Button variant="secondary" size="sm" disabled={busy || page === 1} onClick={() => setPage(page - 1)}>{t('common.back')}</Button><span>{t('catalog.pageOf', { page, pages: data.pages })}</span><Button variant="secondary" size="sm" disabled={busy || page >= data.pages} onClick={() => setPage(page + 1)}>{t('common.next')}</Button></div>}
       <div className="catalog-selection-bar"><div><strong>{t('catalog.selected', { count: selected.size })}</strong><button disabled={!selected.size || busy} onClick={() => { setSelected(new Set()); setPreview(null); }}>{t('catalog.clearSelection')}</button></div>
-        <div className="catalog-selection-target"><small>{shopInfo?.name || t('catalog.chooseShop')}</small><Button icon={<Download size={16} />} loading={preparing} disabled={busy || !selected.size || selected.size > 20000 || !target || targetLoading || activeImport} onClick={prepare}>{t('catalog.prepareImport')}</Button></div></div>
+        <div className="catalog-selection-target"><small>{shopInfo?.name || t('catalog.chooseShop')}</small><Button icon={<Download size={16} />} loading={preparing} disabled={busy || !selected.size || selected.size > 20000 || !target || targetLoading || activeImport} onClick={() => prepare()}>{t('catalog.prepareImport')}</Button></div></div>
     </>}
     {result && <div className="catalog-job-bar"><span>{t(activeImport ? 'catalog.importRunning' : 'catalog.lastImport')}</span><Button variant="secondary" size="sm" onClick={() => setDialog(true)}>{t('catalog.showResult')}</Button></div>}
     {detail && <CatalogDetail key={detail.id} supplier={supplier} product={detail} shop={shop} selected={selected} onToggle={toggle} onClose={() => setDetail(null)} />}
-    {dialog && (preview || result) && <CatalogImport key={result?.preview_id || preview?.preview_id} preview={preview} result={result} shopName={shopInfo?.name || shop} sending={sending} error={importError} onConfirm={() => confirm()} onRetry={() => confirm(true)} onClose={() => setDialog(false)} />}
+    {dialog && (preview || result) && <CatalogImport key={result?.preview_id || preview?.preview_id} preview={preview} result={result} shopName={shopInfo?.name || shop} sending={sending || preparing} error={importError} onReprice={prepare} onConfirm={() => confirm()} onRetry={() => confirm(true)} onClose={() => setDialog(false)} />}
   </div>;
 }

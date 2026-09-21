@@ -107,6 +107,12 @@
 .catalog-import-item-name strong { display: block; font-size: 12px; line-height: 1.6; }
 .catalog-import-item-name code { color: var(--color-text-tertiary); font-size: 10px; }
 .catalog-preview-variant { display: flex; align-items: center; gap: 12px; padding: 10px 20px; font-size: 11px; }
+.catalog-price-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.catalog-edit-prices { width: 100%; min-width: 610px; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+.catalog-edit-prices th, .catalog-edit-prices td { padding: 10px; text-align: left; border-bottom: 1px solid var(--color-border-subtle); }
+.catalog-edit-prices th { color: var(--color-text-secondary); font-size: 11px; }
+.catalog-edit-prices input { width: 120px; padding: 8px; border: 1px solid var(--color-border-subtle); border-radius: 5px; background: var(--color-bg-primary); color: var(--color-text-primary); }
+.catalog-price-reset { display: block; font-size: 10px; margin-top: 5px; color: var(--color-text-secondary); }
 .catalog-modal-actions { display: flex; justify-content: flex-end; gap: 10px; position: sticky; bottom: -12px; background: var(--color-bg-secondary); padding: 15px; margin-top: 16px; border-radius: 8px; }
 @media (max-width: 1100px) { .catalog-tools { flex-wrap: wrap; } .catalog-search { flex-basis: 100%; } .catalog-result-bar { flex-wrap: wrap; } .catalog-result-bar .catalog-muted { width: 100%; margin-left: 0; } }
 @media (max-width: 700px) { .catalog-header { flex-direction: column; } .catalog-target { width: 100%; padding: 0; border: 0; } .catalog-feed-bar { flex-wrap: wrap; gap: 12px; } .catalog-feed-state { flex-basis: 100%; } .catalog-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-selection-target { align-items: flex-end; flex-direction: column; gap: 4px; } .catalog-selection-bar { padding: 12px; } .catalog-detail-head { grid-template-columns: 1fr; } .catalog-detail-head > div:first-child { margin: auto; } .catalog-price-grid { grid-template-columns: 1fr 1fr; } .catalog-import-counts { flex-wrap: wrap; gap: 15px; } }

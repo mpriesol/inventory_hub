@@ -5,12 +5,27 @@ import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button.new';
 import { ProductThumb } from './ProductDisplay';
 
-export function CatalogImport({ preview, result, shopName, sending, error, onConfirm, onRetry, onClose }: {
+export function CatalogImport({ preview, result, shopName, sending, error, onConfirm, onRetry, onClose, onReprice }: {
   preview: ImportPreview | null; result: ImportResult | null; shopName: string; sending: boolean; error: string;
   onConfirm: () => void; onRetry: () => void; onClose: () => void;
+  onReprice: (overrides: Record<number, string>) => void;
 }) {
   const { t } = useTranslation();
   const [page, setPage] = useState(1);
+  const [editingPrices, setEditingPrices] = useState(false);
+  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const dirty = Object.keys(drafts).length > 0;
+  const validPrices = Object.values(drafts).every(value => !value.trim() || (/^\d{1,10}([.,]\d{1,2})?$/.test(value.trim()) && Number(value.replace(',', '.')) > 0));
+  const priceLines = new Map((preview?.price_lines || []).map(line => [line.product_id, line]));
+  function reprice() {
+    const overrides = { ...preview?.sale_price_overrides };
+    Object.entries(drafts).forEach(([id, value]) => {
+      const key = Number(id), cleaned = value.trim().replace(',', '.');
+      if (!cleaned || (!priceLines.get(key)?.overridden && Number(cleaned) === Number(priceLines.get(key)?.sale_gross))) delete overrides[key];
+      else overrides[key] = cleaned;
+    });
+    onReprice(overrides);
+  }
   const items = result?.items || preview?.items || [];
   const options = result?.options || preview?.options;
   const shopCheck = result?.shop_check || (!result ? preview?.shop_check : null);
@@ -30,18 +45,29 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
     {issues.length > 0 && <div role="alert" className="catalog-error">{issues.map((issue, i) => <p key={i}>{t(`catalog.codes.${issue}`, { defaultValue: issue })}</p>)}</div>}
     {running && <p role="status" className="catalog-notice">{t('catalog.importRunning')}</p>}
     {counts.uncertain > 0 && <p className="catalog-notice">{t('catalog.uncertainHelp')}</p>}
-    <div className="catalog-import-items">{items.slice((page - 1) * 30, page * 30).map(item => <details className="catalog-import-item" key={item.code}>
+    {!result && !!preview?.price_lines?.length && <div className="catalog-price-tools"><Button variant="secondary" disabled={sending} onClick={() => setEditingPrices(!editingPrices)}>{t(editingPrices ? 'catalog.hidePriceEditor' : 'catalog.editPrices')}</Button><span className="catalog-muted">{t('catalog.editPricesHelp')}</span></div>}
+    {['retail_below_purchase', 'sale_below_purchase'].filter(w => items.some(item => item.warnings.includes(w))).map(w => <p key={w} className="catalog-notice" role="status">{t(`catalog.codes.${w}`)}</p>)}
+    <div className="catalog-import-items">{items.slice((page - 1) * 30, page * 30).map(item => <details className="catalog-import-item" key={item.code} open={editingPrices || item.errors.length > 0 ? true : undefined}>
       <summary><ProductThumb url={catalogImageUrl(item.payload.images?.[0]?.url)} name={item.name} size={44} /><span className="catalog-import-item-name"><strong>{item.name}</strong><code>{item.code}{item.variants_count ? ` · ${t('catalog.variantCount', { count: item.variants_count })}` : ''}</code></span>
         {item.payload.prices?.[0]?.pricelists?.[0]?.price_original !== undefined && <span className="catalog-number">{item.payload.prices[0].pricelists[0].price_original} {options?.currency}</span>}
         <span className={`catalog-badge ${item.status === 'created' ? 'catalog-good' : item.errors.length ? 'catalog-bad' : ''}`}>{t(`catalog.itemStatus.${item.status}`)}</span></summary>
-      {item.payload.variants?.map((v: any) => <div className="catalog-preview-variant" key={v.code}><ProductThumb url={catalogImageUrl(v.image?.url)} name={v.code} size={36} /><code>{v.code}</code><span>{v.parameters?.flatMap((p: any) => p.values?.map((value: any) => value.descriptions?.[0]?.value)).join(' / ')}</span></div>)}
+      {!result && editingPrices ? <div className="catalog-table-scroll"><table className="catalog-edit-prices"><thead><tr><th>{t('catalog.product')}</th><th>{t('catalog.price.retail_gross')}</th><th>{t('catalog.price.purchase_net')}</th><th>{t('catalog.saleGross')}</th></tr></thead><tbody>{item.product_ids.map(id => {
+        const line = priceLines.get(id);
+        if (!line) return null;
+        return <tr key={id}><td><div className="catalog-product-cell"><ProductThumb url={catalogImageUrl(line.image)} name={line.name} size={36} /><div><code>{line.code}</code><div>{line.attributes.map(a => a.value).join(' / ')}</div></div></div>{line.warnings.map(w => <div key={w} className="catalog-muted">{t(`catalog.codes.${w}`, { defaultValue: w })}</div>)}</td>
+          <td>{line.retail_gross ?? '—'} {options?.currency}</td><td>{line.purchase_net ?? '—'} {options?.currency}</td>
+          <td><label><span className="sr-only">{t('catalog.salePriceOf', { code: line.code })}</span><input type="text" inputMode="decimal" disabled={sending || line.blocked || item.status === 'exists'} value={drafts[id] ?? line.sale_gross ?? ''} placeholder={t('catalog.supplierPrice')} onChange={e => setDrafts(old => ({ ...old, [id]: e.target.value }))} /></label>
+            <button className="catalog-price-reset" disabled={sending || line.blocked || item.status === 'exists'} onClick={() => setDrafts(old => ({ ...old, [id]: '' }))}>{t('catalog.resetSalePrice')}</button></td></tr>;
+      })}</tbody></table></div> : item.payload.variants?.map((v: any) => <div className="catalog-preview-variant" key={v.code}><ProductThumb url={catalogImageUrl(v.image?.url)} name={v.code} size={36} /><code>{v.code}</code><span>{v.parameters?.flatMap((p: any) => p.values?.map((value: any) => value.descriptions?.[0]?.value)).join(' / ')}</span></div>)}
       {[...item.errors, ...item.warnings].map((issue, i) => <p className={item.errors.includes(issue) ? 'catalog-error' : 'catalog-muted'} key={i}>{t(`catalog.codes.${issue}`, { defaultValue: issue })}</p>)}
       {!result && <details><summary>{t('catalog.importPayload')}</summary><pre className="catalog-source">{JSON.stringify(item.payload, null, 2)}</pre></details>}
     </details>)}</div>
     {items.length > 30 && <div className="catalog-pagination"><Button variant="secondary" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>{t('common.back')}</Button><span>{page} / {Math.ceil(items.length / 30)}</span><Button variant="secondary" size="sm" disabled={page * 30 >= items.length} onClick={() => setPage(page + 1)}>{t('common.next')}</Button></div>}
+    {dirty && <p className={validPrices ? 'catalog-notice' : 'catalog-error'} role="status">{t(validPrices ? 'catalog.pricesNeedPreview' : 'catalog.codes.invalid_sale_price')}</p>}
     <div className="catalog-modal-actions"><Button variant="secondary" onClick={onClose}>{t('common.close')}</Button>
+      {!result && dirty && <Button variant="secondary" loading={sending} disabled={!validPrices} onClick={reprice}>{t('catalog.repricePreview')}</Button>}
       {canRetry && <Button loading={sending} onClick={onRetry}>{t('catalog.retryImport')}</Button>}
-      {!result && <Button loading={sending} disabled={!counts.ready || !!preview?.errors.length || !preview || Date.now() >= Date.parse(preview.expires_at)} onClick={onConfirm}>{t('catalog.confirmImport', { count: counts.ready || 0 })}</Button>}
+      {!result && <Button loading={sending} disabled={dirty || !counts.ready || !!preview?.errors.length || !preview || Date.now() >= Date.parse(preview.expires_at)} onClick={onConfirm}>{t('catalog.confirmImport', { count: counts.ready || 0 })}</Button>}
     </div>
   </div></Modal>;
 }

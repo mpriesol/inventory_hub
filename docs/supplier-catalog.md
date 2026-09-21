@@ -1,6 +1,6 @@
 # Supplier products and shop import
 
-The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. The first parser supports Paul Lange. Other suppliers require their own parser registered in `services/catalog.py`; the API and UI remain the same.
+The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Parsers support Paul Lange and Northfinder. Other suppliers require their own parser registered in `services/catalog.py`; the API and UI remain the same.
 
 Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, browse or search, select individual items or groups, choose the target shop, and prepare an import preview. Empty search lists all items with pagination. The page remembers the target shop. Listing badges use mappings known to Hub; the preview verifies codes and EANs against the target shop.
 
@@ -32,7 +32,7 @@ Routes below include the production `/api` prefix. Interactive contracts are ava
 
 Search parameters: `feed_key=products`, `q`, exact `code`, exact `ean`, `manufacturer`, `shop`, `listing=all|listed|unlisted|warnings`, `sort=name|code|manufacturer`, `page=1`, `page_size=50` (maximum 100), `grouped=true`. `q` searches partial names without case or accents, supplier/shop/manufacturer codes and exact EANs. `%` and `_` are literal characters. EANs remain strings, including leading zeros. Multiple filters combine with AND.
 
-The response provides normalized JSON for application use. Full descriptions, all dynamic parameters and original fields are available in the detail response; `source_xml` preserves the original item. `description_html` is sanitized for display, while the original description remains unchanged. Summary rows omit long descriptions and full parameter lists to keep browsing small.
+The response provides normalized JSON for application use. Full descriptions, all dynamic parameters and original fields are available in the detail response; `source_xml` preserves the original item. `description_html` is sanitized for display, while the original description remains unchanged. Manufacturer contact information from `manufacturer_description` remains available in the source data but is not appended to the displayed or imported description. Safety information is preserved. Summary rows omit long descriptions and full parameter lists to keep browsing small.
 
 Paul Lange currently serves its photographs over HTTP on port 8081, without TLS. Catalog thumbnails, galleries and import previews display them through the Hub HTTPS image route to avoid browser mixed-content failures. This route accepts only `ito5-<alphanumeric>.jpg` filenames at the fixed Paul Lange image origin, refuses redirects and non-JPEG responses, and limits download size (5 MiB), duration and concurrency. Successful images have a one-day private browser cache. Original feed URLs, XML and outgoing Upgates payloads remain unchanged. No shared image component or global browser security setting is changed.
 
@@ -46,6 +46,10 @@ Each ID identifies an actual supplier item. Importing selected variants creates 
 
 ## Preview and confirmation
 
+Northfinder uses the parent `reference` as the explicit group and each variant's `reference` as its SKU. `name_b2c`, color/size attributes, variant/parent images and common features are preserved. `price` is purchase price **without VAT**; `recomended_retail_price` is recommended retail **with VAT**. The default sales coefficient is 1.0. Empty variant prices inherit a positive corresponding parent price and receive individual `inherited_purchase_price`, `inherited_retail_price` or `inherited_discount_price` warnings. Explicit zero or malformed prices are not replaced. An MOC below purchase including VAT receives `retail_below_purchase`; no price is raised automatically.
+
+Repeated Northfinder SKUs are represented by one visibly blocked catalog row with `import_blockers: ["duplicate_supplier_code"]`. All candidate EANs remain searchable in `eans`, but none is chosen as the database's canonical EAN or exported. `source_xml` contains a `conflicting_items` wrapper with each competing record. Ordinary variant source XML contains the original parent context and only that variant, avoiding duplication of all siblings. Importing a selection that includes a blocked variant blocks that selected group; users can select valid variants separately. Manual pricing cannot remove this blocker.
+
 Example preview request:
 
 ```json
@@ -54,6 +58,7 @@ Example preview request:
   "feed_key": "products",
   "run_id": 42,
   "product_ids": [101, 102],
+  "sale_price_overrides": {"101": "119.99"},
   "options": {
     "language": "sk",
     "currency": "EUR",
@@ -68,6 +73,10 @@ Example preview request:
 ```
 
 Use real item/run IDs and options returned by the API. A request accepts at most 20,000 explicit IDs. Include `run_id` to reject a selection made against an outdated catalog. A preview is valid for one hour and contains exact outgoing payloads and per-item `ready`, `exists` or `invalid` outcomes. `exists` and `invalid` items are skipped when confirming the remaining ready items. No products are imported merely because they matched a search.
+
+Optional `sale_price_overrides` maps selected catalog IDs to positive selling prices **including VAT**, with at most two decimal places. An override applies only to this preview and target shop, bypasses the supplier coefficient, and does not change the source MOC or purchase price. It can supply a missing selling price without inventing an MOC. For a shop configured with net prices, the server converts the override using the item's VAT. IDs outside the selection are rejected. `price_lines` returns each item's MOC, net purchase, gross selling price, override state and source warnings. Selling below purchase produces `sale_below_purchase` without changing the requested price.
+
+The preview's **Upraviť predajné ceny** action edits individual products or variants. Typing makes no API calls and disables confirmation until **Prepočítať a overiť náhľad** creates a new verified preview. Clearing an override restores supplier pricing. A failed recheck keeps the draft and cannot confirm the old price. Repricing reuses cached shop settings and incremental code/EAN verification; it does not repeat a manually requested full check. Confirmation uses the frozen verified payload, while stale-source and remote-identity checks remain in effect.
 
 Confirm with `{"preview_id":"<returned ID>"}`. Poll the result URL while `status` is `queued` or `running`. Each product ends as `created`, `exists`, `failed` or `uncertain` (invalid preview items retain `invalid`). The top-level `completed` means processing finished; inspect item outcomes for partial success. Polling returns compact display data in `items[].payload`; the preview contains the exact complete API payload. Both responses include the frozen import options and `prices_with_vat`.
 
@@ -85,7 +94,7 @@ Preview/result files are persisted under `shops/{shop}/catalog-imports/`. Each s
 
 No database migration or new runtime dependency is required. Existing catalog tables and the existing `004_shop_product_content.sql` table are used. The configured supplier download URL and auth stay in the existing supplier configuration. The catalog explicitly chooses `products` (or another listing source); it never implicitly chooses the supplier's current stock feed. Downloaded XML snapshots remain in the existing supplier feed directory, with successful/failed indexing recorded in PostgreSQL.
 
-Paul Lange reads its existing `adapter_settings.mapping.postprocess.product_code_prefix`, `price_coefficients`, `vat`, and default category. Optional `adapter_settings.catalog` keys are `currency`, `parser`, `group_tag` (default `ITEMGROUP_ID`), and `variant_parameters` (names of explicit variant attributes). A source can set `catalog_parser` individually, allowing supplier/manufacturer feeds with different parsers later. Unsupported sources display a clear unavailable state.
+Paul Lange reads its existing `adapter_settings.mapping.postprocess.product_code_prefix`, `price_coefficients`, `vat`, and default category. Optional `adapter_settings.catalog` keys are `currency`, `parser`, `group_tag` (default `ITEMGROUP_ID`), and `variant_parameters` (names of explicit variant attributes). Northfinder reads its existing `adapter_settings.northfinder_feed` field mapping, the configured product prefix and VAT; its listing parser accepts the actual `products` XML root or a `root` wrapper. A source can set `catalog_parser` individually, allowing supplier/manufacturer feeds with different parsers later. Unsupported sources display a clear unavailable state.
 
 Merge triggers the existing production build. First verify the feed download, search with/without accents, detail/XML and preview on the deployed Hub. A live create requires an explicitly selected test product. Verify its hidden visibility, review flag and images in the target shop, and verify stock remains unchanged. No live shop product has been created as part of automated tests.
 

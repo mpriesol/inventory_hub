@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -59,6 +59,7 @@ class CatalogProduct(BaseModel):
     variant_attributes: list[CatalogParameter] = Field(default_factory=list)
     variant_relationship: Literal["explicit", "not_provided"] = "not_provided"
     warnings: list[str] = Field(default_factory=list)
+    import_blockers: list[str] = Field(default_factory=list)
     fetched_at: datetime | None = None
     source_hash: str | None = None
     listed: bool = False
@@ -124,6 +125,7 @@ class ShopImportPreviewRequest(BaseModel):
     run_id: int | None = None
     options: ShopImportOptions = Field(default_factory=ShopImportOptions)
     refresh_shop: bool = False
+    sale_price_overrides: dict[int, Annotated[Decimal, Field(gt=0, max_digits=12, decimal_places=2)]] = Field(default_factory=dict, max_length=20000)
 
     @field_validator("product_ids")
     @classmethod
@@ -156,6 +158,20 @@ class ShopCheck(BaseModel):
     mode: Literal["full", "changes"]
 
 
+class ImportPriceLine(BaseModel):
+    product_id: int
+    code: str
+    name: str
+    image: str | None = None
+    attributes: list[CatalogParameter] = Field(default_factory=list)
+    retail_gross: Decimal | None = None
+    purchase_net: Decimal | None = None
+    sale_gross: Decimal | None = None
+    overridden: bool = False
+    blocked: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ShopImportPreview(BaseModel):
     preview_id: str
     shop: str
@@ -169,6 +185,8 @@ class ShopImportPreview(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     create_validation_field: bool = False
     shop_check: ShopCheck | None = None
+    price_lines: list[ImportPriceLine] = Field(default_factory=list)
+    sale_price_overrides: dict[int, Decimal] = Field(default_factory=dict)
 
 
 class ShopImportResult(BaseModel):

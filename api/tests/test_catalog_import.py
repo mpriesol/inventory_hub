@@ -2,16 +2,46 @@ import json
 import tempfile
 import unittest
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from catalog_fixtures import FakeUpgates, dummy_session, product
 from inventory_hub import config_io
-from inventory_hub.catalog_types import CatalogParameter, ShopImportOptions
+from inventory_hub.catalog_types import CatalogParameter, ShopImportOptions, ShopImportPreviewRequest
 from inventory_hub.services import catalog_import as imports
 
 
 class ImportMappingTests(unittest.TestCase):
+    def test_manual_gross_sale_price_bypasses_coefficient_and_converts_for_net_shop(self):
+        p = product()
+        original = p.model_dump()
+        cfg = {"adapter_settings": {"price_coefficients": {"TEST": "0.9"}}}
+        for with_vat, expected in [(True, 120), (False, 97.56)]:
+            item = imports.build_item([p], ShopImportOptions(), cfg, with_vat, {p.id: Decimal("120")})
+            self.assertEqual(item.status, "ready")
+            self.assertEqual(item.payload["prices"][0]["pricelists"][0]["price_original"], expected)
+            self.assertEqual(item.payload["prices"][0]["price_common"], 123 if with_vat else 100)
+            self.assertIn("manual_sale_price", item.warnings)
+        self.assertEqual(p.model_dump(), original, "The supplier snapshot remains unchanged")
+
+    def test_description_keeps_product_and_safety_text_without_manufacturer_contact(self):
+        p = product()
+        p.description = "<p>Compatible with trainers</p>"
+        p.manufacturer_description = "Manufacturer Ltd, address, phone, contact@example.test"
+        p.safety_information = "<p>Follow assembly instructions.</p>"
+        item = imports.build_item([p], ShopImportOptions(), {}, True)
+        description = item.payload["descriptions"][0]["long_description"]
+        self.assertIn("Compatible with trainers", description)
+        self.assertIn("Follow assembly instructions", description)
+        self.assertNotIn("contact@example.test", description)
+        self.assertIn("contact@example.test", p.manufacturer_description)
+
+    def test_api_rejects_invalid_manual_prices(self):
+        for value in ("0", "-1", "NaN", "Infinity", "12.345", "1000000000000"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1], sale_price_overrides={1: value})
+
     def test_gross_and_net_prices_reuse_coefficients_and_omit_stock(self):
         cfg = {"adapter_settings": {"price_coefficients": {"TEST": "0.9"}}}
         p = product()
@@ -81,6 +111,31 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         if queued:
             await imports.execute_import("test-shop", self.id)
         return imports.import_result("test-shop", self.id)
+
+    async def test_preview_freezes_manual_price_and_execution_sends_that_price(self):
+        patch.object(imports, "supplier_config", return_value={}).start()
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        request = ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1], sale_price_overrides={1: "119.99"})
+        preview = await imports.create_preview(db, "test-shop", request)
+        self.assertEqual(preview.sale_price_overrides, {1: Decimal("119.99")})
+        self.assertEqual(preview.price_lines[0].sale_gross, Decimal("119.99"))
+        self.assertTrue(preview.price_lines[0].overridden)
+        _, queued = imports.queue_import("test-shop", preview.preview_id)
+        self.assertTrue(queued)
+        await imports.execute_import("test-shop", preview.preview_id)
+        sent = self.client.sent[0][1]["products"][0]
+        self.assertEqual(sent["prices"][0]["pricelists"][0]["price_original"], 119.99)
+        self.assertEqual(sent["prices"][0]["price_common"], 123)
+
+    async def test_price_for_unselected_product_is_rejected_before_shop_requests(self):
+        request = ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1], sale_price_overrides={2: "19.99"})
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        with self.assertRaises(imports.CatalogError) as error:
+            await imports.create_preview(db, "test-shop", request)
+        self.assertEqual(error.exception.code, "price_override_not_selected")
+        self.assertEqual(self.client.sent, [])
 
     async def test_success_is_verified_and_repeated_confirmation_is_idempotent(self):
         result = await self.run_import()

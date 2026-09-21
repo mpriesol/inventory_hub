@@ -31,10 +31,15 @@ const products = [1, 2, 3].map((id) => ({
   warnings: [], listed: false, supplier_stock_raw: '6+', availability: 'skladom', parameters: [],
 }));
 products[0].images = ['http://xml.paul-lange-oslany.sk:8081/ito5-S123.jpg'];
+products[1].warnings = ['inherited_retail_price', 'retail_below_purchase'];
+products[2].warnings = ['duplicate_supplier_code'];
+products[2].import_blockers = ['duplicate_supplier_code'];
 Object.assign(products[0], { listed: true, shop_url: 'https://shop.example.test/p/prilba', shop_admin_url: 'https://admin.example.test/product/101', shop_active: false });
 const displayImages = ['/api/suppliers/paul-lange/catalog/images/ito5-S123.jpg', products[1].images[0]];
 const calls = [];
 let snapshot = 1;
+let previewNumber = 0;
+let failPreview = false;
 global.fetch = async (path, init = {}) => {
   const url = new URL(path, 'https://hub.example.test');
   const body = init.body ? JSON.parse(init.body) : undefined;
@@ -48,7 +53,12 @@ global.fetch = async (path, init = {}) => {
   else if (url.pathname.endsWith('/selection')) data = { ids: [1, 2, 3], run_id: snapshot };
   else if (url.pathname.endsWith('/catalog/download')) data = { relpath: 'suppliers/paul-lange/feeds/xml/catalog_products_test.xml', size_bytes: 1024, downloaded_at: '2026-01-01T12:00:00Z' };
   else if (url.pathname.endsWith('/import/options')) data = { cache: { checked_at: '2026-01-01T12:00:00Z', expires_at: '2026-01-01T12:15:00Z', from_cache: url.searchParams.get('refresh') !== 'true', max_age_seconds: 900 }, prices_with_vat: true, languages: [{ code: 'sk', currency: 'EUR', default: true }], pricelists: [{ name: 'Predvolené', default: true }], categories: [{ code: 'K-TEST', names: { sk: 'Test' } }], create_validation_field: false };
-  else if (url.pathname.endsWith('/import/preview')) data = { preview_id: 'a'.repeat(32), shop: 'biketrek', supplier: 'paul-lange', options: body.options, errors: [], warnings: [], expires_at: new Date(Date.now() + 3600000).toISOString(), items: [{ code: 'PL-G-G1', name: 'Prilba', product_ids: body.product_ids, variants_count: body.product_ids.length, status: 'ready', errors: [], warnings: [], payload: { images: [{ url: products[0].images[0] }], variants: [{ code: 'PL-A-1', image: { url: products[0].images[0] } }] } }] };
+  else if (url.pathname.endsWith('/import/preview')) {
+    if (failPreview) return { ok: false, status: 502, json: async () => ({ detail: { code: 'upgates_unavailable' } }) };
+    data = { preview_id: (++previewNumber).toString().padStart(32, '0'), shop: 'biketrek', supplier: 'paul-lange', options: body.options, errors: [], warnings: [], expires_at: new Date(Date.now() + 3600000).toISOString(), items: [{ code: 'PL-G-G1', name: 'Prilba', product_ids: body.product_ids, variants_count: body.product_ids.length, status: 'ready', errors: [], warnings: ['retail_below_purchase'], payload: { images: [{ url: products[0].images[0] }], variants: [{ code: 'PL-A-1', image: { url: products[0].images[0] } }] } }],
+      sale_price_overrides: body.sale_price_overrides,
+      price_lines: body.product_ids.map(id => ({ product_id: id, code: products[id - 1].shop_code, name: products[id - 1].name, image: products[id - 1].images[0], attributes: products[id - 1].variant_attributes, retail_gross: '123', purchase_net: '60', sale_gross: body.sale_price_overrides[id] || '123', overridden: id in body.sale_price_overrides, blocked: false, warnings: products[id - 1].warnings })) };
+  }
   else throw new Error(`Unexpected request: ${url.pathname}`);
   if (url.pathname.endsWith('/import/preview')) data.shop_check = { checked_at: '2026-01-01T12:01:00Z', full_checked_at: '2026-01-01T12:00:00Z', mode: body.refresh_shop ? 'full' : 'changes' };
   return { ok: true, status: 200, json: async () => data };
@@ -56,6 +66,7 @@ global.fetch = async (path, init = {}) => {
 const root = createRoot(document.getElementById('root'));
 const button = text => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === text);
 const checkbox = label => [...document.querySelectorAll('input[type="checkbox"]')].find(b => b.getAttribute('aria-label') === label);
+const saleInput = code => [...document.querySelectorAll('.catalog-edit-prices label')].find(label => label.textContent === `Predajná cena s DPH: ${code}`).querySelector('input');
 async function click(element) { assert.ok(element, 'Expected UI element'); await act(async () => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))); }
 async function change(element, value) { await act(async () => { Object.getOwnPropertyDescriptor(element.tagName === 'SELECT' ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype, 'value').set.call(element, value); element.dispatchEvent(new window.Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); }); }
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); }); }
@@ -64,6 +75,8 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) })))));
   await settle();
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
+  assert.ok(document.body.textContent.includes('Cena z hlavného produktu'), 'Collapsed groups show warnings from their variants');
+  assert.ok(document.body.textContent.includes('MOC pod nákupnou cenou'));
   await click(button('Získať pôvodný feed'));
   assert.ok(document.body.textContent.includes('Produkty sa týmto nespracovali.'));
   assert.equal(document.querySelector('a[href^="/api/files/download"]').getAttribute('href'), '/api/files/download?relpath=suppliers%2Fpaul-lange%2Ffeeds%2Fxml%2Fcatalog_products_test.xml');
@@ -87,6 +100,7 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await click(checkbox('Vybrať produkt: Prilba M'));
   assert.equal(checkbox('Vybrať varianty: Prilba').indeterminate, true, 'Parent reflects partial selection');
   await click(button('Ďalej')); await settle();
+  assert.ok(document.body.textContent.includes('Import blokovaný'));
   await click(checkbox('Vybrať produkt: Rukavice'));
   assert.ok(document.body.textContent.includes('Vybrané položky: 2'), 'Selection persists across pages');
   await click(button('Späť')); await settle();
@@ -118,16 +132,44 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(document.querySelector('.catalog-import-item summary img').getAttribute('src'), displayImages[0]);
   assert.equal(document.querySelector('.catalog-preview-variant img').getAttribute('src'), displayImages[0]);
   assert.equal(products[0].images[0], 'http://xml.paul-lange-oslany.sk:8081/ito5-S123.jpg', 'Display leaves the original source URL intact');
+  assert.ok(document.querySelector('.catalog-import > .catalog-notice[role="status"]').textContent.startsWith('MOC je nižšia'), 'MOC warnings are visible before expanding an item');
+  await click(button('Upraviť predajné ceny'));
+  const beforeTyping = calls.length;
+  await change(saleInput('PL-A-1'), '99,95');
+  assert.equal(calls.length, beforeTyping, 'Typing does not contact either API');
+  assert.equal(button('Importovať do e-shopu (1)').disabled, true, 'Unverified price edits prevent confirmation');
+  assert.equal(saleInput('PL-A-2').value, '123', 'Sibling prices stay unchanged');
+  failPreview = true;
+  await click(button('Prepočítať a overiť náhľad'));
+  assert.equal(saleInput('PL-A-1').value, '99,95', 'Failed recheck keeps the price draft');
+  assert.equal(button('Importovať do e-shopu (1)').disabled, true);
+  assert.ok(document.querySelector('.catalog-import [role="alert"]'));
+  failPreview = false;
+  await click(button('Prepočítať a overiť náhľad'));
+  assert.deepEqual(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.sale_price_overrides, { 1: '99.95' });
+  assert.equal(button('Importovať do e-shopu (1)').disabled, false);
+  await click(button('Upraviť predajné ceny'));
+  assert.equal(saleInput('PL-A-1').value, '99.95');
+  await change(saleInput('PL-A-1'), '-1');
+  assert.equal(button('Prepočítať a overiť náhľad').disabled, true, 'Invalid price cannot be submitted');
+  await click(button('Použiť cenu podľa dodávateľa'));
+  await click(button('Prepočítať a overiť náhľad'));
+  assert.deepEqual(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.sale_price_overrides, {});
+  assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Repricing never starts an import');
   await click(button('Zavrieť'));
   await click(button('Možnosti'));
   const fullCheck = [...document.querySelectorAll('label')].find(e => e.textContent.includes('Úplná kontrola e-shopu pri ďalšom náhľade')).querySelector('input');
   await click(fullCheck);
   await click(button('Pripraviť import'));
   assert.equal(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.refresh_shop, true);
+  await click(button('Upraviť predajné ceny'));
+  await change(saleInput('PL-A-2'), '125');
+  await click(button('Prepočítať a overiť náhľad'));
+  assert.equal(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.refresh_shop, false, 'Repricing uses incremental verification after the initial full check');
   await click(button('Zavrieť'));
   snapshot = 2;
   await click(button('Ďalej')); await settle();
   assert.ok(document.body.textContent.includes('Vybrané položky: 0'), 'Changed feed invalidates the selection');
   await act(async () => root.unmount());
-  console.log('Catalog UI passed: expandable variants and images, partial selection, pagination, all-results selection, target shop, explicit preview, snapshot invalidation.');
+  console.log('Catalog UI passed: variants/images, selection, shop freshness, visible price warnings, per-variant price edits/reset, failed recheck protection, snapshot invalidation.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

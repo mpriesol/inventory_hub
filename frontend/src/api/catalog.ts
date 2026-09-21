@@ -12,6 +12,7 @@ export interface CatalogProduct {
   availability: string | null; delivery_date: string | null;
   group_code: string | null; group_name: string | null; variant_relationship: 'explicit' | 'not_provided';
   variant_attributes: { name: string; value: string }[]; warnings: string[]; listed: boolean;
+  import_blockers?: string[];
   fetched_at: string | null; source_hash: string | null;
   shop_url: string | null; shop_admin_url: string | null; shop_active: boolean | null;
 }
@@ -49,6 +50,14 @@ export interface ImportPreview {
   preview_id: string; shop: string; supplier: string; created_at: string; expires_at: string;
   options: ImportOptions; prices_with_vat: boolean; items: ImportItem[]; errors: string[]; warnings: string[]; create_validation_field: boolean;
   shop_check?: ShopCheck | null;
+  price_lines?: ImportPriceLine[];
+  sale_price_overrides?: Record<number, string>;
+}
+export interface ImportPriceLine {
+  product_id: number; code: string; name: string; image: string | null;
+  attributes: { name: string; value: string }[];
+  retail_gross: string | null; purchase_net: string | null; sale_gross: string | null;
+  overridden: boolean; blocked: boolean; warnings: string[];
 }
 export interface ShopCheck { checked_at: string; full_checked_at: string; mode: 'full' | 'changes' }
 export interface ImportResult {
