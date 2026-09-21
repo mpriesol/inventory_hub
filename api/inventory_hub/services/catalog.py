@@ -291,25 +291,34 @@ def _http_url(value) -> str | None:
 
 
 async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: list[CatalogProduct]) -> None:
-    """One local lookup for displayed items; never call the shop API for links."""
+    """Resolve each parent's local content once; never call the shop API for links."""
     codes = {code for p in products if p.listed for code in
              [p.shop_code, *(m.code for m in p.shop_matches), *(m.parent_code for m in p.shop_matches)] if code}
     if not shop_code or not codes:
         return
-    content = ShopProductContent.data
     rows = (await db.execute(select(
         Product.sku, ShopProduct.external_code, ShopProduct.variant_code,
-        func.jsonb_path_query_first(content, cast('$.descriptions[*] ? (@.language == "sk").url', JSONPATH), type_=JSONB).label("sk_url"),
-        content["descriptions"][0]["url"].astext.label("default_url"),
-        content["admin_url"].astext.label("admin_url"), content["active_yn"].as_boolean().label("active"),
+        func.coalesce(func.nullif(ShopProduct.parent_code, ""), ShopProduct.external_code).label("content_code"),
     ).select_from(Product).join(ShopProduct, ShopProduct.product_id == Product.id)
         .join(Shop, Shop.id == ShopProduct.shop_id)
-        .join(ShopProductContent, and_(ShopProductContent.shop_id == ShopProduct.shop_id,
-              ShopProductContent.external_code == func.coalesce(func.nullif(ShopProduct.parent_code, ""), ShopProduct.external_code)))
         .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True), or_(
             func.lower(Product.sku).in_({c.casefold() for c in codes}), func.lower(ShopProduct.external_code).in_({c.casefold() for c in codes}),
             func.lower(ShopProduct.variant_code).in_({c.casefold() for c in codes}))))).all()
-    links = {code.casefold(): row for row in rows for code in (row.sku, row.external_code, row.variant_code) if code}
+    if not rows:
+        return
+    # A legacy parent can contain thousands of variants. Extracting its large JSON
+    # through the variant join repeats the same work for every matching variant.
+    content = ShopProductContent.data
+    parents = (await db.execute(select(
+        ShopProductContent.external_code,
+        func.jsonb_path_query_first(content, cast('$.descriptions[*] ? (@.language == "sk").url', JSONPATH), type_=JSONB).label("sk_url"),
+        content["descriptions"][0]["url"].astext.label("default_url"),
+        content["admin_url"].astext.label("admin_url"), content["active_yn"].as_boolean().label("active"),
+    ).select_from(ShopProductContent).join(Shop, Shop.id == ShopProductContent.shop_id)
+        .where(Shop.code == shop_code, ShopProductContent.external_code.in_({row.content_code for row in rows})))).all()
+    by_parent = {row.external_code: row for row in parents}
+    links = {code.casefold(): by_parent[row.content_code] for row in rows if row.content_code in by_parent
+             for code in (row.sku, row.external_code, row.variant_code) if code}
     for product in products:
         row = next((links[code.casefold()] for code in [product.shop_code, *(m.code for m in product.shop_matches),
                     *(m.parent_code for m in product.shop_matches)] if code.casefold() in links), None)
