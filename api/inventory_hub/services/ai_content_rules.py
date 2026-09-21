@@ -111,4 +111,5 @@ async def publish(db, version_id: int, expected: int):
         raise CatalogError("ai_version_not_found", "Rule version not found", 404)
     RuleBook.model_validate(version.book)
     current.published_id = version.id
+    await db.flush()
     return version

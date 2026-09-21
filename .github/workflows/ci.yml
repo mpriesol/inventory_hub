@@ -64,3 +64,6 @@ jobs:
 
       - name: Check supplier catalog interactions
         run: node frontend/tests/catalog-ui.cjs
+
+      - name: Check AI content preparation and review
+        run: node frontend/tests/ai-content-ui.cjs

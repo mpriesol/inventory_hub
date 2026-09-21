@@ -564,7 +564,7 @@
     "automaticNotice": "Processing follows the selected profiles. Disabling the estimate skips the cost pause; disabling approval and confirmation enables automatic import. Technical errors always stop import.",
     "prepareBatch": "Prepare / start using these settings",
     "recentJobs": "Recent jobs",
-    "startWaiting": "Start waiting jobs in this list",
+    "startWaiting": "Start selected waiting jobs",
     "refresh": "Refresh",
     "jobPersistence": "Jobs continue on the server after the browser closes. Uncertain paid calls are never automatically repeated. Each shop has a separate result.",
     "noJobs": "No jobs yet. Select products in a supplier catalog.",
@@ -606,6 +606,8 @@
       "ai_category_requires_review": "This category requires human review. Automatic approval is not enabled yet.",
       "ai_seo_title_length": "Review SEO title length (45–65 characters recommended).",
       "ai_meta_description_length": "Review meta description length (140–165 characters recommended)."
-    }
+    },
+    "importSelectedReady": "Import selected ready jobs",
+    "selectJob": "Select job"
   }
 }

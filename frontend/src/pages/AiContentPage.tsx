@@ -33,6 +33,7 @@ export function AiContentPage() {
   const [targetOptions, setTargetOptions] = useState<Record<string, TargetOptions>>({});
   const [research, setResearch] = useState('official');
   const [jobs, setJobs] = useState<AiJob[]>([]);
+  const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<AiJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -88,7 +89,7 @@ export function AiContentPage() {
       supplier: selection.supplier, feed_key: selection.feed_key, run_id: selection.run_id, product_ids: selection.product_ids,
       ai_product_ids: families.filter(f => aiFamilies.has(f.code)).flatMap(f => f.product_ids),
       category_profiles: Object.fromEntries(families.flatMap(f => f.product_ids.map(id => [id, profiles[f.code] || 'general']))), targets, research });
-    setJobs(result.jobs); setTab('jobs'); setReload(v => v + 1);
+    setJobs(result.jobs); setSelectedJobs(new Set(result.jobs.map(j => j.id))); setTab('jobs'); setReload(v => v + 1);
     if (result.jobs.length) setDetail(await aiRequest<AiJob>(`/jobs/${result.jobs[0].id}`));
   }
   return <div className="ai-content"><header><div><h1><Sparkles size={24} style={{ display: 'inline', marginRight: 10 }} />{t('ai.title')}</h1><p>{t('ai.subtitle')}</p></div><Link to="/suppliers">{t('ai.backSuppliers')}</Link></header>
@@ -109,9 +110,9 @@ export function AiContentPage() {
           <p>{t('ai.automaticNotice')}</p><button className="ai-primary" disabled={busy || !families.length || !targets.length} onClick={() => execute(prepare)}>{busy ? t('common.loading') : t('ai.prepareBatch')}</button>
         </div>
       </>}
-      {tab === 'jobs' && <><div className="ai-toolbar"><h2>{t('ai.recentJobs')}</h2><button disabled={busy || !jobs.some(j => j.status === 'estimate')} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'estimate')) await aiRequest(`/jobs/${job.id}/action`, { action: 'start', expected_revision: job.revision }); setReload(v => v + 1); if (detail) setDetail(await aiRequest<AiJob>(`/jobs/${detail.id}`)); })}>{t('ai.startWaiting')}</button><button onClick={() => setReload(v => v + 1)}>{t('ai.refresh')}</button></div>
+      {tab === 'jobs' && <><div className="ai-toolbar"><h2>{t('ai.recentJobs')}</h2><button disabled={busy || !jobs.some(j => j.status === 'estimate' && selectedJobs.has(j.id))} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'estimate' && selectedJobs.has(j.id))) await aiRequest(`/jobs/${job.id}/action`, { action: 'start', expected_revision: job.revision }); setReload(v => v + 1); if (detail) setDetail(await aiRequest<AiJob>(`/jobs/${detail.id}`)); })}>{t('ai.startWaiting')}</button><button disabled={busy || !jobs.some(j => j.status === 'ready' && selectedJobs.has(j.id))} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'ready' && selectedJobs.has(j.id))) await aiRequest(`/jobs/${job.id}/action`, { action: 'import', expected_revision: job.revision }); setReload(v => v + 1); })}>{t('ai.importSelectedReady')}</button><button onClick={() => setReload(v => v + 1)}>{t('ai.refresh')}</button></div>
         <p>{t('ai.jobPersistence')}</p>{!jobs.length && <div className="ai-card">{t('ai.noJobs')}</div>}
-        {jobs.map(j => <div className="ai-card ai-row" key={j.id}>{j.image && <img src={catalogImageUrl(j.image)} alt="" />}<div className="ai-grow"><strong>{j.name}</strong><div><small>{j.shop} · {j.code} · {j.use_ai ? 'AI' : t('ai.originalFeed')}</small></div></div><span className="ai-badge">{t(`ai.states.${j.status}`, { defaultValue: j.status })}</span>{j.policy.show_cost_estimate !== false && <small>{Number(j.actual_usd ?? j.estimate_usd).toFixed(3)} USD {j.actual_usd === null ? t('ai.estimated') : ''}</small>}<button disabled={busy} onClick={() => execute(async () => setDetail(await aiRequest<AiJob>(`/jobs/${j.id}`)))}>{t('ai.openJob')}</button></div>)}
+        {jobs.map(j => <div className="ai-card ai-row" key={j.id}><input type="checkbox" aria-label={`${t('ai.selectJob')} ${j.name} ${j.shop}`} checked={selectedJobs.has(j.id)} onChange={e => setSelectedJobs(old => { const next = new Set(old); e.target.checked ? next.add(j.id) : next.delete(j.id); return next; })} />{j.image && <img src={catalogImageUrl(j.image)} alt="" />}<div className="ai-grow"><strong>{j.name}</strong><div><small>{j.shop} · {j.code} · {j.use_ai ? 'AI' : t('ai.originalFeed')}</small></div></div><span className="ai-badge">{t(`ai.states.${j.status}`, { defaultValue: j.status })}</span>{j.policy.show_cost_estimate !== false && <small>{Number(j.actual_usd ?? j.estimate_usd).toFixed(3)} USD {j.actual_usd === null ? t('ai.estimated') : ''}</small>}<button disabled={busy} onClick={() => execute(async () => setDetail(await aiRequest<AiJob>(`/jobs/${j.id}`)))}>{t('ai.openJob')}</button></div>)}
         {detail && <AiJobDetail key={`${detail.id}:${detail.revision}`} job={detail} onChange={job => { setDetail(job); setReload(v => v + 1); }} />}
       </>}
       {tab === 'rules' && rules && <AiRuleEditor key={rules.published_id} rules={rules} onReload={() => setReload(v => v + 1)} onJob={showJob} />}

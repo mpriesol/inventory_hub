@@ -565,7 +565,7 @@
     "automaticNotice": "Po spustení sa použijú pravidlá vybraných profilov. Vypnutý odhad preskočí čakanie na náklady; vypnuté schválenie a potvrdenie umožnia automatický import. Technické chyby ho vždy zastavia.",
     "prepareBatch": "Pripraviť / spustiť podľa nastavení",
     "recentJobs": "Posledné úlohy",
-    "startWaiting": "Spustiť čakajúce úlohy z tohto zoznamu",
+    "startWaiting": "Spustiť označené čakajúce úlohy",
     "refresh": "Obnoviť",
     "jobPersistence": "Úlohy pokračujú na serveri aj po zatvorení prehliadača. Neisté platené volanie sa automaticky neopakuje. Každý e-shop má samostatný výsledok.",
     "noJobs": "Zatiaľ tu nie sú úlohy. Vyber produkty v katalógu dodávateľa.",
@@ -607,6 +607,8 @@
       "ai_category_requires_review": "Táto kategória vyžaduje ľudskú kontrolu. Automatické schválenie ešte nie je povolené.",
       "ai_seo_title_length": "Skontroluj dĺžku SEO titulu (odporúčanie 45–65 znakov).",
       "ai_meta_description_length": "Skontroluj dĺžku meta popisu (odporúčanie 140–165 znakov)."
-    }
+    },
+    "importSelectedReady": "Importovať označené pripravené",
+    "selectJob": "Označiť úlohu"
   }
 }
