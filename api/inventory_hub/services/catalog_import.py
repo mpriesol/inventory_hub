@@ -26,6 +26,8 @@ from inventory_hub.db_models import Product, ProductGroup, ProductIdentifier, Sh
 from inventory_hub.db_models_ext import ProductSupplySource, ShopProduct, ShopProductContent
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
 from inventory_hub.services.catalog_html import clean_description
+from inventory_hub.services.catalog_identity import cached_identities, connection_fingerprint, parent_shop_code, read_cache
+from inventory_hub.services.catalog_sort import variant_sort_key
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
 
@@ -231,8 +233,7 @@ def remote_identities(client: UpgatesClient) -> tuple[set[str], set[str]]:
 @contextmanager
 def _shop_cache(shop: str, kind: str):
     cfg = shop_config(shop)
-    fingerprint = hashlib.sha256(json.dumps([cfg.get(k) for k in
-        ("upgates_api_base_url", "upgates_login", "upgates_api_key")]).encode()).hexdigest()
+    fingerprint = connection_fingerprint(cfg)
     directory = config_io.shop_path(shop).parent / "catalog-cache"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / (kind + ".json")
@@ -242,15 +243,7 @@ def _shop_cache(shop: str, kind: str):
         except BlockingIOError:
             raise CatalogError("shop_check_running", "Another shop check is running; try again shortly", 409) from None
         try:
-            saved = None
-            try:
-                value = json.loads(path.read_text())
-                if value.get("version") == 1 and value.get("fingerprint") == fingerprint:
-                    checked = datetime.fromisoformat(value["checked_at"])
-                    if checked.tzinfo and checked <= now():
-                        saved = value
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                pass
+            saved = read_cache(path, fingerprint, now())
             yield path, saved, fingerprint
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -298,6 +291,7 @@ def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool
                 if not isinstance(item, dict):
                     raise CatalogError("upgates_read_failed", "A product or variant identity is invalid", 502)
                 identities.append({"code": str(item.get("code") or "").casefold(),
+                                   "display_code": str(item.get("code") or ""),
                                    "eans": re.split(r"[;,|/\s]+", str(item.get("ean") or "").strip())})
             products[key] = identities
         # Save only after every page succeeds; failures never become a successful check.
@@ -368,11 +362,11 @@ def _base(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with_v
 def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: dict, with_vat: bool,
                sale_price_overrides: dict[int, Decimal] | None = None) -> ImportItem:
     sale_price_overrides = sale_price_overrides or {}
+    products = sorted(products, key=variant_sort_key)
     first = products[0]
     grouped = bool(first.group_code and first.variant_relationship == "explicit")
     # A Hub parent identifier is derived only from the supplier's explicit group ID.
-    prefix = first.shop_code[:-len(first.code)] if first.shop_code.endswith(first.code) else ""
-    parent_code = prefix + "G-" + first.group_code if grouped else first.shop_code
+    parent_code = parent_shop_code(first)
     item = ImportItem(code=parent_code, name=(first.group_name or first.name) if grouped else first.name,
                       product_ids=[p.id for p in products], variants_count=len(products) if grouped else 0,
                       status="ready", warnings=sorted({w for p in products for w in p.warnings}))
@@ -482,16 +476,26 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
             sale_gross=sale, overridden=product.id in request.sale_price_overrides,
             blocked=bool(product.import_blockers), warnings=product.warnings))
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client, refresh=request.refresh_shop)
+    index = await asyncio.to_thread(cached_identities, shop)
     sources = {p.id: p for p in products}
+    lines = {line.product_id: line for line in price_lines}
     selection_eans = Counter(ean for p in products for ean in p.eans)
     selection_codes = Counter(p.shop_code.casefold() for p in products)
     parent_codes = Counter(item.code.casefold() for item in items)
     for item in items:
+        item.parent_exists = bool(item.variants_count and item.code.casefold() in codes)
+        item.existing_product_ids = [id for id in item.product_ids if item.parent_exists or
+                                    sources[id].shop_code.casefold() in codes or bool(set(sources[id].eans) & eans)]
+        for id in item.product_ids:
+            lines[id].existing = id in item.existing_product_ids
+            lines[id].shop_matches = index.matches(sources[id])
         if item.status == "invalid":
             continue
-        if _duplicate(item.model_dump(), sources, codes, eans):
+        if item.parent_exists or len(item.existing_product_ids) == len(item.product_ids):
             item.status = "exists"
             item.warnings.append("already_in_shop")
+        elif item.existing_product_ids:
+            item.status, item.errors = "invalid", ["some_variants_in_shop"]
         elif (parent_codes[item.code.casefold()] > 1 or
               (item.variants_count and item.code.casefold() in selection_codes) or
               any(selection_codes[sources[id].shop_code.casefold()] > 1 or any(selection_eans[e] > 1 for e in sources[id].eans) for id in item.product_ids)):
@@ -767,7 +771,13 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                         item.update(status="failed", errors=["local_identity_conflict"])
                         continue
                 if _duplicate(item, sources, codes, eans):
-                    item.update(status="exists", errors=[], warnings=list(dict.fromkeys([*item["warnings"], "already_in_shop"])))
+                    parent_exists = bool(item["variants_count"] and item["code"].casefold() in codes)
+                    existing = [id for id in item["product_ids"] if parent_exists or sources[id].shop_code.casefold() in codes
+                                or bool(set(sources[id].eans) & eans)]
+                    partial = len(existing) < len(item["product_ids"])
+                    item.update(status="invalid" if partial else "exists", existing_product_ids=existing, parent_exists=parent_exists,
+                                errors=["some_variants_in_shop"] if partial else [],
+                                warnings=list(dict.fromkeys([*item["warnings"], *([] if partial else ["already_in_shop"])])))
                     continue
                 # Check codes immediately before each create as well as the complete EAN index.
                 check_codes = [item["code"], *(sources[id].shop_code for id in item["product_ids"])]

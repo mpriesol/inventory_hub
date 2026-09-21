@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from catalog_fixtures import FakeUpgates
+from catalog_fixtures import FakeUpgates, product
 from inventory_hub import config_io
 from inventory_hub.services import catalog_import as imports
 from inventory_hub.services.upgates import UpgatesError
+from inventory_hub.services.catalog_identity import cached_identities
 
 
 class ShopCacheTests(unittest.TestCase):
@@ -45,6 +46,19 @@ class ShopCacheTests(unittest.TestCase):
         self.current += timedelta(minutes=16)
         imports.cached_import_options("one", self.client)
         self.assertEqual(self.client.get.call_count, initial * 3)
+
+    def test_catalog_reads_code_and_ean_matches_without_api_calls_and_checks_connection(self):
+        self.client.products = {"OLD": {"product_id": 42, "code": "OLD", "variants": [{"code": "Legacy-M", "ean": product().eans[0]}]}}
+        imports.checked_remote_identities("one", self.client)
+        calls = self.client.get.call_count
+        index = cached_identities("one")
+        self.assertEqual(index.checked_at, self.current.isoformat())
+        match = index.matches(product())[0]
+        self.assertEqual((match.matched_by, match.code, match.parent_code, match.remote_product_id), ("ean", "Legacy-M", "OLD", "42"))
+        self.assertEqual(self.client.get.call_count, calls)
+        self.assertEqual(cached_identities("two").matches(product()), [])
+        config_io.shop_path("one").write_text(json.dumps({**self.cfg, "upgates_api_key": "changed-fixture"}))
+        self.assertIsNone(cached_identities("one").checked_at)
 
     def test_cache_is_scoped_to_shop_and_connection_and_never_falls_back_on_failure(self):
         imports.cached_import_options("one", self.client)

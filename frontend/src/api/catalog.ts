@@ -1,3 +1,4 @@
+export interface CatalogShopMatch { matched_by: 'code' | 'ean' | 'parent_code'; value: string; code: string; parent_code: string; remote_product_id: string | null }
 export interface CatalogProduct {
   id: number; supplier: string; feed_key: string; run_id: number | null;
   code: string; shop_code: string; manufacturer_code: string | null; eans: string[];
@@ -13,12 +14,14 @@ export interface CatalogProduct {
   group_code: string | null; group_name: string | null; variant_relationship: 'explicit' | 'not_provided';
   variant_attributes: { name: string; value: string }[]; warnings: string[]; listed: boolean;
   import_blockers?: string[];
+  shop_matches?: CatalogShopMatch[];
   fetched_at: string | null; source_hash: string | null;
   shop_url: string | null; shop_admin_url: string | null; shop_active: boolean | null;
 }
 export interface CatalogRow { key: string; product: CatalogProduct; is_group: boolean; variants_count: number; matching_ids: number[]; variants: CatalogProduct[] }
 export interface CatalogPage {
   supplier: string; feed_key: string; run_id: number | null; fetched_at: string | null;
+  shop_checked_at?: string | null;
   total: number; total_items: number; page: number; page_size: number; pages: number;
   manufacturers: string[]; items: CatalogRow[];
 }
@@ -45,6 +48,7 @@ export interface ImportItem {
   code: string; name: string; product_ids: number[]; variants_count: number;
   status: 'ready' | 'exists' | 'invalid' | 'created' | 'failed' | 'uncertain';
   warnings: string[]; errors: string[]; payload: Record<string, any>;
+  existing_product_ids?: number[]; parent_exists?: boolean;
 }
 export interface ImportPreview {
   preview_id: string; shop: string; supplier: string; created_at: string; expires_at: string;
@@ -58,6 +62,7 @@ export interface ImportPriceLine {
   attributes: { name: string; value: string }[];
   retail_gross: string | null; purchase_net: string | null; sale_gross: string | null;
   overridden: boolean; blocked: boolean; warnings: string[];
+  existing?: boolean; shop_matches?: CatalogShopMatch[];
 }
 export interface ShopCheck { checked_at: string; full_checked_at: string; mode: 'full' | 'changes' }
 export interface ImportResult {

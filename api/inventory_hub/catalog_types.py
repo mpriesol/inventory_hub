@@ -25,6 +25,14 @@ class CatalogPrices(BaseModel):
     discount_gross: Decimal | None = None
 
 
+class CatalogShopMatch(BaseModel):
+    matched_by: Literal["code", "ean", "parent_code"]
+    value: str
+    code: str
+    parent_code: str = ""
+    remote_product_id: str | None = None
+
+
 class CatalogProduct(BaseModel):
     id: int = 0
     supplier: str
@@ -63,6 +71,7 @@ class CatalogProduct(BaseModel):
     fetched_at: datetime | None = None
     source_hash: str | None = None
     listed: bool = False
+    shop_matches: list[CatalogShopMatch] = Field(default_factory=list)
     shop_url: str | None = None
     shop_admin_url: str | None = None
     shop_active: bool | None = None
@@ -83,6 +92,7 @@ class CatalogPage(BaseModel):
     feed_key: str
     run_id: int | None = None
     fetched_at: datetime | None = None
+    shop_checked_at: datetime | None = None
     total: int
     total_items: int
     page: int
@@ -146,6 +156,8 @@ class ImportItem(BaseModel):
     name: str
     product_ids: list[int]
     variants_count: int = 0
+    existing_product_ids: list[int] = Field(default_factory=list)
+    parent_exists: bool = False
     status: Literal["ready", "exists", "invalid", "created", "failed", "uncertain"]
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -169,6 +181,8 @@ class ImportPriceLine(BaseModel):
     sale_gross: Decimal | None = None
     overridden: bool = False
     blocked: bool = False
+    existing: bool = False
+    shop_matches: list[CatalogShopMatch] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

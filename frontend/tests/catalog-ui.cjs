@@ -40,6 +40,7 @@ const calls = [];
 let snapshot = 1;
 let previewNumber = 0;
 let failPreview = false;
+let partialMatch = false;
 global.fetch = async (path, init = {}) => {
   const url = new URL(path, 'https://hub.example.test');
   const body = init.body ? JSON.parse(init.body) : undefined;
@@ -58,6 +59,10 @@ global.fetch = async (path, init = {}) => {
     data = { preview_id: (++previewNumber).toString().padStart(32, '0'), shop: 'biketrek', supplier: 'paul-lange', options: body.options, errors: [], warnings: [], expires_at: new Date(Date.now() + 3600000).toISOString(), items: [{ code: 'PL-G-G1', name: 'Prilba', product_ids: body.product_ids, variants_count: body.product_ids.length, status: 'ready', errors: [], warnings: ['retail_below_purchase'], payload: { images: [{ url: products[0].images[0] }], variants: [{ code: 'PL-A-1', image: { url: products[0].images[0] } }] } }],
       sale_price_overrides: body.sale_price_overrides,
       price_lines: body.product_ids.map(id => ({ product_id: id, code: products[id - 1].shop_code, name: products[id - 1].name, image: products[id - 1].images[0], attributes: products[id - 1].variant_attributes, retail_gross: '123', purchase_net: '60', sale_gross: body.sale_price_overrides[id] || '123', overridden: id in body.sale_price_overrides, blocked: false, warnings: products[id - 1].warnings })) };
+    if (partialMatch && body.product_ids.includes(1)) {
+      Object.assign(data.items[0], { status: 'invalid', errors: ['some_variants_in_shop'], existing_product_ids: [1], parent_exists: false });
+      Object.assign(data.price_lines.find(line => line.product_id === 1), { existing: true, shop_matches: [{ matched_by: 'ean', value: '00001', code: 'OLD-M', parent_code: 'LEGACY', remote_product_id: '42' }] });
+    }
   }
   else throw new Error(`Unexpected request: ${url.pathname}`);
   if (url.pathname.endsWith('/import/preview')) data.shop_check = { checked_at: '2026-01-01T12:01:00Z', full_checked_at: '2026-01-01T12:00:00Z', mode: body.refresh_shop ? 'full' : 'changes' };
@@ -75,6 +80,7 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) })))));
   await settle();
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
+  assert.ok(document.body.textContent.includes('V e-shope 1 / 2 variantov'), 'The group status counts every variant');
   assert.ok(document.body.textContent.includes('Cena z hlavného produktu'), 'Collapsed groups show warnings from their variants');
   assert.ok(document.body.textContent.includes('MOC pod nákupnou cenou'));
   await click(button('Získať pôvodný feed'));
@@ -156,7 +162,7 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await click(button('Prepočítať a overiť náhľad'));
   assert.deepEqual(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.sale_price_overrides, {});
   assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Repricing never starts an import');
-  await click(button('Zavrieť'));
+  await click(button('Zavrieť')); await settle();
   await click(button('Možnosti'));
   const fullCheck = [...document.querySelectorAll('label')].find(e => e.textContent.includes('Úplná kontrola e-shopu pri ďalšom náhľade')).querySelector('input');
   await click(fullCheck);
@@ -166,10 +172,46 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await change(saleInput('PL-A-2'), '125');
   await click(button('Prepočítať a overiť náhľad'));
   assert.equal(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.refresh_shop, false, 'Repricing uses incremental verification after the initial full check');
-  await click(button('Zavrieť'));
+  await click(button('Upraviť predajné ceny'));
+  const groupPrice = document.querySelector('input[aria-label="Spoločná predajná cena s DPH: Prilba"]');
+  assert.equal(groupPrice.placeholder, 'Rôzne ceny');
+  const beforeGroupTyping = calls.length;
+  await change(groupPrice, '130');
+  assert.equal(saleInput('PL-A-1').value, '130');
+  assert.equal(saleInput('PL-A-2').value, '130');
+  await change(saleInput('PL-A-2'), '135');
+  assert.equal(saleInput('PL-A-1').value, '130', 'An individual override leaves sibling prices unchanged');
+  assert.equal(calls.length, beforeGroupTyping, 'Bulk editing is local until preview verification');
+  await click(button('Prepočítať a overiť náhľad'));
+  assert.deepEqual(calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body.sale_price_overrides, { 1: '130', 2: '135' });
+  await click(button('Zavrieť')); await settle();
+  partialMatch = true;
+  await click(button('Pripraviť import'));
+  assert.ok(document.querySelector('.catalog-import').textContent.includes('OLD-M'));
+  assert.ok(document.querySelector('.catalog-import').textContent.includes('LEGACY'));
+  assert.equal(button('Importovať do e-shopu (0)').disabled, true);
+  await click(button('Upraviť predajné ceny'));
+  assert.equal(saleInput('PL-A-1').disabled, true, 'Existing variants are not repriced by a create-only import');
+  assert.equal(saleInput('PL-A-2').disabled, false, 'A partial match must not lock new variant prices');
+  await change(document.querySelector('input[aria-label="Spoločná predajná cena s DPH: Prilba"]'), '129,50');
+  assert.equal(saleInput('PL-A-1').value, '123');
+  assert.equal(saleInput('PL-A-2').value, '129,50');
+  failPreview = true;
+  await click(button('Odobrať existujúce varianty z výberu (1)'));
+  assert.equal(saleInput('PL-A-2').value, '129,50', 'A failed exclusion preserves pending prices and the original selection');
+  assert.ok(document.body.textContent.includes('Vybrané položky: 2'));
+  failPreview = false;
+  await click(button('Odobrať existujúce varianty z výberu (1)'));
+  const cleanRequest = calls.filter(c => c.path.endsWith('/import/preview')).at(-1).body;
+  assert.deepEqual(cleanRequest.product_ids, [2]);
+  assert.deepEqual(cleanRequest.sale_price_overrides, { 2: '129.50' });
+  assert.equal(button('Importovať do e-shopu (1)').disabled, false);
+  assert.ok(document.body.textContent.includes('Vybrané položky: 1'));
+  assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Excluding existing variants only rebuilds the preview');
+  await click(button('Zavrieť')); await settle();
   snapshot = 2;
   await click(button('Ďalej')); await settle();
   assert.ok(document.body.textContent.includes('Vybrané položky: 0'), 'Changed feed invalidates the selection');
   await act(async () => root.unmount());
-  console.log('Catalog UI passed: variants/images, selection, shop freshness, visible price warnings, per-variant price edits/reset, failed recheck protection, snapshot invalidation.');
+  console.log('Catalog UI passed: variants/images, selection, shop freshness, price warnings, bulk and individual prices, partial EAN matches, exclusion with preserved drafts, failed recheck protection, snapshot invalidation.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

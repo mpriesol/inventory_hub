@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import requests
-from sqlalchemy import and_, cast, func, or_, select, text, update
-from sqlalchemy.dialects.postgresql import JSONB, JSONPATH, insert
+from sqlalchemy import Text, and_, any_, case, cast, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, JSONPATH, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub import config_io
@@ -23,6 +23,8 @@ from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_no
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
+from inventory_hub.services.catalog_identity import cached_identities
+from inventory_hub.services.catalog_sort import variant_sort_key
 
 
 class CatalogError(Exception):
@@ -290,7 +292,8 @@ def _http_url(value) -> str | None:
 
 async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: list[CatalogProduct]) -> None:
     """One local lookup for displayed items; never call the shop API for links."""
-    codes = {p.shop_code for p in products if p.listed}
+    codes = {code for p in products if p.listed for code in
+             [p.shop_code, *(m.code for m in p.shop_matches), *(m.parent_code for m in p.shop_matches)] if code}
     if not shop_code or not codes:
         return
     content = ShopProductContent.data
@@ -304,10 +307,13 @@ async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: l
         .join(ShopProductContent, and_(ShopProductContent.shop_id == ShopProduct.shop_id,
               ShopProductContent.external_code == func.coalesce(func.nullif(ShopProduct.parent_code, ""), ShopProduct.external_code)))
         .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True), or_(
-            Product.sku.in_(codes), ShopProduct.external_code.in_(codes), ShopProduct.variant_code.in_(codes))))).all()
-    links = {code: row for row in rows for code in (row.sku, row.external_code, row.variant_code) if code}
+            func.lower(Product.sku).in_({c.casefold() for c in codes}), func.lower(ShopProduct.external_code).in_({c.casefold() for c in codes}),
+            func.lower(ShopProduct.variant_code).in_({c.casefold() for c in codes}))))).all()
+    links = {code.casefold(): row for row in rows for code in (row.sku, row.external_code, row.variant_code) if code}
     for product in products:
-        if product.listed and (row := links.get(product.shop_code)):
+        row = next((links[code.casefold()] for code in [product.shop_code, *(m.code for m in product.shop_matches),
+                    *(m.parent_code for m in product.shop_matches)] if code.casefold() in links), None)
+        if product.listed and row is not None:
             product.shop_url = _http_url(row.sk_url) or _http_url(row.default_url)
             product.shop_admin_url = _http_url(row.admin_url)
             product.shop_active = row.active if isinstance(row.active, bool) else None
@@ -320,8 +326,9 @@ async def _matches(db: AsyncSession, supplier: str, feed_key: str, *, q: str = "
     source_config(supplier, cfg, feed_key)
     feed = await _feed(db, supplier, cfg, feed_key)
     known = await listed_codes(db, shop)
+    index = await asyncio.to_thread(cached_identities, shop)
     if feed is None:
-        return None, [], known, []
+        return None, [], known, [], index
     conditions = [SupplierProduct.source_feed_id == feed.id, SupplierProduct.is_active.is_(True),
                   SupplierProduct.attributes.has_key("catalog")]
     if q.strip():
@@ -342,7 +349,15 @@ async def _matches(db: AsyncSession, supplier: str, feed_key: str, *, q: str = "
     if listing in ("listed", "unlisted"):
         if not shop:
             raise CatalogError("shop_required", "Choose a shop for the listing filter")
-        match = SupplierProduct.attributes["catalog"]["shop_code"].astext.in_(known)
+        data = SupplierProduct.attributes["catalog"]
+        shop_code, code = data["shop_code"].astext, data["code"].astext
+        prefix = case((func.right(shop_code, func.length(code)) == code,
+                       func.left(shop_code, func.length(shop_code) - func.length(code))), else_="")
+        parent_code = func.concat(prefix, "G-", data["group_code"].astext)
+        match = or_(func.lower(shop_code) == any_(cast(sorted({c.casefold() for c in known} | index.codes.keys()), ARRAY(Text))),
+                    data["eans"].has_any(cast(sorted(index.eans), ARRAY(Text))),
+                    and_(data["variant_relationship"].astext == "explicit", data["group_code"].astext.is_not(None),
+                         func.lower(parent_code) == any_(cast(sorted(index.codes), ARRAY(Text)))))
         conditions.append(match if listing == "listed" else ~match)
     if listing == "warnings":
         conditions.append(func.jsonb_array_length(SupplierProduct.attributes["catalog"]["warnings"]) > 0)
@@ -355,12 +370,12 @@ async def _matches(db: AsyncSession, supplier: str, feed_key: str, *, q: str = "
     manufacturers = list((await db.scalars(select(SupplierProduct.brand).where(
         SupplierProduct.source_feed_id == feed.id, SupplierProduct.is_active.is_(True),
         SupplierProduct.brand.is_not(None)).distinct().order_by(SupplierProduct.brand))).all())
-    return feed, rows, known, manufacturers
+    return feed, rows, known, manufacturers, index
 
 
 async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "products", *,
                        page: int = 1, page_size: int = 50, grouped: bool = True, **filters) -> CatalogPage:
-    feed, matches, known, manufacturers = await _matches(db, supplier, feed_key, **filters)
+    feed, matches, known, manufacturers, index = await _matches(db, supplier, feed_key, **filters)
     groups: OrderedDict[str, list[int]] = OrderedDict()
     for row in matches:
         key = "group:" + row.supplier_group_code if grouped and row.supplier_group_code else "item:" + str(row.id)
@@ -371,7 +386,12 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
     items = []
     for key, group_ids in selected:
         products = [public_product(data[id], listed=(data[id].attributes["catalog"]["shop_code"] in known)) for id in group_ids]
+        for product in products:
+            product.shop_matches = index.matches(product)
+            product.listed = product.listed or bool(product.shop_matches)
         is_group = key.startswith("group:")
+        if is_group:
+            products.sort(key=variant_sort_key)
         items.append(CatalogRow(key=key, product=products[0], is_group=is_group,
                                 variants_count=len(products) if is_group else 0,
                                 matching_ids=group_ids, variants=products if is_group else []))
@@ -379,11 +399,11 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
     return CatalogPage(supplier=supplier, feed_key=feed_key, run_id=feed.last_run_id if feed else None,
                        fetched_at=feed.last_run_at if feed else None, total=len(groups), total_items=len(matches),
                        page=page, page_size=page_size, pages=math.ceil(len(groups) / page_size),
-                       manufacturers=manufacturers, items=items)
+                       manufacturers=manufacturers, items=items, shop_checked_at=index.checked_at)
 
 
 async def catalog_selection(db: AsyncSession, supplier: str, feed_key: str = "products", **filters) -> CatalogSelection:
-    feed, matches, _, _ = await _matches(db, supplier, feed_key, **filters)
+    feed, matches, _, _, _ = await _matches(db, supplier, feed_key, **filters)
     return CatalogSelection(supplier=supplier, feed_key=feed_key, run_id=feed.last_run_id if feed else None,
                             ids=[row.id for row in matches], total=len(matches))
 
@@ -419,6 +439,11 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
             SupplierProduct.supplier_group_code == row.supplier_group_code,
             SupplierProduct.is_active.is_(True)).order_by(SupplierProduct.supplier_sku))).all()
         variants = [public_product(p, detail=True, listed=p.attributes["catalog"]["shop_code"] in known) for p in siblings]
+        variants.sort(key=variant_sort_key)
+    index = await asyncio.to_thread(cached_identities, shop)
+    for item in [product, *variants]:
+        item.shop_matches = index.matches(item)
+        item.listed = item.listed or bool(item.shop_matches)
     await attach_shop_links(db, shop, [product, *variants])
     raw = await db.scalar(select(SupplierFeedItemRaw.raw_data).where(
         SupplierFeedItemRaw.supplier_product_id == product_id, SupplierFeedItemRaw.run_id == row.last_seen_run_id))
