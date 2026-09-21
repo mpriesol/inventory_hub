@@ -35,6 +35,7 @@ export interface ImportOptions {
 }
 export interface TargetOptions {
   shop: string; prices_with_vat: boolean; create_validation_field: boolean;
+  cache?: { checked_at: string; expires_at: string; from_cache: boolean; max_age_seconds: number };
   languages: { code: string; currency: string; default: boolean }[];
   pricelists: { name: string; default: boolean }[];
   categories: { code: string; names: Record<string, string> }[];
@@ -47,11 +48,14 @@ export interface ImportItem {
 export interface ImportPreview {
   preview_id: string; shop: string; supplier: string; created_at: string; expires_at: string;
   options: ImportOptions; prices_with_vat: boolean; items: ImportItem[]; errors: string[]; warnings: string[]; create_validation_field: boolean;
+  shop_check?: ShopCheck | null;
 }
+export interface ShopCheck { checked_at: string; full_checked_at: string; mode: 'full' | 'changes' }
 export interface ImportResult {
   preview_id: string; shop: string; status: 'queued' | 'running' | 'completed' | 'failed';
   items: ImportItem[]; errors: string[]; updated_at: string;
   options: ImportOptions; prices_with_vat: boolean;
+  shop_check?: ShopCheck | null;
 }
 export type CatalogFilters = { feed_key: string; q: string; code: string; ean: string; manufacturer: string; sort: string; listing: string; shop: string };
 

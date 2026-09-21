@@ -123,6 +123,7 @@ class ShopImportPreviewRequest(BaseModel):
     product_ids: list[int] = Field(min_length=1, max_length=20000)
     run_id: int | None = None
     options: ShopImportOptions = Field(default_factory=ShopImportOptions)
+    refresh_shop: bool = False
 
     @field_validator("product_ids")
     @classmethod
@@ -149,6 +150,12 @@ class ImportItem(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class ShopCheck(BaseModel):
+    checked_at: datetime
+    full_checked_at: datetime
+    mode: Literal["full", "changes"]
+
+
 class ShopImportPreview(BaseModel):
     preview_id: str
     shop: str
@@ -161,6 +168,7 @@ class ShopImportPreview(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     create_validation_field: bool = False
+    shop_check: ShopCheck | None = None
 
 
 class ShopImportResult(BaseModel):
@@ -172,3 +180,4 @@ class ShopImportResult(BaseModel):
     items: list[ImportItem]
     errors: list[str] = Field(default_factory=list)
     updated_at: datetime
+    shop_check: ShopCheck | None = None

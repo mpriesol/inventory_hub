@@ -124,10 +124,33 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.client.sent), 1)
 
     async def test_target_price_mode_changed_blocks_all_writes(self):
+        imports.cached_import_options("test-shop", self.client)
         self.client.with_vat = False
         result = await self.run_import()
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["errors"], ["shop_options_changed"])
+        self.assertEqual(self.client.sent, [])
+
+    async def test_new_remote_ean_after_cached_index_blocks_import(self):
+        imports.checked_remote_identities("test-shop", self.client)
+        self.client.products["OUTSIDE"] = {"product_id": 42, "code": "OUTSIDE", "ean": product().eans[0]}
+        result = await self.run_import()
+        self.assertEqual(result["items"][0]["status"], "exists")
+        self.assertEqual(result["shop_check"]["mode"], "changes")
+        self.assertEqual(self.client.sent, [])
+
+    async def test_failed_fresh_identity_check_blocks_all_product_writes(self):
+        imports.checked_remote_identities("test-shop", self.client)
+        original_get = self.client.get
+        def get(path, params=None):
+            if path == "products/simple":
+                from inventory_hub.services.upgates import UpgatesError
+                raise UpgatesError("Synthetic API failure")
+            return original_get(path, params)
+        self.client.get = get
+        result = await self.run_import()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["errors"], ["upgates_read_failed"])
         self.assertEqual(self.client.sent, [])
 
     async def test_process_restart_recovers_durable_item_intent(self):

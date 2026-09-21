@@ -13,6 +13,7 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
   const [page, setPage] = useState(1);
   const items = result?.items || preview?.items || [];
   const options = result?.options || preview?.options;
+  const shopCheck = result?.shop_check || (!result ? preview?.shop_check : null);
   const counts = items.reduce<Record<string, number>>((all, item) => ({ ...all, [item.status]: (all[item.status] || 0) + 1 }), {});
   const running = result?.status === 'running' || result?.status === 'queued';
   const canRetry = !!result && !running && (result.status === 'failed' || !!counts.failed || !!counts.uncertain);
@@ -21,6 +22,7 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
     <div className="catalog-import-heading"><div><div className="catalog-eyebrow">{t('catalog.targetShop')}</div><h2>{shopName}</h2></div>
       <span className="catalog-badge">{t('catalog.hiddenValidation')}</span></div>
     <p className="catalog-muted">{t('catalog.importScope')}</p>
+    {shopCheck && <div className="catalog-notice">{t('catalog.shopProductsChecked', { date: new Date(shopCheck.checked_at).toLocaleString() })} · {t(shopCheck.mode === 'full' ? 'catalog.shopCheckFull' : 'catalog.shopCheckChanges')}<br />{t('catalog.shopFullChecked', { date: new Date(shopCheck.full_checked_at).toLocaleString() })}{!result && <p>{t('catalog.shopRecheckBeforeImport')}</p>}</div>}
     <p className="catalog-muted">{t((result?.prices_with_vat ?? preview?.prices_with_vat) ? 'catalog.shopPricesGross' : 'catalog.shopPricesNet')}</p>
     {!result && preview && <p className="catalog-muted">{t('catalog.previewExpires', { date: new Date(preview.expires_at).toLocaleTimeString() })} · {preview.options.currency} · {preview.options.pricelist} · {preview.options.category_code || t('catalog.noCategory')}</p>}
     {!result && preview?.create_validation_field && <div className="catalog-notice">{t('catalog.createValidationField')}</div>}

@@ -81,8 +81,8 @@ async def source(supplier: str, product_id: int, db: DB):
 
 
 @router.get("/shops/{shop}/import/options", summary="Read verified target languages, currencies, categories and price VAT mode")
-def import_options(shop: str):
-    return catalog_import.import_options(shop)
+def import_options(shop: str, refresh: bool = False):
+    return catalog_import.cached_import_options(shop, refresh=refresh)
 
 
 @router.get("/suppliers/paul-lange/catalog/images/{filename}", response_class=Response,

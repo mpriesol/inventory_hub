@@ -8,6 +8,10 @@ For a listed item with saved shop content, the listing badge opens its storefron
 
 ## API
 
+Shop settings use a per-shop, connection-scoped filesystem cache for up to 15 minutes. `GET /api/shops/{shop}/import/options?refresh=true` bypasses it; responses include `cache.checked_at`, `expires_at`, `from_cache` and `max_age_seconds`. The catalog shows these times and provides a refresh action. Execution always revalidates settings directly before writes, including VAT mode and the validation field.
+
+Code/EAN checks always contact Upgates. The first check loads the complete `products/simple` list; subsequent checks replace changed parent/variant identities using `last_update_time_from` with a five-minute overlap. Full checks repeat on use after 24 hours or when preview receives `refresh_shop: true`. This explicit option detects deletions outside Hub immediately; otherwise deleted entries can conservatively remain marked as existing until the next full check. Preview/results expose `shop_check` times and full/changes mode. Failed pages do not advance the saved checkpoint and block import. Catalog listing badges still describe local Hub mappings, as indicated above the table; the identity cache is used for import duplicate checks.
+
 `POST /api/suppliers/{supplier}/catalog/download` with `{"feed_key":"products"}` downloads the configured listing source without requiring a parser or changing catalog, stock or shop data. It returns the saved relative path, byte size and download time. The catalog's **Získať pôvodný feed** action exposes this for suppliers whose adapter is still being prepared. A successful download confirms file transfer, not successful XML parsing. TLS, timeout, connection, authentication, missing-file and rate-limit errors are distinguished without returning credentials or the supplier URL.
 
 Routes below include the production `/api` prefix. Interactive contracts are available at `/api/docs`.
