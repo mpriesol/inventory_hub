@@ -8,6 +8,8 @@ For a listed item with saved shop content, the listing badge opens its storefron
 
 ## API
 
+`POST /api/suppliers/{supplier}/catalog/download` with `{"feed_key":"products"}` downloads the configured listing source without requiring a parser or changing catalog, stock or shop data. It returns the saved relative path, byte size and download time. The catalog's **Získať pôvodný feed** action exposes this for suppliers whose adapter is still being prepared. A successful download confirms file transfer, not successful XML parsing. TLS, timeout, connection, authentication, missing-file and rate-limit errors are distinguished without returning credentials or the supplier URL.
+
 Routes below include the production `/api` prefix. Interactive contracts are available at `/api/docs`.
 
 | Method | Path | Purpose |

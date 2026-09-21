@@ -46,6 +46,11 @@ async def refresh(supplier: str, request: CatalogRefreshRequest, db: DB):
     return await catalog.refresh_catalog(db, supplier, request.feed_key)
 
 
+@router.post("/suppliers/{supplier}/catalog/download", summary="Save the configured listing feed without parsing or importing products")
+def download(supplier: str, request: CatalogRefreshRequest):
+    return catalog.download_catalog_source(supplier, request.feed_key)
+
+
 @router.get("/suppliers/{supplier}/catalog/products", response_model=CatalogPage,
             summary="Search normalized products; empty q lists all. Names ignore case and accents.")
 async def products(supplier: str, db: DB, feed_key: FeedKey = "products",

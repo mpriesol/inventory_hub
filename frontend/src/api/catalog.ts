@@ -28,6 +28,7 @@ export interface CatalogStatus {
   defaults: { category_code: string; currency: string; vat_percent: string };
 }
 export interface CatalogDetail { product: CatalogProduct; variants: CatalogProduct[]; source_fields: Record<string, unknown>; source_xml: string; description_html: string; active: boolean }
+export interface CatalogDownload { supplier: string; feed_key: string; status: 'downloaded'; filename: string; relpath: string; size_bytes: number; downloaded_at: string }
 export interface ImportOptions {
   language: string; currency: string; pricelist: string; category_code: string | null;
   pricing: 'configured' | 'retail'; include_images: boolean; include_description: boolean; include_parameters: boolean;

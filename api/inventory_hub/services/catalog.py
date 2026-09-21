@@ -43,7 +43,7 @@ def supplier_config(supplier: str) -> dict:
     return config_io.load_supplier(supplier, write_back_on_load=False)
 
 
-def source_config(supplier: str, cfg: dict, feed_key: str) -> tuple[dict, str]:
+def source_config(supplier: str, cfg: dict, feed_key: str, *, require_parser: bool = True) -> tuple[dict, str | None]:
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", feed_key):
         raise CatalogError("invalid_feed_key", "Invalid listing feed key")
     source = (cfg.get("feeds", {}).get("sources", {}) or {}).get(feed_key)
@@ -52,7 +52,7 @@ def source_config(supplier: str, cfg: dict, feed_key: str) -> tuple[dict, str]:
     parser_name = source.get("catalog_parser") or (cfg.get("adapter_settings", {}).get("catalog") or {}).get("parser")
     if not parser_name and supplier == "paul-lange":
         parser_name = "paul-lange"
-    if parser_name not in PARSERS:
+    if require_parser and parser_name not in PARSERS:
         raise CatalogError("catalog_parser_unavailable", "A catalog parser is not available for this supplier", 422)
     return source, parser_name
 
@@ -101,7 +101,8 @@ def _download(supplier: str, source: dict, feed_key: str) -> Path:
                                      timeout=(15, 120), stream=True,
                                      verify=remote.get("verify_ssl", True)) as response:
                     if response.status_code >= 400:
-                        raise CatalogError("feed_http_error", f"Feed download returned HTTP {response.status_code}", 502)
+                        code = {401: "feed_auth_failed", 403: "feed_auth_failed", 404: "feed_not_found", 429: "feed_rate_limited"}.get(response.status_code, "feed_http_error")
+                        raise CatalogError(code, f"Feed download returned HTTP {response.status_code}", 502)
                     size = 0
                     with temporary.open("wb") as output:
                         for chunk in response.iter_content(65536):
@@ -113,11 +114,27 @@ def _download(supplier: str, source: dict, feed_key: str) -> Path:
             raise CatalogError("feed_empty", "The supplier returned an empty feed", 502)
         temporary.replace(destination)
         return destination
+    except requests.exceptions.SSLError:
+        raise CatalogError("feed_tls_failed", "The supplier TLS certificate could not be verified", 502) from None
+    except requests.exceptions.Timeout:
+        raise CatalogError("feed_timeout", "The supplier did not deliver the feed within the timeout", 504) from None
+    except requests.exceptions.ConnectionError:
+        raise CatalogError("feed_connection_failed", "The connection to the supplier failed or was interrupted", 502) from None
     except requests.RequestException:
         # Requests exceptions can contain credentials embedded in URLs.
         raise CatalogError("feed_download_failed", "Could not download the configured supplier feed", 502) from None
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def download_catalog_source(supplier: str, feed_key: str = "products") -> dict:
+    """Save the configured listing source, even before its parser is available."""
+    cfg = supplier_config(supplier)
+    source, _ = source_config(supplier, cfg, feed_key, require_parser=False)
+    path = _download(supplier, source, feed_key)
+    return {"supplier": supplier, "feed_key": feed_key, "status": "downloaded",
+            "filename": path.name, "relpath": path.relative_to(config_io.DATA_ROOT).as_posix(),
+            "size_bytes": path.stat().st_size, "downloaded_at": datetime.now(timezone.utc)}
 
 
 async def _feed(db: AsyncSession, supplier: str, cfg: dict, feed_key: str, create: bool = False) -> SupplierFeed | None:
