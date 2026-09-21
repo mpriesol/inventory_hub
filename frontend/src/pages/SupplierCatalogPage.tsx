@@ -48,6 +48,9 @@ export function SupplierCatalogPage() {
   const [target, setTarget] = useState<TargetOptions | null>(null);
   const [targetLoading, setTargetLoading] = useState(false);
   const [targetError, setTargetError] = useState('');
+  const [targetReload, setTargetReload] = useState(0);
+  const forceTargetRefresh = useRef(false);
+  const [fullShopCheck, setFullShopCheck] = useState(false);
   const [options, setOptions] = useState<ImportOptions>(defaults);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -94,23 +97,26 @@ export function SupplierCatalogPage() {
   }, [q, code, ean, manufacturer, sort, listing, shop, feed, pageSize, grouped]);
 
   useEffect(() => {
+    const force = forceTargetRefresh.current;
+    forceTargetRefresh.current = false;
     remember('catalog.targetShop', shop);
     setPreview(null); setResult(null); setDialog(false); setImportError('');
     setJobId(shop ? stored(`catalog.import.${shop}`) : '');
     setTarget(null); setTargetError('');
-    if (!shop || !shopInfo?.ready) { setTargetLoading(false); return; }
+    if (!shop || !shopInfo?.ready || !source?.supported) { setTargetLoading(false); return; }
     const controller = new AbortController();
     setTargetLoading(true);
-    catalogRequest<TargetOptions>(`/shops/${encodeURIComponent(shop)}/import/options`, undefined, controller.signal).then(response => {
+    catalogRequest<TargetOptions>(`/shops/${encodeURIComponent(shop)}/import/options${force ? '?refresh=true' : ''}`, undefined, controller.signal).then(response => {
+      if (controller.signal.aborted) return;
       setTarget(response);
       const language = response.languages.find(l => l.code === 'sk') || response.languages.find(l => l.default) || response.languages[0];
       const pricelist = response.pricelists.find(p => p.default) || response.pricelists[0];
-      setOptions({ ...defaults, language: language?.code || '', currency: language?.currency || '', pricelist: pricelist?.name || '',
+      if (!force) setOptions({ ...defaults, language: language?.code || '', currency: language?.currency || '', pricelist: pricelist?.name || '',
         category_code: response.categories.some(c => c.code === status?.defaults.category_code) ? status!.defaults.category_code : null });
     }).catch(e => { if (e.name !== 'AbortError') setTargetError(e.code || 'request_failed'); })
       .finally(() => { if (!controller.signal.aborted) setTargetLoading(false); });
     return () => controller.abort();
-  }, [shop, shopInfo?.ready, supplier]);
+  }, [shop, shopInfo?.ready, source?.supported, supplier, targetReload]);
 
   useEffect(() => {
     if (!jobId || !shop) return;
@@ -161,7 +167,7 @@ export function SupplierCatalogPage() {
   async function prepare() {
     setPreparing(true); setError(''); setImportError('');
     try {
-      const next = await catalogRequest<ImportPreview>(`/shops/${encodeURIComponent(shop)}/import/preview`, { supplier, feed_key: feed, product_ids: [...selected], run_id: snapshot.current, options });
+      const next = await catalogRequest<ImportPreview>(`/shops/${encodeURIComponent(shop)}/import/preview`, { supplier, feed_key: feed, product_ids: [...selected], run_id: snapshot.current, options, refresh_shop: fullShopCheck });
       setPreview(next); setResult(null); setJobId(''); setDialog(true);
     } catch (e: any) { setError(e.code || 'request_failed'); }
     finally { setPreparing(false); }
@@ -186,6 +192,10 @@ export function SupplierCatalogPage() {
       <div className="catalog-target"><label htmlFor="catalog-shop"><ShoppingBag size={15} />{t('catalog.targetShop')}</label><select id="catalog-shop" value={shop} onChange={e => setShop(e.target.value)} disabled={preparing || sending}>
         <option value="">{t('catalog.chooseShop')}</option>{status?.shops.map(s => <option key={s.code} value={s.code} disabled={!s.ready}>{s.name}{s.ready ? '' : ` · ${t('catalog.notConfigured')}`}</option>)}
       </select><small>{t('catalog.targetHelp')}</small></div></header>
+    {source?.supported && shopInfo?.ready && <div className="catalog-notice" role="status">
+      {targetLoading ? t('catalog.checkingShopOptions') : target?.cache && <span>{t('catalog.shopOptionsChecked', { date: new Date(target.cache.checked_at).toLocaleString() })} · {t(target.cache.from_cache ? 'catalog.shopOptionsCached' : 'catalog.shopOptionsFetched')}<br />{t('catalog.shopOptionsExpiry', { date: new Date(target.cache.expires_at).toLocaleTimeString() })}</span>}
+      <Button variant="secondary" size="sm" disabled={targetLoading || preparing || sending || activeImport} onClick={() => { forceTargetRefresh.current = true; setTargetReload(n => n + 1); }}>{t('catalog.refreshShopOptions')}</Button>
+    </div>}
     <div className="catalog-feed-bar"><label>{t('catalog.source')}<select value={feed} onChange={e => { setFeed(e.target.value); setManufacturer(''); }} disabled={refreshing || downloading || preparing}>{status?.sources.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}</select></label>
       <div className="catalog-feed-state"><span className={`catalog-dot ${data?.run_id ? 'catalog-dot-good' : ''}`} />{data?.fetched_at ? t('catalog.lastDownload', { date: new Date(data.fetched_at).toLocaleString() }) : t('catalog.notDownloaded')}
         {status?.status === 'failed' && <span className="catalog-error">{t('catalog.lastRefreshFailed')}</span>}</div>
@@ -211,6 +221,7 @@ export function SupplierCatalogPage() {
           <label>{t('catalog.category')}<select value={options.category_code || ''} onChange={e => setOptions({ ...options, category_code: e.target.value || null })}><option value="">{t('catalog.noCategory')}</option>{target.categories.map(c => <option key={c.code} value={c.code}>{c.names[options.language] || c.code} · {c.code}</option>)}</select></label>
           <label>{t('catalog.pricing')}<select value={options.pricing} onChange={e => setOptions({ ...options, pricing: e.target.value as ImportOptions['pricing'] })}><option value="configured">{t('catalog.configuredPricing')}</option><option value="retail">{t('catalog.retailPricing')}</option></select></label></div>
           <div className="catalog-check-options">{(['include_images', 'include_description', 'include_parameters'] as const).map(key => <label key={key}><input type="checkbox" checked={options[key]} onChange={e => setOptions({ ...options, [key]: e.target.checked })} />{t(`catalog.include.${key}`)}</label>)}</div>
+          <div className="catalog-check-options"><label><input type="checkbox" checked={fullShopCheck} onChange={e => { setFullShopCheck(e.target.checked); setPreview(null); }} />{t('catalog.fullShopCheck')}</label></div><p className="catalog-muted">{t('catalog.fullShopCheckHelp')}</p>
           <p className="catalog-muted">{t(target.prices_with_vat ? 'catalog.shopPricesGross' : 'catalog.shopPricesNet')}</p></>}</div>
       </div>}
       {targetError && !advanced && <div role="alert" className="catalog-notice">{message(targetError)}</div>}

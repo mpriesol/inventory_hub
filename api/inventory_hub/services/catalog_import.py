@@ -228,6 +228,88 @@ def remote_identities(client: UpgatesClient) -> tuple[set[str], set[str]]:
     return codes, eans
 
 
+@contextmanager
+def _shop_cache(shop: str, kind: str):
+    cfg = shop_config(shop)
+    fingerprint = hashlib.sha256(json.dumps([cfg.get(k) for k in
+        ("upgates_api_base_url", "upgates_login", "upgates_api_key")]).encode()).hexdigest()
+    directory = config_io.shop_path(shop).parent / "catalog-cache"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (kind + ".json")
+    with path.with_suffix(".lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise CatalogError("shop_check_running", "Another shop check is running; try again shortly", 409) from None
+        try:
+            saved = None
+            try:
+                value = json.loads(path.read_text())
+                if value.get("version") == 1 and value.get("fingerprint") == fingerprint:
+                    checked = datetime.fromisoformat(value["checked_at"])
+                    if checked.tzinfo and checked <= now():
+                        saved = value
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+            yield path, saved, fingerprint
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def cached_import_options(shop: str, client: UpgatesClient | None = None, *, refresh: bool = False) -> dict:
+    with _shop_cache(shop, "options") as (path, saved, fingerprint):
+        cached = bool(not refresh and saved and isinstance(saved.get("data"), dict) and
+                      now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(minutes=15))
+        if not cached:
+            data = import_options(shop, client)
+            saved = {"version": 1, "fingerprint": fingerprint, "checked_at": now().isoformat(), "data": data}
+            _write(path, saved)
+        checked = datetime.fromisoformat(saved["checked_at"])
+        return {**saved["data"], "cache": {"checked_at": saved["checked_at"], "from_cache": cached,
+                "expires_at": (checked + timedelta(minutes=15)).isoformat(), "max_age_seconds": 900}}
+
+
+def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool = False) -> tuple[set[str], set[str], dict]:
+    """Always contact Upgates; reuse a complete index and replace changed parents."""
+    with _shop_cache(shop, "identities") as (path, saved, fingerprint):
+        started = now()
+        full_at = None
+        if saved and isinstance(saved.get("products"), dict):
+            try:
+                full_at = datetime.fromisoformat(saved["full_checked_at"])
+                if full_at.tzinfo is None or full_at > started:
+                    full_at = None
+            except (KeyError, ValueError, TypeError):
+                pass
+        full = refresh or full_at is None or started - full_at >= timedelta(hours=24)
+        products = {} if full else dict(saved["products"])
+        params = {} if full else {"last_update_time_from": (datetime.fromisoformat(saved["checked_at"]) - timedelta(minutes=5)).isoformat()}
+        rows = _pages(client, "products/simple", "products", params)
+        for product in rows:
+            if not isinstance(product, dict) or not product.get("code"):
+                raise CatalogError("upgates_read_failed", "The product identity response is incomplete", 502)
+            # Product IDs survive code changes; replace the whole parent to remove old variant identities.
+            key = str(product["product_id"]) if product.get("product_id") is not None else "code:" + str(product["code"])
+            identities = []
+            variants = product.get("variants") or []
+            if not isinstance(variants, list):
+                raise CatalogError("upgates_read_failed", "The variant identity response is incomplete", 502)
+            for item in [product, *variants]:
+                if not isinstance(item, dict) or not item.get("code"):
+                    raise CatalogError("upgates_read_failed", "A product or variant code is missing", 502)
+                identities.append({"code": str(item["code"]).casefold(),
+                                   "eans": re.split(r"[;,|/\s]+", str(item.get("ean") or "").strip())})
+            products[key] = identities
+        # Save only after every page succeeds; failures never become a successful check.
+        state = {"version": 1, "fingerprint": fingerprint, "checked_at": started.isoformat(),
+                 "full_checked_at": started.isoformat() if full else saved["full_checked_at"], "products": products}
+        _write(path, state)
+        codes = {item["code"] for entries in products.values() for item in entries}
+        eans = {ean for entries in products.values() for item in entries for ean in item["eans"] if ean}
+        return codes, eans, {"checked_at": state["checked_at"], "full_checked_at": state["full_checked_at"],
+                             "mode": "full" if full else "changes"}
+
+
 def _money(value: Decimal) -> float:
     # Round with Decimal; JSON has no Decimal type. The float is only the wire value.
     return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
@@ -344,7 +426,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     products = await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
     supplier_cfg = supplier_config(request.supplier)
     client = UpgatesClient.from_shop(shop)
-    remote = await asyncio.to_thread(import_options, shop, client)
+    remote = await asyncio.to_thread(cached_import_options, shop, client)
     options = request.options.model_copy()
     errors = []
     language = next((l for l in remote["languages"] if l["code"] == options.language), None)
@@ -359,7 +441,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         key = "g:" + product.group_code if product.group_code and product.variant_relationship == "explicit" else "p:" + str(product.id)
         groups.setdefault(key, []).append(product)
     items = [build_item(group, options, supplier_cfg, remote["prices_with_vat"]) for group in groups.values()]
-    codes, eans = await asyncio.to_thread(remote_identities, client)
+    codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client, refresh=request.refresh_shop)
     sources = {p.id: p for p in products}
     selection_eans = Counter(ean for p in products for ean in p.eans)
     selection_codes = Counter(p.shop_code.casefold() for p in products)
@@ -382,7 +464,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     preview = ShopImportPreview(preview_id=uuid4().hex, shop=shop, supplier=request.supplier,
                                 created_at=created, expires_at=created + timedelta(hours=1),
                                 options=options, prices_with_vat=remote["prices_with_vat"], items=items, errors=errors,
-                                create_validation_field=remote["create_validation_field"])
+                                create_validation_field=remote["create_validation_field"], shop_check=shop_check)
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
                 "result": None}
@@ -597,7 +679,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         raise CatalogError("shop_target_changed", "The shop connection changed", 409)
     sources = {p["id"]: CatalogProduct.model_validate(p) for p in document["sources"]}
     client = UpgatesClient.from_shop(shop)
-    remote_options = await asyncio.to_thread(import_options, shop, client)
+    remote_options = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
     options = preview["options"]
     if (document["prices_with_vat"] != remote_options["prices_with_vat"] or
         not any(l["code"] == options["language"] and l["currency"] == options["currency"] for l in remote_options["languages"]) or
@@ -612,10 +694,12 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 "type": "checkbox", "label": "Vyžaduje kontrolu", "active": True, "common_languages_value_yn": True}]})
         except UpgatesError:
             raise CatalogError("validation_field_create_failed", "Could not confirm the validation field; no product was sent", 502) from None
-        verified = await asyncio.to_thread(import_options, shop, client)
+        verified = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
         if verified["create_validation_field"]:
             raise CatalogError("validation_field_create_failed", "The validation field was not created", 502)
-    codes, eans = await asyncio.to_thread(remote_identities, client)
+    codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client)
+    result["shop_check"] = shop_check
+    _save_job(path, document)
     for item in result["items"]:
         if item["status"] not in ("ready", "failed", "uncertain"):
             continue
