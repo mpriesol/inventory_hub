@@ -61,3 +61,6 @@ jobs:
 
       - name: Build frontend
         run: npm --prefix frontend run build
+
+      - name: Check supplier catalog interactions
+        run: node frontend/tests/catalog-ui.cjs

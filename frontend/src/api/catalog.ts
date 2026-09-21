@@ -44,11 +44,12 @@ export interface ImportItem {
 }
 export interface ImportPreview {
   preview_id: string; shop: string; supplier: string; created_at: string; expires_at: string;
-  options: ImportOptions; items: ImportItem[]; errors: string[]; warnings: string[]; create_validation_field: boolean;
+  options: ImportOptions; prices_with_vat: boolean; items: ImportItem[]; errors: string[]; warnings: string[]; create_validation_field: boolean;
 }
 export interface ImportResult {
   preview_id: string; shop: string; status: 'queued' | 'running' | 'completed' | 'failed';
   items: ImportItem[]; errors: string[]; updated_at: string;
+  options: ImportOptions; prices_with_vat: boolean;
 }
 export type CatalogFilters = { feed_key: string; q: string; code: string; ean: string; manufacturer: string; sort: string; listing: string; shop: string };
 

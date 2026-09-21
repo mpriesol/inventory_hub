@@ -58,7 +58,7 @@ Example preview request:
 
 Use real item/run IDs and options returned by the API. A request accepts at most 20,000 explicit IDs. Include `run_id` to reject a selection made against an outdated catalog. A preview is valid for one hour and contains exact outgoing payloads and per-item `ready`, `exists` or `invalid` outcomes. `exists` and `invalid` items are skipped when confirming the remaining ready items. No products are imported merely because they matched a search.
 
-Confirm with `{"preview_id":"<returned ID>"}`. Poll the result URL while `status` is `queued` or `running`. Each product ends as `created`, `exists`, `failed` or `uncertain` (invalid preview items retain `invalid`). The top-level `completed` means processing finished; inspect item outcomes for partial success.
+Confirm with `{"preview_id":"<returned ID>"}`. Poll the result URL while `status` is `queued` or `running`. Each product ends as `created`, `exists`, `failed` or `uncertain` (invalid preview items retain `invalid`). The top-level `completed` means processing finished; inspect item outcomes for partial success. Polling returns compact display data in `items[].payload`; the preview contains the exact complete API payload. Both responses include the frozen import options and `prices_with_vat`.
 
 Products are always hidden (`active_yn=false`, language visibility false) and carry `validation_required=1`. Variant visibility is nested under the hidden parent. If the checkbox does not exist, the preview explicitly states that confirmation will create it. Existing incompatible field definitions block the preview. There is no option to publish directly or send stock quantities. Only POST creation is used; existing shop products are not updated.
 
@@ -66,7 +66,7 @@ Price calculations reuse the Paul Lange manufacturer's configured coefficient / 
 
 Supplier stock is informational: `6+` means `supplier_stock_min=6`, not an exact quantity. Text external availability is a boolean plus its original text, not a guessed quantity. Catalog refresh and import registration create no stock balance or stock movement. Outgoing payloads reject stock fields recursively.
 
-Preview/result files are persisted under `shops/{shop}/catalog-imports/`. Each shop has a process-safe import lock. The item is marked uncertain before an external POST; a timeout is reconciled by reading the shop, never by blindly retrying the POST. Created products must be read back as hidden with the review flag and selected variants before local registration. A database failure after shop creation can be reconciled without another POST.
+Preview/result files are persisted under `shops/{shop}/catalog-imports/`. Each shop has a process-safe import lock. Item state changes are written to a durable journal, so large imports do not rewrite all descriptions on every update. The item is marked uncertain before an external POST; a timeout is reconciled by reading the shop, never by blindly retrying the POST. Created products must be read back as hidden with the review flag and selected variants before local registration. A database failure after shop creation can be reconciled without another POST.
 
 `{"preview_id":"...","retry_failed":true}` verifies uncertain items and retries items that were not sent. Uncertain items still absent from the shop remain uncertain, because a delayed request may finish later; review them before starting a new preview. A process restart is reported as an interrupted job after the lock is released. Images are downloaded asynchronously by Upgates, so a successful product creation does not prove image processing has finished.
 
@@ -80,6 +80,6 @@ Merge triggers the existing production build. First verify the feed download, se
 
 Rollback: revert the feature commit and deploy through the usual approved PR flow. Existing CSV behavior is preserved. Catalog snapshots and audit files can remain on disk/in the existing tables; reverting code does not delete products already explicitly imported to a shop.
 
-Tests use synthetic fixtures and mocked Upgates responses. PostgreSQL integration tests require `CATALOG_TEST_DATABASE_URL` pointing to a dedicated localhost database ending in `_catalog_test`; CI supplies an ephemeral PostgreSQL 16 service. They never fall back to production settings.
+Tests use synthetic fixtures and mocked Upgates responses. PostgreSQL integration tests require `CATALOG_TEST_DATABASE_URL` pointing to a dedicated localhost database ending in `_catalog_test`; CI supplies an ephemeral PostgreSQL 16 service. They never fall back to production settings. `node frontend/tests/catalog-ui.cjs` checks the actual React interactions in jsdom (a development-only dependency); it does not verify browser layout.
 
 Reference contracts: [products](https://docs.upgates.com/api-reference/produkty), [product lists](https://docs.upgates.com/api-reference/produkty-seznamy), [shop settings](https://docs.upgates.com/api-reference/nastaveni-eshopu), [custom fields](https://docs.upgates.com/api-reference/vlastni-pole).

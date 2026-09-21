@@ -121,7 +121,7 @@ export function SupplierCatalogPage() {
         setResult(response);
         if (response.status === 'queued' || response.status === 'running') timer = setTimeout(poll, 2500);
         else setReload(n => n + 1);
-      } catch (e: any) { if (e.name !== 'AbortError') { setImportError(e.code || 'request_failed'); timer = setTimeout(poll, 10000); } }
+      } catch (e: any) { if (e.name !== 'AbortError') { setImportError(e.code || 'request_failed'); if (!['import_not_started', 'preview_not_found'].includes(e.code)) timer = setTimeout(poll, 10000); } }
     }
     poll();
     return () => { controller.abort(); clearTimeout(timer); };

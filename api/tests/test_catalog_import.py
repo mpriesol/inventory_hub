@@ -130,6 +130,50 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["errors"], ["shop_options_changed"])
         self.assertEqual(self.client.sent, [])
 
+    async def test_process_restart_recovers_durable_item_intent(self):
+        imports.queue_import("test-shop", self.id)
+        document = imports._load_job(self.path)
+        document["result"]["status"] = "running"
+        imports._save_job(self.path, document)
+        item = document["result"]["items"][0]
+        item["status"] = "uncertain"
+        imports._item_checkpoint(self.path, document["result"], item)
+        self.client.post("products", {"products": [item["payload"]]})
+        # Simulate termination before the full job document was saved.
+        with patch.object(imports, "now", return_value=imports.now() + timedelta(minutes=1)):
+            interrupted = imports.import_result("test-shop", self.id)
+            self.assertEqual(interrupted["status"], "failed")
+            self.assertEqual(interrupted["items"][0]["status"], "uncertain")
+            self.assertNotIn("descriptions", interrupted["items"][0]["payload"])
+            imports.queue_import("test-shop", self.id, retry_failed=True)
+            await imports.execute_import("test-shop", self.id)
+            self.assertEqual(imports.import_result("test-shop", self.id)["items"][0]["status"], "created")
+        self.assertEqual(len(self.client.sent), 1)
+
+    async def test_incomplete_variant_response_is_not_reported_as_success(self):
+        p = product(group_code="G1", variant_relationship="explicit", variant_attributes=[CatalogParameter(name="Size", value="M")])
+        v = product(2, group_code="G1", variant_relationship="explicit", variant_attributes=[CatalogParameter(name="Size", value="L")])
+        item = imports.build_item([p, v], ShopImportOptions(), {}, True)
+        self.document["sources"] = [source.model_dump(mode="json") for source in (p, v)]
+        self.document["preview"]["items"] = [item.model_dump(mode="json")]
+        imports._write(self.path, self.document)
+        self.client.omit_variant = True
+        with patch.object(imports, "selected_products", AsyncMock(return_value=[p, v])):
+            result = await self.run_import()
+        self.assertEqual(result["items"][0]["status"], "uncertain")
+        self.assertEqual(result["items"][0]["errors"], ["import_readback_mismatch"])
+        self.register.assert_not_awaited()
+
+    def test_queued_double_click_and_shop_lock_do_not_duplicate_jobs(self):
+        _, first = imports.queue_import("test-shop", self.id)
+        _, second = imports.queue_import("test-shop", self.id)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        with imports._shop_lock("test-shop"):
+            with self.assertRaises(imports.CatalogError):
+                with imports._shop_lock("test-shop"):
+                    self.fail("Second shop lock must be rejected")
+
     def test_expired_preview_cannot_be_confirmed(self):
         self.document["preview"]["expires_at"] = (imports.now() - timedelta(seconds=1)).isoformat()
         imports._write(self.path, self.document)

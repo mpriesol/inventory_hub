@@ -153,6 +153,7 @@ class ShopImportPreview(BaseModel):
     created_at: datetime
     expires_at: datetime
     options: ShopImportOptions
+    prices_with_vat: bool
     items: list[ImportItem]
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -162,6 +163,8 @@ class ShopImportPreview(BaseModel):
 class ShopImportResult(BaseModel):
     preview_id: str
     shop: str
+    options: ShopImportOptions
+    prices_with_vat: bool
     status: Literal["queued", "running", "completed", "failed"]
     items: list[ImportItem]
     errors: list[str] = Field(default_factory=list)

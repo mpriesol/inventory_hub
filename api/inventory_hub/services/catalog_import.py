@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import hashlib
 import json
+import os
 import re
 from collections import Counter, OrderedDict
 from contextlib import contextmanager
@@ -58,16 +59,98 @@ def _write(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix("." + uuid4().hex + ".tmp")
     try:
-        temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        with temporary.open("w", encoding="utf-8") as output:
+            json.dump(value, output, ensure_ascii=False)
+            output.flush()
+            os.fsync(output.fileno())
         temporary.replace(path)
+        _sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _sync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _load(path: Path) -> dict:
     if not path.is_file():
         raise CatalogError("preview_not_found", "Import preview was not found", 404)
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _result_path(path: Path) -> Path:
+    return path.with_suffix(".result.json")
+
+
+def _compact_result(result: dict) -> dict:
+    # Polling never transfers thousands of complete descriptions and API payloads.
+    items = []
+    for item in result["items"]:
+        payload = item.get("payload") or {}
+        summary = {"images": payload.get("images", [])[:1], "prices": payload.get("prices", [])}
+        if payload.get("variants"):
+            summary["variants"] = [{k: v[k] for k in ("code", "image", "parameters", "prices") if k in v} for v in payload["variants"]]
+        items.append({**item, "payload": summary})
+    return {**result, "items": items}
+
+
+def _save_job(path: Path, document: dict) -> None:
+    _write(path, document)
+    _write(_result_path(path), _compact_result(document["result"]))
+    events = path.with_suffix(".events.jsonl")
+    if events.is_file():
+        # Preserve the audit and start a clean journal after saving all its states.
+        # This also isolates an incomplete trailing record after a process crash.
+        events.replace(path.with_suffix(".events." + uuid4().hex + ".jsonl"))
+        _sync_directory(path.parent)
+
+
+def _item_checkpoint(path: Path, result: dict, item: dict) -> None:
+    # Append only the changed state. Rewriting a full 6,000-item preview per item
+    # would turn a normal batch into hundreds of GB of filesystem writes.
+    event = {"updated_at": now().isoformat(), "code": item["code"],
+             "status": item["status"], "errors": item["errors"], "warnings": item["warnings"]}
+    with path.with_suffix(".events.jsonl").open("a", encoding="utf-8") as output:
+        output.write(json.dumps(event, ensure_ascii=False) + "\n")
+        output.flush()
+        os.fsync(output.fileno())
+    _sync_directory(path.parent)
+    result["updated_at"] = event["updated_at"]
+
+
+def _read_result(path: Path) -> dict | None:
+    saved = _result_path(path)
+    if not saved.is_file():
+        return _load(path).get("result")
+    result = _load(saved)
+    checkpoint = result["updated_at"]
+    items = {item["code"]: item for item in result["items"]}
+    events = path.with_suffix(".events.jsonl")
+    if events.is_file():
+        with events.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.endswith("\n"):
+                    # An incomplete final intent could not have been followed by a POST.
+                    break
+                event = json.loads(line)
+                if event["updated_at"] > checkpoint and event["code"] in items:
+                    items[event["code"]].update({k: event[k] for k in ("status", "errors", "warnings")})
+                    result["updated_at"] = event["updated_at"]
+    return result
+
+
+def _load_job(path: Path) -> dict:
+    document = _load(path)
+    result = _read_result(path)
+    if result is not None:
+        payloads = {item["code"]: item["payload"] for item in document["preview"]["items"]}
+        document["result"] = {**result, "items": [{**item, "payload": payloads[item["code"]]} for item in result["items"]]}
+    return document
 
 
 @contextmanager
@@ -99,7 +182,8 @@ def _pages(client: UpgatesClient, path: str, key: str, params: dict | None = Non
     output = []
     page = 1
     while True:
-        data = _get(client, path, {**(params or {}), "page": page, "current_page_items": 100})
+        pagination = {"page": page, **({"current_page_items": 100} if path.startswith("products") else {})}
+        data = _get(client, path, {**(params or {}), **pagination})
         if not isinstance(data.get(key), list):
             raise CatalogError("upgates_read_failed", f"Upgates did not return {key}", 502)
         output.extend(data[key])
@@ -116,8 +200,10 @@ def import_options(shop: str, client: UpgatesClient | None = None) -> dict:
     config = _get(client, "config").get("config") or {}
     if not isinstance(config.get("prices_with_vat_yn"), bool):
         raise CatalogError("shop_vat_unknown", "The target shop's price VAT mode could not be verified", 422)
-    languages = _pages(client, "languages", "languages")
-    pricelists = _pages(client, "pricelists", "pricelists")
+    languages = _get(client, "languages").get("languages")
+    pricelists = _get(client, "pricelists").get("pricelists")
+    if not isinstance(languages, list) or not isinstance(pricelists, list):
+        raise CatalogError("upgates_read_failed", "Shop language or pricelist response is incomplete", 502)
     categories = _pages(client, "categories", "categories")
     metas = _pages(client, "metas", "metas", {"key": "validation_required", "category": "products"})
     field = next((m for m in metas if m.get("key") == "validation_required" and m.get("category") == "products"), None)
@@ -295,7 +381,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     created = now()
     preview = ShopImportPreview(preview_id=uuid4().hex, shop=shop, supplier=request.supplier,
                                 created_at=created, expires_at=created + timedelta(hours=1),
-                                options=options, items=items, errors=errors,
+                                options=options, prices_with_vat=remote["prices_with_vat"], items=items, errors=errors,
                                 create_validation_field=remote["create_validation_field"])
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
@@ -391,9 +477,13 @@ def _verify_created(client: UpgatesClient, item: dict) -> dict | None:
         return any(m.get("key") == "validation_required" and str(m.get("value", "")).lower() in ("1", "true") for m in value.get("metas", []))
     if remote.get("active_yn") is not False or not validation_set(remote):
         raise CatalogError("import_readback_mismatch", "Created product visibility or validation flag requires review", 409)
+    if item["payload"].get("ean") and remote.get("ean") != item["payload"]["ean"]:
+        raise CatalogError("import_readback_mismatch", "The created product's EAN differs from the selected item", 409)
     variants = {v.get("code"): v for v in remote.get("variants", [])}
     if any(v["code"] not in variants or not validation_set(variants[v["code"]]) for v in item["payload"].get("variants", [])):
         raise CatalogError("import_readback_mismatch", "Some selected variants or their validation flags were not confirmed", 409)
+    if any(v.get("ean") and variants[v["code"]].get("ean") != v["ean"] for v in item["payload"].get("variants", [])):
+        raise CatalogError("import_readback_mismatch", "A created variant's EAN differs from the selection", 409)
     return remote
 
 
@@ -425,13 +515,13 @@ def _assert_payload(payload: dict) -> None:
 
 def queue_import(shop: str, preview_id: str, retry_failed: bool = False) -> tuple[dict, bool]:
     path = _path(shop, preview_id)
-    current = _load(path).get("result")
+    current = _read_result(path)
     if current and current["status"] in ("queued", "running"):
         current = import_result(shop, preview_id)
         if current["status"] in ("queued", "running"):
             return current, False
     with _shop_lock(shop):
-        document = _load(path)
+        document = _load_job(path)
         preview, result = document["preview"], document["result"]
         if result and result["status"] in ("queued", "running") and (now() - datetime.fromisoformat(result["updated_at"])).total_seconds() < 30:
             return result, False
@@ -448,29 +538,28 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False) -> tupl
         if expired and not (result and any(item["status"] == "uncertain" for item in result["items"])):
             raise CatalogError("preview_expired", "Create a fresh import preview", 409)
         if result is None:
-            result = {"preview_id": preview_id, "shop": shop, "status": "queued", "items": preview["items"], "errors": [], "updated_at": now().isoformat()}
+            result = {"preview_id": preview_id, "shop": shop, "options": preview["options"],
+                      "prices_with_vat": document["prices_with_vat"], "status": "queued", "items": preview["items"], "errors": [], "updated_at": now().isoformat()}
         else:
             result.update(status="queued", errors=[], updated_at=now().isoformat())
         document["result"] = result
-        _write(path, document)
+        _save_job(path, document)
         return result, True
 
 
 def import_result(shop: str, preview_id: str) -> dict:
     path = _path(shop, preview_id)
-    document = _load(path)
-    result = document["result"]
+    result = _read_result(path)
     if result is None:
         raise CatalogError("import_not_started", "This preview has not been confirmed", 409)
     # A process restart releases the OS lock. Expose recovery instead of polling forever.
     if result["status"] in ("queued", "running") and (now() - datetime.fromisoformat(result["updated_at"])).total_seconds() > 30:
         try:
             with _shop_lock(shop):
-                document = _load(path)
-                result = document["result"]
+                result = _read_result(path)
                 if result["status"] in ("queued", "running"):
                     result.update(status="failed", errors=["import_interrupted"], updated_at=now().isoformat())
-                    _write(path, document)
+                    _write(_result_path(path), result)
         except CatalogError as error:
             if error.code != "shop_import_running":
                 raise
@@ -481,25 +570,25 @@ async def execute_import(shop: str, preview_id: str) -> None:
     path = _path(shop, preview_id)
     try:
         with _shop_lock(shop):
-            document = _load(path)
+            document = _load_job(path)
             result = document["result"]
             if result is None or result["status"] != "queued":
                 return
             result.update(status="running", updated_at=now().isoformat())
-            _write(path, document)
+            _save_job(path, document)
             try:
                 await _execute_items(shop, path, document)
             except Exception as error:
                 result.update(status="failed", errors=[error.code if isinstance(error, CatalogError) else "import_failed"])
             result["updated_at"] = now().isoformat()
-            _write(path, document)
+            _save_job(path, document)
     except CatalogError as error:
         if error.code != "shop_import_running":
             raise
         # This queued job did not send anything. Explicit retry is available after the other job.
-        document = _load(path)
+        document = _load_job(path)
         document["result"].update(status="failed", errors=[error.code], updated_at=now().isoformat())
-        _write(path, document)
+        _save_job(path, document)
 
 
 async def _execute_items(shop: str, path: Path, document: dict) -> None:
@@ -544,7 +633,8 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     continue
                 async with get_session_context() as db:
                     fresh = await selected_products(db, preview["supplier"], sources[item["product_ids"][0]].feed_key, item["product_ids"])
-                    if any(p.source_hash != sources[p.id].source_hash or p.shop_code != sources[p.id].shop_code for p in fresh):
+                    ignored = {"run_id", "fetched_at", "listed"}
+                    if any(p.model_dump(exclude=ignored) != sources[p.id].model_dump(exclude=ignored) for p in fresh):
                         item.update(status="failed", errors=["catalog_changed"])
                         continue
                     _, conflicts = await local_identities(db, fresh)
@@ -566,7 +656,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 _assert_payload(item["payload"])
                 item.update(status="uncertain", errors=["import_outcome_unknown"])
                 result["updated_at"] = now().isoformat()
-                _write(path, document)  # Write intent durably before the external request.
+                _item_checkpoint(path, result, item)
                 try:
                     response = await asyncio.to_thread(client.post, "products", {"products": [item["payload"]]})
                 except UpgatesError:
@@ -592,5 +682,5 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 raise
         finally:
             result["updated_at"] = now().isoformat()
-            _write(path, document)
+            _item_checkpoint(path, result, item)
     result["status"] = "completed"
