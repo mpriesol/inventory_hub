@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import requests
-from sqlalchemy import Text, and_, any_, case, cast, func, or_, select, text, update
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, JSONPATH, insert
+from sqlalchemy import cast, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub import config_io
@@ -23,7 +23,7 @@ from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_no
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
-from inventory_hub.services.catalog_identity import cached_identities
+from inventory_hub.services.catalog_identity import cached_identities, parent_shop_code
 from inventory_hub.services.catalog_sort import variant_sort_key
 
 
@@ -301,9 +301,10 @@ async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: l
         func.coalesce(func.nullif(ShopProduct.parent_code, ""), ShopProduct.external_code).label("content_code"),
     ).select_from(Product).join(ShopProduct, ShopProduct.product_id == Product.id)
         .join(Shop, Shop.id == ShopProduct.shop_id)
-        .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True), or_(
-            func.lower(Product.sku).in_({c.casefold() for c in codes}), func.lower(ShopProduct.external_code).in_({c.casefold() for c in codes}),
-            func.lower(ShopProduct.variant_code).in_({c.casefold() for c in codes}))))).all()
+        .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True)))).all()
+    folded_codes = {code.casefold() for code in codes}
+    rows = [row for row in rows if any(code and code.casefold() in folded_codes
+                                     for code in (row.sku, row.external_code, row.variant_code))]
     if not rows:
         return
     # A legacy parent can contain thousands of variants. Extracting its large JSON
@@ -355,27 +356,27 @@ async def _matches(db: AsyncSession, supplier: str, feed_key: str, *, q: str = "
         conditions.append(SupplierProduct.attributes["catalog"]["eans"].contains([ean.strip()]))
     if manufacturer:
         conditions.append(SupplierProduct.brand == manufacturer)
+    columns = [SupplierProduct.id, SupplierProduct.supplier_group_code]
     if listing in ("listed", "unlisted"):
         if not shop:
             raise CatalogError("shop_required", "Choose a shop for the listing filter")
         data = SupplierProduct.attributes["catalog"]
-        shop_code, code = data["shop_code"].astext, data["code"].astext
-        prefix = case((func.right(shop_code, func.length(code)) == code,
-                       func.left(shop_code, func.length(shop_code) - func.length(code))), else_="")
-        parent_code = func.concat(prefix, "G-", data["group_code"].astext)
-        match = or_(func.lower(shop_code) == any_(cast(sorted({c.casefold() for c in known} | index.codes.keys()), ARRAY(Text))),
-                    data["eans"].has_any(cast(sorted(index.eans), ARRAY(Text))),
-                    and_(data["variant_relationship"].astext == "explicit", data["group_code"].astext.is_not(None),
-                         func.lower(parent_code) == any_(cast(sorted(index.codes), ARRAY(Text)))))
-        conditions.append(match if listing == "listed" else ~match)
+        columns.extend([data[k].astext.label(k) for k in ("code", "shop_code", "group_code", "variant_relationship")])
+        columns.append(data["eans"].label("eans"))
     if listing == "warnings":
         conditions.append(func.jsonb_array_length(SupplierProduct.attributes["catalog"]["warnings"]) > 0)
     order = {"name": SupplierProduct.attributes["search_name"].astext,
              "code": SupplierProduct.supplier_sku, "manufacturer": SupplierProduct.brand}.get(sort)
     if order is None:
         raise CatalogError("invalid_sort", "Supported sorts: name, code, manufacturer")
-    rows = (await db.execute(select(SupplierProduct.id, SupplierProduct.supplier_group_code)
+    rows = (await db.execute(select(*columns)
                             .where(*conditions).order_by(order, SupplierProduct.id))).all()
+    if listing in ("listed", "unlisted"):
+        # Use the preview's Unicode casefold in both paths. PostgreSQL lower()
+        # differs for identifiers such as STRAẞE; only small identity fields are read.
+        codes = known | index.codes.keys()
+        rows = [row for row in rows if (row.shop_code.casefold() in codes or
+                any(ean in index.eans for ean in row.eans) or parent_shop_code(row).casefold() in index.codes) == (listing == "listed")]
     manufacturers = list((await db.scalars(select(SupplierProduct.brand).where(
         SupplierProduct.source_feed_id == feed.id, SupplierProduct.is_active.is_(True),
         SupplierProduct.brand.is_not(None)).distinct().order_by(SupplierProduct.brand))).all())

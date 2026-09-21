@@ -251,15 +251,16 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(detail["product"].shop_active)
 
     async def test_local_mixed_case_match_agrees_with_listing_filter_without_remote_cache(self):
+        self.write_feed(xml_item("STRAẞE"), xml_item("A-002", ean="0002"), xml_item("A-003", ean="0003"))
         await self.refresh()
         async with self.sessions() as db:
-            item = (await catalog.catalog_page(db, "paul-lange", code="A-001")).items[0].product
-            product = Product(sku=item.shop_code.lower(), name=item.name)
+            item = (await catalog.catalog_page(db, "paul-lange", code="STRAẞE")).items[0].product
+            product = Product(sku=item.shop_code.casefold(), name=item.name)
             shop = Shop(code="case-shop", name="Case shop", platform="upgates")
             db.add_all([product, shop])
             await db.flush()
-            db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code=item.shop_code.lower(), is_listed=True))
-            db.add(ShopProductContent(shop_id=shop.id, external_code=item.shop_code.lower(), data={
+            db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code=item.shop_code.casefold(), is_listed=True))
+            db.add(ShopProductContent(shop_id=shop.id, external_code=item.shop_code.casefold(), data={
                 "descriptions": [{"language": "sk", "url": "https://shop.example.test/p/mixed-case"}]}))
             await db.commit()
             page = await catalog.catalog_page(db, "paul-lange", shop="case-shop", listing="listed")
