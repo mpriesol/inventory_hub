@@ -136,6 +136,21 @@ class ContentTests(unittest.TestCase):
             with self.assertRaises(imports.CatalogError):
                 imports._assert_payload({"active_yn": True, "variants": [{field: 1}]}, expected_active=True)
 
+    def test_text_metadata_uses_upgates_language_values_shape(self):
+        from inventory_hub.services.ai_content_upgates import meta_value, verify_content
+        item = overlay(imports.build_item([product()], ShopImportOptions(), {}, True),
+            {"active_after_import": False, "content": content().model_dump(), "supplier_name": "Fixture supplier"}, "sk")
+        fields = {m["key"]: m for m in item.payload["metas"]}
+        self.assertEqual(fields["h1_descriptor"], {"key": "h1_descriptor", "values": {"sk": {"language": "sk", "value": "Prilba"}}})
+        self.assertEqual(meta_value(fields["supplier_name"], "sk"), "Fixture supplier")
+        remote = copy.deepcopy(item.payload)
+        for m in remote["metas"]:
+            m["type"] = "textarea" if m["key"] == "h1_descriptor" else "input"
+        verify_content(remote, item.payload)
+        next(m for m in remote["metas"] if m["key"] == "h1_descriptor")["values"] = {"en": {"value": "Prilba"}}
+        with self.assertRaises(imports.CatalogError):
+            verify_content(remote, item.payload)
+
     def test_facts_omit_financial_stock_and_manufacturer_contact_data(self):
         p = product(); p.manufacturer_description = "Private manufacturer contact"
         exported = service.facts([p])[0]

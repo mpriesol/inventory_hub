@@ -54,6 +54,11 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         parameters[key] = value.values
         if definition["scope"] == "parent" and value.product_id is not None or definition["scope"] == "variant" and value.product_id not in ids:
             errors.append("ai_parameter_scope:" + value.name)
+        if definition["scope"] == "variant":
+            source = next((p for p in context["facts"] if p["id"] == value.product_id), {})
+            existing = next((a["value"] for a in source.get("variant_attributes", []) if a["name"] == value.name), None)
+            if existing is None or value.values != [existing]:
+                errors.append("ai_variant_identity_change:" + value.name)
         if definition["values"] and set(value.values) - set(definition["values"]):
             errors.append("ai_parameter_value:" + value.name)
         if any(not v.strip() or "<" in v for v in value.values):
@@ -115,11 +120,13 @@ def overlay(item, enrichment: dict, language: str):
             parent = [p for p in data.parameters if p.product_id is None]
             payload["parameters"] = [{"descriptions": [{"language": language, "name": p.name}],
                 "values": [{"descriptions": [{"language": language, "value": v}]} for v in p.values]} for p in parent]
-        for key, common in (("h1_descriptor", False), ("future_name", True), ("h1_descr_suffix", False)):
+        for key in ("h1_descriptor", "future_name", "h1_descr_suffix"):
             value = getattr(data, key)
             if value:
-                payload.setdefault("metas", []).append({"key": key, "value": value, **({} if common else {"language": language})})
+                payload.setdefault("metas", []).append({"key": key, "values": {language: {"language": language, "value": value}}})
         for obj in [payload, *payload.get("variants", [])]:
+            if enrichment.get("supplier_name"):
+                obj.setdefault("metas", []).append({"key": "supplier_name", "values": {language: {"language": language, "value": enrichment["supplier_name"]}}})
             for meta in obj.get("metas", []):
                 if meta.get("key") == "validation_required":
                     meta["value"] = "0"

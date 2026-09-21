@@ -9,6 +9,7 @@ FIELDS = [
     {"key": "h1_descriptor", "label": "H1 – typ produktu", "common_languages_value_yn": False},
     {"key": "future_name", "label": "H1 – značka a model", "common_languages_value_yn": True},
     {"key": "h1_descr_suffix", "label": "H1 – doplnok", "common_languages_value_yn": False},
+    {"key": "supplier_name", "label": "Dodávateľ", "common_languages_value_yn": False},
 ]
 
 
@@ -19,7 +20,9 @@ def content_fields(shop, client, *, create=False):
         missing = []
         for expected in FIELDS:
             actual = next((m for m in rows if m.get("key") == expected["key"] and m.get("category") == "products"), None)
-            if actual and (actual.get("type") != "input" or actual.get("common_languages_value_yn") != expected["common_languages_value_yn"]):
+            # Existing stores can use textarea for h1_descriptor. Both text types
+            # are compatible; do not alter the shop's existing field definitions.
+            if actual and actual.get("type") not in ("input", "textarea"):
                 raise CatalogError("ai_meta_incompatible", f"Check the shop metadata definition for {expected['key']}", 422)
             if actual is None:
                 missing.append({**expected, "category": "products", "type": "input", "active": True})
@@ -48,6 +51,16 @@ def verify_content(remote: dict, expected: dict):
     for meta in expected.get("metas", []):
         if meta["key"] not in {f["key"] for f in FIELDS}:
             continue
-        if not any(m.get("key") == meta["key"] and m.get("value") == meta["value"] and
-                   ("language" not in meta or m.get("language") == meta["language"]) for m in remote.get("metas", [])):
-            raise CatalogError("ai_content_readback_mismatch", "The shop did not confirm the imported H1 content fields", 409)
+        for language, value in meta.get("values", {}).items():
+            if not any(m.get("key") == meta["key"] and meta_value(m, language) == meta_value(meta, language) for m in remote.get("metas", [])):
+                raise CatalogError("ai_content_readback_mismatch", "The shop did not confirm the imported content fields", 409)
+
+
+def meta_value(meta: dict, language: str):
+    if "value" in meta:
+        return str(meta["value"])
+    values = meta.get("values") or {}
+    value = values.get(language) if isinstance(values, dict) else None
+    if isinstance(value, dict):
+        value = value.get("value")
+    return None if value is None else str(value)

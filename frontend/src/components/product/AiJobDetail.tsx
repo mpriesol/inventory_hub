@@ -6,7 +6,7 @@ import { CatalogImport } from './CatalogImport';
 
 export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJob) => void }) {
   const { t } = useTranslation();
-  const [content, setContent] = useState<AiContent | undefined>(job.output);
+  const [content, setContent] = useState<AiContent | undefined>(job.kind === 'product' ? job.output : undefined);
   const [parameters, setParameters] = useState(JSON.stringify(job.output?.parameters || [], null, 2));
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -25,7 +25,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
     {job.error && <div className="ai-notice ai-error">{t(`ai.errors.${job.error}`, { defaultValue: job.error })}</div>}
     {job.checks?.errors?.map(v => <div key={v} className="ai-notice ai-error">{t(`ai.errors.${v.split(':')[0]}`, { defaultValue: v })}{v.includes(':') ? ` · ${v.split(':').slice(1).join(':')}` : ''}</div>)}
     {job.checks?.warnings?.map(v => <div key={v} className="ai-notice">{t(`ai.errors.${v}`, { defaultValue: v })}</div>)}
-    {job.kind === 'rules' && job.output?.instructions && <><p>{job.output.reason}</p><pre className="ai-original">{job.output.instructions}</pre>{job.output.questions?.map(q => <p key={q}>{q}</p>)}{job.status === 'review' && <button disabled={busy} onClick={() => perform(async () => { await aiRequest(`/jobs/${job.id}/accept-proposal`, { expected_revision: job.revision, action: 'start' }); return aiRequest<AiJob>(`/jobs/${job.id}`); })}>{t('ai.acceptProposal')}</button>}</>}
+    {job.kind === 'rules' && job.output?.instructions && <><p>{job.output.reason}</p><pre className="ai-original">{job.output.instructions}</pre>{job.output.parameters && <details open><summary>{t('ai.parameterRegistry')}</summary><div className="ai-scroll"><table><thead><tr><th>{t('ai.parameterName')}</th><th>{t('ai.required')}</th><th>{t('ai.parameterScope')}</th><th>{t('ai.allowedValues')}</th></tr></thead><tbody>{job.output.parameters.map(p => <tr key={p.name}><td>{p.name}</td><td>{t(p.required ? 'ai.on' : 'ai.off')}</td><td>{t(`ai.${p.scope}`)}</td><td>{p.values.join(' | ')}</td></tr>)}</tbody></table></div></details>}{job.output.questions?.map(q => <p key={q}>{q}</p>)}{job.status === 'review' && <button disabled={busy} onClick={() => perform(async () => { await aiRequest(`/jobs/${job.id}/accept-proposal`, { expected_revision: job.revision, action: 'start' }); return aiRequest<AiJob>(`/jobs/${job.id}`); })}>{t('ai.acceptProposal')}</button>}</>}
     {job.kind === 'product' && content && <>
       <details open><summary>{t('ai.contentReview')}</summary><div className="ai-columns"><div><h3>{t('ai.originalFeed')}</h3>{job.facts?.map(f => <details key={f.id} open={job.facts?.length === 1}><summary>{f.name} · {f.variant_attributes?.map(a => a.value).join(' / ')}</summary><div className="ai-original">{f.description}</div></details>)}</div>
         <div>{(['title', 'short_description', 'long_description', 'seo_title', 'meta_description', 'h1_descriptor', 'future_name', 'h1_descr_suffix'] as const).map(field => <label key={field}>{t(`ai.fields.${field}`)} · {content[field]?.length || 0}

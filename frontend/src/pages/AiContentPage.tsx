@@ -56,7 +56,7 @@ export function AiContentPage() {
         }
       } catch (e) { if (!stopped) setError((e as Error).message); }
     };
-    poll(); const timer = window.setInterval(poll, 5000); return () => { stopped = true; clearInterval(timer); };
+    poll(); const timer = window.setInterval(poll, 5000); return () => { stopped = true; window.clearInterval(timer); };
   }, [unlocked, reload]);
   useEffect(() => {
     if (!unlocked || !selection) return;

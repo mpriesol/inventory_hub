@@ -217,6 +217,7 @@ async def prepare_import(db, job):
     enrichment = {"job_id": job.id, "revision": job.revision, "rules_version": ctx["rules_version"],
         "active_after_import": ctx["resolved"]["policy"]["active_after_import"],
         "content": job.output if ctx["use_ai"] else None,
+        "supplier_name": catalog_import.supplier_config(ctx["supplier"]).get("name") or ctx["supplier"],
         "safety": "\n".join(dict.fromkeys(p.safety_information for p in products if p.safety_information)),
         "registered_parameters": bool((ctx["resolved"].get("category") or {}).get("parameters"))}
     preview = await catalog_import.create_preview(db, ctx["shop"], ShopImportPreviewRequest(
