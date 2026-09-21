@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CatalogDetail as Detail, CatalogProduct, catalogRequest } from '../../api/catalog';
+import { CatalogDetail as Detail, CatalogProduct, catalogRequest, catalogImageUrl } from '../../api/catalog';
 import { Modal } from '../ui/Modal';
 import { ProductThumb } from './ProductDisplay';
 import { Button } from '../ui/Button.new';
@@ -21,8 +21,8 @@ export function CatalogDetail({ supplier, product, shop, onClose, onToggle, sele
   }, [supplier, product.id, shop]);
   const p = data?.product || product;
   return <Modal open onClose={onClose} title={p.name}><div className="supplier-catalog catalog-detail" role="dialog" aria-label={p.name}>
-    <div className="catalog-detail-head"><div><ProductThumb key={image} url={image} name={p.name} size={220} />
-      <div className="catalog-gallery">{p.images.map((url, i) => <button key={url} aria-label={t('catalog.imageNumber', { count: i + 1 })} onClick={() => setImage(url)}><ProductThumb url={url} name={p.name} size={44} /></button>)}</div></div>
+    <div className="catalog-detail-head"><div><ProductThumb key={image} url={catalogImageUrl(image)} name={p.name} size={220} />
+      <div className="catalog-gallery">{p.images.map((url, i) => <button key={url} aria-label={t('catalog.imageNumber', { count: i + 1 })} onClick={() => setImage(url)}><ProductThumb url={catalogImageUrl(url)} name={p.name} size={44} /></button>)}</div></div>
       <div><div className="catalog-eyebrow">{p.brand}</div><h2>{p.name}</h2><code>{p.shop_code}</code>
         <p className="catalog-muted">{p.category || t('catalog.noCategory')}</p><p>EAN: {p.eans.join(', ') || '—'}</p>
         <p>{t('catalog.supplierStock')}: {p.supplier_stock_raw ?? '—'} · {p.availability || '—'}</p>

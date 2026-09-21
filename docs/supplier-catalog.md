@@ -16,6 +16,7 @@ Routes below include the production `/api` prefix. Interactive contracts are ava
 | GET | `/api/suppliers/{supplier}/catalog/selection` | All matching item IDs and the current `run_id` |
 | GET | `/api/suppliers/{supplier}/catalog/products/{id}` | Full normalized data, explicit variants, original fields and XML |
 | GET | `/api/suppliers/{supplier}/catalog/products/{id}/source` | Download original product XML |
+| GET | `/api/suppliers/paul-lange/catalog/images/{filename}` | Display Paul Lange's HTTP-only JPEG through Hub HTTPS |
 | GET | `/api/shops/{shop}/import/options` | Read target languages/currencies, categories, pricelists and VAT mode |
 | POST | `/api/shops/{shop}/import/preview` | Freeze an explicit selection into a preview; no shop writes |
 | POST | `/api/shops/{shop}/import` | Confirm a preview and start a background import |
@@ -24,6 +25,8 @@ Routes below include the production `/api` prefix. Interactive contracts are ava
 Search parameters: `feed_key=products`, `q`, exact `code`, exact `ean`, `manufacturer`, `shop`, `listing=all|listed|unlisted|warnings`, `sort=name|code|manufacturer`, `page=1`, `page_size=50` (maximum 100), `grouped=true`. `q` searches partial names without case or accents, supplier/shop/manufacturer codes and exact EANs. `%` and `_` are literal characters. EANs remain strings, including leading zeros. Multiple filters combine with AND.
 
 The response provides normalized JSON for application use. Full descriptions, all dynamic parameters and original fields are available in the detail response; `source_xml` preserves the original item. `description_html` is sanitized for display, while the original description remains unchanged. Summary rows omit long descriptions and full parameter lists to keep browsing small.
+
+Paul Lange currently serves its photographs over HTTP on port 8081, without TLS. Catalog thumbnails, galleries and import previews display them through the Hub HTTPS image route to avoid browser mixed-content failures. This route accepts only `ito5-<alphanumeric>.jpg` filenames at the fixed Paul Lange image origin, refuses redirects and non-JPEG responses, and limits download size (5 MiB), duration and concurrency. Successful images have a one-day private browser cache. Original feed URLs, XML and outgoing Upgates payloads remain unchanged. No shared image component or global browser security setting is changed.
 
 ### Explicit variant groups
 

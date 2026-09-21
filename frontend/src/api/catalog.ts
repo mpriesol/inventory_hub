@@ -53,6 +53,13 @@ export interface ImportResult {
 }
 export type CatalogFilters = { feed_key: string; q: string; code: string; ean: string; manufacturer: string; sort: string; listing: string; shop: string };
 
+// Display only: preserve the supplier URL in feed data and outgoing shop payloads.
+export function catalogImageUrl(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  const image = /^http:\/\/xml\.paul-lange-oslany\.sk:8081\/(ito5-[A-Za-z0-9]{1,60}\.jpg)$/.exec(url);
+  return image ? `/api/suppliers/paul-lange/catalog/images/${image[1]}` : url;
+}
+
 export class CatalogApiError extends Error {
   constructor(public code: string, message: string) { super(message); }
 }

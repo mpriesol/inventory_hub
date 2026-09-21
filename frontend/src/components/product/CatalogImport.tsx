@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ImportPreview, ImportResult } from '../../api/catalog';
+import { ImportPreview, ImportResult, catalogImageUrl } from '../../api/catalog';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button.new';
 import { ProductThumb } from './ProductDisplay';
@@ -29,10 +29,10 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
     {running && <p role="status" className="catalog-notice">{t('catalog.importRunning')}</p>}
     {counts.uncertain > 0 && <p className="catalog-notice">{t('catalog.uncertainHelp')}</p>}
     <div className="catalog-import-items">{items.slice((page - 1) * 30, page * 30).map(item => <details className="catalog-import-item" key={item.code}>
-      <summary><ProductThumb url={item.payload.images?.[0]?.url} name={item.name} size={44} /><span className="catalog-import-item-name"><strong>{item.name}</strong><code>{item.code}{item.variants_count ? ` · ${t('catalog.variantCount', { count: item.variants_count })}` : ''}</code></span>
+      <summary><ProductThumb url={catalogImageUrl(item.payload.images?.[0]?.url)} name={item.name} size={44} /><span className="catalog-import-item-name"><strong>{item.name}</strong><code>{item.code}{item.variants_count ? ` · ${t('catalog.variantCount', { count: item.variants_count })}` : ''}</code></span>
         {item.payload.prices?.[0]?.pricelists?.[0]?.price_original !== undefined && <span className="catalog-number">{item.payload.prices[0].pricelists[0].price_original} {options?.currency}</span>}
         <span className={`catalog-badge ${item.status === 'created' ? 'catalog-good' : item.errors.length ? 'catalog-bad' : ''}`}>{t(`catalog.itemStatus.${item.status}`)}</span></summary>
-      {item.payload.variants?.map((v: any) => <div className="catalog-preview-variant" key={v.code}><ProductThumb url={v.image?.url} name={v.code} size={36} /><code>{v.code}</code><span>{v.parameters?.flatMap((p: any) => p.values?.map((value: any) => value.descriptions?.[0]?.value)).join(' / ')}</span></div>)}
+      {item.payload.variants?.map((v: any) => <div className="catalog-preview-variant" key={v.code}><ProductThumb url={catalogImageUrl(v.image?.url)} name={v.code} size={36} /><code>{v.code}</code><span>{v.parameters?.flatMap((p: any) => p.values?.map((value: any) => value.descriptions?.[0]?.value)).join(' / ')}</span></div>)}
       {[...item.errors, ...item.warnings].map((issue, i) => <p className={item.errors.includes(issue) ? 'catalog-error' : 'catalog-muted'} key={i}>{t(`catalog.codes.${issue}`, { defaultValue: issue })}</p>)}
       {!result && <details><summary>{t('catalog.importPayload')}</summary><pre className="catalog-source">{JSON.stringify(item.payload, null, 2)}</pre></details>}
     </details>)}</div>

@@ -9,6 +9,7 @@ from inventory_hub.catalog_types import CatalogPage, CatalogRefreshRequest, Cata
 from inventory_hub.database import get_session
 from inventory_hub.services import catalog, catalog_import
 from inventory_hub.services.catalog_html import clean_description
+from inventory_hub.services.catalog_images import paul_lange_image
 
 
 class CatalogRoute(APIRoute):
@@ -77,6 +78,15 @@ async def source(supplier: str, product_id: int, db: DB):
 @router.get("/shops/{shop}/import/options", summary="Read verified target languages, currencies, categories and price VAT mode")
 def import_options(shop: str):
     return catalog_import.import_options(shop)
+
+
+@router.get("/suppliers/paul-lange/catalog/images/{filename}", response_class=Response,
+            summary="Display an HTTP-only Paul Lange JPEG through the Hub HTTPS origin")
+async def catalog_image(filename: str):
+    return Response(await paul_lange_image(filename), media_type="image/jpeg", headers={
+        "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    })
 
 
 @router.post("/shops/{shop}/import/preview", response_model=ShopImportPreview,
