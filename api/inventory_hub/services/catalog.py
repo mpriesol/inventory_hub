@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import requests
-from sqlalchemy import and_, func, or_, select, text, update
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy import and_, cast, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub import config_io
@@ -278,7 +278,7 @@ async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: l
     content = ShopProductContent.data
     rows = (await db.execute(select(
         Product.sku, ShopProduct.external_code, ShopProduct.variant_code,
-        func.jsonb_path_query_first(content, '$.descriptions[*] ? (@.language == "sk").url', type_=JSONB).label("sk_url"),
+        func.jsonb_path_query_first(content, cast('$.descriptions[*] ? (@.language == "sk").url', JSONPATH), type_=JSONB).label("sk_url"),
         content["descriptions"][0]["url"].astext.label("default_url"),
         content["admin_url"].astext.label("admin_url"), content["active_yn"].as_boolean().label("active"),
     ).select_from(Product).join(ShopProduct, ShopProduct.product_id == Product.id)
