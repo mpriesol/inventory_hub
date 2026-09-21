@@ -153,6 +153,40 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
+    async def test_cached_ean_status_filters_detail_and_variant_order_agree(self):
+        cfg = config_io.supplier_path("northfinder")
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"feeds": {"sources": {"products": {"mode": "local", "local_path": str(self.feed)}}},
+                                   "adapter_settings": {"vat": 23, "product_code_prefix": "NF-"}}))
+        variants = northfinder_variant("N-RED-L", "000001", "L") + northfinder_variant("N-RED-S", "000002", "S") + northfinder_variant("N-RED-M", "000003", "M")
+        self.feed.write_text("<products>" + northfinder_product(variants) + "</products>")
+        path = config_io.shop_path("test-shop")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"upgates_api_base_url": "https://shop.example.test/api/v2", "upgates_login": "fixture", "upgates_api_key": "fixture"}))
+        client = FakeUpgates()
+        client.products = {"LEGACY": {"product_id": 42, "code": "LEGACY", "variants": [{"code": "OLD-L", "ean": "000001"}]}}
+        catalog_import.checked_remote_identities("test-shop", client)
+        async with self.sessions() as db:
+            await catalog.refresh_catalog(db, "northfinder")
+            await db.commit()
+            with patch.object(catalog_import.UpgatesClient, "from_shop", side_effect=AssertionError("Browsing must not call Upgates")):
+                page = await catalog.catalog_page(db, "northfinder", shop="test-shop")
+                self.assertIsNotNone(page.shop_checked_at)
+                self.assertEqual([p.shop_code for p in page.items[0].variants], ["NF-N-RED-S", "NF-N-RED-M", "NF-N-RED-L"])
+                self.assertEqual([p.listed for p in page.items[0].variants], [False, False, True])
+                listed = await catalog.catalog_page(db, "northfinder", shop="test-shop", listing="listed")
+                self.assertEqual(listed.total_items, 1)
+                self.assertEqual(listed.items[0].product.shop_matches[0].code, "OLD-L")
+                remaining = await catalog.catalog_selection(db, "northfinder", shop="test-shop", listing="unlisted")
+                self.assertEqual(remaining.total, 2)
+                detail = await catalog.catalog_detail(db, "northfinder", listed.items[0].product.id, shop="test-shop")
+                self.assertEqual([p.id for p in detail["variants"]], [p.id for p in page.items[0].variants])
+                self.assertTrue(detail["product"].listed)
+            client.products = {"NF-G-N": {"code": "NF-G-N", "variants": []}}
+            catalog_import.checked_remote_identities("test-shop", client, refresh=True)
+            self.assertEqual((await catalog.catalog_selection(db, "northfinder", shop="test-shop", listing="listed")).total, 3)
+            self.assertEqual((await catalog.catalog_selection(db, "northfinder", shop="test-shop", listing="unlisted")).total, 0)
+
     async def test_preview_and_local_registration_do_not_change_stock(self):
         await self.refresh()
         path = config_io.shop_path("test-shop")

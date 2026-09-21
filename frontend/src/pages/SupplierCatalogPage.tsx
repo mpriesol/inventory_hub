@@ -164,11 +164,12 @@ export function SupplierCatalogPage() {
     } catch (e: any) { setError(e.code || 'request_failed'); }
     finally { setSelecting(false); }
   }
-  async function prepare(salePriceOverrides?: Record<number, string>) {
+  async function prepare(salePriceOverrides?: Record<number, string>, selection = [...selected]) {
     setPreparing(true); setError(''); setImportError('');
     try {
-      const next = await catalogRequest<ImportPreview>(`/shops/${encodeURIComponent(shop)}/import/preview`, { supplier, feed_key: feed, product_ids: [...selected], run_id: snapshot.current, options, refresh_shop: salePriceOverrides ? false : fullShopCheck, sale_price_overrides: salePriceOverrides || {} });
+      const next = await catalogRequest<ImportPreview>(`/shops/${encodeURIComponent(shop)}/import/preview`, { supplier, feed_key: feed, product_ids: selection, run_id: snapshot.current, options, refresh_shop: salePriceOverrides ? false : fullShopCheck, sale_price_overrides: salePriceOverrides || {} });
       setPreview(next); setResult(null); setJobId(''); setDialog(true);
+      setSelected(new Set(selection)); setReload(n => n + 1);
     } catch (e: any) { salePriceOverrides ? setImportError(e.code || 'request_failed') : setError(e.code || 'request_failed'); }
     finally { setPreparing(false); }
   }
@@ -226,14 +227,14 @@ export function SupplierCatalogPage() {
       </div>}
       {targetError && !advanced && <div role="alert" className="catalog-notice">{message(targetError)}</div>}
       <div className="catalog-result-bar"><span aria-live="polite">{loading ? t('common.loading') : t('catalog.found', { count: data?.total_items || 0 })}{!!data?.total && grouped && data.total !== data.total_items ? ` · ${t('catalog.rowCount', { count: data.total })}` : ''}</span>
-        <button disabled={busy || !data?.total_items} onClick={selectAll}>{t('catalog.selectAllResults')}</button><span className="catalog-muted">{t('catalog.localListingHint')}</span></div>
-      {data?.items.length ? <CatalogTable rows={data.items} selected={selected} onToggle={toggle} onDetail={setDetail} busy={busy} showPrice={showPrice} showAvailability={showAvailability} /> : !loading && <div className="catalog-empty"><Package size={36} /><h2>{t(data?.run_id ? 'catalog.noResults' : 'catalog.startDownload')}</h2><p>{t(data?.run_id ? 'catalog.noResultsHelp' : 'catalog.startDownloadHelp')}</p></div>}
+        <button disabled={busy || !data?.total_items} onClick={selectAll}>{t('catalog.selectAllResults')}</button><span className="catalog-muted">{data?.shop_checked_at ? t('catalog.listingChecked', { date: new Date(data.shop_checked_at).toLocaleString() }) : t('catalog.localListingHint')}</span></div>
+      {data?.items.length ? <CatalogTable rows={data.items} selected={selected} onToggle={toggle} onDetail={setDetail} busy={busy} showPrice={showPrice} showAvailability={showAvailability} shopChecked={!!data.shop_checked_at} /> : !loading && <div className="catalog-empty"><Package size={36} /><h2>{t(data?.run_id ? 'catalog.noResults' : 'catalog.startDownload')}</h2><p>{t(data?.run_id ? 'catalog.noResultsHelp' : 'catalog.startDownloadHelp')}</p></div>}
       {!!data?.pages && <div className="catalog-pagination"><Button variant="secondary" size="sm" disabled={busy || page === 1} onClick={() => setPage(page - 1)}>{t('common.back')}</Button><span>{t('catalog.pageOf', { page, pages: data.pages })}</span><Button variant="secondary" size="sm" disabled={busy || page >= data.pages} onClick={() => setPage(page + 1)}>{t('common.next')}</Button></div>}
       <div className="catalog-selection-bar"><div><strong>{t('catalog.selected', { count: selected.size })}</strong><button disabled={!selected.size || busy} onClick={() => { setSelected(new Set()); setPreview(null); }}>{t('catalog.clearSelection')}</button></div>
         <div className="catalog-selection-target"><small>{shopInfo?.name || t('catalog.chooseShop')}</small><Button icon={<Download size={16} />} loading={preparing} disabled={busy || !selected.size || selected.size > 20000 || !target || targetLoading || activeImport} onClick={() => prepare()}>{t('catalog.prepareImport')}</Button></div></div>
     </>}
     {result && <div className="catalog-job-bar"><span>{t(activeImport ? 'catalog.importRunning' : 'catalog.lastImport')}</span><Button variant="secondary" size="sm" onClick={() => setDialog(true)}>{t('catalog.showResult')}</Button></div>}
     {detail && <CatalogDetail key={detail.id} supplier={supplier} product={detail} shop={shop} selected={selected} onToggle={toggle} onClose={() => setDetail(null)} />}
-    {dialog && (preview || result) && <CatalogImport key={result?.preview_id || preview?.preview_id} preview={preview} result={result} shopName={shopInfo?.name || shop} sending={sending || preparing} error={importError} onReprice={prepare} onConfirm={() => confirm()} onRetry={() => confirm(true)} onClose={() => setDialog(false)} />}
+    {dialog && (preview || result) && <CatalogImport key={result?.preview_id || preview?.preview_id} preview={preview} result={result} shopName={shopInfo?.name || shop} sending={sending || preparing} error={importError} onReprice={prepare} onExclude={(ids, overrides) => prepare(overrides, [...selected].filter(id => !ids.includes(id)))} onConfirm={() => confirm()} onRetry={() => confirm(true)} onClose={() => setDialog(false)} />}
   </div>;
 }

@@ -242,7 +242,7 @@
     "found": "Nájdené položky: {{count}}",
     "rowCount": "Skupiny a produkty: {{count}}",
     "selectAllResults": "Vybrať všetky nájdené",
-    "localListingHint": "Stav podľa Hubu; duplicity sa overia v e-shope pri náhľade.",
+    "localListingHint": "Zatiaľ iba údaje Hubu; stav v e-shope ešte nebol overený. Overí sa pri náhľade.",
     "noResults": "Žiadne zodpovedajúce produkty",
     "noResultsHelp": "Skús kratší názov alebo odstráň filter. Prázdne vyhľadávanie zobrazí celý feed.",
     "startDownload": "Načítaj produkty dodávateľa",
@@ -262,7 +262,7 @@
     "noEan": "EAN chýba",
     "fromPrice": "od {{price}}",
     "listed": "Evidovaný v e-shope",
-    "notLinked": "Bez prepojenia v Hube",
+    "notLinked": "Bez nájdenej zhody",
     "detailOf": "Detail produktu: {{name}}",
     "selectPage": "Vybrať položky na tejto strane",
     "product": "Produkt / variant",
@@ -378,7 +378,8 @@
       "shop_required": "Pre tento filter vyber e-shop.",
       "catalog_items_missing": "Niektoré vybrané produkty už vo feede nie sú. Obnov výber.",
       "catalog_product_missing": "Produkt v katalógu nebol nájdený.",
-      "invalid_price_vat": "Cena s DPH nezodpovedá cene bez DPH a nastavenej sadzbe. Over nastavenie DPH dodávateľa."
+      "invalid_price_vat": "Cena s DPH nezodpovedá cene bez DPH a nastavenej sadzbe. Over nastavenie DPH dodávateľa.",
+      "some_variants_in_shop": "Niektoré vybrané varianty už sú v e-shope. Odober ich z výberu a over nový náhľad pre zostávajúce varianty."
     },
     "tab": {
       "data": "Údaje a parametre",
@@ -408,6 +409,25 @@
       "created": "Vytvorené",
       "failed": "Zlyhalo",
       "uncertain": "Neoverený výsledok"
-    }
+    },
+    "listingChecked": "Kódy a EAN overené {{date}}. Náhľad načíta zmeny; úplná kontrola zachytí aj zmazané produkty.",
+    "listingUnknown": "Zatiaľ neoverené",
+    "notInShopSnapshot": "Bez zhody pri poslednej kontrole",
+    "partlyListed": "V e-shope {{count}} / {{total}} variantov",
+    "matchBy": {
+      "code": "Zhoda kódu",
+      "ean": "Zhoda EAN",
+      "parent_code": "Existujúci hlavný produkt"
+    },
+    "existingParent": "Pod produktom",
+    "existingVariants": "V e-shope sa našlo {{count}} z {{total}} vybraných variantov. Tieto varianty sa znovu nevytvoria ani neprecenia.",
+    "parentAlreadyExists": "Hlavný produkt už existuje v e-shope. Tento import nevkladá varianty do existujúceho produktu ani nemení jeho ceny.",
+    "excludeExisting": "Odobrať existujúce varianty z výberu ({{count}})",
+    "existingPriceUnchanged": "Už v e-shope · cena sa týmto importom nemení",
+    "groupSalePrice": "Spoločná predajná cena s DPH",
+    "groupSalePriceOf": "Spoločná predajná cena s DPH: {{name}}",
+    "groupSalePriceHelp": "Zmení cenu {{count}} z {{total}} vybraných variantov. Potom môžeš upraviť jednotlivé ceny.",
+    "resetGroupSalePrice": "Obnoviť ceny skupiny podľa dodávateľa",
+    "mixedPrices": "Rôzne ceny"
   }
 }

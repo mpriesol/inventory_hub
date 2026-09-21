@@ -137,6 +137,60 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code, "price_override_not_selected")
         self.assertEqual(self.client.sent, [])
 
+    async def test_partial_ean_match_under_legacy_parent_only_blocks_matched_variants(self):
+        products = [product(i, group_code="G1", variant_relationship="explicit",
+                            variant_attributes=[CatalogParameter(name="Size", value=size)]) for i, size in [(1, "L"), (2, "S"), (3, "M")]]
+        self.client.products["LEGACY"] = {"product_id": 42, "code": "LEGACY", "variants": [{"code": "OLD-L", "ean": products[0].eans[0]}]}
+        imports.selected_products.return_value = products
+        patch.object(imports, "supplier_config", return_value={}).start()
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1, 2, 3]))
+        item = preview.items[0]
+        self.assertEqual(item.status, "invalid")
+        self.assertEqual(item.errors, ["some_variants_in_shop"])
+        self.assertEqual(item.existing_product_ids, [1])
+        self.assertFalse(item.parent_exists)
+        self.assertEqual(item.product_ids, [2, 3, 1], "Preview follows size order, independent of request order")
+        lines = {line.product_id: line for line in preview.price_lines}
+        self.assertTrue(lines[1].existing)
+        self.assertFalse(lines[2].existing)
+        self.assertEqual(lines[1].shop_matches[0].matched_by, "ean")
+        self.assertEqual(lines[1].shop_matches[0].parent_code, "LEGACY")
+        self.assertEqual(lines[1].shop_matches[0].code, "OLD-L")
+        self.assertEqual(self.client.sent, [], "Preview must not write to the shop")
+        imports.selected_products.return_value = products[1:]
+        clean = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[2, 3], sale_price_overrides={2: "99.95", 3: "105"}))
+        self.assertEqual(clean.items[0].status, "ready")
+        self.assertEqual([v["prices"][0]["pricelists"][0]["price_original"] for v in clean.items[0].payload["variants"]], [99.95, 105])
+        self.assertEqual(clean.items[0].existing_product_ids, [])
+
+    async def test_existing_parent_blocks_new_variants_without_calling_them_partial(self):
+        p = product(group_code="G1", variant_relationship="explicit", variant_attributes=[CatalogParameter(name="Size", value="M")])
+        imports.selected_products.return_value = [p]
+        self.client.products["PL-G-G1"] = {"code": "PL-G-G1", "variants": []}
+        patch.object(imports, "supplier_config", return_value={}).start()
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1]))
+        self.assertEqual(preview.items[0].status, "exists")
+        self.assertTrue(preview.items[0].parent_exists)
+        self.assertEqual(preview.items[0].existing_product_ids, [1])
+        self.assertEqual(preview.price_lines[0].shop_matches[0].matched_by, "parent_code")
+
+    async def test_variant_created_elsewhere_after_preview_blocks_group_without_writing(self):
+        products = [product(i, group_code="G1", variant_relationship="explicit", variant_attributes=[CatalogParameter(name="Size", value=size)]) for i, size in [(1, "M"), (2, "L")]]
+        self.document["sources"] = [p.model_dump(mode="json") for p in products]
+        self.document["preview"]["items"] = [imports.build_item(products, ShopImportOptions(), {}, True).model_dump(mode="json")]
+        imports._write(self.path, self.document)
+        imports.selected_products.return_value = products
+        self.client.products["LEGACY"] = {"code": "LEGACY", "variants": [{"code": "OLD-M", "ean": products[0].eans[0]}]}
+        result = await self.run_import()
+        self.assertEqual(result["items"][0]["status"], "invalid")
+        self.assertEqual(result["items"][0]["existing_product_ids"], [1])
+        self.assertEqual(result["items"][0]["errors"], ["some_variants_in_shop"])
+        self.assertEqual(self.client.sent, [])
+
     async def test_success_is_verified_and_repeated_confirmation_is_idempotent(self):
         result = await self.run_import()
         self.assertEqual(result["items"][0]["status"], "created")

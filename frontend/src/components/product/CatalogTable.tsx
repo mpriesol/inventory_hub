@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Info, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CatalogProduct, CatalogRow, catalogImageUrl } from '../../api/catalog';
 import { ProductThumb } from './ProductDisplay';
+import { CatalogMatches } from './CatalogMatches';
 
 export function CatalogCheckbox({ ids, selected, onToggle, label, disabled = false }: {
   ids: number[]; selected: Set<number>; onToggle: (ids: number[]) => void; label: string; disabled?: boolean;
@@ -14,9 +15,10 @@ export function CatalogCheckbox({ ids, selected, onToggle, label, disabled = fal
     disabled={disabled || !ids.length} onClick={e => e.stopPropagation()} onChange={() => onToggle(ids)} />;
 }
 
-export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPrice, showAvailability }: {
+export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPrice, showAvailability, shopChecked = false }: {
   rows: CatalogRow[]; selected: Set<number>; onToggle: (ids: number[]) => void; onDetail: (p: CatalogProduct) => void;
   busy: boolean; showPrice: boolean; showAvailability: boolean;
+  shopChecked?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -26,6 +28,10 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
     const group = !!row?.is_group;
     const warnings = group ? [...new Set(row.variants.flatMap(v => v.warnings))] : p.warnings;
     const blocked = group ? row.variants.some(v => v.import_blockers?.length) : !!p.import_blockers?.length;
+    const listedCount = group ? row.variants.filter(v => v.listed).length : Number(p.listed);
+    const partial = group && listedCount > 0 && listedCount < row.variants.length;
+    const label = partial ? t('catalog.partlyListed', { count: listedCount, total: row.variants.length })
+      : t(listedCount ? 'catalog.listed' : shopChecked ? 'catalog.notInShopSnapshot' : 'catalog.listingUnknown');
     return <>
       <td className="catalog-check"><CatalogCheckbox ids={group ? row.matching_ids : [p.id]} selected={selected} onToggle={onToggle} disabled={busy}
         label={t(group ? 'catalog.selectGroup' : 'catalog.selectProduct', { name: group ? p.group_name || p.name : p.name })} /></td>
@@ -44,10 +50,11 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
       <td><code>{group ? p.group_code : p.shop_code}</code><div className="catalog-muted">{group ? t('catalog.supplierGroup') : p.eans[0] || t('catalog.noEan')}</div></td>
       {showPrice && <td className="catalog-number">{group ? t('catalog.fromPrice', { price: formatPrice(row.variants.reduce((low, v) => Number(v.prices.retail_gross ?? Infinity) < Number(low.prices.retail_gross ?? Infinity) ? v : low, p)) }) : formatPrice(p)}</td>}
       {showAvailability && <td>{group ? '—' : <><span>{p.supplier_stock_raw ?? '—'}</span><div className="catalog-muted">{p.availability || ''}</div></>}</td>}
-      <td>{p.listed && p.shop_url ? <a className="catalog-badge catalog-good" href={p.shop_url} target="_blank" rel="noopener noreferrer" title={t('catalog.openShop')} onClick={e => e.stopPropagation()}>{t('catalog.listed')} ↗</a>
-        : <span className={`catalog-badge ${p.listed ? 'catalog-good' : ''}`}>{t(p.listed ? 'catalog.listed' : 'catalog.notLinked')}</span>}
-        {p.listed && p.shop_admin_url && <div className="catalog-muted"><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>{t('catalog.openShopAdmin')} ↗</a></div>}
-        {p.listed && p.shop_active === false && <div className="catalog-muted">{t('catalog.hiddenInShop')}</div>}
+      <td>{!group && p.listed && p.shop_url ? <a className="catalog-badge catalog-good" href={p.shop_url} target="_blank" rel="noopener noreferrer" title={t('catalog.openShop')} onClick={e => e.stopPropagation()}>{label} ↗</a>
+        : <span className={`catalog-badge ${listedCount && !partial ? 'catalog-good' : ''}`}>{label}</span>}
+        {!group && p.listed && p.shop_admin_url && <div className="catalog-muted"><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>{t('catalog.openShopAdmin')} ↗</a></div>}
+        {!group && p.listed && p.shop_active === false && <div className="catalog-muted">{t('catalog.hiddenInShop')}</div>}
+        {!group && <CatalogMatches matches={p.shop_matches} />}
         {warnings.length > 0 && <span className="catalog-warning-icon" title={warnings.map(w => t(`catalog.codes.${w}`, { defaultValue: w })).join('\n')}><AlertTriangle size={14} /></span>}</td>
       <td><button className="catalog-icon" aria-label={t('catalog.detailOf', { name: p.name })} onClick={e => { e.stopPropagation(); onDetail(p); }}><Info size={18} /></button></td>
     </>;

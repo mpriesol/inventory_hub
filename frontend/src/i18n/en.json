@@ -241,7 +241,7 @@
     "found": "Matching items: {{count}}",
     "rowCount": "Groups and products: {{count}}",
     "selectAllResults": "Select all results",
-    "localListingHint": "Status known to Hub; duplicates are verified in the shop during preview.",
+    "localListingHint": "Hub records only so far; the shop has not been checked yet. Preview will verify it.",
     "noResults": "No matching products",
     "noResultsHelp": "Try a shorter name or remove a filter. Empty search shows the entire feed.",
     "startDownload": "Load supplier products",
@@ -261,7 +261,7 @@
     "noEan": "No EAN",
     "fromPrice": "from {{price}}",
     "listed": "Linked to shop",
-    "notLinked": "Not linked in Hub",
+    "notLinked": "No match found",
     "detailOf": "Product detail: {{name}}",
     "selectPage": "Select items on this page",
     "product": "Product / variant",
@@ -377,7 +377,8 @@
       "shop_required": "Choose a shop for this filter.",
       "catalog_items_missing": "Some selected products are no longer in the feed. Reload your selection.",
       "catalog_product_missing": "Product was not found in the catalog.",
-      "invalid_price_vat": "Gross and net prices do not match the configured VAT rate. Check supplier VAT settings."
+      "invalid_price_vat": "Gross and net prices do not match the configured VAT rate. Check supplier VAT settings.",
+      "some_variants_in_shop": "Some selected variants already exist in the shop. Remove them from the selection and verify a new preview for the remaining variants."
     },
     "tab": {
       "data": "Data and parameters",
@@ -407,6 +408,25 @@
       "created": "Created",
       "failed": "Failed",
       "uncertain": "Unconfirmed"
-    }
+    },
+    "listingChecked": "Codes and EANs checked {{date}}. Preview fetches changes; a full check also detects deleted products.",
+    "listingUnknown": "Not yet verified",
+    "notInShopSnapshot": "No match at last check",
+    "partlyListed": "In shop: {{count}} / {{total}} variants",
+    "matchBy": {
+      "code": "Code match",
+      "ean": "EAN match",
+      "parent_code": "Existing parent product"
+    },
+    "existingParent": "Under product",
+    "existingVariants": "Found {{count}} of {{total}} selected variants in the shop. These variants will not be created again or repriced.",
+    "parentAlreadyExists": "The parent product already exists in the shop. This import does not add variants to an existing product or change its prices.",
+    "excludeExisting": "Remove existing variants from selection ({{count}})",
+    "existingPriceUnchanged": "Already in shop · this import does not change its price",
+    "groupSalePrice": "Shared selling price incl. VAT",
+    "groupSalePriceOf": "Shared selling price incl. VAT: {{name}}",
+    "groupSalePriceHelp": "Changes {{count}} of {{total}} selected variant prices. You can then adjust individual prices.",
+    "resetGroupSalePrice": "Restore supplier prices for the group",
+    "mixedPrices": "Mixed prices"
   }
 }
