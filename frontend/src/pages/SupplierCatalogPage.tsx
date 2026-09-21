@@ -6,7 +6,7 @@ import { Button } from '../components/ui/Button.new';
 import { CatalogTable } from '../components/product/CatalogTable';
 import { CatalogDetail } from '../components/product/CatalogDetail';
 import { CatalogImport } from '../components/product/CatalogImport';
-import { CatalogPage, CatalogProduct, CatalogStatus, ImportOptions, TargetOptions, ImportPreview, ImportResult, catalogRequest, catalogQuery } from '../api/catalog';
+import { CatalogDownload, CatalogPage, CatalogProduct, CatalogStatus, ImportOptions, TargetOptions, ImportPreview, ImportResult, catalogRequest, catalogQuery } from '../api/catalog';
 import './SupplierCatalogPage.css';
 
 const defaults: ImportOptions = { language: 'sk', currency: 'EUR', pricelist: 'Predvolené', category_code: null, pricing: 'configured', include_images: true, include_description: true, include_parameters: true };
@@ -36,6 +36,8 @@ export function SupplierCatalogPage() {
   const [data, setData] = useState<CatalogPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloaded, setDownloaded] = useState<CatalogDownload | null>(null);
   const [selecting, setSelecting] = useState(false);
   const [reload, setReload] = useState(0);
   const [error, setError] = useState('');
@@ -62,7 +64,7 @@ export function SupplierCatalogPage() {
   const busy = loading || refreshing || selecting || preparing;
   const message = (key: string) => t(`catalog.codes.${key}`, { defaultValue: key });
 
-  useEffect(() => { setSelected(new Set()); snapshot.current = null; setPage(1); setDetail(null); setPreview(null); }, [supplier, feed]);
+  useEffect(() => { setSelected(new Set()); snapshot.current = null; setPage(1); setDetail(null); setPreview(null); setDownloaded(null); }, [supplier, feed]);
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError('');
@@ -140,6 +142,13 @@ export function SupplierCatalogPage() {
     } catch (e: any) { setError(e.code || 'request_failed'); }
     finally { setRefreshing(false); }
   }
+  async function downloadSource() {
+    setDownloading(true); setError(''); setDownloaded(null);
+    try {
+      setDownloaded(await catalogRequest<CatalogDownload>(`${base}/download`, { feed_key: feed }));
+    } catch (e: any) { setError(e.code || 'request_failed'); }
+    finally { setDownloading(false); }
+  }
   async function selectAll() {
     setSelecting(true); setError('');
     try {
@@ -177,10 +186,12 @@ export function SupplierCatalogPage() {
       <div className="catalog-target"><label htmlFor="catalog-shop"><ShoppingBag size={15} />{t('catalog.targetShop')}</label><select id="catalog-shop" value={shop} onChange={e => setShop(e.target.value)} disabled={preparing || sending}>
         <option value="">{t('catalog.chooseShop')}</option>{status?.shops.map(s => <option key={s.code} value={s.code} disabled={!s.ready}>{s.name}{s.ready ? '' : ` · ${t('catalog.notConfigured')}`}</option>)}
       </select><small>{t('catalog.targetHelp')}</small></div></header>
-    <div className="catalog-feed-bar"><label>{t('catalog.source')}<select value={feed} onChange={e => { setFeed(e.target.value); setManufacturer(''); }} disabled={refreshing || preparing}>{status?.sources.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}</select></label>
+    <div className="catalog-feed-bar"><label>{t('catalog.source')}<select value={feed} onChange={e => { setFeed(e.target.value); setManufacturer(''); }} disabled={refreshing || downloading || preparing}>{status?.sources.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}</select></label>
       <div className="catalog-feed-state"><span className={`catalog-dot ${data?.run_id ? 'catalog-dot-good' : ''}`} />{data?.fetched_at ? t('catalog.lastDownload', { date: new Date(data.fetched_at).toLocaleString() }) : t('catalog.notDownloaded')}
         {status?.status === 'failed' && <span className="catalog-error">{t('catalog.lastRefreshFailed')}</span>}</div>
-      <Button variant="secondary" icon={<RefreshCw size={16} />} loading={refreshing} disabled={!source?.supported || !source?.configured || preparing} onClick={refresh}>{t('catalog.downloadFeed')}</Button></div>
+      <Button variant="secondary" icon={<Download size={16} />} loading={downloading} disabled={!source?.configured || refreshing || preparing} onClick={downloadSource}>{t('catalog.downloadSource')}</Button>
+      <Button variant="secondary" icon={<RefreshCw size={16} />} loading={refreshing} disabled={!source?.supported || !source?.configured || downloading || preparing} onClick={refresh}>{t('catalog.downloadFeed')}</Button></div>
+    {downloaded && <div role="status" className="catalog-notice">{t('catalog.sourceDownloaded', { date: new Date(downloaded.downloaded_at).toLocaleString(), size: (downloaded.size_bytes / 1024 / 1024).toFixed(2) })} · <a href={`/api/files/download?${new URLSearchParams({ relpath: downloaded.relpath })}`}>{t('catalog.saveSource')}</a></div>}
     {error && <div role="alert" className="catalog-error catalog-panel">{message(error)}</div>}
     {notice && <div role="status" className="catalog-notice">{message(notice)}</div>}
     {status && !source?.supported && <div className="catalog-empty"><Package size={36} /><h2>{t('catalog.parserPending')}</h2><p>{t('catalog.parserPendingHelp')}</p></div>}

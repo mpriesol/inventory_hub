@@ -46,6 +46,7 @@ global.fetch = async (path, init = {}) => {
     data = { run_id: snapshot, fetched_at: '2026-01-01T12:00:00Z', total: 2, total_items: 3, pages: 2, manufacturers: ['TEST'], items: rows };
   } else if (url.pathname.endsWith('/catalog/products/1')) data = { product: products[0], variants: [], source_fields: {}, source_xml: '<SHOPITEM/>', description_html: '' };
   else if (url.pathname.endsWith('/selection')) data = { ids: [1, 2, 3], run_id: snapshot };
+  else if (url.pathname.endsWith('/catalog/download')) data = { relpath: 'suppliers/paul-lange/feeds/xml/catalog_products_test.xml', size_bytes: 1024, downloaded_at: '2026-01-01T12:00:00Z' };
   else if (url.pathname.endsWith('/import/options')) data = { prices_with_vat: true, languages: [{ code: 'sk', currency: 'EUR', default: true }], pricelists: [{ name: 'Predvolené', default: true }], categories: [{ code: 'K-TEST', names: { sk: 'Test' } }], create_validation_field: false };
   else if (url.pathname.endsWith('/import/preview')) data = { preview_id: 'a'.repeat(32), shop: 'biketrek', supplier: 'paul-lange', options: body.options, errors: [], warnings: [], expires_at: new Date(Date.now() + 3600000).toISOString(), items: [{ code: 'PL-G-G1', name: 'Prilba', product_ids: body.product_ids, variants_count: body.product_ids.length, status: 'ready', errors: [], warnings: [], payload: { images: [{ url: products[0].images[0] }], variants: [{ code: 'PL-A-1', image: { url: products[0].images[0] } }] } }] };
   else throw new Error(`Unexpected request: ${url.pathname}`);
@@ -62,6 +63,10 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) })))));
   await settle();
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
+  await click(button('Získať pôvodný feed'));
+  assert.ok(document.body.textContent.includes('Produkty sa týmto nespracovali.'));
+  assert.equal(document.querySelector('a[href^="/api/files/download"]').getAttribute('href'), '/api/files/download?relpath=suppliers%2Fpaul-lange%2Ffeeds%2Fxml%2Fcatalog_products_test.xml');
+  assert.equal(calls.some(c => c.path.endsWith('/refresh') || c.path.endsWith('/import')), false, 'Raw download does not index or import products');
   await click(document.querySelector('button[aria-expanded="false"][aria-label]'));
   assert.equal(document.querySelectorAll('tbody tr').length, 3, 'Expanding a parent shows both variants');
   assert.deepEqual([...document.querySelectorAll('.catalog-variant img')].map(i => i.getAttribute('src')), displayImages);
