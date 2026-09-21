@@ -729,8 +729,8 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
         except Exception:
             pass
 
-    # Use stem as invoice_id
-    invoice_id = stem
+    # Use the same identity as notes, receiving and generated invoice outputs.
+    invoice_id = f"{supplier}:{stem}"
 
     entry = {
         "supplier": supplier,

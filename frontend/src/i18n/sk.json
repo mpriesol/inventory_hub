@@ -65,6 +65,7 @@
     "inProgress": "Rozpracované",
     "startReceiving": "Spustiť príjem",
     "resumeReceiving": "Pokračovať",
+    "pauseError": "Nepodarilo sa pozastaviť príjem. Zostáva otvorený; skúste to znova.",
     "noInvoices": "Žiadne čakajúce faktúry",
     "invoice": "Faktúra",
     "date": "Dátum",

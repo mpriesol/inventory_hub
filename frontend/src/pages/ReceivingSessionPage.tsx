@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Camera, Check, X, List, AlertTriangle,
   Edit2, CheckCircle, RotateCcw, MessageSquare, Loader2
@@ -9,6 +10,7 @@ import {
   scanCode as scanCodeApi,
   getReceivingSummary,
   finalizeReceiving,
+  pauseReceiving,
   setLineQuantity,
   acceptAllItems,
   resetAllItems,
@@ -25,6 +27,7 @@ function getRawScm(line: ReceivingLine): string {
 }
 
 export function ReceivingSessionPage() {
+  const { t } = useTranslation();
   const { invoiceId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -54,6 +57,7 @@ export function ReceivingSessionPage() {
   const [editQty,        setEditQty]        = useState('');
   const [editNote,       setEditNote]       = useState('');
   const [savingEdit,     setSavingEdit]     = useState(false);
+  const [pausing,        setPausing]        = useState(false);
 
   const total    = stats.matched + stats.partial + stats.pending;
   const progress = total > 0 ? Math.round((stats.matched / total) * 100) : 0;
@@ -141,6 +145,25 @@ export function ReceivingSessionPage() {
     } catch { setError('Nepodarilo sa dokončiť príjem. Skúste to znova.'); setFinalizing(false); }
   };
 
+  const handleExit = async () => {
+    if (pausing || loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
+    if (!sessionId || finalizeResult) {
+      navigate('/receiving');
+      return;
+    }
+    setPausing(true); setError(null);
+    try {
+      if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
+      await saveReceivedItems();
+      await pauseReceiving(supplier, sessionId);
+      navigate('/receiving');
+    } catch {
+      setError(t('receiving.pauseError'));
+    } finally {
+      setPausing(false);
+    }
+  };
+
   const openEditModal = (index: number, line: ReceivingLine) => { setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
 
   const handleSaveEdit = async () => {
@@ -181,7 +204,7 @@ export function ReceivingSessionPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <button onClick={() => navigate('/receiving')} className="p-2 rounded-lg transition-colors"
+          <button onClick={handleExit} disabled={pausing || loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)} className="p-2 rounded-lg transition-colors"
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-bg-secondary)'; e.currentTarget.style.color = 'var(--color-text-primary)'; }}
             onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}>
@@ -194,7 +217,7 @@ export function ReceivingSessionPage() {
             {sessionId && <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>Session: {sessionId}</div>}
           </div>
         </div>
-        <Button variant="danger" onClick={() => navigate('/receiving')}><X size={16} /> Ukončiť</Button>
+        <Button variant="danger" onClick={handleExit} loading={pausing} disabled={loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)}><X size={16} /> Ukončiť</Button>
       </div>
 
       {error && <div className="p-4 rounded-lg border" style={{ backgroundColor: 'var(--color-error-subtle)', borderColor: 'var(--color-error)', color: 'var(--color-error)' }}>{error}</div>}
@@ -210,8 +233,8 @@ export function ReceivingSessionPage() {
           <p className="text-sm mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Použi skener alebo zadaj kód manuálne</p>
           <div className="mt-6 flex gap-2">
             <input ref={inputRef} type="text" value={scannedCode} onChange={e => setScannedCode(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleScan()}
-              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} autoFocus disabled={loading} />
-            <Button variant="primary" onClick={handleScan} loading={loading} disabled={!scannedCode.trim() || !sessionId}>Scan</Button>
+              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} autoFocus disabled={loading || pausing} />
+            <Button variant="primary" onClick={handleScan} loading={loading} disabled={!scannedCode.trim() || !sessionId || pausing}>Scan</Button>
           </div>
           <div className="flex items-center justify-center gap-4 mt-4">
             <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
@@ -266,12 +289,12 @@ export function ReceivingSessionPage() {
           <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: 'var(--color-border-subtle)' }}>
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>{lines.length} položiek</span>
             <div className="flex gap-2">
-              <button onClick={handleAcceptAll} disabled={bulkLoading || stats.pending === 0}
+              <button onClick={handleAcceptAll} disabled={bulkLoading || pausing || stats.pending === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}>
                 <CheckCircle size={14} /> Prijať všetko ({stats.pending})
               </button>
-              <button onClick={handleResetAll} disabled={bulkLoading || (stats.matched === 0 && stats.partial === 0)}
+              <button onClick={handleResetAll} disabled={bulkLoading || pausing || (stats.matched === 0 && stats.partial === 0)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>
                 <RotateCcw size={14} /> Resetovať
@@ -354,7 +377,7 @@ export function ReceivingSessionPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setEditingLine(null)}>Zrušiť</Button>
-              <Button variant="primary" onClick={handleSaveEdit} loading={savingEdit}>Uložiť</Button>
+              <Button variant="primary" onClick={handleSaveEdit} loading={savingEdit} disabled={pausing}>Uložiť</Button>
             </div>
           </div>
         </div>
@@ -376,7 +399,7 @@ export function ReceivingSessionPage() {
         <Button variant="secondary" onClick={() => setShowLines(!showLines)}>
           <List size={16} /> {showLines ? 'Skryť položky' : 'Zobraziť položky'}
         </Button>
-        <Button variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || finalizing}>
+        <Button variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || finalizing || pausing}>
           <Check size={16} /> Dokončiť príjem
         </Button>
       </div>

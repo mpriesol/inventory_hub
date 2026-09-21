@@ -7,7 +7,7 @@ import {
 import { Button } from '../components/ui/Button.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
 import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
-import { createReceivingSession, resumeReceiving, reopenInvoice } from '../api/receiving';
+import { createReceivingSession, resumeReceiving, reopenInvoice, getActiveSession, getReceivingSummary } from '../api/receiving';
 import { API_BASE } from '../api/client';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 
@@ -181,14 +181,18 @@ export function ReceivingPage() {
     setSelectedInvoice(invoice.id);
     
     try {
-      if (invoice.status === 'in_progress' && invoice.currentSessionId) {
-        const session = await resumeReceiving(supplier, invoice.currentSessionId);
+      // Recover the existing session even after browser/back/sidebar navigation.
+      const active = await getActiveSession(supplier, invoice.number);
+      if (active.has_session && active.session) {
+        const sessionId = active.session.session_id;
+        const session = active.session.is_paused
+          ? await resumeReceiving(supplier, sessionId)
+          : await getReceivingSummary(supplier, sessionId);
         navigate(`/receiving/${invoice.number}`, {
           state: { 
-            sessionId: invoice.currentSessionId,
+            sessionId,
             supplier,
             lines: session.lines,
-            stats: session.stats,
             isResumed: true,
           }
         });
