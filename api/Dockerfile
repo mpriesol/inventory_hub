@@ -24,6 +24,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 RUN playwright install chromium
 
 COPY api/inventory_hub /app/inventory_hub
+COPY infra/db-init/005_ai_content.sql /app/inventory_hub/migrations/005_ai_content.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

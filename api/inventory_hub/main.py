@@ -7,6 +7,8 @@ from typing import Optional, Dict
 import mimetypes
 from urllib.parse import unquote
 import os, shutil
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 
 from fastapi import Query
@@ -72,7 +74,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠ PostgreSQL connection failed: {e}")
             print("  Falling back to JSON-based storage")
+    worker = None
+    if settings.USE_POSTGRES:
+        from inventory_hub.services.ai_content_worker import run
+        worker = asyncio.create_task(run(), name="ai-content-queue")
     yield
+    if worker:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
     # Shutdown
     if settings.USE_POSTGRES:
         await close_db()
@@ -136,6 +146,8 @@ if settings.USE_POSTGRES:
     app.include_router(upgates_sync_router)
     from inventory_hub.routers.catalog import router as catalog_router
     app.include_router(catalog_router)
+    from inventory_hub.routers.ai_content import router as ai_content_router
+    app.include_router(ai_content_router)
 else:
     app.include_router(receiving_router_legacy)
 

@@ -1,5 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Construction } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 
@@ -94,11 +96,12 @@ export function ShopsPage() {
 }
 
 export function SettingsPage() {
+  const { t } = useTranslation();
   return (
-    <PlaceholderPage
-      title="Nastavenia"
-      description="Konfigurácia systému"
-    />
+    <div className="space-y-6"><h1 className="text-2xl font-semibold">{t('ai.settings')}</h1>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/ai-content">
+        <strong>{t('ai.title')}</strong><p>{t('ai.settingsDescription')}</p>
+      </Link></div>
   );
 }
 

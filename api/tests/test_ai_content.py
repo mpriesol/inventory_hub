@@ -1,0 +1,182 @@
+"""Behavioral AI contract tests: synthetic facts, no paid calls or stock writes."""
+import copy
+import json
+import unittest
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
+
+from catalog_fixtures import FakeUpgates, product
+from inventory_hub.ai_content_types import CategoryProfile, Content, ParameterDefinition, Policy, Rule, RuleBook, Scope
+from inventory_hub.catalog_types import ShopImportOptions
+from inventory_hub.routers.ai_content import access
+from inventory_hub.services import ai_content as service, ai_content_provider as provider, ai_content_rules as rules, catalog_import as imports
+from inventory_hub.services.ai_content_validation import overlay, validate_content
+
+
+def context(products=None, **changes):
+    products = products or [product()]
+    products[0].description = "Červená prilba s nastaviteľným upínaním."
+    value = {"model": "gpt-5.6-sol", "shop": "biketrek", "research": "feed_only", "options": {"language": "sk"},
+             "facts": service.facts(products), "resolved": rules.resolve(rules.initial_book(), Scope(category="general"))}
+    return {**value, **changes}
+
+
+def content(**changes):
+    data = dict(title="TEST – červená prilba", short_description="Červená prilba | Nastaviteľné upínanie",
+        long_description="<h2>Červená prilba</h2><p>Nastaviteľné upínanie.</p>",
+        seo_title="Červená prilba TEST s nastaviteľným upínaním", meta_description="Červená prilba TEST s nastaviteľným upínaním.",
+        h1_descriptor="Prilba", future_name="TEST", h1_descr_suffix="", parameters=[],
+        evidence=[{"claim": "Nastaviteľné upínanie", "source": "feed:1", "quote": "nastaviteľným upínaním"}],
+        warnings=[], missing_facts=[])
+    return Content.model_validate({**data, **changes})
+
+
+class RuleTests(unittest.TestCase):
+    def test_scope_inheritance_and_provenance(self):
+        book = rules.initial_book()
+        book.rules.extend([
+            Rule(id="supplier_override", name="Supplier", scope=Scope(supplier="test"), policy=Policy(active_after_import=True)),
+            Rule(id="shop_override", name="Shop", scope=Scope(shop="xtrek"), policy=Policy(review_required=False)),
+            Rule(id="product_override", name="Product", scope=Scope(product="PL-A-001"), policy=Policy(active_after_import=False)),
+        ])
+        result = rules.resolve(book, Scope(shop="xtrek", supplier="test", product="PL-A-001"), Policy(confirm_import=False))
+        self.assertEqual(result["policy"], dict(review_required=False, active_after_import=False, show_cost_estimate=True, confirm_import=False))
+        self.assertEqual(result["origins"]["active_after_import"], "Product")
+        self.assertEqual(result["origins"]["confirm_import"], "run")
+        self.assertTrue(rules.resolve(book, Scope(shop="biketrek"))["policy"]["review_required"])
+
+    def test_conflicts_fail_instead_of_depending_on_rule_id(self):
+        book = rules.initial_book()
+        book.rules += [Rule(id="a", name="a", scope=Scope(shop="xtrek", supplier="test"), policy=Policy(confirm_import=True)),
+                       Rule(id="b", name="b", scope=Scope(shop="xtrek", brand="TEST"), policy=Policy(confirm_import=False))]
+        with self.assertRaisesRegex(imports.CatalogError, "Conflicting"):
+            rules.resolve(book, Scope(shop="xtrek", supplier="test", brand="TEST"))
+
+    def test_tube_rules_are_category_scoped_and_not_auto_ready(self):
+        book = rules.initial_book()
+        generic = rules.resolve(book, Scope(category="general"))
+        tubes = rules.resolve(book, Scope(category="inner_tubes"))
+        self.assertFalse(any("ETRTO" in r["text"] for r in generic["instructions"]))
+        self.assertFalse(tubes["category"]["automatic_import_ready"])
+        self.assertGreater(len(tubes["category"]["parameters"]), 5)
+
+    def test_invalid_domains_duplicate_parameters_and_ambiguous_scopes_rejected(self):
+        for value in ("http://northfinder.com", "northfinder.com?token=x", "localhost", "127.0.0.1"):
+            with self.assertRaises(ValueError):
+                Rule(id="test", name="test", official_domains=[value])
+        with self.assertRaises(ValueError):
+            CategoryProfile(id="test", name="test", parameters=[ParameterDefinition(name="Farba"), ParameterDefinition(name="farba")])
+        with self.assertRaises(ValueError):
+            RuleBook(rules=[Rule(id="a", name="a"), Rule(id="b", name="b")])
+
+
+class ContentTests(unittest.TestCase):
+    def test_good_content_and_empty_registry(self):
+        self.assertEqual(validate_content(content(), context())["errors"], [])
+        bad = content(parameters=[{"name": "Invented", "values": ["yes"], "product_id": None}])
+        self.assertIn("ai_unregistered_parameter:Invented", validate_content(bad, context())["errors"])
+
+    def test_required_values_and_scope(self):
+        ctx = context()
+        ctx["resolved"]["category"]["parameters"] = [ParameterDefinition(name="Farba", required=True, values=["červená"]).model_dump()]
+        self.assertIn("ai_required_parameter:Farba", validate_content(content(), ctx)["errors"])
+        invalid = content(parameters=[{"name": "Farba", "values": ["modrá"], "product_id": 1}])
+        errors = validate_content(invalid, ctx)["errors"]
+        self.assertIn("ai_parameter_scope:Farba", errors)
+        self.assertIn("ai_parameter_value:Farba", errors)
+
+    def test_script_injection_contacts_and_unverified_sources_block(self):
+        for description in ('<script>alert(1)</script>', '<p onclick="x()">Text</p>', '<img src="https://evil.test">', '<h1>Text</h1>', '<p>a@example.com</p>'):
+            self.assertTrue(validate_content(content(long_description=description), context())["errors"])
+        bad = content(evidence=[{"claim": "waterproof", "quote": "not in feed", "source": "feed:1"}])
+        self.assertIn("ai_unverified_feed_evidence", validate_content(bad, context())["errors"])
+
+    def test_official_evidence_requires_opened_allowlisted_page(self):
+        ctx = context()
+        ctx["resolved"]["official_domains"] = ["northfinder.com"]
+        source = "https://northfinder.com/product"
+        value = content(evidence=[{"claim": "fact", "quote": "source quote", "source": source}])
+        self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx)["errors"])
+        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [source])["errors"])
+        for host in ("northfinder.com.evil.test", "evilnorthfinder.com"):
+            url = "https://" + host + "/product"
+            value.evidence[0].source = url
+            self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx, [url])["errors"])
+
+    def test_content_overlay_preserves_money_identity_and_source(self):
+        p = product()
+        source = p.model_dump()
+        item = imports.build_item([p], ShopImportOptions(), {}, True, {1: Decimal("99")})
+        original = copy.deepcopy(item.payload)
+        enriched = overlay(item, {"active_after_import": True, "content": content().model_dump(), "registered_parameters": False, "safety": "Noste prilbu správne."}, "sk")
+        for key in ("code", "ean", "prices", "images", "parameters", "manufacturer"):
+            self.assertEqual(enriched.payload.get(key), original.get(key))
+        self.assertEqual(p.model_dump(), source)
+        imports._assert_payload(enriched.payload, expected_active=True)
+        with self.assertRaises(imports.CatalogError):
+            imports._assert_payload(enriched.payload)
+        self.assertIn("Bezpečnostné", enriched.payload["descriptions"][0]["long_description"])
+        self.assertEqual(next(m["value"] for m in enriched.payload["metas"] if m["key"] == "validation_required"), "0")
+
+    def test_readback_checks_real_content_and_visibility_without_extra_get(self):
+        p = product()
+        item = overlay(imports.build_item([p], ShopImportOptions(), {}, True),
+            {"active_after_import": True, "content": content().model_dump()}, "sk")
+        client = FakeUpgates()
+        client.post("products", {"products": [item.payload]})
+        self.assertIsNotNone(imports._verify_created(client, item.model_dump(mode="json")))
+        client.products[item.code]["descriptions"][0]["seo_description"] = ""
+        with self.assertRaisesRegex(imports.CatalogError, "seo_description"):
+            imports._verify_created(client, item.model_dump(mode="json"))
+
+    def test_stock_is_forbidden_even_for_active_approved_content(self):
+        for field in ("stocks", "stock", "stock_increment", "stock_position", "variants_stock"):
+            with self.assertRaises(imports.CatalogError):
+                imports._assert_payload({"active_yn": True, "variants": [{field: 1}]}, expected_active=True)
+
+    def test_facts_omit_financial_stock_and_manufacturer_contact_data(self):
+        p = product(); p.manufacturer_description = "Private manufacturer contact"
+        exported = service.facts([p])[0]
+        self.assertFalse({"prices", "supplier_stock", "manufacturer_description", "source_hash", "url"}.intersection(exported))
+
+    def test_price_refresh_does_not_invalidate_content_but_changed_facts_do(self):
+        p = product()
+        before = service.source_digest([p]); p.prices.retail_gross = Decimal("200")
+        self.assertEqual(before, service.source_digest([p]))
+        p.description = "Different model facts"
+        self.assertNotEqual(before, service.source_digest([p]))
+
+
+class ProviderTests(unittest.TestCase):
+    def test_schema_strict_and_response_contract(self):
+        body = provider.request_body(context())
+        self.assertFalse(body["store"])
+        self.assertNotIn("tools", body)
+        self.assertEqual(body["text"]["format"]["schema"]["required"], list(Content.model_fields))
+        response = {"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": content().model_dump_json()}]}]}
+        self.assertEqual(provider.parse_response(response)[0]["title"], content().title)
+        for state in ("incomplete", "failed"):
+            with self.assertRaises(imports.CatalogError):
+                provider.parse_response({**response, "status": state})
+
+    def test_refusal_and_unknown_model_fail_closed(self):
+        with self.assertRaises(imports.CatalogError):
+            provider.parse_response({"status": "completed", "output": [{"content": [{"type": "refusal"}]}]})
+        with self.assertRaises(imports.CatalogError):
+            provider.estimate(context(model="unpriced-model"))
+
+    def test_cost_uses_decimal_and_counts_cached_input_and_search(self):
+        usage, cost = provider.usage_cost({"usage": {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 500}, "output_tokens": 100},
+            "output": [{"type": "web_search_call"}]}, "gpt-5.6-sol")
+        self.assertEqual(cost, Decimal("0.014200"))
+        self.assertEqual(usage["web_calls"], 1)
+
+    def test_access_is_denied_when_missing_or_incorrect(self):
+        from pydantic import SecretStr
+        with patch.object(provider.settings, "AI_CONTENT_ACCESS_TOKEN", SecretStr("fixture-token-only-123456789")):
+            for token in (None, "Bearer wrong"):
+                with self.assertRaises(HTTPException):
+                    access(token)
+            access("Bearer fixture-token-only-123456789")
