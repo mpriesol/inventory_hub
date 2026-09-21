@@ -6,8 +6,9 @@ import { Button } from '../ui/Button.new';
 import { ProductThumb } from './ProductDisplay';
 import { CatalogMatches } from './CatalogMatches';
 
-export function CatalogImport({ preview, result, shopName, sending, error, onConfirm, onRetry, onClose, onReprice, onExclude }: {
+export function CatalogImport({ preview, result, shopName, sending, error, onConfirm, onRetry, onClose, onReprice, onExclude, visibilityLabel }: {
   preview: ImportPreview | null; result: ImportResult | null; shopName: string; sending: boolean; error: string;
+  visibilityLabel?: string;
   onConfirm: () => void; onRetry: () => void; onClose: () => void;
   onReprice: (overrides: Record<number, string>) => void;
   onExclude: (ids: number[], overrides: Record<number, string>) => void;
@@ -38,7 +39,7 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
   const issues = [...(result?.errors || preview?.errors || []), ...(error ? [error] : [])];
   return <Modal open onClose={onClose} title={t(result ? 'catalog.importResult' : 'catalog.importPreview')}><div className="supplier-catalog catalog-import" role="dialog" aria-label={t('catalog.importPreview')}>
     <div className="catalog-import-heading"><div><div className="catalog-eyebrow">{t('catalog.targetShop')}</div><h2>{shopName}</h2></div>
-      <span className="catalog-badge">{t('catalog.hiddenValidation')}</span></div>
+      <span className="catalog-badge">{visibilityLabel || t('catalog.hiddenValidation')}</span></div>
     <p className="catalog-muted">{t('catalog.importScope')}</p>
     {shopCheck && <div className="catalog-notice">{t('catalog.shopProductsChecked', { date: new Date(shopCheck.checked_at).toLocaleString() })} · {t(shopCheck.mode === 'full' ? 'catalog.shopCheckFull' : 'catalog.shopCheckChanges')}<br />{t('catalog.shopFullChecked', { date: new Date(shopCheck.full_checked_at).toLocaleString() })}{!result && <p>{t('catalog.shopRecheckBeforeImport')}</p>}</div>}
     <p className="catalog-muted">{t((result?.prices_with_vat ?? preview?.prices_with_vat) ? 'catalog.shopPricesGross' : 'catalog.shopPricesNet')}</p>

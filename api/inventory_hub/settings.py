@@ -4,10 +4,18 @@ Inventory Hub Settings - v12 FINAL with PostgreSQL support.
 """
 from __future__ import annotations
 from pathlib import Path
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, AliasChoices
+from pydantic import Field, AliasChoices, SecretStr
 
 class Settings(BaseSettings):
+    # Loaded from a server-owned, read-only secret mount; never exposed by config APIs.
+    OPENAI_API_KEY: SecretStr = SecretStr("")
+    AI_CONTENT_ACCESS_TOKEN: SecretStr = SecretStr("")
+    AI_CONTENT_ENABLED: bool = False
+    AI_CONTENT_MODEL: str = "gpt-5.6-sol"
+    AI_CONTENT_MONTHLY_USD: float = Field(default=20, ge=0, le=10000)
+    AI_CONTENT_JOB_USD: float = Field(default=2, gt=0, le=100)
     # =========================================================================
     # File Storage (legacy JSON files, invoices, feeds)
     # =========================================================================
@@ -51,7 +59,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-settings = Settings()
+settings = Settings(_env_file=(".env", os.environ.get("AI_CONTENT_ENV_FILE", "/run/secrets/hub-ai.env")))
 
 # Legacy exports for backward compatibility
 INVENTORY_DATA_ROOT = settings.INVENTORY_DATA_ROOT

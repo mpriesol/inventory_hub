@@ -440,7 +440,7 @@ def _duplicate(item: dict, sources: dict[int, CatalogProduct], codes: set[str], 
             any(sources[id].shop_code.casefold() in codes or bool(set(sources[id].eans) & eans) for id in item["product_ids"]))
 
 
-async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreviewRequest) -> ShopImportPreview:
+async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreviewRequest, *, enrichment: dict | None = None) -> ShopImportPreview:
     cfg = shop_config(shop)
     if not await db.scalar(select(Shop.id).where(Shop.code == shop, Shop.is_active.is_(True))):
         raise CatalogError("shop_not_found", "Choose an active Hub shop", 404)
@@ -464,6 +464,14 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         key = "g:" + product.group_code if product.group_code and product.variant_relationship == "explicit" else "p:" + str(product.id)
         groups.setdefault(key, []).append(product)
     items = [build_item(group, options, supplier_cfg, remote["prices_with_vat"], request.sale_price_overrides) for group in groups.values()]
+    if enrichment:
+        from inventory_hub.services.ai_content_validation import overlay
+        if enrichment.get("content"):
+            from inventory_hub.services.ai_content_upgates import content_fields
+            await asyncio.to_thread(content_fields, shop, client)
+        if len(items) != 1:
+            raise CatalogError("ai_family_mismatch", "A content revision applies to exactly one selected family", 422)
+        items = [overlay(item, enrichment, options.language) if item.status == "ready" else item for item in items]
     price_lines = []
     for product in products:
         try:
@@ -513,6 +521,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
                 "result": None}
+    if enrichment:
+        document["content_approval"] = {k: enrichment[k] for k in ("job_id", "revision", "rules_version", "active_after_import")}
     _write(_path(shop, preview.preview_id), document)
     return preview
 
@@ -600,17 +610,21 @@ def _verify_created(client: UpgatesClient, item: dict) -> dict | None:
     remote = next((p for p in rows if p.get("code") == item["code"]), None)
     if remote is None:
         return None
-    def validation_set(value: dict) -> bool:
-        return any(m.get("key") == "validation_required" and str(m.get("value", "")).lower() in ("1", "true") for m in value.get("metas", []))
-    if remote.get("active_yn") is not False or not validation_set(remote):
+    def validation_value(value: dict):
+        meta = next((m for m in value.get("metas", []) if m.get("key") == "validation_required"), None)
+        return None if meta is None else str(meta.get("value", "")).lower() in ("1", "true")
+    if remote.get("active_yn") is not item["payload"].get("active_yn", False) or validation_value(remote) != validation_value(item["payload"]):
         raise CatalogError("import_readback_mismatch", "Created product visibility or validation flag requires review", 409)
     if item["payload"].get("ean") and remote.get("ean") != item["payload"]["ean"]:
         raise CatalogError("import_readback_mismatch", "The created product's EAN differs from the selected item", 409)
     variants = {v.get("code"): v for v in remote.get("variants", [])}
-    if any(v["code"] not in variants or not validation_set(variants[v["code"]]) for v in item["payload"].get("variants", [])):
+    if any(v["code"] not in variants or validation_value(variants[v["code"]]) != validation_value(v) for v in item["payload"].get("variants", [])):
         raise CatalogError("import_readback_mismatch", "Some selected variants or their validation flags were not confirmed", 409)
     if any(v.get("ean") and variants[v["code"]].get("ean") != v["ean"] for v in item["payload"].get("variants", [])):
         raise CatalogError("import_readback_mismatch", "A created variant's EAN differs from the selection", 409)
+    if any("short_description" in d for d in item["payload"].get("descriptions", [])):
+        from inventory_hub.services.ai_content_upgates import verify_content
+        verify_content(remote, item["payload"])
     return remote
 
 
@@ -624,7 +638,7 @@ def _confirmed_response(response: dict, item: dict) -> bool:
     return all(variants.get(v["code"], {}).get("inserted_yn") for v in item["payload"].get("variants", []))
 
 
-def _assert_payload(payload: dict) -> None:
+def _assert_payload(payload: dict, *, expected_active: bool = False) -> None:
     forbidden = {"stock", "stocks", "stock_increment", "stock_position", "variants_stock"}
     def visit(value):
         if isinstance(value, dict):
@@ -636,8 +650,8 @@ def _assert_payload(payload: dict) -> None:
             for child in value:
                 visit(child)
     visit(payload)
-    if payload.get("active_yn") is not False:
-        raise CatalogError("unsafe_import_payload", "Catalog products must be hidden", 422)
+    if payload.get("active_yn") is not expected_active:
+        raise CatalogError("unsafe_import_payload", "Product visibility differs from the approved import policy", 422)
 
 
 def queue_import(shop: str, preview_id: str, retry_failed: bool = False) -> tuple[dict, bool]:
@@ -742,6 +756,9 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         verified = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
         if verified["create_validation_field"]:
             raise CatalogError("validation_field_create_failed", "The validation field was not created", 502)
+    if document.get("content_approval") and any("short_description" in d for item in preview["items"] for d in item["payload"].get("descriptions", [])):
+        from inventory_hub.services.ai_content_upgates import content_fields
+        await asyncio.to_thread(content_fields, shop, client, create=True)
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client)
     result["shop_check"] = shop_check
     _save_job(path, document)
@@ -788,7 +805,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                         break
                 if item["status"] == "exists":
                     continue
-                _assert_payload(item["payload"])
+                _assert_payload(item["payload"], expected_active=bool(document.get("content_approval", {}).get("active_after_import", False)))
                 item.update(status="uncertain", errors=["import_outcome_unknown"])
                 result["updated_at"] = now().isoformat()
                 _item_checkpoint(path, result, item)

@@ -1,4 +1,5 @@
 import React from 'react';
+import { AiContentPage } from './pages/AiContentPage';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 
 // Styles
@@ -55,6 +56,8 @@ function App() {
 
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/ai-content" element={<AiContentPage />} />
+          <Route path="/ai-content" element={<AiContentPage />} />
 
           {/* Fallback */}
           <Route

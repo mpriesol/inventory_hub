@@ -65,8 +65,19 @@ jobs:
             script_stop: true
             script: |
               cd /opt/inventory-hub
+              if [ ! -f ai-content.env ]; then
+                install -m 600 /dev/null ai-content.env
+              fi
+              cat > docker-compose.ai-content.yml <<'YAML'
+              services:
+                api:
+                  volumes:
+                    - ./ai-content.env:/run/secrets/hub-ai.env:ro
+              YAML
               docker compose pull
-              docker compose up -d --force-recreate api frontend-build caddy
+              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.ai_content_migrate
+              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
               sleep 5
               curl -sf https://hub.biketrek.sk/api/health
+              curl -sf https://hub.biketrek.sk/api/ai-content/status
               docker image prune -f
