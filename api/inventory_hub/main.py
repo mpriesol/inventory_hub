@@ -134,6 +134,8 @@ if settings.USE_POSTGRES:
     app.include_router(stock_router)
     from inventory_hub.routers.upgates_sync import router as upgates_sync_router
     app.include_router(upgates_sync_router)
+    from inventory_hub.routers.catalog import router as catalog_router
+    app.include_router(catalog_router)
 else:
     app.include_router(receiving_router_legacy)
 

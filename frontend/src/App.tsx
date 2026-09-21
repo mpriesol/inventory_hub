@@ -15,6 +15,7 @@ import {
   StockPage,
   ProductsPage,
   SuppliersPage,
+  SupplierCatalogPage,
   ShopsPage,
   SettingsPage,
   InvoicesPage,
@@ -47,6 +48,7 @@ function App() {
 
           {/* Suppliers */}
           <Route path="/suppliers" element={<SuppliersPage />} />
+          <Route path="/suppliers/:supplier/catalog" element={<SupplierCatalogPage />} />
 
           {/* Shops */}
           <Route path="/shops" element={<ShopsPage />} />

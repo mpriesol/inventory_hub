@@ -101,13 +101,25 @@ def _dyn_param(item: ET.Element, key_variants: List[str]) -> str:
                     return val
     return ""
 
+def read_feed_items(xml_path: Path):
+    """Shared XML input for the existing CSV export and the supplier catalog."""
+    from lxml import etree
+
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    tree = etree.parse(str(xml_path), parser)
+    if tree.docinfo.doctype:
+        raise ValueError("Feed XML must not contain a document type declaration")
+    root = tree.getroot()
+    if root.tag != "SHOP":
+        raise ValueError("Expected a SHOP product feed")
+    return root.findall(".//SHOPITEM")
+
 def convert_xml_to_upgates(xml_path: Path, out_csv_path: Path,
                            price_coeffs: Optional[Dict[str, float]] = None,
                            vat: int = 23,
                            default_category: str = "K00090",
                            prefix: str = "PL-") -> int:
-    tree = ET.parse(str(xml_path))
-    root = tree.getroot()
+    items = read_feed_items(xml_path)
 
     coeffs = dict(DEFAULT_COEFFS)
     if price_coeffs:
@@ -121,7 +133,7 @@ def convert_xml_to_upgates(xml_path: Path, out_csv_path: Path,
         w = csv.writer(f, delimiter=";", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
         w.writerow(HEADER)
 
-        for item in root.findall(".//SHOPITEM"):
+        for item in items:
             code = _get_text(item, "ITEM_ID")
             if not code:
                 continue
