@@ -102,3 +102,9 @@ class ShopCacheTests(unittest.TestCase):
         _, _, status = imports.checked_remote_identities("one", self.client)
         self.assertEqual(status["mode"], "full")
 
+    def test_parent_without_code_keeps_variant_codes_and_all_eans(self):
+        self.client.products = {"legacy": {"product_id": 7, "code": "", "ean": "0000", "variants": [
+            {"code": "VARIANT", "ean": "0001"}, {"code": "", "ean": "0002"}]}}
+        codes, eans, _ = imports.checked_remote_identities("one", self.client)
+        self.assertEqual(codes, {"variant"})
+        self.assertEqual(eans, {"0000", "0001", "0002"})

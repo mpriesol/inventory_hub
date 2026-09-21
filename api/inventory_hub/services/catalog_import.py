@@ -286,7 +286,7 @@ def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool
         params = {} if full else {"last_update_time_from": (datetime.fromisoformat(saved["checked_at"]) - timedelta(minutes=5)).isoformat()}
         rows = _pages(client, "products/simple", "products", params)
         for product in rows:
-            if not isinstance(product, dict) or not product.get("code"):
+            if not isinstance(product, dict) or (product.get("product_id") is None and not product.get("code")):
                 raise CatalogError("upgates_read_failed", "The product identity response is incomplete", 502)
             # Product IDs survive code changes; replace the whole parent to remove old variant identities.
             key = str(product["product_id"]) if product.get("product_id") is not None else "code:" + str(product["code"])
@@ -295,16 +295,16 @@ def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool
             if not isinstance(variants, list):
                 raise CatalogError("upgates_read_failed", "The variant identity response is incomplete", 502)
             for item in [product, *variants]:
-                if not isinstance(item, dict) or not item.get("code"):
-                    raise CatalogError("upgates_read_failed", "A product or variant code is missing", 502)
-                identities.append({"code": str(item["code"]).casefold(),
+                if not isinstance(item, dict):
+                    raise CatalogError("upgates_read_failed", "A product or variant identity is invalid", 502)
+                identities.append({"code": str(item.get("code") or "").casefold(),
                                    "eans": re.split(r"[;,|/\s]+", str(item.get("ean") or "").strip())})
             products[key] = identities
         # Save only after every page succeeds; failures never become a successful check.
         state = {"version": 1, "fingerprint": fingerprint, "checked_at": started.isoformat(),
                  "full_checked_at": started.isoformat() if full else saved["full_checked_at"], "products": products}
         _write(path, state)
-        codes = {item["code"] for entries in products.values() for item in entries}
+        codes = {item["code"] for entries in products.values() for item in entries if item["code"]}
         eans = {ean for entries in products.values() for item in entries for ean in item["eans"] if ean}
         return codes, eans, {"checked_at": state["checked_at"], "full_checked_at": state["full_checked_at"],
                              "mode": "full" if full else "changes"}
