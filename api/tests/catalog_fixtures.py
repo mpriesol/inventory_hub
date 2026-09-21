@@ -24,6 +24,21 @@ def product(id=1, **changes):
                           retail_net=100, retail_gross=123, purchase_net=60, purchase_gross="73.80"), **changes)
 
 
+def northfinder_variant(code="N-RED-M", ean="000001", size="M", purchase="10", retail="24.60"):
+    return f"""<variant><id_variant>{ean}</id_variant><reference>{code}</reference><ean13>{ean}</ean13>
+    <price>{purchase}</price><recomended_retail_price>{retail}</recomended_retail_price><quantity>3</quantity>
+    <attributes><attribute><group>FARBA</group><value>red</value></attribute><attribute><group>VEĽKOSŤ</group><value>{size}</value></attribute></attributes>
+    <images><image>b2b.northfinder.com/synthetic-test.jpg</image></images><extra>preserve variant</extra></variant>"""
+
+
+def northfinder_product(variants=None, purchase="10", retail="24.60"):
+    return f"""<product><id_product>1</id_product><reference>N</reference><name>Technical name</name><name_b2c>Červená bunda TEST</name_b2c>
+    <description><![CDATA[<p>Popis bundy</p>]]></description><currency>EUR</currency><ean13>0</ean13>
+    <categories_b2c><category>Oblečenie &gt; Bundy</category></categories_b2c><price>{purchase}</price><recomended_retail_price>{retail}</recomended_retail_price>
+    <features><feature><group>Farba</group><value>red</value></feature><feature><group>Farba</group><value>blue</value></feature><feature><group>Materiál</group><value>Polyester</value></feature></features>
+    <variants>{variants if variants is not None else northfinder_variant()}</variants><extra>preserve parent</extra></product>"""
+
+
 @asynccontextmanager
 async def dummy_session():
     yield object()

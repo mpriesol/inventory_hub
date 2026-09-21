@@ -13,7 +13,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
-from catalog_fixtures import FakeUpgates, xml_item
+from catalog_fixtures import FakeUpgates, northfinder_product, northfinder_variant, xml_item
 from inventory_hub import config_io
 from inventory_hub.catalog_types import ShopImportPreviewRequest
 from inventory_hub.db_models import Product, Shop, SupplierFeedRun, SupplierProduct
@@ -122,6 +122,36 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(filtered.items[0].variants_count, 1)
             self.assertEqual(len((await catalog.catalog_detail(db, "paul-lange", filtered.items[0].product.id))["variants"]), 2)
             self.assertEqual((await catalog.catalog_page(db, "paul-lange", grouped=False)).total, 2)
+
+    async def test_northfinder_index_keeps_conflicting_eans_and_inherited_prices(self):
+        path = config_io.supplier_path("northfinder")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"feeds": {"sources": {"products": {"mode": "local", "local_path": str(self.feed)}}},
+            "adapter_settings": {"vat": 23, "product_code_prefix": "NF-"}}))
+        variants = northfinder_variant(ean="000001") + northfinder_variant(ean="000002") + northfinder_variant("N-RED-L", "000003", "L", purchase="", retail="")
+        self.feed.write_text("<products>" + northfinder_product(variants) + "</products>")
+        async with self.sessions() as db:
+            await catalog.refresh_catalog(db, "northfinder")
+            await db.commit()
+            page = await catalog.catalog_page(db, "northfinder", q="cervena bunda")
+            self.assertEqual((page.total, page.total_items), (1, 2))
+            found = [(await catalog.catalog_page(db, "northfinder", ean=ean)).items[0].product for ean in ("000001", "000002")]
+            self.assertEqual(found[0].id, found[1].id)
+            self.assertEqual(found[0].import_blockers, ["duplicate_supplier_code"])
+            row = await db.get(SupplierProduct, found[0].id)
+            self.assertIsNone(row.ean, "No conflicting EAN is chosen as the canonical database identity")
+            detail = await catalog.catalog_detail(db, "northfinder", found[0].id)
+            self.assertIn("<conflicting_items>", detail["source_xml"])
+            inherited = (await catalog.catalog_page(db, "northfinder", ean="000003")).items[0].product
+            self.assertEqual(inherited.prices.purchase_net, 10)
+            self.assertIn("inherited_retail_price", inherited.warnings)
+            first_ids = set((await catalog.catalog_selection(db, "northfinder")).ids)
+            await catalog.refresh_catalog(db, "northfinder")
+            await db.commit()
+            self.assertEqual(set((await catalog.catalog_selection(db, "northfinder")).ids), first_ids)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)), 2)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
     async def test_preview_and_local_registration_do_not_change_stock(self):
         await self.refresh()

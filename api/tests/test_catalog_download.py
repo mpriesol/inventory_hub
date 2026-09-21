@@ -39,7 +39,7 @@ class CatalogDownloadTests(unittest.TestCase):
         self.assertTrue(session.request.call_args.kwargs["verify"])
         self.assertNotIn("synthetic-secret", str(result))
         with self.assertRaises(catalog.CatalogError) as error:
-            catalog.source_config("northfinder", self.cfg, "products")
+            catalog.source_config("unconnected-supplier", self.cfg, "products")
         self.assertEqual(error.exception.code, "catalog_parser_unavailable")
 
     def test_network_errors_are_specific_and_do_not_expose_credentials(self):

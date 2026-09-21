@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub import config_io
 from inventory_hub.adapters.pl_feed_convert import DEFAULT_COEFFS
-from inventory_hub.catalog_types import CatalogProduct, ImportItem, ShopImportOptions, ShopImportPreview, ShopImportPreviewRequest
+from inventory_hub.catalog_types import CatalogProduct, ImportItem, ImportPriceLine, ShopImportOptions, ShopImportPreview, ShopImportPreviewRequest
 from inventory_hub.database import get_session_context
 from inventory_hub.db_models import Product, ProductGroup, ProductIdentifier, Shop, Supplier
 from inventory_hub.db_models_ext import ProductSupplySource, ShopProduct, ShopProductContent
@@ -315,7 +315,7 @@ def _money(value: Decimal) -> float:
     return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def _prices(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with_vat: bool) -> list[dict]:
+def _prices(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with_vat: bool, sale_gross: Decimal | None = None) -> list[dict]:
     source = product.prices
     if source.currency != options.currency:
         raise ValueError("currency_mismatch")
@@ -326,13 +326,21 @@ def _prices(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with
         if net is not None and gross is not None and abs(gross - net * (1 + source.vat_percent / 100)) > Decimal("0.02"):
             raise ValueError("invalid_price_vat")
     retail = source.retail_gross if with_vat else source.retail_net
-    if retail is None or retail <= 0:
+    if sale_gross is None and (retail is None or retail <= 0):
         raise ValueError("missing_price")
     coefficients = {**DEFAULT_COEFFS, **{str(k).upper(): v for k, v in (cfg.get("adapter_settings", {}).get("price_coefficients") or {}).items()}}
     coefficient = Decimal(str(coefficients.get((product.brand or "").upper(), 1))) if options.pricing == "configured" else Decimal(1)
     if not coefficient.is_finite() or coefficient <= 0:
         raise ValueError("invalid_price_coefficient")
-    price = {"language": options.language, "pricelists": [{"name": options.pricelist, "price_original": _money(retail * coefficient)}], "price_common": _money(retail)}
+    if sale_gross is not None:
+        if not sale_gross.is_finite() or sale_gross <= 0:
+            raise ValueError("invalid_sale_price")
+        sale = sale_gross if with_vat else sale_gross / (1 + source.vat_percent / 100)
+    else:
+        sale = retail * coefficient
+    price = {"language": options.language, "pricelists": [{"name": options.pricelist, "price_original": _money(sale)}]}
+    if retail is not None and retail > 0:
+        price["price_common"] = _money(retail)
     purchase = source.purchase_gross if with_vat else source.purchase_net
     if purchase is not None:
         price["price_purchase"] = _money(purchase)
@@ -348,16 +356,18 @@ def _parameters(parameters, language: str) -> list[dict]:
             for name, values in grouped.items()]
 
 
-def _base(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with_vat: bool) -> dict:
+def _base(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with_vat: bool, sale_gross: Decimal | None = None) -> dict:
     result = {"code": product.shop_code, "code_supplier": product.code,
               "active_yn": False, "metas": [{"key": "validation_required", "value": "1"}],
-              "prices": _prices(product, options, cfg, with_vat)}
+              "prices": _prices(product, options, cfg, with_vat, sale_gross)}
     if product.eans:
         result["ean"] = product.eans[0]
     return result
 
 
-def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: dict, with_vat: bool) -> ImportItem:
+def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: dict, with_vat: bool,
+               sale_price_overrides: dict[int, Decimal] | None = None) -> ImportItem:
+    sale_price_overrides = sale_price_overrides or {}
     first = products[0]
     grouped = bool(first.group_code and first.variant_relationship == "explicit")
     # A Hub parent identifier is derived only from the supplier's explicit group ID.
@@ -367,13 +377,17 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
                       product_ids=[p.id for p in products], variants_count=len(products) if grouped else 0,
                       status="ready", warnings=sorted({w for p in products for w in p.warnings}))
     try:
+        blockers = sorted({error for p in products for error in p.import_blockers})
+        if blockers:
+            item.status, item.errors = "invalid", blockers
+            return item
         if len(parent_code) > 100 or not parent_code or any(len(p.shop_code) > 100 for p in products):
             raise ValueError("invalid_shop_code")
-        payload = _base(first, options, cfg, with_vat)
+        payload = _base(first, options, cfg, with_vat, sale_price_overrides.get(first.id))
         payload["code"] = parent_code
         payload["descriptions"] = [{"language": options.language, "active_yn": False, "title": item.name}]
         if options.include_description:
-            payload["descriptions"][0]["long_description"] = clean_description("\n".join(filter(None, [first.description, first.manufacturer_description, first.safety_information])))
+            payload["descriptions"][0]["long_description"] = clean_description("\n".join(filter(None, [first.description, first.safety_information])))
         payload["vats"] = {options.language: float(first.prices.vat_percent)}
         if first.brand:
             payload["manufacturer"] = first.brand
@@ -396,11 +410,17 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
                 raise ValueError("variant_attributes_ambiguous")
             if len({(p.brand, p.prices.vat_percent, p.prices.currency) for p in products}) != 1:
                 raise ValueError("variant_group_inconsistent")
+            if options.include_parameters:
+                names = {a.name.casefold() for p in products for a in p.variant_attributes}
+                common = set.intersection(*({(a.name, a.value) for a in p.parameters} for p in products))
+                parameters = [a for a in first.parameters if (a.name, a.value) in common and a.name.casefold() not in names]
+                if parameters:
+                    payload["parameters"] = _parameters(parameters, options.language)
             payload.pop("ean", None)
             payload.pop("code_supplier", None)
             payload["variants"] = []
             for index, product in enumerate(products):
-                variant = _base(product, options, cfg, with_vat)
+                variant = _base(product, options, cfg, with_vat, sale_price_overrides.get(product.id))
                 variant.update(main_yn=index == 0, active_yn=True,
                                parameters=_parameters(product.variant_attributes, options.language))
                 if options.include_images and product.images:
@@ -408,6 +428,13 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
                 payload["variants"].append(variant)
         if any(len(p.eans) > 1 for p in products):
             item.warnings.append("primary_ean_exported")
+        if any(p.id in sale_price_overrides for p in products):
+            item.warnings.append("manual_sale_price")
+        for product in products:
+            prices = _prices(product, options, cfg, with_vat, sale_price_overrides.get(product.id))[0]
+            if prices.get("price_purchase") is not None and prices["pricelists"][0]["price_original"] < prices["price_purchase"]:
+                item.warnings.append("sale_below_purchase")
+                break
         item.payload = payload
     except (ValueError, InvalidOperation) as error:
         item.status, item.errors = "invalid", [str(error) if isinstance(error, ValueError) else "invalid_price_coefficient"]
@@ -424,6 +451,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     if not await db.scalar(select(Shop.id).where(Shop.code == shop, Shop.is_active.is_(True))):
         raise CatalogError("shop_not_found", "Choose an active Hub shop", 404)
     products = await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
+    if set(request.sale_price_overrides) - {p.id for p in products}:
+        raise CatalogError("price_override_not_selected", "Price overrides must refer to selected products", 422)
     supplier_cfg = supplier_config(request.supplier)
     client = UpgatesClient.from_shop(shop)
     remote = await asyncio.to_thread(cached_import_options, shop, client)
@@ -440,7 +469,18 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     for product in products:
         key = "g:" + product.group_code if product.group_code and product.variant_relationship == "explicit" else "p:" + str(product.id)
         groups.setdefault(key, []).append(product)
-    items = [build_item(group, options, supplier_cfg, remote["prices_with_vat"]) for group in groups.values()]
+    items = [build_item(group, options, supplier_cfg, remote["prices_with_vat"], request.sale_price_overrides) for group in groups.values()]
+    price_lines = []
+    for product in products:
+        try:
+            sale = Decimal(str(_prices(product, options, supplier_cfg, True, request.sale_price_overrides.get(product.id))[0]["pricelists"][0]["price_original"]))
+        except (ValueError, InvalidOperation):
+            sale = None
+        price_lines.append(ImportPriceLine(product_id=product.id, code=product.shop_code, name=product.name,
+            image=product.images[0] if product.images else None, attributes=product.variant_attributes,
+            retail_gross=product.prices.retail_gross, purchase_net=product.prices.purchase_net,
+            sale_gross=sale, overridden=product.id in request.sale_price_overrides,
+            blocked=bool(product.import_blockers), warnings=product.warnings))
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client, refresh=request.refresh_shop)
     sources = {p.id: p for p in products}
     selection_eans = Counter(ean for p in products for ean in p.eans)
@@ -464,7 +504,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     preview = ShopImportPreview(preview_id=uuid4().hex, shop=shop, supplier=request.supplier,
                                 created_at=created, expires_at=created + timedelta(hours=1),
                                 options=options, prices_with_vat=remote["prices_with_vat"], items=items, errors=errors,
-                                create_validation_field=remote["create_validation_field"], shop_check=shop_check)
+                                create_validation_field=remote["create_validation_field"], shop_check=shop_check,
+                                price_lines=price_lines, sale_price_overrides=request.sale_price_overrides)
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
                 "result": None}

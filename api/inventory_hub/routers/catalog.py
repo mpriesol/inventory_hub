@@ -69,7 +69,7 @@ async def selection(supplier: str, db: DB, feed_key: FeedKey = "products", crite
 async def detail(supplier: str, product_id: int, db: DB, include_variants: bool = True, shop: str | None = None):
     result = await catalog.catalog_detail(db, supplier, product_id, include_variants, shop)
     p = result["product"]
-    result["description_html"] = clean_description("\n".join(filter(None, [p.description, p.manufacturer_description, p.safety_information])))
+    result["description_html"] = clean_description("\n".join(filter(None, [p.description, p.safety_information])))
     return result
 
 

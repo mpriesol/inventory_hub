@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub import config_io
 from inventory_hub.adapters.paul_lange_catalog import parse_catalog
+from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_northfinder
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -30,7 +31,7 @@ class CatalogError(Exception):
         self.code, self.status = code, status
 
 
-PARSERS = {"paul-lange": parse_catalog}
+PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder}
 
 
 def folded(value: str) -> str:
@@ -50,8 +51,8 @@ def source_config(supplier: str, cfg: dict, feed_key: str, *, require_parser: bo
     if not isinstance(source, dict) or feed_key == "stock" or source.get("type") == "stock":
         raise CatalogError("listing_feed_not_configured", "Select a configured listing feed")
     parser_name = source.get("catalog_parser") or (cfg.get("adapter_settings", {}).get("catalog") or {}).get("parser")
-    if not parser_name and supplier == "paul-lange":
-        parser_name = "paul-lange"
+    if not parser_name and supplier in PARSERS:
+        parser_name = supplier
     if require_parser and parser_name not in PARSERS:
         raise CatalogError("catalog_parser_unavailable", "A catalog parser is not available for this supplier", 422)
     return source, parser_name
@@ -196,7 +197,7 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
                          "search_code": folded(product.code), "search_shop_code": folded(product.shop_code)}
                 values.append({
                     "supplier_id": feed.supplier_id, "supplier_sku": product.code,
-                    "ean": product.eans[0] if product.eans else None,
+                    "ean": product.eans[0] if product.eans and not product.import_blockers else None,
                     "manufacturer_sku": product.manufacturer_code, "name": product.name,
                     "brand": product.brand, "category": product.category if len(product.category or "") <= 255 else None,
                     "description": product.description, "images": product.images, "attributes": attrs,

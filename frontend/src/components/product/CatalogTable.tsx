@@ -24,6 +24,8 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
   const formatPrice = (p: CatalogProduct) => p.prices.retail_gross === null ? '—' : new Intl.NumberFormat(i18n.language, { style: 'currency', currency: p.prices.currency }).format(Number(p.prices.retail_gross));
   function cells(p: CatalogProduct, row?: CatalogRow) {
     const group = !!row?.is_group;
+    const warnings = group ? [...new Set(row.variants.flatMap(v => v.warnings))] : p.warnings;
+    const blocked = group ? row.variants.some(v => v.import_blockers?.length) : !!p.import_blockers?.length;
     return <>
       <td className="catalog-check"><CatalogCheckbox ids={group ? row.matching_ids : [p.id]} selected={selected} onToggle={onToggle} disabled={busy}
         label={t(group ? 'catalog.selectGroup' : 'catalog.selectProduct', { name: group ? p.group_name || p.name : p.name })} /></td>
@@ -34,6 +36,9 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
         <div><button className="catalog-name" onClick={e => { e.stopPropagation(); group ? toggle(row.key) : onDetail(p); }}>
           {group ? p.group_name || p.name : p.name}</button>
           <div className="catalog-muted">{p.brand}{group ? ` · ${t('catalog.variantCount', { count: row.variants_count })}` : p.variant_attributes.length ? ` · ${p.variant_attributes.map(a => a.value).join(' / ')}` : ''}</div>
+          {blocked && <span className="catalog-badge catalog-bad">{t(group ? 'catalog.groupHasBlocked' : 'catalog.importBlocked')}</span>}
+          {warnings.some(w => ['inherited_retail_price', 'inherited_purchase_price'].includes(w)) && <span className="catalog-badge">{t('catalog.inheritedPrice')}</span>}
+          {warnings.includes('retail_below_purchase') && <span className="catalog-badge catalog-bad">{t('catalog.lowRetailPrice')}</span>}
         </div>
       </div></td>
       <td><code>{group ? p.group_code : p.shop_code}</code><div className="catalog-muted">{group ? t('catalog.supplierGroup') : p.eans[0] || t('catalog.noEan')}</div></td>
@@ -43,7 +48,7 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
         : <span className={`catalog-badge ${p.listed ? 'catalog-good' : ''}`}>{t(p.listed ? 'catalog.listed' : 'catalog.notLinked')}</span>}
         {p.listed && p.shop_admin_url && <div className="catalog-muted"><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>{t('catalog.openShopAdmin')} ↗</a></div>}
         {p.listed && p.shop_active === false && <div className="catalog-muted">{t('catalog.hiddenInShop')}</div>}
-        {p.warnings.length > 0 && <span className="catalog-warning-icon" title={p.warnings.map(w => t(`catalog.codes.${w}`, { defaultValue: w })).join('\n')}><AlertTriangle size={14} /></span>}</td>
+        {warnings.length > 0 && <span className="catalog-warning-icon" title={warnings.map(w => t(`catalog.codes.${w}`, { defaultValue: w })).join('\n')}><AlertTriangle size={14} /></span>}</td>
       <td><button className="catalog-icon" aria-label={t('catalog.detailOf', { name: p.name })} onClick={e => { e.stopPropagation(); onDetail(p); }}><Info size={18} /></button></td>
     </>;
   }
