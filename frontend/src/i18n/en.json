@@ -64,6 +64,7 @@
     "inProgress": "In Progress",
     "startReceiving": "Start Receiving",
     "resumeReceiving": "Resume",
+    "pauseError": "Could not pause receiving. The session remains open; please try again.",
     "noInvoices": "No pending invoices",
     "invoice": "Invoice",
     "date": "Date",

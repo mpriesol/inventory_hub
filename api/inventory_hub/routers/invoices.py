@@ -200,6 +200,16 @@ def _load_received_items(supplier: str, invoice_no: str) -> Optional[Dict[str, A
 
 # ── Index helpers ─────────────────────────────────────────────────────────────
 
+def _invoice_index_key(idx: dict, supplier: str, invoice_no: str) -> str:
+    """Reuse older upload keys instead of creating a second invoice entry."""
+    invoice_id = f"{supplier}:{invoice_no}"
+    if invoice_id in idx:
+        return invoice_id
+    for key, entry in idx.items():
+        if isinstance(entry, dict) and entry.get("number") == invoice_no:
+            return key
+    return invoice_id
+
 def _load_prev_index_map(supplier: str) -> Dict[str, Dict[str, Any]]:
     mp: Dict[str, Dict[str, Any]] = {}
     idx = _index_latest_path(supplier)
@@ -407,7 +417,7 @@ def invoices_reindex(supplier: str, flatten_to_root: bool = Query(False)):
 @router.get("/suppliers/{supplier}/invoices/{invoice_no}/note")
 def invoice_get_note(supplier: str, invoice_no: str):
     idx = _load_json(_index_latest_path(supplier))
-    entry = (idx or {}).get(f"{supplier}:{invoice_no}") or {}
+    entry = (idx or {}).get(_invoice_index_key(idx or {}, supplier, invoice_no)) or {}
     return {"invoice_id": f"{supplier}:{invoice_no}", "note": entry.get("note", ""), "status": entry.get("status", "new")}
 
 @router.post("/suppliers/{supplier}/invoices/{invoice_no}/note")
@@ -416,7 +426,7 @@ def invoice_set_note(supplier: str, invoice_no: str, payload: NotePayload):
     idx = _load_json(idx_path)
     if not isinstance(idx, dict):
         idx = {}
-    invoice_id = f"{supplier}:{invoice_no}"
+    invoice_id = _invoice_index_key(idx, supplier, invoice_no)
     entry = idx.get(invoice_id) or {"invoice_id": invoice_id, "number": invoice_no, "supplier": supplier, "status": "new"}
     entry["note"] = payload.note
     if payload.status:
@@ -482,7 +492,7 @@ def run_prepare(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not isinstance(idx, dict):
         idx = {}
 
-    invoice_id = f"{supplier}:{inv_stem}"
+    invoice_id = _invoice_index_key(idx, supplier, inv_stem)
     entry = idx.get(invoice_id) or {}
     entry.update({
         "supplier": supplier, "invoice_id": invoice_id, "number": inv_stem,
