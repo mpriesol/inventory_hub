@@ -1,7 +1,7 @@
 import React, { Fragment, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Info, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CatalogProduct, CatalogRow } from '../../api/catalog';
+import { CatalogProduct, CatalogRow, catalogImageUrl } from '../../api/catalog';
 import { ProductThumb } from './ProductDisplay';
 
 export function CatalogCheckbox({ ids, selected, onToggle, label, disabled = false }: {
@@ -30,7 +30,7 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
       <td><div className="catalog-product-cell">
         {group ? <button className="catalog-icon" aria-expanded={expanded.has(row.key)} aria-label={t('catalog.expandVariants')} onClick={e => { e.stopPropagation(); toggle(row.key); }}>
           {expanded.has(row.key) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button> : <span className="catalog-indent" />}
-        <ProductThumb key={p.images[0] || p.id} url={p.images[0]} name={p.name} size={52} />
+        <ProductThumb key={p.images[0] || p.id} url={catalogImageUrl(p.images[0])} name={p.name} size={52} />
         <div><button className="catalog-name" onClick={e => { e.stopPropagation(); group ? toggle(row.key) : onDetail(p); }}>
           {group ? p.group_name || p.name : p.name}</button>
           <div className="catalog-muted">{p.brand}{group ? ` · ${t('catalog.variantCount', { count: row.variants_count })}` : p.variant_attributes.length ? ` · ${p.variant_attributes.map(a => a.value).join(' / ')}` : ''}</div>

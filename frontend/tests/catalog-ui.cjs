@@ -30,6 +30,8 @@ const products = [1, 2, 3].map((id) => ({
   prices: { currency: 'EUR', retail_gross: '123', retail_net: '100', purchase_gross: '73.80', purchase_net: '60', vat_percent: '23', vat_source: 'configured' },
   warnings: [], listed: false, supplier_stock_raw: '6+', availability: 'skladom', parameters: [],
 }));
+products[0].images = ['http://xml.paul-lange-oslany.sk:8081/ito5-S123.jpg'];
+const displayImages = ['/api/suppliers/paul-lange/catalog/images/ito5-S123.jpg', products[1].images[0]];
 const calls = [];
 let snapshot = 1;
 global.fetch = async (path, init = {}) => {
@@ -41,9 +43,10 @@ global.fetch = async (path, init = {}) => {
   else if (url.pathname.endsWith('/catalog/products')) {
     const rows = url.searchParams.get('page') === '2' ? [{ key: 'item:3', product: products[2], is_group: false, variants_count: 0, matching_ids: [3], variants: [] }] : [{ key: 'group:G1', product: products[0], is_group: true, variants_count: 2, matching_ids: [1, 2], variants: products.slice(0, 2) }];
     data = { run_id: snapshot, fetched_at: '2026-01-01T12:00:00Z', total: 2, total_items: 3, pages: 2, manufacturers: ['TEST'], items: rows };
-  } else if (url.pathname.endsWith('/selection')) data = { ids: [1, 2, 3], run_id: snapshot };
+  } else if (url.pathname.endsWith('/catalog/products/1')) data = { product: products[0], variants: [], source_fields: {}, source_xml: '<SHOPITEM/>', description_html: '' };
+  else if (url.pathname.endsWith('/selection')) data = { ids: [1, 2, 3], run_id: snapshot };
   else if (url.pathname.endsWith('/import/options')) data = { prices_with_vat: true, languages: [{ code: 'sk', currency: 'EUR', default: true }], pricelists: [{ name: 'Predvolené', default: true }], categories: [{ code: 'K-TEST', names: { sk: 'Test' } }], create_validation_field: false };
-  else if (url.pathname.endsWith('/import/preview')) data = { preview_id: 'a'.repeat(32), shop: 'biketrek', supplier: 'paul-lange', options: body.options, errors: [], warnings: [], expires_at: new Date(Date.now() + 3600000).toISOString(), items: [{ code: 'PL-G-G1', name: 'Prilba', product_ids: body.product_ids, variants_count: body.product_ids.length, status: 'ready', errors: [], warnings: [], payload: {} }] };
+  else if (url.pathname.endsWith('/import/preview')) data = { preview_id: 'a'.repeat(32), shop: 'biketrek', supplier: 'paul-lange', options: body.options, errors: [], warnings: [], expires_at: new Date(Date.now() + 3600000).toISOString(), items: [{ code: 'PL-G-G1', name: 'Prilba', product_ids: body.product_ids, variants_count: body.product_ids.length, status: 'ready', errors: [], warnings: [], payload: { images: [{ url: products[0].images[0] }], variants: [{ code: 'PL-A-1', image: { url: products[0].images[0] } }] } }] };
   else throw new Error(`Unexpected request: ${url.pathname}`);
   return { ok: true, status: 200, json: async () => data };
 };
@@ -60,7 +63,11 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
   await click(document.querySelector('button[aria-expanded="false"][aria-label]'));
   assert.equal(document.querySelectorAll('tbody tr').length, 3, 'Expanding a parent shows both variants');
-  assert.deepEqual([...document.querySelectorAll('.catalog-variant img')].map(i => i.getAttribute('src')), products.slice(0, 2).map(p => p.images[0]));
+  assert.deepEqual([...document.querySelectorAll('.catalog-variant img')].map(i => i.getAttribute('src')), displayImages);
+  await click(button('Prilba M'));
+  assert.equal(document.querySelector('.catalog-detail-head img').getAttribute('src'), displayImages[0], 'Detail uses the HTTPS origin for HTTP supplier photos');
+  assert.equal(document.querySelector('.catalog-gallery img').getAttribute('src'), displayImages[0]);
+  await click(document.querySelector('button[aria-label="Close modal"]'));
   await click(checkbox('Vybrať produkt: Prilba M'));
   assert.equal(checkbox('Vybrať varianty: Prilba').indeterminate, true, 'Parent reflects partial selection');
   await click(button('Ďalej')); await settle();
@@ -84,6 +91,9 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(request.path, '/api/shops/biketrek/import/preview');
   assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Preview does not start an import');
   assert.ok(button('Importovať do e-shopu (1)'), 'Confirmation is a separate action');
+  assert.equal(document.querySelector('.catalog-import-item summary img').getAttribute('src'), displayImages[0]);
+  assert.equal(document.querySelector('.catalog-preview-variant img').getAttribute('src'), displayImages[0]);
+  assert.equal(products[0].images[0], 'http://xml.paul-lange-oslany.sk:8081/ito5-S123.jpg', 'Display leaves the original source URL intact');
   await click(button('Zavrieť'));
   snapshot = 2;
   await click(button('Ďalej')); await settle();
