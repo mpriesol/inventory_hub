@@ -6,7 +6,7 @@ from pathlib import Path
 from catalog_fixtures import xml_item
 from inventory_hub.adapters.paul_lange_catalog import parse_catalog
 from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
-from inventory_hub.services.catalog import folded
+from inventory_hub.services.catalog import folded, _http_url
 from inventory_hub.services.catalog_html import clean_description
 
 
@@ -71,3 +71,8 @@ class CatalogParserTests(unittest.TestCase):
         self.assertIn("<b>text</b>", clean)
         for forbidden in ("script", "onclick", "onerror", "javascript:", "<svg", "<img"):
             self.assertNotIn(forbidden, clean)
+
+    def test_shop_links_accept_only_http_urls_without_credentials(self):
+        self.assertEqual(_http_url("https://shop.example.test/p/product"), "https://shop.example.test/p/product")
+        for value in (None, "javascript:alert(1)", "//shop.example.test/p", "https://user:password@shop.example.test/p", "https://shop.example.test/\n", "https://[invalid"):
+            self.assertIsNone(_http_url(value))

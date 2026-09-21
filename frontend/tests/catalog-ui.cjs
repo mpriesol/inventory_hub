@@ -31,6 +31,7 @@ const products = [1, 2, 3].map((id) => ({
   warnings: [], listed: false, supplier_stock_raw: '6+', availability: 'skladom', parameters: [],
 }));
 products[0].images = ['http://xml.paul-lange-oslany.sk:8081/ito5-S123.jpg'];
+Object.assign(products[0], { listed: true, shop_url: 'https://shop.example.test/p/prilba', shop_admin_url: 'https://admin.example.test/product/101', shop_active: false });
 const displayImages = ['/api/suppliers/paul-lange/catalog/images/ito5-S123.jpg', products[1].images[0]];
 const calls = [];
 let snapshot = 1;
@@ -64,9 +65,18 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await click(document.querySelector('button[aria-expanded="false"][aria-label]'));
   assert.equal(document.querySelectorAll('tbody tr').length, 3, 'Expanding a parent shows both variants');
   assert.deepEqual([...document.querySelectorAll('.catalog-variant img')].map(i => i.getAttribute('src')), displayImages);
+  const shopLink = document.querySelector('.catalog-variant a.catalog-badge');
+  assert.equal(shopLink.getAttribute('href'), products[0].shop_url);
+  assert.equal(shopLink.getAttribute('target'), '_blank');
+  shopLink.addEventListener('click', e => e.preventDefault(), { once: true });
+  await click(shopLink);
+  assert.equal(document.querySelector('[role="dialog"]'), null, 'Shop link must not open the row detail');
+  assert.ok(document.body.textContent.includes('Produkt je v e-shope skrytý'));
   await click(button('Prilba M'));
   assert.equal(document.querySelector('.catalog-detail-head img').getAttribute('src'), displayImages[0], 'Detail uses the HTTPS origin for HTTP supplier photos');
   assert.equal(document.querySelector('.catalog-gallery img').getAttribute('src'), displayImages[0]);
+  assert.equal(document.querySelector('.catalog-detail a[href="https://shop.example.test/p/prilba"]').target, '_blank');
+  assert.ok(document.querySelector('.catalog-detail a[href="https://admin.example.test/product/101"]'));
   await click(document.querySelector('button[aria-label="Close modal"]'));
   await click(checkbox('Vybrať produkt: Prilba M'));
   assert.equal(checkbox('Vybrať varianty: Prilba').indeterminate, true, 'Parent reflects partial selection');

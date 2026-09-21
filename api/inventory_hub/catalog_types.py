@@ -62,6 +62,9 @@ class CatalogProduct(BaseModel):
     fetched_at: datetime | None = None
     source_hash: str | None = None
     listed: bool = False
+    shop_url: str | None = None
+    shop_admin_url: str | None = None
+    shop_active: bool | None = None
 
 
 class CatalogRow(BaseModel):
