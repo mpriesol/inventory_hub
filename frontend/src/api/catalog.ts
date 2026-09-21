@@ -13,6 +13,7 @@ export interface CatalogProduct {
   group_code: string | null; group_name: string | null; variant_relationship: 'explicit' | 'not_provided';
   variant_attributes: { name: string; value: string }[]; warnings: string[]; listed: boolean;
   fetched_at: string | null; source_hash: string | null;
+  shop_url: string | null; shop_admin_url: string | null; shop_active: boolean | null;
 }
 export interface CatalogRow { key: string; product: CatalogProduct; is_group: boolean; variants_count: number; matching_ids: number[]; variants: CatalogProduct[] }
 export interface CatalogPage {

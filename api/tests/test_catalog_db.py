@@ -17,7 +17,7 @@ from catalog_fixtures import FakeUpgates, xml_item
 from inventory_hub import config_io
 from inventory_hub.catalog_types import ShopImportPreviewRequest
 from inventory_hub.db_models import Product, Shop, SupplierFeedRun, SupplierProduct
-from inventory_hub.db_models_ext import ShopProduct
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
 from inventory_hub.services import catalog, catalog_import
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -140,7 +140,9 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(client.sent, [])
             product = (await catalog.selected_products(db, "paul-lange", "products", [id]))[0]
             item = preview.items[0].model_dump()
-            remote = {**item["payload"], "product_id": 101}
+            remote = {**item["payload"], "product_id": 101, "admin_url": "https://admin.example.test/product/101",
+                      "descriptions": [{"language": "en", "url": "https://shop.example.test/en/product"},
+                                       {"language": "sk", "url": "https://shop.example.test/p/produkt"}]}
             await catalog_import.register_created(db, "test-shop", item, {id: product}, remote)
             await db.commit()
             await catalog_import.register_created(db, "test-shop", item, {id: product}, remote)
@@ -150,3 +152,36 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_balances")), 0)
             self.assertTrue((await catalog.catalog_page(db, "paul-lange", shop="test-shop", listing="listed")).items[0].product.listed)
+            listed = (await catalog.catalog_page(db, "paul-lange", shop="test-shop", listing="listed")).items[0].product
+            self.assertEqual(listed.shop_url, "https://shop.example.test/p/produkt")
+            self.assertEqual(listed.shop_admin_url, "https://admin.example.test/product/101")
+            self.assertFalse(listed.shop_active)
+            self.assertEqual((await catalog.catalog_detail(db, "paul-lange", id, shop="test-shop"))["product"].shop_url, listed.shop_url)
+            self.assertIsNone((await catalog.catalog_detail(db, "paul-lange", id))["product"].shop_url)
+            self.assertIsNone((await catalog.catalog_page(db, "paul-lange", shop="other-shop")).items[0].product.shop_url)
+
+    async def test_variant_links_use_parent_content_only_in_selected_shop(self):
+        self.write_feed(xml_item(extra="<ITEMGROUP_ID>GROUP1</ITEMGROUP_ID>"))
+        await self.refresh()
+        async with self.sessions() as db:
+            item = (await catalog.catalog_page(db, "paul-lange")).items[0].product
+            product = Product(sku=item.shop_code, name=item.name)
+            shops = [Shop(code="first-shop", name="First", platform="upgates"), Shop(code="second-shop", name="Second", platform="upgates")]
+            db.add_all([product, *shops])
+            await db.flush()
+            for shop in shops:
+                db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code=item.shop_code,
+                                   variant_code=item.shop_code, parent_code="PARENT", is_listed=True))
+                db.add(ShopProductContent(shop_id=shop.id, external_code="PARENT", data={
+                    "descriptions": [{"language": "sk", "url": f"https://{shop.code}.example.test/p/parent"}],
+                    "admin_url": f"https://{shop.code}.example.test/admin/parent", "active_yn": True}))
+            await db.commit()
+            with patch.object(catalog_import.UpgatesClient, "from_shop", side_effect=AssertionError("Links must not call Upgates")):
+                for shop in shops:
+                    row = (await catalog.catalog_page(db, "paul-lange", shop=shop.code)).items[0]
+                    expected = f"https://{shop.code}.example.test/p/parent"
+                    self.assertEqual(row.product.shop_url, expected)
+                    self.assertEqual(row.variants[0].shop_url, expected)
+                    detail = await catalog.catalog_detail(db, "paul-lange", item.id, shop=shop.code)
+                    self.assertEqual(detail["variants"][0].shop_url, expected)
+                    self.assertTrue(detail["product"].shop_active)

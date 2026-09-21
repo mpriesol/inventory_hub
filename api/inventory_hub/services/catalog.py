@@ -9,18 +9,19 @@ import unicodedata
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import requests
-from sqlalchemy import func, or_, select, text, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub import config_io
 from inventory_hub.adapters.paul_lange_catalog import parse_catalog
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
-from inventory_hub.db_models_ext import ShopProduct
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
 
 
 class CatalogError(Exception):
@@ -257,6 +258,43 @@ async def listed_codes(db: AsyncSession, shop_code: str | None) -> set[str]:
     return {code for row in rows for code in row if code}
 
 
+def _http_url(value) -> str | None:
+    if not isinstance(value, str) or any(ord(c) < 32 for c in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme in ("https", "http") and parsed.hostname and not parsed.username and not parsed.password:
+            return value
+    except ValueError:
+        pass
+    return None
+
+
+async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: list[CatalogProduct]) -> None:
+    """One local lookup for displayed items; never call the shop API for links."""
+    codes = {p.shop_code for p in products if p.listed}
+    if not shop_code or not codes:
+        return
+    content = ShopProductContent.data
+    rows = (await db.execute(select(
+        Product.sku, ShopProduct.external_code, ShopProduct.variant_code,
+        func.jsonb_path_query_first(content, '$.descriptions[*] ? (@.language == "sk").url', type_=JSONB).label("sk_url"),
+        content["descriptions"][0]["url"].astext.label("default_url"),
+        content["admin_url"].astext.label("admin_url"), content["active_yn"].as_boolean().label("active"),
+    ).select_from(Product).join(ShopProduct, ShopProduct.product_id == Product.id)
+        .join(Shop, Shop.id == ShopProduct.shop_id)
+        .join(ShopProductContent, and_(ShopProductContent.shop_id == ShopProduct.shop_id,
+              ShopProductContent.external_code == func.coalesce(func.nullif(ShopProduct.parent_code, ""), ShopProduct.external_code)))
+        .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True), or_(
+            Product.sku.in_(codes), ShopProduct.external_code.in_(codes), ShopProduct.variant_code.in_(codes))))).all()
+    links = {code: row for row in rows for code in (row.sku, row.external_code, row.variant_code) if code}
+    for product in products:
+        if product.listed and (row := links.get(product.shop_code)):
+            product.shop_url = _http_url(row.sk_url) or _http_url(row.default_url)
+            product.shop_admin_url = _http_url(row.admin_url)
+            product.shop_active = row.active if isinstance(row.active, bool) else None
+
+
 async def _matches(db: AsyncSession, supplier: str, feed_key: str, *, q: str = "", code: str = "",
                    ean: str = "", manufacturer: str = "", sort: str = "name", shop: str | None = None,
                    listing: str = "all"):
@@ -319,6 +357,7 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
         items.append(CatalogRow(key=key, product=products[0], is_group=is_group,
                                 variants_count=len(products) if is_group else 0,
                                 matching_ids=group_ids, variants=products if is_group else []))
+    await attach_shop_links(db, filters.get("shop"), [p for item in items for p in (item.variants or [item.product])])
     return CatalogPage(supplier=supplier, feed_key=feed_key, run_id=feed.last_run_id if feed else None,
                        fetched_at=feed.last_run_at if feed else None, total=len(groups), total_items=len(matches),
                        page=page, page_size=page_size, pages=math.ceil(len(groups) / page_size),
@@ -362,6 +401,7 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
             SupplierProduct.supplier_group_code == row.supplier_group_code,
             SupplierProduct.is_active.is_(True)).order_by(SupplierProduct.supplier_sku))).all()
         variants = [public_product(p, detail=True, listed=p.attributes["catalog"]["shop_code"] in known) for p in siblings]
+    await attach_shop_links(db, shop, [product, *variants])
     raw = await db.scalar(select(SupplierFeedItemRaw.raw_data).where(
         SupplierFeedItemRaw.supplier_product_id == product_id, SupplierFeedItemRaw.run_id == row.last_seen_run_id))
     return {"product": product, "variants": variants, "source_fields": (raw or {}).get("fields", {}),

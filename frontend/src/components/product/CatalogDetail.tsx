@@ -28,6 +28,9 @@ export function CatalogDetail({ supplier, product, shop, onClose, onToggle, sele
         <p>{t('catalog.supplierStock')}: {p.supplier_stock_raw ?? '—'} · {p.availability || '—'}</p>
         {p.supplier_stock_external_raw && <p>{t('catalog.externalAvailability')}: {p.supplier_stock_external_raw}</p>}
         {p.url && <a href={p.url} target="_blank" rel="noreferrer">{t('catalog.supplierLink')} ↗</a>}
+        {p.listed && p.shop_url && <p><a href={p.shop_url} target="_blank" rel="noopener noreferrer">{t('catalog.openShop')} ↗</a></p>}
+        {p.listed && p.shop_admin_url && <p><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer">{t('catalog.openShopAdmin')} ↗</a></p>}
+        {p.listed && p.shop_active === false && <p className="catalog-muted">{t('catalog.hiddenInShop')}</p>}
         <div className="catalog-actions"><Button onClick={() => onToggle([p.id])}>{t(selected.has(p.id) ? 'catalog.removeSelection' : 'catalog.addSelection')}</Button></div>
       </div></div>
     <div className="catalog-tabs" role="tablist">{(['data', 'description', 'xml'] as const).map(value => <button role="tab" aria-selected={tab === value} key={value} onClick={() => setTab(value)}>{t(`catalog.tab.${value}`)}</button>)}</div>

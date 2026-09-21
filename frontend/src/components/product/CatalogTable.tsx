@@ -39,7 +39,10 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
       <td><code>{group ? p.group_code : p.shop_code}</code><div className="catalog-muted">{group ? t('catalog.supplierGroup') : p.eans[0] || t('catalog.noEan')}</div></td>
       {showPrice && <td className="catalog-number">{group ? t('catalog.fromPrice', { price: formatPrice(row.variants.reduce((low, v) => Number(v.prices.retail_gross ?? Infinity) < Number(low.prices.retail_gross ?? Infinity) ? v : low, p)) }) : formatPrice(p)}</td>}
       {showAvailability && <td>{group ? '—' : <><span>{p.supplier_stock_raw ?? '—'}</span><div className="catalog-muted">{p.availability || ''}</div></>}</td>}
-      <td><span className={`catalog-badge ${p.listed ? 'catalog-good' : ''}`}>{t(p.listed ? 'catalog.listed' : 'catalog.notLinked')}</span>
+      <td>{p.listed && p.shop_url ? <a className="catalog-badge catalog-good" href={p.shop_url} target="_blank" rel="noopener noreferrer" title={t('catalog.openShop')} onClick={e => e.stopPropagation()}>{t('catalog.listed')} ↗</a>
+        : <span className={`catalog-badge ${p.listed ? 'catalog-good' : ''}`}>{t(p.listed ? 'catalog.listed' : 'catalog.notLinked')}</span>}
+        {p.listed && p.shop_admin_url && <div className="catalog-muted"><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>{t('catalog.openShopAdmin')} ↗</a></div>}
+        {p.listed && p.shop_active === false && <div className="catalog-muted">{t('catalog.hiddenInShop')}</div>}
         {p.warnings.length > 0 && <span className="catalog-warning-icon" title={p.warnings.map(w => t(`catalog.codes.${w}`, { defaultValue: w })).join('\n')}><AlertTriangle size={14} /></span>}</td>
       <td><button className="catalog-icon" aria-label={t('catalog.detailOf', { name: p.name })} onClick={e => { e.stopPropagation(); onDetail(p); }}><Info size={18} /></button></td>
     </>;

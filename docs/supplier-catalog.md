@@ -4,6 +4,8 @@ The supplier catalog is a shared, read-only view of downloaded listing feeds. It
 
 Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, browse or search, select individual items or groups, choose the target shop, and prepare an import preview. Empty search lists all items with pagination. The page remembers the target shop. Listing badges use mappings known to Hub; the preview verifies codes and EANs against the target shop.
 
+For a listed item with saved shop content, the listing badge opens its storefront URL; a separate link opens shop administration. Detail responses and rows include `shop_url`, `shop_admin_url` and `shop_active` for the selected shop. Links come from the existing local content snapshot (preferring the Slovak URL); variants use their parent product's content. Missing URLs remain absent, and hidden products are labelled. No additional Upgates request is made to display or open these links.
+
 ## API
 
 Routes below include the production `/api` prefix. Interactive contracts are available at `/api/docs`.
