@@ -216,6 +216,26 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.client.sent), 1)
         self.register.assert_not_awaited()
 
+    async def test_http_rejection_is_reported_without_exposing_response_or_auto_retry(self):
+        from inventory_hub.services.upgates import UpgatesError
+        with patch.object(self.client, "post", side_effect=UpgatesError("private upstream body", status_code=400)) as post:
+            result = await self.run_import()
+            self.assertEqual(result["items"][0]["status"], "failed")
+            self.assertEqual(result["items"][0]["errors"], ["upgates_rejected_http_400"])
+            self.assertNotIn("private upstream body", json.dumps(result))
+            await self.run_import()
+            self.assertEqual(post.call_count, 1)
+        self.register.assert_not_awaited()
+
+    async def test_explicit_product_validation_error_is_not_an_uncertain_timeout(self):
+        response = {"products": [{"code": self.document["preview"]["items"][0]["code"], "inserted_yn": False,
+                                  "messages": [{"level": "error", "message": "private upstream body"}]}]}
+        with patch.object(self.client, "post", return_value=response):
+            result = await self.run_import()
+        self.assertEqual(result["items"][0]["status"], "failed")
+        self.assertEqual(result["items"][0]["errors"], ["upgates_product_rejected"])
+        self.assertNotIn("private upstream body", json.dumps(result))
+
     async def test_existing_ean_under_another_code_is_not_sent(self):
         self.client.products["OTHER"] = {"code": "OTHER", "ean": product().eans[0]}
         result = await self.run_import()

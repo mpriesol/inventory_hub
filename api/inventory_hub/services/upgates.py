@@ -26,6 +26,9 @@ from inventory_hub.settings import settings
 
 class UpgatesError(Exception):
     """Raised for configuration or API-level failures."""
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class UpgatesClient:
@@ -111,10 +114,10 @@ class UpgatesClient:
         if r.status_code in (401, 403):
             raise UpgatesError(
                 f"Upgates API odmietlo prihlásenie (HTTP {r.status_code}). "
-                "Over upgates_login / upgates_api_key v konfigurácii shopu."
+                "Over upgates_login / upgates_api_key v konfigurácii shopu.", status_code=r.status_code
             )
         if r.status_code >= 400:
-            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}")
+            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}", status_code=r.status_code)
         try:
             data = r.json()
         except ValueError:
