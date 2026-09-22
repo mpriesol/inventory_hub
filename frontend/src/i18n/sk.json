@@ -485,7 +485,8 @@
       "existing": "Existujúce produkty"
     },
     "rules": "Pravidlá",
-    "categoryProfiles": "Profily kategórií",
+    "legacyCategoryRules": "Doplnkové pravidlá zo starších verzií",
+    "legacyCategoryRulesHelp": "Tieto pravidlá zostali zachované zo starších verzií. Môžeš ich upraviť alebo odstrániť; bežné pokyny a parametre spravuj v profile cez Kategórie.",
     "rulesHelp": "Pravidlá sa skladajú v poradí: spoločné → dodávateľ → značka → kategória → e-shop → produkt → nastavenie tejto prípravy. Prázdna hodnota dedí nastavenie. Uloženie vytvorí koncept; publikovaním sa použije pre nové úlohy.",
     "newRule": "Nové pravidlo",
     "newCategory": "Nová kategória",

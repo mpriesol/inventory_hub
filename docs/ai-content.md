@@ -41,15 +41,16 @@ Nastavenia sa skladajú v poradí **spoločné → dodávateľ → značka → k
 
 ## Pravidlá a kategórie
 
-V editore sú tri súvisiace, ale odlišné pojmy:
+Tlačidlo **Kategórie** otvára profily kategórií. Pokyny, povinné parametre aj mapovanie na e-shopy sa upravujú na jednom mieste; samostatné tlačidlo **Profily kategórií** ani pôvodná skupina kategóriových pravidiel už v navigácii nie sú.
 
 | Pojem v UI | Čo obsahuje | Ako sa používa |
 |---|---|---|
-| **Kategórie** medzi skupinami pravidiel | Bežné pravidlá `Rule` s podmienkou `scope.category`: doplňujúce pokyny, prepínače, oficiálne domény alebo importná politika. | Podmienka obsahuje **ID profilu kategórie**, napríklad `inner_tubes`. Môže sa kombinovať s dodávateľom, značkou či e-shopom; musia súhlasiť všetky vyplnené podmienky. |
-| **Profily kategórií** | `CategoryProfile`: základné pokyny pre daný typ produktu, register parametrov, prepínače, pripravenosť automatizácie a mapovanie na kategórie e-shopov. | Profil sa vyberá pri príprave rodiny. Definuje, ktoré parametre AI smie vrátiť a ktoré sú povinné. |
+| **Kategórie** | `CategoryProfile`: základné pokyny pre daný typ produktu, register parametrov, prepínače, pripravenosť automatizácie a mapovanie na kategórie e-shopov. | Profil sa vyberá pri príprave rodiny. Definuje, ktoré parametre AI smie vrátiť a ktoré sú povinné. |
 | **Cieľová kategória e-shopu** | Existujúci strom kategórií z Upgates s kódmi a rodičmi. | Vyberá sa v mapovaní profilu alebo ako náhradná kategória cieľa. Určuje zaradenie produktu v konkrétnom e-shope. |
 
-Bežné pokyny môžu zostať priamo v profile; ďalšie pravidlo pridaj pre samostatnú podmienku alebo výnimku. Pokyny sa skladajú, kolízia prepínačov pri rovnakej priorite vráti `ai_policy_conflict`. Počet pri skupine **Kategórie** počíta pravidlá podľa najkonkrétnejšej podmienky, nie profily ani kategórie Upgates.
+Staršie knihy pravidiel môžu obsahovať aj samostatné `Rule` s podmienkou `scope.category`. Ak v načítanej verzii zostali pravidlá z pôvodnej kategóriovej skupiny, pod kategóriami sa zobrazí kompaktná rozbaľovacia sekcia na ich úpravu alebo odstránenie cez existujúci editor. Bez takých pravidiel sa sekcia nezobrazuje. Platí to aj pri načítaní historickej verzie; samotné otvorenie ani uloženie profilu pravidlá automaticky nepresúva, nezlučuje ani nemaže.
+
+Podmienka `scope.category` naďalej obsahuje **ID profilu**, napríklad `inner_tubes`, a môže sa kombinovať s ďalšími podmienkami. Pravidlá zaradené podľa konkrétnejšej podmienky do skupiny e-shopu či produktu zostávajú v príslušnej skupine. Vyhodnotenie pravidiel sa nemení: všetky vyplnené podmienky musia súhlasiť, pokyny sa skladajú a kolízia prepínačov pri rovnakej priorite vráti `ai_policy_conflict`.
 
 - PostgreSQL je zdrojom pravidiel. Každé uloženie vytvára nezávislú verziu konceptu. Publikovanie s kontrolou očakávanej verzie mení ukazovateľ pre nové úlohy; rozpracované úlohy si zachovávajú pôvodný kontext.
 - Profil kategórie je malý spoločný register pravidiel a parametrov, nie druhý skladový strom. Napríklad jeden profil `inner_tubes` môže mať rozdielne cieľové kódy pre BikeTrek a xTrek.
@@ -189,7 +190,7 @@ Pozorovania z dostupných stránok, snímok a kódu; zamknutý AI tok nebol cel�
 - **Získať pôvodný feed** a **Stiahnuť feed** potrebujú jasnejšie odlíšenie účelu.
 - Drobné sekundárne údaje, napríklad EAN a stav cache, majú nízky kontrast.
 
-Zámena kategóriových pravidiel a profilov bola samostatný problém názvov a vysvetlení; význam oboch je uvedený vyššie. Úprava ich označenia nemení uložené pravidlá ani spôsob ich vyhodnotenia.
+Zámena kategóriových pravidiel a profilov je vyriešená jedným tlačidlom **Kategórie** pre správu profilov; kompatibilita so staršími pravidlami je opísaná vyššie.
 
 ## Nasadenie a návrat
 
