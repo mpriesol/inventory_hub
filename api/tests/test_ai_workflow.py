@@ -7,6 +7,8 @@ from contextlib import ExitStack
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+import httpx
+from fastapi import FastAPI
 from catalog_fixtures import product
 from inventory_hub.ai_content_types import Rule, RuleBook, Scope, JobAction, JobFork, UpdatePreviewRequest
 from inventory_hub.services.ai_content_rules import resolve
@@ -16,6 +18,46 @@ from inventory_hub.services.ai_content_update import patch_from_content, project
 from inventory_hub.services import ai_content as service, ai_content_update as update
 from inventory_hub.services.upgates import UpgatesError
 from test_ai_content import content, context
+
+
+class ProtectedRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from inventory_hub.routers import ai_content as routes
+        self.routes=routes
+        self.app=FastAPI()
+        self.app.include_router(routes.router,prefix='/api')
+        self.app.dependency_overrides[routes.access]=lambda: None
+        async def session():
+            yield AsyncMock()
+        self.app.dependency_overrides[routes.get_session]=session
+        self.client=httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app,raise_app_exceptions=False),base_url='http://test')
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+
+    async def test_update_preview_returns_domain_error_status_and_details(self):
+        error=CatalogError('ai_update_stock_unknown','Verify shop stock before changing availability',422)
+        with patch.object(service,'get_job',AsyncMock(return_value=object())), patch.object(update,'prepare',AsyncMock(side_effect=error)):
+            response=await self.client.post('/api/ai-content/jobs/test/update-preview',json={'expected_revision':7,'fields':['availability']})
+        self.assertEqual(response.status_code,422)
+        self.assertEqual(response.json(),{'detail':{'code':error.code,'message':str(error)}})
+
+    async def test_missing_job_returns_404_instead_of_server_error(self):
+        error=CatalogError('ai_job_not_found','AI job not found',404)
+        with patch.object(service,'get_job',AsyncMock(side_effect=error)):
+            response=await self.client.get('/api/ai-content/jobs/missing')
+        self.assertEqual(response.status_code,404)
+        self.assertEqual(response.json()['detail']['code'],'ai_job_not_found')
+
+    async def test_error_translation_does_not_bypass_access_dependency(self):
+        from fastapi import HTTPException
+        def deny():
+            raise HTTPException(401,detail={'code':'ai_access_required','message':'Unlock AI content'})
+        self.app.dependency_overrides[self.routes.access]=deny
+        with patch.object(service,'get_job',AsyncMock()) as get_job:
+            response=await self.client.get('/api/ai-content/jobs/missing')
+        self.assertEqual(response.status_code,401)
+        get_job.assert_not_awaited()
 
 
 class MerchandisingTests(unittest.TestCase):

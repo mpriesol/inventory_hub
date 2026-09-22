@@ -111,6 +111,14 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click([...document.querySelectorAll('label')].find(label => label.textContent === 'Termoplast').querySelector('input'));
   await click(button('Uložiť koncept obsahu'));
   assert.deepEqual(reviewed.content.parameters,[{name:'Materiál',product_id:null,values:['Termoplast']}], 'A missing required parameter can be corrected through normal controls and saved as structured data');
+  const verifiedEvidence = { claim:'Presný názov', source:'feed:1', quote:'Test bunda' };
+  const unsupportedEvidence = { claim:'Nepodložené príslušenstvo', source:'https://manufacturer.example.test/unopened.pdf', quote:'Accessory' };
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'evidence-fix',job:{...jobs[0],status:'blocked',revision:4,output:{...content,evidence:[unsupportedEvidence,verifiedEvidence]},checks:{errors:['ai_unverified_official_evidence']},facts:[],events:[]},onChange:() => {}})); await tick(); });
+  const unsupportedRow = [...document.querySelectorAll('tr')].find(row => row.textContent.includes('Nepodložené príslušenstvo'));
+  await click(unsupportedRow.querySelector('button'));
+  assert(document.body.textContent.includes('odstráň aj tvrdenia'), 'Evidence removal explains how unsupported claims must be corrected');
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(reviewed.content.evidence,[verifiedEvidence], 'Operator can remove the blocking source while preserving other evidence in the saved review');
   const failedJob = { ...jobs[0], status: 'import_failed', output: content, revision: 7,
     checks: { warnings: ['EAN je vo feede, samostatný návod nebol priložený.'] },
     import_result: { errors: [], items: [{ status: 'uncertain', errors: ['import_outcome_unknown'] }] }, facts: [], events: [] };
