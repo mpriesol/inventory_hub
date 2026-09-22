@@ -794,6 +794,8 @@
       "needsVariant": "Choose a specific variant for this parameter.",
       "invalidValue": "value not allowed",
       "onePerLine": "One value per line"
-    }
+    },
+    "removeEvidence": "Remove evidence",
+    "removeEvidenceHelp": "After removing evidence, also remove any claims in the description or parameters that have no other verified source."
   }
 }

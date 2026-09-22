@@ -795,6 +795,8 @@
       "needsVariant": "Pre tento parameter vyber konkrétny variant.",
       "invalidValue": "nepovolená hodnota",
       "onePerLine": "Každá hodnota na samostatnom riadku"
-    }
+    },
+    "removeEvidence": "Odstrániť podklad",
+    "removeEvidenceHelp": "Po odstránení podkladu odstráň aj tvrdenia v popise alebo parametroch, ktoré nemajú iný overený zdroj."
   }
 }

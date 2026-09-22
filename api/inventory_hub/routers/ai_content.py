@@ -28,7 +28,7 @@ def access(authorization: Annotated[str | None, Header()] = None):
 
 
 router = APIRouter(prefix="/ai-content", tags=["AI content"], route_class=CatalogRoute)
-protected = APIRouter(dependencies=[Depends(access)])
+protected = APIRouter(dependencies=[Depends(access)], route_class=CatalogRoute)
 DB = Annotated[AsyncSession, Depends(get_session)]
 
 
