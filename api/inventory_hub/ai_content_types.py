@@ -29,12 +29,20 @@ class Scope(StrictModel):
     product: str = ""
 
 
+class ImportPolicy(StrictModel):
+    orderable: str | None = Field(default=None, min_length=1, max_length=100)
+    unknown: str | None = Field(default=None, min_length=1, max_length=100)
+    hide_zero_stock: bool | None = None
+    supplier_name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class Rule(StrictModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     name: str = Field(min_length=1, max_length=200)
     scope: Scope = Field(default_factory=Scope)
     instructions: str = Field(default="", max_length=24000)
     policy: Policy = Field(default_factory=Policy)
+    import_policy: ImportPolicy = Field(default_factory=ImportPolicy)
     enabled: bool = True
     official_domains: list[str] = Field(default_factory=list, max_length=20)
 
@@ -81,9 +89,6 @@ class RuleBook(StrictModel):
         for values in (self.rules, self.categories):
             if len({v.id for v in values}) != len(values):
                 raise ValueError("Duplicate rule/category ID")
-        scopes = [tuple(r.scope.model_dump().values()) for r in self.rules if r.enabled]
-        if len(set(scopes)) != len(scopes):
-            raise ValueError("Combine rules with identical scopes into one rule")
         return self
 
 
@@ -161,7 +166,7 @@ class ContentReview(StrictModel):
 
 class JobAction(StrictModel):
     expected_revision: int
-    action: Literal["start", "import", "cancel", "retry_import"]
+    action: Literal["start", "import", "cancel", "retry_import", "archive", "restore", "reopen"]
 
 
 class RuleProposal(StrictModel):
@@ -188,3 +193,20 @@ class SelectionRequest(StrictModel):
 class PriceReview(StrictModel):
     expected_revision: int
     sale_price_overrides: dict[int, str]
+
+
+class JobFork(StrictModel):
+    expected_revision: int
+    product_ids: list[int] = Field(min_length=1, max_length=500)
+    use_ai: bool = True
+    reuse_content: bool = True
+
+
+class UpdatePreviewRequest(StrictModel):
+    expected_revision: int
+    fields: list[Literal["title", "short_description", "long_description", "seo_title", "seo_description", "parameters", "metas", "categories", "availability"]] = Field(min_length=1)
+
+
+class UpdateConfirm(StrictModel):
+    expected_revision: int
+    preview_id: str

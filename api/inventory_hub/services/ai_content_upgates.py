@@ -13,6 +13,19 @@ FIELDS = [
 ]
 
 
+def parameter_registry(shop, client):
+    """Read names for category-rule mapping; reuse the result for one day."""
+    with imports._shop_cache(shop, "ai-parameter-registry") as (path, saved, fingerprint):
+        if saved and imports.now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(days=1):
+            return {"checked_at": saved["checked_at"], "parameters": saved["data"]}
+        rows = imports._pages(client, "parameters", "parameters", {"without_values_yn": "TRUE"})
+        data = [{"id": row["id"], "names": {d["language"]: d.get("name", "") for d in row.get("descriptions", [])}}
+                for row in rows]
+        checked_at = imports.now().isoformat()
+        imports._write(path, {"version": 1, "fingerprint": fingerprint, "checked_at": checked_at, "data": data})
+        return {"checked_at": checked_at, "parameters": data}
+
+
 def content_fields(shop, client, *, create=False):
     with imports._shop_cache(shop, "ai-content-fields") as (path, saved, fingerprint):
         fresh = bool(saved and imports.now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(minutes=15))

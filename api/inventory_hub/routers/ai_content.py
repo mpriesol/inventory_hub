@@ -1,16 +1,19 @@
 """AI content is a separate API from feed search and create-only shop import."""
 import secrets
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.ai_content_models import AiJob, AiRuleVersion
-from inventory_hub.ai_content_types import BatchRequest, ContentReview, JobAction, PriceReview, PublishRequest, RuleProposal, RuleSave, SelectionRequest
+from inventory_hub.ai_content_types import BatchRequest, ContentReview, JobAction, UpdatePreviewRequest, UpdateConfirm, JobFork, PriceReview, PublishRequest, RuleProposal, RuleSave, SelectionRequest
 from inventory_hub.database import get_session
 from inventory_hub.routers.catalog import CatalogRoute
 from inventory_hub.services import ai_content as service, ai_content_rules as rules
+from inventory_hub.services import ai_content_existing as existing
+from inventory_hub.services.ai_content_existing import ExistingProductRequest
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
 
@@ -85,6 +88,24 @@ async def create_batch(request: BatchRequest, db: DB):
     return {"batch_id": request.request_id.hex, "jobs": await service.create_batch(db, request)}
 
 
+@protected.get("/existing-products/options")
+async def existing_options(db: DB):
+    return await existing.choices(db)
+
+
+@protected.get("/shops/{shop}/parameter-registry")
+async def parameter_registry(shop: str):
+    from inventory_hub.services.ai_content_upgates import parameter_registry as load_registry
+    from inventory_hub.services.upgates import UpgatesClient
+    service.catalog_import.shop_config(shop)
+    return await asyncio.to_thread(load_registry, shop, UpgatesClient.from_shop(shop))
+
+
+@protected.post("/existing-products")
+async def existing_product(request: ExistingProductRequest, db: DB):
+    return {"job": await existing.create(db, request)}
+
+
 @protected.post("/selection")
 async def selection(request: SelectionRequest, db: DB):
     products = await service.selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
@@ -119,8 +140,9 @@ async def prices(id: str, request: PriceReview, db: DB):
 
 @protected.get("/jobs")
 async def jobs(db: DB, batch_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"),
-               limit: int = Query(100, ge=1, le=500)):
+               limit: int = Query(100, ge=1, le=500), archived: bool = False):
     statement = select(AiJob).order_by(AiJob.created_at.desc(), AiJob.id).limit(limit)
+    statement = statement.where(func.coalesce(AiJob.context["archived"].as_boolean(), False) == archived)
     if batch_id:
         statement = statement.where(AiJob.batch_id == batch_id)
     return [service.summary(j) for j in (await db.scalars(statement)).all()]
@@ -139,6 +161,23 @@ async def review(id: str, request: ContentReview, db: DB):
 @protected.post("/jobs/{id}/action")
 async def action(id: str, request: JobAction, db: DB):
     return await service.action(db, await service.get_job(db, id, True), request)
+
+
+@protected.post("/jobs/{id}/fork")
+async def fork(id: str, request: JobFork, db: DB):
+    return await service.fork_job(db, await service.get_job(db, id, True), request)
+
+
+@protected.post("/jobs/{id}/update-preview")
+async def update_preview(id: str, request: UpdatePreviewRequest, db: DB):
+    from inventory_hub.services import ai_content_update
+    return await ai_content_update.prepare(db, await service.get_job(db, id, True), request)
+
+
+@protected.post("/jobs/{id}/update-confirm")
+async def update_confirm(id: str, request: UpdateConfirm, db: DB):
+    from inventory_hub.services import ai_content_update
+    return await ai_content_update.confirm(db, await service.get_job(db, id, True), request)
 
 
 router.include_router(protected)
