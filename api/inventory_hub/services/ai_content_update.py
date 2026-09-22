@@ -4,6 +4,7 @@ import copy
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
+from urllib.parse import quote
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -22,14 +23,54 @@ from inventory_hub.services.upgates import UpgatesClient, UpgatesError
 TEXT_FIELDS = {'title', 'short_description', 'long_description', 'seo_title', 'seo_description'}
 
 
-def read_product(client, code):
+def parameter_rows(product):
+    """The parameter detail endpoint offers canonical and legacy shapes."""
+    if isinstance(product.get('parameters_new'), list):
+        rows = product['parameters_new']
+        if any(not isinstance(p, dict) or not isinstance(p.get('descriptions'), list)
+               or not isinstance(p.get('values'), list) or any(not isinstance(v, dict)
+                   or not isinstance(v.get('descriptions'), list) for v in p['values']) for p in rows):
+            raise CatalogError('ai_update_parameters_unavailable', 'The shop returned invalid parameter details', 502)
+        return [{'descriptions':copy.deepcopy(p['descriptions']),
+                 'values':[{'descriptions':copy.deepcopy(v['descriptions'])} for v in p['values']]} for p in rows]
+    rows = product.get('parameters')
+    if not isinstance(rows, list):
+        raise CatalogError('ai_update_parameters_unavailable', 'The shop did not return parameter details', 502)
+    normalized = []
+    for parameter in rows:
+        if not isinstance(parameter, dict) or not isinstance(parameter.get('name'), dict) or not isinstance(parameter.get('values'), list) or any(not isinstance(v, dict) for v in parameter['values']):
+            raise CatalogError('ai_update_parameters_unavailable', 'The shop returned invalid parameter details', 502)
+        normalized.append({'descriptions':[{'language':language,'name':name} for language,name in parameter['name'].items()],
+                           'values':[{'descriptions':[{'language':language,'value':value} for language,value in row.items()]}
+                                     for row in parameter['values']]})
+    return normalized
+
+
+def read_product(client, code, *, include_parameters=False):
     rows = imports._get(client, 'products', {'codes':code, 'current_page_items':100}).get('products', [])
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise CatalogError('upgates_read_failed', 'The shop returned an invalid product response', 502)
     exact = [r for r in rows if r.get('code') == code]
     if len(exact) != 1:
         raise CatalogError('ai_update_not_found', 'The exact product code was not found in the shop', 422)
-    return exact[0]
+    remote = copy.deepcopy(exact[0])
+    if include_parameters:
+        rows = imports._get(client, f'products/{quote(code, safe="")}/parameters').get('products')
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+            raise CatalogError('ai_update_parameters_unavailable', 'The shop did not return one parameter detail', 502)
+        detail = rows[0]
+        if detail.get('code') != code or detail.get('product_id') != remote.get('product_id'):
+            raise CatalogError('ai_update_identity', 'Product identity changed while loading parameters', 409)
+        remote['parameters'] = parameter_rows(detail)
+        variants = {v['code']:v for v in detail.get('variants') or []}
+        if set(variants) != {v['code'] for v in remote.get('variants') or []}:
+            raise CatalogError('ai_update_identity', 'Variant identities changed while loading parameters', 409)
+        for variant in remote.get('variants') or []:
+            found = variants[variant['code']]
+            if found.get('variant_id') != variant.get('variant_id'):
+                raise CatalogError('ai_update_identity', 'Variant identity changed while loading parameters', 409)
+            variant['parameters'] = parameter_rows(found)
+    return remote
 
 
 def identity(remote):
@@ -102,7 +143,8 @@ async def prepare(db, job, request):
     if checks['errors']:
         raise CatalogError('ai_validation_failed', '; '.join(checks['errors']), 422)
     client = UpgatesClient.from_shop(ctx['shop'])
-    remote = await asyncio.to_thread(read_product, client, ctx['code'])
+    remote = await asyncio.to_thread(read_product, client, ctx['code'],
+        include_parameters='parameters' in request.fields or ctx.get('source_kind') == 'shop')
     if ctx.get('source_kind') == 'shop':
         from inventory_hub.services.ai_content_existing import assert_source, products_from_remote
         assert_source(remote, ctx)
@@ -146,16 +188,23 @@ async def prepare(db, job, request):
     if 'availability' in request.fields:
         if remote.get('variants'):
             raise CatalogError('ai_update_variant_availability', 'Variant availability needs a separate per-variant update', 422)
-        try:
-            stock = Decimal(str(remote.get('stock')))
-            if not stock.is_finite():
-                raise InvalidOperation
-        except InvalidOperation:
-            raise CatalogError('ai_update_stock_unknown', 'Verify shop stock before changing availability', 422) from None
-        if stock > 0:
-            enriched['availability'] = remote.get('availability')
-        else:
+        if 'stock' not in remote:
+            raise CatalogError('ai_update_stock_unknown', 'The shop did not return its stock setting', 422)
+        if remote['stock'] is None:
+            # Explicit null means stock was left unset. Supplier lead time is
+            # independent; do not invent or send a stock quantity, including zero.
             apply_availability(enriched, products, policy)
+        else:
+            try:
+                stock = Decimal(str(remote['stock']))
+                if not stock.is_finite():
+                    raise InvalidOperation
+            except InvalidOperation:
+                raise CatalogError('ai_update_stock_unknown', 'Verify shop stock before changing availability', 422) from None
+            if stock > 0:
+                enriched['availability'] = remote.get('availability')
+            else:
+                apply_availability(enriched, products, policy)
     if 'parameters' in request.fields and not (ctx['resolved'].get('category') or {}).get('parameters'):
         raise CatalogError('ai_parameter_registry_missing', 'Choose a category parameter registry first', 422)
     payload = patch_from_content(remote, enriched, request.fields, language)
@@ -164,46 +213,60 @@ async def prepare(db, job, request):
                'identity':identity(remote), 'language':language,
                'before':projection(remote,payload), 'after':projection(payload,payload), 'payload':payload}
     if 'availability' in request.fields:
-        preview['shop_stock'] = remote.get('stock')
+        preview['shop_stock'] = remote['stock']
+        if remote['stock'] is None:
+            preview['availability_basis'] = 'supplier_unset_shop_stock'
     if 'categories' in request.fields:
         preview['category_codes_by_id'] = {str(key):value for key,value in by_id.items()}
+        from inventory_hub.services.catalog_merchandising import system_category_codes
+        preview['system_category_codes'] = sorted(system_category_codes(options['categories']))
     job.context = {**ctx, 'update_preview':preview, 'update_result':None}
     service.event(job, job.status, 'Field-selected update preview prepared; no product changed')
     return service.summary(job, detail=True)
 
 
-def values_match(remote, preview):
+def mismatched_fields(remote, preview):
     actual = projection(remote, preview['payload'])
     expected = preview['after']
+    mismatches = []
     # Text HTML may be normalized by Upgates; all other selected data must match.
     for key in actual:
         if key == 'descriptions':
-            if [[text_of(str(v)) for v in d.values()] for d in actual[key]] != [[text_of(str(v)) for v in d.values()] for d in expected[key]]:
-                return False
+            for description, target in zip(actual[key], expected[key]):
+                mismatches.extend(field for field in target if field != 'language'
+                    and text_of(str(description.get(field))) != text_of(str(target[field])))
         elif key == 'parameters':
             def params(rows):
                 return sorted((d['language'],d.get('name',''),tuple(sorted((t['language'],t.get('value','')) for v in r.get('values',[]) for t in v.get('descriptions',[])))) for r in (rows or []) for d in r.get('descriptions',[]))
-            if params(actual[key]) != params(expected[key]): return False
+            if params(actual[key]) != params(expected[key]): mismatches.append(key)
         elif key == 'categories':
             def category_values(rows):
                 return sorted((c.get('code') or preview.get('category_codes_by_id', {}).get(str(c.get('category_id')), ''),
                                bool(c.get('main_yn'))) for c in rows or [])
-            if category_values(actual[key]) != category_values(expected[key]): return False
+            ignored = set(preview.get('system_category_codes', []))
+            if [c for c in category_values(actual[key]) if c[0] not in ignored or c[1]] != [c for c in category_values(expected[key]) if c[0] not in ignored or c[1]]:
+                mismatches.append(key)
         elif key == 'metas':
             from inventory_hub.services.ai_content_upgates import meta_value
             lookup = {m['key']:m for m in actual[key] or []}
             for expected_meta in expected[key] or []:
                 found = lookup.get(expected_meta['key'])
                 if found is None:
-                    return False
+                    mismatches.append(key)
+                    break
                 values = expected_meta.get('values') or []
                 languages = list(values) if isinstance(values, dict) else [v['language'] for v in values]
                 if 'value' in expected_meta:
                     languages = [preview.get('language', 'sk')]
                 if any(meta_value(found, lang) != meta_value(expected_meta, lang) for lang in languages):
-                    return False
-        elif actual[key] != expected[key]: return False
-    return True
+                    mismatches.append(key)
+                    break
+        elif actual[key] != expected[key]: mismatches.append(key)
+    return list(dict.fromkeys(mismatches))
+
+
+def values_match(remote, preview):
+    return not mismatched_fields(remote, preview)
 
 
 async def cache_confirmed(db, shop, code, remote):
@@ -222,7 +285,7 @@ def check_before(remote, preview):
         raise CatalogError('ai_shop_content_changed', 'Selected fields changed in the shop; prepare a new comparison', 409)
     if preview.get('identity') != identity(remote):
         raise CatalogError('ai_update_identity', 'Product identity changed; prepare a new comparison', 409)
-    if 'availability' in preview['fields'] and remote.get('stock') != preview.get('shop_stock'):
+    if 'availability' in preview['fields'] and ('stock' not in remote or remote['stock'] != preview.get('shop_stock')):
         raise CatalogError('ai_shop_content_changed', 'Shop stock changed; prepare a new availability comparison', 409)
 
 
@@ -236,9 +299,14 @@ async def confirm(db, job, request):
     if preview['target'] != imports._target(imports.shop_config(job.context['shop'])):
         raise CatalogError('shop_target_changed', 'Shop connection changed', 409)
     client = UpgatesClient.from_shop(job.context['shop'])
+    include_parameters = 'parameters' in preview['fields'] or job.context.get('source_kind') == 'shop'
+    if 'categories' in preview['fields'] and 'system_category_codes' not in preview:
+        from inventory_hub.services.catalog_merchandising import system_category_codes
+        options = await asyncio.to_thread(imports.cached_import_options, job.context['shop'], client)
+        preview['system_category_codes'] = sorted(system_category_codes(options['categories']))
     error = None
     try:
-        remote = await asyncio.to_thread(read_product, client, job.context['code'])
+        remote = await asyncio.to_thread(read_product, client, job.context['code'], include_parameters=include_parameters)
     except CatalogError as exc:
         if preview['state'] == 'ready':
             raise
@@ -256,7 +324,7 @@ async def confirm(db, job, request):
         key = int(service.digest(['ai-content-update', job.context['shop'], job.context['code']])[:16], 16) % (1 << 63)
         await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key':key})
         try:
-            remote = await asyncio.to_thread(read_product, client, job.context['code'])
+            remote = await asyncio.to_thread(read_product, client, job.context['code'], include_parameters=include_parameters)
             check_before(remote, preview)
         except CatalogError as exc:
             # The recorded intent never reached PUT; a fresh preview is safe.
@@ -279,7 +347,7 @@ async def confirm(db, job, request):
                     preview['state'] = 'rejected'
         if preview['state'] != 'rejected':
             try:
-                remote = await asyncio.to_thread(read_product, client, job.context['code'])
+                remote = await asyncio.to_thread(read_product, client, job.context['code'], include_parameters=include_parameters)
             except CatalogError as exc:
                 remote, error = None, error or exc.code
             if rejected and remote is not None and identity(remote) == preview['identity'] and projection(remote, preview['payload']) == preview['before']:
@@ -292,9 +360,15 @@ async def confirm(db, job, request):
             raise CatalogError('ai_job_changed', 'The update preparation changed while sending', 409)
         if current.get('state') == 'completed':
             return service.summary(job, detail=True)
+    mismatches = []
     if preview['state'] != 'rejected':
         confirmed_identity = remote is not None and identity(remote) == preview.get('identity')
-        preview['state'] = 'completed' if confirmed_identity and values_match(remote,preview) else 'uncertain'
+        mismatches = mismatched_fields(remote, preview) if confirmed_identity else []
+        preview['state'] = 'completed' if confirmed_identity and not mismatches else 'uncertain'
+        if mismatches:
+            error = 'ai_update_readback_mismatch'
+        elif remote is not None and not confirmed_identity:
+            error = 'ai_update_identity'
     if preview['state'] == 'completed':
         error = None
         await cache_confirmed(db, job.context['shop'], job.context['code'], remote)
@@ -302,6 +376,9 @@ async def confirm(db, job, request):
             from inventory_hub.services.ai_content_existing import source_snapshot
             job.context = {**job.context, 'update_source_digest':service.digest(source_snapshot(remote, job.context['options']['language']))}
     result = {'status':preview['state'], 'fields':preview['fields']}
+    if preview['state'] == 'uncertain' and remote is not None and confirmed_identity:
+        result['mismatched_fields'] = mismatches
+        result['observed'] = projection(remote, preview['payload'])
     if error:
         result['error'] = error
     job.context = {**job.context,'update_preview':preview,'update_result':result}

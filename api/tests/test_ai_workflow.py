@@ -14,7 +14,7 @@ from inventory_hub.ai_content_types import Rule, RuleBook, Scope, JobAction, Job
 from inventory_hub.services.ai_content_rules import resolve
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_merchandising import category_rows, category_chain, apply_availability, availability_policy
-from inventory_hub.services.ai_content_update import patch_from_content, projection, values_match, confirm, identity
+from inventory_hub.services.ai_content_update import patch_from_content, projection, values_match, mismatched_fields, confirm, identity
 from inventory_hub.services import ai_content as service, ai_content_update as update
 from inventory_hub.services.upgates import UpgatesError
 from test_ai_content import content, context
@@ -105,6 +105,75 @@ class MerchandisingTests(unittest.TestCase):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_parameter_detail_endpoint_is_opt_in_and_uses_canonical_parameters(self):
+        base={'code':'A/B','product_id':7,'stock':9,'prices':[{'price':20}]}
+        parameter={'id':12,'descriptions':[{'language':'sk','name':'Hmotnosť'}],
+                   'values':[{'id':13,'descriptions':[{'language':'sk','value':'150 g'}]}]}
+        detail={'code':'A/B','product_id':7,'parameters_new':[parameter]}
+        client=SimpleNamespace(get=Mock(side_effect=[{'products':[base]},{'products':[base]},{'products':[detail]}]))
+        self.assertNotIn('parameters',update.read_product(client,'A/B'))
+        result=update.read_product(client,'A/B',include_parameters=True)
+        self.assertEqual(client.get.call_count,3)
+        self.assertEqual(client.get.call_args.args[0],'products/A%2FB/parameters')
+        self.assertEqual(result['parameters'],[{'descriptions':parameter['descriptions'],'values':[{'descriptions':parameter['values'][0]['descriptions']}]}])
+        self.assertEqual(result['stock'],9)
+        self.assertNotIn('id',result['parameters'][0])
+        self.assertNotIn('parameters',base)
+
+    def test_legacy_parameter_detail_and_variant_parameters_are_normalized(self):
+        base={'code':'A','product_id':7,'variants':[{'code':'A-S','variant_id':8,'ean':'123'}]}
+        detail={'code':'A','product_id':7,'parameters':[{'name':{'sk':'Farba'},'values':[{'sk':'Modrá'}]}],
+                'variants':[{'code':'A-S','variant_id':8,'parameters_new':[{'descriptions':[{'language':'sk','name':'Veľkosť'}],
+                    'values':[{'descriptions':[{'language':'sk','value':'S'}]}]}]}]}
+        client=SimpleNamespace(get=Mock(side_effect=[{'products':[base]},{'products':[detail]}]))
+        result=update.read_product(client,'A',include_parameters=True)
+        self.assertEqual(result['parameters'][0]['descriptions'],[{'language':'sk','name':'Farba'}])
+        self.assertEqual(result['variants'][0]['parameters'][0]['values'][0]['descriptions'],[{'language':'sk','value':'S'}])
+
+    def test_parameter_readback_cannot_join_different_product_or_variant_identity(self):
+        base={'code':'A','product_id':7,'variants':[{'code':'A-S','variant_id':8}]}
+        for detail in ({'code':'A','product_id':99,'parameters_new':[]},
+                       {'code':'OTHER','product_id':7,'parameters_new':[]},
+                       {'code':'A','product_id':7,'parameters_new':[], 'variants':[]},
+                       {'code':'A','product_id':7,'parameters_new':[], 'variants':[{'code':'A-S','variant_id':99,'parameters_new':[]}]}):
+            with self.subTest(detail=detail):
+                client=SimpleNamespace(get=Mock(side_effect=[{'products':[base]},{'products':[detail]}]))
+                with self.assertRaises(CatalogError) as error:
+                    update.read_product(client,'A',include_parameters=True)
+                self.assertEqual(error.exception.code,'ai_update_identity')
+
+    def test_missing_parameter_details_are_not_treated_as_empty_parameters(self):
+        for detail in ({'code':'A','product_id':7}, {'code':'A','product_id':7,'parameters_new':[{'descriptions':[],'values':[None]}]}):
+            with self.subTest(detail=detail):
+                client=SimpleNamespace(get=Mock(side_effect=[{'products':[{'code':'A','product_id':7}]},{'products':[detail]}]))
+                with self.assertRaises(CatalogError) as error:
+                    update.read_product(client,'A',include_parameters=True)
+                self.assertEqual(error.exception.code,'ai_update_parameters_unavailable')
+
+    def test_only_explicit_system_category_codes_can_be_missing_after_import(self):
+        payload={'code':'A','categories':[{'code':'SYSTEM','main_yn':False},{'code':'PARENT','main_yn':False},{'code':'LEAF','main_yn':True}]}
+        preview={'payload':payload,'after':projection(payload,payload),'system_category_codes':['SYSTEM']}
+        remote={'code':'A','categories':payload['categories'][1:]}
+        self.assertTrue(values_match(remote,preview))
+        remote['categories']=remote['categories'][1:]
+        self.assertEqual(mismatched_fields(remote,preview),['categories'])
+
+    def test_missing_system_category_requested_as_primary_is_still_a_mismatch(self):
+        payload={'code':'A','categories':[{'code':'SYSTEM','main_yn':True}]}
+        preview={'payload':payload,'after':projection(payload,payload),'system_category_codes':['SYSTEM']}
+        self.assertEqual(mismatched_fields({'code':'A','categories':[]},preview),['categories'])
+
+    def test_readback_diagnostics_identify_individual_text_fields_and_exclude_unselected_data(self):
+        payload={'code':'A','descriptions':[{'language':'sk','short_description':'Short','long_description':'<p>Long</p>'}],
+                 'parameters':[{'descriptions':[{'language':'sk','name':'Weight'}],'values':[{'descriptions':[{'language':'sk','value':'150'}]}]}]}
+        preview={'payload':payload,'after':projection(payload,payload)}
+        remote={'code':'A','descriptions':[{'language':'sk','short_description':'Short','long_description':'Other','seo_title':'Private untouched'}],
+                'parameters':[],'stock':99,'prices':[{'price':50}],'metas':[{'key':'untouched','value':'not part of update'}]}
+        self.assertEqual(mismatched_fields(remote,preview),['long_description','parameters'])
+        observed=projection(remote,payload)
+        self.assertEqual(set(observed),{'descriptions','parameters'})
+        self.assertEqual(set(observed['descriptions'][0]),{'language','short_description','long_description'})
+
     def test_selected_fields_never_copy_prices_stock_identity_url_or_visibility(self):
         remote={'code':'A','stock':9,'active_yn':False,'ean':'123','prices':[{'price':19}], 'descriptions':[{'language':'sk','title':'Before','seo_url':'keep'}]}
         enriched={'code':'BAD','stock':100,'active_yn':True,'descriptions':[{'language':'sk','title':'After','seo_url':'bad','short_description':'Short'}]}
@@ -225,6 +294,16 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code,'ai_shop_content_changed')
         self.client.put.assert_not_called()
 
+    async def test_unset_stock_becoming_positive_or_missing_prevents_stale_availability_update(self):
+        self.preview['fields'].append('availability')
+        self.preview['shop_stock']=None
+        self.preview['availability_basis']='supplier_unset_shop_stock'
+        for remote in ({**self.remote,'stock':2},{k:v for k,v in self.remote.items() if k!='stock'}):
+            with self.subTest(stock_present='stock' in remote),self.assertRaises(CatalogError) as error:
+                await self.run_confirm([remote])
+            self.assertEqual(error.exception.code,'ai_shop_content_changed')
+        self.client.put.assert_not_called()
+
     async def test_expired_or_wrong_target_preview_never_puts(self):
         for change, code in (({'expires_at':'2000-01-01'},'preview_expired'), ({'target':'other'},'shop_target_changed')):
             with self.subTest(change=change):
@@ -278,6 +357,29 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.job.context['update_preview']['state'],'uncertain')
         self.assertEqual(self.db.execute.await_count,1)
 
+    async def test_uncertain_readback_returns_selected_mismatch_and_observed_values_without_put(self):
+        self.preview['state']='uncertain'
+        remote={**self.remote,'prices':[{'price':99}],'metas':[{'key':'private','value':'not selected'}]}
+        await self.run_confirm([remote])
+        result=self.job.context['update_result']
+        self.assertEqual(result['error'],'ai_update_readback_mismatch')
+        self.assertEqual(result['mismatched_fields'],['title'])
+        self.assertEqual(result['observed'],{'descriptions':[{'language':'sk','title':'Before'}]})
+        self.client.put.assert_not_called()
+
+    async def test_historical_uncertain_preview_reconciles_parameters_and_documented_system_root_without_put(self):
+        parameters=[{'descriptions':[{'language':'sk','name':'Hmotnosť'}],'values':[{'descriptions':[{'language':'sk','value':'150'}]}]}]
+        self.preview.update(state='uncertain',fields=['parameters','categories'])
+        self.preview['payload']={'code':'A','parameters':parameters,'categories':[{'code':'SYSTEM','main_yn':False},{'code':'LEAF','main_yn':True}]}
+        self.preview['after']=projection(self.preview['payload'],self.preview['payload'])
+        remote={**self.remote,'parameters':parameters,'categories':[{'code':'LEAF','main_yn':True}]}
+        with patch.object(update.imports,'cached_import_options',return_value={'categories':[{'code':'SYSTEM','system_root':True}]}):
+            read=await self.run_confirm([remote])
+        self.assertEqual(self.job.context['update_preview']['state'],'completed')
+        self.assertEqual(self.job.context['update_preview']['system_category_codes'],['SYSTEM'])
+        read.assert_called_once_with(self.client,'A',include_parameters=True)
+        self.client.put.assert_not_called()
+
     async def test_readback_preserves_concurrent_archive_change(self):
         async def refresh(*args,**kwargs):
             self.job.context={**self.job.context,'archived':True}
@@ -316,7 +418,7 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         writes=[]
         lock_keys=[]
         jobs=[]
-        def read(*args):
+        def read(*args,**kwargs):
             nonlocal read_count
             with guard:
                 index=read_count
@@ -401,7 +503,7 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch.object(update.imports,'shop_config',return_value={}))
         self.stack.enter_context(patch.object(update.imports,'_target',return_value='target'))
         self.stack.enter_context(patch.object(update,'selected_products',AsyncMock(return_value=[self.source])))
-        self.stack.enter_context(patch.object(update,'read_product',side_effect=lambda *a:copy.deepcopy(self.remote)))
+        self.stack.enter_context(patch.object(update,'read_product',side_effect=lambda *a,**kw:copy.deepcopy(self.remote)))
         self.stack.enter_context(patch.object(service,'summary',return_value={}))
 
     async def prepare(self,fields):
@@ -427,8 +529,23 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
         preview=await self.prepare(['availability'])
         self.assertEqual(preview['payload'],{'code':self.source.shop_code,'availability':'do 5 dní'})
 
-    async def test_missing_stock_does_not_guess_zero_for_availability(self):
-        for stock in (None,'unknown','NaN','Infinity'):
+    async def test_explicit_unset_stock_uses_supplier_availability_without_inventing_quantity(self):
+        self.remote.update(stock=None,stocks=[{'quantity':None},{'quantity':None}],active_yn=False)
+        self.source.supplier_stock=Decimal(0)
+        self.source.supplier_external_available=True
+        preview=await self.prepare(['availability'])
+        self.assertEqual(preview['availability_basis'],'supplier_unset_shop_stock')
+        self.assertIsNone(preview['shop_stock'])
+        self.assertEqual(preview['payload'],{'code':self.source.shop_code,'availability':'do 5 dní'})
+        self.assertIsNone(self.remote['stock'])
+        self.assertFalse(self.remote['active_yn'])
+
+    async def test_missing_stock_field_or_malformed_value_is_not_assumed_unset(self):
+        self.remote.pop('stock')
+        with self.assertRaises(CatalogError) as error:
+            await self.prepare(['availability'])
+        self.assertEqual(error.exception.code,'ai_update_stock_unknown')
+        for stock in ('unknown','null','NaN','Infinity',True):
             self.remote['stock']=stock
             with self.subTest(stock=stock), self.assertRaises(CatalogError) as error:
                 await self.prepare(['availability'])
@@ -476,7 +593,7 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
         from inventory_hub.services import ai_content_existing as existing
         self.remote['manufacturer']='TEST'
         ctx=self.job.context
-        ctx.update(source_kind='shop',update_only=True,product_ids=[])
+        ctx.update(source_kind='shop',update_only=True,product_ids=[],source_parameters_loaded=True)
         ctx['source_digest']=service.digest(existing.source_snapshot(self.remote))
         with patch.object(update,'selected_products',AsyncMock()) as selected:
             preview=await self.prepare(['title'])

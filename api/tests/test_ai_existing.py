@@ -66,8 +66,36 @@ class ExistingSourceTests(unittest.TestCase):
             {"url": "https://example.com/image.jpg?token=secret"}]}))
         self.assertEqual(existing.thumbnail({"images": [{"url": "https://example.com/image.jpg"}]}), "https://example.com/image.jpg")
 
+    def test_old_shop_source_requires_explicit_recapture_even_if_parameters_look_empty(self):
+        remote = remote_product(); remote["parameters"] = []
+        snapshot = existing.source_snapshot(remote)
+        context = {"source_kind": "shop", "options": {"language": "sk"}, "source_snapshot": snapshot,
+            "source_digest": existing.service.digest(snapshot)}
+        original = copy.deepcopy(context)
+        with self.assertRaises(CatalogError) as error:
+            existing.assert_source(remote, context)
+        self.assertEqual(error.exception.code, "ai_existing_source_changed")
+        self.assertEqual(context, original, "Never silently migrate the frozen source baseline")
+        context["source_parameters_loaded"] = True
+        existing.assert_source(remote, context)
+
 
 class ExistingEntryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_old_estimate_cannot_reserve_budget_or_queue_paid_generation(self):
+        db = AsyncMock()
+        job = SimpleNamespace(status="estimate", reserved_usd=Decimal(0), revision=1, events=[],
+            context={"source_kind": "shop", "use_ai": True, "estimate_usd": "0.2"})
+        with patch.object(existing.service, "budget", new_callable=AsyncMock) as budget, \
+             patch.object(existing.service.provider, "generate", new_callable=AsyncMock) as generate:
+            with self.assertRaises(CatalogError) as error:
+                await existing.service.start(db, job)
+        self.assertEqual(error.exception.code, "ai_existing_source_changed")
+        self.assertEqual(job.status, "estimate")
+        self.assertEqual(job.reserved_usd, Decimal(0))
+        self.assertEqual(job.events, [])
+        budget.assert_not_called(); generate.assert_not_called()
+        db.execute.assert_not_called(); db.flush.assert_not_called()
+
     async def test_entry_only_estimates_even_if_published_policy_disables_all_reviews(self):
         book = RuleBook(rules=[Rule(id="common", name="Common", policy={"review_required": False,
             "show_cost_estimate": False, "confirm_import": False})], categories=[CategoryProfile(id="general", name="General"),
@@ -80,7 +108,7 @@ class ExistingEntryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(existing.rules, "published", AsyncMock(return_value=SimpleNamespace(id=2, book=book.model_dump()))), \
              patch.object(existing.imports, "shop_config", return_value={}), patch.object(existing.imports, "_target", return_value="target"), \
              patch.object(existing.UpgatesClient, "from_shop", return_value=object()), \
-             patch("inventory_hub.services.ai_content_update.read_product", return_value=remote), \
+             patch("inventory_hub.services.ai_content_update.read_product", return_value=remote) as read_product, \
              patch.object(existing.service.provider, "estimate", return_value=Decimal("0.2")), \
              patch.object(existing.service, "start", new_callable=AsyncMock) as start:
             result = await existing.create(db, request)
@@ -88,6 +116,8 @@ class ExistingEntryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["product_ids"], [])
         self.assertEqual(result["facts"][0]["id"], 17)
         self.assertEqual(result["facts"][0]["source_kind"], "shop")
+        self.assertEqual(result["facts"][0]["parameters"], [{"name": "Materiál", "value": "Hliník"}])
+        self.assertTrue(read_product.call_args.kwargs["include_parameters"])
         self.assertEqual(result["category_profile"], "pump", "Existing main category selects its registered rules")
         self.assertTrue(result["policy"]["review_required"])
         self.assertTrue(result["policy"]["confirm_import"])

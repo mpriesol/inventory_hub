@@ -73,12 +73,13 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(!calls.some(c => c.path.endsWith('/action')), 'Cost pause causes no paid processing');
   assert(calls.filter(c => c.path.includes('/ai-content/') && !c.path.endsWith('/status')).every(c => c.headers.Authorization === 'Bearer synthetic-ui-fixture-token'));
   jobs[0].status = 'failed'; jobs[1].status = 'generating';
+  jobs.push({...jobs[1],id:'pending-job',status:'exists',update_state:'uncertain'});
   await click(button('Obnoviť'));
   const jobChecks = [...document.querySelectorAll('input[aria-label^="Označiť úlohu"]')];
   for (const checkbox of jobChecks) if (!checkbox.checked) await click(checkbox);
   await click(button('Odstrániť označené zo zoznamu'));
-  assert.deepEqual(calls.filter(c => c.path.endsWith('/action')).map(c => [c.body.action, c.path]), [['archive', '/api/ai-content/jobs/job0/action']], 'Only selected inactive work is archived; in-progress job remains');
-  assert.equal(document.querySelectorAll('input[aria-label^="Označiť úlohu"]').length, 1);
+  assert.deepEqual(calls.filter(c => c.path.endsWith('/action')).map(c => [c.body.action, c.path]), [['archive', '/api/ai-content/jobs/job0/action']], 'Only selected inactive work is archived; processing and unconfirmed updates remain');
+  assert.equal(document.querySelectorAll('input[aria-label^="Označiť úlohu"]').length, 2);
   await click([...document.querySelectorAll('label')].find(l => l.textContent === 'Archív').querySelector('input'));
   const archivedCheck = document.querySelector('input[aria-label^="Označiť úlohu"]');
   assert(archivedCheck && !archivedCheck.checked, 'Archive view resets selection');
@@ -136,12 +137,13 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(button('Pripraviť pôvodný obsah bez AI'));
   assert.deepEqual(calls.findLast(c => c.path.endsWith('/fork')).body, { expected_revision: 8, product_ids: [1], reuse_content: false, use_ai: false }, 'Partial recovery keeps only selected variants and explicitly uses original content');
 
-  const comparison = { id: 'update-fixture', state: 'ready', fields: ['title','long_description','metas','parameters','categories','availability'],
+  const comparison = { id: 'update-fixture', state: 'ready', availability_basis:'supplier_unset_shop_stock', fields: ['title','long_description','metas','parameters','categories','availability'],
     before: { descriptions: [{ language: 'en', title: 'English old title' }, { language: 'sk', title: 'Pôvodný názov', long_description: '<p>Pôvodný popis</p>' }], metas: [{ key: 'future_name', value: 'Pôvodný model' }], parameters: [], categories: [{ code: 'K1', main_yn: true }], availability: 'Overíme' },
     after: { descriptions: [{ language: 'sk', title: 'Vylepšený názov', long_description: '<p>Vylepšený popis</p>' }], metas: [{ key: 'future_name', values: [{ language: 'sk', value: 'Nový model' }] }], parameters: [{ descriptions: [{ language: 'sk', name: 'Materiál' }], values: [{ descriptions: [{ language: 'sk', value: 'Hliník' }] }] }], categories: [{ code: 'K1', main_yn: false }, { code: 'K2', main_yn: true }], availability: 'Na objednávku' } };
   const updateJob = { ...jobs[0], status: 'completed', output: content, options, update_preview: comparison, facts: [], events: [] };
   await act(async () => { root.render(React.createElement(AiJobDetail, { key: 'update', job: updateJob, onChange: () => {} })); await tick(); });
   assert(document.body.textContent.includes('Pôvodný názov') && document.body.textContent.includes('Vylepšený názov'));
+  assert(document.body.textContent.includes('Skladové množstvo e-shopu nie je vyplnené. Dostupnosť sa nastaví podľa dodávateľa; skladové množstvo sa nemení.'), 'Supplier availability preview explains unset shop stock and preservation of quantity');
   assert(!document.body.textContent.includes('English old title'), 'Comparison shows requested shop language only');
   assert(document.body.textContent.includes('Nový model') && document.body.textContent.includes('Materiál') && document.body.textContent.includes('Hliník'));
   const frames = [...document.querySelectorAll('iframe')];
@@ -154,6 +156,31 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(document.querySelector('[role="alert"]'), 'Rejected update exposes a specific error');
   assert(!button('Overiť výsledok aktualizácie'), 'Known rejection is not presented as uncertain reconciliation');
 
+  const uncertainReadback = { ...updateJob, status:'exists', update_only:true, update_state:'uncertain', update_preview:{...comparison,state:'uncertain'},
+    update_result:{status:'uncertain',fields:comparison.fields,error:'ai_update_readback_mismatch',mismatched_fields:['parameters','categories'],
+      observed:{...comparison.after,parameters:null,categories:[{code:'K2',main_yn:true}],descriptions:[{language:'sk',title:'Unrelated readback must not be shown'}]}} };
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'readback-mismatch',job:uncertainReadback,onChange:() => {}})); await tick(); });
+  assert(document.querySelector('.ai-badge').textContent.includes('Výsledok nie je potvrdený') && !document.querySelector('.ai-badge').textContent.includes('Pripravené na aktualizáciu'), 'An existing-product job displays the uncertain update status rather than a ready badge');
+  assert(document.querySelector('.ai-next-step').textContent.includes('overiť bez opakovaného odoslania'), 'Next action matches update reconciliation');
+  assert(!button("Otvoriť obsah na úpravu") && button("Porovnať so stavom v e-shope").disabled, 'An uncertain update cannot be reopened or replaced by a new preview');
+  const readbackAlert = document.querySelector('[role="alert"]');
+  assert(readbackAlert.textContent.includes('Nepotvrdené polia') && readbackAlert.textContent.includes('Parametre') && readbackAlert.textContent.includes('Kategórie vrátane predkov'), 'Readback diagnostics identify the specific mismatched fields');
+  const observedColumns = [...document.querySelectorAll('h4')].filter(heading => heading.textContent === 'Hodnota načítaná z e-shopu').map(heading => heading.parentElement);
+  assert.equal(observedColumns.length,2, 'Actual readback appears only for mismatched fields');
+  assert(observedColumns[0].textContent.includes('API e-shopu nevrátilo hodnotu tohto poľa.'));
+  assert(observedColumns[1].textContent.includes('K2') && !observedColumns[1].textContent.includes('K1'), 'Observed categories are displayed separately from the expected chain');
+  assert(!document.body.textContent.includes('Unrelated readback must not be shown'));
+  assert(observedColumns.every(column => column.closest('details').open), 'Mismatch comparisons are opened for the operator');
+  await click(button('Overiť výsledok aktualizácie'));
+  assert.equal(calls.findLast(c => c.path.endsWith('/update-confirm')).body.preview_id,'update-fixture', 'Operator can reconcile the same update intent without creating a new update');
+
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'pending-content',job:{...uncertainReadback,status:'review',update_only:false},onChange:() => {}})); await tick(); });
+  assert([...document.querySelectorAll('label')].find(label => label.textContent.startsWith('Názov')).querySelector('textarea').disabled, 'Pending updates keep content immutable until reconciled');
+  assert(!button('Uložiť koncept obsahu') && !button('Nová AI príprava s odhadom') && !button("Zrušiť túto úlohu"), 'Blocked edit, fork and cancel actions are absent while the update is pending');
+  assert(!button('Overiť výsledok aktualizácie').disabled, 'An uncertain update retains its reconciliation action');
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'sending-content',job:{...uncertainReadback,update_preview:{...comparison,state:'sending'},update_state:'sending',update_result:{status:'sending',fields:comparison.fields}},onChange:() => {}})); await tick(); });
+  assert(!button('Overiť výsledok aktualizácie'), 'An active send displays its pending state without a redundant submission control');
+
   const existingReview = { ...updateJob, update_only: true, source_kind: 'shop', update_preview: null, status: 'review',
     applied_rules: [{id:'common',name:'Overené spoločné pravidlá',text:'Použitá konkrétna inštrukcia.'}], parameter_registry: [{name:'Materiál',scope:'parent',values:['Hliník'],required:true}],
     facts:[{id:77,name:'Existujúci produkt',description:'Pôvodný text z e-shopu',variant_attributes:[]}] };
@@ -165,10 +192,11 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(availability.disabled && !availability.checked, 'Shop-source update preserves availability without supplier stock');
   assert(document.body.textContent.includes('Použitá konkrétna inštrukcia.') && document.body.textContent.includes('Materiál'), 'Job exposes exact frozen rules and parameter registry');
 
-  const treeCategories = [{ code: 'P', parent_code: null, names: { sk: 'Doplnky' } }, { code: 'C', parent_code: 'P', names: { sk: 'Ručné pumpy' } }, { code: 'S', parent_code: 'P', names: { sk: 'Servis' } }];
+  const treeCategories = [{ code: 'P', parent_code: null, assignable: false, names: { sk: 'Doplnky' } }, { code: 'C', parent_code: 'P', names: { sk: 'Ručné pumpy' } }, { code: 'S', parent_code: 'P', names: { sk: 'Servis' } }];
   let selectedCategory;
   function TreeHarness() { const [value, setValue] = React.useState(''); return React.createElement(CategoryTree, { categories: treeCategories, value, onChange: code => { selectedCategory = code; setValue(code); } }); }
   await act(async () => { root.render(React.createElement(TreeHarness)); await tick(); });
+  assert(![...document.querySelectorAll('button')].some(b => b.textContent.startsWith('Doplnky')), 'Navigation root is visible but cannot be selected as a product category');
   await click([...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Ručné pumpy')));
   assert.equal(selectedCategory, 'C');
   assert(document.querySelector('summary').textContent.includes('Doplnky / Ručné pumpy'), 'Selected category displays full ancestor path');

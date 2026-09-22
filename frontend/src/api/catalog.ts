@@ -42,7 +42,7 @@ export interface TargetOptions {
   cache?: { checked_at: string; expires_at: string; from_cache: boolean; max_age_seconds: number };
   languages: { code: string; currency: string; default: boolean }[];
   pricelists: { name: string; default: boolean }[];
-  categories: { code: string; parent_code?: string | null; active?: boolean; names: Record<string, string> }[];
+  categories: { code: string; parent_code?: string | null; active?: boolean; assignable?: boolean; names: Record<string, string> }[];
 }
 export interface ImportItem {
   code: string; name: string; product_ids: number[]; variants_count: number;
