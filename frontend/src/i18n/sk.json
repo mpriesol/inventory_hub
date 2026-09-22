@@ -507,7 +507,7 @@
       "brand": "Značka",
       "product": "Produkt (kód hlavného produktu)"
     },
-    "officialDomains": "Oficiálne domény, oddelené čiarkou",
+    "officialDomains": "Preferované oficiálne weby (voliteľné, oddelené čiarkou; AI môže nájsť aj ďalšie)",
     "instructions": "Inštrukcie",
     "shopMapping": "Priradenie ku kategóriám e-shopov",
     "categoryCode": "Kód kategórie v e-shope",
@@ -624,7 +624,7 @@
       "ai_parameter_value": "Nepovolená hodnota parametra",
       "ai_duplicate_parameter": "Duplicitný parameter",
       "ai_unverified_feed_evidence": "Citát nebol nájdený v podkladoch feedu.",
-      "ai_unverified_official_evidence": "Oficiálny zdroj nebol potvrdený ako otvorený povolený podklad.",
+      "ai_unverified_official_evidence": "Zdroj nemá platnú HTTPS adresu alebo nebol zaznamenaný ako otvorený podklad.",
       "ai_no_additional_official_evidence": "Výsledok nemá doplňujúci overený oficiálny zdroj; vychádza z feedu.",
       "ai_category_requires_review": "Táto kategória vyžaduje ľudskú kontrolu. Automatické schválenie ešte nie je povolené.",
       "ai_seo_title_length": "Skontroluj dĺžku SEO titulu (odporúčanie 45–65 znakov).",
@@ -790,6 +790,8 @@
     "parameterEditor": {
       "name": "Názov parametra",
       "missing": "Chýbajúce povinné parametre",
+      "missingValue": "Povinný parameter · chýba hodnota",
+      "requiredHelp": "Povinné parametre sú pripravené nižšie. Doplň chýbajúce hodnoty podľa overeného zdroja. Potom uprav aj zodpovedajúci záznam v časti Chýbajúce fakty.",
       "choose": "Vyber parameter",
       "unregistered": "mimo povoleného zoznamu",
       "unknownHelp": "Pôvodný parameter zostáva zachovaný. Vyber povolený názov alebo tento riadok odstráň.",

@@ -53,6 +53,8 @@ global.fetch = async (path, init = {}) => {
   return { ok: true, json: async () => data };
 };
 const button = text => [...document.querySelectorAll('button')].find(b => b.textContent === text);
+const parameterRows = () => [...document.querySelectorAll('select[aria-label^="Názov parametra "]')].map(select => select.closest('tr'));
+const parameterRow = (name, productId = null) => parameterRows().find(row => row.querySelector('select').value === name && row.querySelectorAll('select')[1].value === (productId === null ? 'parent' : String(productId)));
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 async function click(element) { assert(element, 'Element exists'); await act(async () => { element.click(); await tick(); }); }
 async function input(element, value) { await act(async () => { Object.getOwnPropertyDescriptor(element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })); await tick(); }); }
@@ -112,12 +114,67 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
     checks:{errors:['ai_required_parameter:Materiál']}, events:[] };
   await act(async () => { root.render(React.createElement(AiJobDetail,{key:'missing-parameter',job:missingParameterJob,onChange:() => {}})); await tick(); });
   assert(document.body.textContent.includes('Chýbajúce povinné parametre: Materiál'));
-  await click(button('Pridať parameter'));
-  const parameterName = document.querySelector('select[aria-label="Názov parametra 1"]');
-  await act(async () => { parameterName.value = 'Materiál'; parameterName.dispatchEvent(new dom.window.Event('change',{bubbles:true})); await tick(); });
-  await click([...document.querySelectorAll('label')].find(label => label.textContent === 'Termoplast').querySelector('input'));
+  await click([...parameterRow('Materiál').querySelectorAll('label')].find(label => label.textContent === 'Termoplast').querySelector('input'));
   await click(button('Uložiť koncept obsahu'));
   assert.deepEqual(reviewed.content.parameters,[{name:'Materiál',product_id:null,values:['Termoplast']}], 'A missing required parameter can be corrected through normal controls and saved as structured data');
+
+  const pumpRequired = ['Držiak na bicykel v balení', 'Hadica', 'Manometer'];
+  const pumpMaterial = {name:'Materiál',product_id:null,values:['Hliník']};
+  const pumpMissingFacts = ['Chýba overený maximálny tlak.'];
+  const pumpJob = {...missingParameterJob, status:'review', checks:{}, output:{...content,parameters:[pumpMaterial],missing_facts:pumpMissingFacts},
+    parameter_registry:[{name:'Materiál',required:true,scope:'parent',values:['Hliník','Termoplast']},
+      ...pumpRequired.map(name => ({name,required:true,scope:'parent',values:['Áno','Nie']})),
+      {name:'Farba',required:false,scope:'parent',values:[]}]};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'pump-parameters',job:pumpJob,onChange:() => {}})); await tick(); });
+  assert.equal(parameterRows().length,4, 'Only existing values and missing required slots appear automatically; absent optional parameters stay absent');
+  assert(parameterRow('Hadica').closest('details').open, 'Missing required values open the editor even without backend checks');
+  for (const name of pumpRequired) {
+    const row = parameterRow(name);
+    assert(row.classList.contains('ai-parameter-missing') && row.textContent.includes('Povinný parameter · chýba hodnota'), 'Each required blank row has visible translated missing guidance');
+    assert.equal(row.querySelector('fieldset').getAttribute('aria-invalid'),'true', 'Missing choice groups expose their invalid state');
+    assert([...row.querySelectorAll('input[type="checkbox"]')].every(checkbox => !checkbox.checked), 'Required yes/no parameters start unanswered');
+    assert([...row.querySelectorAll('select')].every(select => select.disabled), 'Synthetic rows keep their required name and scope');
+    assert(!row.querySelector('button'), 'An unanswered required placeholder cannot be removed');
+  }
+  assert(!parameterRow('Materiál').classList.contains('ai-parameter-missing'));
+  assert(parameterRow('Materiál').querySelector('input').checked, 'Existing structured values remain selected');
+  await click([...parameterRow('Hadica').querySelectorAll('label')].find(label => label.textContent === 'Áno').querySelector('input'));
+  assert(!parameterRow('Hadica').classList.contains('ai-parameter-missing'), 'An answered required row clears its missing state');
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(reviewed.content.parameters,[pumpMaterial,{name:'Hadica',product_id:null,values:['Áno']}], 'Saving one answer preserves existing values and excludes untouched required placeholders');
+  assert.deepEqual(reviewed.content.missing_facts,pumpMissingFacts, 'Answering a parameter does not silently clear unrelated missing facts');
+
+  const blankVariant = {name:'Dĺžka hadice',product_id:11,values:[' ']};
+  const filledVariant = {name:'Dĺžka hadice',product_id:12,values:['35']};
+  const variantJob = {...missingParameterJob, status:'review', checks:{}, output:{...content,parameters:[blankVariant,filledVariant]},
+    facts:[11,12,13,14].map(id => ({id,name:`Pumpa ${id}`,description:'',variant_attributes:[]})),
+    parameter_registry:[{name:'Dĺžka hadice',required:true,scope:'variant',values:[],unit:'cm'}]};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'variant-parameters',job:variantJob,onChange:() => {}})); await tick(); });
+  assert.equal(parameterRows().length,4, 'Each fact has one required slot; an existing blank row is not duplicated');
+  for (const id of [11,13,14]) {
+    assert(parameterRow('Dĺžka hadice',id).classList.contains('ai-parameter-missing'));
+    assert.equal(parameterRow('Dĺžka hadice',id).querySelector('textarea').getAttribute('aria-invalid'),'true', 'Both blank and absent variant values expose a missing free-text control');
+  }
+  assert.equal(parameterRow('Dĺžka hadice',12).querySelector('textarea').value,'35');
+  assert(!parameterRow('Dĺžka hadice',12).classList.contains('ai-parameter-missing'), 'A populated sibling remains satisfied');
+  const missingVariantInput = parameterRow('Dĺžka hadice',14).querySelector('textarea');
+  await input(missingVariantInput,'4');
+  assert.equal(parameterRow('Dĺžka hadice',14).querySelector('textarea'),missingVariantInput, 'Editing a later placeholder preserves its textarea while an earlier slot remains unanswered');
+  await input(missingVariantInput,'45');
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(reviewed.content.parameters,[filledVariant,{name:'Dĺžka hadice',product_id:14,values:['45']}], 'Editing a missing variant targets its fact, preserves the filled sibling and excludes unanswered blank values');
+  await input(parameterRow('Dĺžka hadice',11).querySelector('textarea'),'25');
+  assert.equal(parameterRows().length,4, 'Correcting an existing blank value updates its row');
+  await click(parameterRow('Dĺžka hadice',14).querySelector('button'));
+  const restoredVariant = parameterRow('Dĺžka hadice',14);
+  assert(restoredVariant.classList.contains('ai-parameter-missing') && restoredVariant.querySelector('textarea').value === '' && !restoredVariant.querySelector('button'), 'Removing a filled required variant restores its blank placeholder');
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(reviewed.content.parameters,[{name:'Dĺžka hadice',product_id:11,values:['25']},filledVariant], 'A restored placeholder stays out of the saved draft and sibling values survive removal');
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'readonly-parameters',job:{...variantJob,status:'completed'},onChange:() => {}})); await tick(); });
+  assert.equal(parameterRows().length,4);
+  assert(parameterRows().every(row => [...row.querySelectorAll('select,textarea,button')].every(control => control.disabled)), 'Read-only jobs keep actual and synthetic parameter controls disabled');
+  assert(button('Pridať parameter').disabled && !button('Uložiť koncept obsahu'));
+
   const verifiedEvidence = { claim:'Presný názov', source:'feed:1', quote:'Test bunda' };
   const unsupportedEvidence = { claim:'Nepodložené príslušenstvo', source:'https://manufacturer.example.test/unopened.pdf', quote:'Accessory' };
   await act(async () => { root.render(React.createElement(AiJobDetail,{key:'evidence-fix',job:{...jobs[0],status:'blocked',revision:4,output:{...content,evidence:[unsupportedEvidence,verifiedEvidence]},checks:{errors:['ai_unverified_official_evidence']},facts:[],events:[]},onChange:() => {}})); await tick(); });
