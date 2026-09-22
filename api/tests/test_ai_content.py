@@ -107,6 +107,31 @@ class ContentTests(unittest.TestCase):
             value.evidence[0].source = url
             self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx, [url])["errors"])
 
+    def test_feed_evidence_matches_real_multiline_text_and_html(self):
+        ctx = context()
+        ctx["facts"][0]["description"] = (
+            '<p>Oceľová základňa\r\n• Hadica 1000\u00a0mm</p>'
+            '<p>• Hliníková konštrukcia "Air\'s"</p>')
+        quote = 'Oceľová základňa\n• Hadica 1000 mm\n• Hliníková konštrukcia "Air\'s"'
+        value = content(evidence=[{"claim": "Konštrukcia pumpy", "source": "feed:1", "quote": quote}])
+        self.assertEqual(validate_content(value, ctx)["errors"], [])
+        value.evidence[0].quote = quote.replace("1000", "2000")
+        self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["errors"])
+
+    def test_feed_evidence_checks_source_fields_without_serialization_artifacts(self):
+        ctx = context()
+        ctx["facts"][0].update(description="Oceľová základňa", brand="Značka", parameters=[{"name": "Tlak", "value": "4 bar"}])
+        for quote, source, valid in [
+            ("4 bar", "feed:1", True),
+            ("4 bar", "feed:999", False),
+            ("Oceľová základňa Značka", "feed:1", False),
+            ("'name': 'Tlak'", "feed:1", False),
+            ("<p> </p>", "feed:1", False),
+        ]:
+            with self.subTest(quote=quote, source=source):
+                value = content(evidence=[{"claim": "Údaj", "source": source, "quote": quote}])
+                self.assertEqual("ai_unverified_feed_evidence" not in validate_content(value, ctx)["errors"], valid)
+
     def test_content_overlay_preserves_money_identity_and_source(self):
         p = product()
         source = p.model_dump()
