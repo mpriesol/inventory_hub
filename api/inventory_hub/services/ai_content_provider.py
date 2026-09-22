@@ -16,6 +16,33 @@ MAX_OUTPUT = 10000
 MAX_PROMPT_BYTES = 100000
 
 
+class ProviderError(CatalogError):
+    """Only allowlisted diagnostic labels may leave an upstream error response."""
+    def __init__(self, response: httpx.Response):
+        code = "ai_outcome_unknown" if response.status_code >= 500 else "ai_provider_rejected"
+        parts = [f"OpenAI HTTP {response.status_code}"]
+        try:
+            body = response.json()
+            error = body.get("error", {}) if isinstance(body, dict) else {}
+        except ValueError:
+            error = {}
+        if isinstance(error, dict):
+            if error.get("code") in (
+                "invalid_api_key", "insufficient_quota", "rate_limit_exceeded", "model_not_found",
+                "permission_denied", "organization_restricted", "billing_hard_limit_reached",
+                "unsupported_value", "unsupported_parameter", "invalid_json_schema", "invalid_value",
+                "missing_required_parameter",
+            ):
+                parts.append("code=" + error["code"])
+            if error.get("param") in (
+                "model", "reasoning", "reasoning.effort", "text.format", "text.format.schema",
+                "tools", "tools[0].type", "tools[0].filters", "max_tool_calls", "max_output_tokens", "include",
+            ):
+                parts.append("param=" + error["param"])
+        # Never include upstream messages, submitted values, headers, or bodies.
+        super().__init__(code, "; ".join(parts), 502)
+
+
 def strict_schema(model) -> dict:
     schema = model.model_json_schema()
     def visit(value):
@@ -125,9 +152,7 @@ async def generate(context: dict, kind="product") -> dict:
     except httpx.HTTPError:
         raise CatalogError("ai_outcome_unknown", "The provider response was interrupted. Do not automatically repeat a potentially paid request", 502) from None
     if response.status_code != 200:
-        code = "ai_outcome_unknown" if response.status_code >= 500 else "ai_provider_rejected"
-        # Provider bodies can contain submitted data. Never log or expose them.
-        raise CatalogError(code, f"OpenAI returned HTTP {response.status_code}; check API project access and limits", 502)
+        raise ProviderError(response)
     try:
         return response.json()
     except ValueError:

@@ -55,7 +55,8 @@ async def generation(id):
             job.error = error.code
             if error.code in ("ai_provider_rejected", "ai_not_configured") and job.actual_usd is None:
                 job.reserved_usd = 0
-            service.event(job, "uncertain" if error.code == "ai_outcome_unknown" else "failed", error.code)
+            note = error.code + "; " + str(error) if isinstance(error, provider.ProviderError) else error.code
+            service.event(job, "uncertain" if error.code == "ai_outcome_unknown" else "failed", note)
 
 
 async def importing(id):
