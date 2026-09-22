@@ -36,7 +36,9 @@ def content_fields(shop, client, *, create=False):
                            and m.get("common_languages_value_yn") == f["common_languages_value_yn"] for m in rows) for f in missing):
                 raise CatalogError("ai_meta_create_failed", "New content fields were not confirmed", 502)
         imports._write(path, {"version": 1, "fingerprint": fingerprint, "checked_at": imports.now().isoformat(), "data": rows})
-        return [m["key"] for m in missing]
+        return {f["key"]: next((bool(m.get("common_languages_value_yn")) for m in rows
+                if m.get("key") == f["key"] and m.get("category") == "products"), f["common_languages_value_yn"])
+                for f in FIELDS}
 
 
 def verify_content(remote: dict, expected: dict):
@@ -51,7 +53,11 @@ def verify_content(remote: dict, expected: dict):
     for meta in expected.get("metas", []):
         if meta["key"] not in {f["key"] for f in FIELDS}:
             continue
-        for language, value in meta.get("values", {}).items():
+        values = meta.get("values") or []
+        languages = (list(values) if isinstance(values, dict) else [v["language"] for v in values])
+        if "value" in meta:
+            languages = [d["language"] for d in expected.get("descriptions", [])]
+        for language in languages:
             if not any(m.get("key") == meta["key"] and meta_value(m, language) == meta_value(meta, language) for m in remote.get("metas", [])):
                 raise CatalogError("ai_content_readback_mismatch", "The shop did not confirm the imported content fields", 409)
 
@@ -60,7 +66,7 @@ def meta_value(meta: dict, language: str):
     if "value" in meta:
         return str(meta["value"])
     values = meta.get("values") or {}
-    value = values.get(language) if isinstance(values, dict) else None
+    value = values.get(language) if isinstance(values, dict) else next((v for v in values if v.get("language") == language), None)
     if isinstance(value, dict):
         value = value.get("value")
     return None if value is None else str(value)

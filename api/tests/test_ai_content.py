@@ -144,13 +144,28 @@ class ContentTests(unittest.TestCase):
         item = overlay(imports.build_item([product()], ShopImportOptions(), {}, True),
             {"active_after_import": False, "content": content().model_dump(), "supplier_name": "Fixture supplier"}, "sk")
         fields = {m["key"]: m for m in item.payload["metas"]}
-        self.assertEqual(fields["h1_descriptor"], {"key": "h1_descriptor", "values": {"sk": {"language": "sk", "value": "Prilba"}}})
+        self.assertEqual(fields["h1_descriptor"], {"key": "h1_descriptor", "values": [{"language": "sk", "value": "Prilba"}]})
+        self.assertEqual(fields["future_name"], {"key": "future_name", "value": "TEST"})
         self.assertEqual(meta_value(fields["supplier_name"], "sk"), "Fixture supplier")
         remote = copy.deepcopy(item.payload)
         for m in remote["metas"]:
             m["type"] = "textarea" if m["key"] == "h1_descriptor" else "input"
         verify_content(remote, item.payload)
-        next(m for m in remote["metas"] if m["key"] == "h1_descriptor")["values"] = {"en": {"value": "Prilba"}}
+        next(m for m in remote["metas"] if m["key"] == "h1_descriptor")["values"] = [{"language": "en", "value": "Prilba"}]
+        with self.assertRaises(imports.CatalogError):
+            verify_content(remote, item.payload)
+
+    def test_metadata_respects_existing_shop_language_configuration(self):
+        from inventory_hub.services.ai_content_upgates import verify_content
+        item = overlay(imports.build_item([product()], ShopImportOptions(), {}, True),
+            {"active_after_import": False, "content": content().model_dump(),
+             "meta_common": {"h1_descriptor": True, "future_name": False}}, "sk")
+        fields = {m["key"]: m for m in item.payload["metas"]}
+        self.assertEqual(fields["h1_descriptor"]["value"], "Prilba")
+        self.assertEqual(fields["future_name"]["values"], [{"language": "sk", "value": "TEST"}])
+        remote = copy.deepcopy(item.payload)
+        verify_content(remote, item.payload)
+        next(m for m in remote["metas"] if m["key"] == "h1_descriptor")["value"] = "Wrong"
         with self.assertRaises(imports.CatalogError):
             verify_content(remote, item.payload)
 

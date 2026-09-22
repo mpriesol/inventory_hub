@@ -120,13 +120,16 @@ def overlay(item, enrichment: dict, language: str):
             parent = [p for p in data.parameters if p.product_id is None]
             payload["parameters"] = [{"descriptions": [{"language": language, "name": p.name}],
                 "values": [{"descriptions": [{"language": language, "value": v}]} for v in p.values]} for p in parent]
+        def text_meta(key, value):
+            common = enrichment.get("meta_common", {}).get(key, key == "future_name")
+            return {"key": key, **({"value": value} if common else {"values": [{"language": language, "value": value}]})}
         for key in ("h1_descriptor", "future_name", "h1_descr_suffix"):
             value = getattr(data, key)
             if value:
-                payload.setdefault("metas", []).append({"key": key, "values": {language: {"language": language, "value": value}}})
+                payload.setdefault("metas", []).append(text_meta(key, value))
         for obj in [payload, *payload.get("variants", [])]:
             if enrichment.get("supplier_name"):
-                obj.setdefault("metas", []).append({"key": "supplier_name", "values": {language: {"language": language, "value": enrichment["supplier_name"]}}})
+                obj.setdefault("metas", []).append(text_meta("supplier_name", enrichment["supplier_name"]))
             for meta in obj.get("metas", []):
                 if meta.get("key") == "validation_required":
                     meta["value"] = "0"

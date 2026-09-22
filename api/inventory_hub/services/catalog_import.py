@@ -468,7 +468,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         from inventory_hub.services.ai_content_validation import overlay
         if enrichment.get("content"):
             from inventory_hub.services.ai_content_upgates import content_fields
-            await asyncio.to_thread(content_fields, shop, client)
+            enrichment = {**enrichment, "meta_common": await asyncio.to_thread(content_fields, shop, client)}
         if len(items) != 1:
             raise CatalogError("ai_family_mismatch", "A content revision applies to exactly one selected family", 422)
         items = [overlay(item, enrichment, options.language) if item.status == "ready" else item for item in items]
@@ -809,14 +809,20 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 item.update(status="uncertain", errors=["import_outcome_unknown"])
                 result["updated_at"] = now().isoformat()
                 _item_checkpoint(path, result, item)
+                rejected = None
                 try:
                     response = await asyncio.to_thread(client.post, "products", {"products": [item["payload"]]})
-                except UpgatesError:
+                except UpgatesError as error:
                     # Do not retry a POST that may have reached the shop.
                     response = {}
+                    if error.status_code in (400, 401, 403, 422, 429):
+                        rejected = "upgates_rejected_http_" + str(error.status_code)
                 remote = await asyncio.to_thread(_verify_created, client, item)
                 if remote is None:
-                    if not _confirmed_response(response, item):
+                    row = next((p for p in response.get("products", []) if p.get("code") == item["code"]), {})
+                    if rejected or (row.get("inserted_yn") is False and any(m.get("level") == "error" for m in row.get("messages", []))):
+                        item.update(status="failed", errors=[rejected or "upgates_product_rejected"])
+                    elif not _confirmed_response(response, item):
                         item["errors"] = ["import_outcome_unknown"]
                     continue
                 if not _confirmed_response(response, item):
