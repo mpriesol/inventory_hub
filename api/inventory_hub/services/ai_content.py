@@ -111,6 +111,8 @@ async def budget(db):
 async def start(db, job):
     if job.status != "estimate":
         return
+    if job.context.get("source_kind") == "shop" and not job.context.get("source_parameters_loaded"):
+        raise CatalogError("ai_existing_source_changed", "This older preparation did not capture shop parameters; load the product again before starting AI", 409)
     if job.context.get("use_ai", True):
         if not settings.AI_CONTENT_ENABLED or not settings.OPENAI_API_KEY.get_secret_value():
             raise CatalogError("ai_not_configured", "Enable AI and configure the API key on the server first", 503)

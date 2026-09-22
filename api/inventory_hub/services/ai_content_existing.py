@@ -64,6 +64,11 @@ def source_snapshot(remote, language="sk"):
 
 
 def assert_source(remote, context):
+    if context.get("source_kind") == "shop" and not context.get("source_parameters_loaded"):
+        # Old jobs captured an incomplete GET /products response. Never silently
+        # treat missing parameters as a trustworthy empty register or advance
+        # their frozen baseline: prepare a new source snapshot explicitly.
+        raise CatalogError("ai_existing_source_changed", "This older preparation did not capture shop parameters; load the product again before updating", 409)
     snapshot = source_snapshot(remote, context["options"]["language"])
     # A confirmed update advances the comparison baseline while the original
     # facts remain pinned for evidence and audit history.
@@ -115,7 +120,7 @@ async def create(db, request: ExistingProductRequest):
     cfg = imports.shop_config(request.shop)
     client = UpgatesClient.from_shop(request.shop)
     from inventory_hub.services.ai_content_update import read_product
-    remote = await asyncio.to_thread(read_product, client, request.code.strip())
+    remote = await asyncio.to_thread(read_product, client, request.code.strip(), include_parameters=True)
     snapshot = source_snapshot(remote)
     if request.brand and snapshot["brand"] and request.brand.casefold() != snapshot["brand"].casefold():
         raise CatalogError("ai_existing_brand_mismatch", "The chosen brand rule differs from the shop manufacturer", 422)
@@ -139,7 +144,7 @@ async def create(db, request: ExistingProductRequest):
     ctx = {"source_kind": "shop", "update_only": True, "supplier": request.supplier, "feed_key": "shop",
         "product_ids": [], "run_id": None, "shop": request.shop, "target": imports._target(cfg),
         "code": snapshot["code"], "name": snapshot["descriptions"]["title"], "image": thumbnail(remote),
-        "source_snapshot": snapshot, "source_digest": service.digest(snapshot), "use_ai": True,
+        "source_snapshot": snapshot, "source_digest": service.digest(snapshot), "source_parameters_loaded": True, "use_ai": True,
         "rules_version": published.id, "resolved": resolved, "category_profile": profile,
         "options": options.model_dump(mode="json"), "research": request.research,
         "sale_price_overrides": {}, "model": settings.AI_CONTENT_MODEL}

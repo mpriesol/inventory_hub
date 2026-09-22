@@ -646,10 +646,11 @@
       "upgates_update_rejected": "The shop rejected the update. Review the selected fields and prepare a new comparison.",
       "ai_existing_identity": "The shop did not return a valid product identifier. Check the exact code and connection.",
       "ai_existing_language": "The shop product has no title in the requested language. Add it before preparing content.",
-      "ai_existing_source_changed": "The shop product content or identity changed. Load it again through Existing products.",
+      "ai_existing_source_changed": "Product source data changed or this older preparation did not capture its parameters. Load the product again in Existing products and create a fresh preparation before starting AI.",
       "ai_existing_brand_mismatch": "The selected brand differs from the shop manufacturer. Choose the matching brand.",
       "ai_existing_variant_registry": "This preparation updates shared product content. Choose a profile with parent parameters rather than variant-specific parameters.",
-      "ai_update_stock_unknown": "Shop stock could not be verified. Availability was not changed; refresh the comparison or leave it out of the update."
+      "ai_update_stock_unknown": "Shop stock could not be verified. Availability was not changed; refresh the comparison or leave it out of the update.",
+      "ai_update_readback_mismatch": "The selected fields could not be confirmed as matching after the update."
     },
     "importSelectedReady": "Import selected ready jobs",
     "selectJob": "Select job",
@@ -796,6 +797,10 @@
       "onePerLine": "One value per line"
     },
     "removeEvidence": "Remove evidence",
-    "removeEvidenceHelp": "After removing evidence, also remove any claims in the description or parameters that have no other verified source."
+    "removeEvidenceHelp": "After removing evidence, also remove any claims in the description or parameters that have no other verified source.",
+    "mismatchedUpdateFields": "Unconfirmed fields",
+    "actualShopValue": "Value read from the shop",
+    "readbackValueMissing": "The shop API did not return a value for this field.",
+    "updateReadbackHelp": "Compare the expected and observed values below. Missing API data does not by itself mean the change was not saved. Verify update result checks the current state without sending the changes again."
   }
 }

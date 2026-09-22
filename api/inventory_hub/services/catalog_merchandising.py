@@ -2,6 +2,20 @@
 from inventory_hub.services.catalog import CatalogError
 
 
+def _system_category_root(category):
+    # Upgates documents explicit parent_id: null as a system menu root. A
+    # missing field in an older cached row is not evidence of a system root.
+    # https://docs.upgates.com/api-reference/kategorie
+    return (category.get('category_id') is not None and 'parent_id' in category
+            and category['parent_id'] is None and not category.get('parent_code'))
+
+
+def system_category_codes(rows):
+    """Only roots identified by Upgates metadata, for historical readback."""
+    return {row['code'] for row in rows if row.get('code')
+            and (row.get('system_root') is True or _system_category_root(row))}
+
+
 def category_rows(rows):
     by_id = {c['category_id']: c['code'] for c in rows if c.get('category_id') is not None and c.get('code')}
     result = []
@@ -12,7 +26,9 @@ def category_rows(rows):
         parent = c.get('parent_code') or by_id.get(parent_id)
         if not parent and parent_id not in (None, 0, ''):
             raise CatalogError('category_tree_invalid', 'A parent category is missing from the shop response', 422)
+        system_root = _system_category_root(c)
         result.append({'code': c['code'], 'category_id': c.get('category_id'), 'parent_code': parent,
+                       'system_root': system_root, 'assignable': not system_root,
                        'active': c.get('active_yn', True),
                        'names': {d['language']: d.get('name', c['code']) for d in c.get('descriptions', [])}})
     return result
@@ -22,13 +38,17 @@ def category_chain(rows, code):
     if not code:
         return []
     index = {r['code']: r for r in rows}
+    system_roots = system_category_codes(rows)
+    if code in system_roots:
+        raise CatalogError('category_not_assignable', 'A system menu cannot be assigned to a product', 422)
     chain, seen = [], set()
     current = code
     while current:
         if current in seen or current not in index:
             raise CatalogError('category_tree_invalid', 'Category ancestry is incomplete or cyclic', 422)
         seen.add(current)
-        chain.append({'code': current, 'main_yn': current == code})
+        if current not in system_roots:
+            chain.append({'code': current, 'main_yn': current == code})
         current = index[current].get('parent_code')
     return list(reversed(chain))
 

@@ -647,10 +647,11 @@
       "upgates_update_rejected": "E-shop aktualizáciu odmietol. Skontroluj vybrané polia a priprav nové porovnanie.",
       "ai_existing_identity": "E-shop nevrátil platný identifikátor produktu. Skontroluj presný kód a pripojenie.",
       "ai_existing_language": "Produkt v e-shope nemá názov v požadovanom jazyku. Doplň ho pred prípravou.",
-      "ai_existing_source_changed": "Obsah alebo identita produktu v e-shope sa zmenili. Načítaj ho znova cez Existujúce produkty.",
+      "ai_existing_source_changed": "Podklady produktu sa zmenili alebo staršia príprava neobsahuje jeho parametre. Na karte Existujúce produkty načítaj produkt a priprav ho znova pred spustením AI.",
       "ai_existing_brand_mismatch": "Vybraná značka sa nezhoduje s výrobcom produktu v e-shope. Vyber zodpovedajúcu značku.",
       "ai_existing_variant_registry": "Táto príprava upravuje spoločný obsah produktu. Vyber profil s parametrami hlavného produktu, nie jednotlivých variantov.",
-      "ai_update_stock_unknown": "Stav vlastného skladu sa nepodarilo overiť. Dostupnosť sa nezmenila; obnov porovnanie alebo ju vynechaj z aktualizácie."
+      "ai_update_stock_unknown": "Stav vlastného skladu sa nepodarilo overiť. Dostupnosť sa nezmenila; obnov porovnanie alebo ju vynechaj z aktualizácie.",
+      "ai_update_readback_mismatch": "Nepodarilo sa potvrdiť zhodu vybraných polí po aktualizácii."
     },
     "importSelectedReady": "Importovať označené pripravené",
     "selectJob": "Označiť úlohu",
@@ -797,6 +798,10 @@
       "onePerLine": "Každá hodnota na samostatnom riadku"
     },
     "removeEvidence": "Odstrániť podklad",
-    "removeEvidenceHelp": "Po odstránení podkladu odstráň aj tvrdenia v popise alebo parametroch, ktoré nemajú iný overený zdroj."
+    "removeEvidenceHelp": "Po odstránení podkladu odstráň aj tvrdenia v popise alebo parametroch, ktoré nemajú iný overený zdroj.",
+    "mismatchedUpdateFields": "Nepotvrdené polia",
+    "actualShopValue": "Hodnota načítaná z e-shopu",
+    "readbackValueMissing": "API e-shopu nevrátilo hodnotu tohto poľa.",
+    "updateReadbackHelp": "Porovnaj očakávané a načítané hodnoty nižšie. Chýbajúca odpoveď API sama osebe neznamená, že sa zmena neuložila. Tlačidlo Overiť výsledok aktualizácie iba skontroluje stav; zmeny znova neodošle."
   }
 }
