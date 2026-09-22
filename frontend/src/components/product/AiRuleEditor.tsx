@@ -18,6 +18,8 @@ export function AiRuleEditor({ rules, onReload, onJob }: { rules: AiRules; onRel
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const groupOf = (r: AiRule) => ['product','shop','category','brand','supplier'].find(k => r.scope[k as keyof AiRule['scope']]) || 'common';
+  const categoryRules = book.rules.map((r,i) => ({r,i})).filter(({r}) => groupOf(r) === 'category');
+  const categoryView = kind === 'categories' || group === 'category';
   const choices = book[kind].map((r,i) => ({r,i})).filter(({r}) => kind === 'categories' || groupOf(r as AiRule) === group);
   const selected = choices.find(c => c.i === index)?.r;
   useEffect(() => { if (kind !== 'categories') return; let stopped = false; Promise.all(['biketrek','xtrek'].map(async shop => { const data = await catalogRequest<TargetOptions>(`/shops/${shop}/import/options`); if (!stopped) setShopOptions(old => ({...old,[shop]:data})); })).catch(e => { if (!stopped) setError(e.message); }); return () => { stopped = true; }; }, [kind]);
@@ -39,7 +41,11 @@ export function AiRuleEditor({ rules, onReload, onJob }: { rules: AiRules; onRel
   }
   return <>
     <div className="ai-notice">{t('ai.rulesHelp')}</div>
-    <nav className="ai-rule-groups" aria-label={t('ai.ruleGroupsLabel')}>{['common','supplier','brand','category','shop','product'].map(key => <button key={key} aria-selected={group === key && kind === 'rules'} className={group === key && kind === 'rules' ? 'ai-primary' : ''} onClick={() => chooseGroup(key)}>{t(`ai.ruleGroups.${key}`)} ({book.rules.filter(r => groupOf(r) === key).length})</button>)}<button aria-selected={kind === 'categories'} className={kind === 'categories' ? 'ai-primary' : ''} onClick={() => { setKind('categories'); setIndex(0); }}>{t('ai.categoryProfiles')}</button></nav><div className="ai-toolbar"><button onClick={add}>{t('ai.add')}</button><small>{t('ai.ruleOrder')}</small></div>
+    <nav className="ai-rule-groups" aria-label={t('ai.ruleGroupsLabel')}>{['common','supplier','brand','category','shop','product'].map(key => key === 'category'
+      ? <button key={key} aria-selected={categoryView} className={categoryView ? 'ai-primary' : ''} onClick={() => { setGroup('category'); setKind('categories'); setIndex(0); }}>{t('ai.ruleGroups.category')} ({book.categories.length})</button>
+      : <button key={key} aria-selected={group === key && kind === 'rules'} className={group === key && kind === 'rules' ? 'ai-primary' : ''} onClick={() => chooseGroup(key)}>{t(`ai.ruleGroups.${key}`)} ({book.rules.filter(r => groupOf(r) === key).length})</button>)}</nav>
+    {categoryView && categoryRules.length > 0 && <details><summary>{t('ai.legacyCategoryRules')}</summary><p>{t('ai.legacyCategoryRulesHelp')}</p><div className="ai-actions">{categoryRules.map(({r,i}) => <button key={r.id} onClick={() => { setGroup('category'); setKind('rules'); setIndex(i); }}>{r.name}</button>)}</div></details>}
+    <div className="ai-toolbar">{!(kind === 'rules' && group === 'category') && <button onClick={add}>{t('ai.add')}</button>}<small>{t('ai.ruleOrder')}</small></div>
     <div className="ai-columns"><aside className="ai-card"><label>{t('ai.chooseProfile')}<select value={index} onChange={e => setIndex(Number(e.target.value))}>{choices.map(({r,i}) => <option key={r.id} value={i}>{r.name}</option>)}</select></label>
       <p>{t('ai.publishedVersion', { version: rules.published_id })}</p>
       <label>{t('ai.versionHistory')}<select value="" disabled={busy} onChange={e => execute(async () => { const value = await aiRequest<{ book: AiBook; id: number }>(`/rules/${e.target.value}`); setBook(value.book); setIndex(kind === 'categories' ? 0 : value.book.rules.findIndex(r => groupOf(r) === group)); setDraft(value.id); })}><option value="">{t('ai.loadVersion')}</option>{rules.versions.map(v => <option key={v.id} value={v.id}>#{v.id} · {v.note}</option>)}</select></label>

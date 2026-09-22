@@ -32,12 +32,13 @@ const options = { language: 'sk', currency: 'EUR', pricelist: 'Predvolené', cat
 const families = [{ code: 'NF-G-TEST', name: 'Test bunda', image: 'https://images.example.test/1.jpg', product_ids: [1, 2], products: [1, 2].map(id => ({ id, shop_code: 'NF-' + id, variant_attributes: [{ name: 'Veľkosť', value: id === 1 ? 'S' : 'M' }] })) },
   { code: 'NF-OTHER', name: 'Test nohavice', image: null, product_ids: [3], products: [{ id: 3, shop_code: 'NF-3', variant_attributes: [] }] }];
 const content = { title: 'Test bunda', short_description: 'Short', long_description: '<p>Long</p>', seo_title: 'SEO', meta_description: 'Meta', h1_descriptor: 'Bunda', future_name: 'TEST', h1_descr_suffix: '', parameters: [], evidence: [], warnings: [], missing_facts: [] };
-const calls = []; let jobs = []; let reviewed;
+const calls = []; let jobs = []; let reviewed; let historicalBook = book;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body, headers: init.headers });
   let data;
   if (path.endsWith('/status')) data = { enabled: true, key_configured: true, access_configured: true, model: 'fixture', monthly_limit_usd: '20', job_limit_usd: '2' };
   else if (path.endsWith('/rules')) data = body ? { id: 2 } : rules;
+  else if (path.endsWith('/rules/1')) data = { id: 1, book: historicalBook };
   else if (path.endsWith('/existing-products/options')) data = { shops: [{code:'biketrek',name:'BikeTrek'}] };
   else if (path.endsWith('/existing-products')) { const job = { ...jobs[0], id:'existing-job', status:'estimate', update_only:true, source_kind:'shop', product_ids:[], code:body.code }; jobs.push(job); data = {job}; }
   else if (path.endsWith('/selection')) data = families;
@@ -230,6 +231,38 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(!calls.some(c => /\/publish$/.test(c.path)), 'Rule deletion does not publish automatically');
   assert(!button('Publikovať verziu #2').disabled, 'Saving a draft enables publishing the actual version');
   assert(!document.getElementById('ai-publish-help'), 'No-draft instruction disappears when a draft is available');
+
+  const legacyRule = { ...book.rules[0], id: 'legacy-category', name: 'Pôvodné pravidlo duší', scope: { ...scope, category: 'general' }, official_domains: ['example.com'], import_policy: { orderable: 'Na objednávku' } };
+  historicalBook = { ...book, rules: [...book.rules, legacyRule] };
+  await act(async () => { root.render(React.createElement(AiRuleEditor, { key: 'single-category-tab', rules, onReload: () => {}, onJob: () => {} })); await tick(); });
+  const categoryButtons = [...document.querySelectorAll('.ai-rule-groups button')].filter(b => b.textContent.startsWith('Kategórie'));
+  assert.equal(categoryButtons.length, 1, 'Only one category navigation entry is offered');
+  assert(!button('Profily kategórií'), 'The duplicate category profiles navigation is removed');
+  await click(categoryButtons[0]);
+  assert(document.body.textContent.includes('Priradenie ku kategóriám e-shopov'));
+  assert(button('Pridať parameter'), 'Categories opens profile parameters directly');
+  assert(!document.body.textContent.includes('Doplnkové pravidlá zo starších verzií'), 'Normal profiles show no legacy controls');
+  await input([...document.querySelectorAll('label')].find(l => l.textContent === 'Názov profilu').querySelector('input'), 'Upravený profil');
+  await input([...document.querySelectorAll('label')].find(l => l.textContent === 'Dôvod zmeny').querySelector('input'), 'Úprava profilu kategórie');
+  await click(button('Uložiť novú verziu konceptu'));
+  const savedProfileBook = calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book;
+  assert.equal(savedProfileBook.categories[0].name, 'Upravený profil');
+  assert.deepEqual(savedProfileBook.rules, book.rules, 'Editing a profile preserves other rules');
+  const historySelect = [...document.querySelectorAll('label')].find(l => l.textContent.startsWith('História verzií')).querySelector('select');
+  await act(async () => { historySelect.value = '1'; historySelect.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); });
+  assert(document.body.textContent.includes('Doplnkové pravidlá zo starších verzií'), 'Loading old versions keeps their scoped rules accessible');
+  await input([...document.querySelectorAll('label')].find(l => l.textContent === 'Názov profilu').querySelector('input'), 'Profil zo staršej verzie');
+  await click(button('Uložiť novú verziu konceptu'));
+  assert.deepEqual(calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book.rules, historicalBook.rules, 'Saving profiles preserves legacy rules including domains and import policy');
+  const legacyDetails = [...document.querySelectorAll('details')].find(d => d.querySelector('summary')?.textContent === 'Doplnkové pravidlá zo starších verzií');
+  await click(legacyDetails.querySelector('summary'));
+  await click(button('Pôvodné pravidlo duší'));
+  assert(document.querySelector('input[value="example.com"]'), 'Legacy rules remain editable');
+  window.confirm = () => true; await click(button('Odstrániť pravidlo / profil'));
+  await click(button('Kategórie (1)'));
+  assert(!document.body.textContent.includes('Doplnkové pravidlá zo starších verzií'), 'Removing the final legacy rule leaves only profiles');
+  await click(button('Uložiť novú verziu konceptu'));
+  assert.deepEqual(calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book.rules, book.rules, 'Legacy deletion preserves unrelated rules');
   await act(async () => root.unmount());
   console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search and scoped rule deletion.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

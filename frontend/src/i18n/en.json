@@ -484,7 +484,8 @@
       "existing": "Existing products"
     },
     "rules": "Rules",
-    "categoryProfiles": "Category profiles",
+    "legacyCategoryRules": "Supplementary rules from earlier versions",
+    "legacyCategoryRulesHelp": "These rules were preserved from earlier versions. You can edit or remove them; manage standard instructions and parameters in the profile under Categories.",
     "rulesHelp": "Rules apply in order: common → supplier → brand → category → shop → product → this preparation. Empty settings inherit. Saving creates a draft; publishing applies it to new jobs.",
     "newRule": "New rule",
     "newCategory": "New category",
