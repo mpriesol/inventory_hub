@@ -3,6 +3,7 @@ import json
 import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ from catalog_fixtures import FakeUpgates
 from test_ai_content import content
 from inventory_hub import config_io, database
 from inventory_hub.ai_content_models import AiContentRevision, AiJob, AiRuleVersion
-from inventory_hub.ai_content_types import BatchRequest, ContentReview, JobAction, Policy, RuleBook, Target
+from inventory_hub.ai_content_types import BatchRequest, ContentReview, JobAction, JobFork, Policy, RuleBook, Target
 from inventory_hub.services import ai_content as service, ai_content_rules as rules, ai_content_worker as worker, catalog, catalog_import
 from inventory_hub.services.ai_content_upgates import FIELDS
 from inventory_hub.settings import settings
@@ -172,3 +173,36 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(catalog.CatalogError):
                 await rules.publish(db, old.id, old.id)
             self.assertEqual((await rules.published(db)).id, next.id)
+
+    async def test_archiving_retains_paid_usage_and_can_be_restored(self):
+        id = (await self.create())[0]['id']
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            job.actual_usd = Decimal('0.15')
+            service.event(job, 'failed', 'Synthetic paid failure')
+            await db.commit()
+        await self.act(id, 'archive')
+        async with self.sessions() as db:
+            job = await service.get_job(db, id)
+            self.assertTrue(job.context['archived'])
+            self.assertEqual(job.actual_usd, Decimal('0.15'))
+            self.assertEqual(await service.budget(db), Decimal('0.15'))
+        await self.act(id, 'restore')
+        self.assertFalse((await self.job(id)).context['archived'])
+        self.generate.assert_not_called()
+
+    async def test_fork_source_revision_prevents_duplicate_batch_on_replayed_request(self):
+        id = (await self.create())[0]['id']
+        request = JobFork(expected_revision=1, product_ids=[self.id], reuse_content=False)
+        async with self.sessions() as db:
+            original = await service.get_job(db, id, True)
+            fresh = await service.fork_job(db, original, request)
+            await db.commit()
+        self.assertNotEqual(fresh['id'], id)
+        async with self.sessions() as db:
+            original = await service.get_job(db, id, True)
+            with self.assertRaises(catalog.CatalogError) as error:
+                await service.fork_job(db, original, request)
+            self.assertEqual(error.exception.code, 'ai_job_changed')
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM ai_content_jobs')), 2)
+        self.generate.assert_not_called()

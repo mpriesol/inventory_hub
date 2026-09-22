@@ -1,3 +1,4 @@
+import { CategoryTree } from '../components/product/CategoryTree';
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -219,7 +220,7 @@ export function SupplierCatalogPage() {
         <div><h3>{t('catalog.importSettings')}</h3>{targetLoading ? <p>{t('common.loading')}</p> : !target ? <p>{targetError ? message(targetError) : t('catalog.chooseShop')}</p> : <><div className="catalog-fields">
           <label>{t('catalog.language')}<select value={options.language} onChange={e => { const l = target.languages.find(l => l.code === e.target.value)!; setOptions({ ...options, language: l.code, currency: l.currency }); }}>{target.languages.map(l => <option key={l.code} value={l.code}>{l.code.toUpperCase()} · {l.currency}</option>)}</select></label>
           <label>{t('catalog.pricelist')}<select value={options.pricelist} onChange={e => setOptions({ ...options, pricelist: e.target.value })}>{target.pricelists.map(p => <option key={p.name}>{p.name}</option>)}</select></label>
-          <label>{t('catalog.category')}<select value={options.category_code || ''} onChange={e => setOptions({ ...options, category_code: e.target.value || null })}><option value="">{t('catalog.noCategory')}</option>{target.categories.map(c => <option key={c.code} value={c.code}>{c.names[options.language] || c.code} · {c.code}</option>)}</select></label>
+          <label>{t('catalog.category')}<CategoryTree categories={target.categories} value={options.category_code || ''} language={options.language} onChange={code => setOptions({ ...options, category_code: code || null })} /></label>
           <label>{t('catalog.pricing')}<select value={options.pricing} onChange={e => setOptions({ ...options, pricing: e.target.value as ImportOptions['pricing'] })}><option value="configured">{t('catalog.configuredPricing')}</option><option value="retail">{t('catalog.retailPricing')}</option></select></label></div>
           <div className="catalog-check-options">{(['include_images', 'include_description', 'include_parameters'] as const).map(key => <label key={key}><input type="checkbox" checked={options[key]} onChange={e => setOptions({ ...options, [key]: e.target.checked })} />{t(`catalog.include.${key}`)}</label>)}</div>
           <div className="catalog-check-options"><label><input type="checkbox" checked={fullShopCheck} onChange={e => { setFullShopCheck(e.target.checked); setPreview(null); }} />{t('catalog.fullShopCheck')}</label></div><p className="catalog-muted">{t('catalog.fullShopCheckHelp')}</p>

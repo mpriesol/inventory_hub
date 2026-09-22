@@ -71,8 +71,7 @@ class RuleTests(unittest.TestCase):
                 Rule(id="test", name="test", official_domains=[value])
         with self.assertRaises(ValueError):
             CategoryProfile(id="test", name="test", parameters=[ParameterDefinition(name="Farba"), ParameterDefinition(name="farba")])
-        with self.assertRaises(ValueError):
-            RuleBook(rules=[Rule(id="a", name="a"), Rule(id="b", name="b")])
+        self.assertEqual(len(RuleBook(rules=[Rule(id="a", name="a"), Rule(id="b", name="b")]).rules), 2)
 
 
 class ContentTests(unittest.TestCase):

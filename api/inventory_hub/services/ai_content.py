@@ -61,15 +61,20 @@ def summary(job, *, detail=False):
         "revision": job.revision, "shop": context.get("shop"), "supplier": context.get("supplier"),
         "code": context.get("code"), "name": context.get("name"), "image": context.get("image"),
         "product_ids": context.get("product_ids", []), "use_ai": context.get("use_ai", True),
+        "update_only": bool(context.get("update_only")), "source_kind": context.get("source_kind", "catalog"),
+        "update_state": (context.get("update_preview") or {}).get("state"),
         "rules_version": context.get("rules_version"), "category_profile": context.get("category_profile"),
         "policy": context.get("resolved", {}).get("policy", {}),
         "origins": context.get("resolved", {}).get("origins", {}),
         "estimate_usd": context.get("estimate_usd", "0"), "reserved_usd": str(job.reserved_usd or 0),
         "actual_usd": str(job.actual_usd) if job.actual_usd is not None else None,
         "checks": job.checks, "error": job.error, "preview_id": job.preview_id,
-        "created_at": job.created_at, "updated_at": job.updated_at}
+        "created_at": job.created_at, "updated_at": job.updated_at, "archived": bool(context.get("archived"))}
     if detail:
-        data.update(output=job.output, facts=context.get("facts", []), events=job.events,
+        data.update(applied_rules=context.get("resolved", {}).get("instructions", []),
+                    resolved_import_policy=context.get("resolved", {}).get("import_policy", {}),
+                    parameter_registry=(context.get("resolved", {}).get("category") or {}).get("parameters", []))
+        data.update(output=job.output, facts=context.get("facts", []), events=job.events, update_preview=context.get("update_preview"), update_result=context.get("update_result"),
                     usage=job.usage, options=context.get("options"), research=context.get("research"))
         if job.preview_id:
             try:
@@ -154,6 +159,10 @@ async def create_batch(db, request: BatchRequest):
             if len(profiles) != 1:
                 raise CatalogError("ai_family_category_conflict", "Selected variants must share a category profile", 422)
             profile = profiles.pop()
+            if profile == "general" and target.options.category_code:
+                mapped_profiles = [c.id for c in book.categories if c.shop_categories.get(target.shop) == target.options.category_code]
+                if len(mapped_profiles) == 1:
+                    profile = mapped_profiles[0]
             resolved = rules.resolve(book, Scope(shop=target.shop, supplier=request.supplier, category=profile,
                 brand=group[0].brand or "", product=code), target.policy)
             options = target.options.model_copy()
@@ -187,6 +196,8 @@ async def create_batch(db, request: BatchRequest):
 
 async def review(db, job, request):
     expect(job, request.expected_revision)
+    if (job.context.get("update_preview") or {}).get("state") in ("sending", "uncertain"):
+        raise CatalogError("ai_update_uncertain", "Reconcile the previous update first", 409)
     if job.status not in ("review", "blocked", "ready") or not job.context.get("use_ai"):
         raise CatalogError("ai_review_state", "Content cannot be edited in this state", 409)
     checks = validate_content(request.content, job.context, (job.usage or {}).get("opened_sources", []))
@@ -195,7 +206,7 @@ async def review(db, job, request):
     job.output, job.checks, job.error, job.preview_id = request.content.model_dump(), checks, None, None
     event(job, "preparing_import" if request.approve else "blocked" if checks["errors"] else "review",
           "Human content approval" if request.approve else "Content draft edited")
-    job.context = {**job.context, "approval": "human" if request.approve else None}
+    job.context = {**job.context, "approval": "human" if request.approve else None, "update_preview":None}
     db.add(AiContentRevision(job_id=job.id, revision=job.revision, content=job.output,
                             decision="human_approved" if request.approve else "draft"))
     return summary(job, detail=True)
@@ -205,6 +216,9 @@ async def prepare_import(db, job):
     ctx = job.context
     if catalog_import._target(catalog_import.shop_config(ctx["shop"])) != ctx["target"]:
         raise CatalogError("shop_target_changed", "The shop connection changed; prepare a new batch", 409)
+    if ctx.get("update_only"):
+        from inventory_hub.services import ai_content_existing
+        return await ai_content_existing.approved(db, job)
     products = await selected_products(db, ctx["supplier"], ctx["feed_key"], ctx["product_ids"], None)
     if source_digest(products) != ctx["source_digest"]:
         raise CatalogError("ai_source_changed", "Supplier data changed after AI preparation; prepare a new batch", 409)
@@ -217,7 +231,8 @@ async def prepare_import(db, job):
     enrichment = {"job_id": job.id, "revision": job.revision, "rules_version": ctx["rules_version"],
         "active_after_import": ctx["resolved"]["policy"]["active_after_import"],
         "content": job.output if ctx["use_ai"] else None,
-        "supplier_name": catalog_import.supplier_config(ctx["supplier"]).get("name") or ctx["supplier"],
+        "supplier_name": ctx["resolved"].get("import_policy", {}).get("supplier_name") or {"paul-lange": "Paul Lange", "northfinder": "Northfinder"}.get(ctx["supplier"], ctx["supplier"]),
+        "import_policy": ctx["resolved"].get("import_policy", {}),
         "safety": "\n".join(dict.fromkeys(p.safety_information for p in products if p.safety_information)),
         "registered_parameters": bool((ctx["resolved"].get("category") or {}).get("parameters"))}
     preview = await catalog_import.create_preview(db, ctx["shop"], ShopImportPreviewRequest(
@@ -236,7 +251,22 @@ async def prepare_import(db, job):
 
 async def action(db, job, request):
     expect(job, request.expected_revision)
-    if request.action == "cancel":
+    if (job.context.get("update_preview") or {}).get("state") in ("sending", "uncertain"):
+        raise CatalogError("ai_update_uncertain", "Reconcile the pending update before changing this job", 409)
+    if request.action in ("archive", "restore"):
+        if job.status in ("queued", "generating", "preparing_import", "import_queued", "importing"):
+            raise CatalogError("ai_job_running", "Wait for the running operation before archiving", 409)
+        job.context = {**job.context, "archived": request.action == "archive"}
+        event(job, job.status, "Archived from work list" if request.action == "archive" else "Restored to work list")
+    elif request.action == "reopen":
+        if (job.context.get("update_preview") or {}).get("state") in ("sending", "uncertain"):
+            raise CatalogError("ai_update_uncertain", "Reconcile the previous update first", 409)
+        if job.status not in ("import_blocked", "exists", "completed", "cancelled") or not job.output:
+            raise CatalogError("ai_review_state", "Use reconciliation for an unconfirmed import", 409)
+        job.preview_id, job.error = None, None
+        job.context = {**job.context, "approval": None, "update_preview": None}
+        event(job, "review", "Reopened content for editing")
+    elif request.action == "cancel":
         if job.status in ("generating", "importing", "completed", "exists", "uncertain"):
             raise CatalogError("ai_cancel_state", "A running, completed or uncertain operation cannot be cancelled", 409)
         if job.status in ("estimate", "queued"):
@@ -245,6 +275,8 @@ async def action(db, job, request):
     elif request.action == "start":
         await start(db, job)
     elif request.action in ("import", "retry_import"):
+        if job.context.get("update_only"):
+            raise CatalogError("ai_update_only", "This preparation can update an existing product only", 409)
         allowed = ("ready",) if request.action == "import" else ("import_failed", "import_blocked")
         if job.status not in allowed:
             raise CatalogError("ai_import_state", "This job cannot be imported in its current state", 409)
@@ -299,3 +331,42 @@ async def accept_proposal(db, job, expected_revision):
     await db.flush()
     event(job, "completed", "Proposal saved as draft; publication still requires an operator")
     return {"version_id": version.id, "book": version.book, "published": False}
+
+
+async def fork_job(db, job, request):
+    expect(job, request.expected_revision)
+    if job.context.get("update_only"):
+        raise CatalogError("ai_update_only", "Start another preparation from the existing product", 409)
+    if (job.context.get("update_preview") or {}).get("state") in ("sending", "uncertain"):
+        raise CatalogError("ai_update_uncertain", "Reconcile the pending update first", 409)
+    if job.kind != "product" or job.status in ("queued", "generating", "preparing_import", "import_queued", "importing"):
+        raise CatalogError("ai_job_running", "Wait for the current operation", 409)
+    detail = summary(job, detail=True)
+    if (job.status == "import_failed" and not detail.get("import_result")) or any(i["status"] == "uncertain" for i in (detail.get("import_result") or {}).get("items", [])):
+        raise CatalogError("import_outcome_unknown", "Reconcile the previous import before preparing another create", 409)
+    ids = set(request.product_ids)
+    if len(ids) != len(request.product_ids) or not ids <= set(job.context["product_ids"]):
+        raise CatalogError("ai_selection_invalid", "Select products from this job", 422)
+    ctx = job.context
+    req = BatchRequest(request_id=uuid4(), supplier=ctx["supplier"], feed_key=ctx["feed_key"],
+        product_ids=sorted(ids), ai_product_ids=sorted(ids) if request.use_ai else [],
+        category_profiles={id:ctx["category_profile"] for id in ids},
+        targets=[{"shop":ctx["shop"], "options":ctx["options"],
+                  "policy":{**ctx["resolved"]["policy"], "show_cost_estimate":True, "review_required":True, "confirm_import":True}}],
+        research=ctx["research"], sale_price_overrides={int(k):v for k,v in ctx["sale_price_overrides"].items() if int(k) in ids})
+    created = await create_batch(db, req)
+    fresh = await get_job(db, created[0]["id"], True)
+    if request.reuse_content and request.use_ai and job.output:
+        output = copy.deepcopy(job.output)
+        output["parameters"] = [p for p in output["parameters"] if p["product_id"] is None or p["product_id"] in ids]
+        # Parent text may describe excluded variants: explicit review is mandatory.
+        output["evidence"] = [e for e in output["evidence"] if not e["source"].startswith("feed:") or e["source"] in {f"feed:{id}" for id in ids}]
+        if not output["evidence"]:
+            raise CatalogError("ai_partial_evidence", "Remaining products require a new AI preparation", 422)
+        fresh.output, fresh.usage, fresh.actual_usd = output, {"opened_sources":(job.usage or {}).get("opened_sources", [])}, Decimal(0)
+        fresh.checks = validate_content(Content.model_validate(output), fresh.context, fresh.usage["opened_sources"])
+        event(fresh, "blocked" if fresh.checks["errors"] else "review", "Copied content; check the remaining variants before approval. No AI call.")
+    fresh.context = {**fresh.context, "source_job_id":job.id}
+    event(job, job.status, "Selected products copied to a new preparation")
+    await db.flush()
+    return summary(fresh, detail=True)

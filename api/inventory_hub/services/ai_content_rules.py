@@ -70,12 +70,18 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> d
     matches.sort(key=lambda pair: (pair[0], pair[1].id))
     policy, origins, instructions, domains = DEFAULT_POLICY.copy(), {k: "default" for k in DEFAULT_POLICY}, [], []
     assigned = {}
+    import_policy = {}
     for priority, rule in matches:
         for key, value in rule.policy.model_dump(exclude_none=True).items():
             if (priority, key) in assigned and assigned[(priority, key)] != value:
                 raise CatalogError("ai_policy_conflict", f"Conflicting rules for {key}; combine their scopes", 422)
             assigned[(priority, key)] = value
             policy[key], origins[key] = value, rule.name
+        for key, value in rule.import_policy.model_dump(exclude_none=True).items():
+            if (priority, "import:" + key) in assigned and assigned[(priority, "import:" + key)] != value:
+                raise CatalogError("ai_policy_conflict", f"Conflicting import rules for {key}", 422)
+            assigned[(priority, "import:" + key)] = value
+            import_policy[key] = value
         if rule.instructions.strip():
             instructions.append({"id": rule.id, "name": rule.name, "text": rule.instructions})
         domains.extend(rule.official_domains)
@@ -83,7 +89,7 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> d
         for key, value in override.model_dump(exclude_none=True).items():
             policy[key], origins[key] = value, "run"
     return {"policy": policy, "origins": origins, "instructions": instructions,
-            "official_domains": sorted(set(domains)), "category": category.model_dump() if category else None}
+            "import_policy": import_policy, "official_domains": sorted(set(domains)), "category": category.model_dump() if category else None}
 
 
 async def published(db) -> AiRuleVersion:

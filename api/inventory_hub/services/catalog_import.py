@@ -207,6 +207,7 @@ def import_options(shop: str, client: UpgatesClient | None = None) -> dict:
     if not isinstance(languages, list) or not isinstance(pricelists, list):
         raise CatalogError("upgates_read_failed", "Shop language or pricelist response is incomplete", 502)
     categories = _pages(client, "categories", "categories")
+    from inventory_hub.services.catalog_merchandising import category_rows
     metas = _pages(client, "metas", "metas", {"key": "validation_required", "category": "products"})
     field = next((m for m in metas if m.get("key") == "validation_required" and m.get("category") == "products"), None)
     if field and (field.get("type") != "checkbox" or not field.get("common_languages_value_yn")):
@@ -215,7 +216,7 @@ def import_options(shop: str, client: UpgatesClient | None = None) -> dict:
             "languages": [{"code": l.get("language_id"), "currency": l.get("currency_id"),
                            "default": bool(l.get("default_yn"))} for l in languages if l.get("active_yn")],
             "pricelists": [{"name": p["name"], "default": p.get("default_yn") in (True, 1, "1")} for p in pricelists],
-            "categories": [{"code": c.get("code"), "names": {d["language"]: d.get("name", c.get("code")) for d in c.get("descriptions", [])}} for c in categories if c.get("code")],
+            "categories": category_rows(categories), "category_tree_version": 1,
             "create_validation_field": field is None}
 
 
@@ -251,7 +252,7 @@ def _shop_cache(shop: str, kind: str):
 
 def cached_import_options(shop: str, client: UpgatesClient | None = None, *, refresh: bool = False) -> dict:
     with _shop_cache(shop, "options") as (path, saved, fingerprint):
-        cached = bool(not refresh and saved and isinstance(saved.get("data"), dict) and
+        cached = bool(not refresh and saved and isinstance(saved.get("data"), dict) and saved["data"].get("category_tree_version") == 1 and
                       now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(minutes=15))
         if not cached:
             data = import_options(shop, client)
@@ -472,6 +473,12 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         if len(items) != 1:
             raise CatalogError("ai_family_mismatch", "A content revision applies to exactly one selected family", 422)
         items = [overlay(item, enrichment, options.language) if item.status == "ready" else item for item in items]
+    from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
+    policy = {**availability_policy(request.supplier), **(enrichment or {}).get("import_policy", {})}
+    for item in items:
+        if item.status == "ready":
+            item.payload["categories"] = category_chain(remote["categories"], options.category_code)
+            apply_availability(item.payload, [p for p in products if p.id in item.product_ids], policy)
     price_lines = []
     for product in products:
         try:
@@ -650,7 +657,7 @@ def _assert_payload(payload: dict, *, expected_active: bool = False) -> None:
             for child in value:
                 visit(child)
     visit(payload)
-    if payload.get("active_yn") is not expected_active:
+    if not isinstance(payload.get("active_yn"), bool) or (payload["active_yn"] and not expected_active):
         raise CatalogError("unsafe_import_payload", "Product visibility differs from the approved import policy", 422)
 
 

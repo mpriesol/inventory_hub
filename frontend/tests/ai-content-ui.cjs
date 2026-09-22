@@ -18,6 +18,8 @@ const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
 const { MemoryRouter } = require('react-router-dom');
 const { AiContentPage } = require('../src/pages/AiContentPage.tsx');
+const { AiRuleEditor } = require('../src/components/product/AiRuleEditor.tsx');
+const { CategoryTree } = require('../src/components/product/CategoryTree.tsx');
 const { AiJobDetail } = require('../src/components/product/AiJobDetail.tsx');
 const { unlockAi } = require('../src/api/aiContent.ts');
 const root = createRoot(document.getElementById('root'));
@@ -35,12 +37,15 @@ global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body, headers: init.headers });
   let data;
   if (path.endsWith('/status')) data = { enabled: true, key_configured: true, access_configured: true, model: 'fixture', monthly_limit_usd: '20', job_limit_usd: '2' };
-  else if (path.endsWith('/rules')) data = rules;
+  else if (path.endsWith('/rules')) data = body ? { id: 2 } : rules;
+  else if (path.endsWith('/existing-products/options')) data = { shops: [{code:'biketrek',name:'BikeTrek'}] };
+  else if (path.endsWith('/existing-products')) { const job = { ...jobs[0], id:'existing-job', status:'estimate', update_only:true, source_kind:'shop', product_ids:[], code:body.code }; jobs.push(job); data = {job}; }
   else if (path.endsWith('/selection')) data = families;
   else if (path.includes('/catalog?')) data = { shops: [{ code: 'biketrek', name: 'BikeTrek', ready: true }, { code: 'xtrek', name: 'xTrek', ready: true }] };
   else if (path.endsWith('/import/options')) data = { languages: [{ code: 'sk', currency: 'EUR' }], pricelists: [{ name: 'Predvolené', default: true }], categories: [{ code: 'K1', names: { sk: 'Category' } }] };
   else if (path.endsWith('/batches')) { jobs = body.targets.map((target, i) => ({ id: 'job' + i, batch_id: 'batch', kind: 'product', status: 'estimate', revision: 1, name: 'Test bunda', code: 'NF-G-TEST', shop: target.shop, policy, origins: {}, checks: {}, use_ai: true, estimate_usd: '0.3', actual_usd: null, product_ids: [1, 2] })); data = { jobs }; }
-  else if (path.endsWith('/jobs')) data = jobs;
+  else if (path.includes('/jobs?') || path.endsWith('/jobs')) data = jobs.filter(job => !!job.archived === path.includes('archived=true'));
+  else if (path.endsWith('/action')) { const job = jobs.find(j => path.includes('/jobs/' + j.id + '/')); if (body.action === 'archive' || body.action === 'restore') job.archived = body.action === 'archive'; data = job; }
   else if (path.endsWith('/review')) { reviewed = body; data = { ...jobs[0], output: body.content, revision: 2, status: body.approve ? 'preparing_import' : 'review' }; }
   else if (path.includes('/jobs/')) data = jobs.find(j => path.endsWith(j.id)) || jobs[0];
   else throw new Error('Unexpected synthetic endpoint ' + path);
@@ -49,7 +54,7 @@ global.fetch = async (path, init = {}) => {
 const button = text => [...document.querySelectorAll('button')].find(b => b.textContent === text);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 async function click(element) { assert(element, 'Element exists'); await act(async () => { element.click(); await tick(); }); }
-async function input(element, value) { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })); await tick(); }); }
+async function input(element, value) { await act(async () => { Object.getOwnPropertyDescriptor(element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })); await tick(); }); }
 
 (async () => {
   unlockAi('synthetic-ui-fixture-token');
@@ -67,6 +72,27 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert.deepEqual(batch.targets.map(t => t.shop), ['biketrek', 'xtrek']);
   assert(!calls.some(c => c.path.endsWith('/action')), 'Cost pause causes no paid processing');
   assert(calls.filter(c => c.path.includes('/ai-content/') && !c.path.endsWith('/status')).every(c => c.headers.Authorization === 'Bearer synthetic-ui-fixture-token'));
+  jobs[0].status = 'failed'; jobs[1].status = 'generating';
+  await click(button('Obnoviť'));
+  const jobChecks = [...document.querySelectorAll('input[aria-label^="Označiť úlohu"]')];
+  for (const checkbox of jobChecks) if (!checkbox.checked) await click(checkbox);
+  await click(button('Odstrániť označené zo zoznamu'));
+  assert.deepEqual(calls.filter(c => c.path.endsWith('/action')).map(c => [c.body.action, c.path]), [['archive', '/api/ai-content/jobs/job0/action']], 'Only selected inactive work is archived; in-progress job remains');
+  assert.equal(document.querySelectorAll('input[aria-label^="Označiť úlohu"]').length, 1);
+  await click([...document.querySelectorAll('label')].find(l => l.textContent === 'Archív').querySelector('input'));
+  const archivedCheck = document.querySelector('input[aria-label^="Označiť úlohu"]');
+  assert(archivedCheck && !archivedCheck.checked, 'Archive view resets selection');
+  await click(archivedCheck); await click(button('Obnoviť označené'));
+  assert.equal(calls.findLast(c => c.path.endsWith('/action')).body.action, 'restore');
+  await click(button('Existujúce produkty')); await act(tick);
+  const exactCode = [...document.querySelectorAll('label')].find(l => l.textContent === 'Presný kód produktu v e-shope').querySelector('input');
+  await input(exactCode, 'PL-EXISTING');
+  const paidBefore = calls.filter(c => c.path.endsWith('/action') && c.body.action === 'start').length;
+  await click(button('Načítať produkt a pripraviť odhad'));
+  const existingRequest = calls.findLast(c => c.path.endsWith('/existing-products')).body;
+  assert.equal(existingRequest.code, 'PL-EXISTING'); assert.equal(existingRequest.shop, 'biketrek');
+  assert.equal(calls.filter(c => c.path.endsWith('/action') && c.body.action === 'start').length, paidBefore, 'Existing-product entry captures source without starting paid generation');
+  assert(document.body.textContent.includes('Táto príprava upravuje existujúci produkt'));
   await act(async () => { root.render(React.createElement(AiJobDetail, { job: { ...jobs[0], status: 'review', output: content, facts: [], events: [] }, onChange: () => {} })); await tick(); });
   const title = [...document.querySelectorAll('label')].find(l => l.textContent.startsWith('Názov')).querySelector('textarea');
   await input(title, 'Upravený názov');
@@ -74,6 +100,90 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(button('Uložiť koncept obsahu'));
   assert.equal(reviewed.content.title, 'Upravený názov'); assert.equal(reviewed.approve, false);
   await click(button('Schváliť obsah a pripraviť import')); assert.equal(reviewed.approve, true);
+  const missingParameterJob = { ...jobs[0], status:'blocked', output:content, revision:3, facts:[],
+    parameter_registry:[{name:'Materiál',required:true,scope:'parent',values:['Hliník','Termoplast'],unit:'',instructions:''}],
+    checks:{errors:['ai_required_parameter:Materiál']}, events:[] };
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'missing-parameter',job:missingParameterJob,onChange:() => {}})); await tick(); });
+  assert(document.body.textContent.includes('Chýbajúce povinné parametre: Materiál'));
+  await click(button('Pridať parameter'));
+  const parameterName = document.querySelector('select[aria-label="Názov parametra 1"]');
+  await act(async () => { parameterName.value = 'Materiál'; parameterName.dispatchEvent(new dom.window.Event('change',{bubbles:true})); await tick(); });
+  await click([...document.querySelectorAll('label')].find(label => label.textContent === 'Termoplast').querySelector('input'));
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(reviewed.content.parameters,[{name:'Materiál',product_id:null,values:['Termoplast']}], 'A missing required parameter can be corrected through normal controls and saved as structured data');
+  const failedJob = { ...jobs[0], status: 'import_failed', output: content, revision: 7,
+    checks: { warnings: ['EAN je vo feede, samostatný návod nebol priložený.'] },
+    import_result: { errors: [], items: [{ status: 'uncertain', errors: ['import_outcome_unknown'] }] }, facts: [], events: [] };
+  await act(async () => { root.render(React.createElement(AiJobDetail, { key: 'failed', job: failedJob, onChange: () => {} })); await tick(); });
+  assert(document.querySelector('[role="alert"]').textContent.includes('Výsledok odoslania nie je potvrdený'), 'Concrete import blocker is visible above content warnings');
+  assert(document.body.textContent.includes('samy osebe neblokujú import'), 'Warnings are explicitly distinguished from blockers');
+  assert(!button('Nová AI príprava s odhadom'), 'Unknown previous import cannot be duplicated');
+  await click(button('Overiť výsledok v e-shope'));
+  assert.deepEqual(calls.findLast(c => c.path.endsWith('/action')).body, { action: 'retry_import', expected_revision: 7 }, 'Uncertain outcome offers explicit reconciliation');
+
+  const partialJob = { ...jobs[0], status: 'import_blocked', output: content, revision: 8,
+    facts: [{ id: 1, name: 'Modrá bunda', description: '', variant_attributes: [] }, { id: 2, name: 'Červená bunda', description: '', variant_attributes: [] }], events: [] };
+  await act(async () => { root.render(React.createElement(AiJobDetail, { key: 'partial', job: partialJob, onChange: () => {} })); await tick(); });
+  await click([...document.querySelectorAll('label')].find(l => l.textContent.includes('Červená bunda')).querySelector('input'));
+  await click(button('Pripraviť pôvodný obsah bez AI'));
+  assert.deepEqual(calls.findLast(c => c.path.endsWith('/fork')).body, { expected_revision: 8, product_ids: [1], reuse_content: false, use_ai: false }, 'Partial recovery keeps only selected variants and explicitly uses original content');
+
+  const comparison = { id: 'update-fixture', state: 'ready', fields: ['title','long_description','metas','parameters','categories','availability'],
+    before: { descriptions: [{ language: 'en', title: 'English old title' }, { language: 'sk', title: 'Pôvodný názov', long_description: '<p>Pôvodný popis</p>' }], metas: [{ key: 'future_name', value: 'Pôvodný model' }], parameters: [], categories: [{ code: 'K1', main_yn: true }], availability: 'Overíme' },
+    after: { descriptions: [{ language: 'sk', title: 'Vylepšený názov', long_description: '<p>Vylepšený popis</p>' }], metas: [{ key: 'future_name', values: [{ language: 'sk', value: 'Nový model' }] }], parameters: [{ descriptions: [{ language: 'sk', name: 'Materiál' }], values: [{ descriptions: [{ language: 'sk', value: 'Hliník' }] }] }], categories: [{ code: 'K1', main_yn: false }, { code: 'K2', main_yn: true }], availability: 'Na objednávku' } };
+  const updateJob = { ...jobs[0], status: 'completed', output: content, options, update_preview: comparison, facts: [], events: [] };
+  await act(async () => { root.render(React.createElement(AiJobDetail, { key: 'update', job: updateJob, onChange: () => {} })); await tick(); });
+  assert(document.body.textContent.includes('Pôvodný názov') && document.body.textContent.includes('Vylepšený názov'));
+  assert(!document.body.textContent.includes('English old title'), 'Comparison shows requested shop language only');
+  assert(document.body.textContent.includes('Nový model') && document.body.textContent.includes('Materiál') && document.body.textContent.includes('Hliník'));
+  const frames = [...document.querySelectorAll('iframe')];
+  assert(frames.some(f => f.srcdoc.includes('Vylepšený popis')), 'HTML descriptions are previewed visually');
+  assert(frames.every(f => f.hasAttribute('sandbox') && f.getAttribute('sandbox') === ''), 'Untrusted HTML comparisons remain sandboxed');
+  assert.equal(document.querySelectorAll('pre').length, 0, 'Regular comparison does not expose API JSON');
+  await click(button('Potvrdiť vybrané zmeny v e-shope'));
+  assert.equal(calls.findLast(c => c.path.endsWith('/update-confirm')).body.preview_id, 'update-fixture');
+  await act(async () => { root.render(React.createElement(AiJobDetail, { key: 'rejected', job: { ...updateJob, update_preview: { ...comparison, state: 'rejected' }, update_result: { status: 'rejected', fields: comparison.fields, error: 'upgates_update_http_422' } }, onChange: () => {} })); await tick(); });
+  assert(document.querySelector('[role="alert"]'), 'Rejected update exposes a specific error');
+  assert(!button('Overiť výsledok aktualizácie'), 'Known rejection is not presented as uncertain reconciliation');
+
+  const existingReview = { ...updateJob, update_only: true, source_kind: 'shop', update_preview: null, status: 'review',
+    applied_rules: [{id:'common',name:'Overené spoločné pravidlá',text:'Použitá konkrétna inštrukcia.'}], parameter_registry: [{name:'Materiál',scope:'parent',values:['Hliník'],required:true}],
+    facts:[{id:77,name:'Existujúci produkt',description:'Pôvodný text z e-shopu',variant_attributes:[]}] };
+  await act(async () => { root.render(React.createElement(AiJobDetail, { key:'existing-review', job:existingReview, onChange:() => {} })); await tick(); });
+  assert(document.body.textContent.includes('Aktuálny obsah e-shopu'), 'Existing source is identified separately from supplier feed');
+  assert(button('Schváliť obsah pre aktualizáciu'), 'Approval explains update-only purpose');
+  assert(!button('Schváliť obsah a pripraviť import') && !button('Nová AI príprava s odhadom'), 'Shop-source jobs cannot create or fork imports');
+  const availability = [...document.querySelectorAll('label')].find(l => l.textContent === 'Dostupnosť (samostatný produkt)').querySelector('input');
+  assert(availability.disabled && !availability.checked, 'Shop-source update preserves availability without supplier stock');
+  assert(document.body.textContent.includes('Použitá konkrétna inštrukcia.') && document.body.textContent.includes('Materiál'), 'Job exposes exact frozen rules and parameter registry');
+
+  const treeCategories = [{ code: 'P', parent_code: null, names: { sk: 'Doplnky' } }, { code: 'C', parent_code: 'P', names: { sk: 'Ručné pumpy' } }, { code: 'S', parent_code: 'P', names: { sk: 'Servis' } }];
+  let selectedCategory;
+  function TreeHarness() { const [value, setValue] = React.useState(''); return React.createElement(CategoryTree, { categories: treeCategories, value, onChange: code => { selectedCategory = code; setValue(code); } }); }
+  await act(async () => { root.render(React.createElement(TreeHarness)); await tick(); });
+  await click([...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Ručné pumpy')));
+  assert.equal(selectedCategory, 'C');
+  assert(document.querySelector('summary').textContent.includes('Doplnky / Ručné pumpy'), 'Selected category displays full ancestor path');
+  await input(document.querySelector('input'), 'rucne');
+  assert(document.body.textContent.includes('Doplnky / Ručné pumpy'));
+  assert(!document.body.textContent.includes('Servis'), 'Accent-insensitive search filters unrelated categories');
+  await click(button('Zrušiť výber')); assert.equal(selectedCategory, '');
+
+  const editorRules = { ...rules, book: { ...book, rules: [...book.rules,
+    { ...book.rules[0], id: 'supplier', name: 'Paul Lange pravidlo', scope: { ...scope, supplier: 'paul-lange' } },
+    { ...book.rules[0], id: 'brand', name: 'Zéfal pravidlo', scope: { ...scope, brand: 'Zéfal' } }] } };
+  await act(async () => { root.render(React.createElement(AiRuleEditor, { rules: editorRules, onReload: () => {}, onJob: () => {} })); await tick(); });
+  await click([...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Dodávatelia (')));
+  const profileSelect = [...document.querySelectorAll('label')].find(l => l.textContent.startsWith('Profil')).querySelector('select');
+  assert.equal(profileSelect.options.length, 1); assert.equal(profileSelect.options[0].textContent, 'Paul Lange pravidlo', 'Rule groups filter profiles');
+  window.confirm = () => false; await click(button('Odstrániť pravidlo / profil'));
+  assert(document.querySelector('input[value="Paul Lange pravidlo"]'), 'Cancelling delete keeps rule');
+  window.confirm = () => true; await click(button('Odstrániť pravidlo / profil'));
+  assert(!document.querySelector('input[value="Paul Lange pravidlo"]'));
+  const note = [...document.querySelectorAll('label')].find(l => l.textContent === 'Dôvod zmeny').querySelector('input');
+  await input(note, 'Odstránené staré pravidlo'); await click(button('Uložiť novú verziu konceptu'));
+  assert.deepEqual(calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book.rules.map(r => r.id), ['common', 'brand'], 'Delete persists in draft without touching other groups');
+  assert(!calls.some(c => /\/publish$/.test(c.path)), 'Rule deletion does not publish automatically');
   await act(async () => root.unmount());
-  console.log('AI UI passed: per-family checkbox, original-content selection, two shops, cost pause, scoped token, editable content and explicit approval.');
+  console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search and scoped rule deletion.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

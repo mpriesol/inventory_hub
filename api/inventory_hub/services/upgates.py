@@ -124,6 +124,19 @@ class UpgatesClient:
             data = {"raw": r.text[:1000]}
         return data
 
+    def put(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            response = self.session.put(f"{self.base_url}/{path.lstrip('/')}", json=payload,
+                                        timeout=self.timeout, verify=self.verify_ssl)
+        except requests.RequestException:
+            raise UpgatesError("Upgates update outcome unknown") from None
+        if response.status_code >= 400:
+            raise UpgatesError(f"Upgates update HTTP {response.status_code}", status_code=response.status_code)
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+
     # ── Products ─────────────────────────────────────────────────────────
 
     def iter_products(self, page_size: int = 100) -> Iterator[Dict[str, Any]]:
