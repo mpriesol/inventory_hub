@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AiContent, AiJob, aiRequest } from '../../api/aiContent';
-import { AiParameterValues } from './AiParameterValues';
+import { AiParameterValues, missingRequiredParameterValues } from './AiParameterValues';
 import { AiPolicyFields } from './AiPolicyFields';
 import { CatalogImport } from './CatalogImport';
 
@@ -44,6 +44,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
   const updateState = job.update_preview?.state || job.update_state;
   const pendingUpdate = ['sending','uncertain'].includes(updateState || '');
   const editable = !pendingUpdate && ['review', 'blocked', 'ready'].includes(job.status) && job.kind === 'product';
+  const missingParameters = missingRequiredParameterValues(job.kind === 'product' ? job.output?.parameters || [] : [], job.parameter_registry || [], job.facts || []);
   async function perform(fn: () => Promise<AiJob>) { setBusy(true); setError(''); try { const updated = await fn(); onChange(updated); setDirty(false); } catch (e) { setError(t(`ai.errors.${(e as Error & {code?: string}).code}`, {defaultValue:(e as Error).message})); } finally { setBusy(false); } }
   const importErrors = [...new Set([...(job.preview?.errors || []), ...(job.import_result?.errors || []), ...(job.import_result?.items || job.preview?.items || []).flatMap(i => i.errors)])];
   const unknownImport = job.import_result?.items.some(i => i.status === 'uncertain');
@@ -51,7 +52,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
   const mismatchedFields = job.update_result?.status === 'uncertain' ? job.update_result.mismatched_fields || [] : [];
   const canFork = !pendingUpdate && job.kind === 'product' && !job.update_only && !unknownImport && !['queued','generating','preparing_import','import_queued','importing'].includes(job.status);
   const action = (action: string) => perform(() => aiRequest<AiJob>(`/jobs/${job.id}/action`, { action, expected_revision: job.revision }));
-  const save = (approve: boolean) => perform(() => aiRequest<AiJob>(`/jobs/${job.id}/review`, { expected_revision: job.revision, approve, content: { ...content, parameters } }));
+  const save = (approve: boolean) => perform(() => aiRequest<AiJob>(`/jobs/${job.id}/review`, { expected_revision: job.revision, approve, content: { ...content, parameters: parameters.filter(parameter => parameter.values.some(value => value.trim())) } }));
   return <section className="ai-card">
     <div className="ai-row"><h2 className="ai-grow">{job.name} · {job.shop}</h2><span className="ai-badge">{t(updateNeedsAttention ? `ai.updateStates.${updateState}` : job.update_only && job.status === 'exists' ? updateState === 'completed' ? 'ai.updatedExisting' : 'ai.readyForUpdate' : `ai.states.${job.status}`, { defaultValue: job.status })}</span></div>
     <p>{job.code} · {t('ai.publishedVersion', { version: job.rules_version })} · {job.category_profile}</p>
@@ -73,7 +74,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
         <div>{(['title', 'short_description', 'long_description', 'seo_title', 'meta_description', 'h1_descriptor', 'future_name', 'h1_descr_suffix'] as const).map(field => <label key={field}>{t(`ai.fields.${field}`)} · {content[field]?.length || 0}
           <textarea className={field === 'long_description' ? 'ai-long-text' : ''} disabled={!editable || busy} value={content[field] || ''} onChange={e => { setContent({ ...content, [field]: e.target.value }); setDirty(true); }} /></label>)}</div></div></details>
       <details><summary>{t('ai.renderedDescription')}</summary><DescriptionPreview title={t('ai.renderedDescription')} value={content.long_description} /></details>
-      <details open={job.checks?.errors?.some(error => error.includes('parameter') || error.includes('evidence')) || undefined}><summary>{t('ai.parametersAndEvidence')}</summary><AiParameterValues values={parameters} registry={job.parameter_registry || []} facts={job.facts || []} disabled={!editable || busy} onChange={values => { setParameters(values); setDirty(true); }} /><div className="ai-scroll"><table><thead><tr><th>{t('ai.claim')}</th><th>{t('ai.source')}</th><th>{t('ai.evidence')}</th><th /></tr></thead><tbody>{content.evidence?.map((e, i) => <tr key={i}><td>{e.claim}</td><td>{e.source}</td><td>{e.quote}</td><td><button type="button" disabled={!editable || busy} aria-label={`${t('ai.removeEvidence')} ${e.claim}`} onClick={() => { setContent({ ...content, evidence: content.evidence.filter((_, index) => index !== i) }); setDirty(true); }}>{t('ai.removeEvidence')}</button></td></tr>)}</tbody></table></div><p>{t('ai.removeEvidenceHelp')}</p>
+      <details open={missingParameters.length > 0 || job.checks?.errors?.some(error => error.includes('parameter') || error.includes('evidence')) || undefined}><summary>{t('ai.parametersAndEvidence')}</summary><AiParameterValues values={parameters} registry={job.parameter_registry || []} facts={job.facts || []} disabled={!editable || busy} onChange={values => { setParameters(values); setDirty(true); }} /><div className="ai-scroll"><table><thead><tr><th>{t('ai.claim')}</th><th>{t('ai.source')}</th><th>{t('ai.evidence')}</th><th /></tr></thead><tbody>{content.evidence?.map((e, i) => <tr key={i}><td>{e.claim}</td><td>{e.source}</td><td>{e.quote}</td><td><button type="button" disabled={!editable || busy} aria-label={`${t('ai.removeEvidence')} ${e.claim}`} onClick={() => { setContent({ ...content, evidence: content.evidence.filter((_, index) => index !== i) }); setDirty(true); }}>{t('ai.removeEvidence')}</button></td></tr>)}</tbody></table></div><p>{t('ai.removeEvidenceHelp')}</p>
         <label>{t('ai.missingFacts')}<textarea disabled={!editable || busy} value={(content.missing_facts || []).join('\n')} onChange={e => { setContent({ ...content, missing_facts: e.target.value.split('\n').filter(Boolean) }); setDirty(true); }} /></label></details>
       {editable && <div className="ai-actions"><button disabled={busy || !dirty} onClick={() => save(false)}>{t('ai.saveContent')}</button><button className="ai-primary" disabled={busy} onClick={() => save(true)}>{t(job.update_only ? 'ai.approveUpdateContent' : 'ai.approveContent')}</button>{dirty && <small>{t('ai.unsaved')}</small>}</div>}
     </>}

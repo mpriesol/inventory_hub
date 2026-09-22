@@ -506,7 +506,7 @@
       "brand": "Brand",
       "product": "Parent product code"
     },
-    "officialDomains": "Official domains, comma separated",
+    "officialDomains": "Preferred official websites (optional, comma separated; AI can discover others)",
     "instructions": "Instructions",
     "shopMapping": "Shop category mapping",
     "categoryCode": "Shop category code",
@@ -623,7 +623,7 @@
       "ai_parameter_value": "Unsupported parameter value",
       "ai_duplicate_parameter": "Duplicate parameter",
       "ai_unverified_feed_evidence": "The quotation was not found in the feed facts.",
-      "ai_unverified_official_evidence": "The official source was not confirmed as an opened, allowed source.",
+      "ai_unverified_official_evidence": "The source is not a valid HTTPS URL or was not recorded as an opened source.",
       "ai_no_additional_official_evidence": "No additional official source was verified; this result relies on the feed.",
       "ai_category_requires_review": "This category requires human review. Automatic approval is not enabled yet.",
       "ai_seo_title_length": "Review SEO title length (45–65 characters recommended).",
@@ -789,6 +789,8 @@
     "parameterEditor": {
       "name": "Parameter name",
       "missing": "Missing required parameters",
+      "missingValue": "Required parameter · value missing",
+      "requiredHelp": "Required parameters are listed below. Fill in missing values using a verified source. Then update the matching entry in Missing facts as well.",
       "choose": "Choose a parameter",
       "unregistered": "outside the registry",
       "unknownHelp": "The original parameter is preserved. Choose a registered name or remove this row.",

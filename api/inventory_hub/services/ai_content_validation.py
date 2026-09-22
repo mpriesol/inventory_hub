@@ -90,7 +90,6 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
                 values = parameters.get((attribute["name"], product["id"]))
                 if values is not None and values != [attribute["value"]]:
                     errors.append("ai_variant_identity_change:" + attribute["name"])
-    domains = context["resolved"].get("official_domains", [])
     feed_texts = {"feed:" + str(p["id"]): feed_evidence_texts(p) for p in context["facts"]}
     for evidence in content.evidence:
         if evidence.source.startswith("feed:"):
@@ -100,8 +99,10 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         else:
             url = urlsplit(evidence.source)
             host = (url.hostname or "").lower()
-            if (url.scheme != "https" or url.username or url.password or url.query or
-                not any(host == d or host.endswith("." + d) for d in domains) or evidence.source not in (opened or [])):
+            # Official sites may be discovered without a preconfigured domain list.
+            # The model assesses publisher identity; the server checks actual opening.
+            if (url.scheme != "https" or not host or url.username or url.password or url.query or
+                evidence.source not in (opened or [])):
                 errors.append("ai_unverified_official_evidence")
     if context["research"] == "official" and not any(not e.source.startswith("feed:") for e in content.evidence):
         warnings.append("ai_no_additional_official_evidence")
