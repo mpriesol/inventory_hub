@@ -294,6 +294,16 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code,'ai_shop_content_changed')
         self.client.put.assert_not_called()
 
+    async def test_unset_stock_becoming_positive_or_missing_prevents_stale_availability_update(self):
+        self.preview['fields'].append('availability')
+        self.preview['shop_stock']=None
+        self.preview['availability_basis']='supplier_unset_shop_stock'
+        for remote in ({**self.remote,'stock':2},{k:v for k,v in self.remote.items() if k!='stock'}):
+            with self.subTest(stock_present='stock' in remote),self.assertRaises(CatalogError) as error:
+                await self.run_confirm([remote])
+            self.assertEqual(error.exception.code,'ai_shop_content_changed')
+        self.client.put.assert_not_called()
+
     async def test_expired_or_wrong_target_preview_never_puts(self):
         for change, code in (({'expires_at':'2000-01-01'},'preview_expired'), ({'target':'other'},'shop_target_changed')):
             with self.subTest(change=change):
@@ -519,8 +529,23 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
         preview=await self.prepare(['availability'])
         self.assertEqual(preview['payload'],{'code':self.source.shop_code,'availability':'do 5 dní'})
 
-    async def test_missing_stock_does_not_guess_zero_for_availability(self):
-        for stock in (None,'unknown','NaN','Infinity'):
+    async def test_explicit_unset_stock_uses_supplier_availability_without_inventing_quantity(self):
+        self.remote.update(stock=None,stocks=[{'quantity':None},{'quantity':None}],active_yn=False)
+        self.source.supplier_stock=Decimal(0)
+        self.source.supplier_external_available=True
+        preview=await self.prepare(['availability'])
+        self.assertEqual(preview['availability_basis'],'supplier_unset_shop_stock')
+        self.assertIsNone(preview['shop_stock'])
+        self.assertEqual(preview['payload'],{'code':self.source.shop_code,'availability':'do 5 dní'})
+        self.assertIsNone(self.remote['stock'])
+        self.assertFalse(self.remote['active_yn'])
+
+    async def test_missing_stock_field_or_malformed_value_is_not_assumed_unset(self):
+        self.remote.pop('stock')
+        with self.assertRaises(CatalogError) as error:
+            await self.prepare(['availability'])
+        self.assertEqual(error.exception.code,'ai_update_stock_unknown')
+        for stock in ('unknown','null','NaN','Infinity',True):
             self.remote['stock']=stock
             with self.subTest(stock=stock), self.assertRaises(CatalogError) as error:
                 await self.prepare(['availability'])

@@ -188,16 +188,23 @@ async def prepare(db, job, request):
     if 'availability' in request.fields:
         if remote.get('variants'):
             raise CatalogError('ai_update_variant_availability', 'Variant availability needs a separate per-variant update', 422)
-        try:
-            stock = Decimal(str(remote.get('stock')))
-            if not stock.is_finite():
-                raise InvalidOperation
-        except InvalidOperation:
-            raise CatalogError('ai_update_stock_unknown', 'Verify shop stock before changing availability', 422) from None
-        if stock > 0:
-            enriched['availability'] = remote.get('availability')
-        else:
+        if 'stock' not in remote:
+            raise CatalogError('ai_update_stock_unknown', 'The shop did not return its stock setting', 422)
+        if remote['stock'] is None:
+            # Explicit null means stock was left unset. Supplier lead time is
+            # independent; do not invent or send a stock quantity, including zero.
             apply_availability(enriched, products, policy)
+        else:
+            try:
+                stock = Decimal(str(remote['stock']))
+                if not stock.is_finite():
+                    raise InvalidOperation
+            except InvalidOperation:
+                raise CatalogError('ai_update_stock_unknown', 'Verify shop stock before changing availability', 422) from None
+            if stock > 0:
+                enriched['availability'] = remote.get('availability')
+            else:
+                apply_availability(enriched, products, policy)
     if 'parameters' in request.fields and not (ctx['resolved'].get('category') or {}).get('parameters'):
         raise CatalogError('ai_parameter_registry_missing', 'Choose a category parameter registry first', 422)
     payload = patch_from_content(remote, enriched, request.fields, language)
@@ -206,7 +213,9 @@ async def prepare(db, job, request):
                'identity':identity(remote), 'language':language,
                'before':projection(remote,payload), 'after':projection(payload,payload), 'payload':payload}
     if 'availability' in request.fields:
-        preview['shop_stock'] = remote.get('stock')
+        preview['shop_stock'] = remote['stock']
+        if remote['stock'] is None:
+            preview['availability_basis'] = 'supplier_unset_shop_stock'
     if 'categories' in request.fields:
         preview['category_codes_by_id'] = {str(key):value for key,value in by_id.items()}
         from inventory_hub.services.catalog_merchandising import system_category_codes
@@ -276,7 +285,7 @@ def check_before(remote, preview):
         raise CatalogError('ai_shop_content_changed', 'Selected fields changed in the shop; prepare a new comparison', 409)
     if preview.get('identity') != identity(remote):
         raise CatalogError('ai_update_identity', 'Product identity changed; prepare a new comparison', 409)
-    if 'availability' in preview['fields'] and remote.get('stock') != preview.get('shop_stock'):
+    if 'availability' in preview['fields'] and ('stock' not in remote or remote['stock'] != preview.get('shop_stock')):
         raise CatalogError('ai_shop_content_changed', 'Shop stock changed; prepare a new availability comparison', 409)
 
 

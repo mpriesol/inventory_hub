@@ -801,6 +801,7 @@
     "mismatchedUpdateFields": "Unconfirmed fields",
     "actualShopValue": "Value read from the shop",
     "readbackValueMissing": "The shop API did not return a value for this field.",
-    "updateReadbackHelp": "Compare the expected and observed values below. Missing API data does not by itself mean the change was not saved. Verify update result checks the current state without sending the changes again."
+    "updateReadbackHelp": "Compare the expected and observed values below. Missing API data does not by itself mean the change was not saved. Verify update result checks the current state without sending the changes again.",
+    "supplierAvailabilityUnsetStock": "The shop stock quantity is unset. Availability will be set from the supplier; the stock quantity is unchanged."
   }
 }

@@ -137,12 +137,13 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(button('Pripraviť pôvodný obsah bez AI'));
   assert.deepEqual(calls.findLast(c => c.path.endsWith('/fork')).body, { expected_revision: 8, product_ids: [1], reuse_content: false, use_ai: false }, 'Partial recovery keeps only selected variants and explicitly uses original content');
 
-  const comparison = { id: 'update-fixture', state: 'ready', fields: ['title','long_description','metas','parameters','categories','availability'],
+  const comparison = { id: 'update-fixture', state: 'ready', availability_basis:'supplier_unset_shop_stock', fields: ['title','long_description','metas','parameters','categories','availability'],
     before: { descriptions: [{ language: 'en', title: 'English old title' }, { language: 'sk', title: 'Pôvodný názov', long_description: '<p>Pôvodný popis</p>' }], metas: [{ key: 'future_name', value: 'Pôvodný model' }], parameters: [], categories: [{ code: 'K1', main_yn: true }], availability: 'Overíme' },
     after: { descriptions: [{ language: 'sk', title: 'Vylepšený názov', long_description: '<p>Vylepšený popis</p>' }], metas: [{ key: 'future_name', values: [{ language: 'sk', value: 'Nový model' }] }], parameters: [{ descriptions: [{ language: 'sk', name: 'Materiál' }], values: [{ descriptions: [{ language: 'sk', value: 'Hliník' }] }] }], categories: [{ code: 'K1', main_yn: false }, { code: 'K2', main_yn: true }], availability: 'Na objednávku' } };
   const updateJob = { ...jobs[0], status: 'completed', output: content, options, update_preview: comparison, facts: [], events: [] };
   await act(async () => { root.render(React.createElement(AiJobDetail, { key: 'update', job: updateJob, onChange: () => {} })); await tick(); });
   assert(document.body.textContent.includes('Pôvodný názov') && document.body.textContent.includes('Vylepšený názov'));
+  assert(document.body.textContent.includes('Skladové množstvo e-shopu nie je vyplnené. Dostupnosť sa nastaví podľa dodávateľa; skladové množstvo sa nemení.'), 'Supplier availability preview explains unset shop stock and preservation of quantity');
   assert(!document.body.textContent.includes('English old title'), 'Comparison shows requested shop language only');
   assert(document.body.textContent.includes('Nový model') && document.body.textContent.includes('Materiál') && document.body.textContent.includes('Hliník'));
   const frames = [...document.querySelectorAll('iframe')];

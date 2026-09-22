@@ -802,6 +802,7 @@
     "mismatchedUpdateFields": "Nepotvrdené polia",
     "actualShopValue": "Hodnota načítaná z e-shopu",
     "readbackValueMissing": "API e-shopu nevrátilo hodnotu tohto poľa.",
-    "updateReadbackHelp": "Porovnaj očakávané a načítané hodnoty nižšie. Chýbajúca odpoveď API sama osebe neznamená, že sa zmena neuložila. Tlačidlo Overiť výsledok aktualizácie iba skontroluje stav; zmeny znova neodošle."
+    "updateReadbackHelp": "Porovnaj očakávané a načítané hodnoty nižšie. Chýbajúca odpoveď API sama osebe neznamená, že sa zmena neuložila. Tlačidlo Overiť výsledok aktualizácie iba skontroluje stav; zmeny znova neodošle.",
+    "supplierAvailabilityUnsetStock": "Skladové množstvo e-shopu nie je vyplnené. Dostupnosť sa nastaví podľa dodávateľa; skladové množstvo sa nemení."
   }
 }
