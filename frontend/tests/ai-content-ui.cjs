@@ -57,6 +57,11 @@ async function click(element) { assert(element, 'Element exists'); await act(asy
 async function input(element, value) { await act(async () => { Object.getOwnPropertyDescriptor(element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })); await tick(); }); }
 
 (async () => {
+  unlockAi('');
+  await act(async () => { root.render(React.createElement(MemoryRouter, {key:'locked'}, React.createElement(AiContentPage))); await tick(); });
+  assert(button('Odomknúť správu AI').disabled, 'Unlock stays disabled until the access token is filled');
+  await input(document.querySelector('input[type="password"]'), 'synthetic-ui-fixture-token');
+  assert(!button('Odomknúť správu AI').disabled, 'Unlock becomes available when the token is entered');
   unlockAi('synthetic-ui-fixture-token');
   await act(async () => { root.render(React.createElement(MemoryRouter, { initialEntries: [{ pathname: '/ai-content', state: { selection: { supplier: 'northfinder', feed_key: 'products', product_ids: [1, 2, 3], run_id: 1, shop: 'biketrek', options } } }] }, React.createElement(AiContentPage))); await tick(); });
   await act(tick);
@@ -209,6 +214,9 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
     { ...book.rules[0], id: 'supplier', name: 'Paul Lange pravidlo', scope: { ...scope, supplier: 'paul-lange' } },
     { ...book.rules[0], id: 'brand', name: 'Zéfal pravidlo', scope: { ...scope, brand: 'Zéfal' } }] } };
   await act(async () => { root.render(React.createElement(AiRuleEditor, { rules: editorRules, onReload: () => {}, onJob: () => {} })); await tick(); });
+  assert(button('Publikovať koncept').disabled, 'A missing draft has a readable action label without an invented version number');
+  assert(!document.body.textContent.includes('#—'));
+  assert(document.getElementById(button('Publikovať koncept').getAttribute('aria-describedby')).textContent.includes('Najskôr vyplň dôvod zmeny'), 'Disabled publishing explains how to enable the action');
   await click([...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Dodávatelia (')));
   const profileSelect = [...document.querySelectorAll('label')].find(l => l.textContent.startsWith('Profil')).querySelector('select');
   assert.equal(profileSelect.options.length, 1); assert.equal(profileSelect.options[0].textContent, 'Paul Lange pravidlo', 'Rule groups filter profiles');
@@ -220,6 +228,8 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await input(note, 'Odstránené staré pravidlo'); await click(button('Uložiť novú verziu konceptu'));
   assert.deepEqual(calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book.rules.map(r => r.id), ['common', 'brand'], 'Delete persists in draft without touching other groups');
   assert(!calls.some(c => /\/publish$/.test(c.path)), 'Rule deletion does not publish automatically');
+  assert(!button('Publikovať verziu #2').disabled, 'Saving a draft enables publishing the actual version');
+  assert(!document.getElementById('ai-publish-help'), 'No-draft instruction disappears when a draft is available');
   await act(async () => root.unmount());
   console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search and scoped rule deletion.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

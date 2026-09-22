@@ -12,8 +12,8 @@
 .ai-content label { display: grid; gap: 6px; font-size: 13px; }
 .ai-content label.ai-check { display: flex; align-items: center; gap: 9px; }
 .ai-content button:not(.btn) { border: 1px solid var(--color-border-default, #41454b); border-radius: 8px; padding: 9px 14px; background: var(--color-bg-secondary); cursor: pointer; }
-.ai-content button:disabled { opacity: .45; cursor: default; }
-.ai-content button[aria-selected=true], .ai-content .ai-primary { border-color: var(--color-accent-primary, #f0aa08); background: var(--color-accent-primary, #f0aa08); color: #15120a; }
+.ai-content button[aria-selected=true], .ai-content button.ai-primary { border-color: var(--color-accent-primary, #f0aa08); background: var(--color-accent-primary, #f0aa08); color: #15120a; }
+.ai-content button:disabled { background: var(--color-bg-secondary); color: var(--color-text-secondary); border-color: var(--color-border-default, #41454b); border-style: dashed; opacity: 1; cursor: not-allowed; }
 .ai-card { background: var(--color-bg-secondary); border: 1px solid var(--color-border-default, #41454b); border-radius: 12px; padding: 20px; margin: 14px 0; }
 .ai-notice { border-left: 3px solid #f0aa08; background: rgba(240,170,8,.07); padding: 13px 16px; margin: 12px 0; border-radius: 6px; overflow-wrap: anywhere; }
 .ai-error { border-color: #ef6464; background: rgba(239,100,100,.09); }
