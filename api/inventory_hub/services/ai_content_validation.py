@@ -22,6 +22,20 @@ def text_of(value: str) -> str:
     return " ".join(BeautifulSoup(value or "", "html.parser").stripped_strings)
 
 
+def evidence_text(value: str) -> str:
+    return " ".join(text_of(value).split()).casefold()
+
+
+def feed_evidence_texts(value) -> list[str]:
+    # Read source values directly: dict repr escapes line breaks and quotes.
+    # Keep fields separate so unrelated values cannot form a matching quote.
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in feed_evidence_texts(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in feed_evidence_texts(item)]
+    return [] if value is None else [evidence_text(str(value))]
+
+
 def validate_content(content: Content, context: dict, opened: list[str] | None = None) -> dict:
     errors, warnings = [], list(content.warnings)
     if content.missing_facts:
@@ -77,10 +91,11 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
                 if values is not None and values != [attribute["value"]]:
                     errors.append("ai_variant_identity_change:" + attribute["name"])
     domains = context["resolved"].get("official_domains", [])
-    feed_texts = {"feed:" + str(p["id"]): text_of(str(p)) for p in context["facts"]}
+    feed_texts = {"feed:" + str(p["id"]): feed_evidence_texts(p) for p in context["facts"]}
     for evidence in content.evidence:
         if evidence.source.startswith("feed:"):
-            if evidence.source not in feed_texts or text_of(evidence.quote).casefold() not in feed_texts[evidence.source].casefold():
+            quote = evidence_text(evidence.quote)
+            if not quote or not any(quote in text for text in feed_texts.get(evidence.source, [])):
                 errors.append("ai_unverified_feed_evidence")
         else:
             url = urlsplit(evidence.source)
