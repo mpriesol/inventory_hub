@@ -2,16 +2,19 @@
 import copy
 import json
 import unittest
+from contextlib import asynccontextmanager
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi import HTTPException
 
 from catalog_fixtures import FakeUpgates, product
 from inventory_hub.ai_content_types import CategoryProfile, Content, ParameterDefinition, Policy, Rule, RuleBook, Scope
 from inventory_hub.catalog_types import ShopImportOptions
 from inventory_hub.routers.ai_content import access
-from inventory_hub.services import ai_content as service, ai_content_provider as provider, ai_content_rules as rules, catalog_import as imports
+from inventory_hub.services import ai_content as service, ai_content_provider as provider, ai_content_rules as rules, ai_content_worker as worker, catalog_import as imports
 from inventory_hub.services.ai_content_validation import overlay, validate_content
 
 
@@ -164,7 +167,38 @@ class ContentTests(unittest.TestCase):
         self.assertNotEqual(before, service.source_digest([p]))
 
 
+class WorkerErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_safe_diagnostic_reaches_history_without_changing_retry_or_budget_rules(self):
+        @asynccontextmanager
+        async def session():
+            yield None
+        for status, expected_state, reserved in ((400, "failed", 0), (503, "uncertain", 1)):
+            job = SimpleNamespace(status="queued", context=context(), kind="product", revision=1,
+                                  events=[], actual_usd=None, reserved_usd=1)
+            error = provider.ProviderError(httpx.Response(status, json={"error": {"code": "model_not_found"}}))
+            with patch.object(worker, "get_session_context", session), \
+                 patch.object(service, "get_job", AsyncMock(return_value=job)), \
+                 patch.object(provider, "generate", AsyncMock(side_effect=error)) as generate, \
+                 patch.object(provider.settings, "AI_CONTENT_ENABLED", True):
+                await worker.generation("synthetic-job")
+            generate.assert_awaited_once()
+            self.assertEqual((job.status, job.reserved_usd), (expected_state, reserved))
+            self.assertIn(f"OpenAI HTTP {status}; code=model_not_found", job.events[-1]["note"])
+
+
 class ProviderTests(unittest.TestCase):
+    def test_provider_diagnostics_exclude_secrets_and_arbitrary_values(self):
+        error = provider.ProviderError(httpx.Response(400, json={"error": {
+            "code": "unsupported_value", "param": "reasoning.effort", "message": "private input and secret",
+        }}))
+        self.assertEqual(error.code, "ai_provider_rejected")
+        self.assertEqual(str(error), "OpenAI HTTP 400; code=unsupported_value; param=reasoning.effort")
+        for body in ({"error": {"code": "private-secret", "param": "private-secret", "message": "private-secret"}},
+                     {"error": "private-secret"}, ["private-secret"]):
+            self.assertEqual(str(provider.ProviderError(httpx.Response(401, json=body))), "OpenAI HTTP 401")
+        error = provider.ProviderError(httpx.Response(503, text="private proxy response"))
+        self.assertEqual((error.code, str(error)), ("ai_outcome_unknown", "OpenAI HTTP 503"))
+
     def test_schema_strict_and_response_contract(self):
         body = provider.request_body(context())
         self.assertFalse(body["store"])
