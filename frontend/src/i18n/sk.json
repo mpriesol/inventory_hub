@@ -527,6 +527,8 @@
     "changeNote": "Dôvod zmeny",
     "saveDraft": "Uložiť novú verziu konceptu",
     "publishVersion": "Publikovať verziu #{{version}}",
+    "publishDraft": "Publikovať koncept",
+    "publishDraftHelp": "Najskôr vyplň dôvod zmeny a ulož koncept. Potom ho môžeš publikovať pre nové úlohy.",
     "aiRuleAssistant": "Navrhnúť úpravu pomocou AI",
     "proposalHelp": "AI pracuje s publikovaným profilom. Vytvorí návrh textu a prípadne registra parametrov kategórie. Návrh sa sám nikdy nepublikuje.",
     "proposalPlaceholder": "Čo potrebujeme doplniť alebo spresniť?",

@@ -526,6 +526,8 @@
     "changeNote": "Reason for change",
     "saveDraft": "Save a new draft version",
     "publishVersion": "Publish version #{{version}}",
+    "publishDraft": "Publish draft",
+    "publishDraftHelp": "First enter a reason for the change and save a draft. You can then publish it for new jobs.",
     "aiRuleAssistant": "Propose a change with AI",
     "proposalHelp": "AI uses the published profile. It proposes instructions and optionally the category parameter registry. Proposals are never published automatically.",
     "proposalPlaceholder": "What should be added or clarified?",
