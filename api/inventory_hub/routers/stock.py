@@ -11,12 +11,15 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import case, func, select
+from sqlalchemy import Numeric, and_, case, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.database import get_session
-from inventory_hub.db_models import Product, Shop
+from inventory_hub.db_models import Product, Shop, Warehouse
 from inventory_hub.db_models_ext import StockBalance
+from inventory_hub.fifo_models import FifoLayer, FifoState
+from inventory_hub.services.product_editor import effective_names
+from inventory_hub.product_editor_models import ProductEditorOverride
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -52,76 +55,89 @@ async def _image_urls_by_product(db: AsyncSession) -> Dict[int, str]:
     return out
 
 
+def valuation_balances():
+    """One row per balance; partial FIFO costs never become complete stock value."""
+    layers = select(
+        FifoLayer.product_id, FifoLayer.warehouse_id,
+        func.sum(case((FifoLayer.cost_status == "known", func.round(FifoLayer.quantity_remaining * FifoLayer.unit_cost, 4)), else_=0)).label("known_value"),
+        func.sum(case((FifoLayer.cost_status == "provisional", func.round(FifoLayer.quantity_remaining * FifoLayer.unit_cost, 4)), else_=0)).label("provisional_value"),
+        func.sum(case((FifoLayer.cost_status == "provisional", FifoLayer.quantity_remaining), else_=0)).label("provisional_quantity"),
+        func.sum(case((FifoLayer.cost_status == "unknown", FifoLayer.quantity_remaining), else_=0)).label("unknown_quantity"),
+    ).group_by(FifoLayer.product_id, FifoLayer.warehouse_id).subquery()
+    active = FifoState.product_id.is_not(None)
+    unknown = case((active, func.coalesce(layers.c.unknown_quantity, 0)),
+                   (StockBalance.total_value.is_(None), StockBalance.qty_on_hand), else_=0)
+    provisional = func.coalesce(layers.c.provisional_quantity, 0)
+    return select(
+        StockBalance.product_id, StockBalance.warehouse_id, StockBalance.qty_on_hand,
+        StockBalance.qty_reserved, StockBalance.qty_quarantined,
+        func.coalesce(cast(ProductEditorOverride.data["warehouses"][Warehouse.code]["min_quantity"].astext, Numeric(12, 3)),
+                      StockBalance.min_quantity).label("min_quantity"),
+        StockBalance.total_value,
+        case((active, func.coalesce(layers.c.known_value, 0)), else_=func.coalesce(StockBalance.total_value, 0)).label("known_value"),
+        func.coalesce(layers.c.provisional_value, 0).label("provisional_value"),
+        unknown.label("unknown_quantity"), provisional.label("provisional_quantity"),
+        case((and_(unknown == 0, provisional == 0, StockBalance.total_value.is_not(None)), 0), else_=1).label("incomplete"),
+    ).join(Warehouse, Warehouse.id == StockBalance.warehouse_id)\
+     .outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == StockBalance.product_id)\
+     .outerjoin(FifoState, and_(FifoState.product_id == StockBalance.product_id,
+                               FifoState.warehouse_id == StockBalance.warehouse_id))\
+     .outerjoin(layers, and_(layers.c.product_id == StockBalance.product_id,
+                            layers.c.warehouse_id == StockBalance.warehouse_id)).subquery()
+
+
+def valuation_fields(balance):
+    return [func.sum(balance.c.qty_on_hand).label("on_hand"),
+            func.sum(balance.c.qty_reserved).label("reserved"),
+            func.sum(balance.c.qty_quarantined).label("quarantined"),
+            func.sum(balance.c.total_value).label("total_value"),
+            func.sum(balance.c.known_value).label("known_value"),
+            func.sum(balance.c.provisional_value).label("provisional_value"),
+            func.sum(balance.c.unknown_quantity).label("unknown_quantity"),
+            func.sum(balance.c.provisional_quantity).label("provisional_quantity"),
+            func.sum(balance.c.incomplete).label("incomplete")]
+
+
+def valuation_output(row):
+    on_hand, reserved, quarantined = (float(row.on_hand or 0), float(row.reserved or 0), float(row.quarantined or 0))
+    complete = not row.incomplete
+    value = float(row.total_value or 0) if complete else None
+    return {"on_hand": on_hand, "reserved": reserved, "quarantined": quarantined,
+            "available": on_hand - reserved - quarantined,
+            "avg_cost": value / on_hand if complete and on_hand else (0 if complete else None),
+            "total_value": value, "value_complete": complete,
+            "known_value": float(row.known_value or 0), "provisional_value": float(row.provisional_value or 0),
+            "unknown_quantity": float(row.unknown_quantity or 0), "provisional_quantity": float(row.provisional_quantity or 0)}
+
+
 @router.get("/items")
 async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str, Any]]:
-    """
-    Stock items aggregated per product across warehouses.
-    Empty list until stock movements start populating stock_balances.
-    """
-    stmt = (
-        select(
-            Product.id,
-            Product.sku,
-            Product.name,
-            Product.brand,
-            func.sum(StockBalance.qty_on_hand).label("on_hand"),
-            func.sum(StockBalance.qty_reserved).label("reserved"),
-            func.sum(StockBalance.total_value).label("total_value"),
-            func.max(StockBalance.min_quantity).label("min_quantity"),
-            func.max(StockBalance.avg_cost).label("avg_cost"),
-        )
-        .join(StockBalance, StockBalance.product_id == Product.id)
-        .group_by(Product.id, Product.sku, Product.name, Product.brand)
-        .order_by(Product.sku)
-    )
-    result = await db.execute(stmt)
+    balances = valuation_balances()
+    result = await db.execute(select(Product.id, Product.sku, Product.name, Product.brand,
+        *valuation_fields(balances), func.max(balances.c.min_quantity).label("min_quantity"))
+        .join(balances, balances.c.product_id == Product.id)
+        .group_by(Product.id, Product.sku, Product.name, Product.brand).order_by(Product.sku))
     images = await _image_urls_by_product(db)
-
-    items: List[Dict[str, Any]] = []
-    for row in result.all():
-        on_hand = float(row.on_hand or 0)
-        reserved = float(row.reserved or 0)
-        min_qty = float(row.min_quantity or 0)
-        items.append({
-            "sku": row.sku,
-            "image_url": images.get(row.id),
-            "name": row.name,
-            "brand": row.brand or "",
-            "on_hand": on_hand,
-            "reserved": reserved,
-            "available": on_hand - reserved,
-            "avg_cost": float(row.avg_cost or 0),
-            "total_value": float(row.total_value or 0),
-            "low_stock": on_hand <= min_qty,
-        })
-    return items
+    names = await effective_names(db)
+    return [{"sku": row.sku, "image_url": images.get(row.id), "name": names.get(row.id, {}).get("name", row.name), "brand": names.get(row.id, {}).get("brand", row.brand) or "",
+             **valuation_output(row),
+             "low_stock": float(row.on_hand or 0) - float(row.reserved or 0) - float(row.quarantined or 0) <= float(row.min_quantity or 0)}
+            for row in result.all()]
 
 
 @router.get("/summary")
 async def stock_summary(db: AsyncSession = Depends(get_session)) -> Dict[str, Any]:
-    """Real aggregate numbers for dashboard / stock page header."""
-    bal = await db.execute(
-        select(
-            func.count(func.distinct(StockBalance.product_id)),
-            func.coalesce(func.sum(StockBalance.total_value), 0),
-            func.coalesce(func.sum(StockBalance.qty_reserved), 0),
-            func.coalesce(
-                func.sum(case((StockBalance.qty_on_hand <= StockBalance.min_quantity, 1), else_=0)),
-                0,
-            ),
-        )
-    )
-    products_with_stock, total_value, reserved_total, low_stock = bal.one()
-
+    balances = valuation_balances()
+    row = (await db.execute(select(*valuation_fields(balances),
+        func.count(func.distinct(balances.c.product_id)).label("products_with_stock"),
+        func.sum(case((balances.c.qty_on_hand - balances.c.qty_reserved - balances.c.qty_quarantined <= balances.c.min_quantity, 1), else_=0)).label("low_stock")))).one()
+    values = valuation_output(row)
     products_total = (await db.execute(select(func.count(Product.id)))).scalar() or 0
-
-    return {
-        "products_total": int(products_total),
-        "products_with_stock": int(products_with_stock or 0),
-        "inventory_value": float(total_value or 0),
-        "reserved_total": float(reserved_total or 0),
-        "low_stock_count": int(low_stock or 0),
-    }
+    return {"products_total": int(products_total), "products_with_stock": int(row.products_with_stock or 0),
+            "inventory_value": values["total_value"], "known_inventory_value": values["known_value"],
+            "provisional_inventory_value": values["provisional_value"], "value_complete": values["value_complete"],
+            "unknown_quantity": values["unknown_quantity"], "provisional_quantity": values["provisional_quantity"],
+            "quarantined_total": values["quarantined"], "reserved_total": values["reserved"], "low_stock_count": int(row.low_stock or 0)}
 
 
 # ============================================================================
@@ -164,6 +180,7 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
     if not product:
         raise HTTPException(404, detail=f"Product not found: {sku}")
 
+    names = (await effective_names(db, [product.id])).get(product.id, {})
     group = None
     if product.group_id:
         group = await db.get(ProductGroup, product.group_id)
@@ -178,9 +195,9 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
         select(ProductIdentifier).where(ProductIdentifier.product_id == product.id)
     )).scalars().all()
 
-    balances = (await db.execute(
-        select(_SB).where(_SB.product_id == product.id)
-    )).scalars().all()
+    balances = valuation_balances()
+    valuation = valuation_output((await db.execute(select(*valuation_fields(balances))
+        .where(balances.c.product_id == product.id))).one())
 
     shop_rows = (await db.execute(
         select(ShopProduct, Shop.code)
@@ -203,13 +220,10 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
             if image_url:
                 break
 
-    on_hand = sum(float(b.qty_on_hand or 0) for b in balances)
-    reserved = sum(float(b.qty_reserved or 0) for b in balances)
-
     return {
         "sku": product.sku,
-        "name": product.name,
-        "brand": product.brand,
+        "name": names.get("name", product.name),
+        "brand": names.get("brand", product.brand),
         "category": product.category,
         "weight_g": product.weight_g,
         "created_from_source": product.created_from_source,
@@ -224,12 +238,7 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
              "value": i.value, "is_primary": i.is_primary}
             for i in idents
         ],
-        "stock": {
-            "on_hand": on_hand,
-            "reserved": reserved,
-            "available": on_hand - reserved,
-            "avg_cost": float(balances[0].avg_cost) if balances and balances[0].avg_cost is not None else None,
-        },
+        "stock": valuation,
         "shops": [
             {"shop": shop_code, "external_code": sp.external_code, "variant_code": sp.variant_code,
              "parent_code": sp.parent_code,

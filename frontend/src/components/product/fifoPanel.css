@@ -1,0 +1,23 @@
+.fifo-panel { display: grid; gap: 12px; color: var(--color-text-primary); }
+.fifo-panel h3, .fifo-panel h4 { font-weight: 600; margin: 8px 0; }
+.fifo-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.fifo-panel label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.fifo-panel input, .fifo-panel select { max-width: 100%; border: 1px solid var(--color-border); border-radius: 5px; padding: 7px; background: var(--color-bg-primary); color: inherit; }
+.fifo-panel button { border: 1px solid var(--color-border); border-radius: 5px; padding: 7px 10px; background: var(--color-bg-secondary); font-size: 13px; }
+.fifo-panel button:disabled { opacity: .45; cursor: default; }
+.fifo-panel button:not(:disabled):hover { border-color: var(--color-accent); }
+.fifo-panel button:focus-visible, .fifo-panel input:focus-visible, .fifo-panel select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.fifo-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 8px; }
+.fifo-metrics > div { display: flex; flex-direction: column; border: 1px solid var(--color-border); padding: 10px; border-radius: 6px; }
+.fifo-metrics small { color: var(--color-text-secondary); }
+.fifo-notice, .fifo-form { padding: 14px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-bg-secondary); }
+.fifo-form { display: grid; gap: 12px; }
+.fifo-form fieldset { display: grid; gap: 12px; min-width: 0; }
+.fifo-fields, .fifo-layer-draft { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; }
+.fifo-layer-draft { border-bottom: 1px solid var(--color-border); padding-bottom: 12px; }
+.fifo-panel .fifo-confirm { flex-direction: row; align-items: flex-start; }
+.fifo-scroll { overflow-x: auto; max-width: 100%; }
+.fifo-panel table { border-collapse: collapse; min-width: 620px; width: 100%; font-size: 13px; }
+.fifo-panel th, .fifo-panel td { text-align: left; padding: 8px; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.fifo-panel td button { margin: 2px; }
+.fifo-panel [role=alert] { padding: 10px; border-left: 3px solid #b45309; }

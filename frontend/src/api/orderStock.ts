@@ -18,9 +18,10 @@ export interface OrderStockLine {
   old_allocation: string; allocation: string; shortage: string;
 }
 export interface OrderStockEffect {
-  product_id: number; sku: string; qty_on_hand: string; qty_reserved: string; avg_cost: string; total_value: string;
-  old_allocation: string; allocation: string; shortage: string; issue_quantity: string; issue_cost: string;
-  qty_on_hand_after: string; qty_reserved_after: string; total_value_after: string;
+  product_id: number; sku: string; qty_on_hand: string; qty_reserved: string; avg_cost: string | null; total_value: string | null;
+  old_allocation: string; allocation: string; shortage: string; issue_quantity: string; issue_cost: string | null;
+  qty_on_hand_after: string; qty_reserved_after: string; total_value_after: string | null;
+  valuation_mode?: string; value_complete?: boolean; qty_quarantined?: string;
 }
 export interface OrderStockExcluded {
   line_key: string; code?: string; title?: string; name?: string; quantity?: string; classification?: string; reason?: string; reasons?: string[];

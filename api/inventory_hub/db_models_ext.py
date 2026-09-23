@@ -101,10 +101,11 @@ class StockBalance(TimestampMixin, Base):
     warehouse_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False)
     qty_on_hand: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, nullable=False)
     qty_reserved: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, nullable=False)
+    qty_quarantined: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, nullable=False)
     # qty_available is GENERATED in PostgreSQL, but we compute it here too
     min_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, nullable=False)
-    avg_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=0, nullable=False)
-    total_value: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0, nullable=False)
+    avg_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4).evaluates_none(), default=0, nullable=True)
+    total_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 4).evaluates_none(), default=0, nullable=True)
     last_purchase_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
     last_purchase_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_movement_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -117,11 +118,12 @@ class StockBalance(TimestampMixin, Base):
     @property
     def qty_available(self) -> Decimal:
         """Computed available quantity."""
-        return self.qty_on_hand - self.qty_reserved
+        return self.qty_on_hand - self.qty_reserved - (self.qty_quarantined or Decimal("0"))
     
     __table_args__ = (
         UniqueConstraint("product_id", "warehouse_id", name="uq_stock_balances"),
         CheckConstraint("qty_reserved >= 0", name="chk_qty_reserved_non_negative"),
+        CheckConstraint("qty_quarantined >= 0", name="chk_qty_quarantined_non_negative"),
         CheckConstraint("avg_cost >= 0", name="chk_avg_cost_non_negative"),
         Index("idx_stock_balances_product", "product_id"),
         Index("idx_stock_balances_warehouse", "warehouse_id"),
@@ -154,7 +156,7 @@ class StockMovement(Base):
     reference_id: Mapped[Optional[str]] = mapped_column(String(100))
     reference_source: Mapped[Optional[str]] = mapped_column(String(100))
     balance_after: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
-    avg_cost_after: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    avg_cost_after: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(String(100), default="system", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)

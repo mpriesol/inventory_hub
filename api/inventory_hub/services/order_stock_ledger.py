@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from inventory_hub.db_models import MovementType, OrderStatus, Product, ReservationStatus, Warehouse
 from inventory_hub.db_models_ext import Reservation, ShopOrder, ShopOrderItem, StockBalance, StockMovement
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.services import fifo
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
 
@@ -201,46 +202,67 @@ async def _plan(db, order, source_order, action, warehouse_id, *, lock):
             errors.append(_error("inactive_product", product_id=product_id))
         on_hand = Decimal(balance.qty_on_hand) if balance else ZERO
         reserved = Decimal(balance.qty_reserved) if balance else ZERO
-        avg = Decimal(balance.avg_cost) if balance else ZERO
-        value = Decimal(balance.total_value) if balance else ZERO
+        quarantined = Decimal(balance.qty_quarantined) if balance else ZERO
+        avg = Decimal(balance.avg_cost) if balance and balance.avg_cost is not None else None if balance else ZERO
+        value = Decimal(balance.total_value) if balance and balance.total_value is not None else None if balance else ZERO
         old = previous[product_id]
-        if (not all(number.is_finite() for number in (on_hand, reserved, avg, value))
-                or not ZERO <= old <= reserved <= on_hand or min(avg, value) < ZERO
-                or (on_hand == ZERO and value != ZERO)):
+        try:
+            valuation = await fifo.valuation(db, balance, lock=lock)
+        except fifo.FifoError as error:
+            errors.append({"code": error.code, "product_id": product_id})
+            continue
+        fifo_mode = valuation["mode"] == "fifo"
+        if (not all(number.is_finite() for number in (on_hand, reserved, quarantined))
+                or not ZERO <= old <= reserved or quarantined < ZERO or reserved + quarantined > on_hand
+                or (not fifo_mode and (avg is None or value is None))
+                or any(number is not None and (not number.is_finite() or number < ZERO) for number in (avg, value))
+                or (on_hand == ZERO and value not in (ZERO, None))):
             errors.append(_error("invariant", product_id=product_id))
             continue
-        # Receiving rounds average and value independently to four decimals.
-        # Allow that rounding residual, but do not consume materially
-        # inconsistent acquisition values from a legacy balance.
-        if action != "cancel" and abs(value - on_hand * avg) > (on_hand + 1) * MONEY / 2:
+        if (not fifo_mode and action != "cancel" and
+                abs(value - on_hand * avg) > (on_hand + 1) * MONEY / 2):
             errors.append(_error("invariant", product_id=product_id))
             continue
-        if action != "cancel" and any(number != number.to_integral_value() for number in (on_hand, reserved, old)):
+        if action != "cancel" and any(number != number.to_integral_value() for number in (on_hand, reserved, quarantined, old)):
             errors.append(_error("unit_unsupported", product_id=product_id))
             continue
         demand = sum((line["quantity"] for line in current), ZERO)
         if demand > MAX_QUANTITY:
             errors.append(_error("quantity_unsupported", product_id=product_id))
             continue
-        available = on_hand - reserved + old
+        available = on_hand - reserved - quarantined + old
         allocated = min(demand, available)
         shortage = demand - allocated
         if action == "issue" and shortage:
             errors.append(_error("insufficient_stock", product_id=product_id))
-        # A failed issue has no projected partial dispatch. Its shortage is still
-        # visible, but no physical movement is eligible for application.
         issue_quantity = demand if action == "issue" and shortage == ZERO else ZERO
         allocation_after = allocated if action == "reserve" else ZERO
-        issue_cost = (value if issue_quantity == on_hand and issue_quantity > ZERO else
-                      (value * issue_quantity / on_hand).quantize(MONEY, rounding=ROUND_HALF_UP)
-                      if issue_quantity > ZERO else ZERO)
+        fifo_plan = None
+        if fifo_mode and issue_quantity:
+            try:
+                fifo_plan = await fifo.plan_issue(db, balance, current, lock=lock)
+            except fifo.FifoError as error:
+                errors.append({"code": error.code, "product_id": product_id})
+                continue
+            issue_cost = Decimal(fifo_plan["total_cost"]) if fifo_plan["total_cost"] is not None else None
+            value_after = Decimal(fifo_plan["after"]["total_value"]) if fifo_plan["after"]["total_value"] is not None else None
+            avg_after = Decimal(fifo_plan["after"]["avg_cost"]) if fifo_plan["after"]["avg_cost"] is not None else None
+        else:
+            issue_cost = (value if issue_quantity == on_hand and issue_quantity > ZERO else
+                          (value * issue_quantity / on_hand).quantize(MONEY, rounding=ROUND_HALF_UP)
+                          if issue_quantity > ZERO else ZERO)
+            value_after = value - issue_cost if value is not None else None
+            avg_after = avg
         effect = {"product_id": product_id, "sku": product.sku,
-                  "qty_on_hand": on_hand, "qty_reserved": reserved, "avg_cost": avg, "total_value": value,
+                  "qty_on_hand": on_hand, "qty_reserved": reserved, "qty_quarantined": quarantined,
+                  "avg_cost": avg, "total_value": value,
+                  "valuation_mode": valuation["mode"], "value_complete": valuation["value_complete"],
+                  "fifo_revision": valuation["revision"], "fifo_plan": fifo_plan,
                   "old_allocation": old, "allocation": allocation_after, "shortage": shortage,
                   "issue_quantity": issue_quantity, "issue_cost": issue_cost,
                   "qty_on_hand_after": on_hand - issue_quantity,
                   "qty_reserved_after": reserved - old + allocation_after,
-                  "total_value_after": value - issue_cost}
+                  "avg_cost_after": avg_after, "total_value_after": value_after}
         effects.append({key: _text(val) if isinstance(val, Decimal) else val for key, val in effect.items()})
         remaining = allocated
         for line in current:
@@ -319,6 +341,25 @@ async def apply_order(db, order, source_order: dict, action: str, warehouse_id: 
             continue
         balance.qty_reserved = Decimal(effect["qty_reserved_after"])
         if action != "issue" or Decimal(effect["issue_quantity"]) == ZERO:
+            continue
+        if effect["valuation_mode"] == "fifo":
+            for line in sorted((line for line in source_lines if line["product_id"] == product_id),
+                               key=lambda line: line["line_key"]):
+                item = items[line["line_key"]]
+                movement = StockMovement(
+                    idempotency_key=f"order:{order.id}:issue:{item.id}", product_id=product_id,
+                    warehouse_id=warehouse_id, movement_type=MovementType.SALE_OUT, quantity=-line["quantity"],
+                    unit_cost=None, total_cost=None, unit_cost_currency="EUR", fx_rate_to_eur=Decimal("1"),
+                    reference_type="shop_order", reference_id=str(order.id), reference_source=str(order.shop_id),
+                    balance_after=balance.qty_on_hand - line["quantity"], avg_cost_after=None,
+                    created_by="order-stock", created_at=stamp)
+                try:
+                    await fifo.apply_issue(db, balance, movement,
+                        [row for row in effect["fifo_plan"]["allocations"] if row["line_key"] == line["line_key"]])
+                except fifo.FifoError as error:
+                    raise OrderStockError(error.code, error.status) from None
+                movements.append((movement, reservations[item.id], balance))
+            balance.last_movement_at = stamp
             continue
         remaining_quantity = Decimal(effect["issue_quantity"])
         remaining_cost = Decimal(effect["issue_cost"])
