@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Globe,
   FileText,
+  ClipboardList,
 } from 'lucide-react';
 
 interface NavItem {
@@ -29,6 +30,7 @@ const navigation: NavItem[] = [
   { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: null },
   { id: 'products', nameKey: 'nav.products', href: '/products', icon: Package, badge: null },
   { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: null },
+  { id: 'order-audit', nameKey: 'nav.orderAudit', href: '/orders', icon: ClipboardList, badge: null },
   { id: 'suppliers', nameKey: 'nav.suppliers', href: '/suppliers', icon: Factory, badge: null },
   { id: 'shops', nameKey: 'nav.shops', href: '/shops', icon: ShoppingCart, badge: null },
   { id: 'settings', nameKey: 'nav.settings', href: '/settings', icon: Settings, badge: null },

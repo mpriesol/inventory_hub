@@ -7,12 +7,14 @@ Import scope (per approved design):
   metas, SEO, labels, parameters, variants...) is stored losslessly in
   shop_product_content — the vault used later for transferring products to
   another shop (xTrek on Upgates, Atomer export).
-- Structured fields with a proper home are also written:
+- Structured fields initialize NEW canonical products only:
   products.name/brand/weight_g, variant parameters ->
   product_variant_attributes (created if missing), EAN ->
   product_identifiers, main image -> product_groups.main_image_url,
-  main price -> shop_products.shop_price, availability/stock snapshot ->
-  shop_products.
+  Per-shop prices, availability and remote quantities remain shop_products
+  snapshots; refreshing them never edits existing canonical product content.
+- Identity is resolved by explicit shop mapping, then validated EAN/UPC.
+  Conflicting aliases and global SKU collisions are reported per family.
 - NEW products and EXISTING products (update_existing=true): product data
   only. Remote stock remains a shop snapshot, never a physical receipt or
   an acquisition cost. Opening stock needs a separate audited workflow.
@@ -29,27 +31,32 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, text
+from sqlalchemy.exc import IntegrityError, DataError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.database import get_session
 from inventory_hub.settings import settings
 from inventory_hub.db_models import (
-    Product, ProductGroup, Shop, ProductIdentifier,
+    Product, ProductGroup, Shop,
 )
 from inventory_hub.db_models_ext import (
     ShopProduct, ShopProductContent, ProductVariantAttribute,
     StockBalance,
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.product_identity import (
+    IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes,
+)
 from inventory_hub.services.upgates import (
-    UpgatesClient, UpgatesError, product_title, variant_params_text, first_ean,
+    UpgatesClient, UpgatesError, product_title, variant_params_text,
 )
 
 router = APIRouter(prefix="/shops", tags=["upgates-sync"])
@@ -140,31 +147,10 @@ def _product_key(p: Dict[str, Any]) -> str:
     code = str(p.get("code") or "").strip()
     if code:
         return code
-    for v in p.get("variants") or []:
+    for v in p.get("variants") if isinstance(p.get("variants"), list) else []:
         if isinstance(v, dict) and str(v.get("code") or "").strip():
             return str(v["code"]).strip()
     return ""
-
-
-async def _known_skus(db: AsyncSession, skus: List[str]) -> set:
-    known: set = set()
-    CHUNK = 500
-    for i in range(0, len(skus), CHUNK):
-        chunk = skus[i:i + CHUNK]
-        result = await db.execute(select(Product.sku).where(Product.sku.in_(chunk)))
-        known.update(r[0] for r in result.all())
-    return known
-
-
-def _all_codes_of(p: Dict[str, Any]) -> List[str]:
-    """Product code + all variant codes (these are our products.sku)."""
-    codes = []
-    for v in p.get("variants") or []:
-        if isinstance(v, dict) and v.get("code"):
-            codes.append(str(v["code"]))
-    if p.get("code"):
-        codes.append(str(p["code"]))
-    return codes
 
 
 def _variant_params(v: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -233,40 +219,114 @@ def _to_decimal(val: Any) -> Optional[Decimal]:
         return None
 
 
-async def _add_identifier_safe(
-    db: AsyncSession,
-    identifier_service: ProductIdentifierService,
-    product_id: int,
-    value: str,
-    is_primary: bool = False,
-) -> bool:
-    """
-    Add an identifier without ever poisoning the outer transaction.
-
-    Real shop data contains duplicate EANs (e.g. the same EAN on two colour
-    variants). EAN/UPC values are globally unique in our DB, so a plain
-    insert would raise and abort the whole import transaction. We pre-check
-    the exact value and additionally guard the insert with a SAVEPOINT
-    (begin_nested), so any residual conflict rolls back only this one insert.
-    Returns True if added, False if skipped.
-    """
-    value = (value or "").strip()
-    if not value:
-        return False
-    existing = (await db.execute(
-        select(ProductIdentifier.id).where(ProductIdentifier.value == value).limit(1)
-    )).scalar_one_or_none()
-    if existing is not None:
-        return False
-    try:
-        async with db.begin_nested():
-            await identifier_service.add_identifier(product_id, value, is_primary=is_primary)
-        return True
-    except Exception:
-        return False
+def _remote_id(value: Any) -> Optional[str]:
+    return str(value).strip() if value not in (None, "", "None", 0) else None
 
 
-# ── Endpoints ────────────────────────────────────────────────────────────
+def _remote_barcodes(obj: Dict[str, Any]) -> tuple[str, ...]:
+    value = obj.get("ean") or []
+    return tuple(str(v) for v in (value if isinstance(value, list) else [value]) if v)
+
+
+def _pull_families(shop_id: int, products: List[Dict[str, Any]]) -> list[dict]:
+    """Preflight the whole remote listing; never silently collapse duplicate codes."""
+    families = []
+    selection_codes, leaf_codes, ids, barcodes = {}, {}, {}, {}
+
+    def register(index, key, position, reason):
+        if not key:
+            return
+        if key in index:
+            families[position]["reasons"].add(reason)
+            families[index[key]]["reasons"].add(reason)
+        else:
+            index[key] = position
+
+    for position, raw in enumerate(products):
+        p = raw if isinstance(raw, dict) else {}
+        key = _product_key(p)
+        family = {"code": key, "payload": p, "leaves": [], "reasons": set()}
+        families.append(family)
+        variants = p.get("variants") or []
+        if not key or len(key) > 100 or not isinstance(variants, list):
+            family["reasons"].add("remote_identity_invalid")
+            continue
+        register(selection_codes, key.casefold(), position, "remote_code_duplicate")
+        if variants and p.get("code"):
+            register(leaf_codes, str(p["code"]).strip().casefold(), position, "remote_code_duplicate")
+        # Parent IDs identify the remote family, even though only variants sell.
+        register(ids, (False, _remote_id(p.get("product_id"))) if _remote_id(p.get("product_id")) else None,
+                 position, "remote_id_duplicate")
+        for obj in variants if variants else [p]:
+            if not isinstance(obj, dict):
+                family["reasons"].add("remote_identity_invalid")
+                continue
+            code = str(obj.get("code") or "").strip()
+            external_id = _remote_id(obj.get("variant_id") if variants else p.get("product_id"))
+            if not code or len(code) > 100 or external_id and len(external_id) > 100:
+                family["reasons"].add("remote_identity_invalid")
+                continue
+            identity = RemoteIdentity(shop_id, code, bool(variants), external_id,
+                                      key if variants else None, _remote_barcodes(obj))
+            family["leaves"].append((identity, obj))
+            register(leaf_codes, code.casefold(), position, "remote_code_duplicate")
+            if variants and external_id:
+                register(ids, (True, external_id), position, "remote_id_duplicate")
+            for barcode in verified_barcodes(identity.barcodes):
+                register(barcodes, barcode, position, "remote_barcode_duplicate")
+        if not family["leaves"]:
+            family["reasons"].add("remote_identity_invalid")
+    return families
+
+
+def _mark_resolved_duplicates(families: list[dict], index) -> None:
+    owners = {}
+    for family in families:
+        for identity, _ in family["leaves"]:
+            resolution = index.resolve(identity)
+            if resolution.product_id is None:
+                continue
+            if resolution.product_id in owners:
+                family["reasons"].add("local_mapping_conflict")
+                owners[resolution.product_id]["reasons"].add("local_mapping_conflict")
+            else:
+                owners[resolution.product_id] = family
+
+
+async def _pull_groups(db: AsyncSession, families: list[dict]) -> dict[str, ProductGroup]:
+    codes = sorted({f["code"] for f in families if f["payload"].get("variants") and f["code"]})
+    groups = {}
+    for start in range(0, len(codes), 500):
+        rows = (await db.execute(select(ProductGroup).where(ProductGroup.code.in_(codes[start:start + 500])))).scalars()
+        groups.update((row.code, row) for row in rows)
+    return groups
+
+
+def _family_resolution(family: dict, index, groups: dict) -> tuple[list, Optional[dict], Optional[int]]:
+    resolutions = [index.resolve(identity) for identity, _ in family["leaves"]]
+    reasons = set(family["reasons"])
+    candidates = set()
+    for resolution in resolutions:
+        reasons.update(resolution.reasons)
+        candidates.update(resolution.candidate_product_ids)
+    # The database allows one leaf per canonical product in each shop.
+    matched = [r.product_id for r in resolutions if r.product_id is not None]
+    if len(matched) != len(set(matched)):
+        reasons.add("local_mapping_conflict")
+    group_id = None
+    if family["payload"].get("variants"):
+        group_ids = {index.products[product_id].group_id for product_id in matched}
+        if len(group_ids) > 1:
+            reasons.add("group_identity_conflict")
+        elif group_ids:
+            group_id = next(iter(group_ids))
+        elif family["code"] in groups:
+            # An unrelated canonical group with a coincident remote code is not evidence.
+            reasons.add("group_identity_conflict")
+    conflict = {"code": family["code"], "reasons": sorted(reasons),
+                "candidate_product_ids": sorted(candidates)} if reasons else None
+    return resolutions, conflict, group_id
+
 
 @router.get("/{shop_code}/upgates/products/preview")
 async def preview_upgates_products(
@@ -274,51 +334,39 @@ async def preview_upgates_products(
     refresh: bool = False,
     db: AsyncSession = Depends(get_session),
 ):
-    """Compare Upgates products with local DB; list products not yet imported.
-
-    refresh=false reuses the on-disk catalog cache (0 API calls) when it is
-    younger than PREVIEW_CACHE_TTL_S; refresh=true forces a fresh pull."""
-    await _get_shop(db, shop_code)
-    upgates_products, meta = _fetch_upgates_products(
-        shop_code, ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh)
-
-    all_skus: List[str] = []
-    for p in upgates_products:
-        all_skus.extend(_all_codes_of(p))
-    known = await _known_skus(db, all_skus)
-
-    new_items: List[Dict[str, Any]] = []
+    """Preview new/linkable families and explicit conflicts without database writes."""
+    shop = await _get_shop(db, shop_code)
+    products, meta = await asyncio.to_thread(_fetch_upgates_products, shop_code,
+                                             ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh)
+    families = _pull_families(shop.id, products)
+    index = await load_identity_index(db, shop.id, [i for f in families for i, _ in f["leaves"]])
+    _mark_resolved_duplicates(families, index)
+    groups = await _pull_groups(db, families)
+    new_items, conflicts = [], []
     known_count = 0
-    no_key_count = 0
-    for p in upgates_products:
-        key = _product_key(p)
-        if not key:
-            no_key_count += 1
+    for family in families:
+        resolutions, conflict, _ = _family_resolution(family, index, groups)
+        if conflict:
+            conflicts.append(conflict)
             continue
-        codes = _all_codes_of(p)
-        if any(c in known for c in codes):
+        if all(r.status == "mapped" for r in resolutions):
             known_count += 1
             continue
+        p = family["payload"]
+        identity_status = "partial" if any(r.status == "mapped" for r in resolutions) else (
+            "identified" if any(r.status == "identified" for r in resolutions) else "new")
         new_items.append({
-            "key": key,
-            "code": str(p.get("code") or "") or key,
-            "title": product_title(p),
-            "manufacturer": p.get("manufacturer") or "",
-            "variants_count": len(p.get("variants") or []),
-            "availability": p.get("availability") or "",
-            "stock": p.get("stock"),
+            "key": family["code"], "code": family["code"], "title": product_title(p),
+            "manufacturer": p.get("manufacturer") or "", "variants_count": len(p.get("variants") or []),
+            "availability": p.get("availability") or "", "stock": p.get("stock"),
+            "identity_status": identity_status,
         })
-
     return {
-        "shop": shop_code,
-        "total_in_upgates": len(upgates_products),
-        "already_in_db": known_count,
-        "without_any_code": no_key_count,
-        "new_count": len(new_items),
-        "new_products": new_items,
-        "catalog_source": meta["source"],
-        "catalog_pulled_at": meta["pulled_at"],
-        "catalog_age_s": meta["cache_age_s"],
+        "shop": shop_code, "total_in_upgates": len(products), "already_in_db": known_count,
+        "without_any_code": sum(not f["code"] for f in families),
+        "new_count": len(new_items), "new_products": new_items,
+        "conflict_count": len(conflicts), "conflicts": conflicts,
+        "catalog_source": meta["source"], "catalog_pulled_at": meta["pulled_at"], "catalog_age_s": meta["cache_age_s"],
     }
 
 
@@ -328,213 +376,140 @@ async def import_upgates_products(
     payload: Dict[str, Any] = Body(default={}),
     db: AsyncSession = Depends(get_session),
 ):
-    """Import/update products from Upgates. See module docstring for scope."""
+    """Link/create products and refresh per-shop snapshots; never overwrite canonical content or stock."""
     if payload.get("include_stock", False) is not False:
-        raise HTTPException(
-            400,
-            detail=("Import produktov nemení fyzický sklad. Pošli 'include_stock': false "
-                    "alebo tento parameter vynechaj. Počiatočné zásoby vyžadujú "
-                    "samostatný overený príjem s nákupnou cenou."),
-        )
-    shop = await _get_shop(db, shop_code)
-
-    wanted_codes = payload.get("codes") or []
-    import_all = bool(payload.get("all"))
-    update_existing = bool(payload.get("update_existing", False))
-    if not wanted_codes and not import_all and not update_existing:
+        raise HTTPException(400, detail=("Import produktov nemení fyzický sklad. Pošli 'include_stock': false "
+                                       "alebo tento parameter vynechaj. Počiatočné zásoby vyžadujú "
+                                       "samostatný overený príjem s nákupnou cenou."))
+    wanted = payload.get("codes") or []
+    if not isinstance(wanted, list) or any(not isinstance(code, str) for code in wanted):
+        raise HTTPException(400, detail="'codes' musí byť zoznam produktových kódov")
+    import_all = payload.get("all") is True
+    update_existing = payload.get("update_existing") is True
+    if not wanted and not import_all and not update_existing:
         raise HTTPException(400, detail="Zadaj 'codes', 'all': true alebo 'update_existing': true")
-
-    upgates_products, meta = _fetch_upgates_products(shop_code, ttl_s=IMPORT_CACHE_TTL_S)
-    by_code = {}
-    for p in upgates_products:
-        k = _product_key(p)
-        if k:
-            by_code[k] = p
-
-    all_skus: List[str] = []
-    for p in upgates_products:
-        all_skus.extend(_all_codes_of(p))
-    known = await _known_skus(db, all_skus)
-
-    def is_known(p: Dict[str, Any]) -> bool:
-        return any(c in known for c in _all_codes_of(p))
-
-    if import_all:
-        selected = list(by_code.values())
-        missing: List[str] = []
-    else:
-        selected = [by_code[c] for c in wanted_codes if c in by_code]
-        missing = [c for c in wanted_codes if c not in by_code]
-        if update_existing:
-            chosen = {_product_key(p) for p in selected}
-            selected += [p for p in by_code.values() if is_known(p) and _product_key(p) not in chosen]
-
-    identifier_service = ProductIdentifierService(db)
+    shop = await _get_shop(db, shop_code)
+    products, _ = await asyncio.to_thread(_fetch_upgates_products, shop_code, ttl_s=IMPORT_CACHE_TTL_S)
+    families = _pull_families(shop.id, products)
+    # Same transaction lock as catalog registration; do not race mappings across shops.
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    identities = [i for f in families for i, _ in f["leaves"]]
+    index = await load_identity_index(db, shop.id, identities)
+    _mark_resolved_duplicates(families, index)
+    groups = await _pull_groups(db, families)
+    selected = [f for f in families if import_all or f["code"] in wanted or (
+        update_existing and any(index.by_code.get(i.code.casefold()) or
+                                index.by_external_id.get((i.is_variant, i.external_id))
+                                for i, _ in f["leaves"]))]
+    missing = sorted(set(wanted) - {f["code"] for f in families})
+    skipped = [{"code": code, "reason": "not found in Upgates"} for code in missing]
+    conflicts = []
+    stats = {"created_products": 0, "created_variants": 0, "updated_products": 0,
+             "linked_products": 0, "content_saved": 0, "stock_initialized": 0, "ean_conflicts": 0}
     now = datetime.utcnow()
     source = f"upgates:{shop_code}"
 
-    stats = {"created_products": 0, "created_variants": 0, "updated_products": 0,
-             "content_saved": 0, "stock_initialized": 0, "ean_conflicts": 0}
-    ean_conflicts: List[Dict[str, str]] = []
-    skipped: List[Dict[str, str]] = [{"code": c, "reason": "not found in Upgates"} for c in missing]
-
-    async def _save_content(parent_code: str, p: Dict[str, Any]) -> None:
-        existing = (await db.execute(select(ShopProductContent).where(
-            ShopProductContent.shop_id == shop.id,
-            ShopProductContent.external_code == parent_code,
-        ))).scalar_one_or_none()
-        if existing:
-            existing.data = p
-            existing.pulled_at = now
-        else:
-            db.add(ShopProductContent(shop_id=shop.id, external_code=parent_code, data=p, pulled_at=now))
-        await db.flush()
+    for family in selected:
+        resolutions, conflict, group_id = _family_resolution(family, index, groups)
+        if not conflict and all(r.status == "mapped" for r in resolutions) and not update_existing:
+            skipped.append({"code": family["code"], "reason": "already mapped (update_existing=false)"})
+            continue
+        if conflict:
+            conflicts.append(conflict)
+            skipped.append({"code": family["code"], "reason": ", ".join(conflict["reasons"])})
+            continue
+        p, code = family["payload"], family["code"]
+        variants = bool(p.get("variants"))
+        created_rows, mapping_rows, new_identifiers = [], [], []
+        created_group = None
+        linked = 0
+        try:
+            # Any failed variant rolls back this complete family, including its vault content.
+            async with db.begin_nested():
+                if variants and not any(r.product_id is not None for r in resolutions):
+                    created_group = ProductGroup(code=code, name=product_title(p)[:500],
+                                                 brand=str(p.get("manufacturer") or "")[:100] or None,
+                                                 main_image_url=_main_image_url(p))
+                    db.add(created_group)
+                    await db.flush()
+                    group_id = created_group.id
+                for (identity, obj), resolution in zip(family["leaves"], resolutions):
+                    if resolution.product_id is None:
+                        title = product_title(p)
+                        params = _variant_params(obj) if variants else []
+                        suffix = variant_params_text(obj) or identity.code
+                        product = Product(sku=identity.code, name=(f"{title} – {suffix}" if variants else title or identity.code)[:500],
+                                          brand=str(p.get("manufacturer") or "")[:100] or None,
+                                          weight_g=_weight_g(obj), group_id=group_id, created_from_source=source)
+                        db.add(product)
+                        await db.flush()
+                        created_rows.append(product)
+                        for order, (name, value) in enumerate(params):
+                            db.add(ProductVariantAttribute(product_id=product.id, attribute_name=name,
+                                                           attribute_value=value, display_order=order))
+                        service = ProductIdentifierService(db)
+                        for position, barcode in enumerate(verified_barcodes(identity.barcodes)):
+                            identifier = await service.add_identifier(product.id, barcode, is_primary=position == 0)
+                            new_identifiers.append(identifier)
+                    else:
+                        product = index.products[resolution.product_id]
+                    mappings = index.by_product.get(product.id, [])
+                    mapping = mappings[0] if mappings else ShopProduct(shop_id=shop.id, product_id=product.id)
+                    if not mappings:
+                        db.add(mapping)
+                        if resolution.status == "identified":
+                            linked += 1
+                    # Preserve both legacy external_code conventions on existing mappings.
+                    if not mapping.external_code:
+                        mapping.external_code = identity.code
+                    mapping.variant_code = identity.code if variants else None
+                    mapping.parent_code = code if variants else None
+                    mapping.is_variant, mapping.is_listed = variants, True
+                    if identity.external_id:
+                        mapping.external_id = identity.external_id
+                    mapping.shop_availability = str(obj.get("availability") or "") or None
+                    mapping.shop_stock = _to_decimal(obj.get("stock"))
+                    price = _main_price(obj)
+                    if price is not None:
+                        mapping.shop_price = price
+                    mapping.last_pull_at = now
+                    mapping_rows.append(mapping)
+                content = (await db.execute(select(ShopProductContent).where(
+                    ShopProductContent.shop_id == shop.id, ShopProductContent.external_code == code,
+                ))).scalar_one_or_none()
+                if content is None:
+                    db.add(ShopProductContent(shop_id=shop.id, external_code=code, data=p, pulled_at=now))
+                else:
+                    content.data, content.pulled_at = p, now
+                await db.flush()
+        except (IntegrityError, DataError):
+            conflict = {"code": code, "reasons": ["identity_changed"], "candidate_product_ids": []}
+            conflicts.append(conflict)
+            skipped.append({"code": code, "reason": "identity_changed"})
+            # Savepoint rollback can expire previously mapped ORM rows. Reload only on this exceptional path.
+            index = await load_identity_index(db, shop.id, identities)
+            continue
+        for product in created_rows:
+            index.products[product.id] = product
+            index.by_sku[product.sku.casefold()].add(product.id)
+        for identifier in new_identifiers:
+            index.by_barcode[identifier.value].add(identifier.product_id)
+            index.product_barcodes[identifier.product_id].add(identifier.value)
+        for mapping in mapping_rows:
+            index.add_mapping(mapping)
+        if created_group:
+            groups[code] = created_group
+        stats["created_products"] += bool(created_rows)
+        stats["created_variants"] += len(created_rows) if variants else 0
+        stats["updated_products"] += not bool(created_rows)
+        stats["linked_products"] += linked
         stats["content_saved"] += 1
 
-    async def _upsert_attributes(product_id: int, params: List[Tuple[str, str]]) -> None:
-        if not params:
-            return
-        await db.execute(delete(ProductVariantAttribute).where(
-            ProductVariantAttribute.product_id == product_id))
-        for order, (name, value) in enumerate(params):
-            db.add(ProductVariantAttribute(
-                product_id=product_id, attribute_name=name,
-                attribute_value=value, display_order=order))
-        await db.flush()
-
-    async def _upsert_shop_product(product: Product, parent_code: str,
-                                   variant_code: Optional[str], obj: Dict[str, Any]) -> None:
-        sp = (await db.execute(select(ShopProduct).where(
-            ShopProduct.shop_id == shop.id, ShopProduct.product_id == product.id,
-        ))).scalar_one_or_none()
-        if sp is None:
-            sp = ShopProduct(shop_id=shop.id, product_id=product.id)
-            db.add(sp)
-        sp.external_code = parent_code
-        sp.variant_code = variant_code
-        sp.parent_code = parent_code if variant_code else None
-        sp.is_variant = variant_code is not None
-        sp.shop_availability = str(obj.get("availability") or "") or None
-        sp.shop_stock = _to_decimal(obj.get("stock"))
-        price = _main_price(obj)
-        if price is not None:
-            sp.shop_price = price
-        sp.last_pull_at = now
-        await db.flush()
-
-    async def _upsert_product_row(
-        sku: str, name: str, brand: str, group_id: Optional[int],
-        obj: Dict[str, Any], parent_code: str, variant_code: Optional[str],
-        params: List[Tuple[str, str]],
-    ) -> Tuple[Optional[Product], bool]:
-        if len(sku) > 100:
-            skipped.append({"code": sku[:100], "reason": "SKU longer than 100 chars — skipped"})
-            return None, False
-        product = (await db.execute(select(Product).where(Product.sku == sku))).scalar_one_or_none()
-        created = product is None
-        if created:
-            product = Product(sku=sku, created_from_source=source)
-            db.add(product)
-        # Content fields refresh on both create and update (Upgates owns content)
-        product.name = (name or sku)[:500]
-        product.brand = (brand or product.brand or "")[:100] or None
-        if group_id:
-            product.group_id = group_id
-        w = _weight_g(obj)
-        if w is not None:
-            product.weight_g = w
-        await db.flush()
-
-        ean = first_ean(obj)
-        if ean:
-            added = await _add_identifier_safe(db, identifier_service, product.id, ean, is_primary=created)
-            if not added:
-                stats["ean_conflicts"] += 1
-                if len(ean_conflicts) < 100:
-                    ean_conflicts.append({"sku": sku, "ean": ean})
-        await _upsert_attributes(product.id, params)
-        await _upsert_shop_product(product, parent_code, variant_code, obj)
-        return product, created
-
-    for p in selected:
-        code = _product_key(p)
-        title = product_title(p)
-        brand = str(p.get("manufacturer") or "")
-        known_product = is_known(p)
-
-        if known_product and not update_existing and not import_all:
-            # explicit codes may include known ones; without update_existing skip
-            skipped.append({"code": code, "reason": "already in DB (update_existing=false)"})
-            continue
-        if known_product and import_all and not update_existing:
-            skipped.append({"code": code, "reason": "already in DB (update_existing=false)"})
-            continue
-
-        await _save_content(code, p)
-        variants = [v for v in (p.get("variants") or []) if isinstance(v, dict) and v.get("code")]
-
-        if variants:
-            group = (await db.execute(select(ProductGroup).where(
-                ProductGroup.code == code))).scalar_one_or_none()
-            if not group:
-                group = ProductGroup(code=code, name=title[:500], brand=(brand or "")[:100] or None)
-                db.add(group)
-                await db.flush()
-            group.name = title[:500]
-            group.brand = (brand or group.brand or "")[:100] or None
-            img = _main_image_url(p)
-            if img:
-                group.main_image_url = img
-
-            created_any = False
-            for v in variants:
-                vcode = str(v["code"])
-                params = _variant_params(v)
-                ptxt = variant_params_text(v)
-                vname = f"{title} – {ptxt}" if ptxt else f"{title} – {vcode}"
-                product, created = await _upsert_product_row(
-                    sku=vcode, name=vname, brand=brand, group_id=group.id,
-                    obj=v, parent_code=code, variant_code=vcode, params=params,
-                )
-                if product is None:
-                    continue
-                if created:
-                    stats["created_variants"] += 1
-                    created_any = True
-            if created_any:
-                stats["created_products"] += 1
-            elif known_product:
-                stats["updated_products"] += 1
-        else:
-            product, created = await _upsert_product_row(
-                sku=code, name=title, brand=brand, group_id=None,
-                obj=p, parent_code=code, variant_code=None, params=[],
-            )
-            if product is None:
-                continue
-            if created:
-                stats["created_products"] += 1
-            else:
-                stats["updated_products"] += 1
-
-    msg = (
-        f"Nové: {stats['created_products']} produktov "
-        f"({stats['created_variants']} variantov), "
-        f"aktualizované: {stats['updated_products']}, "
-        "fyzický sklad nezmenený"
-    )
-    if stats["ean_conflicts"]:
-        msg += (
-            f" · ⚠ {stats['ean_conflicts']} duplicitných EAN preskočených "
-            f"(EAN patrí inému produktu — oprav v Upgates)"
-        )
-    return {
-        "shop": shop_code,
-        **stats,
-        "ean_conflict_details": ean_conflicts,
-        "skipped": skipped,
-        "message": msg,
-    }
+    return {"shop": shop_code, **stats, "ean_conflict_details": [], "skipped": skipped,
+            "conflict_count": len(conflicts), "conflicts": conflicts,
+            "message": (f"Nové: {stats['created_products']} produktov ({stats['created_variants']} variantov), "
+                        f"priradené: {stats['linked_products']}, obnovené záznamy: {stats['updated_products']}, "
+                        f"konflikty: {len(conflicts)}; fyzický sklad nezmenený")}
 
 
 @router.get("/{shop_code}/upgates/status")
@@ -554,6 +529,7 @@ async def upgates_connection_status(shop_code: str, db: AsyncSession = Depends(g
 
 SERVER_ASSIGNED_KEYS = {"product_id", "url", "urls", "admin_url", "seo_url"}
 VARIANT_SERVER_KEYS = {"variant_id", "product_id", "url"}
+REMOTE_STOCK_KEYS = {"stock", "stocks", "stock_increment", "stock_position", "variants_stock"}
 
 
 def _build_push_payload(content: Dict[str, Any], local_stock: Dict[str, float]) -> Dict[str, Any]:
@@ -562,15 +538,15 @@ def _build_push_payload(content: Dict[str, Any], local_stock: Dict[str, float]) 
     Server-assigned identifiers are stripped; stock values are replaced by
     LOCAL stock (local DB is the source of truth for quantities).
     """
-    p = {k: v for k, v in content.items() if k not in SERVER_ASSIGNED_KEYS}
+    p = {k: v for k, v in content.items() if k not in SERVER_ASSIGNED_KEYS | REMOTE_STOCK_KEYS}
     code = str(p.get("code") or "")
-    if code in local_stock:
+    if not p.get("variants") and code in local_stock:
         p["stock"] = local_stock[code]
     variants = []
     for v in p.get("variants") or []:
         if not isinstance(v, dict):
             continue
-        nv = {k: x for k, x in v.items() if k not in VARIANT_SERVER_KEYS}
+        nv = {k: x for k, x in v.items() if k not in VARIANT_SERVER_KEYS | REMOTE_STOCK_KEYS}
         vcode = str(nv.get("code") or "")
         if vcode in local_stock:
             nv["stock"] = local_stock[vcode]
@@ -578,6 +554,16 @@ def _build_push_payload(content: Dict[str, Any], local_stock: Dict[str, float]) 
     if variants:
         p["variants"] = variants
     return p
+
+
+def _push_family_has_canonical_codes(data: dict, products: list[Product]) -> bool:
+    if not str(data.get("code") or "").strip():
+        return False
+    leaves = data.get("variants") or [data]
+    if not isinstance(leaves, list) or any(not isinstance(leaf, dict) for leaf in leaves):
+        return False
+    codes = [str(leaf.get("code") or "") for leaf in leaves]
+    return bool(codes) and all(codes) and len(codes) == len(set(codes)) and set(codes) == {p.sku for p in products}
 
 
 @router.post("/{shop_code}/upgates/products/push")
@@ -626,6 +612,7 @@ async def push_products_to_shop(
             continue
         if parent not in parents:
             content = (await db.execute(select(ShopProductContent).where(
+                ShopProductContent.shop_id == sp.shop_id,
                 ShopProductContent.external_code == parent).limit(1))).scalar_one_or_none()
             if not content or not isinstance(content.data, dict):
                 skipped.append({"sku": sku, "reason": f"chýba uložený obsah pre {parent} — spusti Stiahnuť z Upgates"})
@@ -637,25 +624,33 @@ async def push_products_to_shop(
             siblings = (await db.execute(
                 select(Product)
                 .join(ShopProduct, ShopProduct.product_id == Product.id)
-                .where((ShopProduct.parent_code == parent) | (ShopProduct.external_code == parent))
+                .where(ShopProduct.shop_id == sp.shop_id,
+                       (ShopProduct.parent_code == parent) | (ShopProduct.external_code == parent))
                 .distinct()
             )).scalars().all()
             resolved_products[parent] = list(siblings)
         if not any(pr.id == product.id for pr in resolved_products.get(parent, [])):
             resolved_products.setdefault(parent, []).append(product)
-        bal = (await db.execute(select(func.coalesce(func.sum(StockBalance.qty_on_hand), 0)).where(
-            StockBalance.product_id == product.id))).scalar()
-        local_stock[sku] = float(bal or 0)
 
     # Duplicate-target guard: skip parents already mapped in the target shop
     to_send: List[Dict[str, Any]] = []
     for parent, data in parents.items():
+        family_products = resolved_products[parent]
+        if not _push_family_has_canonical_codes(data, family_products):
+            skipped.append({"sku": parent, "reason": "identity_alias_push_blocked"})
+            continue
         existing = (await db.execute(select(ShopProduct.id).where(
             ShopProduct.shop_id == shop.id,
-            ShopProduct.external_code == parent).limit(1))).scalar_one_or_none()
+            ((ShopProduct.external_code == parent) | (ShopProduct.parent_code == parent) |
+             ShopProduct.product_id.in_([product.id for product in family_products]))).limit(1))).scalar_one_or_none()
         if existing is not None:
             skipped.append({"sku": parent, "reason": f"už existuje v shope {shop_code}"})
             continue
+        # Every sibling is sent, so every quantity must come from canonical balances.
+        for product in family_products:
+            bal = (await db.execute(select(func.coalesce(func.sum(StockBalance.qty_on_hand), 0)).where(
+                StockBalance.product_id == product.id))).scalar()
+            local_stock[product.sku] = float(bal or 0)
         to_send.append(_build_push_payload(data, local_stock))
 
     now = datetime.utcnow()
@@ -666,7 +661,7 @@ async def push_products_to_shop(
     for i in range(0, len(to_send), 100):
         batch = to_send[i:i + 100]
         try:
-            resp = client.post("products", {"products": batch})
+            resp = await asyncio.to_thread(client.post, "products", {"products": batch})
         except UpgatesError as e:
             batches.append({"batch": i // 100 + 1, "sent": len(batch), "error": str(e)})
             continue

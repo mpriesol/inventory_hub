@@ -15,6 +15,7 @@ so we never retry on 401/403.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -162,6 +163,39 @@ class UpgatesClient:
             "number_of_items": data.get("number_of_items"),
             "number_of_pages": data.get("number_of_pages"),
         }
+
+    def read_order_audit(self, params: Dict[str, Any]) -> tuple[dict, dict]:
+        """Two bounded GETs, with no raw order/error-body logging or retries.
+
+        Unlike the general diagnostic GET path, customer-bearing responses
+        must stay in memory and must never be copied into public data/logs.
+        The caller projects a small, explicit non-customer response shape.
+        """
+        results = []
+        for path, query in (("orders", params), ("order-statuses", {})):
+            try:
+                response = self.session.get(
+                    f"{self.base_url}/{path}", params=query,
+                    timeout=(5, min(self.timeout, 25)), verify=self.verify_ssl,
+                    allow_redirects=False,
+                )
+            except requests.RequestException:
+                raise UpgatesError("Order audit connection failed") from None
+            try:
+                if response.status_code != 200:
+                    raise UpgatesError("Order audit request failed", status_code=response.status_code)
+                if len(response.content) > 8_000_000:
+                    raise UpgatesError("Order audit response is too large")
+                try:
+                    data = response.json(parse_float=Decimal)
+                except ValueError:
+                    raise UpgatesError("Order audit response is not valid JSON") from None
+                if not isinstance(data, dict) or data.get("messages"):
+                    raise UpgatesError("Order audit response needs verification")
+                results.append(data)
+            finally:
+                response.close()
+        return results[0], results[1]
 
 
 # ── Tolerant field extraction helpers (shapes vary slightly across versions) ──

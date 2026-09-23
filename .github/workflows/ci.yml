@@ -73,3 +73,6 @@ jobs:
 
       - name: Check supplier availability configuration
         run: node frontend/tests/supplier-config-ui.cjs
+
+      - name: Check protected order audit interactions
+        run: node frontend/tests/order-audit-ui.cjs

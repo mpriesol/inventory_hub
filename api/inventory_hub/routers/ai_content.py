@@ -1,9 +1,8 @@
 """AI content is a separate API from feed search and create-only shop import."""
-import secrets
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,15 +15,7 @@ from inventory_hub.services import ai_content_existing as existing
 from inventory_hub.services.ai_content_existing import ExistingProductRequest
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
-
-
-def access(authorization: Annotated[str | None, Header()] = None):
-    expected = settings.AI_CONTENT_ACCESS_TOKEN.get_secret_value()
-    token = authorization.removeprefix("Bearer ") if authorization else ""
-    if len(expected) < 24:
-        raise HTTPException(503, detail={"code": "ai_access_not_configured", "message": "Configure the Hub AI access token on the server"})
-    if not secrets.compare_digest(token, expected):
-        raise HTTPException(401, detail={"code": "ai_access_required", "message": "Unlock AI content with the Hub access token"})
+from inventory_hub.access import ai_access as access
 
 
 router = APIRouter(prefix="/ai-content", tags=["AI content"], route_class=CatalogRoute)

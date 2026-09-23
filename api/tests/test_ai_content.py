@@ -292,7 +292,7 @@ class ProviderTests(unittest.TestCase):
     def test_access_is_denied_when_missing_or_incorrect(self):
         from pydantic import SecretStr
         with patch.object(provider.settings, "AI_CONTENT_ACCESS_TOKEN", SecretStr("fixture-token-only-123456789")):
-            for token in (None, "Bearer wrong"):
+            for token in (None, "Bearer wrong", "fixture-token-only-123456789", "Basic fixture-token-only-123456789", "Bearer nesprávny"):
                 with self.assertRaises(HTTPException):
                     access(token)
             access("Bearer fixture-token-only-123456789")

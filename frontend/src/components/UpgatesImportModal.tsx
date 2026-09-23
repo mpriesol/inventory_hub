@@ -9,12 +9,35 @@ import {
   importUpgatesProducts,
   type UpgatesPreview,
   type UpgatesImportResult,
+  type UpgatesIdentityConflict,
 } from '../api/upgates';
 
 interface Props {
   shop: string;              // e.g. "biketrek"
   onClose: () => void;
   onImported: () => void;    // parent refreshes stock data
+}
+
+function IdentityConflicts({ title, count, conflicts }: { title: string; count: number; conflicts: UpgatesIdentityConflict[] }) {
+  const { t } = useTranslation();
+  if (!count) return null;
+  return (
+    <div role="alert" className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+      <h3 className="font-medium">{title} · {t('upgatesImport.conflictCount', { count })}</h3>
+      <p className="mt-1">{t('upgatesImport.conflictsHelp')}</p>
+      <ul className="mt-3 space-y-3">
+        {conflicts.map((conflict, index) => (
+          <li key={`${conflict.code}-${index}`}>
+            <strong style={{ fontFamily: 'var(--font-mono)' }}>{conflict.code}</strong>
+            <ul className="list-disc pl-5">
+              {conflict.reasons.map(reason => <li key={reason}>{t(`upgatesImport.reasons.${reason}`, { defaultValue: t('upgatesImport.unknownConflict', { reason }) })}</li>)}
+            </ul>
+            {!!conflict.candidate_product_ids?.length && <p className="text-xs mt-1">{t('upgatesImport.candidates', { ids: conflict.candidate_product_ids.join(', ') })}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
@@ -26,6 +49,8 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<UpgatesImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
+  const previewConflictCount = preview?.conflict_count ?? preview?.conflicts?.length ?? 0;
+  const resultConflictCount = result?.conflict_count ?? result?.conflicts?.length ?? 0;
 
   const loadPreview = async (refresh = false) => {
     setLoading(true);
@@ -98,10 +123,11 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
         >
           <div>
             <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-              Stiahnuť z Upgates ({shop})
+              {t('upgatesImport.title', { shop })}
             </h2>
             <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-              {preview && `V Upgates: ${preview.total_in_upgates} · už v databáze: ${preview.already_in_db} · nové: ${preview.new_count}`}
+              {preview && t('upgatesImport.summary', { total: preview.total_in_upgates, known: preview.already_in_db, pending: preview.new_count })}
+              {previewConflictCount > 0 && ` · ${t('upgatesImport.conflictCount', { count: previewConflictCount })}`}
               {preview && preview.without_any_code > 0 && ` · bez kódu: ${preview.without_any_code}`}
               {preview && (preview.catalog_source === 'cache'
                 ? ` · katalóg z cache (${Math.round(preview.catalog_age_s / 60)} min)`
@@ -118,7 +144,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
             >
               <RefreshCw size={14} /> Obnoviť z Upgates
             </Button>
-            <button onClick={onClose} style={{ color: 'var(--color-text-tertiary)' }}>
+            <button onClick={onClose} aria-label={t('common.close')} style={{ color: 'var(--color-text-tertiary)' }}>
               <X size={18} />
             </button>
           </div>
@@ -136,30 +162,36 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
             <div className="py-8 text-center text-sm" style={{ color: 'var(--color-error)' }}>
               {error}
               <div className="mt-3">
-                <Button variant="secondary" size="sm" onClick={loadPreview}>
+                <Button variant="secondary" size="sm" onClick={() => loadPreview()}>
                   <RefreshCw size={14} /> Skúsiť znovu
                 </Button>
               </div>
             </div>
           )}
 
-          {!loading && !error && result && (
+          {!loading && result && (
+            <>
             <div
               className="mb-4 rounded-lg border px-4 py-3 text-sm"
-              style={{ borderColor: 'var(--color-success)', color: 'var(--color-success)' }}
+              role="status"
+              style={{ borderColor: resultConflictCount ? 'var(--color-warning)' : 'var(--color-success)', color: resultConflictCount ? 'var(--color-warning)' : 'var(--color-success)' }}
             >
-              {result.message}
+              {t('upgatesImport.resultSummary', { created: result.created_products ?? 0, variants: result.created_variants ?? 0, linked: result.linked_products ?? 0, snapshots: result.content_saved ?? 0 })}
               {result.skipped.length > 0 && (
                 <span style={{ color: 'var(--color-text-tertiary)' }}>
                   {' '}(preskočených: {result.skipped.length})
                 </span>
               )}
             </div>
+            <IdentityConflicts title={t('upgatesImport.importConflicts')} count={resultConflictCount} conflicts={result.conflicts || []} />
+            </>
           )}
+
+          {!loading && !error && preview && <IdentityConflicts title={t('upgatesImport.previewConflicts')} count={previewConflictCount} conflicts={preview.conflicts || []} />}
 
           {!loading && !error && preview && preview.new_products.length === 0 && (
             <div className="py-10 text-center text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-              Žiadne nové produkty — všetko z Upgates už je v lokálnej databáze. 🎉
+              {t(previewConflictCount > 0 ? 'upgatesImport.onlyConflicts' : 'upgatesImport.noPending')}
             </div>
           )}
 
@@ -168,11 +200,12 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               <thead>
                 <tr className="border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
                   <th className="w-8 px-2 py-2">
-                    <input type="checkbox" checked={allChecked} onChange={toggleAll} />
+                    <input type="checkbox" aria-label={t('catalog.selectPage')} checked={allChecked} onChange={toggleAll} />
                   </th>
                   <th className="text-left px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>Kód</th>
                   <th className="text-left px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>Názov</th>
                   <th className="text-left px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>Výrobca</th>
+                  <th className="text-left px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>{t('upgatesImport.identity')}</th>
                   <th className="text-right px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>Varianty</th>
                 </tr>
               </thead>
@@ -182,6 +215,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                     <td className="px-2 py-2">
                       <input
                         type="checkbox"
+                        aria-label={t('catalog.selectProduct', { name: p.code })}
                         checked={selected.has(p.key)}
                         onChange={() => toggle(p.key)}
                         onClick={(e) => e.stopPropagation()}
@@ -192,6 +226,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                     </td>
                     <td className="px-2 py-2" style={{ color: 'var(--color-text-primary)' }}>{p.title}</td>
                     <td className="px-2 py-2" style={{ color: 'var(--color-text-secondary)' }}>{p.manufacturer}</td>
+                    <td className="px-2 py-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>{p.identity_status ? t(`upgatesImport.identityStatus.${p.identity_status}`) : '—'}</td>
                     <td className="px-2 py-2 text-right" style={{ color: 'var(--color-text-secondary)' }}>
                       {p.variants_count || '—'}
                     </td>
@@ -213,21 +248,23 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               <input
                 type="checkbox"
                 checked={updateExisting}
+                aria-describedby="upgates-refresh-snapshots-help"
                 onChange={(e) => setUpdateExisting(e.target.checked)}
               />
-              Aktualizovať aj existujúce produkty (obsah, parametre — bez skladu)
+              {t('upgatesImport.refreshSnapshots')}
             </label>
+            <p id="upgates-refresh-snapshots-help">{t('upgatesImport.refreshSnapshotsHelp')}</p>
           </div>
           <Button
             variant="primary"
             onClick={handleImport}
-            disabled={importing || loading || (selected.size === 0 && !updateExisting)}
+            disabled={importing || loading || !!error || (selected.size === 0 && !updateExisting)}
           >
             <Download size={16} />
             {importing
               ? 'Importujem…'
               : updateExisting && selected.size === 0
-              ? 'Aktualizovať existujúce'
+              ? t('upgatesImport.refreshSnapshotsAction')
               : `Importovať vybrané (${selected.size})`}
           </Button>
         </div>
