@@ -11,6 +11,7 @@ ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS stock_issued_at TIMESTAMPTZ;
 ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS stock_issue_result JSONB;
 ALTER TABLE shop_order_items ADD COLUMN IF NOT EXISTS stock_managed BOOLEAN NOT NULL DEFAULT false;
 -- This workflow does not import financial prices. NULL means unknown, never a fabricated zero.
+ALTER TABLE shop_orders ALTER COLUMN currency DROP NOT NULL;
 ALTER TABLE shop_order_items ALTER COLUMN unit_price DROP NOT NULL;
 ALTER TABLE shop_order_items ALTER COLUMN total_price DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_order_item_key ON shop_order_items(order_id, external_item_id) WHERE stock_managed = true;

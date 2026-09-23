@@ -165,7 +165,7 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `004_shop_product_content.sql` | Kompletný obsah produktov podľa e-shopu a parent kódu. |
 | `005_ai_content.sql` | AI pravidlá, dávky, úlohy a revízie. |
 | `006_opening_stock.sql` | Dávky a riadky kontrolovaného počiatočného stavu; nemení existujúcu zásobu. |
-| `007_order_stock.sql` | Politiky, náhľady a stav skladového spracovania; presný náklad nového výdaja. Neznáme predajné ceny riadkov smú byť `NULL`. Žiadny historický výdaj ani rezervácia sa nevytvorí migráciou. |
+| `007_order_stock.sql` | Politiky, náhľady a stav skladového spracovania; presný náklad nového výdaja. Neznáme predajné ceny a mena objednávky smú byť `NULL`. Žiadny historický výdaj ani rezervácia sa nevytvorí migráciou. |
 
 **Aktuálny deployment spúšťa `005`, `006` a `007`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py) a [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), pod spoločným transakčným DB zámkom a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetky tri SQL súbory balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 

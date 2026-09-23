@@ -397,7 +397,7 @@ class ShopOrder(TimestampMixin, Base):
     subtotal: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     shipping_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
-    currency: Mapped[str] = mapped_column(String(3), default="EUR", nullable=False)
+    currency: Mapped[Optional[str]] = mapped_column(String(3), default="EUR", nullable=True)
     stock_state: Mapped[str] = mapped_column(String(16), default="unmanaged", server_default="unmanaged", nullable=False)
     stock_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     stock_warehouse_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("warehouses.id", ondelete="RESTRICT"))

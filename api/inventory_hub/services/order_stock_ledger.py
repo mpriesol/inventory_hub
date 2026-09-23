@@ -78,7 +78,7 @@ async def get_or_create_order(db, shop, source_order: dict, warehouse_id: int) -
         async with db.begin_nested():
             await db.execute(insert(ShopOrder).values(
                 shop_id=shop.id, external_id=number, external_code=number,
-                order_date=created_at, status=OrderStatus.new,
+                order_date=created_at, status=OrderStatus.new, currency=None,
                 stock_state="pending", stock_revision=0,
                 stock_warehouse_id=warehouse_id, stock_source_uuid=source_uuid,
             ).on_conflict_do_nothing(index_elements=["shop_id", "external_id"]))

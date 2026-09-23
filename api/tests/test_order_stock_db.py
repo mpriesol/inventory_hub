@@ -176,8 +176,19 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
         before = await self.physical_snapshot()
         preview = await self.preview(raw)
         self.assertEqual(await self.physical_snapshot(), before)
+        async with self.sessions() as db:
+            row = (await db.execute(select(ShopOrder).where(ShopOrder.stock_source_uuid == raw["uuid"]))).scalar_one()
+            self.assertIsNone(row.currency, "Stock processing must not invent the order's commercial currency")
+            self.assertTrue((await db.execute(select(OrderStockPreview.result.is_(None)).where(
+                OrderStockPreview.id == preview["id"],
+            ))).scalar_one(), "A prepared preview has no stored result, including no JSON null")
         result = await self.apply(preview)
         self.assertEqual(result["stock_state"], "reserved")
+        async with self.sessions() as db:
+            prices = (await db.execute(select(ShopOrderItem.unit_price, ShopOrderItem.total_price).where(
+                ShopOrderItem.order_id == result["order_id"],
+            ))).all()
+            self.assertEqual(prices, [(None, None), (None, None)])
         self.assertEqual((await self.balance("SKU-A"))[:2], (D("2"), D("2")))
         self.assertIsNone(await self.balance("SKU-B"), "An unavailable supplier/backorder item must not fabricate a physical balance")
         rows = {product: (quantity, shortage) for _, product, quantity, shortage, _ in await self.holds(raw)}

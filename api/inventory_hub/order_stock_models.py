@@ -39,7 +39,8 @@ class OrderStockPreview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    result: Mapped[dict | None] = mapped_column(JSONB)
+    # Prepared previews have no result yet; the database constraint expects SQL NULL.
+    result: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         CheckConstraint("status IN ('prepared', 'completed')", name="chk_order_stock_preview_status"),
