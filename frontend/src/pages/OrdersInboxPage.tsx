@@ -4,12 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { CollectionRun, CollectionStockPreview, configureCollection, getCollectionRuns, getCollectionStatus,
-  getOrderInbox, OrderCollectionStatus, OrderInbox, previewCollectionStock, refreshCollection } from '../api/orderCollection';
+  getOrderInbox, getOrderProcessingJobs, OrderCollectionStatus, OrderInbox, OrderProcessingJobs, previewCollectionStock, refreshCollection } from '../api/orderCollection';
 import './OpeningStockPage.css';
 import './OrdersInboxPage.css';
 
-type Operation = 'load' | 'inbox' | 'configure' | 'refresh' | 'stock' | null;
-interface View { revision: number; shop: string; status: OrderCollectionStatus; inbox: OrderInbox; runs: CollectionRun[] }
+type Operation = 'load' | 'inbox' | 'jobs' | 'configure' | 'refresh' | 'stock' | null;
+interface View { revision: number; shop: string; status: OrderCollectionStatus; inbox: OrderInbox; runs: CollectionRun[]; jobs: OrderProcessingJobs }
 
 export function OrdersInboxPage() {
   const { t, i18n } = useTranslation();
@@ -58,8 +58,8 @@ export function OrdersInboxPage() {
   function load() {
     if (busyRef.current) return;
     setLoaded(null); setConfirmed(false);
-    read('load', signal => Promise.all([getCollectionStatus(shop, signal), getOrderInbox(shop, 0, signal), getCollectionRuns(shop, signal)]),
-      ([status, inbox, runs]) => { setLoaded({ revision: accessRevision(), shop, status, inbox, runs: runs.runs }); setUncertain(false); setRefreshQueued(false); });
+    read('load', signal => Promise.all([getCollectionStatus(shop, signal), getOrderInbox(shop, 0, signal), getCollectionRuns(shop, signal), getOrderProcessingJobs(shop, 0, signal)]),
+      ([status, inbox, runs, jobs]) => { setLoaded({ revision: accessRevision(), shop, status, inbox, runs: runs.runs, jobs }); setUncertain(false); setRefreshQueued(false); });
   }
   function page(offset: number) {
     read('inbox', signal => getOrderInbox(shop, offset, signal), inbox => setLoaded(previous => previous ? { ...previous, inbox } : null));
@@ -67,7 +67,7 @@ export function OrdersInboxPage() {
   async function changeCollection(operation: 'configure' | 'refresh', enabled?: boolean) {
     if (!view || busyRef.current || mutation.current || uncertain) return;
     if (operation === 'configure' && enabled && (!confirmed || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false)) return;
-    if (operation === 'refresh' && (!view.status.collector?.enabled || view.status.connection_matches === false)) return;
+    if (operation === 'refresh' && (!view.status.policy || !view.status.connection_configured || view.status.connection_matches === false || view.status.collector?.manual_pending)) return;
     const id = generation.current, credential = accessRevision();
     const expected = view.status.collector?.revision ?? null;
     mutation.current = true; busyRef.current = operation; setBusy(operation); setError(''); setRefreshQueued(false);
@@ -75,7 +75,7 @@ export function OrdersInboxPage() {
     try {
       const status = operation === 'configure'
         ? await configureCollection({ shop_code: shop, enabled: !!enabled, expected_revision: expected, confirmed: true })
-        : await refreshCollection({ shop_code: shop, expected_revision: expected!, confirmed: true });
+        : await refreshCollection({ shop_code: shop, expected_revision: expected, confirmed: true });
       if (current()) { setLoaded(previous => previous ? { ...previous, status } : null); setConfirmed(false); setRefreshQueued(operation === 'refresh'); }
     } catch (value) { if (current()) { setUncertain(true); setConfirmed(false); report(value); } }
     finally { mutation.current = false; if (current()) { busyRef.current = null; setBusy(null); } }
@@ -90,7 +90,10 @@ export function OrdersInboxPage() {
     setStockLoaded(null);
     read('stock', signal => previewCollectionStock(shop, skus, signal), value => setStockLoaded({ value, revision: accessRevision(), shop }));
   }
-  const message = (code: string) => t(`orderCollection.errors.${code}`, { defaultValue: t('orderCollection.errors.request_failed') });
+  const message = (code: string) => t(`orderCollection.errors.${code}`, { defaultValue: t(`stockSettings.errors.${code}`, { defaultValue: t('orderCollection.errors.request_failed') }) });
+  const processingError = (code: string) => t(`orderCollection.processingErrors.${code}`, {
+    defaultValue: t(`orderStock.errors.${code}`, { defaultValue: t(`stockSettings.errors.${code}`, { defaultValue: message(code) }) }),
+  });
   const date = (value: string | null | undefined) => value ? new Date(value).toLocaleString(i18n.language) : '—';
   const state = (value: string | null) => t(`orderCollection.stockStates.${value || 'none'}`, { defaultValue: t('orderCollection.stockStates.unknown') });
 
@@ -98,6 +101,7 @@ export function OrdersInboxPage() {
     <Link className="opening-stock-back" to="/orders">← {t('orderCollection.back')}</Link>
     <header><div><h1>{t('orderCollection.title')}</h1><p>{t('orderCollection.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" onClick={() => { unlockHub(''); setError(''); }}>{t('orderCollection.lock')}</Button>}</header>
     <div className="opening-stock-notice">{t('orderCollection.scope')}</div>
+    <p><Link to={`/settings/stock?shop=${encodeURIComponent(shop)}`}>{t('stockSettings.open')}</Link></p>
     {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) { setError(''); unlockHub(token.trim()); setToken(''); } }}>
       <p>{t('orderCollection.tokenHelp')}</p><label>{t('orderCollection.token')}<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label>
       <Button type="submit" disabled={!token.trim()}>{t('orderCollection.unlock')}</Button>
@@ -111,14 +115,19 @@ export function OrdersInboxPage() {
           <div className="orders-inbox-status"><strong>{t(view.status.collector?.enabled ? 'orderCollection.enabled' : 'orderCollection.paused')}</strong><span>{t('orderCollection.seen', { count: view.status.collector?.entries_seen ?? 0 })}</span></div>
           <p className="opening-stock-muted">{t('orderCollection.lastCompleted')}: {date(view.status.collector?.last_completed_at)} · {t('orderCollection.nextCheck')}: {date(view.status.collector?.next_poll_at)}</p>
           {view.status.collector?.last_error && <div className="opening-stock-errors" role="alert">{message(view.status.collector.last_error)}</div>}
+          {view.status.configuration_error && <div className="opening-stock-errors" role="alert">{message(view.status.configuration_error)}</div>}
           {!view.status.connection_configured && <p className="opening-stock-errors">{t('orderCollection.connectionMissing')}</p>}
           {view.status.connection_matches === false && <p className="opening-stock-errors">{t('orderCollection.connectionChanged')}</p>}
           {!view.status.policy ? <p><Link to={`/orders/stock?shop=${encodeURIComponent(shop)}`}>{t('orderCollection.setupPolicy')}</Link></p> : <p>{t('orderCollection.since', { at: date(view.status.policy.starts_at), warehouse: view.status.policy.warehouse_code })}</p>}
           <p className="opening-stock-muted">{t('orderCollection.backgroundHelp')}</p>
+          <p>{t('orderCollection.processingMode')}: <strong>{view.status.effective ? t(`stockSettings.modes.${view.status.effective.mode}`) : t('orderCollection.unknown')}</strong>{view.status.effective?.processing_paused && <> · {t('stockSettings.currentlyPaused')}</>}</p>
+          {view.status.effective?.processing_error && <div className="opening-stock-errors" role="alert">{processingError(view.status.effective.processing_error)}</div>}
+          {view.status.effective?.retry_after_at && <p className="opening-stock-muted">{t('orderCollection.retryAfter', { at: date(view.status.effective.retry_after_at) })}</p>}
+          {view.status.collector?.manual_pending && <p role="status" className="opening-stock-notice">{t('orderCollection.manualPending')}</p>}
           <div className="opening-stock-confirmations">{!view.status.collector?.enabled && <label><input type="checkbox" checked={confirmed} disabled={!!busy || uncertain} onChange={event => setConfirmed(event.target.checked)} />{t('orderCollection.enableConfirm')}</label>}
             <div className="opening-stock-actions">{view.status.collector?.enabled ? <Button variant="secondary" disabled={!!busy || uncertain} onClick={() => changeCollection('configure', false)}>{t('orderCollection.pause')}</Button>
               : <Button disabled={!!busy || uncertain || !confirmed || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false} onClick={() => changeCollection('configure', true)}>{t('orderCollection.enable')}</Button>}
-              <Button variant="secondary" disabled={!!busy || uncertain || !view.status.collector?.enabled || view.status.connection_matches === false} onClick={() => changeCollection('refresh')}>{t('orderCollection.fetchNow')}</Button></div>
+              <Button variant="secondary" disabled={!!busy || uncertain || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false || !!view.status.collector?.manual_pending} onClick={() => changeCollection('refresh')}>{t('orderCollection.fetchNow')}</Button></div>
           </div>
         </>}
       </section>
@@ -134,8 +143,18 @@ export function OrdersInboxPage() {
             <span>{t('orderCollection.range', { from: view.inbox.total ? view.inbox.offset + 1 : 0, to: view.inbox.offset + view.inbox.entries.length, total: view.inbox.total })}</span>
             <Button variant="secondary" size="sm" disabled={!!busy || view.inbox.offset + view.inbox.limit >= view.inbox.total} onClick={() => page(view.inbox.offset + view.inbox.limit)}>{t('orderCollection.next')}</Button></div>
         </section>
+        <section className="opening-stock-panel"><h2>{t('orderCollection.processingTitle')}</h2><p className="opening-stock-muted">{t('orderCollection.processingHelp')}</p>
+          {!view.jobs.jobs.length ? <p>{t('orderCollection.noJobs')}</p> : <div className="opening-stock-table-scroll"><table><thead><tr>{['orderNumber', 'processingStatus', 'processingChecked', 'processingNext', 'processingResult', 'runError', 'action'].map(key => <th key={key}>{t(`orderCollection.${key}`)}</th>)}</tr></thead><tbody>{view.jobs.jobs.map(job => <tr key={job.id}>
+            <td>{job.order_number}</td><td>{t(`orderCollection.jobStates.${job.status}`)}</td><td>{date(job.last_checked_at || job.last_completed_at)}</td><td>{date(job.next_attempt_at)}</td>
+            <td>{job.result?.action ? t(`orderStock.actions.${job.result.action}`, { defaultValue: t('orderCollection.unknown') }) : '—'}{job.result?.stock_state && <small className="orders-inbox-subline">{state(job.result.stock_state)}</small>}</td>
+            <td>{job.error ? processingError(job.error) : '—'}</td><td>{job.order_number && <Link to={`/orders/stock?shop=${encodeURIComponent(shop)}&order=${encodeURIComponent(job.order_number)}`}>{t('orderCollection.reviewStock')}</Link>}</td>
+          </tr>)}</tbody></table></div>}
+          <div className="opening-stock-pagination"><Button data-testid="jobs-previous" variant="secondary" size="sm" disabled={!!busy || view.jobs.offset === 0} onClick={() => read('jobs', signal => getOrderProcessingJobs(shop, Math.max(0, view.jobs.offset - view.jobs.limit), signal), jobs => setLoaded(previous => previous ? { ...previous, jobs } : null))}>{t('orderCollection.previous')}</Button>
+            <span>{t('orderCollection.range', { from: view.jobs.total ? view.jobs.offset + 1 : 0, to: view.jobs.offset + view.jobs.jobs.length, total: view.jobs.total })}</span>
+            <Button data-testid="jobs-next" variant="secondary" size="sm" disabled={!!busy || view.jobs.offset + view.jobs.limit >= view.jobs.total} onClick={() => read('jobs', signal => getOrderProcessingJobs(shop, view.jobs.offset + view.jobs.limit, signal), jobs => setLoaded(previous => previous ? { ...previous, jobs } : null))}>{t('orderCollection.next')}</Button></div>
+        </section>
         <section className="opening-stock-panel"><h2>{t('orderCollection.runs')}</h2>{!view.runs.length ? <p>{t('orderCollection.noRuns')}</p> : <div className="opening-stock-table-scroll"><table><thead><tr>{['runMode', 'runStatus', 'startedAt', 'completedAt', 'interval', 'runCount', 'runError'].map(key => <th key={key}>{t(`orderCollection.${key}`)}</th>)}</tr></thead><tbody>{view.runs.map(run => <tr key={run.id}>
-          <td>{t(`orderCollection.modes.${run.mode}`)}</td><td>{t(`orderCollection.runStates.${run.status}`)}</td><td>{date(run.started_at)}</td><td>{date(run.completed_at)}</td><td>{date(run.from_at)} → {date(run.until_at)}</td><td>{run.observed_count}</td><td>{run.error ? message(run.error) : '—'}</td>
+          <td>{t(`orderCollection.modes.${run.mode}`)}{run.trigger && <small className="orders-inbox-subline">{t(`orderCollection.triggers.${run.trigger}`)}</small>}</td><td>{t(`orderCollection.runStates.${run.status}`)}</td><td>{date(run.started_at)}</td><td>{date(run.completed_at)}</td><td>{date(run.from_at)} → {date(run.until_at)}</td><td>{run.observed_count}</td><td>{run.error ? message(run.error) : '—'}</td>
         </tr>)}</tbody></table></div>}</section>
       </>}
       <section className="opening-stock-panel"><h2>{t('orderCollection.stockTitle')}</h2><p>{t('orderCollection.stockHelp')}</p>

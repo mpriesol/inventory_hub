@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-import hashlib
-import json
-from urllib.parse import urlsplit
 
 from inventory_hub.services.order_stock_source import SourceError, _positive_id, _text, _timestamp, _uuid
-from inventory_hub.services.upgates import UpgatesClient, UpgatesError
+from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connection_fingerprint
 
 
 MAX_PAGE_SIZE = 100
@@ -23,20 +20,6 @@ class CollectionSourceError(SourceError):
     def __init__(self, code: str, status: int = 502, retry_after: int | None = None):
         super().__init__(code, status)
         self.retry_after = retry_after
-
-
-def connection_fingerprint(base, login) -> str | None:
-    """Identify a validated HTTPS target and login, without its secret key."""
-    try:
-        if not isinstance(base, str) or not isinstance(login, str) or not login:
-            return None
-        parsed = urlsplit(base)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            return None
-        target = [parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), login]
-        return hashlib.sha256(json.dumps(target, separators=(",", ":")).encode()).hexdigest()
-    except (ValueError, TypeError, UnicodeError):
-        return None
 
 
 def _invalid() -> CollectionSourceError:

@@ -149,7 +149,7 @@ Prvá verzia pracuje len s kladnými celými `ks`. Sety, nepodporované jednotky
 
 Pri potvrdení sa zamkne objednávka a dotknuté produkty/bilancie v stabilnom poradí. Prepočíta sa vlastná predchádzajúca alokácia a voľné fyzické kusy, pričom rezervácie iných objednávok zostanú zachované. Zmena množstva, pridanie, odstránenie alebo výmena produktu upraví iba rozdiel rezervácie. Odstránené evidované riadky zostanú označené, nemažú sa. Storno pred výdajom uvoľní známe uložené rezervácie a nevytvorí fyzický pohyb.
 
-Pri nedostatku sa rezervujú dostupné celé kusy a zvyšok zostane `backorder`. Dodávateľská dostupnosť nepridáva zásobu a neumožňuje záporný výdaj. Dopyt na produkt bez bilancie ponechá bilanciu neprítomnú; tým nezablokuje jeho neskorší počiatočný stav. Príjem ani tento balík automaticky neprerozdelí voľné kusy medzi čakajúce objednávky: obsluha načíta a potvrdí nový náhľad príslušnej objednávky. Pridelenie určuje poradie potvrdených operácií, nie nový automatický prioritizačný algoritmus.
+Pri nedostatku sa rezervujú dostupné celé kusy a zvyšok zostane `backorder`. Dodávateľská dostupnosť nepridáva zásobu a neumožňuje záporný výdaj. Dopyt na produkt bez bilancie ponechá bilanciu neprítomnú; tým nezablokuje jeho neskorší počiatočný stav. V ručnom režime obsluha načíta a potvrdí nový náhľad príslušnej objednávky. Voliteľná automatika v šiestom balíku opakuje kontrolu nedostatku podľa nastaveného intervalu. Pridelenie určuje poradie spracovaných operácií; nezavádza sa obchodná priorita objednávok.
 
 ### Výdaj, ocenenie a opakovanie
 
@@ -173,7 +173,7 @@ Pri stratenej odpovedi UI uchová UUID a vyžaduje čítacie overenie `GET /orde
 
 Identita API cieľa je viazaná na HTTPS adresu a prihlasovacie meno; ukladá sa iba hash, nie heslo/kľúč. Zmena cieľa zber zastaví. Skontroluje sa konfigurácia aj skutočné pripojenie pred GET a konfigurácia znovu pred uložením odpovede. Výmena samotného API kľúča nemení identitu. Tento balík neposkytuje automatické prepojenie starej evidencie na iný e-shop. Chyba 401/403 zber vypne; po oprave prístupu ho treba vedome obnoviť.
 
-Worker beží v existujúcom API procese a používa vlastný databázový advisory lock pre všetky repliky. Stav uchovávajú `order_collection_settings`, `order_collection_runs` a `order_inbox`. Zavretie prehliadača ho nezastaví; nasadenie alebo reštart nestratia kontrolný bod. Nové e-shopy ani nasadenie sa samy nezapínajú. Bežný odstup medzi dokončenými behmi je päť minút. `POST /refresh` len zaradí skorší beh a vracia HTTP 202; neobchádza chybovú prestávku ani minimálny odstup 60 sekúnd. Verzia nastavenia sa tým nemení. Stratená odpoveď nastavenia sa rieši čítaním aktuálneho stavu pred opakovaním.
+Worker beží v existujúcom API procese a používa vlastný databázový advisory lock pre všetky repliky. Stav uchovávajú `order_collection_settings`, `order_collection_runs` a `order_inbox`. Zavretie prehliadača ho nezastaví; nasadenie alebo reštart nestratia kontrolný bod. Nové e-shopy ani nasadenie sa samy nezapínajú. Predvolený odstup medzi dokončenými behmi je päť minút; šiesty balík ho umožňuje zmeniť pre sklad a e-shop. `POST /refresh` zaradí jednorazový beh aj pri vypnutom pravidelnom zbere a vracia HTTP 202; neobchádza chybovú prestávku ani minimálny odstup 60 sekúnd. Verzia nastavenia sa tým nemení. Stratená odpoveď nastavenia sa rieši čítaním aktuálneho stavu pred opakovaním.
 
 ### Zber zmien a obnova
 
@@ -183,7 +183,7 @@ Zmenový beh sa vracia desať minút pred posledný dokončený kontrolný bod, 
 
 Upgates neposkytuje zdokumentovaný horný filter času aktualizácie ani konzistentný stránkovací snapshot. Duplicity, zmenené počty/počet strán, obrátené časové poradie či prekročený limit označia beh ako neúspešný bez posunu kontrolného bodu. Limit je 100 strán na jeden dopyt a 180 sekúnd na celý beh. Pri limite sa nič potichu nepreskočí. Okrem zmenových behov sa približne raz denne začína kontrolný prechod všetkých objednávok od začiatku evidencie v najviac sedemdňových intervaloch vytvorenia. Jeho dokončenie závisí od rozsahu dát a dostupnosti API. Dlhší kontrolný prechod sa strieda so zmenovými behmi, aby ich nevyhladoval. Ide o priebežné zbližovanie pohľadov, nie o záruku okamžite kompletného snapshotu počas súbežných zmien.
 
-Čítacie chyby opakuje worker s odstupom 5–60 minút; rešpektuje dlhšie `Retry-After` pri 429, najviac sedem dní. Nedokončený beh po reštarte sa označí ako prerušený a pokračuje od nezmeneného kontrolného bodu. Na sieťové volanie sa nedržia zámky skladových riadkov ani zámky konfigurácie. Pozastavenie počas načítania zneplatní uloženie ďalšej stránky cez revíziu nastavenia.
+Čítacie chyby pravidelného zberu opakuje worker s predvoleným odstupom 5–60 minút (konfigurovateľné v šiestom balíku); rešpektuje dlhšie `Retry-After` pri 429, najviac sedem dní. Nedokončený beh po reštarte sa označí ako prerušený a pokračuje od nezmeneného kontrolného bodu. Na sieťové volanie sa nedržia zámky skladových riadkov ani zámky konfigurácie. Pozastavenie počas načítania zneplatní uloženie ďalšej stránky cez revíziu nastavenia.
 
 `GET /inbox` má stránkovanie; `GET /runs` ukazuje posledných 20 behov. Rovnaké UUID a číslo v jednom e-shope sa nezaložia dvakrát. Staršie pozorovanie neprepíše novšie. Rozpor čísla/UUID alebo rôzne údaje pri rovnakom čase zostávajú viditeľne na kontrolu; tento balík nemá editor na automatické vyriešenie takých konfliktov. Stav skladového spracovania sa ukazuje oddelene od stavu zberu. Zhodný čas hlavičky nie je dôkaz totožného obsahu riadkov.
 
@@ -199,6 +199,14 @@ Vlastná voľná zásoba je zatiaľ výpočet z **potvrdených operácií v Hube
 
 Oficiálne zdroje overené pri implementácii: [objednávkové API](https://docs.upgates.com/api-reference/objednavky), [limity API](https://docs.upgates.com/api/rate-limiting). Zdokumentované filtre nestačia na tvrdenie o distribuovanej transakcii alebo bezstratovom stránkovaní počas ľubovoľných súbežných zmien.
 
+## Šiesty implementačný balík — prevádzkové nastavenia a lokálna automatika
+
+`/settings/stock` sprístupňuje predvolené hodnoty skladu, čiastočné odchýlky každého e-shopu a samostatné režimy `manual`, `reserve`, `fulfill`. Režim výdaja sa nikdy nededí zo skladu. Predvolené hodnoty zachovávajú päťminútový zber; intervaly, kontrolné prechody, opakovanie chýb a spracovanie nedostatku majú validované limity. Spoločné pozastavenie skladu zastavuje automatické lokálne spracovanie objednávok; ručne potvrdené operácie a čítací zber zostávajú samostatné.
+
+Jednorazové načítanie nezapína pravidelný zber. Samostatná trvalá fronta spracovania načítava celé aktuálne objednávky a používa existujúcu identitu variantov a účtovný ledger. Aktivácia prijíma iba nové objednávky od uloženého času; výdaj má vlastnú hranicu. Výnimky zostávajú na ručnú kontrolu. Audit zaznamenáva automatické oprávnenie, nevyrába potvrdenie obsluhy ku každej objednávke. Automatika stále neposiela zásoby do e-shopov.
+
+Podrobný postup a význam kontrolného náhľadu sú v [návode pre obsluhu](order-workflows.md). API, hodnoty, zamykanie, idempotencia a prevádzkové hranice sú vo [vývojárskom kontrakte](order-automation.md).
+
 ## Nasadenie a ďalší postup
 
 Prvý a druhý balík neobsahujú databázovú migráciu ani opravu historických dát. Nové config polia sú spätne kompatibilné a majú predvolené hodnoty. Nasadenie prebieha existujúcim workflow po merge PR. Pri návrate na verziu pred prvým balíkom zostávajú dáta zachované, ale vrátia sa pôvodné riziká príjmu a inicializácie skladu; dovtedy tieto operácie nepoužívať.
@@ -211,4 +219,6 @@ Počiatočný stav pridáva migráciu `006_opening_stock.sql` s tabuľkami dávo
 
 Piaty balík pridáva aditívnu migráciu `008_order_collection.sql`, zabalenú v API obraze a spustenú po `007` pred reštartom. Nevytvorí nastavenie žiadneho e-shopu ani skladový pohyb. Pri návrate kódu sa nové tabuľky ponechajú; starší kód nemá zberača. Pred neskorším opätovným nasadením treba skontrolovať uchované aktivácie. Overenie zberača používa syntetické zdroje a izolovaný PostgreSQL, nie živé objednávky.
 
-Ďalej treba dokončiť automatické účtovanie zmien objednávok, zistenie tvrdých zmazaní a prevádzkové zosúladenie pred zápisom do e-shopov, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu doručenia zmien a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
+Šiesty balík pridáva aditívnu migráciu `009_stock_automation.sql`, ktorú deployment spúšťa po `008` pred reštartom API. Migrácia nezapína automatiku ani nezapisuje skladové pohyby. Návrat kódu ponecháva nové tabuľky, konfiguráciu a všetky účtovné zápisy; vypnutie automatiky už vykonaný výdaj nevráti.
+
+Ďalej treba dokončiť zistenie tvrdých zmazaní a prevádzkové zosúladenie pred zápisom do e-shopov, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu doručenia zmien a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.

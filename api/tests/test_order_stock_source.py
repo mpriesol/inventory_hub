@@ -155,6 +155,17 @@ class SourceNormalizationTests(IsolatedAsyncioTestCase):
                     await source.load_source(None, Shop(id=1, code="biketrek"), number)
         fetch.assert_not_called()
 
+    async def test_target_binding_reaches_client_fetch_and_default_manual_signature_is_unchanged(self):
+        fingerprint = source.connection_fingerprint("https://example.invalid/api/v2", "test")
+        for expected in (None, fingerprint):
+            with patch.object(source, "_fetch", return_value=(envelope(order()), STATUSES)) as fetch, \
+                 patch.object(source, "load_identity_index", AsyncMock(return_value=identity_index())):
+                await source.load_source(None, Shop(id=1, code="biketrek"), "SOURCE-1", expected_target_fingerprint=expected)
+            if expected is None:
+                fetch.assert_called_once_with("biketrek", "SOURCE-1")
+            else:
+                fetch.assert_called_once_with("biketrek", "SOURCE-1", expected_target_fingerprint=fingerprint)
+
 
 class StatusTests(IsolatedAsyncioTestCase):
     async def test_status_hash_covers_automation_metadata_without_deriving_actions(self):
@@ -211,3 +222,42 @@ class SourceTransportTests(TestCase):
             self.assertNotIn("PRIVATE", str(raised.exception))
             client.read_order_audit.assert_called_once()
             client.session.close.assert_called_once()
+
+    def test_changed_actual_target_never_gets_orders_or_statuses(self):
+        fingerprint = source.connection_fingerprint("https://example.invalid/api/v2", "test")
+        for base, login in (("https://wrong.invalid/api/v2", "test"), ("https://example.invalid/other", "test"),
+                            ("https://example.invalid/api/v2", "wrong-login"), ("http://example.invalid/api/v2", "test")):
+            client = UpgatesClient(base, login, "secret-not-hashed")
+            client.session = Mock(auth=(login, "secret-not-hashed"))
+            with self.subTest(base=base, login=login), patch.object(source.UpgatesClient, "from_shop", return_value=client), \
+                 self.assertRaises(source.SourceError) as raised:
+                source._fetch("biketrek", "SOURCE-1", expected_target_fingerprint=fingerprint)
+            self.assertEqual((raised.exception.code, raised.exception.status), ("order_stock_target_changed", 409))
+            client.session.get.assert_not_called()
+            client.session.close.assert_called_once()
+
+    def test_rate_limit_preserves_only_bounded_integer_retry_delay(self):
+        for delay, expected in ((90, 90), (604800, 604800), (604801, None), (0, None),
+                                (-1, None), (True, None), ("90", None), (None, None)):
+            client = Mock()
+            error = UpgatesError("PRIVATE BODY", status_code=429)
+            error.retry_after = delay
+            client.read_order_audit.side_effect = error
+            with self.subTest(delay=delay), patch.object(source.UpgatesClient, "from_shop", return_value=client), \
+                 self.assertRaises(source.SourceError) as raised:
+                source._fetch("biketrek", "SOURCE-1")
+            self.assertEqual(raised.exception.retry_after, expected)
+            self.assertEqual(raised.exception.code, "order_stock_rate_limited")
+            self.assertNotIn("PRIVATE", str(raised.exception))
+            client.read_order_audit.assert_called_once()
+            client.session.close.assert_called_once()
+
+    def test_same_target_with_rotated_key_fetches_both_fresh_order_and_status(self):
+        fingerprint = source.connection_fingerprint("https://example.invalid/api/v2", "test")
+        client = UpgatesClient("https://example.invalid/api/v2", "test", "rotated-key")
+        client.session = Mock(auth=("test", "rotated-key"))
+        client.session.get.side_effect = [self.response(envelope(order())), self.response(STATUSES)]
+        with patch.object(source.UpgatesClient, "from_shop", return_value=client):
+            source._fetch("biketrek", "SOURCE-1", expected_target_fingerprint=fingerprint)
+        self.assertEqual(client.session.get.call_count, 2)
+        client.session.close.assert_called_once()

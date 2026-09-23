@@ -18,6 +18,7 @@ import {
   OrdersAuditPage,
   OrdersStockPage,
   OrdersInboxPage,
+  StockSettingsPage,
   ProductsPage,
   SuppliersPage,
   SupplierCatalogPage,
@@ -64,6 +65,7 @@ function App() {
 
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/stock" element={<StockSettingsPage />} />
           <Route path="/settings/ai-content" element={<AiContentPage />} />
           <Route path="/ai-content" element={<AiContentPage />} />
 

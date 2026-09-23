@@ -101,6 +101,9 @@ export function SettingsPage() {
     <div className="space-y-6"><h1 className="text-2xl font-semibold">{t('ai.settings')}</h1>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/ai-content">
         <strong>{t('ai.title')}</strong><p>{t('ai.settingsDescription')}</p>
+      </Link>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/stock">
+        <strong>{t('stockSettings.title')}</strong><p>{t('stockSettings.subtitle')}</p>
       </Link></div>
   );
 }

@@ -3,33 +3,33 @@ import asyncio
 from datetime import datetime
 import logging
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from inventory_hub import database
 from inventory_hub.database import get_session_context
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderCollectionRun
 from inventory_hub.services import order_collection as service
+from inventory_hub.services.stock_settings import SettingsError
 from inventory_hub.services.order_collection_source import CollectionSourceError, load_changed_page
 
 
 logger = logging.getLogger(__name__)
 WORKER_LOCK = 691432112
-MAX_PAGES = 100
-RUN_TIMEOUT = 180
 
 
 async def collect(plan):
+    max_pages = plan["configuration_snapshot"]["max_pages_per_pass"]
     seen_uuids, seen_numbers = set(), set()
     for deleted in (False, True):
         expected, count, previous_time = None, 0, None
-        for page in range(1, MAX_PAGES + 1):
+        for page in range(1, max_pages + 1):
             async with get_session_context() as db:
                 await service.check_run(db, plan["id"])
             data = await load_changed_page(plan["shop_code"], created_from=plan["created_from"],
                 changed_from=plan["changed_from"], created_to=plan["created_to"], page=page, deleted=deleted,
                 expected_target_fingerprint=plan["target_fingerprint"])
             metadata = (data["number_of_pages"], data["number_of_items"])
-            if data["number_of_pages"] > MAX_PAGES:
+            if data["number_of_pages"] > max_pages:
                 raise service.CollectionError("order_collection_backlog_limit")
             if expected is not None and metadata != expected:
                 raise service.CollectionError("order_collection_unstable_scan")
@@ -68,15 +68,16 @@ async def cycle():
                 for identifier in interrupted:
                     await service.fail_run(db, identifier, "order_collection_interrupted")
                 shop_id = await db.scalar(select(OrderCollectionSettings.shop_id).where(
-                    OrderCollectionSettings.enabled.is_(True), OrderCollectionSettings.next_poll_at <= service.now()
+                    or_(OrderCollectionSettings.enabled.is_(True), OrderCollectionSettings.manual_requested_at.is_not(None)),
+                    OrderCollectionSettings.next_poll_at <= service.now()
                 ).order_by(OrderCollectionSettings.next_poll_at, OrderCollectionSettings.shop_id).limit(1))
                 plan = await service.start_run(db, shop_id) if shop_id is not None else None
             if plan is None:
                 return False
             try:
-                async with asyncio.timeout(RUN_TIMEOUT):
+                async with asyncio.timeout(plan["configuration_snapshot"]["run_timeout_seconds"]):
                     await collect(plan)
-            except (CollectionSourceError, service.CollectionError) as error:
+            except (CollectionSourceError, service.CollectionError, SettingsError) as error:
                 async with get_session_context() as db:
                     await service.fail_run(db, plan["id"], error.code, getattr(error, "retry_after", None))
             except asyncio.CancelledError:

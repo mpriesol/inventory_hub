@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.order_collection_types import CollectionConfigure, CollectionConfirmation, StockProjectionRequest
-from inventory_hub.services import order_collection as service, stock_projection
+from inventory_hub.services import order_collection as service, stock_projection, stock_settings
 
 
 class NoStoreRoute(APIRoute):
@@ -39,7 +39,7 @@ ShopCode = Annotated[str, Query(pattern=r"^[a-z0-9][a-z0-9_-]{0,49}$")]
 async def _call(operation):
     try:
         return await operation
-    except (service.CollectionError, stock_projection.StockProjectionError) as error:
+    except (service.CollectionError, stock_projection.StockProjectionError, stock_settings.SettingsError) as error:
         raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
 
 

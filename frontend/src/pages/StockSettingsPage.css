@@ -1,0 +1,9 @@
+.stock-settings-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin: 24px 0; }
+.stock-settings-field > small { display: block; margin-top: 7px; }
+.stock-settings .stock-settings-inherit { flex-direction: row; align-items: center; margin-top: 10px; line-height: 1.5; }
+.stock-settings input[type=checkbox] { accent-color: var(--color-accent); }
+.stock-settings details { margin: 20px 0; }
+.stock-settings summary { cursor: pointer; color: var(--color-accent); }
+.stock-settings-mode { max-width: 500px; margin-top: 24px; }
+@media (max-width: 1000px) { .stock-settings-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 650px) { .stock-settings-fields { grid-template-columns: 1fr; } }
