@@ -93,6 +93,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         patch.object(imports.UpgatesClient, "from_shop", return_value=self.client).start()
         patch.object(imports, "get_session_context", dummy_session).start()
         patch.object(imports, "selected_products", AsyncMock(return_value=[product()])).start()
+        self.supplier_config = patch.object(imports, "supplier_config", return_value={}).start()
         patch.object(imports, "local_identities", AsyncMock(return_value=({}, set()))).start()
         self.register = patch.object(imports, "register_created", AsyncMock()).start()
         self.id = "a" * 32
@@ -100,6 +101,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         p = product()
         item = imports.build_item([p], ShopImportOptions(), {}, True)
         self.document = {"target": imports._target(imports.shop_config("test-shop")), "prices_with_vat": True,
+            "supplier_availability": imports.availability_policy("paul-lange"),
             "sources": [p.model_dump(mode="json")], "result": None,
             "preview": {"preview_id": self.id, "shop": "test-shop", "supplier": "paul-lange", "errors": [],
                 "expires_at": (imports.now() + timedelta(hours=1)).isoformat(), "options": ShopImportOptions().model_dump(),
@@ -127,6 +129,67 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         sent = self.client.sent[0][1]["products"][0]
         self.assertEqual(sent["prices"][0]["pricelists"][0]["price_original"], 119.99)
         self.assertEqual(sent["prices"][0]["price_common"], 123)
+
+    async def test_config_availability_overrides_ai_rules_and_preserves_metadata_review_flags(self):
+        from test_ai_content import content
+        self.supplier_config.return_value = {"adapter_settings": {"availability": {"orderable": "do 7 dní"}}}
+        imports.selected_products.return_value = [product(supplier_stock=Decimal(3))]
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        enrichment = {"job_id": "test", "revision": 1, "rules_version": 1, "active_after_import": False,
+                      "content": content().model_dump(), "supplier_name": "Supplier custom name",
+                      "import_policy": {"orderable": "AI label", "unknown": "AI unknown", "hide_zero_stock": True}}
+        with patch("inventory_hub.services.ai_content_upgates.content_fields", return_value={"supplier_name": True}):
+            preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1]), enrichment=enrichment)
+        payload = preview.items[0].payload
+        self.assertEqual(payload["availability"], "do 7 dní")
+        self.assertFalse(payload["active_yn"])
+        self.assertTrue(payload["can_add_to_basket_yn"])
+        self.assertIn({"key": "supplier_name", "value": "Supplier custom name"}, payload["metas"])
+        self.assertIn({"key": "validation_required", "value": "0"}, payload["metas"])
+        saved = imports._load_job(imports._path("test-shop", preview.preview_id))
+        self.assertEqual(saved["supplier_availability"]["orderable"], "do 7 dní")
+        self.assertEqual(self.client.sent, [])
+
+    async def test_raw_unknown_product_remains_hidden_review_required_and_orderable(self):
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1]))
+        payload = preview.items[0].payload
+        self.assertEqual(payload["availability"], "overíme")
+        self.assertFalse(payload["active_yn"])
+        self.assertTrue(payload["can_add_to_basket_yn"])
+        self.assertEqual(payload["metas"], [{"key": "validation_required", "value": "1"}])
+
+    async def test_config_changed_after_preview_or_queue_never_sends_stale_availability(self):
+        self.supplier_config.return_value = {"adapter_settings": {"availability": {"orderable": "do 7 dní"}}}
+        with self.assertRaises(imports.CatalogError) as error:
+            imports.queue_import("test-shop", self.id)
+        self.assertEqual(error.exception.code, "supplier_availability_changed")
+        self.supplier_config.return_value = {}
+        imports.queue_import("test-shop", self.id)
+        self.supplier_config.return_value = {"adapter_settings": {"availability": {"orderable": "do 7 dní"}}}
+        await imports.execute_import("test-shop", self.id)
+        self.assertEqual(imports.import_result("test-shop", self.id)["errors"], ["supplier_availability_changed"])
+        self.assertEqual(self.client.sent, [])
+
+    async def test_old_preview_requires_refresh_but_uncertain_import_still_reconciles(self):
+        self.document.pop("supplier_availability")
+        imports._write(self.path, self.document)
+        with self.assertRaises(imports.CatalogError) as error:
+            imports.queue_import("test-shop", self.id)
+        self.assertEqual(error.exception.code, "supplier_availability_changed")
+        self.document["supplier_availability"] = imports.availability_policy("paul-lange")
+        imports._write(self.path, self.document)
+        self.register.side_effect = RuntimeError("simulated registration failure")
+        result = await self.run_import()
+        self.assertEqual(result["items"][0]["status"], "uncertain")
+        self.register.side_effect = None
+        self.supplier_config.return_value = {"adapter_settings": {"availability": {"orderable": "do 7 dní"}}}
+        imports.queue_import("test-shop", self.id, retry_failed=True)
+        await imports.execute_import("test-shop", self.id)
+        self.assertEqual(imports.import_result("test-shop", self.id)["items"][0]["status"], "created")
+        self.assertEqual(len(self.client.sent), 1)
 
     async def test_price_for_unselected_product_is_rejected_before_shop_requests(self):
         request = ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1], sale_price_overrides={2: "19.99"})

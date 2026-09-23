@@ -3,6 +3,26 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
+SUPPLIER_AVAILABILITY_DEFAULTS = {"orderable": "do 5 dní", "unknown": "overíme"}
+
+
+def normalize_supplier_availability(value: Any = None) -> Dict[str, Any]:
+    """Supplier lead-time labels, independent of physical stock and AI rules."""
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("adapter_settings.availability must be an object")
+    result = dict(value)
+    for key, default in SUPPLIER_AVAILABILITY_DEFAULTS.items():
+        label = value.get(key)
+        if label is None or (isinstance(label, str) and not label.strip()):
+            label = default
+        if not isinstance(label, str) or len(label.strip()) > 100:
+            raise ValueError(f"adapter_settings.availability.{key} must be a label of at most 100 characters")
+        result[key] = label.strip()
+    return result
+
+
 KANON_DEFAULT: Dict[str, Any] = {
     "feeds": {
         "current_key": "products",
@@ -45,7 +65,8 @@ KANON_DEFAULT: Dict[str, Any] = {
     },
     "adapter_settings": {
         "product_code_prefix": "",
-        "price_coefficients": {}
+        "price_coefficients": {},
+        "availability": SUPPLIER_AVAILABILITY_DEFAULTS.copy(),
     }
 }
 
@@ -147,5 +168,6 @@ def normalize_supplier_config(raw_in: Optional[Dict[str, Any]]) -> Dict[str, Any
         _deep_set(out, ["adapter_settings", "product_code_prefix"], raw["product_code_prefix"])
     if "price_coefficients" in raw and isinstance(raw["price_coefficients"], dict):
         _deep_set(out, ["adapter_settings", "price_coefficients"], raw["price_coefficients"])
+    out["adapter_settings"]["availability"] = normalize_supplier_availability(adapt.get("availability"))
 
     return out

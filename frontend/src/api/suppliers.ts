@@ -91,6 +91,10 @@ export interface SupplierConfig {
   adapter_settings: {
     currency?: string;
     vat_rate?: number;
+    availability?: {
+      orderable?: string | null;
+      unknown?: string | null;
+    };
     mapping: {
       invoice_to_canon: Record<string, string | null>;
       postprocess: {

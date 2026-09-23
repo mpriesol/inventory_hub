@@ -71,8 +71,21 @@ def summary(job, *, detail=False):
         "checks": job.checks, "error": job.error, "preview_id": job.preview_id,
         "created_at": job.created_at, "updated_at": job.updated_at, "archived": bool(context.get("archived"))}
     if detail:
+        # Availability belongs to supplier configuration, not to historical AI
+        # rules. Prefer the exact policy frozen into a displayed preview.
+        import_policy = {k: v for k, v in context.get("resolved", {}).get("import_policy", {}).items()
+                         if k not in ("orderable", "unknown", "hide_zero_stock")}
+        try:
+            from inventory_hub.services.catalog_merchandising import availability_policy
+            effective = availability_policy(context["supplier"], catalog_import.supplier_config(context["supplier"]))
+            import_policy.update({k: effective[k] for k in ("orderable", "unknown", "hide_zero_stock")})
+        except (CatalogError, KeyError):
+            pass
+        frozen = (context.get("update_preview") or {}).get("supplier_availability")
+        if frozen:
+            import_policy.update({k: frozen[k] for k in ("orderable", "unknown", "hide_zero_stock")})
         data.update(applied_rules=context.get("resolved", {}).get("instructions", []),
-                    resolved_import_policy=context.get("resolved", {}).get("import_policy", {}),
+                    resolved_import_policy=import_policy,
                     parameter_registry=(context.get("resolved", {}).get("category") or {}).get("parameters", []))
         data.update(output=job.output, facts=context.get("facts", []), events=job.events, update_preview=context.get("update_preview"), update_result=context.get("update_result"),
                     usage=job.usage, options=context.get("options"), research=context.get("research"))
@@ -80,6 +93,8 @@ def summary(job, *, detail=False):
             try:
                 doc = catalog_import._load_job(catalog_import._path(context["shop"], job.preview_id))
                 data.update(preview=doc["preview"], import_result=doc.get("result"))
+                if not frozen and doc.get("supplier_availability"):
+                    import_policy.update({k: doc["supplier_availability"][k] for k in ("orderable", "unknown", "hide_zero_stock")})
             except CatalogError:
                 data["preview_unavailable"] = True
     return data

@@ -153,6 +153,13 @@
       "feedUrlNotReachable": "Feed URL not reachable",
       "loginUrlReachable": "Login URL reachable",
       "loginUrlNotReachable": "Login URL not reachable"
+    },
+    "availability": {
+      "title": "Supplier availability",
+      "help": "Availability labels for product imports and updates come from supplier configuration. Supplier stock does not increase our physical stock.",
+      "orderable": "Item in stock at supplier",
+      "unknown": "Unknown supplier availability",
+      "defaults": "Empty values use “do 5 dní” and “overíme”. Customers can also order items with unknown availability."
     }
   },
   "stock": {
@@ -396,7 +403,9 @@
       "ai_update_variant_availability": "Family availability requires per-variant review. Content can be updated now.",
       "ai_job_running": "Wait for the running operation.",
       "ai_selection_invalid": "Select valid products from this job.",
-      "ai_partial_evidence": "Remaining products need a new AI preparation."
+      "ai_partial_evidence": "Remaining products need a new AI preparation.",
+      "supplier_availability_changed": "Supplier availability settings changed or this preview uses older rules. Prepare a new preview.",
+      "supplier_availability_invalid": "Check availability labels in supplier configuration; each field can contain at most 100 characters."
     },
     "tab": {
       "data": "Data and parameters",
@@ -653,7 +662,9 @@
       "ai_existing_brand_mismatch": "The selected brand differs from the shop manufacturer. Choose the matching brand.",
       "ai_existing_variant_registry": "This preparation updates shared product content. Choose a profile with parent parameters rather than variant-specific parameters.",
       "ai_update_stock_unknown": "Shop stock could not be verified. Availability was not changed; refresh the comparison or leave it out of the update.",
-      "ai_update_readback_mismatch": "The selected fields could not be confirmed as matching after the update."
+      "ai_update_readback_mismatch": "The selected fields could not be confirmed as matching after the update.",
+      "supplier_availability_changed": "Supplier availability settings changed or this preview uses older rules. Prepare a new preview.",
+      "supplier_availability_invalid": "Check availability labels in supplier configuration; each field can contain at most 100 characters."
     },
     "importSelectedReady": "Import selected ready jobs",
     "selectJob": "Select job",
@@ -693,7 +704,7 @@
     "removeRule": "Remove rule / profile",
     "removeRuleConfirm": "Remove “{{name}}” from the draft? History is retained. Save and publish to apply.",
     "importPolicy": "Import rules – availability and supplier",
-    "importPolicyHelp": "Hub applies these values during import. Empty fields inherit supplier defaults. Supplier stock is not copied to local stock.",
+    "importPolicyHelp": "An AI rule can change the supplier name. An empty field uses the default supplier name.",
     "hideZeroStock": "Hide new variants with confirmed zero supplier stock",
     "jobFilters": {
       "all": "All",
@@ -807,6 +818,10 @@
     "actualShopValue": "Value read from the shop",
     "readbackValueMissing": "The shop API did not return a value for this field.",
     "updateReadbackHelp": "Compare the expected and observed values below. Missing API data does not by itself mean the change was not saved. Verify update result checks the current state without sending the changes again.",
-    "supplierAvailabilityUnsetStock": "The shop stock quantity is unset. Availability will be set from the supplier; the stock quantity is unchanged."
+    "supplierAvailabilityUnsetStock": "The shop stock quantity is unset. Availability will be set from the supplier; the stock quantity is unchanged.",
+    "supplierAvailabilityConfigHelp": "Availability labels come from supplier configuration under Suppliers. AI rules do not override them; items marked “overíme” remain orderable."
+  },
+  "upgatesImport": {
+    "productOnlyNote": "Downloads product data. Physical stock and acquisition costs stay unchanged."
   }
 }

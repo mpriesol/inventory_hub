@@ -79,17 +79,18 @@ class MerchandisingTests(unittest.TestCase):
         p = product(supplier_stock=Decimal(0),supplier_external_available=True)
         payload = {'active_yn':True}
         apply_availability(payload,[p],availability_policy('paul-lange'))
-        self.assertEqual(payload,{'active_yn':True,'availability':'do 5 dní'})
+        self.assertEqual(payload,{'active_yn':True,'availability':'do 5 dní','can_add_to_basket_yn':True})
         p.supplier_external_available = None
         apply_availability(payload,[p],availability_policy('paul-lange'))
-        self.assertEqual(payload['availability'],'Overíme')
+        self.assertEqual(payload['availability'],'overíme')
 
-    def test_northfinder_zero_is_hidden_only_for_confirmed_zero(self):
+    def test_northfinder_zero_remains_orderable_and_keeps_review_visibility(self):
         p = product(supplier_stock=Decimal(0))
-        payload = {'active_yn':True,'variants':[{'code':p.shop_code,'active_yn':True}]}
+        payload = {'active_yn':False,'variants':[{'code':p.shop_code,'active_yn':True}]}
         apply_availability(payload,[p],availability_policy('northfinder'))
-        self.assertFalse(payload['variants'][0]['active_yn'])
-        self.assertFalse(payload['variants'][0]['can_add_to_basket_yn'])
+        self.assertTrue(payload['variants'][0]['active_yn'])
+        self.assertTrue(payload['variants'][0]['can_add_to_basket_yn'])
+        self.assertEqual(payload['variants'][0]['availability'],'overíme')
         self.assertFalse(payload['active_yn'])
         p.supplier_stock = None
         payload = {'active_yn':True}
@@ -97,11 +98,33 @@ class MerchandisingTests(unittest.TestCase):
         self.assertTrue(payload['active_yn'])
         self.assertNotIn('stock',payload)
 
+    def test_configured_supplier_labels_apply_to_exact_minimum_and_external_stock(self):
+        policy = availability_policy('other-supplier', {'adapter_settings': {'availability': {'orderable': 'do 7 dní'}}})
+        for changes in ({'supplier_stock': Decimal(2)}, {'supplier_stock_min': Decimal(6)},
+                        {'supplier_external_available': True}):
+            with self.subTest(changes=changes):
+                payload = {'active_yn': False}
+                apply_availability(payload, [product(**changes)], policy)
+                self.assertEqual(payload['availability'], 'do 7 dní')
+                self.assertFalse(payload['active_yn'])
+                self.assertNotIn('stock', payload)
+        payload = {'active_yn': True}
+        apply_availability(payload, [product()], policy)
+        self.assertEqual(payload['availability'], 'overíme')
+        self.assertTrue(payload['can_add_to_basket_yn'])
+
     def test_import_rule_priority_and_conflict(self):
-        book = RuleBook(rules=[Rule(id='a',name='a',import_policy={'orderable':'A'}),Rule(id='b',name='b',scope=Scope(supplier='test'),import_policy={'orderable':'B'})])
-        self.assertEqual(resolve(book,Scope(supplier='test'))['import_policy']['orderable'],'B')
-        book.rules.append(Rule(id='c',name='c',scope=Scope(supplier='test'),import_policy={'orderable':'C'}))
+        book = RuleBook(rules=[Rule(id='a',name='a',import_policy={'supplier_name':'A'}),Rule(id='b',name='b',scope=Scope(supplier='test'),import_policy={'supplier_name':'B'})])
+        self.assertEqual(resolve(book,Scope(supplier='test'))['import_policy']['supplier_name'],'B')
+        book.rules.append(Rule(id='c',name='c',scope=Scope(supplier='test'),import_policy={'supplier_name':'C'}))
         with self.assertRaises(CatalogError): resolve(book,Scope(supplier='test'))
+
+    def test_obsolete_availability_rule_conflicts_cannot_block_supplier_configuration(self):
+        book = RuleBook(rules=[
+            Rule(id='a',name='a',import_policy={'orderable':'A','unknown':'A','hide_zero_stock':True,'supplier_name':'Named supplier'}),
+            Rule(id='b',name='b',import_policy={'orderable':'B','unknown':'B','hide_zero_stock':False}),
+        ])
+        self.assertEqual(resolve(book,Scope(supplier='test'))['import_policy'], {'supplier_name':'Named supplier'})
 
 
 class UpdateTests(unittest.TestCase):
@@ -239,8 +262,9 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.remote = {'product_id':7,'code':'A','ean':'123','stock':0,'descriptions':[{'language':'sk','title':'Before'}]}
         self.payload = {'code':'A','descriptions':[{'language':'sk','title':'After'}]}
         self.preview = {'id':'p','state':'ready','target':'target','fields':['title'],'payload':copy.deepcopy(self.payload),
+            'supplier_availability': availability_policy('paul-lange'),
             'identity':identity(self.remote),'before':projection(self.remote,self.payload),'after':projection(self.payload,self.payload),'expires_at':'2999-01-01'}
-        self.job = SimpleNamespace(revision=1,context={'shop':'test','code':'A','update_preview':self.preview},status='review',events=[])
+        self.job = SimpleNamespace(revision=1,context={'shop':'test','supplier':'paul-lange','code':'A','update_preview':self.preview},status='review',events=[])
         self.client = SimpleNamespace(put=Mock(return_value={'products':[{'code':'A','updated_yn':True}]}))
         self.db = AsyncMock()
         self.db.scalar.return_value = 1
@@ -249,6 +273,7 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(update.UpgatesClient,'from_shop',return_value=self.client))
         self.stack.enter_context(patch.object(update.imports,'shop_config',return_value={}))
+        self.supplier_config = self.stack.enter_context(patch.object(update.imports,'supplier_config',return_value={}))
         self.stack.enter_context(patch.object(update.imports,'_target',return_value='target'))
         self.stack.enter_context(patch.object(service,'summary',return_value={}))
 
@@ -292,6 +317,29 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(CatalogError) as error:
             await self.run_confirm([{**self.remote,'stock':2}])
         self.assertEqual(error.exception.code,'ai_shop_content_changed')
+        self.client.put.assert_not_called()
+
+    async def test_changed_supplier_config_blocks_ready_availability_but_not_uncertain_readback(self):
+        self.preview['fields'].append('availability')
+        self.preview['shop_stock'] = 0
+        self.supplier_config.return_value = {'adapter_settings': {'availability': {'orderable': 'do 7 dní'}}}
+        with self.assertRaises(CatalogError) as error:
+            await self.run_confirm([self.remote])
+        self.assertEqual(error.exception.code, 'supplier_availability_changed')
+        self.client.put.assert_not_called()
+        self.db.commit.assert_not_awaited()
+        self.preview['state'] = 'uncertain'
+        await self.run_confirm([self.remote])
+        self.client.put.assert_not_called()
+        self.assertEqual(self.job.context['update_preview']['state'], 'uncertain')
+
+    async def test_legacy_availability_preview_requires_new_preview_before_put(self):
+        self.preview['fields'].append('availability')
+        self.preview['shop_stock'] = 0
+        self.preview.pop('supplier_availability')
+        with self.assertRaises(CatalogError) as error:
+            await self.run_confirm([self.remote])
+        self.assertEqual(error.exception.code, 'supplier_availability_changed')
         self.client.put.assert_not_called()
 
     async def test_unset_stock_becoming_positive_or_missing_prevents_stale_availability_update(self):
@@ -501,6 +549,7 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(update.UpgatesClient,'from_shop',return_value=self.client))
         self.stack.enter_context(patch.object(update.imports,'shop_config',return_value={}))
+        self.supplier_config = self.stack.enter_context(patch.object(update.imports,'supplier_config',return_value={}))
         self.stack.enter_context(patch.object(update.imports,'_target',return_value='target'))
         self.stack.enter_context(patch.object(update,'selected_products',AsyncMock(return_value=[self.source])))
         self.stack.enter_context(patch.object(update,'read_product',side_effect=lambda *a,**kw:copy.deepcopy(self.remote)))
@@ -528,6 +577,16 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
     async def test_zero_local_stock_uses_supplier_lead_time_without_stock_write(self):
         preview=await self.prepare(['availability'])
         self.assertEqual(preview['payload'],{'code':self.source.shop_code,'availability':'do 5 dní'})
+
+    async def test_supplier_config_overrides_frozen_ai_labels_without_changing_cart_or_visibility(self):
+        self.supplier_config.return_value = {'adapter_settings': {'availability': {'orderable': 'do 7 dní'}}}
+        self.job.context['resolved']['import_policy'] = {'orderable': 'AI value', 'unknown': 'AI unknown', 'hide_zero_stock': True}
+        preview = await self.prepare(['availability'])
+        self.assertEqual(preview['payload'], {'code': self.source.shop_code, 'availability': 'do 7 dní'})
+        self.assertEqual(preview['supplier_availability']['orderable'], 'do 7 dní')
+        self.source.supplier_stock = Decimal(0)
+        preview = await self.prepare(['availability'])
+        self.assertEqual(preview['payload'], {'code': self.source.shop_code, 'availability': 'overíme'})
 
     async def test_explicit_unset_stock_uses_supplier_availability_without_inventing_quantity(self):
         self.remote.update(stock=None,stocks=[{'quantity':None},{'quantity':None}],active_yn=False)

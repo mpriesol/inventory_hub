@@ -25,6 +25,7 @@ Use **BIKETREK** and **xTrek** in new documentation and user-facing copy. Keep e
 - `infra/docker-compose.prod.yml`: deployment reference, not proof of the server's current configuration.
 - `OVERVIEW.md`: project map, implementation status and operational context.
 - `docs/supplier-catalog.md`: supplier catalog, validation, import and recovery contracts.
+- `docs/central-stock.md`: accepted order/manual-line rules and phased central-stock implementation.
 - `docs/ai-content.md`: AI preparation, review, selected-field updates, access configuration and recovery.
 
 There are two data stores. PostgreSQL holds relational business data; the filesystem holds supplier/shop configuration and imported/generated files. Supplier-related changes may need both representations. Do not silently update only one side.
@@ -98,9 +99,11 @@ npm --prefix frontend ci
 npm --prefix frontend run build
 node frontend/tests/catalog-ui.cjs
 node frontend/tests/ai-content-ui.cjs
+node frontend/tests/upgates-import-ui.cjs
+node frontend/tests/supplier-config-ui.cjs
 ```
 
-Run the relevant UI interaction checks above for catalog/AI changes; CI currently runs both. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
+Run the relevant UI interaction checks above for catalog/AI changes; CI runs all four suites. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
 
 For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/i18n/en.json`. Keep the corresponding types in `frontend/src/api/`, `frontend/src/types/` and `frontend/src/types.ts` aligned with API responses.
 

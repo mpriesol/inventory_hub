@@ -255,6 +255,12 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(availability.disabled && !availability.checked, 'Shop-source update preserves availability without supplier stock');
   assert(document.body.textContent.includes('Použitá konkrétna inštrukcia.') && document.body.textContent.includes('Materiál'), 'Job exposes exact frozen rules and parameter registry');
 
+  await act(async () => { root.render(React.createElement(AiJobDetail, { key:'supplier-policy-review', job:{...existingReview, source_kind:'catalog',
+    resolved_import_policy:{orderable:'do 7 dní',unknown:'overíme',hide_zero_stock:false,supplier_name:'Supplier from config'}}, onChange:() => {} })); await tick(); });
+  const appliedPolicy = [...document.querySelectorAll('h3')].find(heading => heading.textContent === 'Importné pravidlá – dostupnosť a dodávateľ').parentElement;
+  assert(appliedPolicy.textContent.includes('do 7 dní') && appliedPolicy.textContent.includes('overíme') && appliedPolicy.textContent.includes('Supplier from config'), 'Review displays effective availability returned by the API');
+  assert(appliedPolicy.textContent.includes('Texty dostupnosti sa berú z konfigurácie dodávateľa'), 'Review identifies supplier configuration as the availability source');
+
   const treeCategories = [{ code: 'P', parent_code: null, assignable: false, names: { sk: 'Doplnky' } }, { code: 'C', parent_code: 'P', names: { sk: 'Ručné pumpy' } }, { code: 'S', parent_code: 'P', names: { sk: 'Servis' } }];
   let selectedCategory;
   function TreeHarness() { const [value, setValue] = React.useState(''); return React.createElement(CategoryTree, { categories: treeCategories, value, onChange: code => { selectedCategory = code; setValue(code); } }); }
@@ -269,7 +275,7 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(button('Zrušiť výber')); assert.equal(selectedCategory, '');
 
   const editorRules = { ...rules, book: { ...book, rules: [...book.rules,
-    { ...book.rules[0], id: 'supplier', name: 'Paul Lange pravidlo', scope: { ...scope, supplier: 'paul-lange' } },
+    { ...book.rules[0], id: 'supplier', name: 'Paul Lange pravidlo', scope: { ...scope, supplier: 'paul-lange' }, import_policy: { orderable:'Old ignored override', unknown:'Old unknown override', hide_zero_stock:true, supplier_name:'Original name' } },
     { ...book.rules[0], id: 'brand', name: 'Zéfal pravidlo', scope: { ...scope, brand: 'Zéfal' } }] } };
   await act(async () => { root.render(React.createElement(AiRuleEditor, { rules: editorRules, onReload: () => {}, onJob: () => {} })); await tick(); });
   assert(button('Publikovať koncept').disabled, 'A missing draft has a readable action label without an invented version number');
@@ -278,6 +284,14 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click([...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Dodávatelia (')));
   const profileSelect = [...document.querySelectorAll('label')].find(l => l.textContent.startsWith('Profil')).querySelector('select');
   assert.equal(profileSelect.options.length, 1); assert.equal(profileSelect.options[0].textContent, 'Paul Lange pravidlo', 'Rule groups filter profiles');
+  assert(document.body.textContent.includes('Texty dostupnosti sa berú z konfigurácie dodávateľa'), 'Rule editor explains where availability can be changed');
+  assert(!document.querySelector('input[value="Old ignored override"]') && !document.querySelector('input[value="Old unknown override"]'), 'Obsolete availability overrides are not editable');
+  assert(![...document.querySelectorAll('label')].some(label => label.textContent.startsWith('Skryť nové varianty s potvrdenou nulovou zásobou')), 'Rule editor cannot hide orderable items based on zero supplier stock');
+  await input([...document.querySelectorAll('label')].find(label => label.textContent === 'Názov dodávateľa v e-shope').querySelector('input'), 'Updated name');
+  await input([...document.querySelectorAll('label')].find(label => label.textContent === 'Dôvod zmeny').querySelector('input'), 'Update supplier display name');
+  await click(button('Uložiť novú verziu konceptu'));
+  assert.deepEqual(calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book.rules.find(rule => rule.id === 'supplier').import_policy,
+    {...editorRules.book.rules.find(rule => rule.id === 'supplier').import_policy,supplier_name:'Updated name'}, 'Changing supplier name preserves unrelated legacy values for historical rule compatibility');
   window.confirm = () => false; await click(button('Odstrániť pravidlo / profil'));
   assert(document.querySelector('input[value="Paul Lange pravidlo"]'), 'Cancelling delete keeps rule');
   window.confirm = () => true; await click(button('Odstrániť pravidlo / profil'));

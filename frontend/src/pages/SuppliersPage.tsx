@@ -363,8 +363,9 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
     setSaving(true);
     setError(null);
     try {
-      await updateSupplierConfig(code, config);
-      setOriginalConfig(JSON.parse(JSON.stringify(config)));
+      const savedConfig = await updateSupplierConfig(code, config);
+      setConfig(savedConfig);
+      setOriginalConfig(JSON.parse(JSON.stringify(savedConfig)));
       setHasChanges(false);
       onSaved();
     } catch (err: any) {
@@ -704,6 +705,8 @@ interface TabProps {
 }
 
 function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords }: TabProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
@@ -798,6 +801,46 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords }: T
           className="w-full"
         />
       </div>
+
+      <fieldset className="space-y-3">
+        <legend className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+          {t('suppliers.availability.title')}
+        </legend>
+        <p id="supplier-availability-help" className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('suppliers.availability.help')}
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {(['orderable', 'unknown'] as const).map((key) => (
+            <div key={key}>
+              <label htmlFor={`supplier-availability-${key}`} className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                {t(`suppliers.availability.${key}`)}
+              </label>
+              <input
+                id={`supplier-availability-${key}`}
+                type="text"
+                maxLength={100}
+                value={config.adapter_settings?.availability?.[key] ?? (key === 'orderable' ? 'do 5 dní' : 'overíme')}
+                placeholder={key === 'orderable' ? 'do 5 dní' : 'overíme'}
+                aria-describedby="supplier-availability-help supplier-availability-defaults"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  updateConfig((cfg) => ({
+                    ...cfg,
+                    adapter_settings: {
+                      ...cfg.adapter_settings,
+                      availability: { ...cfg.adapter_settings?.availability, [key]: value },
+                    },
+                  }));
+                }}
+                className="w-full"
+              />
+            </div>
+          ))}
+        </div>
+        <p id="supplier-availability-defaults" className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('suppliers.availability.defaults')}
+        </p>
+      </fieldset>
 
       <div className="flex items-center gap-3 pt-4 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
         <button

@@ -40,7 +40,6 @@ export interface UpgatesImportResult {
 
 export interface UpgatesImportOptions {
   updateExisting?: boolean;
-  includeStock?: boolean;
 }
 
 export async function getUpgatesPreview(shop: string, refresh = false): Promise<UpgatesPreview> {
@@ -60,7 +59,7 @@ export async function importUpgatesProducts(
     body: JSON.stringify({
       codes,
       update_existing: !!opts.updateExisting,
-      include_stock: opts.includeStock !== false,
+      include_stock: false,
     }),
   });
 }
