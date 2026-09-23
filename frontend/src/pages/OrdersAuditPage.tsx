@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import { ClipboardList, Lock } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
@@ -72,6 +73,7 @@ export function OrdersAuditPage() {
       {unlocked && <Button variant="secondary" icon={<Lock size={16} />} onClick={() => { unlockHub(''); setToken(''); setError(''); }}>{t('orderAudit.lock')}</Button>}
     </header>
     <div className="orders-audit-notice">{t('orderAudit.readOnly')}</div>
+    <p><Link to={`/orders/stock?shop=${encodeURIComponent(shop)}`}>{t('orderStock.open')}</Link></p>
 
     {!unlocked ? <form className="orders-audit-panel orders-audit-unlock" onSubmit={event => {
       event.preventDefault();
@@ -111,6 +113,7 @@ export function OrdersAuditPage() {
               <span className="orders-audit-muted">{t('orderAudit.details')}</span>
             </summary>
             <div className="orders-audit-order-body">
+              <Link to={`/orders/stock?shop=${encodeURIComponent(shop)}&order=${encodeURIComponent(order.order_number)}`}>{t('orderStock.openOrder')}</Link>
               <p>{t('orderAudit.createdAt')}: {date(order.created_at)} · {reason(order.candidate_reason)}</p>
               {!!order.warnings.length && <ul className="orders-audit-warnings">{order.warnings.map((warning, warningIndex) => <li key={warningIndex}>{reason(warning)}</li>)}</ul>}
               <div className="orders-audit-table-scroll"><table>

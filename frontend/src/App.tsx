@@ -16,6 +16,7 @@ import {
   StockPage,
   OpeningStockPage,
   OrdersAuditPage,
+  OrdersStockPage,
   ProductsPage,
   SuppliersPage,
   SupplierCatalogPage,
@@ -46,6 +47,7 @@ function App() {
           <Route path="/stock" element={<StockPage />} />
           <Route path="/stock/opening" element={<OpeningStockPage />} />
           <Route path="/orders" element={<OrdersAuditPage />} />
+          <Route path="/orders/stock" element={<OrdersStockPage />} />
 
           {/* Products */}
           <Route path="/products" element={<ProductsPage />} />

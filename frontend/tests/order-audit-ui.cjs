@@ -16,6 +16,7 @@ require.extensions['.css'] = () => {};
 const i18n = require('../src/i18n/index.ts').default;
 const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
+const { MemoryRouter } = require('react-router-dom');
 const { OrdersAuditPage } = require('../src/pages/OrdersAuditPage.tsx');
 const { unlockHub, hubUnlocked } = require('../src/api/access.ts');
 const { unlockAi, aiUnlocked, aiRequest } = require('../src/api/aiContent.ts');
@@ -67,7 +68,7 @@ global.fetch = async (path, init = {}) => {
 
 (async () => {
   unlockHub('');
-  await act(async () => { root.render(React.createElement(OrdersAuditPage)); await tick(); });
+  await act(async () => { root.render(React.createElement(MemoryRouter, null, React.createElement(OrdersAuditPage))); await tick(); });
   assert.equal(calls.length, 0, 'Mounting the locked audit never loads orders');
   assert(button('unlock').disabled);
   await input(document.querySelector('input[type="password"]'), 'synthetic-audit-token');

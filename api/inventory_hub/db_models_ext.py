@@ -145,6 +145,8 @@ class StockMovement(Base):
     )
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     unit_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    # Explicit nonnegative value consumed by an order issue; historical rows stay NULL.
+    total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 4))
     unit_cost_original: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
     unit_cost_currency: Mapped[str] = mapped_column(String(3), default="EUR", nullable=False)
     fx_rate_to_eur: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=1.0, nullable=False)
@@ -395,7 +397,15 @@ class ShopOrder(TimestampMixin, Base):
     subtotal: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     shipping_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
-    currency: Mapped[str] = mapped_column(String(3), default="EUR", nullable=False)
+    currency: Mapped[Optional[str]] = mapped_column(String(3), default="EUR", nullable=True)
+    stock_state: Mapped[str] = mapped_column(String(16), default="unmanaged", server_default="unmanaged", nullable=False)
+    stock_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    stock_warehouse_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("warehouses.id", ondelete="RESTRICT"))
+    stock_source_uuid: Mapped[Optional[str]] = mapped_column(String(100))
+    stock_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    stock_source_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    stock_issued_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    stock_issue_result: Mapped[Optional[dict]] = mapped_column(JSONB)
     
     # Relationships
     shop: Mapped["Shop"] = relationship(back_populates="shop_orders")
@@ -403,6 +413,8 @@ class ShopOrder(TimestampMixin, Base):
     
     __table_args__ = (
         UniqueConstraint("shop_id", "external_id", name="uq_shop_orders"),
+        Index("uq_stock_order_source_uuid", "shop_id", "stock_source_uuid", unique=True,
+              postgresql_where="stock_source_uuid IS NOT NULL"),
         Index("idx_shop_orders_date", "order_date"),
         Index("idx_shop_orders_status", "shop_id", "status"),
     )
@@ -421,9 +433,10 @@ class ShopOrderItem(TimestampMixin, Base):
     external_item_id: Mapped[Optional[str]] = mapped_column(String(100))
     external_product_code: Mapped[Optional[str]] = mapped_column(String(100))
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
-    total_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    total_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    stock_managed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     
     # Relationships
     order: Mapped["ShopOrder"] = relationship(back_populates="items")
@@ -434,6 +447,8 @@ class ShopOrderItem(TimestampMixin, Base):
         CheckConstraint("quantity > 0", name="chk_order_item_qty_positive"),
         Index("idx_shop_order_items_order", "order_id"),
         Index("idx_shop_order_items_product", "product_id"),
+        Index("uq_stock_order_item_key", "order_id", "external_item_id", unique=True,
+              postgresql_where="stock_managed = true"),
     )
 
 

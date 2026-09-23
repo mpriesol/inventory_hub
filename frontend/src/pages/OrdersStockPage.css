@@ -1,0 +1,10 @@
+.order-stock-config { margin-top: 20px; }
+.order-stock-config summary, .order-stock-lines summary { cursor: pointer; font-weight: 500; }
+.order-stock-config > label { max-width: 400px; }
+.order-stock-order-input { margin-top: 16px; align-items: flex-end; }
+.order-stock-excluded { padding: 16px; margin: 20px 0; border: 1px solid var(--color-border-subtle); border-radius: 8px; }
+.order-stock-excluded h3 { margin: 0; font-weight: 600; }
+.order-stock-excluded ul { line-height: 1.8; }
+.order-stock-lines { margin: 20px 0; }
+.order-stock td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.order-stock-config td:first-child { white-space: normal; min-width: 180px; }
