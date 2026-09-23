@@ -85,7 +85,11 @@ async def effective(db, shop_id, lock=False):
     # Runtime throttling is separate from the operator configuration revision/hash.
     retry_after = shop_row.processing_retry_after_at if shop_row else None
     collector = await _one(db, OrderCollectionSettings, OrderCollectionSettings.shop_id == shop_id)
-    if (collector and collector.target_fingerprint == result["target_fingerprint"]
+    from inventory_hub.services.order_collection import target_fingerprint
+    shop = await _one(db, Shop, Shop.id == shop_id)
+    current_target = target_fingerprint(shop.code) if shop and shop.is_active and shop.platform == "upgates" else None
+    if (collector and collector.target_fingerprint == current_target
+            and (result["mode"] == "manual" or collector.target_fingerprint == result["target_fingerprint"])
             and collector.last_error == "order_collection_rate_limited" and collector.retry_after_at):
         retry_after = max(retry_after, collector.retry_after_at) if retry_after else collector.retry_after_at
     result["retry_after_at"] = retry_after
@@ -96,11 +100,9 @@ async def effective(db, shop_id, lock=False):
         elif result["authorized_policy_revision"] != policy.revision:
             error = "order_processing_policy_changed"
         else:
-            from inventory_hub.services.order_collection import target_fingerprint
-            shop = await _one(db, Shop, Shop.id == shop_id)
             if shop is None or not shop.is_active or shop.platform != "upgates":
                 error = "order_processing_shop_unavailable"
-            elif target_fingerprint(shop.code) != result["target_fingerprint"]:
+            elif current_target != result["target_fingerprint"]:
                 error = "order_processing_target_changed"
             elif retry_after and retry_after > now():
                 error = "order_processing_retry_later"
