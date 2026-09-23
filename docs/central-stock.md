@@ -22,7 +22,7 @@ Objednávkové pravidlá sú tu špecifikácia ďalšej etapy. Doterajšie balí
 
 Parameter `include_stock` môže chýbať alebo byť JSON `false`. Iná hodnota vracia HTTP 400 ešte pred volaním e-shopu. Odpoveď zachováva kompatibilné `stock_initialized: 0`. UI odstránilo voľbu inicializácie zásoby. Existujúce historické pohyby, množstvá a náklady sa nemenia.
 
-Počiatočný stav potrebuje samostatný kontrolovaný import s fyzickým množstvom, identitou, pôvodom a obstarávacou cenou. Táto cesta zatiaľ nie je implementovaná. Párovanie rozdielnych kódov pri bežnom pulle a oddelenie údajov e-shopu od spoločného produktu rozširuje druhý balík opísaný nižšie. Existujúce historické duplicity automaticky nezlučuje.
+Počiatočný stav používa samostatný kontrolovaný import s fyzickým množstvom, identitou, pôvodom a obstarávacou cenou, opísaný v treťom balíku nižšie. Párovanie rozdielnych kódov pri bežnom pulle a oddelenie údajov e-shopu od spoločného produktu rozširuje druhý balík. Existujúce historické duplicity automaticky nezlučuje.
 
 ### Bezpečnejší príjem podľa faktúry
 
@@ -89,10 +89,40 @@ Audit nevytvára ani nemení `shop_orders`, rezervácie, produkty, skladové poh
 
 Prístup vyžaduje rovnaký existujúci operátorský token ako AI obsah (`AI_CONTENT_ACCESS_TOKEN`). Spoločná kontrola je v `access.py`; chýbajúci alebo krátky serverový token prístup uzavrie. Token zostáva iba v pamäti prehliadača a neukladá sa do URL ani localStorage. Ide o prechodné zdieľané oprávnenie, nie dokončené používateľské účty a roly. Ostatné existujúce nechránené cesty týmto balíkom nezískavajú všeobecné prihlásenie.
 
+## Tretí implementačný balík — kontrolovaný počiatočný stav
+
+Stránka **Sklad → Počiatočný stav** (`/stock/opening`) používa existujúci operátorský token. Všetky nové cesty pod `/stock/opening` vyžadujú túto kontrolu pred prístupom k DB a vracajú `Cache-Control: no-store`. Token zostáva iba v pamäti prehliadača. Vyplnené meno obsluhy je deklarovaný údaj o pôvode; zdieľaný token nepotvrdzuje totožnosť konkrétneho človeka.
+
+### Vstup a náhľad
+
+Obsluha vyberie existujúci aktívny sklad, vyplní označenie zdrojového súpisu, meno a čas fyzického spočítania s časovým pásmom. Budúci čas sa odmietne. CSV má presné hlavičky `sku;quantity;unit_cost;unit`, najviac 5 000 riadkov a 1 MB. Podporované oddeľovače sú bodkočiarka, čiarka a tabulátor; desatinnú čiarku treba oddeliť alebo uzavrieť podľa pravidiel CSV. Neznáme či duplicitné hlavičky sa nepovažujú za platný vstup.
+
+Každý riadok potrebuje presné existujúce kanonické SKU, kladný celý počet a explicitnú obstarávaciu cenu **EUR bez DPH**. Jediná podporovaná jednotka je **`ks`**. Produktový model zatiaľ nemá autoritatívne merné jednotky; táto verzia preto nepokrýva metrový ani vážený tovar a nevykonáva prevody balení. EAN ani parent kód nenahrádzajú SKU a import nezakladá produkty.
+
+Množstvo je najviac 999 999 999 kusov; jednotková cena najviac 99 999 999,9999 EUR so štyrmi desatinnými miestami. Hodnota riadka musí vojsť do presnosti skladového modelu. Chýbajúca, záporná, nekonečná či neplatná cena je chyba. Explicitná nulová cena zostáva možná s viditeľným upozornením. Nulové množstvo sa nepreskočí, ale označí ako chyba. Náklady sa nepreberajú z e-shopu, predajnej ceny ani posledného priemeru. Výpočty a uložené ceny používajú `Decimal`; odpoveď ich prenáša ako desatinné reťazce.
+
+`POST /stock/opening/preview` overí celý vstup. Neplatný náhľad zobrazí chyby a nemá zaúčtovateľnú dávku. Platný náhľad uloží dávku, riadky, pôvod, čas platnosti a hash, ale nevytvorí bilanciu ani pohyb. UUID požiadavky umožňuje obnovu: rovnaké UUID s rovnakým obsahom vráti tú istú dávku, iný obsah pod rovnakým UUID je konflikt. Náhľad platí 30 minút. Zmena vstupu alebo prístupového tokenu v UI zneplatní náhľad a potvrdenia.
+
+### Zaúčtovanie a obnova
+
+Obsluha musí osobitne potvrdiť skontrolovaný obsah aj vysporiadanie rozpracovaných príjmov. Tovar započítaný v počiatočnom stave sa nesmie neskôr znovu zaúčtovať z nedokončeného príjmu. Databázové zámky riešia súbeh zápisov, ale nedokážu určiť, ktoré fyzické kusy obsluha spočítala. Pred otvorením preto treba určiť hranicu počítania a vyriešiť prekrývajúce sa príjmy.
+
+`POST /stock/opening/{batch_id}/finalize` vyžaduje pôvodný hash a obe výslovné potvrdenia. Znovu overí sklad, identitu SKU, platnosť náhľadu a prázdny stav každého dotknutého produktu v tomto sklade. **Aj existujúca nulová bilancia alebo jediný historický pohyb blokujú otvorenie.** Ide o prvé zavedenie tovaru do skladu, nie korekciu starých nesprávnych údajov; história sa nemení.
+
+Dávka sa zamkne a bilancie sa získajú v rovnakom stabilnom poradí ako pri príjme. Súbežný príjem dokončený ako prvý zablokuje otvorenie. Ak sa prvé dokončí otvorenie, následný príjem zásobu normálne zvýši a použije existujúci vážený priemer. Dve otváracie dávky pre tú istú položku v jednom sklade nemôžu obe uspieť.
+
+Jediná transakcia vytvorí pre každý riadok nemenný pohyb `INITIAL`, množstvo, priemernú obstarávaciu cenu a hodnotu bilancie, označí dávku ako dokončenú a uloží výsledok. Chyba ktoréhokoľvek riadka vráti späť celú transakciu. Čas spočítania je údaj o pôvode; čas pohybu je skutočný čas zápisu. Počiatočný stav nevymýšľa dátum posledného nákupu ani nákupné FIFO vrstvy.
+
+Opakované potvrdenie rovnakej dokončenej dávky vracia uložený výsledok bez ďalšieho pohybu, aj po neskoršom príjme. Pri strate odpovede UI ponechá identifikátor dávky a ponúkne **čítacie overenie výsledku** cez `GET /stock/opening/{batch_id}`. Zápis automaticky neopakuje. Nedokončenú platnú dávku možno potvrdiť výslovne znovu po overení. Prehľad nedávnych dávok cez `GET /stock/opening/batches` umožňuje obnovu aj po obnovení stránky.
+
+Tento balík nezapisuje do e-shopov, fronty synchronizácie ani objednávok. Nezapína rezervácie, výdaje či FIFO. Samotné nasadenie nevytvorí počiatočnú zásobu.
+
 ## Nasadenie a ďalší postup
 
-Balík neobsahuje databázovú migráciu ani opravu historických dát. Nové config polia sú spätne kompatibilné a majú predvolené hodnoty. Nasadenie prebieha existujúcim workflow po merge PR. Pri návrate na staršiu verziu kódu zostávajú dáta zachované, ale vrátia sa pôvodné riziká príjmu a inicializácie skladu; dovtedy tieto operácie nepoužívať.
+Prvý a druhý balík neobsahujú databázovú migráciu ani opravu historických dát. Nové config polia sú spätne kompatibilné a majú predvolené hodnoty. Nasadenie prebieha existujúcim workflow po merge PR. Pri návrate na verziu pred prvým balíkom zostávajú dáta zachované, ale vrátia sa pôvodné riziká príjmu a inicializácie skladu; dovtedy tieto operácie nepoužívať.
 
 Úprava pre spoločné SKU a pokladňový produkt tiež nevyžaduje migráciu alebo nový konfiguračný parameter. Po nasadení treba v Hube znovu načítať náhľad a spustiť vybrané produktové prepojenia; nasadenie samo nespúšťa import ani externý zápis. Návrat na predchádzajúcu verziu obnoví obmedzenie skupín a staré pravidlo párovania bez SKU; existujúce dáta ostanú zachované, ale produktový pull a legacy push treba do nápravy pozastaviť.
 
-Ďalej treba dokončiť jednotnú identitu a kontrolovaný otvárací stav, ochranu prístupu, objednávkový inbox a spracovanie uzamknutého výdaja, rezervácie, FIFO, vratky, frontu synchronizácie a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
+Počiatočný stav pridáva migráciu `006_opening_stock.sql` s tabuľkami dávok a riadkov. Deployment ju explicitne spustí po `005` a pred reštartom API; oba súbory sú súčasťou API obrazu. Opakované vykonanie nemení zásoby ani pohyby. Pri chybe sa nasadenie preruší pred reštartom. Návrat kódu cez revert PR môže ponechať nové tabuľky aj už zaúčtované pohyby; nesmie ich mazať. Schéma je aditívna, ale revert sám neruší zaúčtovaný počiatočný stav. Prípadná dátová oprava potrebuje osobitný postup s kompenzačnými pohybmi.
+
+Ďalej treba dokončiť všeobecné roly a merné jednotky, objednávkový inbox a spracovanie uzamknutého výdaja, rezervácie, FIFO, vratky, frontu synchronizácie a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.

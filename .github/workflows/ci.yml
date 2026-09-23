@@ -76,3 +76,6 @@ jobs:
 
       - name: Check protected order audit interactions
         run: node frontend/tests/order-audit-ui.cjs
+
+      - name: Check controlled opening stock interactions
+        run: node frontend/tests/opening-stock-ui.cjs

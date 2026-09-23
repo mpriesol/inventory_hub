@@ -14,6 +14,7 @@ import {
   ReceivingPage,
   ReceivingSessionPage,
   StockPage,
+  OpeningStockPage,
   OrdersAuditPage,
   ProductsPage,
   SuppliersPage,
@@ -43,6 +44,7 @@ function App() {
 
           {/* Stock */}
           <Route path="/stock" element={<StockPage />} />
+          <Route path="/stock/opening" element={<OpeningStockPage />} />
           <Route path="/orders" element={<OrdersAuditPage />} />
 
           {/* Products */}
