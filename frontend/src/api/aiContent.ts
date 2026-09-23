@@ -1,4 +1,6 @@
-import { CatalogApiError, ImportOptions, ImportPreview, ImportResult } from './catalog';
+import { ImportOptions, ImportPreview, ImportResult } from './catalog';
+import { hubRequest } from './access';
+export { unlockHub as unlockAi, hubUnlocked as aiUnlocked } from './access';
 
 export const policyKeys = ['review_required', 'active_after_import', 'show_cost_estimate', 'confirm_import'] as const;
 export type PolicyKey = typeof policyKeys[number];
@@ -17,16 +19,6 @@ interface AiJobBase { applied_rules?: {id:string; name:string; text:string}[]; r
 export interface AiProposal { instructions: string; reason: string; questions: string[]; parameters: AiParameter[] | null }
 export type AiJob = AiJobBase & ({ kind: 'product'; output?: AiContent } | { kind: 'rules'; output?: AiProposal });
 
-// Deliberately memory-only: the OpenAI key is never sent to the frontend, and
-// the Hub operator token does not persist in localStorage or URLs.
-let accessToken = '';
-export function unlockAi(value: string) { accessToken = value; }
-export function aiUnlocked() { return !!accessToken; }
 export async function aiRequest<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api/ai-content${path}`, { method: body === undefined ? 'GET' : 'POST',
-    headers: { Authorization: `Bearer ${accessToken}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body) });
-  const data = await response.json();
-  if (!response.ok) throw new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
-  return data;
+  return hubRequest<T>(`/api/ai-content${path}`, body);
 }

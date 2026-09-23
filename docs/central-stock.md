@@ -10,7 +10,7 @@ Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačn
 - **„overíme“ je objednateľné.** Neznáma dostupnosť nesľubuje termín; sama nesmie skryť produkt ani zakázať košík. Ručné vypnutie produktu a povinná kontrola nového importu naďalej platia.
 - **Dodacia lehota patrí dodávateľovi.** Každý dodávateľ má vlastnú konfiguráciu. Ak nemá vyplnený text pre dostupný tovar, použije sa `do 5 dní`; predvolený text pre neznámu dostupnosť je `overíme`. Dodávateľská zásoba nikdy nezvyšuje vlastný fyzický sklad.
 
-Objednávkové pravidlá sú tu špecifikácia ďalšej etapy. Tento prvý balík ešte nezapína rezervácie, výdaje objednávok, FIFO ani automatické odosielanie vlastných zásob do e-shopov.
+Objednávkové pravidlá sú tu špecifikácia ďalšej etapy. Doterajšie balíky ešte nezapínajú rezervácie, výdaje objednávok, FIFO ani automatické odosielanie vlastných zásob do e-shopov.
 
 ## Prvý implementačný balík
 
@@ -20,7 +20,7 @@ Objednávkové pravidlá sú tu špecifikácia ďalšej etapy. Tento prvý balí
 
 Parameter `include_stock` môže chýbať alebo byť JSON `false`. Iná hodnota vracia HTTP 400 ešte pred volaním e-shopu. Odpoveď zachováva kompatibilné `stock_initialized: 0`. UI odstránilo voľbu inicializácie zásoby. Existujúce historické pohyby, množstvá a náklady sa nemenia.
 
-Počiatočný stav potrebuje samostatný kontrolovaný import s fyzickým množstvom, identitou, pôvodom a obstarávacou cenou. Táto cesta zatiaľ nie je implementovaná. Párovanie rozdielnych kódov oboch e-shopov a oddelenie ich obsahu od spoločného produktu sú ďalší krok; bežný pull zatiaľ používa existujúce SKU párovanie.
+Počiatočný stav potrebuje samostatný kontrolovaný import s fyzickým množstvom, identitou, pôvodom a obstarávacou cenou. Táto cesta zatiaľ nie je implementovaná. Párovanie rozdielnych kódov pri bežnom pulle a oddelenie údajov e-shopu od spoločného produktu rozširuje druhý balík opísaný nižšie. Existujúce historické duplicity automaticky nezlučuje.
 
 ### Bezpečnejší príjem podľa faktúry
 
@@ -50,6 +50,38 @@ Chýbajúce a prázdne hodnoty dostanú predvolené texty; explicitný text, nap
 Nové produkty sa stále vytvárajú skryté s povinnou kontrolou `validation_required`. Nulová alebo neznáma zásoba dodávateľa sama nezakazuje košík. Aktualizácia dostupnosti existujúceho produktu stále nemení jeho aktivitu, košík ani skladové množstvo a zachováva doterajšie obmedzenia na samostatné produkty. Už zakázaný košík sa touto aktualizáciou automaticky nezapína.
 
 Náhľad zachytí použitú politiku. Zmena konfigurácie vyžaduje nový náhľad pred novým externým zápisom; overovanie už neistého výsledku zostáva čítacie a používa pôvodný obsah. Podrobnosti sú v [katalógu](supplier-catalog.md) a [AI obsahu](ai-content.md).
+
+## Druhý implementačný balík — identity a kontrola objednávok
+
+### Párovanie pri sťahovaní produktov
+
+Produktový pull najprv hľadá jednoznačné existujúce prepojenie pre konkrétny e-shop a jeho predajnú položku. Pri variante používa variantový kód; parent kód nesmie zastúpiť skladovanú veľkosť/farbu. Interné ID samostatného produktu a variantu majú oddelený význam. Existujúce dáta z pullu a katalógového importu majú odlišné historické vyplnenie `external_code`, preto resolver používa aj `is_variant`, `variant_code` a `parent_code`.
+
+Bez existujúceho prepojenia možno položku identifikovať jednoznačným platným EAN/UPC. Zhodný text SKU medzi dvoma e-shopmi sám nestačí na zlúčenie. Ak by sa mal vytvoriť nový produkt, ale jeho SKU už používa neprepojená položka, vznikne viditeľný konflikt. Rozpor medzi mapovaním a čiarovým kódom, viac kandidátov alebo opakovaný vzdialený kód/ID blokuje dotknutú skupinu. Nevytvára sa náhradný vymyslený identifikátor.
+
+Prepojenie aj uloženie rodiny prebieha ako jedna operácia; konflikt rodiny nesmie nechať polovicu variantov uloženú. Zápis prepojení zdieľa DB zámok s registráciou katalógového importu. Bežný pull naďalej nemení skladové bilancie ani pohyby.
+
+Prvý import nového produktu inicializuje jeho spoločné údaje. Ďalšie sťahovanie už existujúceho produktu obnovuje iba `ShopProduct` a `ShopProductContent` konkrétneho e-shopu. Názov, značka, skupina a variantné atribúty spoločného produktu sa neprepisujú obsahom druhého webu. Voľba `update_existing` v API zostáva kompatibilná, ale v UI je výslovne označená ako obnova údajov e-shopu.
+
+Náhľad považuje rodinu za už prepojenú až vtedy, keď sú pre tento e-shop prepojené všetky jej predajné položky. Čiastočne prepojené varianty sa dajú doplniť. Výsledok uvádza nové produkty, nové prepojenia, uložené snímky a samostatný zoznam konfliktov; nevydáva konflikt za úspešný import.
+
+Tento krok automaticky neprepisuje staré mapovania, nezlučuje už existujúce skladové produkty a nezavádza ručný editor konfliktov. Katalógový import si zachováva vlastný overený create-only pracovný tok; jeho staršie interné párovanie nie je touto zmenou celé nahradené.
+
+Starší prenos produktov medzi e-shopmi odmietne rodinu, ktorej kódy sa nezhodujú s kanonickými SKU (`identity_alias_push_blocked`). Kontrola existujúceho cieľa zohľadňuje parent kód aj prepojené produkty. Pri podporovanej rodine berie množstvo všetkých variantov z lokálnych bilancií a odstráni skladové údaje zdrojového e-shopu. Táto ochrana neaktivuje automatickú synchronizáciu zásob.
+
+### Chránená kontrola objednávok
+
+Nová stránka **Kontrola objednávok** načíta zvolený e-shop a obdobie po výslovnom pokyne používateľa. API `GET /shops/{shop}/upgates/orders/audit?days=30&page=1` podporuje 7, 30 alebo 90 dní a jednu stránku najviac 100 objednávok na požiadavku. Automaticky neprechádza históriu a neobnovuje ju na pozadí. Pri každom načítaní použije najviac jednu objednávkovú stránku a číselník stavov.
+
+Objednávkové riadky sa rozlišujú na prepojené, identifikované bez kanálového prepojenia, manuálne mimo skladu, nevyriešené a konfliktné. Manuálna výnimka sa týka položky bez skladovej identity; riadok s kódom a chýbajúcim párovaním sa nesmie potichu vynechať. Čiarový kód bez kódu môže vyžadovať kontrolu identity. Zľavové riadky sú osobitné neskladové položky. Sety, nejednoznačné jednotky a neplatné množstvá sa označia na kontrolu; zložený tovar sa automaticky neodpisuje dvakrát.
+
+Upgates objednávkové `product_id` a `option_set_id` sú orientačné; audit ich nepoužíva ako náhradu overeného kódu či čiarového kódu. Produktový model zatiaľ nemá autoritatívnu mernú jednotku, preto skladované riadky s inou jednotkou než `ks` dostanú upozornenie. Resolver načítava mapovania daného e-shopu naraz a ďalšie údaje po dávkach; pri veľkých katalógoch zostáva priestor na zúženie tohto čítania.
+
+Z aktuálneho stavu sa zobrazuje iba **kandidát** na rezerváciu, výdaj, storno alebo kontrolu. Odoslaná/Vyzdvihnutá a dokončený platený pokladňový predaj majú význam podľa schválených pravidiel. Samotná platba webovej objednávky nestačí. Neznámy stav a vratka/reklamácia vyžadujú kontrolu. Táto čítacia obrazovka nepotvrdzuje minulý výdaj, trvanie rezervácie ani skutočný návrat tovaru.
+
+Audit nevytvára ani nemení `shop_orders`, rezervácie, produkty, skladové pohyby alebo účtovné údaje. Prenáša iba potrebné údaje objednávky a produktových riadkov; raw odpoveď sa neukladá do súborov ani neposiela do prehliadača. Zákaznícke adresy, kontakty, ceny a poznámky sa do výsledku nezaraďujú. Odpoveď má `Cache-Control: no-store`.
+
+Prístup vyžaduje rovnaký existujúci operátorský token ako AI obsah (`AI_CONTENT_ACCESS_TOKEN`). Spoločná kontrola je v `access.py`; chýbajúci alebo krátky serverový token prístup uzavrie. Token zostáva iba v pamäti prehliadača a neukladá sa do URL ani localStorage. Ide o prechodné zdieľané oprávnenie, nie dokončené používateľské účty a roly. Ostatné existujúce nechránené cesty týmto balíkom nezískavajú všeobecné prihlásenie.
 
 ## Nasadenie a ďalší postup
 

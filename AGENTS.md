@@ -101,9 +101,10 @@ node frontend/tests/catalog-ui.cjs
 node frontend/tests/ai-content-ui.cjs
 node frontend/tests/upgates-import-ui.cjs
 node frontend/tests/supplier-config-ui.cjs
+node frontend/tests/order-audit-ui.cjs
 ```
 
-Run the relevant UI interaction checks above for catalog/AI changes; CI runs all four suites. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
+Run the relevant UI interaction checks above for catalog/AI changes; CI runs all five suites. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
 
 For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/i18n/en.json`. Keep the corresponding types in `frontend/src/api/`, `frontend/src/types/` and `frontend/src/types.ts` aligned with API responses.
 

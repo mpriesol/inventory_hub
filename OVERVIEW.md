@@ -2,7 +2,7 @@
 
 Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Kompletný centrálny sklad vrátane predaja zo všetkých kanálov, rezervácií, FIFO a tabuľkovej editácie je ďalším cieľom, nie dokončenou funkciou celého systému.
 
-**Posledné porovnanie s kódom:** 23. 9. 2026, prvý implementačný balík centrálneho skladu nad základom `671c897e7935ae3f5956dc0f44172ced75b38e99`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
+**Posledné porovnanie s kódom:** 23. 9. 2026, druhý implementačný balík centrálneho skladu nad základom `73bdb17b9c368966faa528bc0d5c4ef9b004be55`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
 
 ## Kde začať
 
@@ -43,6 +43,7 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |
 | Nastavenia `/settings` | Vstup do AI nastavení | `/settings/ai-content` a `/ai-content` zobrazujú AI stránku; nejde o úplnú správu skladu. |
 | AI obsah | Implementovaný samostatný workflow | Pravidlá, profily, príprava, kontrola, náhľad importu a aktualizácia vybraných polí. Limity v `docs/ai-content.md`. |
+| Kontrola objednávok `/orders` | Chránený čítací audit | Jedna stránka objednávok, klasifikácia identity a kandidát na operáciu. Nevytvára rezerváciu ani skladový výdaj; používa existujúci operátorský token. |
 | Objednávky, rezervácie, inventúry, všeobecná sync fronta | Modely / nedokončený celkový workflow | Existencia tabuliek nepotvrdzuje kompletné spracovanie predaja a rezervácií zo všetkých kanálov. |
 | FIFO, excelový editor, skladové miesta, roly obsluhy | Ciele ďalšieho návrhu | Nie sú tu deklarované ako hotové funkcie. AI prístupový token nie je všeobecný systém rolí. |
 
@@ -129,7 +130,7 @@ Označenie „synchronizácia“ nie je zárukou rovnakého správania všetkýc
 | Cesta | Čo robí | Hranice |
 | --- | --- | --- |
 | Legacy CSV | Príprava súborov, načítanie exportu e-shopu a rozdelenie importných výstupov. | Nie je priebežnou API synchronizáciou celého skladu. |
-| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; fyzický sklad ani obstarávacie ceny nemení. | `include_stock=true` je odmietnuté; samostatný kontrolovaný otvárací stav a párovanie rozdielnych SKU oboch webov zostávajú ďalším krokom. |
+| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; fyzický sklad ani obstarávacie ceny nemení. | `include_stock=true` je odmietnuté; párovanie používa kanálové prepojenie a overené čiarové kódy. Obnova existujúceho produktu mení iba snímku e-shopu. Konflikty sa zobrazia; kontrolovaný otvárací stav zostáva ďalším krokom. |
 | Hub → e-shop cez `push_products_to_shop` | Prenos vybraných produktov zo zachyteného obsahu. | Aktuálne preskakuje parenty už namapované v cieli; nejde o všeobecnú aktualizáciu existujúcich produktov alebo automatickú stock sync službu. |
 | Dodávateľský katalóg → e-shop | Výber, náhľad a založenie nových produktov cez API, skrytých a označených `validation_required=1`. | Neaktualizuje existujúce produkty a neposiela vlastné skladové množstvá. |
 | AI aktualizácia existujúceho produktu | Porovnanie pred/po a aktualizácia povolených polí s kontrolou identity a výsledku. | Všeobecná aktualizácia obsahu neposiela ceny, vlastné množstvo, aktivitu, identifikátory ani nové varianty. |
@@ -144,7 +145,7 @@ AI workflow používa existujúci katalóg/importer a vlastné DB tabuľky. Work
 
 Oficiálny prieskum môže vyhľadávať weby výrobcov/dodávateľov bez povinného prednastaveného zoznamu domén. Vyhľadávanie nezaručuje dostupnosť správnej hodnoty a chýbajúce povinné parametre naďalej vyžadujú vyriešenie.
 
-AI má vlastnú konfiguráciu a ochranu prístupovým tokenom: `AI_CONTENT_ENABLED`, `AI_CONTENT_MODEL`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria. Postup konfigurácie a obmedzenia sú v [docs/ai-content.md](docs/ai-content.md).
+AI má vlastnú konfiguráciu; jeho existujúci prístupový token chráni aj nový čítací audit objednávok cez spoločný `access.py`. Nejde o všeobecný systém rolí. Konfigurácia: `AI_CONTENT_ENABLED`, `AI_CONTENT_MODEL`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria. Postup konfigurácie a obmedzenia sú v [docs/ai-content.md](docs/ai-content.md).
 
 ## Databázové migrácie
 
@@ -188,7 +189,7 @@ npm --prefix frontend run dev
 
 API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.ts). Konfigurácie ani dáta nevymýšľaj, aby sa aplikácia tvárila funkčne.
 
-Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a jsdom sady pre katalóg, AI, konfiguráciu dostupnosti a produktový pull. DB testy používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
+Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a jsdom sady pre katalóg, AI, konfiguráciu dostupnosti, produktový pull a chránený audit objednávok. DB testy používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
 
 ## Produkčné nasadzovanie a diagnostika
 

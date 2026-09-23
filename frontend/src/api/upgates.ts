@@ -11,6 +11,13 @@ export interface UpgatesNewProduct {
   variants_count: number;
   availability: string;
   stock: number | null;
+  identity_status?: 'new' | 'identified' | 'partial';
+}
+
+export interface UpgatesIdentityConflict {
+  code: string;
+  reasons: string[];
+  candidate_product_ids: number[];
 }
 
 export interface UpgatesPreview {
@@ -20,6 +27,8 @@ export interface UpgatesPreview {
   without_any_code: number;
   new_count: number;
   new_products: UpgatesNewProduct[];
+  conflict_count?: number;
+  conflicts?: UpgatesIdentityConflict[];
   catalog_source: 'cache' | 'api';
   catalog_pulled_at: string;
   catalog_age_s: number;
@@ -31,6 +40,9 @@ export interface UpgatesImportResult {
   created_variants: number;
   updated_products: number;
   content_saved: number;
+  linked_products?: number;
+  conflict_count?: number;
+  conflicts?: UpgatesIdentityConflict[];
   stock_initialized: number;
   ean_conflicts: number;
   ean_conflict_details: { sku: string; ean: string }[];
