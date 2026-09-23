@@ -19,6 +19,7 @@ from inventory_hub.db_models import Product, Supplier, Warehouse, ReceivingStatu
 from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.stock_balances import lock_stock_balances
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
 D = Decimal
@@ -131,6 +132,31 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             receipt = await db.get(ReceivingSession, session_id)
             self.assertEqual(receipt.session_data["keep"], "existing metadata")
+
+    async def test_shared_balance_lock_distinguishes_existing_zero_from_new_and_rolled_back_rows(self):
+        async with self.sessions() as db:
+            product = Product(sku="RECEIPT-NEW-BALANCE", name="Product without stock balance")
+            db.add(product)
+            db.add(StockBalance(product_id=self.product_id, warehouse_id=self.warehouse_id))
+            await db.commit()
+            product_ids = {self.product_id, product.id}
+            new_product_id = product.id
+
+        async with self.sessions() as db:
+            balances, created = await lock_stock_balances(db, product_ids, self.warehouse_id)
+            self.assertEqual(set(balances), product_ids)
+            self.assertEqual(created, {new_product_id})
+            self.assertEqual(balances[self.product_id].qty_on_hand, D("0"))
+            await db.rollback()
+
+        async with self.sessions() as db:
+            _, created = await lock_stock_balances(db, product_ids, self.warehouse_id)
+            self.assertEqual(created, {new_product_id})
+            await db.commit()
+
+        async with self.sessions() as db:
+            _, created = await lock_stock_balances(db, product_ids, self.warehouse_id)
+            self.assertEqual(created, set())
 
     async def run_held_receipts(self, first_id, second_id):
         entered, release = asyncio.Event(), asyncio.Event()

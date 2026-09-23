@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Search, Download, RefreshCw, AlertTriangle } from 'lucide-react';
 import { StatsCard } from '../components/ui/StatsCard';
 import { Button } from '../components/ui/Button.new';
@@ -23,6 +24,7 @@ interface StockItem {
 const deaccent = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 export function StockPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -107,6 +109,7 @@ export function StockPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => navigate('/stock/opening')}>{t('openingStock.title')}</Button>
           <Button variant="secondary" disabled title="Pripravujeme — export reálneho skladu">
             <Download size={16} />
             Export CSV

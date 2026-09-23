@@ -14,7 +14,6 @@ import csv, io, re
 import logging
 
 from sqlalchemy import select, func
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -30,6 +29,7 @@ from inventory_hub.db_models_ext import (
     StockMovement, StockBalance
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.routers.receiving import _update_invoice_status
 
@@ -471,21 +471,8 @@ async def _write_stock_for_line(
 async def _lock_stock_balances(
     db: AsyncSession, warehouse_id: int, product_ids: set[int]
 ) -> Dict[int, StockBalance]:
-    """Create missing balances safely and lock them in a consistent order.
-
-    The unique-key insert also serializes the first receipts of a product that
-    has no balance yet; SELECT FOR UPDATE alone cannot lock an absent row.
-    """
-    balances = {}
-    for product_id in sorted(product_ids):
-        await db.execute(insert(StockBalance).values(
-            product_id=product_id, warehouse_id=warehouse_id,
-        ).on_conflict_do_nothing(index_elements=["product_id", "warehouse_id"]))
-        balance = (await db.execute(select(StockBalance).where(
-            StockBalance.product_id == product_id,
-            StockBalance.warehouse_id == warehouse_id,
-        ).with_for_update().execution_options(populate_existing=True))).scalar_one()
-        balances[product_id] = balance
+    """Keep the receiving interface while sharing locks with other stock writers."""
+    balances, _created_product_ids = await lock_stock_balances(db, product_ids, warehouse_id)
     return balances
 
 
