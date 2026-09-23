@@ -8,7 +8,7 @@ Tento dokument dopĺňa [doménové pravidlá](central-stock.md) a [používate�
 - Spracovateľ objednávok rozhoduje podľa úplného čerstvého zdroja, potvrdenej politiky a účinných prevádzkových nastavení. Vykonáva lokálnu rezerváciu, uvoľnenie alebo jeden výdaj.
 - `order_stock_ledger.py` zostáva spoločným miestom výpočtu alokácií a zápisu pohybov pre ručné aj automatické spracovanie. Nevolá Upgates a necommitne transakciu.
 - Existujúci ručný postup používa nemenný náhľad a osobitné potvrdenie fyzického výdaja. Automatika potrebuje vlastnú zaznamenanú autorizáciu politikou; nesmie predstierať, že používateľ ručne potvrdil každý riadok.
-- `stock_projection.py` ostáva čítacím návrhom. Externý zapisovač, outbox zásob a automatické zmeny viditeľnosti/cien nie sú súčasťou tejto etapy.
+- `stock_projection.py` ostáva čítacím návrhom. Kontrolované odoslanie počas údržby je samostatný workflow opísaný v [stock-publication.md](stock-publication.md); tento procesor zásoby do e-shopov neposiela.
 
 Všetky nové používateľské API používajú `operator_access` a `Cache-Control: no-store`. V prehliadači zostáva token iba v pamäti. Worker nepoužíva požiadavku z prehliadača ako trvalú autorizáciu; používa uložený explicitný režim, cieľ a revízie.
 
@@ -137,3 +137,5 @@ Pred merge treba overiť aspoň tieto scenáre v izolovanom PostgreSQL a synteti
 - žiadny Upgates zápis, outbox zásob, záporné množstvo ani vymyslená cena.
 
 Pri návrate verzie najprv vypnúť príslušné automatické režimy/použiť pauzu a overiť výsledky rozpracovaných úloh. Aditívne tabuľky a už zaúčtované pohyby sa ponechajú. Revert kódu nesmie spätne mazať rezervácie alebo obracať ledger. Obnova starého kódu sama nenahrádza kompenzačný skladový postup.
+
+Publikovanie pridáva do `OperationalValues` dedený limit `publication_batch_size` (20, rozsah 1–100) a platnosť porovnania `publication_preview_minutes` (15 minút, rozsah 5–60). Trvalá blokácia skladu pri publikovaní pozastaví aj automatické lokálne spracovanie; prebiehajúca úloha, ktorá na ňu narazí, sa odloží do opakovania. Nejde o bežné nastavenie `processing_paused`.

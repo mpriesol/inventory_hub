@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: SecretStr = SecretStr("")
     AI_CONTENT_ACCESS_TOKEN: SecretStr = SecretStr("")
     AI_CONTENT_ENABLED: bool = False
+    STOCK_PUBLICATION_WRITE_ENABLED: bool = False
     AI_CONTENT_MODEL: str = "gpt-5.6-sol"
     AI_CONTENT_MONTHLY_USD: float = Field(default=20, ge=0, le=10000)
     AI_CONTENT_JOB_USD: float = Field(default=2, gt=0, le=100)

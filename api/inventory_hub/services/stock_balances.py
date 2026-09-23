@@ -4,6 +4,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.db_models_ext import StockBalance
+from inventory_hub.services.stock_publication_gate import require_stock_write_allowed
 
 
 async def lock_stock_balances(
@@ -17,6 +18,7 @@ async def lock_stock_balances(
     to that same transaction. ``create_missing=False`` locks only existing
     rows: reservation-only backorders must not claim a physical balance.
     """
+    await require_stock_write_allowed(db, warehouse_id)
     balances = {}
     created_product_ids = set()
     for product_id in sorted(product_ids):

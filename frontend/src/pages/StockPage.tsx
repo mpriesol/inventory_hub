@@ -90,7 +90,7 @@ export function StockPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1
             className="text-2xl font-semibold"
@@ -108,8 +108,9 @@ export function StockPage() {
             Aktuálne stavy a dostupnosť produktov
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           <Button variant="secondary" onClick={() => navigate('/stock/opening')}>{t('openingStock.title')}</Button>
+          <Button variant="secondary" onClick={() => navigate('/stock/publication')}>{t('stockPublication.open')}</Button>
           <Button variant="secondary" disabled title="Pripravujeme — export reálneho skladu">
             <Download size={16} />
             Export CSV

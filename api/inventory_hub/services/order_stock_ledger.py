@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from inventory_hub.db_models import MovementType, OrderStatus, Product, ReservationStatus, Warehouse
 from inventory_hub.db_models_ext import Reservation, ShopOrder, ShopOrderItem, StockBalance, StockMovement
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
 
 ZERO = Decimal("0")
@@ -181,7 +182,10 @@ async def _plan(db, order, source_order, action, warehouse_id, *, lock):
         query = query.with_for_update(read=True)
     products = {row.id: row for row in (await db.execute(query.execution_options(populate_existing=True))).scalars()}
     if lock:
-        balances, _ = await lock_stock_balances(db, ids, warehouse_id, create_missing=False)
+        try:
+            balances, _ = await lock_stock_balances(db, ids, warehouse_id, create_missing=False)
+        except StockPublicationHoldError as error:
+            raise OrderStockError(error.code, error.status) from None
     else:
         balances = {row.product_id: row for row in (await db.execute(select(StockBalance).where(
             StockBalance.product_id.in_(sorted(ids)), StockBalance.warehouse_id == warehouse_id,

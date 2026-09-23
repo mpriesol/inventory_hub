@@ -74,6 +74,8 @@ Sklad poskytuje predvolené prevádzkové hodnoty všetkým pripojeným e-shopom
 | Najviac objednávok v jednej spracovateľskej dávke | 20 | 1–100 |
 | Odstup opakovanej kontroly čakajúceho spracovania | 5 minút | 1–1 440 minút |
 | Odstup opakovanej kontroly úplného podkladu objednávky | 24 hodín | 1–168 hodín |
+| Najviac SKU v jednom porovnaní zásob | 20 | 1–100 |
+| Platnosť porovnania zásob pred odoslaním | 15 minút | 5–60 minút |
 
 Maximálny odstup po chybe nesmie byť kratší než základný. Dlhšia prestávka požadovaná samotným Upgates sa rešpektuje aj nad týmto bežným nastavením. Kratšie intervaly znamenajú viac API volaní; menšie limity môžu spôsobiť, že väčší zber skončí ako nedokončený. Nedokončený beh nepreskočí zvyšné objednávky.
 
@@ -122,3 +124,7 @@ Pri probléme prepni automatické spracovanie dotknutého e-shopu na ručný re�
 Vypnutie automatiky ani návrat staršej verzie aplikácie nevrátia rezervácie a vydaný tovar späť. Už zaúčtované operácie ostávajú v evidencii. Návrh vlastných zásob neposiela údaje do Upgates; odosielanie zásob je samostatná nedokončená etapa.
 
 Technický kontrakt a testovacie hranice sú v [order-automation.md](order-automation.md); podrobné doménové pravidlá v [central-stock.md](central-stock.md).
+
+## Odoslanie zásob do e-shopov
+
+Na obrazovke **Publikovanie zásob** (`/stock/publication`) je samostatný postup na porovnanie a kontrolované odoslanie vybraných SKU počas údržby. Predvolene je odosielanie vypnuté. Táto obrazovka nie je potrebná na každodenné načítavanie objednávok. Postup a význam blokácie skladu nájdeš v [návode na publikovanie](stock-publication.md). Limit jednej dávky a platnosť porovnania sa nastavujú v prevádzkových nastaveniach skladu alebo odchýlkach e-shopu.

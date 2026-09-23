@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI):
     worker = None
     collection_worker = None
     processing_worker = None
+    publication_worker = None
     if settings.USE_POSTGRES:
         from inventory_hub.services.ai_content_worker import run
         worker = asyncio.create_task(run(), name="ai-content-queue")
@@ -84,6 +85,8 @@ async def lifespan(app: FastAPI):
         collection_worker = asyncio.create_task(collect_orders(), name="order-collection")
         from inventory_hub.services.order_processing_worker import run as process_orders
         processing_worker = asyncio.create_task(process_orders(), name="order-processing")
+        from inventory_hub.services.stock_publication_worker import run as publish_stock
+        publication_worker = asyncio.create_task(publish_stock(), name="stock-publication")
     yield
     if worker:
         worker.cancel()
@@ -97,6 +100,10 @@ async def lifespan(app: FastAPI):
         processing_worker.cancel()
         with suppress(asyncio.CancelledError):
             await processing_worker
+    if publication_worker:
+        publication_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await publication_worker
     # Shutdown
     if settings.USE_POSTGRES:
         await close_db()
@@ -168,6 +175,8 @@ if settings.USE_POSTGRES:
     app.include_router(order_collection_router)
     from inventory_hub.routers.stock_settings import router as stock_settings_router
     app.include_router(stock_settings_router)
+    from inventory_hub.routers.stock_publication import router as stock_publication_router
+    app.include_router(stock_publication_router)
     from inventory_hub.routers.order_processing import router as order_processing_router
     app.include_router(order_processing_router)
     from inventory_hub.routers.catalog import router as catalog_router

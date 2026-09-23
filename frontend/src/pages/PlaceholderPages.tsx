@@ -104,6 +104,9 @@ export function SettingsPage() {
       </Link>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/stock">
         <strong>{t('stockSettings.title')}</strong><p>{t('stockSettings.subtitle')}</p>
+      </Link>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/stock/publication">
+        <strong>{t('stockPublication.title')}</strong><p>{t('stockPublication.subtitle')}</p>
       </Link></div>
   );
 }

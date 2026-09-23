@@ -28,6 +28,7 @@ Use **BIKETREK** and **xTrek** in new documentation and user-facing copy. Keep e
 - `docs/central-stock.md`: accepted order/manual-line rules and phased central-stock implementation.
 - `docs/order-workflows.md`: operator guide for collection, local automation and manual exceptions.
 - `docs/order-automation.md`: operational settings, worker contracts, concurrency and recovery.
+- `docs/stock-publication.md`: controlled maintenance stock publication, persistent warehouse holds and ambiguous-write recovery.
 - `docs/ai-content.md`: AI preparation, review, selected-field updates, access configuration and recovery.
 
 There are two data stores. PostgreSQL holds relational business data; the filesystem holds supplier/shop configuration and imported/generated files. Supplier-related changes may need both representations. Do not silently update only one side.
@@ -108,9 +109,10 @@ node frontend/tests/opening-stock-ui.cjs
 node frontend/tests/order-stock-ui.cjs
 node frontend/tests/order-collection-ui.cjs
 node frontend/tests/stock-settings-ui.cjs
+node frontend/tests/stock-publication-ui.cjs
 ```
 
-Run the relevant UI interaction checks above for changed workflows; CI runs all nine suites. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
+Run the relevant UI interaction checks above for changed workflows; CI runs all ten suites. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
 
 For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/i18n/en.json`. Keep the corresponding types in `frontend/src/api/`, `frontend/src/types/` and `frontend/src/types.ts` aligned with API responses.
 
@@ -118,7 +120,7 @@ For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/
 
 For Docker-related changes, build locally when available. Do not use the production compose definition as a test environment. Validate SQL and migration order in an isolated database; applying a production migration must be covered by the task's authorization and rollback plan.
 
-The current deployment explicitly runs `inventory_hub.ai_content_migrate` for `005_ai_content.sql`, then `inventory_hub.opening_stock_migrate` for `006_opening_stock.sql`, `inventory_hub.order_stock_migrate` for `007_order_stock.sql`, `inventory_hub.order_collection_migrate` for `008_order_collection.sql` and `inventory_hub.stock_automation_migrate` for `009_stock_automation.sql`, before restarting the API. All five SQL files are packaged in its image. Adding another numbered SQL file does not automatically make it run on an existing production database. Plan the application and verification of each new migration explicitly; Docker's initialization directory is not a general upgrade runner. Test schemas using current `StockMovement` or order ORM models need migration `007` too; collector/settings/processing tests also need `008` and `009`. The read-only order collector is opt-in per shop and must never call stock apply or populate the sync outbox. Its metadata is not a complete stock snapshot. The separate opt-in order processor may mutate the local ledger under an explicit per-shop mode and activation cutoff. It must not fabricate manual physical confirmations or publish shop stock. Warehouse settings pause automatic order processing only; they do not freeze manual receiving or other confirmed stock operations.
+The current deployment explicitly runs `inventory_hub.ai_content_migrate` for `005_ai_content.sql`, then `inventory_hub.opening_stock_migrate` for `006_opening_stock.sql`, `inventory_hub.order_stock_migrate` for `007_order_stock.sql`, `inventory_hub.order_collection_migrate` for `008_order_collection.sql` and `inventory_hub.stock_automation_migrate` for `009_stock_automation.sql`, then `inventory_hub.stock_publication_migrate` for `010_stock_publication.sql`, before restarting the API. All six SQL files are packaged in its image. Adding another numbered SQL file does not automatically make it run on an existing production database. Plan the application and verification of each new migration explicitly; Docker's initialization directory is not a general upgrade runner. Test schemas using current `StockMovement` or order ORM models need migration `007` too; collector/settings/processing tests also need `008` and `009`. Physical writer tests now also need `010`, since all balance writers check its persistent publication hold. The read-only order collector is opt-in per shop and must never call stock apply or populate the sync outbox. Its metadata is not a complete stock snapshot. The separate opt-in order processor may mutate the local ledger under an explicit per-shop mode and activation cutoff. It must not fabricate manual physical confirmations or publish shop stock. Warehouse settings pause automatic order processing only; they do not freeze manual receiving or other confirmed stock operations. Controlled publication uses a separate persistent hold that gates all local stock writers. `STOCK_PUBLICATION_WRITE_ENABLED` defaults to false and is never enabled by migration. Never retry an ambiguous stock PUT or release its hold merely because a read matches; follow the explicit resolution protocol in `docs/stock-publication.md`.
 
 ## Domain rules
 

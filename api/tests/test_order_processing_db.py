@@ -23,6 +23,7 @@ from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.order_stock_types import OrderStockApplyRequest, OrderStockPreviewRequest
 from inventory_hub.stock_settings_models import StockShopSettings, StockWarehouseSettings
+from inventory_hub.stock_publication_models import StockPublicationHold
 from inventory_hub.services import order_collection as collection
 from inventory_hub.services import order_processing as service
 from inventory_hub.services import order_stock as manual
@@ -53,7 +54,7 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((sql_root / "001_schema.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
-                             "009_stock_automation.sql"):
+                             "009_stock_automation.sql", "010_stock_publication.sql"):
                 await connection.execute((sql_root / filename).read_text())
         finally:
             await connection.close()
@@ -544,4 +545,29 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
                          (plan["generation"] + 1, "review", "order_collection_source_conflict"))
         self.assertEqual(job["observation_hash"], plan["observation_hash"])
         self.assertEqual(await self.finish(plan, fetched), {"status": "superseded"})
+        self.assertEqual(await self.physical_snapshot(), before)
+
+    async def test_publication_hold_blocks_automatic_work_and_schedules_existing_attempt_for_retry(self):
+        await self.seed("5")
+        plan = await self.start(self.raw(raw_line(quantity="2"), status_id=8))
+        before = await self.physical_snapshot()
+        async with self.transaction() as db:
+            db.add(StockPublicationHold(id=str(uuid4()), shop_id=self.shops["biketrek"],
+                warehouse_id=self.warehouse_id, active=True,
+                assertions={"external_writers_paused": True, "orders_reconciled": True}, created_at=NOW))
+        for operation in (
+            lambda db: service.enqueue(db, plan["shop_id"], force=True),
+            lambda db: service.refresh(db, "biketrek"),
+            lambda db: service.start_job(db, plan["id"]),
+        ):
+            with self.assertRaises(service.ProcessingError) as raised:
+                async with self.transaction() as db:
+                    await operation(db)
+            self.assertEqual((raised.exception.code, raised.exception.status), ("stock_publication_warehouse_held", 409))
+        async with self.transaction() as db:
+            await service.fail_job(db, plan, "stock_publication_warehouse_held")
+        state = await self.state()
+        self.assertEqual((state.jobs[0]["status"], state.jobs[0]["error"]), ("retry", "stock_publication_warehouse_held"))
+        self.assertGreater(state.jobs[0]["next_attempt_at"], NOW)
+        self.assertEqual(self.source_reads, [])
         self.assertEqual(await self.physical_snapshot(), before)

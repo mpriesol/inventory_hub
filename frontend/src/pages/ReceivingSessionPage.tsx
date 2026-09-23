@@ -142,7 +142,12 @@ export function ReceivingSessionPage() {
       const result = await finalizeReceiving(supplier, sessionId);
       setFinalizeResult(result);
       setTimeout(() => setShowCsvModal(true), 2000);
-    } catch { setError('Nepodarilo sa dokončiť príjem. Skúste to znova.'); setFinalizing(false); }
+    } catch (error) {
+      setError(error instanceof Error && error.message.includes('stock_publication_warehouse_held')
+        ? t('stockPublication.errors.stock_publication_warehouse_held')
+        : 'Nepodarilo sa dokončiť príjem. Skúste to znova.');
+      setFinalizing(false);
+    }
   };
 
   const handleExit = async () => {

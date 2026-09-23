@@ -46,6 +46,7 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((self.sql_root / "002_invoice_management.sql").read_text())
             await connection.execute((self.sql_root / "006_opening_stock.sql").read_text())
             await connection.execute((self.sql_root / "007_order_stock.sql").read_text())
+            await connection.execute((self.sql_root / "010_stock_publication.sql").read_text())
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

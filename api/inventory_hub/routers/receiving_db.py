@@ -30,6 +30,7 @@ from inventory_hub.db_models_ext import (
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.routers.receiving import _update_invoice_status
 
@@ -472,7 +473,10 @@ async def _lock_stock_balances(
     db: AsyncSession, warehouse_id: int, product_ids: set[int]
 ) -> Dict[int, StockBalance]:
     """Keep the receiving interface while sharing locks with other stock writers."""
-    balances, _created_product_ids = await lock_stock_balances(db, product_ids, warehouse_id)
+    try:
+        balances, _created_product_ids = await lock_stock_balances(db, product_ids, warehouse_id)
+    except StockPublicationHoldError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
     return balances
 
 
