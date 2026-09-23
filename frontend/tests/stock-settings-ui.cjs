@@ -39,6 +39,7 @@ const defaults = {
   overlap_minutes: 10, reconcile_window_days: 7, max_pages_per_pass: 100,
   run_timeout_seconds: 180, retry_base_seconds: 300, retry_max_seconds: 3600,
   processing_batch_size: 20, processing_retry_minutes: 5,
+  publication_batch_size: 20, publication_preview_minutes: 15,
 };
 const warehouses = {
   main: { warehouse_code: 'main', revision: 4, values: { ...defaults }, processing_paused: false },

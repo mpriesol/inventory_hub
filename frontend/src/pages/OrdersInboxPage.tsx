@@ -101,7 +101,7 @@ export function OrdersInboxPage() {
     <Link className="opening-stock-back" to="/orders">← {t('orderCollection.back')}</Link>
     <header><div><h1>{t('orderCollection.title')}</h1><p>{t('orderCollection.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" onClick={() => { unlockHub(''); setError(''); }}>{t('orderCollection.lock')}</Button>}</header>
     <div className="opening-stock-notice">{t('orderCollection.scope')}</div>
-    <p><Link to={`/settings/stock?shop=${encodeURIComponent(shop)}`}>{t('stockSettings.open')}</Link></p>
+    <p><Link to={`/settings/stock?shop=${encodeURIComponent(shop)}`}>{t('stockSettings.open')}</Link> · <Link to={`/stock/publication?shop=${encodeURIComponent(shop)}`}>{t('stockPublication.open')}</Link></p>
     {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) { setError(''); unlockHub(token.trim()); setToken(''); } }}>
       <p>{t('orderCollection.tokenHelp')}</p><label>{t('orderCollection.token')}<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label>
       <Button type="submit" disabled={!token.trim()}>{t('orderCollection.unlock')}</Button>

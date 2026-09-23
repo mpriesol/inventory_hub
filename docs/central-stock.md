@@ -222,3 +222,7 @@ Piaty balík pridáva aditívnu migráciu `008_order_collection.sql`, zabalenú 
 Šiesty balík pridáva aditívnu migráciu `009_stock_automation.sql`, ktorú deployment spúšťa po `008` pred reštartom API. Migrácia nezapína automatiku ani nezapisuje skladové pohyby. Návrat kódu ponecháva nové tabuľky, konfiguráciu a všetky účtovné zápisy; vypnutie automatiky už vykonaný výdaj nevráti.
 
 Ďalej treba dokončiť zistenie tvrdých zmazaní a prevádzkové zosúladenie pred zápisom do e-shopov, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu doručenia zmien a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
+
+## Kontrolované publikovanie zásob
+
+Ďalšia etapa pridáva samostatnú obrazovku `/stock/publication` a migráciu `010_stock_publication.sql`. Čítacia projekcia v inboxe zostáva bez zápisov. Nová cesta umožňuje po výslovnom potvrdení údržby pripraviť a odoslať vybrané SKU; vyžaduje serverové aj e-shopové povolenie. Predvolene je odosielanie vypnuté. Podrobný postup pre obsluhu, obnova nejasných výsledkov a kontrakty pre vývojárov sú v [stock-publication.md](stock-publication.md).

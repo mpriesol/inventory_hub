@@ -18,6 +18,7 @@ from inventory_hub.db_models_ext import StockBalance, StockMovement
 from inventory_hub.opening_stock_models import OpeningStockBatch, OpeningStockLine
 from inventory_hub.opening_stock_types import OpeningFinalizeRequest, OpeningPreviewRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
 
 MAX_BYTES = 1_048_576
@@ -284,7 +285,10 @@ async def finalize(db: AsyncSession, batch_id: str, payload: OpeningFinalizeRequ
     expected = [{key: row[key] for key in actual[0]} for row in saved]
     if actual != expected or _hash(batch.preview_data) != batch.preview_hash:
         raise OpeningError("opening_preview_changed")
-    balances, newly_created = await lock_stock_balances(db, set(ids), batch.warehouse_id)
+    try:
+        balances, newly_created = await lock_stock_balances(db, set(ids), batch.warehouse_id)
+    except StockPublicationHoldError as error:
+        raise OpeningError(error.code, error.status) from None
     if newly_created != set(ids):
         raise OpeningError("opening_existing_stock")
     for start in range(0, len(ids), 500):

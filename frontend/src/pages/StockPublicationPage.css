@@ -1,0 +1,5 @@
+.stock-publication textarea { margin-bottom: 16px; }
+.stock-publication-result-actions { justify-content: flex-start; margin-top: 20px; }
+.stock-publication h3 { font-weight: 600; margin-top: 24px; }
+.stock-publication-subline { display: block; margin-top: 5px; }
+.stock-publication .opening-stock-recent .opening-stock-pagination { justify-content: center; }

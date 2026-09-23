@@ -45,6 +45,7 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Parsery pre Paul Lange a Northfinder. |
 | Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |
 | Nastavenia `/settings` | AI a prevádzkové nastavenia skladu | `/settings/stock`: predvolené hodnoty skladu, odchýlky e-shopu, intervaly a výslovné režimy automatického spracovania. `/settings/ai-content` zachováva AI nastavenia. |
+| Publikovanie `/stock/publication` | Kontrolované zosúladenie vybraných SKU počas údržby | Trvalá blokácia lokálneho skladu, porovnanie presných variantov, jedno odoslanie a obnova nejasného výsledku. Serverový zápis je predvolene vypnutý; pozri [návod](docs/stock-publication.md). |
 | AI obsah | Implementovaný samostatný workflow | Pravidlá, profily, príprava, kontrola, náhľad importu a aktualizácia vybraných polí. Limity v `docs/ai-content.md`. |
 | Kontrola objednávok `/orders` | Chránený čítací audit | Jedna stránka objednávok, klasifikácia identity a kandidát na operáciu. Nevytvára rezerváciu ani skladový výdaj; používa existujúci operátorský token. |
 | Skladové spracovanie `/orders/stock` | Kontrolované rezervácie, uvoľnenie a jednorazový výdaj | Jedna čerstvo načítaná objednávka, potvrdené stavové ID a pevný začiatok evidencie pre každý e-shop. Náhľad a výslovné zaúčtovanie; bez automatického prechodu histórie, pollingu či zápisov do e-shopov. Len celé kusy. |
@@ -80,6 +81,7 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `routers/order_stock.py`, `services/order_stock.py`, `order_stock_source.py`, `order_stock_ledger.py` | Potvrdená politika stavov, čerstvý zdroj objednávky, rezervácie a jednorazový výdaj. Posledné dva moduly sú v `services/`. |
 | `routers/stock_settings.py`, `services/stock_settings.py`, `routers/order_processing.py`, `services/order_processing*.py` | Dedené nastavenia, samostatná autorizácia automatiky, trvalé úlohy a lokálne skladové spracovanie. |
 | `routers/order_collection.py`, `services/order_collection*.py`, `services/stock_projection.py` | Chránené nastavenie, obnoviteľný čítací zber, inbox a lokálny návrh zásob bez externých zápisov. |
+| `routers/stock_publication.py`, `services/stock_publication*.py` | Chránené dávky, blokácia skladu a samostatné odoslanie absolútneho stavu počas potvrdenej údržby. |
 | `routers/upgates_sync.py`, `services/upgates.py` | Načítanie produktov a vybrané operácie ich prenosu. |
 | `routers/catalog.py`, `services/catalog.py`, `services/catalog_import.py` | Katalóg, identita, náhľad a založenie produktov. |
 | `services/identifiers.py`, `adapters/` | Identifikátory a dodávateľské spracovanie. |
@@ -179,12 +181,13 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `007_order_stock.sql` | Politiky, náhľady a stav skladového spracovania; presný náklad nového výdaja. Neznáme predajné ceny a mena objednávky smú byť `NULL`. Žiadny historický výdaj ani rezervácia sa nevytvorí migráciou. |
 | `008_order_collection.sql` | Aktivácia zberu, trvalé behy a inbox hlavičiek. Migrácia nezapína e-shopy a nemení fyzický sklad. |
 | `009_stock_automation.sql` | Dedené prevádzkové nastavenia, jednorazové načítanie a trvalá fronta spracovania. Predvolene ručný režim; žiadne spätné zaúčtovanie. |
+| `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005`, `006`, `007`, `008` a `009`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py) a [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py), pod spoločným transakčným DB zámkom a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých päť SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Aktuálny deployment spúšťa `005`, `006`, `007`, `008`, `009` a `010`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py), [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py) a [stock_publication_migrate.py](api/inventory_hub/stock_publication_migrate.py), pod transakčnými DB zámkami a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých šesť SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`009` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`010` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -219,7 +222,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005`, `006`, `007`, `008` a `009` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005`, `006`, `007`, `008`, `009` a `010` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
 5. Skontroluje `/api/health` a `/api/ai-content/status` a vykoná existujúce čistenie nepoužívaných obrazov.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
@@ -251,3 +254,5 @@ Požiadavky vlastníka na ďalší návrh, nie hotové funkcie:
 - praktické úlohy a oprávnenia obsluhy, postupne skladové miesta a príjem bez faktúry.
 
 Rozsah a poradie určí samostatný návrh MVP. Uprednostni aktívny kód, malé rozšírenia a jasné zodpovednosti. Tieto požiadavky samy neautorizujú implementáciu počas úlohy zameranej iba na dokumentáciu alebo návrh.
+
+Kontrolované publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md). Automatické periodické posielanie zásob ostáva plánované: Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného odpočtu z pokladne alebo košíka. Táto etapa vyžaduje externú údržbu a kontrolu objednávok; trvalá blokácia v Hube sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.

@@ -16,6 +16,8 @@ class OperationalValues(BaseModel):
     processing_batch_size: StrictInt = Field(default=20, ge=1, le=100)
     processing_retry_minutes: StrictInt = Field(default=5, ge=1, le=1440)
     full_order_check_hours: StrictInt = Field(default=24, ge=1, le=168)
+    publication_batch_size: StrictInt = Field(default=20, ge=1, le=100)
+    publication_preview_minutes: StrictInt = Field(default=15, ge=5, le=60)
 
     @model_validator(mode="after")
     def retry_range(self):

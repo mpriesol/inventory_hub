@@ -22,6 +22,7 @@ from inventory_hub.services import order_stock as stock, order_stock_ledger as l
 from inventory_hub.services.order_collection import target_fingerprint
 from inventory_hub.services.order_stock_source import resolve_lines
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+from inventory_hub.services.stock_publication_gate import require_stock_write_allowed, StockPublicationHoldError
 
 
 class ProcessingError(Exception):
@@ -96,6 +97,10 @@ async def _context(db, shop_id, *, identity=False, shop_write=False):
         raise ProcessingError("order_processing_not_configured")
     config = await stock_settings.effective(db, shop_id, lock=True)
     _enabled(config, policy)
+    try:
+        await require_stock_write_allowed(db, policy.warehouse_id)
+    except StockPublicationHoldError as error:
+        raise ProcessingError(error.code, error.status) from None
     if target_fingerprint(shop.code) != config["target_fingerprint"]:
         raise ProcessingError("order_processing_target_changed")
     if config.get("retry_after_at") and config["retry_after_at"] > now():
@@ -302,7 +307,7 @@ async def fail_job(db, plan, code, retry_after=None):
         return
     retry = code in {"order_processing_source_behind", "order_processing_interrupted", "order_processing_source_unavailable",
                      "order_stock_source_unavailable", "order_stock_rate_limited", "order_processing_configuration_changed",
-                     "order_processing_paused"}
+                     "order_processing_paused", "stock_publication_warehouse_held"}
     _schedule(job, {"values": plan["values"]}, status="retry" if retry else "review", error=code)
     if cooldown_settings is not None:
         job.next_attempt_at = max(job.next_attempt_at, cooldown_settings.processing_retry_after_at)

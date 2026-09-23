@@ -12,6 +12,8 @@ export const STOCK_SETTING_FIELDS = [
   { key: 'retry_max_seconds', min: 300, max: 86400, advanced: true },
   { key: 'processing_batch_size', min: 1, max: 100, advanced: true },
   { key: 'processing_retry_minutes', min: 1, max: 1440, advanced: true },
+  { key: 'publication_batch_size', min: 1, max: 100, advanced: true },
+  { key: 'publication_preview_minutes', min: 5, max: 60, advanced: true },
 ] as const;
 export type StockSettingKey = typeof STOCK_SETTING_FIELDS[number]['key'];
 export type StockSettingValues = Record<StockSettingKey, number>;
