@@ -152,6 +152,7 @@ export function OrdersStockPage() {
     <Link to="/orders" className="opening-stock-back">← {t('orderStock.back')}</Link>
     <header><div><h1>{t('orderStock.title')}</h1><p>{t('orderStock.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" onClick={() => { unlockHub(''); setError(''); }}>{t('orderStock.lock')}</Button>}</header>
     <div className="opening-stock-notice">{t('orderStock.scope')}</div>
+    <p><Link to={`/orders/inbox?shop=${encodeURIComponent(shop)}`}>{t('orderCollection.open')}</Link></p>
     {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) { setError(''); unlockHub(token.trim()); setToken(''); } }}>
       <p>{t('orderStock.tokenHelp')}</p><label>{t('orderStock.token')}<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label>
       <Button type="submit" disabled={!token.trim()}>{t('orderStock.unlock')}</Button>

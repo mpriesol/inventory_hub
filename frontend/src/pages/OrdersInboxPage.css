@@ -1,0 +1,9 @@
+.orders-inbox-status { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
+.orders-inbox-status strong { font-size: 17px; }
+.orders-inbox-status span, .orders-inbox-subline { color: var(--color-text-secondary); font-size: 12px; }
+.orders-inbox-subline { display: block; margin-top: 4px; }
+.orders-inbox a { color: var(--color-accent); }
+.orders-inbox textarea { margin-bottom: 16px; }
+.orders-inbox td { font-variant-numeric: tabular-nums; }
+.orders-inbox th, .orders-inbox td:first-child { white-space: nowrap; }
+.orders-inbox .opening-stock-pagination { margin-top: 16px; }

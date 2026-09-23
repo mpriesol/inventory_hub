@@ -12,7 +12,7 @@ Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačn
 - **Kód predajnej položky je spoločná identita BIKETREK a xTrek.** Vlastník potvrdil spoločné kódy variantov. Jednoznačný presne zhodný kód môže prepojiť položku aj bez EAN; rozdielne platné EAN alebo rozpor s existujúcim mapovaním vyžadujú kontrolu.
 - **Pokladňový zberný produkt „xTrek“ v BIKETREK** môže obsahovať tisíce navzájom nesúvisiacich variantov, ktoré sú v xTrek e-shope pod rôznymi produktmi. Rodičovstvo je údaj konkrétneho e-shopu, nie podmienka spoločnej skladovej identity. Jeden tovar má jednu skladovú kartu a viac kanálových prepojení. Skladové spracovanie nesmie meniť jeho viditeľnosť v e-shope.
 
-Štvrtý balík nižšie implementuje potvrdené spracovanie jednotlivých objednávok vrátane rezervácií a výdaja. Automatický zber objednávok, FIFO, vratky a odosielanie vlastných zásob do e-shopov ešte nebežia.
+Štvrtý balík implementuje potvrdené spracovanie jednotlivých objednávok vrátane rezervácií a výdaja. Piaty pridáva zapínateľný automatický zber hlavičiek objednávok a čítací návrh vlastných zásob. Automatické účtovanie objednávok, FIFO, vratky a odosielanie vlastných zásob do e-shopov ešte nebežia.
 
 ## Prvý implementačný balík
 
@@ -163,6 +163,42 @@ Opakované potvrdenie dokončeného náhľadu vráti pôvodný výsledok bez ďa
 
 Pri stratenej odpovedi UI uchová UUID a vyžaduje čítacie overenie `GET /order-stock/previews/{id}`. Zápis samo neopakuje. Prehľad posledných 20 náhľadov daného e-shopu umožňuje obnovu po načítaní stránky. Zmena vstupu, nastavenia alebo tokenu zneplatní zobrazený náhľad a potvrdenia. Stratená odpoveď nastavenia sa overuje novým načítaním možností.
 
+## Piaty implementačný balík — automatický zber a návrh zásob
+
+**Objednávky → Automatický zber** (`/orders/inbox`) zobrazuje objednávky zachytené na pozadí, stav posledných behov a návrh vlastnej voľnej zásoby pre vybrané SKU. Celé nové API `/order-collection` používa operátorský token a `Cache-Control: no-store`. Bez výslovného načítania prehliadač neposiela požiadavky. Token ani údaje objednávok neukladá do localStorage.
+
+### Aktivácia a trvalý stav
+
+`GET /status?shop_code=...` ukazuje existujúcu skladovú politiku, pripojenie a stav zberača. `POST /configure` vyžaduje `enabled`, `expected_revision` a skutočné JSON `confirmed=true`. Prvé zapnutie vyžaduje aktívny Upgates e-shop, potvrdenú skladovú politiku a aktívny sklad. Počiatočný čas zberu je **existujúci začiatok skladovej evidencie**, takže sa nestratí obdobie medzi jej nastavením a neskorším zapnutím zberu. Pozastavenie a obnovenie tento čas ani dokončený kontrolný bod neposúvajú.
+
+Identita API cieľa je viazaná na HTTPS adresu a prihlasovacie meno; ukladá sa iba hash, nie heslo/kľúč. Zmena cieľa zber zastaví. Skontroluje sa konfigurácia aj skutočné pripojenie pred GET a konfigurácia znovu pred uložením odpovede. Výmena samotného API kľúča nemení identitu. Tento balík neposkytuje automatické prepojenie starej evidencie na iný e-shop. Chyba 401/403 zber vypne; po oprave prístupu ho treba vedome obnoviť.
+
+Worker beží v existujúcom API procese a používa vlastný databázový advisory lock pre všetky repliky. Stav uchovávajú `order_collection_settings`, `order_collection_runs` a `order_inbox`. Zavretie prehliadača ho nezastaví; nasadenie alebo reštart nestratia kontrolný bod. Nové e-shopy ani nasadenie sa samy nezapínajú. Bežný odstup medzi dokončenými behmi je päť minút. `POST /refresh` len zaradí skorší beh a vracia HTTP 202; neobchádza chybovú prestávku ani minimálny odstup 60 sekúnd. Verzia nastavenia sa tým nemení. Stratená odpoveď nastavenia sa rieši čítaním aktuálneho stavu pred opakovaním.
+
+### Zber zmien a obnova
+
+Zdroj používa zdokumentované filtre `last_update_time_from`, `creation_time_from/to`, poradie podľa aktualizácie a samostatný dopyt pre aktívne a zmazané objednávky. Jedna stránka obsahuje najviac 100 hlavičiek. Neukladajú sa produkty objednávky, zákazníci, adresy, kontakty, poznámky, ceny ani raw odpoveď. Uchovávajú sa číslo a UUID objednávky, časy vytvorenia/aktualizácie, pôvod, stavové ID, príznak zmazania, hash týchto údajov a časy pozorovania.
+
+Zmenový beh sa vracia desať minút pred posledný dokončený kontrolný bod, najskôr po začiatok skladovej evidencie. Kontrolný bod postúpi na **lokálny čas začiatku behu** až po úspešnom dokončení všetkých strán oboch dopytov. Nepoužíva maximum vzdialeného času. Hlavičky sa ukladajú po stránkach, takže časť výsledkov môže byť viditeľná aj po chybe; chybný beh sa však nevydáva za dokončený.
+
+Upgates neposkytuje zdokumentovaný horný filter času aktualizácie ani konzistentný stránkovací snapshot. Duplicity, zmenené počty/počet strán, obrátené časové poradie či prekročený limit označia beh ako neúspešný bez posunu kontrolného bodu. Limit je 100 strán na jeden dopyt a 180 sekúnd na celý beh. Pri limite sa nič potichu nepreskočí. Okrem zmenových behov sa približne raz denne začína kontrolný prechod všetkých objednávok od začiatku evidencie v najviac sedemdňových intervaloch vytvorenia. Jeho dokončenie závisí od rozsahu dát a dostupnosti API. Dlhší kontrolný prechod sa strieda so zmenovými behmi, aby ich nevyhladoval. Ide o priebežné zbližovanie pohľadov, nie o záruku okamžite kompletného snapshotu počas súbežných zmien.
+
+Čítacie chyby opakuje worker s odstupom 5–60 minút; rešpektuje dlhšie `Retry-After` pri 429, najviac sedem dní. Nedokončený beh po reštarte sa označí ako prerušený a pokračuje od nezmeneného kontrolného bodu. Na sieťové volanie sa nedržia zámky skladových riadkov ani zámky konfigurácie. Pozastavenie počas načítania zneplatní uloženie ďalšej stránky cez revíziu nastavenia.
+
+`GET /inbox` má stránkovanie; `GET /runs` ukazuje posledných 20 behov. Rovnaké UUID a číslo v jednom e-shope sa nezaložia dvakrát. Staršie pozorovanie neprepíše novšie. Rozpor čísla/UUID alebo rôzne údaje pri rovnakom čase zostávajú viditeľne na kontrolu; tento balík nemá editor na automatické vyriešenie takých konfliktov. Stav skladového spracovania sa ukazuje oddelene od stavu zberu. Zhodný čas hlavičky nie je dôkaz totožného obsahu riadkov.
+
+Zmazanie, zmiznutie zo zoznamu ani absencia počas kontroly **nie sú storno alebo vratka**. Zmazaná objednávka sa označí na kontrolu. Tvrdé zmazanie API nemusí vôbec vrátiť; lokálny záznam sa preto automaticky nemaže ani neuvoľní. Bežná aktívna objednávka odkazuje na existujúce `/orders/stock`, kde sa pred potvrdením znovu načíta celý aktuálny zdroj. Zberač nikdy nevytvára `ShopOrder`, rezerváciu, príjem ani výdaj a nevyrába potvrdenie fyzického odovzdania.
+
+### Návrh zásob podľa predajnej položky
+
+`POST /stock-preview` prijme 1–100 presných existujúcich SKU a vybraný e-shop. Použije iba sklad z jeho potvrdenej objednávkovej politiky. Vypočíta vlastné **voľné kusy = fyzické − rezervované**, s desatinnou aritmetikou a kontrolou celých nezáporných kusov. Chýbajúca bilancia alebo bilancia bez fyzického pohybu v rovnakom sklade zostáva neznáma (`null`). Skutočne vyčerpaná overená zásoba má známu nulu. Zásoby dodávateľa ani e-shopu do nej nevstupujú.
+
+Cieľ tvorí presne zhodný predajný kód a jeho mapovanie v konkrétnom e-shope. Variant pod pokladňovým rodičom `xTrek` sa spracuje samostatne; ostatné varianty rodiny sa nepridajú do výberu. Alias, nejednoznačné mapovanie, neplatný rodič či neoverená bilancia blokujú príslušný riadok. Nemenia sa kódy, rodičovstvo, viditeľnosť, ceny ani dodávateľská dostupnosť. Návrh vždy vracia `external_write_enabled=false`, nevytvára outbox a nemá odosielacie tlačidlo.
+
+Vlastná voľná zásoba je zatiaľ výpočet z **potvrdených operácií v Hube**, nie automaticky úplný obraz všetkých objednávok. Upgates odpočítava vlastnú zásobu pri objednaní. Absolútny zápis z Hubu by bez zosúladenia nezachytených objednávok mohol obnoviť už predaný kus. Výdaj už rezervovaných kusov navyše znižuje fyzické aj rezervované množstvo, takže voľné množstvo sa nezmení; nesmie sa poslať druhý záporný prírastok. Preto tento balík pripravuje kontrolovateľnú projekciu, ale nezavádza externého zapisovača.
+
+Oficiálne zdroje overené pri implementácii: [objednávkové API](https://docs.upgates.com/api-reference/objednavky), [limity API](https://docs.upgates.com/api/rate-limiting). Zdokumentované filtre nestačia na tvrdenie o distribuovanej transakcii alebo bezstratovom stránkovaní počas ľubovoľných súbežných zmien.
+
 ## Nasadenie a ďalší postup
 
 Prvý a druhý balík neobsahujú databázovú migráciu ani opravu historických dát. Nové config polia sú spätne kompatibilné a majú predvolené hodnoty. Nasadenie prebieha existujúcim workflow po merge PR. Pri návrate na verziu pred prvým balíkom zostávajú dáta zachované, ale vrátia sa pôvodné riziká príjmu a inicializácie skladu; dovtedy tieto operácie nepoužívať.
@@ -173,4 +209,6 @@ Počiatočný stav pridáva migráciu `006_opening_stock.sql` s tabuľkami dávo
 
 Štvrtý balík pridáva migráciu `007_order_stock.sql`, explicitne spustenú po `006` pred reštartom API. Rozširuje existujúce objednávkové modely a pridáva politiky/náhľady. Dva cenové stĺpce objednávkového riadka a menu objednávky povoľuje ako `NULL`; existujúce hodnoty nemení. Žiadne staré objednávky, rezervácie ani výdaje sa migráciou nedopočítajú. Návrat kódu cez revert PR ponechá schému, už potvrdené rezervácie a nemenné pohyby; ich zrušenie vyžaduje osobitný riadený postup. Nasadenie samo nevytvorí politiku, neaktivuje e-shop a nezaúčtuje objednávky.
 
-Ďalej treba dokončiť automatický zber/revízie objednávok a obnovu pri výpadkoch, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu synchronizácie a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
+Piaty balík pridáva aditívnu migráciu `008_order_collection.sql`, zabalenú v API obraze a spustenú po `007` pred reštartom. Nevytvorí nastavenie žiadneho e-shopu ani skladový pohyb. Pri návrate kódu sa nové tabuľky ponechajú; starší kód nemá zberača. Pred neskorším opätovným nasadením treba skontrolovať uchované aktivácie. Overenie zberača používa syntetické zdroje a izolovaný PostgreSQL, nie živé objednávky.
+
+Ďalej treba dokončiť automatické účtovanie zmien objednávok, zistenie tvrdých zmazaní a prevádzkové zosúladenie pred zápisom do e-shopov, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu doručenia zmien a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.

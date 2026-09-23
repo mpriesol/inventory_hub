@@ -74,6 +74,7 @@ export function OrdersAuditPage() {
     </header>
     <div className="orders-audit-notice">{t('orderAudit.readOnly')}</div>
     <p><Link to={`/orders/stock?shop=${encodeURIComponent(shop)}`}>{t('orderStock.open')}</Link></p>
+    <p><Link to={`/orders/inbox?shop=${encodeURIComponent(shop)}`}>{t('orderCollection.open')}</Link></p>
 
     {!unlocked ? <form className="orders-audit-panel orders-audit-unlock" onSubmit={event => {
       event.preventDefault();

@@ -17,6 +17,7 @@ import {
   OpeningStockPage,
   OrdersAuditPage,
   OrdersStockPage,
+  OrdersInboxPage,
   ProductsPage,
   SuppliersPage,
   SupplierCatalogPage,
@@ -48,6 +49,7 @@ function App() {
           <Route path="/stock/opening" element={<OpeningStockPage />} />
           <Route path="/orders" element={<OrdersAuditPage />} />
           <Route path="/orders/stock" element={<OrdersStockPage />} />
+          <Route path="/orders/inbox" element={<OrdersInboxPage />} />
 
           {/* Products */}
           <Route path="/products" element={<ProductsPage />} />
