@@ -30,6 +30,7 @@ from inventory_hub.db_models_ext import (
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.services import fifo
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.routers.receiving import _update_invoice_status
@@ -432,14 +433,25 @@ async def _write_stock_for_line(
     unit_cost = line.unit_price
 
     old_qty = balance.qty_on_hand or Decimal("0")
-    old_avg = balance.avg_cost or Decimal("0")
+    old_avg = balance.avg_cost
+    state = await fifo.lock_state(db, balance)
+    if state is None and old_avg is None:
+        raise HTTPException(409, detail={"code": "fifo_cutover_required", "message": "fifo_cutover_required"})
     new_qty = old_qty + qty
-    if unit_cost is not None and new_qty > 0:
+    if new_qty > fifo.MAX_QUANTITY:
+        raise HTTPException(409, detail={"code": "fifo_value_out_of_range", "message": "fifo_value_out_of_range"})
+    if unit_cost is not None and new_qty > 0 and old_avg is not None:
         new_avg = ((old_qty * old_avg) + (qty * unit_cost)) / new_qty
     else:
         new_avg = old_avg
 
-    now = datetime.utcnow()
+    try:
+        projected = await fifo.receipt_valuation(db, balance, qty, unit_cost)
+    except fifo.FifoError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
+    if projected is not None:
+        new_avg = Decimal(projected["avg_cost"]) if projected["avg_cost"] is not None else None
+    now = datetime.now(timezone.utc)
     movement = StockMovement(
         idempotency_key=f"receiving:{session.id}:{line.id}",
         product_id=product.id,
@@ -459,13 +471,19 @@ async def _write_stock_for_line(
 
     balance.qty_on_hand = new_qty
     balance.avg_cost = new_avg
-    balance.total_value = new_qty * new_avg
+    balance.total_value = new_qty * new_avg if new_avg is not None else None
     if unit_cost is not None:
         balance.last_purchase_price = unit_cost
         balance.last_purchase_at = now
     balance.last_movement_at = now
     balance.last_movement_id = movement.id
-
+    try:
+        await fifo.add_receipt(db, balance, movement, now, unit_cost, "known",
+            {"kind": "receiving", "session_id": session.id, "line_id": line.id,
+             "supplier_code": supplier_code, "invoice_number": session.invoice_number,
+             "unit_cost_at_receipt": str(unit_cost)})
+    except fifo.FifoError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
     return movement
 
 

@@ -1,6 +1,6 @@
 # Inventory Hub — prehľad projektu
 
-Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Kompletný centrálny sklad vrátane predaja zo všetkých kanálov, rezervácií, FIFO a tabuľkovej editácie je ďalším cieľom, nie dokončenou funkciou celého systému.
+Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Automatické doručovanie produktových zmien a kompletná prevádzka centrálneho skladu zo všetkých kanálov ešte nie sú dokončené.
 
 **Posledné porovnanie s kódom:** 23. 9. 2026, konfigurovateľný zber a voliteľné automatické lokálne spracovanie objednávok nad základom `2c198857d1ca83c0e0ef7836e590bca504df2b1f`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
 
@@ -37,8 +37,8 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | --- | --- | --- |
 | Dashboard `/` | Implementovaný prehľad | `DashboardPage.tsx`; počítadlo nedokazuje dokončený obchodný proces. |
 | Faktúry `/invoices`, `/invoices/:invoiceId` | Nahrávanie, evidencia, filtre a detail | `routers/invoices.py`, `invoices_unified.py` a príslušné stránky. Nahratie súboru neznamená univerzálne OCR ani rozpoznanie každého formátu. |
-| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje pohyby a vážený priemer pod DB zámkami; opakovanie vracia uložený výsledok. Všeobecný príjem bez faktúry je cieľ ďalšieho rozvoja. |
-| Sklad `/stock` | Čiastočné pracovné rozhranie | `routers/stock.py`, `StockPage.tsx`: stavy, rezervované/voľné množstvo, priemerná cena, detail a Upgates operácie. Chýba editor buniek; stránkovacie tlačidlá a CSV export sú neaktívne. |
+| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile FIFO. |
+| Sklad `/stock` | Čiastočné pracovné rozhranie | `routers/stock.py`, `StockPage.tsx`: stavy, rezervované/voľné množstvo, priemerná cena, detail a Upgates operácie. Editor buniek a stránkovanie sú na `/products`; starý prehľad má odkaz na editor. CSV export zostáva neaktívny. |
 | Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie celej dávky vytvorí `INITIAL` pohyby iba bez existujúcej bilancie či histórie daného tovaru v sklade. Výpadok sa overuje čítaním uloženého výsledku. |
 | Produkty `/products` | „V príprave“ | `ProductsPage` z `PlaceholderPages.tsx`. Samostatný detail `/products/:sku` už používa produktové komponenty. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
@@ -53,7 +53,9 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Návrh zásob v `/orders/inbox` | Čítacia projekcia 1–100 SKU | Vlastné voľné celé kusy z potvrdeného skladu, presné mapovanie jednotlivých variantov vrátane rodiča xTrek. Neznámy stav nie je nula. Bez outboxu a externého odosielania. |
 | Automatické skladové spracovanie | Voliteľný samostatný worker a trvalá fronta | Režimy ručne / rezervácie / rezervácie a výdaj, nové objednávky od výslovnej aktivácie, opakovanie nedostatku a kontrola vydaných objednávok. Predvolene vypnuté. |
 | Inventúry, vratky a doručovanie zásob do e-shopov | Nedokončený celkový workflow | Automatické lokálne rezervácie a výdaje nezapínajú externé odosielanie zásob. |
-| FIFO, excelový editor, skladové miesta, roly obsluhy | Ciele ďalšieho návrhu | Nie sú tu deklarované ako hotové funkcie. AI prístupový token nie je všeobecný systém rolí. |
+| Produkty `/products` | Tabuľkový editor lokálnych údajov | Bunky, klávesnica, TSV, vybrané riadky, konflikty, audit; mená/ceny/viditeľnosť pre e-shopy sa ukladajú ako neodoslané. [Postup](docs/product-editor.md). |
+| FIFO v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
+| Roly obsluhy a úplné doručovanie produktových zmien | Plánované | Operátorský token nie je všeobecný systém rolí; lokálne uložená zmena sa nevydáva za potvrdený zápis do Upgates. |
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx), [exporty stránok](frontend/src/pages/index.ts), [zástupné stránky](frontend/src/pages/PlaceholderPages.tsx).
 
@@ -136,7 +138,7 @@ Databázový príjem používa cesty pod `/api/suppliers/{supplier_code}/receivi
 
 Finalizácia v `routers/receiving_db.py` vytvára `RECEIVING_IN` pohyby, aktualizuje `stock_balances` a podľa pravidiel môže založiť chýbajúcu položku. Má identifikačný kľúč pohybu pre reláciu a riadok, zámok relácie a bilancií a uložený výsledok pre opakovanie. Prijaté riadky bez identity alebo platnej nákupnej ceny blokujú celý príjem; nulové množstvo nevytvorí pohyb. Súborový index faktúry sa označí až po DB commite. Presný kontrakt a dočasné obmedzenie príjmu bez ceny sú v [centrálnom sklade](docs/central-stock.md).
 
-Aktuálny výpočet príjmu je **vážený priemer**, nie FIFO. Voľné množstvo je rozdiel fyzického a rezervovaného množstva. Kontrolované spracovanie jednotlivých objednávok rezervuje dostupné kusy, zvyšok eviduje ako nedostatok a pred výdajom vyžaduje celú zásobu pri zachovaní rezervácií ostatných objednávok. Automatické lokálne účtovanie je voliteľné pre každý e-shop; samostatný čítací zberač stále iba zachytáva hlavičky a samostatný procesor načítava celé aktuálne objednávky. Nový `SALE_OUT.total_cost` zachytáva presnú odobratú hodnotu vrátane zaokrúhlenia; historické pohyby sa nedopočítavajú. Podrobnosti sú v [centrálnom sklade](docs/central-stock.md).
+Nové zásoby bez predchádzajúcich pohybov a explicitne prevedené zostatky používajú **FIFO**. Staršie zostatky zostávajú na pôvodnom váženom priemere do overeného prechodu. Voľné množstvo je fyzické mínus rezervované mínus karanténa. Neznáme ceny zostávajú `NULL`; neúplné ocenenie sa neukazuje ako nula. Podrobnosti prechodu, vrstiev a nákladov sú v [FIFO](docs/fifo.md). Kontrolované spracovanie jednotlivých objednávok rezervuje dostupné kusy, zvyšok eviduje ako nedostatok a pred výdajom vyžaduje celú zásobu pri zachovaní rezervácií ostatných objednávok. Automatické lokálne účtovanie je voliteľné pre každý e-shop; samostatný čítací zberač stále iba zachytáva hlavičky a samostatný procesor načítava celé aktuálne objednávky. Nový `SALE_OUT.total_cost` zachytáva presnú odobratú hodnotu vrátane zaokrúhlenia; historické pohyby sa nedopočítavajú. Podrobnosti sú v [centrálnom sklade](docs/central-stock.md).
 
 `stock_movements` sa pri oprave minulosti nemajú meniť ani mazať; používajú sa korekčné pohyby. Nákupná cena, predajná cena a aktuálna feedová cena majú odlišný význam. Chránený počiatočný stav používa vlastný CSV náhľad a výslovné potvrdenie; nepoužíva množstvá ani predajné ceny e-shopu. Prvá verzia podporuje iba celé `ks`, odmieta existujúcu bilanciu aj predchádzajúci pohyb a nenahrádza historické nákupné vrstvy. Pred fyzickým otvorením treba odsúhlasiť hranicu počítania a rozpracované príjmy podľa [centrálneho skladu](docs/central-stock.md).
 
@@ -181,13 +183,15 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `007_order_stock.sql` | Politiky, náhľady a stav skladového spracovania; presný náklad nového výdaja. Neznáme predajné ceny a mena objednávky smú byť `NULL`. Žiadny historický výdaj ani rezervácia sa nevytvorí migráciou. |
 | `008_order_collection.sql` | Aktivácia zberu, trvalé behy a inbox hlavičiek. Migrácia nezapína e-shopy a nemení fyzický sklad. |
 | `009_stock_automation.sql` | Dedené prevádzkové nastavenia, jednorazové načítanie a trvalá fronta spracovania. Predvolene ručný režim; žiadne spätné zaúčtovanie. |
+| `011_fifo.sql` | FIFO vrstvy, alokácie výdajov, prechody, príjmy, vratky, karanténa a opravy ceny. Nullable ocenenie a prepočet generovaného voľného množstva; nezakladá historické vrstvy. |
+| `012_product_editor.sql` | Ručné produktové overrides, revízie, uložené výsledky dávok a audit; prirodzené radenie kódov. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005`, `006`, `007`, `008`, `009` a `010`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py), [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py) a [stock_publication_migrate.py](api/inventory_hub/stock_publication_migrate.py), pod transakčnými DB zámkami a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých šesť SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Aktuálny deployment spúšťa `005` až `012`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py), [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py) , [stock_publication_migrate.py](api/inventory_hub/stock_publication_migrate.py), [fifo_migrate.py](api/inventory_hub/fifo_migrate.py) a [product_editor_migrate.py](api/inventory_hub/product_editor_migrate.py), pod transakčnými DB zámkami a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých osem SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`010` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`012` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -222,7 +226,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005`, `006`, `007`, `008`, `009` a `010` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `012` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
 5. Skontroluje `/api/health` a `/api/ai-content/status` a vykoná existujúce čistenie nepoužívaných obrazov.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
@@ -242,17 +246,15 @@ Diagnostiku začni výsledkom Actions a relevantnými jobmi. [Swagger](https://h
 
 Návrat kódu rieš kontrolovaným revert PR a bežným nasadením. Revert nevracia DB ani už vykonané Upgates zápisy. Taká zmena potrebuje osobitný postup pre dáta a kontrolu spätnej kompatibility.
 
-## Ďalší cieľ: centrálny sklad MVP
+## Ďalšie kroky centrálneho skladu
 
-Požiadavky vlastníka na ďalší návrh, nie hotové funkcie:
+Lokálne rezervácie/výdaje, FIFO a editácia produktov sú implementované; prevádzkové zapnutie a overenie každého kanála zostáva samostatným krokom. Editor ukladá požadované údaje pre BIKETREK a xTrek, ale tento balík ešte nepridáva ich odosielanie do Upgates. Zostáva najmä:
 
-- spoločný fyzický sklad pre BIKETREK, xTrek a predajňu, s oddeleným zalistovaním a údajmi kanálov;
-- predaj a rezervácie z oboch webov a pokladne bez duplicitných pohybov;
-- FIFO nákupné vrstvy, náklad predaného tovaru a história, oddelené od predajnej ceny;
-- tabuľková editácia produktových údajov, validácie a stav doručenia zmien do každého e-shopu;
-- spoľahlivá synchronizácia vlastného voľného množstva a osobitnej dodávateľskej dostupnosti;
-- praktické úlohy a oprávnenia obsluhy, postupne skladové miesta a príjem bez faktúry.
+- doručovanie požadovaných názvov, cien a viditeľnosti s overením výsledku na konkrétnom variante;
+- kompletné tržby bez DPH, zľavy a refundácie pre výpočet hrubej marže; FIFO zatiaľ poskytuje náklady;
+- historické vratky bez FIFO alokácií, odpis poškodeného tovaru, všeobecné merné jednotky a roly;
+- prevádzkové zosúladenie objednávok vrátane tvrdých zmazaní a bezpečná automatická publikácia zásob.
 
-Rozsah a poradie určí samostatný návrh MVP. Uprednostni aktívny kód, malé rozšírenia a jasné zodpovednosti. Tieto požiadavky samy neautorizujú implementáciu počas úlohy zameranej iba na dokumentáciu alebo návrh.
+Po aktivácii FIFO sa nemožno vrátiť k starému kódu váženého priemeru bez kontrolovaného plánu. Ponechaj nové tabuľky aj nemenné pohyby a použi opravu vpred; podrobnosti v [FIFO](docs/fifo.md).
 
 Kontrolované publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md). Automatické periodické posielanie zásob ostáva plánované: Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného odpočtu z pokladne alebo košíka. Táto etapa vyžaduje externú údržbu a kontrolu objednávok; trvalá blokácia v Hube sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.

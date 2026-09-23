@@ -54,7 +54,7 @@ def _number_text(number):
 def _row(sku, product, mappings, code_owners, sku_owners, stock):
     row = {"sku": sku, "product_id": product.id if product else None, "target": None,
            "quantity_known": False, "qty_on_hand": None, "qty_reserved": None,
-           "qty_available": None, "errors": []}
+           "qty_available": None, "qty_quarantined": None, "errors": []}
 
     def reject(reason):
         row["errors"].append("stock_projection_" + reason)
@@ -91,13 +91,16 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
     if not has_movement:
         reject("balance_unverified")
     on_hand, reserved = _quantity(balance.qty_on_hand), _quantity(balance.qty_reserved)
-    if on_hand is None or reserved is None or not Decimal("0") <= reserved <= on_hand:
+    quarantined = _quantity(balance.qty_quarantined)
+    if (on_hand is None or reserved is None or quarantined is None or quarantined < 0
+            or not Decimal("0") <= reserved <= on_hand - quarantined):
         reject("quantity_invalid")
-    elif on_hand != on_hand.to_integral_value() or reserved != reserved.to_integral_value():
+    elif any(value != value.to_integral_value() for value in (on_hand, reserved, quarantined)):
         reject("unit_unsupported")
     if not row["errors"]:
         row.update(quantity_known=True, qty_on_hand=_number_text(on_hand), qty_reserved=_number_text(reserved),
-                   qty_available=_number_text(on_hand - reserved))
+                   qty_quarantined=_number_text(quarantined),
+                   qty_available=_number_text(on_hand - reserved - quarantined))
     return row
 
 
@@ -152,6 +155,7 @@ including a zero balance without a physical ledger record.
         # concurrent first receipt cannot validate an earlier zero observation.
         balances = {balance.product_id: (balance, balance.has_movement) for balance in
                     (await db.execute(select(StockBalance.product_id, StockBalance.qty_on_hand, StockBalance.qty_reserved,
+                                             StockBalance.qty_quarantined,
                                              has_movement.label("has_movement")).where(
                         StockBalance.product_id.in_(product_ids), StockBalance.warehouse_id == warehouse.id,
                     ))).all()}

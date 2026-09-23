@@ -20,8 +20,9 @@ def mapping(identifier=1, product_id=1, code="SKU-A", parent="NORMAL-PARENT", **
                   "is_listed": True, **changes})
 
 
-def balance(product_id=1, on_hand="7", reserved="3", evidence=True):
-    return Row(product_id=product_id, qty_on_hand=Decimal(on_hand), qty_reserved=Decimal(reserved), has_movement=evidence)
+def balance(product_id=1, on_hand="7", reserved="3", evidence=True, quarantined="0"):
+    return Row(product_id=product_id, qty_on_hand=Decimal(on_hand), qty_reserved=Decimal(reserved),
+               qty_quarantined=Decimal(quarantined), has_movement=evidence)
 
 
 class Result:
@@ -56,6 +57,13 @@ class ReadOnlyDB:
 
 
 class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quarantine_is_never_published_as_available(self):
+        row = (await service.preview(ReadOnlyDB(balances=[balance(quarantined="2")]), "biketrek", ["SKU-A"]))["rows"][0]
+        self.assertEqual((row["qty_available"], row["qty_quarantined"]), ("2", "2"))
+        invalid = (await service.preview(ReadOnlyDB(balances=[balance(quarantined="5")]), "biketrek", ["SKU-A"]))["rows"][0]
+        self.assertFalse(invalid["quantity_known"])
+        self.assertIsNone(invalid["qty_available"])
+
     async def test_own_available_subtracts_all_reservations_and_never_calls_shop(self):
         db = ReadOnlyDB()
         with patch("inventory_hub.services.upgates.UpgatesClient.from_shop", side_effect=AssertionError("No remote access")):

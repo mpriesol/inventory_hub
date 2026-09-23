@@ -12,5 +12,6 @@ export { SuppliersPage } from './SuppliersPage';
 export { SupplierCatalogPage } from './SupplierCatalogPage';
 export { InvoicesPage } from './InvoicesPage';
 export { InvoiceDetailPage } from './InvoiceDetailPage';
-export { ProductsPage, ShopsPage, SettingsPage } from './PlaceholderPages';
+export { ShopsPage, SettingsPage } from './PlaceholderPages';
+export { ProductEditorPage } from './ProductEditorPage';
 export { ProductDetailPage } from './ProductDetailPage';

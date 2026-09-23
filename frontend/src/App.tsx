@@ -20,7 +20,7 @@ import {
   OrdersInboxPage,
   StockSettingsPage,
   StockPublicationPage,
-  ProductsPage,
+  ProductEditorPage,
   SuppliersPage,
   SupplierCatalogPage,
   ShopsPage,
@@ -55,7 +55,7 @@ function App() {
           <Route path="/orders/inbox" element={<OrdersInboxPage />} />
 
           {/* Products */}
-          <Route path="/products" element={<ProductsPage />} />
+          <Route path="/products" element={<ProductEditorPage />} />
           <Route path="/products/:sku" element={<ProductDetailPage />} />
 
           {/* Suppliers */}

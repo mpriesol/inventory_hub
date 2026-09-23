@@ -59,7 +59,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             # 002 historically checks enum names outside the active schema.
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
-                             "009_stock_automation.sql"):
+                             "009_stock_automation.sql", "011_fifo.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
         finally:
             await connection.close()

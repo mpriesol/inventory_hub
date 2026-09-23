@@ -8,7 +8,7 @@ export interface DashboardStats {
   totalProducts: number;
   lowStockCount: number;
   openOrders: number;
-  inventoryValue: number;
+  inventoryValue: number | null;
   pendingInvoices: number;
   syncStatus: {
     percentage: number;
@@ -32,7 +32,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     totalProducts: 0,
     lowStockCount: 0,
     openOrders: 0,
-    inventoryValue: 0,
+    inventoryValue: null,
     pendingInvoices: 0,
     syncStatus: { percentage: 0, lastSync: null, shopsConnected: 0 },
   };
@@ -50,7 +50,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   try {
     const summary = await fetchJSON<{
       products_total: number;
-      inventory_value: number;
+      inventory_value: number | null;
       low_stock_count: number;
     }>(`${API_BASE}/stock/summary`);
     return {

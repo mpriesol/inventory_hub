@@ -18,6 +18,7 @@ from inventory_hub.db_models_ext import StockBalance, StockMovement
 from inventory_hub.opening_stock_models import OpeningStockBatch, OpeningStockLine
 from inventory_hub.opening_stock_types import OpeningFinalizeRequest, OpeningPreviewRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.services import fifo
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
 
@@ -313,6 +314,12 @@ async def finalize(db: AsyncSession, batch_id: str, payload: OpeningFinalizeRequ
         balance = balances[line.product_id]
         balance.qty_on_hand, balance.avg_cost, balance.total_value = line.quantity, line.unit_cost, line.value
         balance.last_movement_at, balance.last_movement_id = at, movement.id
+        try:
+            await fifo.add_receipt(db, balance, movement, batch.counted_at, line.unit_cost, "known",
+                {"kind": "opening_stock", "batch_id": batch.id, "source_reference": batch.source_reference,
+                 "operator_name": batch.operator_name, "counted_at": batch.counted_at.isoformat()})
+        except fifo.FifoError as error:
+            raise OpeningError(error.code, error.status) from None
         line.movement_id = movement.id
         result_lines.append({"line_number": line.line_number, "sku": line.sku, "product_id": line.product_id,
                              "movement_id": movement.id, "quantity": format(line.quantity, ".0f"),

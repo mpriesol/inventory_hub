@@ -12,7 +12,7 @@ Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačn
 - **Kód predajnej položky je spoločná identita BIKETREK a xTrek.** Vlastník potvrdil spoločné kódy variantov. Jednoznačný presne zhodný kód môže prepojiť položku aj bez EAN; rozdielne platné EAN alebo rozpor s existujúcim mapovaním vyžadujú kontrolu.
 - **Pokladňový zberný produkt „xTrek“ v BIKETREK** môže obsahovať tisíce navzájom nesúvisiacich variantov, ktoré sú v xTrek e-shope pod rôznymi produktmi. Rodičovstvo je údaj konkrétneho e-shopu, nie podmienka spoločnej skladovej identity. Jeden tovar má jednu skladovú kartu a viac kanálových prepojení. Skladové spracovanie nesmie meniť jeho viditeľnosť v e-shope.
 
-Štvrtý balík implementuje potvrdené spracovanie jednotlivých objednávok vrátane rezervácií a výdaja. Piaty pridáva zapínateľný automatický zber hlavičiek objednávok a čítací návrh vlastných zásob. Automatické účtovanie objednávok, FIFO, vratky a odosielanie vlastných zásob do e-shopov ešte nebežia.
+Štvrtý balík implementuje potvrdené spracovanie jednotlivých objednávok vrátane rezervácií a výdaja. Piaty pridáva zapínateľný automatický zber hlavičiek objednávok a čítací návrh vlastných zásob. Neskoršie etapy pridali voliteľné lokálne účtovanie, kontrolované odosielanie a teraz FIFO/vratky a editor. Nasadenie samo nezapína odosielanie zásob do e-shopov.
 
 ## Prvý implementačný balík
 
@@ -30,7 +30,7 @@ Mutácie príjmovej relácie sa serializujú databázovým zámkom. Finalizácia
 
 Každý kladne prijatý riadok vyžaduje vyriešenú identitu a konečnú nezápornú nákupnú cenu. Chýbajúca alebo neplatná cena sa neodhadne a neprevezme z predaja či starého priemeru; celý príjem zostane nedokončený s chybou. Ani `force=true` túto kontrolu neobchádza. Rozpracovaná relácia obsahuje vlastnú kópiu riadkov; samotná výmena CSV ju neopraví. Kým nebude doplnený editor prijímanej ceny/identity, oprava takého riadka vyžaduje riadený administrátorský zásah do nedokončenej relácie, bez zásahu do histórie pohybov. Nulový prijatý riadok nevytvára pohyb.
 
-Oceňovanie zostáva **váženým priemerom**. Príjem bez faktúry, neocenené FIFO vrstvy a dodatočné doplnenie nákladu patria nasledujúcej etape. Súborový index faktúry sa aktualizuje až po úspešnom DB commite; jeho prípadné zlyhanie nesmie spôsobiť opakované zaúčtovanie. Neúspech sa loguje. Opakované dokončenie bezpečne zopakuje opravu indexu; samostatná automatická obnova indexu zatiaľ neexistuje.
+Pri starších zostatkoch do explicitného prechodu zostáva **vážený priemer**. Nové a prevedené zásoby používajú FIFO. Samostatný potvrdený príjem bez faktúry, neocenené vrstvy a doložené opravy ceny opisuje [FIFO](fifo.md). Súborový index faktúry sa aktualizuje až po úspešnom DB commite; jeho prípadné zlyhanie nesmie spôsobiť opakované zaúčtovanie. Neúspech sa loguje. Opakované dokončenie bezpečne zopakuje opravu indexu; samostatná automatická obnova indexu zatiaľ neexistuje.
 
 ### Dostupnosť v konfigurácii dodávateľa
 
@@ -109,13 +109,13 @@ Obsluha musí osobitne potvrdiť skontrolovaný obsah aj vysporiadanie rozpracov
 
 `POST /stock/opening/{batch_id}/finalize` vyžaduje pôvodný hash a obe výslovné potvrdenia. Znovu overí sklad, identitu SKU, platnosť náhľadu a prázdny stav každého dotknutého produktu v tomto sklade. **Aj existujúca nulová bilancia alebo jediný historický pohyb blokujú otvorenie.** Ide o prvé zavedenie tovaru do skladu, nie korekciu starých nesprávnych údajov; história sa nemení.
 
-Dávka sa zamkne a bilancie sa získajú v rovnakom stabilnom poradí ako pri príjme. Súbežný príjem dokončený ako prvý zablokuje otvorenie. Ak sa prvé dokončí otvorenie, následný príjem zásobu normálne zvýši a použije existujúci vážený priemer. Dve otváracie dávky pre tú istú položku v jednom sklade nemôžu obe uspieť.
+Dávka sa zamkne a bilancie sa získajú v rovnakom stabilnom poradí ako pri príjme. Súbežný príjem dokončený ako prvý zablokuje otvorenie. Ak sa prvé dokončí otvorenie, následný príjem zásobu zvýši a pridá ďalšiu FIFO vrstvu. Dve otváracie dávky pre tú istú položku v jednom sklade nemôžu obe uspieť.
 
-Jediná transakcia vytvorí pre každý riadok nemenný pohyb `INITIAL`, množstvo, priemernú obstarávaciu cenu a hodnotu bilancie, označí dávku ako dokončenú a uloží výsledok. Chyba ktoréhokoľvek riadka vráti späť celú transakciu. Čas spočítania je údaj o pôvode; čas pohybu je skutočný čas zápisu. Počiatočný stav nevymýšľa dátum posledného nákupu ani nákupné FIFO vrstvy.
+Jediná transakcia vytvorí pre každý riadok nemenný pohyb `INITIAL`, množstvo, priemernú obstarávaciu cenu a hodnotu bilancie, označí dávku ako dokončenú a uloží výsledok. Chyba ktoréhokoľvek riadka vráti späť celú transakciu. Čas spočítania je údaj o pôvode; čas pohybu je skutočný čas zápisu. Počiatočný stav nevymýšľa dátum posledného nákupu. Po migrácii011 vytvorí doloženú otváraciu FIFO vrstvu s vlastným pôvodom; netvári sa ako historická faktúra.
 
 Opakované potvrdenie rovnakej dokončenej dávky vracia uložený výsledok bez ďalšieho pohybu, aj po neskoršom príjme. Pri strate odpovede UI ponechá identifikátor dávky a ponúkne **čítacie overenie výsledku** cez `GET /stock/opening/{batch_id}`. Zápis automaticky neopakuje. Nedokončenú platnú dávku možno potvrdiť výslovne znovu po overení. Prehľad nedávnych dávok cez `GET /stock/opening/batches` umožňuje obnovu aj po obnovení stránky.
 
-Tento balík nezapisuje do e-shopov, fronty synchronizácie ani objednávok. Nezapína rezervácie, výdaje či FIFO. Samotné nasadenie nevytvorí počiatočnú zásobu.
+Tento balík nezapisuje do e-shopov, fronty synchronizácie ani objednávok. Nezapína automatické rezervácie ani výdaje. Od migrácie011 vytvorí potvrdený nový počiatočný stav FIFO vrstvu. Samotné nasadenie nevytvorí počiatočnú zásobu.
 
 ## Štvrtý implementačný balík — rezervácie a uzamknutý výdaj
 
@@ -157,7 +157,7 @@ Pri nedostatku sa rezervujú dostupné celé kusy a zvyšok zostane `backorder`.
 
 Výdaj vyžaduje dostatok zásoby pre všetky aktuálne skladové riadky pri zachovaní cudzích rezervácií. **Čiastočný výdaj sa nevykoná.** Jediná DB transakcia uloží `SALE_OUT` pre každý skladovaný riadok, zníži fyzické množstvo, spotrebuje vlastnú rezerváciu, označí objednávku ako vydanú a uloží výsledok. Chyba vráti späť celú operáciu. Súbeh s príjmom, počiatočným stavom a ostatnými objednávkami používa spoločné poradie zámkov. Samotné rezervovanie/storno nevytvára `SALE_OUT` ani iný fyzický pohyb.
 
-Ocenenie zostáva váženým priemerom. `unit_cost` výdaja zachytí uzamknutú priemernú obstarávaciu cenu. Nové nullable pole `stock_movements.total_cost` uloží presný odobratý náklad: pomernú časť aktuálnej celkovej hodnoty zaokrúhlenú na štyri desatinné miesta (`ROUND_HALF_UP`). Posledný riadok preberie zvyšok zaokrúhlenia a úplné vyprázdnenie ponechá nulovú hodnotu zásoby. Priemer sa výdajom nemení. Tento postup nevytvára FIFO vrstvy ani nedopočítava historické náklady. Predajné ceny sa nepoužívajú na ocenenie; keďže ich tento proces neimportuje, nové evidované riadky majú predajné ceny `NULL`, nie vymyslenú nulu. Neimportovaná mena objednávky zostáva tiež `NULL`; skladové náklady sú naďalej v EUR.
+Nasledujúci výpočet platí iba pre **staršie zostatky pred prechodom na FIFO**. `unit_cost` výdaja zachytí uzamknutú priemernú obstarávaciu cenu. Nové nullable pole `stock_movements.total_cost` uloží presný odobratý náklad: pomernú časť aktuálnej celkovej hodnoty zaokrúhlenú na štyri desatinné miesta (`ROUND_HALF_UP`). Posledný riadok preberie zvyšok zaokrúhlenia a úplné vyprázdnenie ponechá nulovú hodnotu zásoby. Priemer sa výdajom nemení. Tento postup nevytvára FIFO vrstvy ani nedopočítava historické náklady. Predajné ceny sa nepoužívajú na ocenenie; keďže ich tento proces neimportuje, nové evidované riadky majú predajné ceny `NULL`, nie vymyslenú nulu. Neimportovaná mena objednávky zostáva tiež `NULL`; skladové náklady sú naďalej v EUR.
 
 Opakované potvrdenie dokončeného náhľadu vráti pôvodný výsledok bez ďalšieho čítania e-shopu alebo zápisu. Nový náhľad už vydanej nezmenenej objednávky zobrazí dokončený výsledok; sklad sa druhýkrát nezníži. Zmenené položky/identita alebo neskoršie storno, vratka či reklamácia nemôžu prepísať vydaný obsah ani automaticky vrátiť zásobu. Vratkový proces s potvrdením fyzického návratu ešte nie je súčasťou tohto balíka.
 
@@ -221,8 +221,17 @@ Piaty balík pridáva aditívnu migráciu `008_order_collection.sql`, zabalenú 
 
 Šiesty balík pridáva aditívnu migráciu `009_stock_automation.sql`, ktorú deployment spúšťa po `008` pred reštartom API. Migrácia nezapína automatiku ani nezapisuje skladové pohyby. Návrat kódu ponecháva nové tabuľky, konfiguráciu a všetky účtovné zápisy; vypnutie automatiky už vykonaný výdaj nevráti.
 
-Ďalej treba dokončiť zistenie tvrdých zmazaní a prevádzkové zosúladenie pred zápisom do e-shopov, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu doručenia zmien a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
+Ďalej treba dokončiť zistenie tvrdých zmazaní a prevádzkové zosúladenie pred zápisom do e-shopov, všeobecné roly a merné jednotky, historické vratky bez doložených alokácií, odpis poškodeného tovaru a frontu doručenia produktových zmien. Lokálny editor a FIFO vrátane vratiek nových výdajov už dopĺňajú migrácie011–012. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
 
 ## Kontrolované publikovanie zásob
 
 Ďalšia etapa pridáva samostatnú obrazovku `/stock/publication` a migráciu `010_stock_publication.sql`. Čítacia projekcia v inboxe zostáva bez zápisov. Nová cesta umožňuje po výslovnom potvrdení údržby pripraviť a odoslať vybrané SKU; vyžaduje serverové aj e-shopové povolenie. Predvolene je odosielanie vypnuté. Podrobný postup pre obsluhu, obnova nejasných výsledkov a kontrakty pre vývojárov sú v [stock-publication.md](stock-publication.md).
+
+
+## Produkty a FIFO (migrácie011–012)
+
+Na `/products` je pracovná tabuľka vrátane produktov bez skladového zostatku. Priame úpravy, vkladanie TSV, hromadné úpravy vybraných riadkov a konflikty opisuje [návod editora](product-editor.md). Rovnaké presné SKU stále určuje fyzický tovar; parent xTrek v BIKETREK pokladni sa nezamieňa s kanonickou rodinou. Úpravy e-shopových údajov sú lokálne uložené a neodoslané.
+
+Detail produktu obsahuje skladové vrstvy a pohyby aj formuláre príjmu, prechodu, vratky, uvoľnenia karantény a opravy nákupnej ceny. Postup a vývojárske kontrakty sú v [FIFO](fifo.md). Aktívne FIFO výdaje spotrebúvajú najstaršie dostupné vrstvy; rezervácia ich nespotrebúva. Vratky vždy vyžadujú fyzické potvrdenie a doložený pôvodný výdaj. Dostupné množstvo je fyzické mínus rezervované mínus karanténa. Neuvedená cena zostáva neznáma a celkové ocenenie sa nevydáva za nulu.
+
+Nové tabuľky a nullable ocenenie sa nasadia pred novým API. Migrácia sama nevytvára zásoby ani historické vrstvy a nezapína externé odosielanie. Po aktivovaní FIFO používaj opravu vpred; samotný revert na starý vážený priemer by bol účtovne nebezpečný.

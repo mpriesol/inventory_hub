@@ -186,9 +186,9 @@ export function DashboardPage() {
         />
         <StatsCard
           icon="💰"
-          value={`€${stats?.inventoryValue.toLocaleString('sk-SK') || '0'}`}
+          value={stats?.inventoryValue == null ? t('stock.unknownValue', 'Neúplné ocenenie') : `€${stats.inventoryValue.toLocaleString('sk-SK')}`}
           label="Hodnota skladu"
-          sublabel="WAC valuácia"
+          sublabel={t('stock.valuationBasis')}
         />
       </div>
 

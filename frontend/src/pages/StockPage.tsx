@@ -17,7 +17,7 @@ interface StockItem {
   onHand: number;
   reserved: number;
   available: number;
-  avgCost: number;
+  avgCost: number | null;
   lowStock: boolean;
 }
 
@@ -49,6 +49,7 @@ export function StockPage() {
       const [apiItems, apiSummary] = await Promise.all([getStockItems(), getStockSummary()]);
       setItems(apiItems.map((it) => ({
         sku: it.sku,
+        imageUrl: it.image_url,
         name: it.name,
         brand: it.brand,
         onHand: it.on_hand,
@@ -83,7 +84,7 @@ export function StockPage() {
     return matchesSearch && matchesBrand && matchesLowStock;
   });
 
-  const totalValue = summary?.inventory_value ?? 0;
+  const totalValue = summary?.inventory_value;
   const lowStockCount = summary?.low_stock_count ?? 0;
   const totalReserved = summary?.reserved_total ?? 0;
 
@@ -109,6 +110,7 @@ export function StockPage() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap justify-end">
+          <Button variant="secondary" onClick={() => navigate('/products')}>{t('productEditor.title', 'Produkty a sklad')}</Button>
           <Button variant="secondary" onClick={() => navigate('/stock/opening')}>{t('openingStock.title')}</Button>
           <Button variant="secondary" onClick={() => navigate('/stock/publication')}>{t('stockPublication.open')}</Button>
           <Button variant="secondary" disabled title="Pripravujeme — export reálneho skladu">
@@ -134,7 +136,7 @@ export function StockPage() {
       <div className="grid grid-cols-4 gap-4">
         <StatsCard
           icon="💰"
-          value={`€${totalValue.toLocaleString('sk-SK', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
+          value={totalValue == null ? t('stock.unknownValue', 'Neúplné ocenenie') : `€${totalValue.toLocaleString('sk-SK', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
           label="Hodnota skladu"
         />
         <StatsCard
@@ -426,7 +428,7 @@ export function StockPage() {
                     color: 'var(--color-text-secondary)',
                   }}
                 >
-                  €{item.avgCost.toFixed(2)}
+                  {item.avgCost == null ? t('stock.unknownValue', 'Neúplné ocenenie') : `€${item.avgCost.toFixed(2)}`}
                 </td>
               </tr>
             ))}

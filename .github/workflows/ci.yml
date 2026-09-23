@@ -90,3 +90,9 @@ jobs:
         run: node frontend/tests/stock-settings-ui.cjs
       - name: Stock publication interaction checks
         run: node frontend/tests/stock-publication-ui.cjs
+
+      - name: Product editor interaction checks
+        run: node frontend/tests/product-editor-ui.cjs
+
+      - name: FIFO inventory interactions
+        run: node frontend/tests/fifo-ui.cjs

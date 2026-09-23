@@ -628,7 +628,7 @@ async def push_products_to_shop(
             continue
         # Every sibling is sent, so every quantity must come from canonical balances.
         for product in family_products:
-            bal = (await db.execute(select(func.coalesce(func.sum(StockBalance.qty_on_hand), 0)).where(
+            bal = (await db.execute(select(func.coalesce(func.sum(StockBalance.qty_on_hand - StockBalance.qty_reserved - StockBalance.qty_quarantined), 0)).where(
                 StockBalance.product_id == product.id))).scalar()
             local_stock[product.sku] = float(bal or 0)
         to_send.append(_build_push_payload(data, local_stock))
