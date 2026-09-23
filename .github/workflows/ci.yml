@@ -79,3 +79,6 @@ jobs:
 
       - name: Check controlled opening stock interactions
         run: node frontend/tests/opening-stock-ui.cjs
+
+      - name: Check controlled order stock processing
+        run: node frontend/tests/order-stock-ui.cjs

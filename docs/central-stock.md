@@ -12,7 +12,7 @@ Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačn
 - **Kód predajnej položky je spoločná identita BIKETREK a xTrek.** Vlastník potvrdil spoločné kódy variantov. Jednoznačný presne zhodný kód môže prepojiť položku aj bez EAN; rozdielne platné EAN alebo rozpor s existujúcim mapovaním vyžadujú kontrolu.
 - **Pokladňový zberný produkt „xTrek“ v BIKETREK** môže obsahovať tisíce navzájom nesúvisiacich variantov, ktoré sú v xTrek e-shope pod rôznymi produktmi. Rodičovstvo je údaj konkrétneho e-shopu, nie podmienka spoločnej skladovej identity. Jeden tovar má jednu skladovú kartu a viac kanálových prepojení. Skladové spracovanie nesmie meniť jeho viditeľnosť v e-shope.
 
-Objednávkové pravidlá sú tu špecifikácia ďalšej etapy. Doterajšie balíky ešte nezapínajú rezervácie, výdaje objednávok, FIFO ani automatické odosielanie vlastných zásob do e-shopov.
+Štvrtý balík nižšie implementuje potvrdené spracovanie jednotlivých objednávok vrátane rezervácií a výdaja. Automatický zber objednávok, FIFO, vratky a odosielanie vlastných zásob do e-shopov ešte nebežia.
 
 ## Prvý implementačný balík
 
@@ -117,6 +117,52 @@ Opakované potvrdenie rovnakej dokončenej dávky vracia uložený výsledok bez
 
 Tento balík nezapisuje do e-shopov, fronty synchronizácie ani objednávok. Nezapína rezervácie, výdaje či FIFO. Samotné nasadenie nevytvorí počiatočnú zásobu.
 
+## Štvrtý implementačný balík — rezervácie a uzamknutý výdaj
+
+**Kontrola objednávok → Skladové spracovanie** (`/orders/stock`) je samostatný chránený postup pre jednu vybranú objednávku. Pôvodný audit na `/orders` zostáva čítací. Nové API pod `/order-stock` používa existujúci operátorský token a `Cache-Control: no-store`; token sa neukladá do URL ani úložiska prehliadača. Nie je to automatický importer ani všeobecný systém používateľských rolí.
+
+### Začiatok evidencie a stavy
+
+Obsluha výslovne načíta možnosti e-shopu, vyberie existujúci aktívny sklad a potvrdí význam konkrétnych stavových ID. Pri prvom potvrdení nastavenia server uloží **aktuálny čas začiatku evidencie**. Nie je možné ho spätne posunúť. Vybraný sklad zostáva pevný; ďalšia potvrdená zmena mapovania stavov mení revíziu politiky a zachováva začiatok evidencie. Konfigurácia sama nespracuje žiadnu objednávku.
+
+Spracovať možno iba objednávky vytvorené od tohto začiatku. Staršie objednávky vrátane stále otvorených sa týmto balíkom automaticky nepreberajú. Existujúce lokálne `shop_orders` bez príznaku spravovania tiež zostávajú mimo nového postupu. Tak sa starý výdaj nezapočíta do novej fyzickej zásoby druhýkrát. Pred aktiváciou treba dokončiť počiatočný stav a určiť prevádzkovú hranicu; import zásob sa nesmie miešať s nezohľadneným predajom.
+
+Predvolená voľba každého nového stavu je kontrola. Server povoľuje rezervovanie pri type `Received` a výslovne zvolených bežných stavoch typu `Custom`; výdaj pri `Sent` alebo dohodnutých názvoch Odoslaná/Vyzdvihnutá; uvoľnenie pri `Canceled`. Neznáme stavy, rozpoznané vratky/reklamácie a zlyhané platby zostávajú na kontrolu. Bežný stav prijatej objednávky nemožno nastaviť ako okamžitý výdaj. Identifikátor, názov, typ a správanie stavov sú súčasťou kontrolného hashu; zmena číselníka vyžaduje nové potvrdenie nastavenia.
+
+Zaplatená webová objednávka zostáva kandidátom na rezerváciu. Pri objednávke s pôvodom `cash-register`, stavom typu `Received` povoleným na rezervovanie, platným dátumom platby a `resolved_yn=true` sa navrhne výdaj dokončeného pokladňového predaja. Pred každým prvým výdajom obsluha osobitne potvrdzuje aj fyzické odovzdanie.
+
+### Čerstvý zdroj a náhľad
+
+Prehliadač posiela iba e-shop a číslo objednávky, nikdy vlastné skladové riadky alebo množstvá. Server načíta jednu aktívnu objednávku cez presný filter `order_numbers` a číselník stavov. Prázdny výsledok, zmazaná/neznáma objednávka, viac výsledkov, neplatné UUID alebo chýbajúci jednoznačný čas znamenajú kontrolu; nezmenia sa na storno. Načítanie má časový a veľkostný limit a nič nezapisuje do Upgates. Neprechádza automaticky ďalšie stránky.
+
+Ukladajú sa iba potrebné fakty objednávky a riadkov, nie zákaznícke adresy, kontakty, poznámky ani raw odpoveď. Zdroj vyžaduje stabilné UUID objednávky a riadkov, čas vytvorenia/aktualizácie s pásmom, presné stavové ID a podporované typy položiek. Rovnaké číslo alebo UUID nemožno v jednom e-shope použiť na druhú skladovú objednávku. Pokladňa a web nemajú oddelený identifikačný priestor v rámci toho istého e-shopu.
+
+Identita sa rieši existujúcim spoločným resolverom. Skladovo použiteľné je jednoznačné kanálové prepojenie alebo presné spoločné SKU (`identified/shared_sku`). Samotný čiarový kód bez kódu, konflikt EAN, nejednoznačné mapovanie či nevyriešená kódovaná položka blokujú rezerváciu/výdaj. Manuálna výnimka nemá kód, čiarový kód ani natívnu produktovú/variantovú identitu; platí aj pre služby a ručne predaný diel. Zľavové riadky sa osobitne vylúčia. Takéto riadky sa zobrazia, ale nevytvoria skladový produkt, rezerváciu ani pohyb.
+
+Prvá verzia pracuje len s kladnými celými `ks`. Sety, nepodporované jednotky, dĺžkové údaje a zlomkové existujúce zásoby/rezervácie vyžadujú kontrolu. Jednotky sa neodhadujú. Starý čítací audit môže zobraziť viac kandidátov, než je povolené fyzicky zaúčtovať.
+
+`POST /order-stock/preview` uloží nemenný náhľad s revíziou politiky a lokálnej objednávky, zdrojovým hashom, skladovými účinkami a platnosťou 30 minút. UUID požiadavky s rovnakým vstupom vráti tú istú snímku; s iným vstupom je konflikt. Náhľad môže založiť lokálnu evidenciu objednávky, ale nemení fyzické ani rezervované množstvo. Aj blokovaný náhľad sa zachová na diagnostiku a zobrazí nedostatky či chybné riadky; nemožno ho zaúčtovať.
+
+### Rezervácia, zmena a storno
+
+`Reservation.quantity` je celý dopyt riadka, `shortage_qty` jeho nekrytá časť. Do `StockBalance.qty_reserved` prispieva iba rozdiel týchto hodnôt aktívnej rezervácie. Viac riadkov s rovnakým produktom sa pred overením dostupnosti spočíta; pridelenie medzi riadky je deterministické podľa UUID.
+
+Pri potvrdení sa zamkne objednávka a dotknuté produkty/bilancie v stabilnom poradí. Prepočíta sa vlastná predchádzajúca alokácia a voľné fyzické kusy, pričom rezervácie iných objednávok zostanú zachované. Zmena množstva, pridanie, odstránenie alebo výmena produktu upraví iba rozdiel rezervácie. Odstránené evidované riadky zostanú označené, nemažú sa. Storno pred výdajom uvoľní známe uložené rezervácie a nevytvorí fyzický pohyb.
+
+Pri nedostatku sa rezervujú dostupné celé kusy a zvyšok zostane `backorder`. Dodávateľská dostupnosť nepridáva zásobu a neumožňuje záporný výdaj. Dopyt na produkt bez bilancie ponechá bilanciu neprítomnú; tým nezablokuje jeho neskorší počiatočný stav. Príjem ani tento balík automaticky neprerozdelí voľné kusy medzi čakajúce objednávky: obsluha načíta a potvrdí nový náhľad príslušnej objednávky. Pridelenie určuje poradie potvrdených operácií, nie nový automatický prioritizačný algoritmus.
+
+### Výdaj, ocenenie a opakovanie
+
+`POST /order-stock/previews/{id}/apply` vyžaduje hash náhľadu a potvrdenie; pri výdaji navyše fyzické odovzdanie. Pred prvým zápisom znovu načíta aktuálnu objednávku. Zmena zdroja, politiky, lokálnej revízie, identity alebo skladového výpočtu vyžaduje nový náhľad. Čítanie e-shopu sa dokončí pred uzamknutím skladových riadkov. Nejde o distribuovanú transakciu s Upgates: prípadná ďalšia zmena na webe sa zistí pri nasledujúcej výslovnej kontrole.
+
+Výdaj vyžaduje dostatok zásoby pre všetky aktuálne skladové riadky pri zachovaní cudzích rezervácií. **Čiastočný výdaj sa nevykoná.** Jediná DB transakcia uloží `SALE_OUT` pre každý skladovaný riadok, zníži fyzické množstvo, spotrebuje vlastnú rezerváciu, označí objednávku ako vydanú a uloží výsledok. Chyba vráti späť celú operáciu. Súbeh s príjmom, počiatočným stavom a ostatnými objednávkami používa spoločné poradie zámkov. Samotné rezervovanie/storno nevytvára `SALE_OUT` ani iný fyzický pohyb.
+
+Ocenenie zostáva váženým priemerom. `unit_cost` výdaja zachytí uzamknutú priemernú obstarávaciu cenu. Nové nullable pole `stock_movements.total_cost` uloží presný odobratý náklad: pomernú časť aktuálnej celkovej hodnoty zaokrúhlenú na štyri desatinné miesta (`ROUND_HALF_UP`). Posledný riadok preberie zvyšok zaokrúhlenia a úplné vyprázdnenie ponechá nulovú hodnotu zásoby. Priemer sa výdajom nemení. Tento postup nevytvára FIFO vrstvy ani nedopočítava historické náklady. Predajné ceny sa nepoužívajú na ocenenie; keďže ich tento proces neimportuje, nové evidované riadky majú predajné ceny `NULL`, nie vymyslenú nulu.
+
+Opakované potvrdenie dokončeného náhľadu vráti pôvodný výsledok bez ďalšieho čítania e-shopu alebo zápisu. Nový náhľad už vydanej nezmenenej objednávky zobrazí dokončený výsledok; sklad sa druhýkrát nezníži. Zmenené položky/identita alebo neskoršie storno, vratka či reklamácia nemôžu prepísať vydaný obsah ani automaticky vrátiť zásobu. Vratkový proces s potvrdením fyzického návratu ešte nie je súčasťou tohto balíka.
+
+Pri stratenej odpovedi UI uchová UUID a vyžaduje čítacie overenie `GET /order-stock/previews/{id}`. Zápis samo neopakuje. Prehľad posledných 20 náhľadov daného e-shopu umožňuje obnovu po načítaní stránky. Zmena vstupu, nastavenia alebo tokenu zneplatní zobrazený náhľad a potvrdenia. Stratená odpoveď nastavenia sa overuje novým načítaním možností.
+
 ## Nasadenie a ďalší postup
 
 Prvý a druhý balík neobsahujú databázovú migráciu ani opravu historických dát. Nové config polia sú spätne kompatibilné a majú predvolené hodnoty. Nasadenie prebieha existujúcim workflow po merge PR. Pri návrate na verziu pred prvým balíkom zostávajú dáta zachované, ale vrátia sa pôvodné riziká príjmu a inicializácie skladu; dovtedy tieto operácie nepoužívať.
@@ -125,4 +171,6 @@ Prvý a druhý balík neobsahujú databázovú migráciu ani opravu historickýc
 
 Počiatočný stav pridáva migráciu `006_opening_stock.sql` s tabuľkami dávok a riadkov. Deployment ju explicitne spustí po `005` a pred reštartom API; oba súbory sú súčasťou API obrazu. Opakované vykonanie nemení zásoby ani pohyby. Pri chybe sa nasadenie preruší pred reštartom. Návrat kódu cez revert PR môže ponechať nové tabuľky aj už zaúčtované pohyby; nesmie ich mazať. Schéma je aditívna, ale revert sám neruší zaúčtovaný počiatočný stav. Prípadná dátová oprava potrebuje osobitný postup s kompenzačnými pohybmi.
 
-Ďalej treba dokončiť všeobecné roly a merné jednotky, objednávkový inbox a spracovanie uzamknutého výdaja, rezervácie, FIFO, vratky, frontu synchronizácie a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
+Štvrtý balík pridáva migráciu `007_order_stock.sql`, explicitne spustenú po `006` pred reštartom API. Rozširuje existujúce objednávkové modely a pridáva politiky/náhľady. Dva nepoužívané povinné cenové stĺpce objednávkového riadka povoľuje ako `NULL`; existujúce hodnoty nemení. Žiadne staré objednávky, rezervácie ani výdaje sa migráciou nedopočítajú. Návrat kódu cez revert PR ponechá schému, už potvrdené rezervácie a nemenné pohyby; ich zrušenie vyžaduje osobitný riadený postup. Nasadenie samo nevytvorí politiku, neaktivuje e-shop a nezaúčtuje objednávky.
+
+Ďalej treba dokončiť automatický zber/revízie objednávok a obnovu pri výpadkoch, všeobecné roly a merné jednotky, FIFO, oficiálne vratky, frontu synchronizácie a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.
