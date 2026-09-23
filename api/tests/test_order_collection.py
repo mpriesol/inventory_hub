@@ -1,10 +1,11 @@
 """Collection controls and worker orchestration; no database or live transport."""
+import asyncio
 import json
 import unittest
 from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -17,6 +18,8 @@ from inventory_hub.routers import order_collection as routes
 from inventory_hub.services import order_collection as service
 from inventory_hub.services import order_collection_worker as worker
 from inventory_hub.services import order_stock, stock_projection
+from inventory_hub.services.stock_settings import SettingsError
+from inventory_hub.stock_settings_types import OperationalValues
 from inventory_hub.services.order_collection_source import CollectionSourceError
 from inventory_hub.services.upgates import UpgatesClient
 from inventory_hub.settings import settings
@@ -233,7 +236,9 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.plan = {"id": str(uuid4()), "shop_code": "biketrek", "created_from": START,
                      "changed_from": START, "created_to": START + timedelta(hours=1),
-                     "target_fingerprint": "test-target"}
+                     "target_fingerprint": "test-target",
+                     "configuration_hash": "a" * 64,
+                     "configuration_snapshot": OperationalValues().model_dump()}
         self.db = object()
         self.events = []
 
@@ -345,8 +350,9 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.complete.assert_not_awaited()
 
     async def test_scan_is_bounded_both_by_reported_pages_and_actual_iteration(self):
+        self.plan["configuration_snapshot"]["max_pages_per_pass"] = 2
         self.load.side_effect = None
-        self.load.return_value = page(pages=worker.MAX_PAGES + 1)
+        self.load.return_value = page(pages=3)
         with self.assertRaises(service.CollectionError) as raised:
             await worker.collect(self.plan)
         self.assertEqual(raised.exception.code, "order_collection_backlog_limit")
@@ -355,8 +361,64 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.load.reset_mock()
         self.load.side_effect = [page(entry("A"), pages=2, total=2, more=True),
                                  page(entry("B"), pages=2, total=2, more=True)]
-        with patch.object(worker, "MAX_PAGES", 2), self.assertRaises(service.CollectionError) as raised:
+        with self.assertRaises(service.CollectionError) as raised:
             await worker.collect(self.plan)
         self.assertEqual(raised.exception.code, "order_collection_backlog_limit")
         self.assertEqual(self.load.await_count, 2)
         self.complete.assert_not_awaited()
+
+    async def test_configuration_changed_before_next_page_stops_before_another_get(self):
+        self.load.return_value = page(entry("A"), pages=2, total=2, more=True)
+        self.check.side_effect = [None, service.CollectionError("order_collection_settings_changed")]
+        with self.assertRaises(service.CollectionError) as raised:
+            await worker.collect(self.plan)
+        self.assertEqual(raised.exception.code, "order_collection_settings_changed")
+        self.load.assert_awaited_once()
+        self.save.assert_awaited_once()
+        self.complete.assert_not_awaited()
+
+
+class CollectionConfigurationErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_policy_or_inactive_warehouse_becomes_safe_collector_error(self):
+        for code in ("stock_settings_policy_required", "stock_settings_warehouse_not_found"):
+            with self.subTest(code=code), patch.object(service.stock_settings, "effective",
+                    AsyncMock(side_effect=SettingsError(code, 404))):
+                with self.assertRaises(service.CollectionError) as raised:
+                    await service._configuration(object(), 1, lock=True)
+                self.assertEqual(raised.exception.code, "order_collection_not_configured")
+                self.assertEqual(raised.exception.status, 409)
+
+    async def test_invalid_operational_values_remain_sanitized_specific_error(self):
+        with patch.object(service.stock_settings, "effective",
+                AsyncMock(side_effect=SettingsError("stock_settings_invalid_values", 422))):
+            with self.assertRaises(service.CollectionError) as raised:
+                await service._configuration(object(), 1)
+            self.assertEqual(raised.exception.code, "stock_settings_invalid_values")
+            self.assertEqual(raised.exception.status, 422)
+
+
+class CollectionWorkerCycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cycle_uses_frozen_timeout_and_records_settings_error_without_generic_failure(self):
+        db = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+                             scalar=AsyncMock(return_value=1))
+        connection = SimpleNamespace(scalar=AsyncMock(return_value=True), execute=AsyncMock(), commit=AsyncMock())
+
+        @asynccontextmanager
+        async def session():
+            yield db
+
+        @asynccontextmanager
+        async def connected():
+            yield connection
+
+        plan = {"id": str(uuid4()), "configuration_snapshot": {"run_timeout_seconds": 45}}
+        with patch.object(worker, "get_session_context", session), \
+             patch.object(worker.database, "_engine", SimpleNamespace(connect=Mock(side_effect=connected))), \
+             patch.object(service, "start_run", AsyncMock(return_value=plan)), \
+             patch.object(worker, "collect", AsyncMock(side_effect=SettingsError("stock_settings_invalid_values", 422))), \
+             patch.object(service, "fail_run", AsyncMock()) as fail, \
+             patch.object(worker.asyncio, "timeout", wraps=asyncio.timeout) as timeout:
+            self.assertTrue(await worker.cycle())
+        timeout.assert_called_once_with(45)
+        fail.assert_awaited_once_with(db, plan["id"], "stock_settings_invalid_values", None)
+        connection.commit.assert_awaited_once()

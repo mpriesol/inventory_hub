@@ -76,11 +76,14 @@ async def lifespan(app: FastAPI):
             print("  Falling back to JSON-based storage")
     worker = None
     collection_worker = None
+    processing_worker = None
     if settings.USE_POSTGRES:
         from inventory_hub.services.ai_content_worker import run
         worker = asyncio.create_task(run(), name="ai-content-queue")
         from inventory_hub.services.order_collection_worker import run as collect_orders
         collection_worker = asyncio.create_task(collect_orders(), name="order-collection")
+        from inventory_hub.services.order_processing_worker import run as process_orders
+        processing_worker = asyncio.create_task(process_orders(), name="order-processing")
     yield
     if worker:
         worker.cancel()
@@ -90,6 +93,10 @@ async def lifespan(app: FastAPI):
         collection_worker.cancel()
         with suppress(asyncio.CancelledError):
             await collection_worker
+    if processing_worker:
+        processing_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await processing_worker
     # Shutdown
     if settings.USE_POSTGRES:
         await close_db()
@@ -159,6 +166,10 @@ if settings.USE_POSTGRES:
     app.include_router(order_stock_router)
     from inventory_hub.routers.order_collection import router as order_collection_router
     app.include_router(order_collection_router)
+    from inventory_hub.routers.stock_settings import router as stock_settings_router
+    app.include_router(stock_settings_router)
+    from inventory_hub.routers.order_processing import router as order_processing_router
+    app.include_router(order_processing_router)
     from inventory_hub.routers.catalog import router as catalog_router
     app.include_router(catalog_router)
     from inventory_hub.routers.ai_content import router as ai_content_router

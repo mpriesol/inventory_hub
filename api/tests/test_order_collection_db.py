@@ -22,6 +22,9 @@ from inventory_hub.order_collection_types import CollectionConfigure, Collection
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.services import order_collection as service, order_collection_worker as worker
 from inventory_hub.services.order_collection_source import CollectionSourceError
+from inventory_hub.services import stock_settings
+from inventory_hub.stock_settings_types import OperationalValues, WarehouseSettingsInput, ShopSettingsInput
+from inventory_hub.stock_settings_models import StockWarehouseSettings, StockShopSettings
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -55,7 +58,8 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((self.sql_root / "001_schema.sql").read_text())
             # 002 historically checks enum names outside the active schema.
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
-            for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql"):
+            for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
+                             "009_stock_automation.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
         finally:
             await connection.close()
@@ -160,6 +164,18 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             return await service.refresh(db, CollectionConfirmation(shop_code="biketrek",
                 expected_revision=revision, confirmed=True))
 
+    async def operational(self, *, shop_overrides=None, **changes):
+        async with self.transaction() as db:
+            existing = await db.get(StockWarehouseSettings, self.warehouse_id)
+            result = await stock_settings.configure_warehouse(db, WarehouseSettingsInput(
+                warehouse_code="collection-central", expected_revision=existing.revision if existing else 0,
+                confirmed=True, processing_paused=False, values=OperationalValues(**changes)))
+        if shop_overrides is not None:
+            async with self.transaction() as db:
+                await stock_settings.configure_shop(db, ShopSettingsInput(shop_code="biketrek",
+                    expected_revision=0, expected_warehouse_revision=result["revision"], confirmed=True,
+                    overrides=shop_overrides, mode="manual"))
+
     async def enable(self, *, delta=False):
         await self.configure()
         if delta:
@@ -195,6 +211,196 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.configure()
         self.assertEqual(raised.exception.code, "order_collection_connection_missing")
         self.assertIsNone(await self.settings())
+
+    async def test_first_manual_refresh_is_coalesced_and_runs_once_without_enabling(self):
+        response = await self.refresh(None)
+        self.assertFalse(response["collector"]["enabled"])
+        self.assertTrue(response["collector"]["manual_pending"])
+        self.assertEqual(response["collector"]["revision"], 1)
+        self.clock.return_value += timedelta(seconds=10)
+        repeated = await self.refresh(1)
+        self.assertEqual(repeated["collector"]["manual_requested_at"], NOW)
+        with self.assertRaises(service.CollectionError):
+            await self.refresh(None)
+        self.assertTrue(await worker.cycle())
+        row = await self.settings()
+        self.assertFalse(row.enabled)
+        self.assertIsNone(row.manual_requested_at)
+        run = (await self.runs())[0]
+        self.assertTrue(run.manual)
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(run.configuration_snapshot, OperationalValues().model_dump())
+        self.assertEqual(len(run.configuration_hash), 64)
+        async with self.sessions() as db:
+            public = await service.runs(db, "biketrek")
+        self.assertEqual(public["runs"][0]["trigger"], "manual")
+        with self.assertRaises(service.CollectionError) as raised:
+            await self.refresh(1)
+        self.assertEqual(raised.exception.code, "order_collection_retry_later")
+        self.clock.return_value += timedelta(days=2)
+        self.source.reset_mock()
+        self.assertFalse(await worker.cycle())
+        self.source.assert_not_awaited()
+
+    async def test_pending_one_off_survives_an_explicit_paused_configuration_revision(self):
+        await self.refresh(None)
+        await self.configure(enabled=False, revision=1)
+        row = await self.settings()
+        self.assertEqual(row.revision, 2)
+        self.assertEqual(row.manual_requested_at, NOW)
+        self.assertFalse(row.enabled)
+        self.assertTrue(await worker.cycle())
+        run = (await self.runs())[0]
+        self.assertTrue(run.manual)
+        self.assertEqual(run.settings_revision, 2)
+        self.assertEqual(run.status, "completed")
+        self.assertFalse((await self.settings()).enabled)
+
+    async def test_failed_one_off_preserves_backoff_and_requires_another_explicit_request(self):
+        await self.refresh(None)
+        self.source.side_effect = CollectionSourceError("order_collection_rate_limited", 429, retry_after=900)
+        self.assertTrue(await worker.cycle())
+        state = await self.settings()
+        self.assertFalse(state.enabled)
+        self.assertIsNone(state.manual_requested_at)
+        self.assertEqual(state.retry_after_at, NOW + timedelta(seconds=900))
+        with self.assertRaises(service.CollectionError) as raised:
+            await self.refresh(state.revision)
+        self.assertEqual(raised.exception.code, "order_collection_retry_later")
+        self.clock.return_value = state.retry_after_at
+        self.source.reset_mock()
+        self.assertFalse(await worker.cycle())
+        self.source.assert_not_awaited()
+        await self.refresh(state.revision)
+        self.source.side_effect = None
+        self.assertTrue(await worker.cycle())
+        self.assertEqual([run.status for run in await self.runs()], ["failed", "completed"])
+        self.assertFalse((await self.settings()).enabled)
+
+    async def test_missing_policy_and_inactive_warehouse_stop_without_repeated_due_work(self):
+        async with self.sessions() as db:
+            state = await service.status(db, "xtrek")
+        self.assertIsNone(state["configuration"])
+        self.assertEqual(state["configuration_error"], "order_collection_not_configured")
+        self.assertIsNone((await self.configure(shop="xtrek", enabled=False))["collector"])
+        await self.refresh(None)
+        async with self.transaction() as db:
+            await db.execute(update(Warehouse).where(Warehouse.id == self.warehouse_id).values(is_active=False))
+        self.assertFalse(await worker.cycle())
+        row = await self.settings()
+        self.assertFalse(row.enabled)
+        self.assertEqual(row.last_error, "order_collection_not_configured")
+        self.assertGreater(row.next_poll_at, NOW)
+        self.assertFalse(await worker.cycle())
+        self.source.assert_not_awaited()
+        self.assertEqual(await self.runs(), [])
+        await self.configure(enabled=False, revision=row.revision)
+
+    async def test_shop_overrides_drive_frozen_run_limits_overlap_and_poll_delay(self):
+        await self.operational(poll_interval_seconds=600, overlap_minutes=20,
+            max_pages_per_pass=2, run_timeout_seconds=45,
+            shop_overrides={"poll_interval_seconds": 900, "overlap_minutes": 30})
+        await self.enable(delta=True)
+        async with self.transaction() as db:
+            await db.execute(update(OrderCollectionSettings).values(cursor_at=NOW - timedelta(hours=1)))
+        plan = await self.start()
+        self.assertEqual(plan["changed_from"], NOW - timedelta(minutes=90))
+        self.assertEqual(plan["configuration_snapshot"]["poll_interval_seconds"], 900)
+        self.assertEqual(plan["configuration_snapshot"]["max_pages_per_pass"], 2)
+        self.assertEqual(plan["configuration_snapshot"]["run_timeout_seconds"], 45)
+        self.assertEqual((await self.settings()).next_poll_at, NOW + timedelta(seconds=900))
+        await self.complete(plan)
+        self.assertEqual((await self.settings()).next_poll_at, NOW + timedelta(seconds=900))
+        self.assertEqual((await self.runs())[0].configuration_snapshot, plan["configuration_snapshot"])
+
+    async def test_configured_reconciliation_interval_and_window_control_scope(self):
+        await self.operational(reconcile_interval_hours=2, reconcile_window_days=2)
+        await self.enable()
+        async with self.transaction() as db:
+            await db.execute(update(OrderCollectionSettings).values(last_reconciled_at=NOW - timedelta(hours=3)))
+        plan = await self.start()
+        self.assertEqual(plan["created_from"], CUTOVER)
+        self.assertEqual(plan["created_to"], CUTOVER + timedelta(days=2))
+        await self.complete(plan)
+        self.assertEqual((await self.settings()).reconcile_cursor_at, CUTOVER + timedelta(days=2))
+
+    async def test_retry_uses_frozen_configured_exponential_backoff_and_maximum(self):
+        await self.operational(retry_base_seconds=120, retry_max_seconds=300)
+        await self.enable(delta=True)
+        self.source.side_effect = CollectionSourceError("order_collection_source_unavailable")
+        for delay in (120, 240, 300):
+            at = self.clock.return_value
+            self.assertTrue(await worker.cycle())
+            row = await self.settings()
+            self.assertEqual(row.retry_after_at, at + timedelta(seconds=delay))
+            self.clock.return_value = row.retry_after_at
+
+    async def test_configuration_change_during_get_discards_page_without_advancing_cursor(self):
+        await self.enable(delta=True)
+        async def source(shop, **params):
+            await self.operational(poll_interval_seconds=600)
+            return page(entry())
+        self.source.side_effect = source
+        self.assertTrue(await worker.cycle())
+        self.source.assert_awaited_once()
+        self.assertEqual(await self.inbox_rows(), [])
+        self.assertEqual((await self.settings()).cursor_at, CUTOVER)
+        self.assertEqual((await self.settings()).last_error, "order_collection_settings_changed")
+        self.assertEqual((await self.runs())[0].configuration_snapshot["poll_interval_seconds"], 300)
+
+    async def test_configuration_change_after_last_page_prevents_atomic_completion(self):
+        await self.enable(delta=True)
+        plan = await self.start()
+        await self.save(plan, entry())
+        await self.operational(poll_interval_seconds=600)
+        with self.assertRaises(service.CollectionError) as raised:
+            await self.complete(plan)
+        self.assertEqual(raised.exception.code, "order_collection_settings_changed")
+        self.assertEqual((await self.settings()).cursor_at, CUTOVER)
+        self.assertEqual((await self.runs())[0].status, "running")
+
+    async def test_processing_rate_limit_postpones_pending_one_off_without_consuming_or_enabling(self):
+        await self.operational(shop_overrides={})
+        await self.refresh(None)
+        deadline = NOW + timedelta(seconds=900)
+        async with self.transaction() as db:
+            await db.execute(update(StockShopSettings).where(StockShopSettings.shop_id == self.shops["biketrek"])
+                             .values(processing_retry_after_at=deadline))
+        self.assertFalse(await worker.cycle())
+        self.source.assert_not_awaited()
+        row = await self.settings()
+        self.assertEqual(row.next_poll_at, deadline)
+        self.assertEqual(row.manual_requested_at, NOW)
+        self.assertFalse(row.enabled)
+        self.assertEqual(row.cursor_at, CUTOVER)
+        self.assertEqual(await self.runs(), [])
+        with self.assertRaises(service.CollectionError) as raised:
+            await self.refresh(1)
+        self.assertEqual((raised.exception.code, raised.exception.status), ("order_collection_retry_later", 429))
+        self.clock.return_value = deadline
+        self.assertTrue(await worker.cycle())
+        self.assertFalse((await self.settings()).enabled)
+
+    async def test_processing_rate_limit_during_get_discards_response_and_preserves_wait(self):
+        await self.operational(shop_overrides={})
+        await self.enable(delta=True)
+        deadline = NOW + timedelta(seconds=900)
+        async def source(shop, **params):
+            async with self.transaction() as db:
+                await db.execute(update(StockShopSettings).where(StockShopSettings.shop_id == self.shops["biketrek"])
+                                 .values(processing_retry_after_at=deadline))
+            return page(entry())
+        self.source.side_effect = source
+        self.assertTrue(await worker.cycle())
+        self.source.assert_awaited_once()
+        row = await self.settings()
+        self.assertTrue(row.enabled)
+        self.assertEqual(row.retry_after_at, deadline)
+        self.assertEqual(row.next_poll_at, deadline)
+        self.assertEqual(row.last_error, "order_collection_retry_later")
+        self.assertEqual(row.cursor_at, CUTOVER)
+        self.assertEqual(await self.inbox_rows(), [])
+        self.assertFalse(await worker.cycle())
 
     async def test_cutover_cursor_and_reconciliation_progress_survive_pause_resume_and_revision_guards(self):
         await self.enable()
@@ -340,10 +546,10 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(await self.inbox_rows()), 1)
 
     async def test_page_limit_failure_does_not_attempt_entire_backlog_or_advance_cursor(self):
+        await self.operational(max_pages_per_pass=2)
         await self.enable(delta=True)
         self.source.return_value = page(entry(), pages=3, total=3)
-        with patch.object(worker, "MAX_PAGES", 2):
-            await worker.cycle()
+        await worker.cycle()
         self.source.assert_awaited_once()
         self.assertEqual((await self.settings()).last_error, "order_collection_backlog_limit")
         self.assertEqual((await self.settings()).cursor_at, CUTOVER)
@@ -372,6 +578,10 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.configure(enabled=False, revision=1)
         await self.configure(revision=2)
         self.assertEqual((await self.settings()).next_poll_at, state.retry_after_at)
+        self.assertEqual((await self.settings()).last_error, "order_collection_rate_limited")
+        async with self.sessions() as db:
+            config = await stock_settings.effective(db, self.shops["biketrek"])
+        self.assertEqual(config["retry_after_at"], state.retry_after_at)
         self.source.reset_mock()
         self.clock.return_value = NOW + timedelta(seconds=899)
         self.assertFalse(await worker.cycle())
@@ -382,7 +592,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await worker.cycle())
         self.assertIsNone((await self.settings()).retry_after_at)
 
-    async def test_upstream_auth_error_disables_collection_until_explicit_operator_resume(self):
+    async def test_upstream_auth_error_disables_collection_until_explicit_operator_request(self):
         await self.enable()
         self.source.side_effect = CollectionSourceError("order_collection_upgates_access")
         await worker.cycle()
@@ -394,9 +604,12 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.source.reset_mock()
         self.assertFalse(await worker.cycle())
         self.source.assert_not_awaited()
-        with self.assertRaises(service.CollectionError) as raised:
-            await self.refresh(state.revision)
-        self.assertEqual(raised.exception.code, "order_collection_disabled")
+        response = await self.refresh(state.revision)
+        self.assertFalse(response["collector"]["enabled"])
+        self.assertTrue(response["collector"]["manual_pending"])
+        self.source.side_effect = None
+        self.assertTrue(await worker.cycle())
+        self.assertFalse((await self.settings()).enabled)
 
     async def test_pause_during_fetch_discards_response_without_overriding_new_operator_decision(self):
         await self.enable(delta=True)
@@ -495,7 +708,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_reconciliation_scans_weekly_creation_windows_alternating_with_delta(self):
         await self.enable()
         for index in range(5):
-            self.clock.return_value = NOW + timedelta(seconds=service.POLL_SECONDS * index)
+            self.clock.return_value = NOW + timedelta(seconds=OperationalValues().poll_interval_seconds * index)
             self.assertTrue(await worker.cycle())
         runs = await self.runs()
         self.assertEqual([run.mode for run in runs], ["reconcile", "delta", "reconcile", "delta", "reconcile"])
@@ -510,7 +723,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(state.reconcile_until_at)
         self.assertEqual(state.last_reconciled_at, runs[-1].started_at)
         self.assertEqual(state.cursor_at, runs[-2].started_at)
-        self.clock.return_value += timedelta(seconds=service.POLL_SECONDS)
+        self.clock.return_value += timedelta(seconds=OperationalValues().poll_interval_seconds)
         await worker.cycle()
         self.assertEqual((await self.runs())[-1].mode, "delta")
 
@@ -524,6 +737,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((self.sql_root / "008_order_collection.sql").read_text())
+            await connection.execute((self.sql_root / "009_stock_automation.sql").read_text())
         finally:
             await connection.close()
         self.assertEqual((await self.settings()).cursor_at, before.cursor_at)

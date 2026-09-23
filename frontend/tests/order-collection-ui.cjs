@@ -38,11 +38,22 @@ let connection = true;
 let connectionMatches = true;
 let hasPolicy = true;
 const status = shop => ({ shop: { code: shop, name: shop }, policy: hasPolicy ? { starts_at: '2026-09-23T10:00:00Z', warehouse_code: 'main' } : null,
-  collector, connection_configured: connection, connection_matches: connectionMatches, external_write_enabled: false });
+  collector, connection_configured: connection, connection_matches: connectionMatches, external_write_enabled: false,
+  effective: { mode: 'fulfill', processing_paused: false, processing_ready: false, processing_error: 'order_processing_policy_changed', retry_after_at: null } });
 const entry = (id, number, changes = {}) => ({ id, order_number: number, source_uuid: `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`, created_at: '2026-09-23T11:00:00Z', updated_at: '2026-09-23T11:30:00Z', deleted: false, origin: 'eshop', status_id: 8,
   observed_at: '2026-09-23T12:00:00Z', last_seen_at: '2026-09-23T12:00:00Z', review_reason: null, stock_state: null, stock_issued_at: null, stock_updated_at: null, ...changes });
 const inbox = offset => ({ entries: offset ? [entry(51, 'NEXT-PAGE')] : [entry(1, 'ACTIVE-1'), entry(2, 'DELETED-1', { deleted: true }), entry(3, 'CONFLICT-1', { review_reason: 'order_collection_identity_conflict' }), entry(4, 'NO-IDENTITY', { source_uuid: null }), entry(5, 'EMPTY-REVIEW', { review_reason: '' })], total: 51, limit: 50, offset });
 const runs = { runs: [{ id: 1, mode: 'delta', status: 'failed', started_at: '2026-09-23T12:00:00Z', completed_at: '2026-09-23T12:00:01Z', from_at: '2026-09-23T11:00:00Z', until_at: '2026-09-23T12:00:00Z', pages: 1, observed_count: 0, error: 'order_collection_source_unavailable' }] };
+const job = (id, orderNumber, changes = {}) => ({ id, source_uuid: `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`, order_number: orderNumber,
+  generation: 1, status: 'pending', next_attempt_at: '2026-09-23T12:10:00Z', last_started_at: '2026-09-23T12:00:00Z',
+  last_completed_at: null, last_checked_at: '2026-09-23T12:00:01Z', attempts: 1, error: null, result: null, audit_preview_id: null, ...changes });
+const reviewOrderNumber = 'REVIEW / 1?x=2';
+const jobs = offset => ({ jobs: offset ? [job(51, 'NEXT-JOB-PAGE')] : [
+  job(1, reviewOrderNumber, { status: 'review', error: 'order_processing_identity_conflict' }),
+  job(2, 'RETRY-ORDER', { status: 'retry', error: 'order_processing_source_unavailable', attempts: 3 }),
+], total: 51, limit: 50, offset });
+const newCollector = () => ({ enabled: false, revision: 1, cursor_at: '2026-09-23T10:00:00Z', last_reconciled_at: null,
+  next_poll_at: '2026-09-23T12:10:00Z', last_started_at: null, last_completed_at: null, last_error: null, entries_seen: 5, manual_pending: false });
 const stock = (shop, sku = 'KNOWN-ZERO') => ({ shop_code: shop, warehouse: { id: 1, code: 'main', name: 'Main fixture' }, captured_at: '2026-09-23T12:05:00Z', external_write_enabled: false,
   rows: [{ sku, product_id: 1, target: { parent_code: 'PARENT', variant_code: sku, code: sku }, quantity_known: true, qty_on_hand: '3', qty_reserved: '3', qty_available: '0', errors: [] },
     { sku: 'UNKNOWN-BALANCE', product_id: 2, target: null, quantity_known: false, qty_on_hand: null, qty_reserved: null, qty_available: null, errors: ['stock_projection_balance_missing'] }] });
@@ -50,7 +61,8 @@ const calls = []; let pendingStatus; let pendingStock; let statusMode = 'valid';
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(path.startsWith('/api/order-collection/'), 'No stock apply, outbox or shop-write endpoint can be invoked');
+  assert(path.startsWith('/api/order-collection/') || (path.startsWith('/api/order-processing/jobs?') && init.method === 'GET'),
+    'Only collection endpoints and read-only processing jobs can be invoked; never stock apply, outbox or shop writes');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   const url = new URL(path, dom.window.location.origin); const shop = url.searchParams.get('shop_code') || body?.shop_code;
   if (url.pathname.endsWith('/status')) {
@@ -59,14 +71,16 @@ global.fetch = async (path, init = {}) => {
   }
   if (url.pathname.endsWith('/inbox')) return { ok: true, json: async () => inbox(Number(url.searchParams.get('offset'))) };
   if (url.pathname.endsWith('/runs')) return { ok: true, json: async () => runs };
+  if (url.pathname.endsWith('/jobs')) return { ok: true, json: async () => jobs(Number(url.searchParams.get('offset'))) };
   if (url.pathname.endsWith('/configure')) {
     assert.equal(init.method, 'POST'); assert.equal(body.confirmed, true); assert.equal(body.expected_revision, collector?.revision ?? null);
-    collector = { enabled: body.enabled, revision: (collector?.revision ?? 0) + 1, cursor_at: '2026-09-23T10:00:00Z', last_reconciled_at: null, next_poll_at: '2026-09-23T12:10:00Z', last_started_at: null, last_completed_at: null, last_error: null, entries_seen: 5 };
+    collector = { ...(collector || newCollector()), enabled: body.enabled, revision: (collector?.revision ?? 0) + 1 };
     if (configMode === 'pending') return new Promise((resolve, reject) => { rejectConfig = () => reject(new TypeError('Synthetic connection lost')); });
     return { ok: true, json: async () => status(shop) };
   }
   if (url.pathname.endsWith('/refresh')) {
-    assert.equal(body.expected_revision, collector.revision); assert.equal(body.confirmed, true); assert(collector.enabled);
+    assert.equal(init.method, 'POST'); assert.equal(body.expected_revision, collector?.revision ?? null); assert.equal(body.confirmed, true);
+    collector = { ...(collector || newCollector()), manual_pending: true };
     return { ok: true, json: async () => status(shop) };
   }
   if (url.pathname.endsWith('/stock-preview')) {
@@ -86,9 +100,12 @@ const posts = () => calls.filter(call => call.method === 'POST');
   await input(document.querySelector('input[type="password"]'), 'synthetic-collection-token'); await click(button('unlock'));
   assert.equal(calls.length, 0, 'Token entry never starts collection or loads records automatically');
   assert.equal(field('shop').value, 'xtrek');
-  await click(button('load')); assert.equal(calls.length, 3, 'Explicit overview load reads status, one inbox page and runs');
+  await click(button('load')); assert.equal(calls.length, 4, 'Explicit overview load reads status, one inbox page, runs and one processing-job page');
   assert(calls.every(call => call.path.includes('shop_code=xtrek')));
-  assert(button('enable').disabled && button('fetchNow').disabled);
+  assert(button('enable').disabled && !button('fetchNow').disabled, 'A one-off collection is available without enabling scheduled collection');
+  assert(document.body.textContent.includes(i18n.t('stockSettings.modes.fulfill')));
+  assert([...document.querySelectorAll('[role="alert"]')].some(element => element.textContent.includes(t('processingErrors.order_processing_policy_changed'))),
+    'Configured automatic mode visibly explains why changed policy blocks processing');
   assert.equal(posts().length, 0);
   const orderTable = [...document.querySelectorAll('table')].find(table => table.textContent.includes('ACTIVE-1'));
   const links = [...orderTable.querySelectorAll('a')];
@@ -96,6 +113,24 @@ const posts = () => calls.filter(call => call.method === 'POST');
   assert.equal(links[0].getAttribute('href'), '/orders/stock?shop=xtrek&order=ACTIVE-1');
   assert(orderTable.textContent.includes(t('deleted')) && orderTable.textContent.includes(t('stockStates.none')));
   assert(document.body.textContent.includes(t('runStates.failed')));
+  const jobsTable = [...document.querySelectorAll('table')].find(table => table.textContent.includes(reviewOrderNumber));
+  assert(jobsTable, 'Processing exceptions appear in their own table');
+  assert(jobsTable.textContent.includes(t('jobStates.review')) && jobsTable.textContent.includes(t('jobStates.retry')));
+  assert(jobsTable.textContent.includes(t('processingErrors.order_processing_identity_conflict')));
+  assert(jobsTable.textContent.includes(t('processingErrors.order_processing_source_unavailable')));
+  assert(!jobsTable.textContent.includes('order_processing_'), 'Operators see helpful translated errors, not backend codes');
+  assert([...jobsTable.querySelectorAll('a')].some(link => link.getAttribute('href') === '/orders/stock?shop=xtrek&order=REVIEW%20%2F%201%3Fx%3D2'),
+    'The review link preserves the exact order number through URL encoding');
+
+  await click(button('fetchNow'));
+  assert.deepEqual(calls.at(-1).body, { shop_code: 'xtrek', expected_revision: null, confirmed: true });
+  assert.equal(collector.enabled, false, 'A first manual collection creates a paused collector');
+  assert.equal(collector.revision, 1); assert.equal(configurations().length, 0, 'Manual collection never invokes the enable endpoint');
+  assert(button('enable') && button('fetchNow').disabled && document.body.textContent.includes(t('manualPending')));
+  const beforeQueuedClick = posts().length; await click(button('fetchNow'));
+  assert.equal(posts().length, beforeQueuedClick, 'A queued manual collection cannot be submitted twice');
+  collector = { ...collector, manual_pending: false }; await click(button('load'));
+  assert(!button('fetchNow').disabled && button('enable'), 'Explicit status reload reflects completion while scheduled collection stays paused');
   await click(field('enableConfirm')); configMode = 'pending'; const enable = button('enable');
   await act(async () => { enable.click(); enable.click(); await tick(); });
   assert.equal(configurations().length, 1, 'A double click cannot duplicate enable requests');
@@ -107,11 +142,22 @@ const posts = () => calls.filter(call => call.method === 'POST');
   assert(button('pause') && !button('fetchNow').disabled);
   configMode = 'valid'; await click(button('fetchNow'));
   assert(document.body.textContent.includes(t('refreshQueued')));
-  assert.equal(calls.at(-1).body.expected_revision, 1);
+  assert.equal(calls.at(-1).body.expected_revision, 2);
+  assert.equal(collector.revision, 2, 'Requesting a manual run preserves the configuration revision');
+  collector = { ...collector, manual_pending: false }; await click(button('load'));
   await click(button('pause')); assert.equal(configurations().at(-1).body.enabled, false);
-  assert(button('fetchNow').disabled && !field('enableConfirm').checked, 'Pause prevents scheduled-refresh requests until explicitly re-enabled');
-  await click(button('next')); assert(calls.at(-1).path.endsWith('limit=50&offset=50')); assert(document.body.textContent.includes('NEXT-PAGE'));
-  await click(button('previous')); assert(calls.at(-1).path.endsWith('offset=0'));
+  assert(!button('fetchNow').disabled && !field('enableConfirm').checked, 'Pausing scheduled collection still allows an explicit one-off run');
+  await click(button('fetchNow')); assert.equal(calls.at(-1).body.expected_revision, 3);
+  assert.equal(collector.enabled, false); assert.equal(collector.revision, 3); assert(button('fetchNow').disabled);
+  collector = { ...collector, manual_pending: false }; await click(button('load'));
+  await click(button('next')); assert(calls.at(-1).path.includes('/inbox?') && calls.at(-1).path.endsWith('limit=50&offset=50')); assert(document.body.textContent.includes('NEXT-PAGE'));
+  await click(button('previous')); assert(calls.at(-1).path.includes('/inbox?') && calls.at(-1).path.endsWith('offset=0'));
+  const beforeJobsPage = calls.length; await click(document.querySelector('[data-testid="jobs-next"]'));
+  assert.equal(calls.length, beforeJobsPage + 1);
+  assert.equal(calls.at(-1).path, '/api/order-processing/jobs?shop_code=xtrek&limit=50&offset=50');
+  assert(document.body.textContent.includes('NEXT-JOB-PAGE') && document.body.textContent.includes('ACTIVE-1'), 'Job pagination leaves the inbox page intact');
+  await click(document.querySelector('[data-testid="jobs-previous"]'));
+  assert.equal(calls.at(-1).path, '/api/order-processing/jobs?shop_code=xtrek&limit=50&offset=0');
 
   await input(field('skus'), 'KNOWN-ZERO\nUNKNOWN-BALANCE'); await click(button('previewStock'));
   assert.deepEqual(calls.at(-1).body, { shop_code: 'xtrek', skus: ['KNOWN-ZERO', 'UNKNOWN-BALANCE'] });
@@ -137,16 +183,18 @@ const posts = () => calls.filter(call => call.method === 'POST');
   assert(staleRequest.signal.aborted);
   await act(async () => { oldStatus(status('xtrek')); await tick(); });
   assert(!document.body.textContent.includes('ACTIVE-1'), 'Shop changes discard pending inbox and status responses');
+  assert(!document.body.textContent.includes(reviewOrderNumber), 'Shop changes also discard processing jobs');
   statusMode = 'valid'; stockMode = 'valid'; connection = false; hasPolicy = false;
   await click(button('load')); await click(field('enableConfirm'));
-  assert(button('enable').disabled, 'Missing connection or stock policy prevents enabling');
+  assert(button('enable').disabled && button('fetchNow').disabled, 'Missing connection or stock policy prevents both enabling and manual collection');
   assert(document.querySelector('a[href="/orders/stock?shop=biketrek"]'));
   connection = true; hasPolicy = true; connectionMatches = false; await click(button('load')); await click(field('enableConfirm'));
-  assert(button('enable').disabled && document.body.textContent.includes(t('connectionChanged')), 'A different target connection stays visibly blocked');
+  assert(button('enable').disabled && button('fetchNow').disabled && document.body.textContent.includes(t('connectionChanged')), 'A different target connection stays visibly blocked');
   connectionMatches = true; await click(button('load'));
   statusMode = 'pending'; await click(button('load')); const oldTokenStatus = pendingStatus;
   await act(async () => { unlockHub('synthetic-replacement-token'); await tick(); oldTokenStatus(status('biketrek')); await tick(); });
   assert(!document.body.textContent.includes('ACTIVE-1'));
+  assert(!document.body.textContent.includes(reviewOrderNumber));
   assert.equal(field('skus').value, '', 'Shared token changes clear typed product data too');
   assert.equal(dom.window.localStorage.length, 0); assert.equal(dom.window.sessionStorage.length, 0);
   assert(!dom.window.location.href.includes('synthetic-'));

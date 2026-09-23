@@ -2,6 +2,7 @@
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from inventory_hub.database import Base
@@ -25,6 +26,7 @@ class OrderCollectionSettings(Base):
     entries_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_mode: Mapped[str | None] = mapped_column(String(16))
+    manual_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OrderCollectionRun(Base):
@@ -41,6 +43,9 @@ class OrderCollectionRun(Base):
     pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     observed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(String(80))
+    manual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    configuration_hash: Mapped[str | None] = mapped_column(String(64))
+    configuration_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     __table_args__ = (Index("ix_order_collection_runs_shop", "shop_id", "started_at"),)
 
 

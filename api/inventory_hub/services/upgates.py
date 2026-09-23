@@ -14,6 +14,7 @@ so we never retry on 401/403.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -21,6 +22,7 @@ from email.utils import parsedate_to_datetime
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import urlsplit
 
 import requests
 
@@ -34,6 +36,20 @@ class UpgatesError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.retry_after = retry_after
+
+
+def connection_fingerprint(base, login) -> str | None:
+    """Identify a validated HTTPS target and login, without its secret key."""
+    try:
+        if not isinstance(base, str) or not isinstance(login, str) or not login:
+            return None
+        parsed = urlsplit(base)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return None
+        target = [parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), login]
+        return hashlib.sha256(json.dumps(target, separators=(",", ":")).encode()).hexdigest()
+    except (ValueError, TypeError, UnicodeError):
+        return None
 
 
 def _retry_after_seconds(value) -> int | None:

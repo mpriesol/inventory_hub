@@ -15,15 +15,16 @@ from uuid import UUID
 
 from inventory_hub.db_models import Shop
 from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index, verified_barcodes
-from inventory_hub.services.upgates import UpgatesClient, UpgatesError
+from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connection_fingerprint
 
 
 IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons"}
 
 
 class SourceError(Exception):
-    def __init__(self, code: str, status: int = 502):
+    def __init__(self, code: str, status: int = 502, retry_after: int | None = None):
         self.code, self.status = code, status
+        self.retry_after = retry_after
         super().__init__(code)
 
 
@@ -256,10 +257,16 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
     return result
 
 
-def _fetch(shop_code: str, order_number: str | None = None):
+def _fetch(shop_code: str, order_number: str | None = None, *, expected_target_fingerprint: str | None = None):
     client = None
     try:
         client = UpgatesClient.from_shop(shop_code)
+        if expected_target_fingerprint is not None:
+            auth = client.session.auth
+            login = auth[0] if isinstance(auth, (tuple, list)) and len(auth) == 2 else getattr(auth, "username", None)
+            actual = connection_fingerprint(client.base_url, login)
+            if actual is None or actual != expected_target_fingerprint:
+                raise SourceError("order_stock_target_changed", 409)
         if order_number is None:
             return client.read_order_statuses()
         # The documented default excludes deleted orders. A filtered list has
@@ -269,7 +276,9 @@ def _fetch(shop_code: str, order_number: str | None = None):
         if error.status_code in (401, 403):
             raise SourceError("order_stock_upgates_access") from None
         if error.status_code == 429:
-            raise SourceError("order_stock_rate_limited", 429) from None
+            delay = getattr(error, "retry_after", None)
+            retry_after = delay if type(delay) is int and 1 <= delay <= 604800 else None
+            raise SourceError("order_stock_rate_limited", 429, retry_after) from None
         if error.status_code == 404 and order_number is not None:
             raise SourceError("order_stock_source_missing", 409) from None
         raise SourceError("order_stock_source_unavailable") from None
@@ -282,14 +291,15 @@ async def load_statuses(shop_code: str) -> dict:
     return _statuses(await asyncio.to_thread(_fetch, shop_code))
 
 
-async def load_source(db, shop: Shop, order_number: str) -> dict:
+async def load_source(db, shop: Shop, order_number: str, *, expected_target_fingerprint: str | None = None) -> dict:
     try:
         normalized = _text(order_number, blank=False)
     except SourceError:
         raise SourceError("order_stock_invalid_order_number", 422) from None
     if normalized != order_number or ";" in normalized:
         raise SourceError("order_stock_invalid_order_number", 422)
-    payload, status_payload = await asyncio.to_thread(_fetch, shop.code, order_number)
+    target_guard = {"expected_target_fingerprint": expected_target_fingerprint} if expected_target_fingerprint is not None else {}
+    payload, status_payload = await asyncio.to_thread(_fetch, shop.code, order_number, **target_guard)
     statuses = _statuses(status_payload)
     order, source_hash = _order(payload, order_number)
     order["lines"] = await resolve_lines(db, shop, order)
