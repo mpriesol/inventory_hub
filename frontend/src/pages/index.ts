@@ -5,6 +5,7 @@ export { StockPage } from './StockPage';
 export { OpeningStockPage } from './OpeningStockPage';
 export { OrdersAuditPage } from './OrdersAuditPage';
 export { OrdersStockPage } from './OrdersStockPage';
+export { OrdersInboxPage } from './OrdersInboxPage';
 export { SuppliersPage } from './SuppliersPage';
 export { SupplierCatalogPage } from './SupplierCatalogPage';
 export { InvoicesPage } from './InvoicesPage';

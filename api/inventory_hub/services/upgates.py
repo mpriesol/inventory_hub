@@ -15,7 +15,10 @@ so we never retry on 401/403.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -27,9 +30,28 @@ from inventory_hub.settings import settings
 
 class UpgatesError(Exception):
     """Raised for configuration or API-level failures."""
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(self, message: str, status_code: int | None = None, retry_after: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(value) -> int | None:
+    """Keep only a bounded delay; never propagate the upstream header text."""
+    if not isinstance(value, str) or len(value) > 100:
+        return None
+    value = value.strip()
+    try:
+        if value.isascii() and value.isdigit():
+            seconds = int(value)
+        else:
+            at = parsedate_to_datetime(value)
+            if at.tzinfo is None or at.utcoffset() is None:
+                return None
+            seconds = math.ceil((at - datetime.now(timezone.utc)).total_seconds())
+        return min(604800, max(1, seconds))
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 class UpgatesClient:
@@ -176,6 +198,10 @@ class UpgatesClient:
     def read_order_statuses(self) -> dict:
         return self._read_order_json("order-statuses", {})
 
+    def read_order_collection(self, params: Dict[str, Any]) -> dict:
+        """One change-discovery page; no status fetch or raw response logging."""
+        return self._read_order_json("orders", params)
+
     def _read_order_json(self, path: str, params: Dict[str, Any]) -> dict:
         """Bounded customer-bearing reads, without diagnostic logs or retries."""
         try:
@@ -188,7 +214,8 @@ class UpgatesClient:
             raise UpgatesError("Order audit connection failed") from None
         try:
             if response.status_code != 200:
-                raise UpgatesError("Order audit request failed", status_code=response.status_code)
+                retry_after = _retry_after_seconds(response.headers.get("Retry-After")) if response.status_code == 429 else None
+                raise UpgatesError("Order audit request failed", status_code=response.status_code, retry_after=retry_after)
             if len(response.content) > 8_000_000:
                 raise UpgatesError("Order audit response is too large")
             try:
