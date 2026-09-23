@@ -13,6 +13,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { X, Upload, ExternalLink, ImageOff } from 'lucide-react';
 import { Button } from '../ui/Button.new';
 import { getProductDetail, type ProductDetail } from '../../api/stock';
@@ -97,6 +98,7 @@ export function ProductHoverCard({ item, children }: { item: HoverItem; children
 // ── Jadro detailu (zdieľané stránkou aj modalom) ─────────────────────────
 
 export function ProductDetailView({ sku, compact = false }: { sku: string; compact?: boolean }) {
+  const { t } = useTranslation();
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +119,7 @@ export function ProductDetailView({ sku, compact = false }: { sku: string; compa
     setPushMsg(null);
     try {
       const res = await pushProductsToShop(shop, [sku]);
-      setPushMsg(res.skipped.length ? `${res.message} — ${res.skipped[0].reason}` : res.message);
+      setPushMsg(res.skipped.length ? `${res.message} — ${t(`upgatesPush.reasons.${res.skipped[0].reason}`, { defaultValue: res.skipped[0].reason })}` : res.message);
       const d = await getProductDetail(sku);
       setDetail(d);
     } catch (e: any) {
@@ -175,7 +177,7 @@ export function ProductDetailView({ sku, compact = false }: { sku: string; compa
           ))}
           <div>Vytvorené: {detail.created_at?.slice(0, 16).replace('T', ' ')} · zdroj: {detail.created_from_source || 'neznámy'}</div>
           {detail.shops.map((s) => (
-            <div key={s.shop}>V shope <b>{s.shop}</b>: {s.external_code}{s.variant_code ? ` / ${s.variant_code}` : ''} · „{s.shop_availability || '—'}“</div>
+            <div key={s.shop}>V shope <b>{s.shop}</b>: {s.parent_code || s.external_code}{s.variant_code ? ` / ${s.variant_code}` : ''} · „{s.shop_availability || '—'}“</div>
           ))}
         </div>
 

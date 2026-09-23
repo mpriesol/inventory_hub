@@ -12,14 +12,14 @@ from uuid import uuid4
 import asyncpg
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text, update
+from sqlalchemy import event, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from inventory_hub.database import get_session
-from inventory_hub.db_models import MovementType, Product, ProductGroup, ProductIdentifier, Warehouse, Shop
+from inventory_hub.db_models import IdentifierType, MovementType, Product, ProductGroup, ProductIdentifier, Warehouse, Shop
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, StockBalance, StockMovement, ProductVariantAttribute
-from inventory_hub.routers import upgates_sync
+from inventory_hub.routers import stock, upgates_sync
 from inventory_hub.services.product_identity import IdentityIndex
 
 
@@ -201,19 +201,23 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(row.external_id for row in mappings))
         self.assertEqual(await self.stock_snapshot(), {"stock_balances": [], "stock_movements": []})
 
-    async def test_same_sku_without_matching_valid_barcode_is_conflict_not_a_join(self):
+    async def test_shared_sku_links_without_ean_but_conflicting_verified_ean_blocks(self):
         await self.pull()
-        for value in (None, "00012345", "012345678905"):
+        remote = deepcopy(PRODUCTS[0])
+        remote["ean"] = "012345678905"
+        self.fetch.return_value = ([remote], META)
+        result = await self.pull("xtrek")
+        self.assertEqual(result["conflicts"][0]["reasons"], ["identifier_conflict"])
+        self.assertEqual(result["content_saved"], 0)
+        for value in (None, "00012345"):
             with self.subTest(ean=value):
-                remote = deepcopy(PRODUCTS[0])
                 remote["ean"] = value
-                self.fetch.return_value = ([remote], META)
-                result = await self.pull("xtrek")
-                self.assertEqual(result["conflicts"][0]["reasons"], ["unmapped_sku_collision"])
-                self.assertEqual(result["content_saved"], 0)
+                result = await self.pull("xtrek", update_existing=True)
+                self.assertEqual(result["conflict_count"], 0)
+                self.assertEqual(result["content_saved"], 1)
         async with self.sessions() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 3)
-            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 3)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 4)
 
     async def test_partial_mapped_variant_family_stays_visible_and_adds_missing_sibling(self):
         self.remote[1]["variants"] = self.remote[1]["variants"][:1]
@@ -244,7 +248,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await db.execute(select(Product.sku))).scalars().all(), ["PULL-SIMPLE"])
             self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProductContent)), 1)
 
-    async def test_late_variant_failure_rolls_back_entire_family_including_content_and_group(self):
+    async def test_late_variant_failure_rolls_back_entire_family_including_identifiers_and_content(self):
         self.remote[1]["variants"][1]["parameters"] = [
             {"name": "Size", "value": "L"}, {"name": "Size", "value": "XL"},
         ]
@@ -262,10 +266,183 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(ProductGroup(code="PULL-GROUP", name="Unrelated canonical family"))
             await db.commit()
         result = await self.pull()
-        self.assertEqual(result["conflicts"][0]["reasons"], ["group_identity_conflict"])
+        self.assertEqual(result["conflict_count"], 0)
         async with self.sessions() as db:
-            self.assertEqual((await db.execute(select(Product.sku))).scalars().all(), ["PULL-SIMPLE"])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 3)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product).where(Product.group_id.is_not(None))), 0)
             self.assertEqual(await db.scalar(select(ProductGroup.name)), "Unrelated canonical family")
+
+    async def test_pos_umbrella_links_different_existing_groups_and_new_leaf_without_regrouping(self):
+        async with self.sessions() as db:
+            groups = [ProductGroup(code="SHOES", name="Shoes"), ProductGroup(code="LIGHTS", name="Lights")]
+            db.add_all(groups)
+            await db.flush()
+            products = [Product(sku="SHOE-42", name="Original shoe", group_id=groups[0].id),
+                        Product(sku="LIGHT-BLACK", name="Original light", group_id=groups[1].id)]
+            db.add_all(products)
+            await db.flush()
+            db.add(ProductVariantAttribute(product_id=products[0].id, attribute_name="Size", attribute_value="42"))
+            await db.commit()
+            originals = {p.sku: (p.id, p.name, p.group_id) for p in products}
+            before_groups = (await db.execute(text("SELECT * FROM product_groups ORDER BY id"))).mappings().all()
+            before_attrs = (await db.execute(text("SELECT * FROM product_variant_attributes ORDER BY id"))).mappings().all()
+        self.fetch.return_value = ([{"code": "POS-ALL", "product_id": 100,
+                                    "variants": [{"code": "SHOE-42", "variant_id": 101},
+                                                 {"code": "LIGHT-BLACK", "variant_id": 102},
+                                                 {"code": "NEW-PART", "variant_id": 103}]}], META)
+        result = await self.pull()
+        self.assertEqual((result["linked_products"], result["created_variants"], result["conflict_count"]), (2, 1, 0))
+        await self.pull(update_existing=True)
+        async with self.sessions() as db:
+            products = (await db.scalars(select(Product))).all()
+            for p in products:
+                if p.sku in originals:
+                    self.assertEqual((p.id, p.name, p.group_id), originals[p.sku])
+                else:
+                    self.assertIsNone(p.group_id)
+            self.assertEqual((await db.execute(text("SELECT * FROM product_groups ORDER BY id"))).mappings().all(), before_groups)
+            self.assertEqual((await db.execute(text("SELECT * FROM product_variant_attributes ORDER BY id"))).mappings().all(), before_attrs)
+            self.assertEqual(set((await db.scalars(select(ShopProduct.parent_code))).all()), {"POS-ALL"})
+        self.assertEqual(await self.stock_snapshot(), {"stock_balances": [], "stock_movements": []})
+
+    async def test_split_families_first_then_pos_umbrella_share_leaves_and_preserve_parent_namespaces(self):
+        self.fetch.return_value = ([{"code": "SAME-PARENT", "product_id": 1,
+                                    "variants": [{"code": "SHOE-42", "variant_id": 11}]},
+                                   {"code": "LIGHTS", "product_id": 2,
+                                    "variants": [{"code": "LIGHT-BLACK", "variant_id": 12}]}], META)
+        await self.pull("xtrek")
+        async with self.sessions() as db:
+            original_ids = dict((await db.execute(select(Product.sku, Product.id))).all())
+        self.fetch.return_value = ([{"code": "SAME-PARENT", "product_id": 7,
+                                    "variants": [{"code": "SHOE-42", "variant_id": 71},
+                                                 {"code": "LIGHT-BLACK", "variant_id": 72}]}], META)
+        result = await self.pull("biketrek")
+        self.assertEqual((result["linked_products"], result["created_products"], result["conflict_count"]), (2, 0, 0))
+        async with self.sessions() as db:
+            self.assertEqual(dict((await db.execute(select(Product.sku, Product.id))).all()), original_ids)
+            rows = (await db.execute(select(Shop.code, Product.sku, ShopProduct.parent_code)
+                                    .join(ShopProduct, Shop.id == ShopProduct.shop_id)
+                                    .join(Product, Product.id == ShopProduct.product_id))).all()
+            self.assertEqual(set(rows), {("xtrek", "SHOE-42", "SAME-PARENT"), ("xtrek", "LIGHT-BLACK", "LIGHTS"),
+                                         ("biketrek", "SHOE-42", "SAME-PARENT"), ("biketrek", "LIGHT-BLACK", "SAME-PARENT")})
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductGroup)), 0)
+        self.assertEqual(await self.stock_snapshot(), {"stock_balances": [], "stock_movements": []})
+
+    async def test_same_parent_text_in_two_shops_keeps_images_in_its_own_shop(self):
+        expected = {}
+        for position, shop in enumerate(("biketrek", "xtrek")):
+            sku, image = f"{shop}-LEAF", f"https://example.invalid/{shop}.jpg"
+            self.fetch.return_value = ([{"code": "SAME-PARENT", "product_id": 1,
+                                        "images": [{"url": image, "main_yn": True}],
+                                        "variants": [{"code": sku, "variant_id": position + 2}]}], META)
+            result = await self.pull(shop)
+            self.assertEqual(result["conflict_count"], 0)
+            expected[sku] = image
+        async with self.sessions() as db:
+            images = await stock._image_urls_by_product(db)
+            ids = dict((await db.execute(select(Product.sku, Product.id))).all())
+            self.assertEqual(images, {ids[sku]: image for sku, image in expected.items()})
+            for sku, image in expected.items():
+                detail = await stock.product_detail(sku, db)
+                self.assertEqual(detail["image_url"], image)
+                self.assertEqual(detail["shops"][0]["parent_code"], "SAME-PARENT")
+
+    async def test_missing_verified_barcodes_are_appended_without_replacing_existing_primary(self):
+        async with self.sessions() as db:
+            product = Product(sku="PULL-SIMPLE", name="Existing without verified barcode")
+            db.add(product)
+            await db.flush()
+            db.add(ProductIdentifier(product_id=product.id, value="12345", identifier_type=IdentifierType.unverified_barcode,
+                                     is_primary=True))
+            await db.commit()
+        self.fetch.return_value = ([deepcopy(PRODUCTS[0])], META)
+        first = await self.pull()
+        self.assertEqual((first["linked_products"], first["created_products"], first["conflict_count"]), (1, 0, 0))
+        # A confirmed existing barcode plus an additional UPC supplies consistent
+        # evidence. The old primary and both verified values survive repetitions.
+        self.fetch.return_value[0][0]["ean"] = "5901234123457/012345678905"
+        await self.pull(update_existing=True)
+        await self.pull("xtrek")
+        async with self.sessions() as db:
+            rows = (await db.execute(select(ProductIdentifier.value, ProductIdentifier.identifier_type,
+                                            ProductIdentifier.is_primary))).all()
+            self.assertEqual(set(rows), {("12345", IdentifierType.unverified_barcode, True),
+                                         ("5901234123457", IdentifierType.ean, False),
+                                         ("012345678905", IdentifierType.upc, False)})
+
+    async def test_new_barcode_for_existing_leaf_rolls_back_with_failing_family(self):
+        async with self.sessions() as db:
+            db.add(Product(sku="PULL-M", name="Existing without barcode"))
+            await db.commit()
+        remote = deepcopy(PRODUCTS[1])
+        remote["variants"][1]["parameters"] = [{"name": "Size", "value": "L"}, {"name": "Size", "value": "XL"}]
+        self.fetch.return_value = ([remote], META)
+        result = await self.pull()
+        self.assertEqual(result["conflict_count"], 1)
+        async with self.sessions() as db:
+            self.assertEqual((await db.scalars(select(Product.sku))).all(), ["PULL-M"])
+            for model in (ProductIdentifier, ShopProduct, ShopProductContent):
+                self.assertEqual(await db.scalar(select(func.count()).select_from(model)), 0)
+
+    async def test_2500_variant_pos_first_then_split_shop_uses_batches_and_preserves_stock(self):
+        def barcode(position):
+            prefix = str(400000000000 + position)
+            total = sum(int(digit) * (1 if i % 2 == 0 else 3) for i, digit in enumerate(prefix))
+            return prefix + str((-total) % 10)
+
+        leaves = [{"code": f"SHARED-{position:04}", "variant_id": position + 10000,
+                   "ean": barcode(position) if position % 2 == 0 else None,
+                   "parameters": [{"name": "Item", "value": str(position)}], "stock": position}
+                  for position in range(2500)]
+        umbrella = [{"code": "POS-ALL", "product_id": 1, "variants": leaves}]
+        split = [{"code": f"XT-PARENT-{start // 100}", "product_id": start // 100 + 1,
+                  "variants": leaves[start:start + 100]} for start in range(0, len(leaves), 100)]
+        statements = []
+
+        def count_sql(_connection, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement.split(None, 1)[0])
+
+        event.listen(self.engine.sync_engine, "before_cursor_execute", count_sql)
+        try:
+            self.fetch.return_value = (umbrella, META)
+            first = await self.pull()
+            self.assertEqual((first["created_variants"], first["conflict_count"]), (2500, 0))
+            self.assertLess(len(statements), 120, "Initial creation must batch products, attributes, EANs and mappings")
+            async with self.sessions() as db:
+                ids = dict((await db.execute(select(Product.sku, Product.id))).all())
+                warehouse = await db.scalar(select(Warehouse.id))
+                movement = StockMovement(idempotency_key="large-family-opening", product_id=ids["SHARED-0000"],
+                                         warehouse_id=warehouse, movement_type=MovementType.RECEIVING_IN,
+                                         quantity=Decimal("7"), unit_cost=Decimal("4"), balance_after=Decimal("7"),
+                                         avg_cost_after=Decimal("4"))
+                db.add(movement)
+                await db.flush()
+                db.add(StockBalance(product_id=ids["SHARED-0000"], warehouse_id=warehouse,
+                                    qty_on_hand=Decimal("7"), qty_reserved=Decimal("2"), avg_cost=Decimal("4"),
+                                    total_value=Decimal("28"), last_movement_id=movement.id))
+                await db.commit()
+            before = await self.stock_snapshot()
+            statements.clear()
+            self.fetch.return_value = (split, META)
+            second = await self.pull("xtrek")
+            self.assertEqual((second["linked_products"], second["created_products"], second["conflict_count"]), (2500, 0, 0))
+            self.assertLess(len(statements), 350, "Resolving split families must not query once per leaf")
+            await self.pull("xtrek", update_existing=True)
+            self.fetch.return_value = (umbrella, META)
+            await self.pull(update_existing=True)
+            async with self.sessions() as db:
+                self.assertEqual(dict((await db.execute(select(Product.sku, Product.id))).all()), ids)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 5000)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ProductIdentifier)), 1250)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ProductVariantAttribute)), 2500)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ProductGroup)), 0)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(Product).where(Product.group_id.is_not(None))), 0)
+                parent_counts = (await db.execute(select(Shop.code, func.count(func.distinct(ShopProduct.parent_code)))
+                                               .join(ShopProduct, Shop.id == ShopProduct.shop_id).group_by(Shop.code))).all()
+                self.assertEqual(dict(parent_counts), {"biketrek": 1, "xtrek": 25})
+            self.assertEqual(await self.stock_snapshot(), before)
+        finally:
+            event.remove(self.engine.sync_engine, "before_cursor_execute", count_sql)
 
     async def test_legacy_variant_mapping_parent_code_still_resolves_and_refreshes(self):
         await self.pull()
@@ -297,6 +474,21 @@ class LegacyPushIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pushed_products"], 0)
         self.assertEqual(result["skipped"][0]["reason"], "identity_alias_push_blocked")
         client.post.assert_not_called()
+
+    async def test_one_selected_sku_does_not_push_thousands_of_umbrella_siblings(self):
+        products = [SimpleNamespace(id=position + 1, sku=f"POS-{position:04}") for position in range(2500)]
+        mapping = SimpleNamespace(shop_id=1, parent_code="POS-ALL", external_code=products[0].sku)
+        content = SimpleNamespace(data={"code": "POS-ALL", "variants": [{"code": p.sku} for p in products]})
+        db = MagicMock(spec=AsyncSession)
+        db.execute.side_effect = [self.row(products[0]), self.row(mapping), self.row(content), self.row(rows=products)]
+        client = MagicMock()
+        with patch.object(upgates_sync, "_get_shop", AsyncMock(return_value=SimpleNamespace(id=2))), \
+                patch.object(upgates_sync.UpgatesClient, "from_shop", return_value=client):
+            result = await upgates_sync.push_products_to_shop("xtrek", {"skus": [products[0].sku]}, db)
+        self.assertEqual(result["pushed_products"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "selection_expands_family")
+        client.post.assert_not_called()
+        self.assertEqual(db.execute.await_count, 4, "No per-sibling stock queries are needed for rejected expansion")
 
     async def test_existing_target_variant_mapping_blocks_parent_before_post(self):
         product = SimpleNamespace(id=1, sku="V-M")

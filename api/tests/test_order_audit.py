@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from inventory_hub.database import get_session
-from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Shop
+from inventory_hub.db_models import IdentifierType, Product, ProductGroup, ProductIdentifier, Shop
 from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.routers import order_audit as router_module
 from inventory_hub.services import order_audit as audit
@@ -90,8 +90,40 @@ class OrderNormalizationTests(unittest.IsolatedAsyncioTestCase):
         result = await self.normalize(order(line(code="UNKNOWN"), line(code="", product_id=5),
                                             line(code="", ean="5901234123457"), line(code="UNMAPPED")))
         rows = result["orders"][0]["lines"]
-        self.assertEqual([row["classification"] for row in rows], ["unresolved", "unresolved", "identified", "conflict"])
+        self.assertEqual([row["classification"] for row in rows], ["unresolved", "unresolved", "identified", "identified"])
+        self.assertEqual((rows[3]["product_id"], rows[3]["matched_by"]), (3, "shared_sku"))
         self.assertIn("identity_review_required", result["orders"][0]["warnings"])
+
+    async def test_shared_sku_never_overrides_a_different_valid_ean(self):
+        result = await self.normalize(order(line(code="UNMAPPED", ean="4006381333931")))
+        row = result["orders"][0]["lines"][0]
+        self.assertEqual(row["classification"], "conflict")
+        self.assertIsNone(row["product_id"])
+        self.assertIn("identity_review_required", result["orders"][0]["warnings"])
+
+    async def test_normal_shop_and_pos_umbrella_leaves_keep_the_same_canonical_products(self):
+        products = [Product(id=10, sku="XT-SHOE-42", name="Shoe 42", group_id=100),
+                    Product(id=11, sku="XT-LIGHT-BLACK", name="Black light", group_id=200)]
+        shops = [(1, "biketrek", "cash-register", ["xTrek", "xTrek"]),
+                 (2, "xtrek", "eshop", ["SHOES", "LIGHTS"])]
+        for shop_id, shop_code, origin, parents in shops:
+            with self.subTest(shop=shop_code):
+                mappings = [ShopProduct(id=position + 1, shop_id=shop_id, product_id=product.id,
+                                        external_code=parent, parent_code=parent,
+                                        variant_code=product.sku, is_variant=True)
+                            for position, (product, parent) in enumerate(zip(products, parents))]
+                index = IdentityIndex(shop_id, products, mappings)
+                sample = order(*(line(code=product.sku, product_id=900 if origin == "cash-register" else 100 + position,
+                                      option_set_id=200 + position, unit="ks")
+                                 for position, product in enumerate(products)), origin=origin)
+                with patch.object(audit, "load_identity_index", AsyncMock(return_value=index)):
+                    result = await audit.normalize_order_page(None, Shop(id=shop_id, code=shop_code),
+                                                              page(sample), STATUSES, page=1, fetched_at=NOW)
+                rows = result["orders"][0]["lines"]
+                self.assertEqual([(row["classification"], row["product_id"], row["sku"]) for row in rows],
+                                 [("mapped", 10, "XT-SHOE-42"), ("mapped", 11, "XT-LIGHT-BLACK")])
+                self.assertEqual([row["ean"] for row in rows], ["", ""])
+        self.assertEqual([product.group_id for product in products], [100, 200])
 
     async def test_bad_identity_cannot_match_a_truncated_prefix(self):
         result = await self.normalize(order(line(code="REMOTE-A\n" + "X" * 101), line(code={"code": "REMOTE-A"}),
@@ -315,3 +347,56 @@ class OrderAuditDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(count, 0, table)
             product_count = (await db.execute(text("SELECT count(*) FROM products"))).scalar_one()
             self.assertEqual(product_count, 1)
+
+    async def test_shared_sku_pos_without_ean_resolves_cross_shop_without_writing_mappings_or_groups(self):
+        async with self.sessions() as db:
+            xtrek_id = (await db.execute(text("SELECT id FROM shops WHERE code='xtrek'"))).scalar_one()
+            groups = [ProductGroup(code="SHOES", name="Shoes"), ProductGroup(code="LIGHTS", name="Lights")]
+            db.add_all(groups)
+            await db.flush()
+            products = [Product(sku="XT-SHOE-42", name="Shoe 42", group_id=groups[0].id),
+                        Product(sku="XT-LIGHT-BLACK", name="Black light", group_id=groups[1].id)]
+            db.add_all(products)
+            await db.flush()
+            for product, group in zip(products, groups):
+                db.add(ShopProduct(shop_id=xtrek_id, product_id=product.id, external_code=group.code,
+                                   parent_code=group.code, variant_code=product.sku, is_variant=True))
+            await db.commit()
+            expected_ids = [product.id for product in products]
+            expected_groups = [(product.id, product.group_id) for product in products]
+
+        tables = ("products", "product_groups", "product_identifiers", "shop_products", "stock_movements",
+                  "stock_balances", "shop_orders", "shop_order_items", "reservations")
+        async with self.sessions() as db:
+            await db.execute(text("SET TRANSACTION READ ONLY"))
+
+            async def snapshot():
+                return {table: (await db.execute(text(
+                    f"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id), '[]'::jsonb) FROM {table} t"
+                ))).scalar_one() for table in tables}
+
+            before = await snapshot()
+            for shop_code, origin, classification, matched_by in (
+                    ("xtrek", "eshop", "mapped", "shop_mapping"),
+                    ("biketrek", "cash-register", "identified", "shared_sku")):
+                with self.subTest(shop=shop_code):
+                    sample = order(*(line(code=product.sku, title="xTrek" if origin == "cash-register" else product.name,
+                                          product_id=900 if origin == "cash-register" else 100 + position,
+                                          option_set_id=200 + position, unit="ks")
+                                     for position, product in enumerate(products)), origin=origin,
+                                   paid_date=NOW.isoformat(), resolved_yn=True)
+                    with patch.object(audit, "_fetch_page", return_value=(page(sample), STATUSES)):
+                        result = await audit.audit_orders(db, shop_code, 30, 1)
+                    rows = result["orders"][0]["lines"]
+                    self.assertEqual([row["product_id"] for row in rows], expected_ids)
+                    self.assertEqual([row["classification"] for row in rows], [classification, classification])
+                    self.assertEqual([row["matched_by"] for row in rows], [matched_by, matched_by])
+                    self.assertEqual([row["ean"] for row in rows], ["", ""])
+                    self.assertTrue(result["read_only"])
+                    if shop_code == "biketrek":
+                        self.assertIn("identity_review_required", result["orders"][0]["warnings"])
+            self.assertEqual(await snapshot(), before, "Audit must not create mappings, move canonical groups or change stock")
+            actual_groups = list((await db.execute(text(
+                "SELECT id, group_id FROM products WHERE sku IN ('XT-SHOE-42', 'XT-LIGHT-BLACK') ORDER BY id"
+            ))).all())
+            self.assertEqual(actual_groups, expected_groups)

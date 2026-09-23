@@ -40,9 +40,10 @@ const fixture = (shop = 'biketrek', orderNumber = 'TEST-BT-01', page = 1) => ({
     status_id: 8, status_name: 'Odoslaná', status_type: 'dispatched', paid: true, resolved: true, delivered: true,
     candidate: 'review', candidate_reason: 'identity_review_required', warnings: [],
     lines: ['mapped', 'identified', 'manual', 'non_stock', 'unresolved', 'conflict'].map((classification, index) => ({
-      line_key: `line-${index}`, code: classification === 'manual' ? '' : `SHOP-${index}`, title: `Fixture ${classification}`,
+      line_key: `line-${index}`, code: classification === 'manual' ? '' : classification === 'identified' ? `HUB-${index}` : `SHOP-${index}`, title: `Fixture ${classification}`,
       ean: '', quantity: index === 0 ? '1.250' : '1', unit: index === 0 ? 'm' : 'ks', classification,
-      product_id: index < 2 ? index + 1 : null, sku: index < 2 ? `HUB-${index}` : null, matched_by: null, reasons: [],
+      product_id: index < 2 ? index + 1 : null, sku: index < 2 ? `HUB-${index}` : null,
+      matched_by: classification === 'identified' ? 'shared_sku' : classification === 'mapped' ? 'shop_mapping' : null, reasons: [],
     })),
   }],
 });
@@ -83,6 +84,11 @@ global.fetch = async (path, init = {}) => {
   assert(document.body.textContent.includes(t('readOnly')));
   assert(document.body.textContent.includes(t('manualHelp')));
   assert.equal(document.querySelectorAll('tbody tr').length, 6, 'All six outcomes, including discount lines, remain visible');
+  const sharedSkuRow = [...document.querySelectorAll('tbody tr')].find(row => row.textContent.includes('Fixture identified'));
+  assert(sharedSkuRow.textContent.includes(t('classification.identified')), 'A shared SKU without EAN is shown as identified');
+  assert.equal(sharedSkuRow.querySelectorAll('code')[0].textContent, 'HUB-1');
+  assert.equal(sharedSkuRow.querySelectorAll('code')[1].textContent, 'HUB-1', 'The shop leaf and canonical SKU stay the same');
+  assert(!sharedSkuRow.textContent.includes('EAN:'));
   assert(document.body.textContent.includes('1.250 m'), 'Fractional quantity stays decimal text');
   assert(button('previous').disabled);
   await tick(); assert.equal(calls.length, 1, 'There is no automatic polling or eager next-page fetching');
