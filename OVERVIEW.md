@@ -2,7 +2,7 @@
 
 Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Kompletný centrálny sklad vrátane predaja zo všetkých kanálov, rezervácií, FIFO a tabuľkovej editácie je ďalším cieľom, nie dokončenou funkciou celého systému.
 
-**Posledné porovnanie s kódom:** 23. 9. 2026, `main` na commite `951684b6c63cf94e6ffe5705ab95e86ee8a3c493`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
+**Posledné porovnanie s kódom:** 23. 9. 2026, prvý implementačný balík centrálneho skladu nad základom `671c897e7935ae3f5956dc0f44172ced75b38e99`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
 
 ## Kde začať
 
@@ -11,6 +11,7 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 | [AGENTS.md](AGENTS.md) | Rozsah práce, platnosť udelených oprávnení a pravidlá zmien. |
 | Tento dokument | Mapa projektu, hranice implementácie a prevádzkové súvislosti. |
 | [Dodávateľský katalóg](docs/supplier-catalog.md) | Kontrakty feedov, identity, náhľadov, importu a obnovy. |
+| [Centrálny sklad](docs/central-stock.md) | Schválené obchodné pravidlá, prvý bezpečnostný balík a hranice ďalšej implementácie. |
 | [AI obsah](docs/ai-content.md) | Príprava a kontrola obsahu, existujúce produkty, pravidlá, fronta a konfigurácia. |
 | [PR kontroly](.github/workflows/ci.yml) | Automatické testy a izolovaná testovacia databáza. |
 | [Build a deployment](.github/workflows/build.yml) | Skutočný automatický postup nasadenia po zmene `main`. |
@@ -34,7 +35,7 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | --- | --- | --- |
 | Dashboard `/` | Implementovaný prehľad | `DashboardPage.tsx`; počítadlo nedokazuje dokončený obchodný proces. |
 | Faktúry `/invoices`, `/invoices/:invoiceId` | Nahrávanie, evidencia, filtre a detail | `routers/invoices.py`, `invoices_unified.py` a príslušné stránky. Nahratie súboru neznamená univerzálne OCR ani rozpoznanie každého formátu. |
-| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje pohyby a vážený priemer. Všeobecný príjem bez faktúry je cieľ ďalšieho rozvoja. |
+| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje pohyby a vážený priemer pod DB zámkami; opakovanie vracia uložený výsledok. Všeobecný príjem bez faktúry je cieľ ďalšieho rozvoja. |
 | Sklad `/stock` | Čiastočné pracovné rozhranie | `routers/stock.py`, `StockPage.tsx`: stavy, rezervované/voľné množstvo, priemerná cena, detail a Upgates operácie. Chýba editor buniek; stránkovacie tlačidlá a CSV export sú neaktívne. |
 | Produkty `/products` | „V príprave“ | `ProductsPage` z `PlaceholderPages.tsx`. Samostatný detail `/products/:sku` už používa produktové komponenty. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
@@ -115,7 +116,7 @@ Obnova projektu potrebuje databázu aj relevantné súbory a chránenú konfigur
 
 Databázový príjem používa cesty pod `/api/suppliers/{supplier_code}/receiving/sessions`. Skenovanie a finalizácia patria ku konkrétnej relácii; všeobecné `/receiving/sessions` z predchádzajúcej dokumentácie nebolo správnym popisom tohto kontraktu.
 
-Finalizácia v `routers/receiving_db.py` vytvára `RECEIVING_IN` pohyby, aktualizuje `stock_balances` a podľa pravidiel môže založiť chýbajúcu položku. Má identifikačný kľúč pohybu pre reláciu a riadok. Pri rozšírení over aj súbeh a obnovu po chybe; samotný kľúč nedokazuje pokrytie všetkých okrajových prípadov.
+Finalizácia v `routers/receiving_db.py` vytvára `RECEIVING_IN` pohyby, aktualizuje `stock_balances` a podľa pravidiel môže založiť chýbajúcu položku. Má identifikačný kľúč pohybu pre reláciu a riadok, zámok relácie a bilancií a uložený výsledok pre opakovanie. Prijaté riadky bez identity alebo platnej nákupnej ceny blokujú celý príjem; nulové množstvo nevytvorí pohyb. Súborový index faktúry sa označí až po DB commite. Presný kontrakt a dočasné obmedzenie príjmu bez ceny sú v [centrálnom sklade](docs/central-stock.md).
 
 Aktuálny výpočet príjmu je **vážený priemer**, nie FIFO. Voľné množstvo je rozdiel fyzického a rezervovaného množstva. Zobrazený stĺpec rezervácií neznamená hotové automatické rezervovanie predajov z oboch webov a pokladne.
 
@@ -128,14 +129,14 @@ Označenie „synchronizácia“ nie je zárukou rovnakého správania všetkýc
 | Cesta | Čo robí | Hranice |
 | --- | --- | --- |
 | Legacy CSV | Príprava súborov, načítanie exportu e-shopu a rozdelenie importných výstupov. | Nie je priebežnou API synchronizáciou celého skladu. |
-| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; má aj cestu inicializácie zásoby. | Nedokazuje bezpečné zlúčenie počiatočného skladu dvoch webov ani históriu nákupov. |
+| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; fyzický sklad ani obstarávacie ceny nemení. | `include_stock=true` je odmietnuté; samostatný kontrolovaný otvárací stav a párovanie rozdielnych SKU oboch webov zostávajú ďalším krokom. |
 | Hub → e-shop cez `push_products_to_shop` | Prenos vybraných produktov zo zachyteného obsahu. | Aktuálne preskakuje parenty už namapované v cieli; nejde o všeobecnú aktualizáciu existujúcich produktov alebo automatickú stock sync službu. |
 | Dodávateľský katalóg → e-shop | Výber, náhľad a založenie nových produktov cez API, skrytých a označených `validation_required=1`. | Neaktualizuje existujúce produkty a neposiela vlastné skladové množstvá. |
 | AI aktualizácia existujúceho produktu | Porovnanie pred/po a aktualizácia povolených polí s kontrolou identity a výsledku. | Všeobecná aktualizácia obsahu neposiela ceny, vlastné množstvo, aktivitu, identifikátory ani nové varianty. |
 
 Podmienky náhľadov, potvrdenia, kontrol identity, stavu `uncertain` a obnovy sú v [katalógovej](docs/supplier-catalog.md) a [AI dokumentácii](docs/ai-content.md). Existuje aj osobitná obmedzená AI cesta aktualizácie dodávateľskej dostupnosti; jej podmienky neplatia automaticky pre všetky produkty a varianty.
 
-Dodávateľská zásoba je oddelená od našej. `6+` je dolná hranica, nie presný počet. Obnova katalógu a zalistovanie z feedu nevytvárajú fyzický príjem. Zachovaj čerstvosť údajov, neznáme hodnoty a pravidlá konkrétneho integračného kontraktu.
+Dodávateľská zásoba je oddelená od našej. `6+` je dolná hranica, nie presný počet. Obnova katalógu a zalistovanie z feedu nevytvárajú fyzický príjem. Texty dostupnosti vlastní `adapter_settings.availability` dodávateľa, s predvolenými `do 5 dní` a `overíme`. AI pravidlá ich neprepisujú; `overíme` je objednateľné. Zachovaj čerstvosť údajov, neznáme hodnoty a pravidlá konkrétneho integračného kontraktu.
 
 ## AI obsah
 
@@ -187,7 +188,7 @@ npm --prefix frontend run dev
 
 API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.ts). Konfigurácie ani dáta nevymýšľaj, aby sa aplikácia tvárila funkčne.
 
-Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a dve jsdom sady pre katalóg a AI. DB testy používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
+Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a jsdom sady pre katalóg, AI, konfiguráciu dostupnosti a produktový pull. DB testy používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
 
 ## Produkčné nasadzovanie a diagnostika
 

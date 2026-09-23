@@ -164,7 +164,6 @@ async def prepare(db, job, request):
     language = ctx['options']['language']
     item = ImportItem(code=ctx['code'], name=ctx['name'], product_ids=ctx['product_ids'] or [p.id for p in products], status='ready',
                       payload={'code':ctx['code'], 'descriptions':[{'language':language}]})
-    policy = {**availability_policy(ctx['supplier']), **ctx['resolved'].get('import_policy', {})}
     enriched = overlay(item, {'content':job.output, 'active_after_import':False,
         'registered_parameters':bool((ctx['resolved'].get('category') or {}).get('parameters')),
         'meta_common':await asyncio.to_thread(content_fields, ctx['shop'], client) if 'metas' in request.fields else {},
@@ -186,6 +185,7 @@ async def prepare(db, job, request):
             categories[category['code']] = category
         enriched['categories'] = list(categories.values())
     if 'availability' in request.fields:
+        policy = availability_policy(ctx['supplier'], imports.supplier_config(ctx['supplier']))
         if remote.get('variants'):
             raise CatalogError('ai_update_variant_availability', 'Variant availability needs a separate per-variant update', 422)
         if 'stock' not in remote:
@@ -214,6 +214,7 @@ async def prepare(db, job, request):
                'before':projection(remote,payload), 'after':projection(payload,payload), 'payload':payload}
     if 'availability' in request.fields:
         preview['shop_stock'] = remote['stock']
+        preview['supplier_availability'] = policy
         if remote['stock'] is None:
             preview['availability_basis'] = 'supplier_unset_shop_stock'
     if 'categories' in request.fields:
@@ -315,6 +316,8 @@ async def confirm(db, job, request):
         if service.now().isoformat() > preview['expires_at']:
             raise CatalogError('preview_expired', 'Prepare a new update preview', 409)
         check_before(remote, preview)
+        if 'availability' in preview['fields']:
+            imports.assert_supplier_availability(job.context['supplier'], preview.get('supplier_availability'))
         preview['state'] = 'sending'
         job.context = {**job.context, 'update_preview':preview}
         service.event(job,job.status,'Update intent recorded; no automatic repeated PUT')
@@ -326,6 +329,8 @@ async def confirm(db, job, request):
         try:
             remote = await asyncio.to_thread(read_product, client, job.context['code'], include_parameters=include_parameters)
             check_before(remote, preview)
+            if 'availability' in preview['fields']:
+                imports.assert_supplier_availability(job.context['supplier'], preview.get('supplier_availability'))
         except CatalogError as exc:
             # The recorded intent never reached PUT; a fresh preview is safe.
             preview['state'], error = 'rejected', exc.code

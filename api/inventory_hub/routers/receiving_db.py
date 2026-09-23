@@ -8,11 +8,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Body, Depends, Query
 from typing import Any, Dict, Optional, List
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 import csv, io, re
+import logging
 
 from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,6 +34,7 @@ from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.routers.receiving import _update_invoice_status
 
 router = APIRouter(tags=["Receiving"])
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # CSV Parsing Helpers (from original receiving.py)
@@ -173,7 +177,7 @@ def _invoice_no_from_id(invoice_id: str) -> str:
 # Pydantic Models for API
 # ============================================================================
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateSessionRequest(BaseModel):
@@ -183,13 +187,13 @@ class CreateSessionRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     code: str
-    qty: float = 1.0
+    qty: Decimal = Field(default=Decimal("1"), gt=0, max_digits=12, decimal_places=3)
     scanned_by: str = "scanner"
 
 
 class SetQtyRequest(BaseModel):
     line_index: int
-    received_qty: float
+    received_qty: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     note: Optional[str] = None
 
 
@@ -287,7 +291,7 @@ async def _get_supplier(db: AsyncSession, supplier_code: str) -> Supplier:
 
 
 async def _get_session_for_supplier(
-    db: AsyncSession, supplier_code: str, session_id: int
+    db: AsyncSession, supplier_code: str, session_id: int, *, lock: bool = False
 ) -> ReceivingSession:
     stmt = (
         select(ReceivingSession)
@@ -295,6 +299,11 @@ async def _get_session_for_supplier(
         .options(selectinload(ReceivingSession.supplier))
         .where(ReceivingSession.id == session_id)
     )
+    if lock:
+        # All receiving mutations take this lock before reading line quantities.
+        # Refresh cached ORM objects as another transaction may have committed
+        # while this request was waiting for the lock.
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
     if not session or session.supplier.code != supplier_code:
@@ -356,23 +365,35 @@ async def _ensure_product_for_line(
         await db.flush()
         created = True
 
-    # Attach identifiers so future scans/imports match this product.
-    # SAVEPOINT (begin_nested): a unique-index conflict (duplicate EAN in
-    # source data) must roll back only this insert, not the whole finalize.
+    # Attach identifiers so future scans/imports match this product. A
+    # savepoint keeps the transaction usable for an ownership check after a
+    # duplicate insert; a conflicting owner aborts the entire receipt.
     if ean:
         try:
             async with db.begin_nested():
                 await identifier_service.add_identifier(product.id, ean, is_primary=created)
-        except Exception:
-            pass  # EAN already attached elsewhere — reported by validation later
+        except IntegrityError:
+            existing = await identifier_service.find_product_by_barcode(ean)
+            if existing is None or existing.id != product.id:
+                raise HTTPException(409, detail=(
+                    f"Riadok {line.line_number}: EAN je priradený inému produktu. "
+                    "Príjem nebol dokončený; skontroluj identifikáciu produktu."
+                ))
     if sku_raw:
         try:
             async with db.begin_nested():
                 await identifier_service.add_identifier(
                     product.id, sku_raw, IdentifierType.supplier_sku, supplier_id=supplier.id
                 )
-        except Exception:
-            pass
+        except IntegrityError:
+            existing = await identifier_service.find_product_by_identifier(
+                sku_raw, IdentifierType.supplier_sku, supplier.id
+            )
+            if existing is None or existing.id != product.id:
+                raise HTTPException(409, detail=(
+                    f"Riadok {line.line_number}: kód dodávateľa je priradený inému produktu. "
+                    "Príjem nebol dokončený; skontroluj identifikáciu produktu."
+                ))
 
     # supplier_products link (unique per supplier+sku)
     if sku_raw:
@@ -399,6 +420,7 @@ async def _write_stock_for_line(
     line: ReceivingLine,
     product: Product,
     supplier_code: str,
+    balance: StockBalance,
 ) -> StockMovement:
     """
     Append immutable RECEIVING_IN stock movement and update stock balance
@@ -407,16 +429,6 @@ async def _write_stock_for_line(
     """
     qty = line.received_qty
     unit_cost = line.unit_price
-
-    result = await db.execute(select(StockBalance).where(
-        StockBalance.product_id == product.id,
-        StockBalance.warehouse_id == session.warehouse_id,
-    ))
-    balance = result.scalar_one_or_none()
-    if balance is None:
-        balance = StockBalance(product_id=product.id, warehouse_id=session.warehouse_id)
-        db.add(balance)
-        await db.flush()
 
     old_qty = balance.qty_on_hand or Decimal("0")
     old_avg = balance.avg_cost or Decimal("0")
@@ -454,6 +466,83 @@ async def _write_stock_for_line(
     balance.last_movement_id = movement.id
 
     return movement
+
+
+async def _lock_stock_balances(
+    db: AsyncSession, warehouse_id: int, product_ids: set[int]
+) -> Dict[int, StockBalance]:
+    """Create missing balances safely and lock them in a consistent order.
+
+    The unique-key insert also serializes the first receipts of a product that
+    has no balance yet; SELECT FOR UPDATE alone cannot lock an absent row.
+    """
+    balances = {}
+    for product_id in sorted(product_ids):
+        await db.execute(insert(StockBalance).values(
+            product_id=product_id, warehouse_id=warehouse_id,
+        ).on_conflict_do_nothing(index_elements=["product_id", "warehouse_id"]))
+        balance = (await db.execute(select(StockBalance).where(
+            StockBalance.product_id == product_id,
+            StockBalance.warehouse_id == warehouse_id,
+        ).with_for_update().execution_options(populate_existing=True))).scalar_one()
+        balances[product_id] = balance
+    return balances
+
+
+async def _finalize_result(
+    db: AsyncSession, session: ReceivingSession, movements_created: int,
+    products_created: Optional[int], skipped_lines: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    lines = _lines_sorted(session)
+    stats = {
+        "total_lines": len(lines),
+        "received_complete": sum(1 for ln in lines if ln.status == "matched"),
+        "received_partial": sum(1 for ln in lines if ln.status == "partial"),
+        "received_overage": sum(1 for ln in lines if ln.status == "overage"),
+        "not_received": sum(1 for ln in lines if ln.status == "pending"),
+        "total_scans": await _count_scans(db, session.id),
+        "unexpected_scans": await _count_unexpected(db, session.id),
+    }
+    return {
+        "success": True,
+        "invoice_number": session.invoice_number,
+        "invoice_no": session.invoice_number,
+        "session_id": session.id,
+        "completed_at": session.finished_at.isoformat() if session.finished_at else None,
+        "stats": stats,
+        "total_ordered": float(sum((ln.ordered_qty for ln in lines), Decimal("0"))),
+        "total_received": float(sum((ln.received_qty for ln in lines), Decimal("0"))),
+        "received_items_count": sum(1 for ln in lines if ln.received_qty > 0),
+        "stock_movements_created": movements_created > 0,
+        "movements_created": movements_created,
+        # Older sessions did not persist this count; do not invent it on replay.
+        "products_created": products_created,
+        "skipped_lines": skipped_lines,
+        "message": f"Príjem faktúry {session.invoice_number} dokončený",
+    }
+
+
+def _sync_finalized_invoice(supplier_code: str, result: Dict[str, Any]) -> None:
+    """Best-effort UI index refresh, only after the ledger transaction commits."""
+    try:
+        updated = _update_invoice_status(supplier_code, result["invoice_number"], "processed", {
+            "processed_at": result["completed_at"],
+            "receiving_session_id": str(result["session_id"]),
+            "receiving_stats": {
+                key: result["stats"][key] for key in (
+                    "total_lines", "received_complete", "received_partial", "not_received"
+                )
+            },
+            "current_session_id": None,
+            "paused_at": None,
+            "pause_stats": None,
+        })
+        if not updated:
+            logger.warning("Receiving session %s committed, but invoice index entry was not found; retry finalize to refresh it", result["session_id"])
+    except Exception:
+        # A retried finalize repairs the filesystem projection from the saved
+        # successful result without receiving the goods a second time.
+        logger.warning("Receiving session %s committed, but invoice index refresh failed; retry finalize to refresh it", result["session_id"], exc_info=True)
 
 
 # ============================================================================
@@ -575,7 +664,7 @@ async def scan_code(
     db: AsyncSession = Depends(get_session),
 ):
     """Process a barcode scan: match EAN first, then supplier SKU."""
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
 
     if session.status == ReceivingStatus.paused:
         raise HTTPException(400, detail="Session is paused — resume it first")
@@ -665,7 +754,7 @@ async def set_line_quantity(
     db: AsyncSession = Depends(get_session),
 ):
     """Manually set received quantity for a line. line_index is 0-based index in the sorted lines array."""
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
     if session.status == ReceivingStatus.completed:
         raise HTTPException(400, detail="Session already finalized")
 
@@ -711,7 +800,7 @@ async def accept_all_items(
     db: AsyncSession = Depends(get_session),
 ):
     """Mark items as fully received (received_qty = ordered_qty)."""
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
     if session.status == ReceivingStatus.completed:
         raise HTTPException(400, detail="Session already finalized")
 
@@ -746,7 +835,7 @@ async def reset_all_items(
     db: AsyncSession = Depends(get_session),
 ):
     """Reset all received quantities to 0."""
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
     if session.status == ReceivingStatus.completed:
         raise HTTPException(400, detail="Session already finalized")
 
@@ -775,18 +864,33 @@ async def finalize_session(
     request: FinalizeRequest = Body(default=FinalizeRequest()),
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Finalize receiving session (idempotency guard: cannot finalize twice).
+    """Finalize once; retries return the original committed result.
 
-    Writes the stock ledger transactionally:
-    - auto-creates products for unmatched lines (created_from_source='invoice:...')
-    - appends RECEIVING_IN stock_movements (idempotency_key per session+line)
-    - updates stock_balances with weighted-average cost
+    Session mutations serialize on the session row. Balance creation and
+    weighted-average updates use ordered row locks across receiving sessions.
     """
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
 
     if session.status == ReceivingStatus.completed:
-        raise HTTPException(400, detail="Session already finalized")
+        result = (session.session_data or {}).get("finalize_result")
+        if not result:
+            # Backward compatibility for sessions finalized before result
+            # snapshots existed. Never append movements on this path.
+            movements = (await db.execute(select(StockMovement).where(
+                StockMovement.reference_type == "receiving_session",
+                StockMovement.reference_id == str(session.id),
+            ))).scalars().all()
+            keys = {movement.idempotency_key for movement in movements}
+            skipped = [
+                {"line_number": line.line_number, "reason": "Historical completed line has no receiving movement"}
+                for line in session.lines
+                if line.received_qty > 0 and f"receiving:{session.id}:{line.id}" not in keys
+            ]
+            result = await _finalize_result(db, session, len(movements), None, skipped)
+            session.session_data = {**(session.session_data or {}), "finalize_result": result}
+        await db.commit()
+        _sync_finalized_invoice(supplier_code, result)
+        return result
 
     lines = _lines_sorted(session)
     pending = sum(1 for ln in lines if ln.status == "pending")
@@ -796,90 +900,71 @@ async def finalize_session(
             detail=f"{pending} lines not received. Use force=true to finalize anyway.",
         )
 
-    total_scans = await _count_scans(db, session.id)
-    unexpected = await _count_unexpected(db, session.id)
+    # Validate the entire receipt before resolving products or writing stock.
+    # force only allows quantities not received; it never overrides identity
+    # or cost validation. Unknown acquisition cost needs explicit support in
+    # the future valuation model, not a guessed zero or old average.
+    for line in lines:
+        if not line.received_qty.is_finite() or line.received_qty < 0:
+            raise HTTPException(409, detail=f"Riadok {line.line_number}: oprav neplatné prijaté množstvo.")
+        if line.received_qty == 0:
+            continue
+        if line.unit_price is None or not line.unit_price.is_finite() or line.unit_price < 0:
+            raise HTTPException(409, detail=(
+                f"Riadok {line.line_number}: chýba platná nákupná cena. "
+                "Správca musí opraviť cenu v uloženom riadku nedokončeného príjmu; "
+                "samotná výmena CSV ho neaktualizuje. Príjem bez známej nákupnej ceny zatiaľ nie je podporovaný."
+            ))
+        if not line.product_id and not (line.ean or "").strip() and not (line.supplier_sku or "").strip():
+            raise HTTPException(409, detail=(
+                f"Riadok {line.line_number}: produkt nemá priradenie, EAN ani kód dodávateľa. "
+                "Oprav identifikáciu produktu pred dokončením príjmu."
+            ))
 
-    # ── Stock write: movements (immutable ledger) + balances ──────────────
     supplier = await _get_supplier(db, supplier_code)
     prefix = _product_code_prefix(supplier_code)
     identifier_service = ProductIdentifierService(db)
-
-    movements_created = 0
     products_created = 0
-    skipped_lines: List[Dict[str, Any]] = []
+    resolved = []
+
+    # Serialize invoice-created identities for this supplier before creating
+    # products or supplier links. Existing matched products do not need it.
+    if any(line.received_qty > 0 and not line.product_id for line in lines):
+        await db.execute(select(Supplier.id).where(Supplier.id == supplier.id).with_for_update())
 
     for line in lines:
         if line.received_qty <= 0:
             continue
-        product = None
-        if line.product_id:
-            product = await db.get(Product, line.product_id)
+        product = await db.get(Product, line.product_id) if line.product_id else None
         if product is None:
-            product, created, skip_reason = await _ensure_product_for_line(
+            product, created, reason = await _ensure_product_for_line(
                 db, supplier, line, prefix, session.invoice_number, identifier_service
             )
             if product is None:
-                skipped_lines.append({"line_number": line.line_number, "reason": skip_reason})
-                continue
-            if created:
-                products_created += 1
+                raise HTTPException(409, detail=(
+                    f"Riadok {line.line_number}: produkt nemožno priradiť ({reason}). "
+                    "Oprav identifikáciu produktu pred dokončením príjmu."
+                ))
+            products_created += int(created)
             line.product_id = product.id
             if not line.match_method:
                 line.match_method = "auto_created"
-        await _write_stock_for_line(db, session, line, product, supplier_code)
-        movements_created += 1
+        resolved.append((line, product))
+
+    balances = await _lock_stock_balances(db, session.warehouse_id, {product.id for _, product in resolved})
+    for line, product in resolved:
+        await _write_stock_for_line(db, session, line, product, supplier_code, balances[product.id])
 
     session.status = ReceivingStatus.completed
-    session.finished_at = datetime.utcnow()
+    session.finished_at = datetime.now(timezone.utc)
+    result = await _finalize_result(db, session, len(resolved), products_created, [])
+    session.session_data = {**(session.session_data or {}), "finalize_result": result}
 
-    stats = {
-        "total_lines": len(lines),
-        "received_complete": sum(1 for ln in lines if ln.status == "matched"),
-        "received_partial": sum(1 for ln in lines if ln.status == "partial"),
-        "received_overage": sum(1 for ln in lines if ln.status == "overage"),
-        "not_received": sum(1 for ln in lines if ln.status == "pending"),
-        "total_scans": total_scans,
-        "unexpected_scans": unexpected,
-    }
-
-    total_ordered = sum(float(ln.ordered_qty) for ln in lines)
-    total_received = sum(float(ln.received_qty) for ln in lines)
-    received_count = sum(1 for ln in lines if ln.received_qty > 0)
-
-    # Sync filesystem invoice index (UI tabs Nové/Prebieha/Dokončené read it)
-    try:
-        _update_invoice_status(supplier_code, session.invoice_number, "processed", {
-            "processed_at": session.finished_at.isoformat(),
-            "receiving_session_id": str(session.id),
-            "receiving_stats": {
-                "total_lines": stats["total_lines"],
-                "received_complete": stats["received_complete"],
-                "received_partial": stats["received_partial"],
-                "not_received": stats["not_received"],
-            },
-            "current_session_id": None,
-            "paused_at": None,
-            "pause_stats": None,
-        })
-    except Exception:
-        pass
-
-    return {
-        "success": True,
-        "invoice_number": session.invoice_number,  # canonical
-        "invoice_no": session.invoice_number,      # alias (frontend)
-        "session_id": session.id,
-        "completed_at": session.finished_at.isoformat(),
-        "stats": stats,
-        "total_ordered": total_ordered,
-        "total_received": total_received,
-        "received_items_count": received_count,
-        "stock_movements_created": movements_created > 0,
-        "movements_created": movements_created,
-        "products_created": products_created,
-        "skipped_lines": skipped_lines,
-        "message": f"Príjem faktúry {session.invoice_number} dokončený",
-    }
+    # The index is outside the DB transaction. Commit first, so a failed
+    # ledger write never marks the invoice processed in the filesystem.
+    await db.commit()
+    _sync_finalized_invoice(supplier_code, result)
+    return result
 
 
 @router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/pause")
@@ -889,7 +974,7 @@ async def pause_session(
     db: AsyncSession = Depends(get_session),
 ):
     """Pause receiving session."""
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
 
     if session.status not in (ReceivingStatus.new, ReceivingStatus.in_progress):
         raise HTTPException(400, detail=f"Cannot pause session in status {session.status.value}")
@@ -935,7 +1020,7 @@ async def resume_session(
     db: AsyncSession = Depends(get_session),
 ):
     """Resume paused receiving session; returns lines + scan history."""
-    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
 
     if session.status != ReceivingStatus.paused:
         raise HTTPException(400, detail=f"Cannot resume session in status {session.status.value}")
@@ -1044,6 +1129,8 @@ async def reopen_invoice(
         )
         .order_by(ReceivingSession.finished_at.desc())
         .limit(1)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
@@ -1067,6 +1154,10 @@ async def reopen_invoice(
             )
 
         session.status = ReceivingStatus.paused
+        session.session_data = {
+            key: value for key, value in (session.session_data or {}).items()
+            if key != "finalize_result"
+        }
         session.finished_at = None
         session.paused_at = datetime.utcnow()
 

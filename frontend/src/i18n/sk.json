@@ -154,6 +154,13 @@
       "feedUrlNotReachable": "Feed URL nedostupná",
       "loginUrlReachable": "Login URL dostupná",
       "loginUrlNotReachable": "Login URL nedostupná"
+    },
+    "availability": {
+      "title": "Dodávateľská dostupnosť",
+      "help": "Text dostupnosti pre import a aktualizáciu produktov sa berie z konfigurácie dodávateľa. Zásoba dodávateľa nezvyšuje náš fyzický sklad.",
+      "orderable": "Tovar skladom u dodávateľa",
+      "unknown": "Neznáma dostupnosť dodávateľa",
+      "defaults": "Prázdne hodnoty použijú „do 5 dní“ a „overíme“. Aj pri neznámej dostupnosti si zákazník môže tovar objednať."
     }
   },
   "stock": {
@@ -397,7 +404,9 @@
       "ai_update_variant_availability": "Dostupnosť rodiny potrebuje samostatnú kontrolu jednotlivých variantov. Teraz možno aktualizovať obsah.",
       "ai_job_running": "Počkaj na dokončenie prebiehajúcej operácie.",
       "ai_selection_invalid": "Vyber platné položky z tejto úlohy.",
-      "ai_partial_evidence": "Pre zostávajúce produkty chýbajú podklady; priprav nový AI návrh."
+      "ai_partial_evidence": "Pre zostávajúce produkty chýbajú podklady; priprav nový AI návrh.",
+      "supplier_availability_changed": "Dostupnosť v konfigurácii dodávateľa sa zmenila alebo náhľad vznikol podľa starých pravidiel. Priprav nový náhľad.",
+      "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov."
     },
     "tab": {
       "data": "Údaje a parametre",
@@ -654,7 +663,9 @@
       "ai_existing_brand_mismatch": "Vybraná značka sa nezhoduje s výrobcom produktu v e-shope. Vyber zodpovedajúcu značku.",
       "ai_existing_variant_registry": "Táto príprava upravuje spoločný obsah produktu. Vyber profil s parametrami hlavného produktu, nie jednotlivých variantov.",
       "ai_update_stock_unknown": "Stav vlastného skladu sa nepodarilo overiť. Dostupnosť sa nezmenila; obnov porovnanie alebo ju vynechaj z aktualizácie.",
-      "ai_update_readback_mismatch": "Nepodarilo sa potvrdiť zhodu vybraných polí po aktualizácii."
+      "ai_update_readback_mismatch": "Nepodarilo sa potvrdiť zhodu vybraných polí po aktualizácii.",
+      "supplier_availability_changed": "Dostupnosť v konfigurácii dodávateľa sa zmenila alebo náhľad vznikol podľa starých pravidiel. Priprav nový náhľad.",
+      "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov."
     },
     "importSelectedReady": "Importovať označené pripravené",
     "selectJob": "Označiť úlohu",
@@ -694,7 +705,7 @@
     "removeRule": "Odstrániť pravidlo / profil",
     "removeRuleConfirm": "Odstrániť „{{name}}“ z pripravovanej verzie? História zostane zachovaná. Zmena sa prejaví po uložení a publikovaní.",
     "importPolicy": "Importné pravidlá – dostupnosť a dodávateľ",
-    "importPolicyHelp": "Tieto hodnoty uplatňuje priamo Hub pri importe. Prázdne pole dedí predvolené pravidlo dodávateľa. Zásoba dodávateľa sa nekopíruje do lokálneho skladu.",
+    "importPolicyHelp": "Názov dodávateľa môže upraviť AI pravidlo. Prázdne pole použije predvolený názov dodávateľa.",
     "hideZeroStock": "Skryť nové varianty s potvrdenou nulovou zásobou dodávateľa",
     "jobFilters": {
       "all": "Všetky",
@@ -808,6 +819,10 @@
     "actualShopValue": "Hodnota načítaná z e-shopu",
     "readbackValueMissing": "API e-shopu nevrátilo hodnotu tohto poľa.",
     "updateReadbackHelp": "Porovnaj očakávané a načítané hodnoty nižšie. Chýbajúca odpoveď API sama osebe neznamená, že sa zmena neuložila. Tlačidlo Overiť výsledok aktualizácie iba skontroluje stav; zmeny znova neodošle.",
-    "supplierAvailabilityUnsetStock": "Skladové množstvo e-shopu nie je vyplnené. Dostupnosť sa nastaví podľa dodávateľa; skladové množstvo sa nemení."
+    "supplierAvailabilityUnsetStock": "Skladové množstvo e-shopu nie je vyplnené. Dostupnosť sa nastaví podľa dodávateľa; skladové množstvo sa nemení.",
+    "supplierAvailabilityConfigHelp": "Texty dostupnosti sa berú z konfigurácie dodávateľa v časti Dodávatelia. AI pravidlá ich nemenia; tovar „overíme“ zostáva objednateľný."
+  },
+  "upgatesImport": {
+    "productOnlyNote": "Stiahnu sa produktové údaje. Fyzický sklad a nákupné ceny sa tým nemenia."
   }
 }

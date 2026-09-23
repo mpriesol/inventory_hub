@@ -28,6 +28,7 @@ from inventory_hub.services.catalog import CatalogError, selected_products, supp
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.services.catalog_identity import cached_identities, connection_fingerprint, parent_shop_code, read_cache
 from inventory_hub.services.catalog_sort import variant_sort_key
+from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
 
@@ -48,6 +49,11 @@ def shop_config(shop: str) -> dict:
 def _target(cfg: dict) -> str:
     # Detect accidental target changes without storing credentials in the job.
     return hashlib.sha256(cfg["upgates_api_base_url"].rstrip("/").encode()).hexdigest()
+
+
+def assert_supplier_availability(supplier: str, frozen: dict | None) -> None:
+    if frozen is None or frozen != availability_policy(supplier, supplier_config(supplier)):
+        raise CatalogError("supplier_availability_changed", "Supplier availability settings changed; create a new preview", 409)
 
 
 def _path(shop: str, preview_id: str) -> Path:
@@ -473,8 +479,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         if len(items) != 1:
             raise CatalogError("ai_family_mismatch", "A content revision applies to exactly one selected family", 422)
         items = [overlay(item, enrichment, options.language) if item.status == "ready" else item for item in items]
-    from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
-    policy = {**availability_policy(request.supplier), **(enrichment or {}).get("import_policy", {})}
+    policy = availability_policy(request.supplier, supplier_cfg)
     for item in items:
         if item.status == "ready":
             item.payload["categories"] = category_chain(remote["categories"], options.category_code)
@@ -527,7 +532,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
                                 price_lines=price_lines, sale_price_overrides=request.sale_price_overrides)
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
-                "result": None}
+                "supplier_availability": policy, "result": None}
     if enrichment:
         document["content_approval"] = {k: enrichment[k] for k in ("job_id", "revision", "rules_version", "active_after_import")}
     _write(_path(shop, preview.preview_id), document)
@@ -681,6 +686,8 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False) -> tupl
             raise CatalogError("preview_invalid", "Resolve the preview errors first", 422)
         if document["target"] != _target(shop_config(shop)):
             raise CatalogError("shop_target_changed", "The shop connection changed; create a new preview", 409)
+        if not (result and any(item["status"] == "uncertain" for item in result["items"])):
+            assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
         # Expired previews may only reconcile previously sent items; they never create more products.
         expired = now() > datetime.fromisoformat(preview["expires_at"])
         if expired and not (result and any(item["status"] == "uncertain" for item in result["items"])):
@@ -743,6 +750,15 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
     preview, result = document["preview"], document["result"]
     if document["target"] != _target(shop_config(shop)):
         raise CatalogError("shop_target_changed", "The shop connection changed", 409)
+    policy_current = True
+    try:
+        assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
+    except CatalogError:
+        # Old/changed previews may still reconcile an uncertain POST, but must
+        # never create more products or auxiliary metadata with stale settings.
+        if not any(item["status"] == "uncertain" for item in result["items"]):
+            raise
+        policy_current = False
     sources = {p["id"]: CatalogProduct.model_validate(p) for p in document["sources"]}
     client = UpgatesClient.from_shop(shop)
     remote_options = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
@@ -752,7 +768,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         not any(p["name"] == options["pricelist"] for p in remote_options["pricelists"]) or
         (options["category_code"] and not any(c["code"] == options["category_code"] for c in remote_options["categories"]))):
         raise CatalogError("shop_options_changed", "Shop settings changed; create a new preview", 409)
-    if remote_options["create_validation_field"]:
+    if policy_current and remote_options["create_validation_field"]:
         if not preview["create_validation_field"]:
             raise CatalogError("shop_options_changed", "The validation field changed; create a new preview", 409)
         try:
@@ -763,7 +779,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         verified = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
         if verified["create_validation_field"]:
             raise CatalogError("validation_field_create_failed", "The validation field was not created", 502)
-    if document.get("content_approval") and any("short_description" in d for item in preview["items"] for d in item["payload"].get("descriptions", [])):
+    if policy_current and document.get("content_approval") and any("short_description" in d for item in preview["items"] for d in item["payload"].get("descriptions", [])):
         from inventory_hub.services.ai_content_upgates import content_fields
         await asyncio.to_thread(content_fields, shop, client, create=True)
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client)
@@ -781,6 +797,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     item["errors"] = ["import_outcome_unknown"]
                     continue
             else:
+                assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 if now() > datetime.fromisoformat(preview["expires_at"]):
                     item.update(status="failed", errors=["preview_expired"])
                     continue
@@ -813,6 +830,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 if item["status"] == "exists":
                     continue
                 _assert_payload(item["payload"], expected_active=bool(document.get("content_approval", {}).get("active_after_import", False)))
+                assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 item.update(status="uncertain", errors=["import_outcome_unknown"])
                 result["updated_at"] = now().isoformat()
                 _item_checkpoint(path, result, item)

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
 from inventory_hub.settings import settings
+from inventory_hub.config_normalize import normalize_supplier_availability
 from inventory_hub.config_io import (
     load_supplier as io_load_supplier,
     save_supplier as io_save_supplier,
@@ -485,6 +486,13 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
     """Update supplier configuration with automatic history backup"""
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON")
+    adapter = payload.get("adapter_settings", {})
+    try:
+        if not isinstance(adapter, dict):
+            raise ValueError("adapter_settings must be an object")
+        normalize_supplier_availability(adapter.get("availability"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={"code": "supplier_availability_invalid", "message": str(error)}) from None
 
     try:
         current_cfg = io_load_supplier(supplier, write_back_on_load=False)
@@ -903,4 +911,3 @@ def refresh_supplier_feed(
         "csv_saved": csv_path.relative_to(sup_dir).as_posix(),
         "rows_converted": rows,
     }
-

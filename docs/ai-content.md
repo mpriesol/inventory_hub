@@ -94,7 +94,9 @@ Porovnanie funguje aj z feedovej prípravy pre existujúci produkt; výber musí
 
 ## Dostupnosť dodávateľa a sklad
 
-Dostupnosť z feedu určuje dodaciu lehotu, nie vlastný sklad. Kladné dodávateľské množstvo/minimum alebo externá dostupnosť použije `orderable`, inak `unknown`. Základ Paul Lange/Northfinder je `do 5 dní` / `Overíme`, pravidlá ho môžu zmeniť. Northfinder pri novom importe predvolene skryje variant s explicitnou nulou a zakáže košík; neznáme množstvo nie je nula. Bez aktívneho variantu sa skryje aj parent.
+Dostupnosť z feedu určuje dodaciu lehotu, nie vlastný sklad. Kladné dodávateľské množstvo/minimum alebo externá dostupnosť použije `orderable`, inak `unknown`. Jediným zdrojom textov je konfigurácia dodávateľa `adapter_settings.availability`, predvolene `do 5 dní` / `overíme`; prázdne hodnoty sa doplnia, explicitné hodnoty (napríklad `do 7 dní`) sa zachovajú. Polia majú najviac 100 znakov a upravujú sa v Dodávatelia → Obecné. Staré AI pravidlá `orderable`, `unknown` a `hide_zero_stock` zostávajú čitateľné v histórii, ale nepoužívajú sa ani nevytvárajú konflikty pri zostavení účinnej politiky. `supplier_name` ostáva podporované. Nulová ani neznáma dodávateľská zásoba sama neskryje variant a nezakáže košík: `overíme` je objednateľné. Nový parent naďalej zostáva skrytý do kontroly s `validation_required=1`.
+
+Náhľad zachytí účinnú politiku. Zmenená konfigurácia alebo starý náhľad bez nej vyžaduje nové porovnanie pred novým zápisom. Overenie `sending`/`uncertain` naďalej iba číta a porovnáva pôvodný payload; kvôli novej politike sa už neistý zápis neopakuje. Detail úlohy zobrazuje účinnú politiku, nie neúčinné historické AI prepísanie.
 
 Aktualizácia `availability` funguje iba z feedovej prípravy produktu bez variantov. Pri kladnom sklade e-shopu zachová dostupnosť; pri nekladnom alebo explicitnom `stock=null` použije dodávateľskú politiku. Chýbajúci/neplatný sklad blokuje porovnanie. `null` sa nemení na nulu, sklad sa neposiela. Mení sa iba dostupnosť, nie aktivita ani košík. Úloha načítaná len z e-shopu dodávateľskú dostupnosť nemá.
 

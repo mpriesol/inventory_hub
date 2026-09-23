@@ -1,6 +1,7 @@
 // src/components/UpgatesImportModal.tsx
 // "Stiahnuť z Upgates" — preview new products in the shop, select, import into local DB.
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X, Download, RefreshCw } from 'lucide-react';
 import { Button } from './ui/Button.new';
 import {
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
+  const { t } = useTranslation();
   const [preview, setPreview] = useState<UpgatesPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +26,6 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<UpgatesImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
-  const [includeStock, setIncludeStock] = useState(true);
 
   const loadPreview = async (refresh = false) => {
     setLoading(true);
@@ -68,7 +69,6 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
     try {
       const res = await importUpgatesProducts(shop, Array.from(selected), {
         updateExisting,
-        includeStock,
       });
       setResult(res);
       onImported();
@@ -208,14 +208,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
           style={{ borderColor: 'var(--color-border-subtle)' }}
         >
           <div className="flex flex-col gap-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeStock}
-                onChange={(e) => setIncludeStock(e.target.checked)}
-              />
-              Importovať aj skladové zásoby (len produkty bez skladových pohybov)
-            </label>
+            <p>{t('upgatesImport.productOnlyNote')}</p>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"

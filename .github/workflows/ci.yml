@@ -67,3 +67,9 @@ jobs:
 
       - name: Check AI content preparation and review
         run: node frontend/tests/ai-content-ui.cjs
+
+      - name: Check product-only Upgates import
+        run: node frontend/tests/upgates-import-ui.cjs
+
+      - name: Check supplier availability configuration
+        run: node frontend/tests/supplier-config-ui.cjs

@@ -13,18 +13,17 @@ Import scope (per approved design):
   product_identifiers, main image -> product_groups.main_image_url,
   main price -> shop_products.shop_price, availability/stock snapshot ->
   shop_products.
-- NEW products: everything, optionally including local stock
-  (include_stock, default true) -> INITIAL stock movement + balance.
-- EXISTING products (update_existing=true): everything EXCEPT local stock;
-  stock is written only with include_stock AND only when the product has
-  no stock movements yet (protects the ledger from being overwritten).
+- NEW products and EXISTING products (update_existing=true): product data
+  only. Remote stock remains a shop snapshot, never a physical receipt or
+  an acquisition cost. Opening stock needs a separate audited workflow.
+- Legacy include_stock=true requests are rejected before any import work.
 
 Endpoints:
   GET  /shops/{shop}/upgates/products/preview
   POST /shops/{shop}/upgates/products/import
        body: {"codes": [...] | "all": true,
               "update_existing": bool = false,
-              "include_stock": bool = true}
+              "include_stock": false}
   GET  /shops/{shop}/upgates/status
 """
 from __future__ import annotations
@@ -42,11 +41,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.database import get_session
 from inventory_hub.settings import settings
 from inventory_hub.db_models import (
-    Product, ProductGroup, Shop, Warehouse, MovementType, ProductIdentifier,
+    Product, ProductGroup, Shop, ProductIdentifier,
 )
 from inventory_hub.db_models_ext import (
     ShopProduct, ShopProductContent, ProductVariantAttribute,
-    StockMovement, StockBalance,
+    StockBalance,
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.upgates import (
@@ -64,14 +63,6 @@ async def _get_shop(db: AsyncSession, shop_code: str) -> Shop:
     if not shop:
         raise HTTPException(404, detail=f"Shop not found in DB: {shop_code}")
     return shop
-
-
-async def _default_warehouse(db: AsyncSession) -> Warehouse:
-    result = await db.execute(select(Warehouse).where(Warehouse.is_default == True))  # noqa: E712
-    wh = result.scalar_one_or_none()
-    if not wh:
-        raise HTTPException(500, detail="No default warehouse in DB")
-    return wh
 
 
 # ── Catalog cache ────────────────────────────────────────────────────────
@@ -338,13 +329,18 @@ async def import_upgates_products(
     db: AsyncSession = Depends(get_session),
 ):
     """Import/update products from Upgates. See module docstring for scope."""
+    if payload.get("include_stock", False) is not False:
+        raise HTTPException(
+            400,
+            detail=("Import produktov nemení fyzický sklad. Pošli 'include_stock': false "
+                    "alebo tento parameter vynechaj. Počiatočné zásoby vyžadujú "
+                    "samostatný overený príjem s nákupnou cenou."),
+        )
     shop = await _get_shop(db, shop_code)
-    warehouse = await _default_warehouse(db)
 
     wanted_codes = payload.get("codes") or []
     import_all = bool(payload.get("all"))
     update_existing = bool(payload.get("update_existing", False))
-    include_stock = bool(payload.get("include_stock", True))
     if not wanted_codes and not import_all and not update_existing:
         raise HTTPException(400, detail="Zadaj 'codes', 'all': true alebo 'update_existing': true")
 
@@ -405,44 +401,6 @@ async def import_upgates_products(
                 product_id=product_id, attribute_name=name,
                 attribute_value=value, display_order=order))
         await db.flush()
-
-    async def _init_stock(product: Product, stock_val: Any, unit_price: Optional[Decimal]) -> bool:
-        """INITIAL movement + balance. Only when the product has no movements yet."""
-        qty = _to_decimal(stock_val)
-        if qty is None or qty <= 0:
-            return False
-        cnt = (await db.execute(select(func.count()).where(
-            StockMovement.product_id == product.id))).scalar() or 0
-        if cnt:
-            skipped.append({"code": product.sku,
-                            "reason": "stock not imported — product already has stock movements"})
-            return False
-        balance = (await db.execute(select(StockBalance).where(
-            StockBalance.product_id == product.id,
-            StockBalance.warehouse_id == warehouse.id))).scalar_one_or_none()
-        if balance is None:
-            balance = StockBalance(product_id=product.id, warehouse_id=warehouse.id)
-            db.add(balance)
-            await db.flush()
-        avg = unit_price if unit_price is not None else Decimal("0")
-        movement = StockMovement(
-            idempotency_key=f"upgates-init:{shop.id}:{product.id}",
-            product_id=product.id, warehouse_id=warehouse.id,
-            movement_type=MovementType.INITIAL, quantity=qty,
-            unit_cost=unit_price,
-            reference_type="upgates_import", reference_id=product.sku,
-            reference_source=source,
-            balance_after=qty, avg_cost_after=avg, created_by="upgates_import",
-        )
-        db.add(movement)
-        await db.flush()
-        balance.qty_on_hand = qty
-        balance.avg_cost = avg
-        balance.total_value = qty * avg
-        balance.last_movement_at = now
-        balance.last_movement_id = movement.id
-        stats["stock_initialized"] += 1
-        return True
 
     async def _upsert_shop_product(product: Product, parent_code: str,
                                    variant_code: Optional[str], obj: Dict[str, Any]) -> None:
@@ -543,8 +501,6 @@ async def import_upgates_products(
                 if created:
                     stats["created_variants"] += 1
                     created_any = True
-                if include_stock:
-                    await _init_stock(product, v.get("stock"), _main_price(v) or _main_price(p))
             if created_any:
                 stats["created_products"] += 1
             elif known_product:
@@ -560,14 +516,12 @@ async def import_upgates_products(
                 stats["created_products"] += 1
             else:
                 stats["updated_products"] += 1
-            if include_stock:
-                await _init_stock(product, p.get("stock"), _main_price(p))
 
     msg = (
         f"Nové: {stats['created_products']} produktov "
         f"({stats['created_variants']} variantov), "
         f"aktualizované: {stats['updated_products']}, "
-        f"sklad inicializovaný: {stats['stock_initialized']}"
+        "fyzický sklad nezmenený"
     )
     if stats["ean_conflicts"]:
         msg += (

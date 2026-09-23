@@ -1,5 +1,6 @@
 """Deterministic category and availability rules; never writes stock quantities."""
 from inventory_hub.services.catalog import CatalogError
+from inventory_hub.config_normalize import normalize_supplier_availability
 
 
 def _system_category_root(category):
@@ -53,21 +54,24 @@ def category_chain(rows, code):
     return list(reversed(chain))
 
 
-def availability_policy(supplier):
-    if supplier == 'paul-lange':
-        return {'orderable': 'do 5 dní', 'unknown': 'Overíme', 'hide_zero_stock': False, 'supplier_name': 'Paul Lange'}
-    if supplier == 'northfinder':
-        return {'orderable': 'do 5 dní', 'unknown': 'Overíme', 'hide_zero_stock': True, 'supplier_name': 'Northfinder'}
-    return {'unknown': 'Overíme'}
+def availability_policy(supplier, config=None):
+    """Only supplier configuration owns availability; AI import rules cannot override it."""
+    try:
+        labels = normalize_supplier_availability((config or {}).get('adapter_settings', {}).get('availability'))
+    except (ValueError, AttributeError) as error:
+        raise CatalogError('supplier_availability_invalid', 'Check supplier availability configuration', 422) from error
+    return {'orderable': labels['orderable'], 'unknown': labels['unknown'], 'hide_zero_stock': False,
+            'supplier_name': {'paul-lange': 'Paul Lange', 'northfinder': 'Northfinder'}.get(supplier, supplier)}
 
 
 def apply_availability(payload, products, policy):
     def apply(obj, product):
         positive = (product.supplier_stock is not None and product.supplier_stock > 0) or bool(product.supplier_stock_min and product.supplier_stock_min > 0)
         orderable = positive or product.supplier_external_available is True
-        obj['availability'] = policy.get('orderable', 'Overíme') if orderable else policy.get('unknown', 'Overíme')
-        if policy.get('hide_zero_stock') and product.supplier_stock == 0:
-            obj.update(active_yn=False, can_add_to_basket_yn=False, availability=policy.get('unknown', 'Overíme'))
+        obj['availability'] = policy['orderable'] if orderable else policy['unknown']
+        # Unknown/zero supplier stock is orderable; visibility remains governed
+        # by the separate import review/approval contract.
+        obj['can_add_to_basket_yn'] = True
     variants = payload.get('variants')
     if variants:
         by_code = {p.shop_code: p for p in products}
@@ -78,7 +82,8 @@ def apply_availability(payload, products, policy):
             payload['active_yn'] = False
             for d in payload.get('descriptions', []):
                 d['active_yn'] = False
-        payload['availability'] = policy.get('unknown', 'Overíme')
+        payload['availability'] = policy['unknown']
+        payload['can_add_to_basket_yn'] = True
     else:
         apply(payload, products[0])
         if not payload.get('active_yn'):

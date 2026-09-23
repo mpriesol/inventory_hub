@@ -78,6 +78,10 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> d
             assigned[(priority, key)] = value
             policy[key], origins[key] = value, rule.name
         for key, value in rule.import_policy.model_dump(exclude_none=True).items():
+            if key in ('orderable', 'unknown', 'hide_zero_stock'):
+                # Kept in the schema for old rule books; supplier config now
+                # owns these fields, so obsolete rules cannot conflict either.
+                continue
             if (priority, "import:" + key) in assigned and assigned[(priority, "import:" + key)] != value:
                 raise CatalogError("ai_policy_conflict", f"Conflicting import rules for {key}", 422)
             assigned[(priority, "import:" + key)] = value

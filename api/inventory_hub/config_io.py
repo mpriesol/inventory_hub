@@ -2,7 +2,9 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any
+from copy import deepcopy
 import json, os
+from inventory_hub.config_normalize import normalize_supplier_availability
 
 def _data_root() -> Path:
     env = os.environ.get("INVENTORY_DATA_ROOT")
@@ -49,7 +51,7 @@ def _norm_shop(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return cfg
 
 def _norm_supplier(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    cfg = dict(cfg or {})
+    cfg = deepcopy(cfg or {})
     feeds = cfg.setdefault("feeds", {})
     feeds.setdefault("current_key", "products")
     feeds.setdefault("sources", {
@@ -64,7 +66,8 @@ def _norm_supplier(cfg: Dict[str, Any]) -> Dict[str, Any]:
     web.setdefault("login", {"mode":"form","login_url":"","user_field":"login","pass_field":"password",
                              "username":"","password":"","cookie":"","basic_user":"","basic_pass":"",
                              "token":"","header_name":"","insecure_all":False})
-    cfg.setdefault("adapter_settings", {})
+    adapter = cfg.setdefault("adapter_settings", {})
+    adapter["availability"] = normalize_supplier_availability(adapter.get("availability"))
     mp = cfg.setdefault("adapter_settings", {}).setdefault("mapping", {}).setdefault("postprocess", {})
     if "product_code_prefix" in cfg.get("adapter_settings", {}):
         mp.setdefault("product_code_prefix", cfg["adapter_settings"]["product_code_prefix"] or "")
