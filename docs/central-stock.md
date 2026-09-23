@@ -9,6 +9,8 @@ Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačn
 - **Po výdaji** sa zmena rieši oficiálnou vratkou, reklamáciou alebo neprevzatím zásielky. Samotná zmena názvu stavu, zmazanie riadka ani storno nesmie spätne prepísať výdaj. Príjem vráteného tovaru nastane až pri potvrdenom fyzickom návrate, s odkazom na pôvodný výdaj.
 - **„overíme“ je objednateľné.** Neznáma dostupnosť nesľubuje termín; sama nesmie skryť produkt ani zakázať košík. Ručné vypnutie produktu a povinná kontrola nového importu naďalej platia.
 - **Dodacia lehota patrí dodávateľovi.** Každý dodávateľ má vlastnú konfiguráciu. Ak nemá vyplnený text pre dostupný tovar, použije sa `do 5 dní`; predvolený text pre neznámu dostupnosť je `overíme`. Dodávateľská zásoba nikdy nezvyšuje vlastný fyzický sklad.
+- **Kód predajnej položky je spoločná identita BIKETREK a xTrek.** Vlastník potvrdil spoločné kódy variantov. Jednoznačný presne zhodný kód môže prepojiť položku aj bez EAN; rozdielne platné EAN alebo rozpor s existujúcim mapovaním vyžadujú kontrolu.
+- **Pokladňový zberný produkt „xTrek“ v BIKETREK** môže obsahovať tisíce navzájom nesúvisiacich variantov, ktoré sú v xTrek e-shope pod rôznymi produktmi. Rodičovstvo je údaj konkrétneho e-shopu, nie podmienka spoločnej skladovej identity. Jeden tovar má jednu skladovú kartu a viac kanálových prepojení. Skladové spracovanie nesmie meniť jeho viditeľnosť v e-shope.
 
 Objednávkové pravidlá sú tu špecifikácia ďalšej etapy. Doterajšie balíky ešte nezapínajú rezervácie, výdaje objednávok, FIFO ani automatické odosielanie vlastných zásob do e-shopov.
 
@@ -57,17 +59,21 @@ Náhľad zachytí použitú politiku. Zmena konfigurácie vyžaduje nový náhľ
 
 Produktový pull najprv hľadá jednoznačné existujúce prepojenie pre konkrétny e-shop a jeho predajnú položku. Pri variante používa variantový kód; parent kód nesmie zastúpiť skladovanú veľkosť/farbu. Interné ID samostatného produktu a variantu majú oddelený význam. Existujúce dáta z pullu a katalógového importu majú odlišné historické vyplnenie `external_code`, preto resolver používa aj `is_variant`, `variant_code` a `parent_code`.
 
-Bez existujúceho prepojenia možno položku identifikovať jednoznačným platným EAN/UPC. Zhodný text SKU medzi dvoma e-shopmi sám nestačí na zlúčenie. Ak by sa mal vytvoriť nový produkt, ale jeho SKU už používa neprepojená položka, vznikne viditeľný konflikt. Rozpor medzi mapovaním a čiarovým kódom, viac kandidátov alebo opakovaný vzdialený kód/ID blokuje dotknutú skupinu. Nevytvára sa náhradný vymyslený identifikátor.
+Po potvrdení spoločných kódov vlastníkom sa bez existujúceho prepojenia použije jednoznačné presne zhodné kanonické SKU (`matched_by=shared_sku`), aj keď EAN chýba. Platný EAN/UPC zostáva doplnkovou kontrolou a cestou na rozpoznanie existujúcich aliasov s rozdielnym kódom. Rozpor medzi kódom, mapovaním a čiarovým kódom je konflikt; prednosť existujúceho mapovania nesmie taký rozpor skryť. Kódy líšiace sa len veľkosťou písmen alebo viac kandidátov sa automaticky nezlúčia. Nevytvára sa náhradný vymyslený identifikátor.
 
-Prepojenie aj uloženie rodiny prebieha ako jedna operácia; konflikt rodiny nesmie nechať polovicu variantov uloženú. Zápis prepojení zdieľa DB zámok s registráciou katalógového importu. Bežný pull naďalej nemení skladové bilancie ani pohyby.
+Identifikátory sa načítajú aj pre kandidátov nájdených výlučne podľa SKU, aby sa odhalil rozdielny nový EAN, ktorý ešte nemá iného vlastníka. Úspešný produktový pull môže doplniť chýbajúci overený EAN/UPC k prepojenej položke; existujúce identifikátory neodstraňuje ani nenahrádza. Náhľad a audit objednávok identifikátory iba čítajú.
 
-Prvý import nového produktu inicializuje jeho spoločné údaje. Ďalšie sťahovanie už existujúceho produktu obnovuje iba `ShopProduct` a `ShopProductContent` konkrétneho e-shopu. Názov, značka, skupina a variantné atribúty spoločného produktu sa neprepisujú obsahom druhého webu. Voľba `update_existing` v API zostáva kompatibilná, ale v UI je výslovne označená ako obnova údajov e-shopu.
+Prepojenie aj uloženie rodiny prebieha ako jedna operácia; konflikt rodiny nesmie nechať polovicu variantov uloženú. To platí aj pre celý pokladňový zberný produkt: chyba jednej jeho identity zatiaľ blokuje túto rodinu a zobrazí konflikt. Zápis prepojení zdieľa DB zámok s registráciou katalógového importu. Nové produkty a nadväzujúce záznamy sa ukladajú dávkovo. Bežný pull naďalej nemení skladové bilancie ani pohyby.
+
+Prvý import nového produktu inicializuje jeho spoločné údaje. Ďalšie sťahovanie už existujúceho produktu obnovuje `ShopProduct` a `ShopProductContent` konkrétneho e-shopu a môže doplniť chýbajúce overené identifikátory. Názov, značka, skupina a variantné atribúty spoločného produktu sa neprepisujú obsahom druhého webu. Voľba `update_existing` v API zostáva kompatibilná, ale v UI je výslovne označená ako obnova údajov e-shopu.
+
+Upgates pull už nevytvára ani neodvodzuje kanonické `ProductGroup`: nové skladové položky majú `group_id=None`, existujúce zaradenie sa nemení. Nadradený produkt každého kanála zostáva v `ShopProduct.parent_code`; rodina môže prepájať položky z rôznych kanonických skupín aj položky bez skupiny. Toto pravidlo funguje aj pri importe pokladňového produktu ako prvého. Skupiny vytvorené katalógovým importom alebo staršími importmi zostávajú zachované. Náhľad obrázka používa obsah rovnakého e-shopu ako príslušné prepojenie, takže rovnaký parent kód medzi e-shopmi nezamení zdrojový obsah.
 
 Náhľad považuje rodinu za už prepojenú až vtedy, keď sú pre tento e-shop prepojené všetky jej predajné položky. Čiastočne prepojené varianty sa dajú doplniť. Výsledok uvádza nové produkty, nové prepojenia, uložené snímky a samostatný zoznam konfliktov; nevydáva konflikt za úspešný import.
 
 Tento krok automaticky neprepisuje staré mapovania, nezlučuje už existujúce skladové produkty a nezavádza ručný editor konfliktov. Katalógový import si zachováva vlastný overený create-only pracovný tok; jeho staršie interné párovanie nie je touto zmenou celé nahradené.
 
-Starší prenos produktov medzi e-shopmi odmietne rodinu, ktorej kódy sa nezhodujú s kanonickými SKU (`identity_alias_push_blocked`). Kontrola existujúceho cieľa zohľadňuje parent kód aj prepojené produkty. Pri podporovanej rodine berie množstvo všetkých variantov z lokálnych bilancií a odstráni skladové údaje zdrojového e-shopu. Táto ochrana neaktivuje automatickú synchronizáciu zásob.
+Starší prenos produktov medzi e-shopmi odmietne rodinu, ktorej kódy sa nezhodujú s kanonickými SKU (`identity_alias_push_blocked`). Vyžaduje tiež výslovný výber všetkých položiek prenášanej rodiny (`selection_expands_family`); výber jedného variantu nesmie odoslať celý pokladňový zberný produkt. Kontrola existujúceho cieľa zohľadňuje parent kód aj prepojené produkty. Pri podporovanej rodine berie množstvo všetkých variantov z lokálnych bilancií a odstráni skladové údaje zdrojového e-shopu. Táto ochrana neaktivuje automatickú synchronizáciu zásob ani nemení viditeľnosť existujúcich produktov v e-shope.
 
 ### Chránená kontrola objednávok
 
@@ -86,5 +92,7 @@ Prístup vyžaduje rovnaký existujúci operátorský token ako AI obsah (`AI_CO
 ## Nasadenie a ďalší postup
 
 Balík neobsahuje databázovú migráciu ani opravu historických dát. Nové config polia sú spätne kompatibilné a majú predvolené hodnoty. Nasadenie prebieha existujúcim workflow po merge PR. Pri návrate na staršiu verziu kódu zostávajú dáta zachované, ale vrátia sa pôvodné riziká príjmu a inicializácie skladu; dovtedy tieto operácie nepoužívať.
+
+Úprava pre spoločné SKU a pokladňový produkt tiež nevyžaduje migráciu alebo nový konfiguračný parameter. Po nasadení treba v Hube znovu načítať náhľad a spustiť vybrané produktové prepojenia; nasadenie samo nespúšťa import ani externý zápis. Návrat na predchádzajúcu verziu obnoví obmedzenie skupín a staré pravidlo párovania bez SKU; existujúce dáta ostanú zachované, ale produktový pull a legacy push treba do nápravy pozastaviť.
 
 Ďalej treba dokončiť jednotnú identitu a kontrolovaný otvárací stav, ochranu prístupu, objednávkový inbox a spracovanie uzamknutého výdaja, rezervácie, FIFO, vratky, frontu synchronizácie a pracovný editor. Autoritu nad skladom Hub prevezme až po overení celého toku vrátane pokladne a výpadkov.

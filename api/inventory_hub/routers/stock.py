@@ -25,12 +25,12 @@ async def _image_urls_by_product(db: AsyncSession) -> Dict[int, str]:
     """
     product_id -> main image URL, resolved in TWO set-based queries
     (no per-row JSON parsing in Python):
-    1. main image per external_code straight from the JSONB vault,
-    2. product_id -> external/parent code mapping from shop_products.
+    1. main image per shop and external_code straight from the JSONB vault,
+    2. product_id -> shop and external/parent code mapping from shop_products.
     """
     from sqlalchemy import text
     img_rows = await db.execute(text("""
-        SELECT external_code,
+        SELECT shop_id, external_code,
                COALESCE(
                  (SELECT img->>'url'
                     FROM jsonb_array_elements(data->'images') img
@@ -40,13 +40,13 @@ async def _image_urls_by_product(db: AsyncSession) -> Dict[int, str]:
                ) AS url
           FROM shop_product_content
     """))
-    url_by_code = {r.external_code: r.url for r in img_rows if r.url}
+    url_by_code = {(r.shop_id, r.external_code): r.url for r in img_rows if r.url}
 
     from inventory_hub.db_models_ext import ShopProduct as _SP
-    sp_rows = await db.execute(select(_SP.product_id, _SP.external_code, _SP.parent_code))
+    sp_rows = await db.execute(select(_SP.product_id, _SP.shop_id, _SP.external_code, _SP.parent_code))
     out: Dict[int, str] = {}
-    for pid, ext, parent in sp_rows.all():
-        code = parent or ext
+    for pid, shop_id, ext, parent in sp_rows.all():
+        code = (shop_id, parent or ext)
         if pid not in out and code in url_by_code:
             out[pid] = url_by_code[code]
     return out
@@ -188,14 +188,15 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
         .where(ShopProduct.product_id == product.id)
     )).all()
 
-    # Image: find vault content by parent external code (any shop)
+    # Each mapping must read its own shop's parent payload.
     image_url = None
     for sp, _shop_code in shop_rows:
         parent = sp.parent_code or sp.external_code
         if not parent:
             continue
         content = (await db.execute(
-            select(ShopProductContent).where(ShopProductContent.external_code == parent).limit(1)
+            select(ShopProductContent).where(ShopProductContent.shop_id == sp.shop_id,
+                                            ShopProductContent.external_code == parent).limit(1)
         )).scalar_one_or_none()
         if content and isinstance(content.data, dict):
             image_url = _image_from_content(content.data, sp.variant_code)
@@ -231,6 +232,7 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
         },
         "shops": [
             {"shop": shop_code, "external_code": sp.external_code, "variant_code": sp.variant_code,
+             "parent_code": sp.parent_code,
              "shop_availability": sp.shop_availability,
              "shop_stock": float(sp.shop_stock) if sp.shop_stock is not None else None,
              "last_pull_at": sp.last_pull_at.isoformat() if sp.last_pull_at else None}

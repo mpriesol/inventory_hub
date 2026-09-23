@@ -1,10 +1,11 @@
-"""Shared identity resolver: explicit shop aliases, validated identifiers, no SKU guesses."""
+"""Shared identity resolver: explicit mappings, exact shared SKUs, validated barcodes."""
 import unittest
 from types import SimpleNamespace
 
-from inventory_hub.db_models import IdentifierType
+from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier
+from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.routers.upgates_sync import _pull_families, _mark_resolved_duplicates
-from inventory_hub.services.product_identity import IdentityIndex, RemoteIdentity, verified_barcodes
+from inventory_hub.services.product_identity import IdentityIndex, RemoteIdentity, load_identity_index, verified_barcodes
 
 
 EAN_A = "5901234123457"
@@ -27,11 +28,60 @@ def mapping(id, product_id, code, *, shop_id=1, variant=False, external_id=None,
 
 
 class IdentityResolverTests(unittest.TestCase):
-    def test_same_sku_without_trusted_identity_is_a_visible_conflict(self):
-        index = IdentityIndex(1, [product(1, "COMMON")])
-        result = index.resolve(RemoteIdentity(1, "COMMON", barcodes=("00012345",)))
+    def test_exact_shared_sku_identifies_product_without_requiring_ean(self):
+        for barcodes in ((), ("00012345",), ("0000000000000",)):
+            with self.subTest(barcodes=barcodes):
+                index = IdentityIndex(2, [product(1, "COMMON")], identifiers=[identifier(1, EAN_A)])
+                result = index.resolve(RemoteIdentity(2, "COMMON", barcodes=barcodes))
+                self.assertEqual((result.status, result.product_id, result.matched_by), ("identified", 1, "shared_sku"))
+                self.assertEqual(result.reasons, [])
+
+    def test_exact_shared_sku_agrees_with_ean_or_allows_first_unowned_ean(self):
+        for identifiers in ([], [identifier(1, EAN_A)]):
+            with self.subTest(stored=bool(identifiers)):
+                index = IdentityIndex(2, [product(1, "COMMON")], identifiers=identifiers)
+                result = index.resolve(RemoteIdentity(2, "COMMON", barcodes=(EAN_A,)))
+                self.assertEqual((result.status, result.product_id, result.matched_by), ("identified", 1, "shared_sku"))
+
+    def test_shared_sku_and_ean_with_different_owners_conflict(self):
+        index = IdentityIndex(2, [product(1, "COMMON"), product(2, "OTHER")],
+                              identifiers=[identifier(1, EAN_A), identifier(2, EAN_B)])
+        result = index.resolve(RemoteIdentity(2, "COMMON", barcodes=(EAN_B,)))
         self.assertEqual((result.status, result.reasons, result.candidate_product_ids),
-                         ("conflict", ["unmapped_sku_collision"], [1]))
+                         ("conflict", ["identifier_conflict"], [1, 2]))
+
+    def test_shared_sku_conflicts_with_disjoint_known_ean_even_if_incoming_unowned(self):
+        index = IdentityIndex(2, [product(1, "COMMON")], identifiers=[identifier(1, EAN_A)])
+        result = index.resolve(RemoteIdentity(2, "COMMON", barcodes=(EAN_B,)))
+        self.assertEqual((result.status, result.reasons, result.candidate_product_ids),
+                         ("conflict", ["identifier_conflict"], [1]))
+
+    def test_duplicate_exact_or_casefold_skus_never_choose_an_arbitrary_owner(self):
+        for second in ("COMMON", "common"):
+            with self.subTest(second=second):
+                index = IdentityIndex(2, [product(1, "COMMON"), product(2, second)], identifiers=[identifier(1, EAN_A)])
+                result = index.resolve(RemoteIdentity(2, "COMMON", barcodes=(EAN_A,)))
+                self.assertEqual((result.status, result.reasons, result.candidate_product_ids),
+                                 ("conflict", ["unmapped_sku_collision"], [1, 2]))
+
+    def test_shared_sku_cannot_replace_a_different_existing_same_shop_alias(self):
+        index = IdentityIndex(2, [product(1, "COMMON")], [mapping(7, 1, "OLD-ALIAS", shop_id=2)])
+        result = index.resolve(RemoteIdentity(2, "COMMON"))
+        self.assertEqual(result.reasons, ["local_mapping_conflict"])
+
+    def test_mapping_and_shared_sku_pointing_at_different_products_conflict(self):
+        index = IdentityIndex(2, [product(1, "CANONICAL"), product(2, "COMMON")],
+                              [mapping(7, 1, "COMMON", shop_id=2)], [identifier(1, EAN_A)])
+        result = index.resolve(RemoteIdentity(2, "COMMON", barcodes=(EAN_A,)))
+        self.assertEqual((result.status, result.reasons, result.candidate_product_ids),
+                         ("conflict", ["mapping_identifier_conflict"], [1, 2]))
+
+    def test_matching_mapping_remains_authoritative_and_is_not_replaced(self):
+        stored_mapping = mapping(7, 1, "COMMON", shop_id=2, variant=True, external_id="15")
+        index = IdentityIndex(2, [product(1, "COMMON")], [stored_mapping])
+        result = index.resolve(RemoteIdentity(2, "COMMON", True, "15"))
+        self.assertEqual((result.status, result.product_id, result.matched_by), ("mapped", 1, "shop_mapping"))
+        self.assertEqual((stored_mapping.product_id, stored_mapping.variant_code, stored_mapping.external_id), (1, "COMMON", "15"))
 
     def test_valid_ean_links_different_shop_code_without_changing_local_sku(self):
         index = IdentityIndex(2, [product(1, "CANONICAL")], identifiers=[identifier(1, EAN_A)])
@@ -133,3 +183,63 @@ class RemotePreflightTests(unittest.TestCase):
         index = IdentityIndex(1, [product(1, "LOCAL")], identifiers=[identifier(1, EAN_A), identifier(1, EAN_B)])
         _mark_resolved_duplicates(families, index)
         self.assertTrue(all("local_mapping_conflict" in family["reasons"] for family in families))
+
+
+class ReadOnlyIdentityDatabase:
+    """Execute the loader's SELECT filters against in-memory relational fixtures."""
+    def __init__(self, *, products=(), mappings=(), identifiers=()):
+        self.products, self.mappings, self.identifiers = list(products), list(mappings), list(identifiers)
+        self.queries = []
+
+    async def execute(self, statement):
+        self.queries.append(statement)
+        entity = statement.column_descriptions[0]["entity"]
+        params = statement.compile().params
+        if entity is ShopProduct:
+            rows = [row for row in self.mappings if row.shop_id == params["shop_id_1"]]
+        elif entity is Product:
+            if "lower_1" in params:
+                rows = [row for row in self.products if row.sku.lower() in params["lower_1"]]
+            else:
+                rows = [row for row in self.products if row.id in params["id_1"]]
+        elif entity is ProductIdentifier:
+            rows = [row for row in self.identifiers if row.identifier_type in params["identifier_type_1"]]
+            if "value_1" in params:
+                rows = [row for row in rows if row.value in params["value_1"]]
+            else:
+                rows = [row for row in rows if row.product_id in params["product_id_1"]]
+        else:
+            raise AssertionError(f"Unexpected database write or entity: {entity}")
+        return SimpleNamespace(scalars=lambda: rows)
+
+
+class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sku_only_candidate_loads_stored_barcodes_before_resolving_unowned_ean(self):
+        db = ReadOnlyIdentityDatabase(products=[product(1, "COMMON")], identifiers=[identifier(1, EAN_A)])
+        incoming = RemoteIdentity(2, "COMMON", barcodes=(EAN_B,))
+        index = await load_identity_index(db, 2, [incoming])
+        self.assertEqual(index.product_barcodes[1], {EAN_A})
+        self.assertEqual(index.resolve(incoming).reasons, ["identifier_conflict"])
+        self.assertTrue(all(str(query).startswith("SELECT ") for query in db.queries))
+
+    async def test_loader_keeps_mapping_sku_and_barcode_candidates_for_conflict_evidence(self):
+        db = ReadOnlyIdentityDatabase(products=[product(1, "CANONICAL"), product(2, "COMMON"), product(3, "EAN-OWNER")],
+            mappings=[mapping(7, 1, "COMMON", shop_id=2)], identifiers=[identifier(3, EAN_A)])
+        incoming = RemoteIdentity(2, "COMMON", barcodes=(EAN_A,))
+        index = await load_identity_index(db, 2, [incoming])
+        self.assertEqual(index.resolve(incoming).candidate_product_ids, [1, 2, 3])
+        self.assertEqual(index.resolve(incoming).status, "conflict")
+
+    async def test_thousand_shared_skus_use_bounded_read_batches_not_per_line_queries(self):
+        products = [product(i, f"SHARED-{i:04d}") for i in range(1, 1002)]
+        db = ReadOnlyIdentityDatabase(products=products, identifiers=[identifier(1, EAN_A)])
+        incoming = [RemoteIdentity(2, row.sku, True) for row in products]
+        index = await load_identity_index(db, 2, incoming)
+        self.assertTrue(all(index.resolve(row).matched_by == "shared_sku" for row in incoming))
+        self.assertLessEqual(len(db.queries), 8)
+        for query in db.queries:
+            self.assertTrue(str(query).startswith("SELECT "))
+            for value in query.compile().params.values():
+                if isinstance(value, (list, tuple)):
+                    self.assertLessEqual(len(value), 500)
+        self.assertEqual(index.product_barcodes[1], {EAN_A})

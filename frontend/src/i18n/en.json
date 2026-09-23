@@ -823,7 +823,7 @@
     "supplierAvailabilityConfigHelp": "Availability labels come from supplier configuration under Suppliers. AI rules do not override them; items marked “overíme” remain orderable."
   },
   "upgatesImport": {
-    "productOnlyNote": "Downloads product data. Physical stock and acquisition costs stay unchanged.",
+    "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",
     "title": "Download from Upgates ({{shop}})",
     "summary": "In Upgates: {{total}} · linked to this shop: {{known}} · to process: {{pending}}",
     "conflictCount": "Conflicting families: {{count}}",
@@ -834,7 +834,7 @@
     "unknownConflict": "Unclear identity: {{reason}}",
     "identity": "Identity",
     "refreshSnapshots": "Refresh existing product data from this shop",
-    "refreshSnapshotsHelp": "Refreshes the saved copy of shop data. Shared product data, purchase costs and physical stock remain unchanged.",
+    "refreshSnapshotsHelp": "Refreshes this shop’s data and may add missing verified barcodes. Name, brand, canonical group, purchase costs and physical stock stay unchanged.",
     "refreshSnapshotsAction": "Refresh saved shop data",
     "noPending": "All products with codes are linked to this shop.",
     "onlyConflicts": "No items without conflicts remain to process.",
@@ -844,7 +844,7 @@
       "remote_id_duplicate": "The shop product ID occurs more than once.",
       "remote_barcode_duplicate": "The same barcode belongs to multiple shop items.",
       "remote_identity_invalid": "Shop product identity data is invalid.",
-      "unmapped_sku_collision": "The code is already used by a Hub product without a verified link.",
+      "unmapped_sku_collision": "The code has multiple candidates or differs only in letter case.",
       "ambiguous_shop_mapping": "The shop item has multiple possible links.",
       "identifier_conflict": "Identifiers point to different Hub products.",
       "mapping_identifier_conflict": "The identifier does not match the existing link.",
@@ -920,7 +920,7 @@
       "remote_id_duplicate": "The shop product ID occurs more than once.",
       "remote_barcode_duplicate": "The same barcode belongs to multiple shop items.",
       "remote_identity_invalid": "Shop product identity data is invalid.",
-      "unmapped_sku_collision": "The code is already used by a Hub product without a verified link.",
+      "unmapped_sku_collision": "The code has multiple candidates or differs only in letter case.",
       "ambiguous_shop_mapping": "The shop item has multiple possible links.",
       "identifier_conflict": "Identifiers point to different Hub products.",
       "mapping_identifier_conflict": "The identifier does not match the existing link.",
@@ -956,6 +956,12 @@
       "order_audit_rate_limited": "The shop has limited requests. Try loading later.",
       "order_audit_upgates_unavailable": "The shop is unavailable. Try loading again.",
       "order_audit_shop_not_found": "The selected shop is unavailable for order review."
+    }
+  },
+  "upgatesPush": {
+    "reasons": {
+      "selection_expands_family": "The transfer would include unselected variants. A whole family, including a cash register collection, cannot be sent by selecting one item.",
+      "identity_alias_push_blocked": "This family uses different shop and Hub codes. Review its mappings before transfer."
     }
   }
 }

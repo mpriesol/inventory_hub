@@ -47,7 +47,7 @@ export interface ProductDetail {
   attributes: { name: string; value: string }[];
   identifiers: { type: string; value: string; is_primary: boolean }[];
   stock: { on_hand: number; reserved: number; available: number; avg_cost: number | null };
-  shops: { shop: string; external_code: string; variant_code: string | null; shop_availability: string | null; shop_stock: number | null; last_pull_at: string | null }[];
+  shops: { shop: string; external_code: string; parent_code?: string | null; variant_code: string | null; shop_availability: string | null; shop_stock: number | null; last_pull_at: string | null }[];
 }
 
 export async function getProductDetail(sku: string): Promise<ProductDetail> {

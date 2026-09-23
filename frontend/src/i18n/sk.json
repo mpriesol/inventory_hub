@@ -824,7 +824,7 @@
     "supplierAvailabilityConfigHelp": "Texty dostupnosti sa berú z konfigurácie dodávateľa v časti Dodávatelia. AI pravidlá ich nemenia; tovar „overíme“ zostáva objednateľný."
   },
   "upgatesImport": {
-    "productOnlyNote": "Stiahnu sa produktové údaje. Fyzický sklad a nákupné ceny sa tým nemenia.",
+    "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",
     "title": "Stiahnuť z Upgates ({{shop}})",
     "summary": "V Upgates: {{total}} · prepojené s týmto e-shopom: {{known}} · na spracovanie: {{pending}}",
     "conflictCount": "Konfliktné skupiny: {{count}}",
@@ -835,7 +835,7 @@
     "unknownConflict": "Nejednoznačná identita: {{reason}}",
     "identity": "Identita",
     "refreshSnapshots": "Obnoviť údaje existujúcich produktov z tohto e-shopu",
-    "refreshSnapshotsHelp": "Obnoví sa uložená kópia údajov e-shopu. Spoločné produktové údaje, nákupné ceny a fyzický sklad sa nemenia.",
+    "refreshSnapshotsHelp": "Obnovia sa údaje tohto e-shopu a môžu sa doplniť chýbajúce overené EAN. Názov, značka, spoločná skupina, nákupné ceny a fyzický sklad sa nemenia.",
     "refreshSnapshotsAction": "Obnoviť uložené údaje e-shopu",
     "noPending": "Všetky produkty s kódom sú prepojené s týmto e-shopom.",
     "onlyConflicts": "Na spracovanie nezostali žiadne položky bez konfliktu.",
@@ -845,7 +845,7 @@
       "remote_id_duplicate": "Identifikátor produktu e-shopu sa opakuje.",
       "remote_barcode_duplicate": "Rovnaký čiarový kód patrí viacerým položkám e-shopu.",
       "remote_identity_invalid": "Identifikačné údaje produktu e-shopu nie sú platné.",
-      "unmapped_sku_collision": "Kód už používa produkt v Hube bez overeného prepojenia.",
+      "unmapped_sku_collision": "Kód má viac kandidátov alebo sa líši iba veľkosťou písmen.",
       "ambiguous_shop_mapping": "Položka e-shopu má viac možných prepojení.",
       "identifier_conflict": "Identifikátory ukazujú na rôzne produkty v Hube.",
       "mapping_identifier_conflict": "Identifikátor nezodpovedá existujúcemu prepojeniu.",
@@ -921,7 +921,7 @@
       "remote_id_duplicate": "Identifikátor produktu e-shopu sa opakuje.",
       "remote_barcode_duplicate": "Rovnaký čiarový kód patrí viacerým položkám e-shopu.",
       "remote_identity_invalid": "Identifikačné údaje produktu e-shopu nie sú platné.",
-      "unmapped_sku_collision": "Kód už používa produkt v Hube bez overeného prepojenia.",
+      "unmapped_sku_collision": "Kód má viac kandidátov alebo sa líši iba veľkosťou písmen.",
       "ambiguous_shop_mapping": "Položka e-shopu má viac možných prepojení.",
       "identifier_conflict": "Identifikátory ukazujú na rôzne produkty v Hube.",
       "mapping_identifier_conflict": "Identifikátor nezodpovedá existujúcemu prepojeniu.",
@@ -957,6 +957,12 @@
       "order_audit_rate_limited": "E-shop obmedzil počet požiadaviek. Skús načítanie neskôr.",
       "order_audit_upgates_unavailable": "E-shop momentálne nie je dostupný. Skús načítanie znova.",
       "order_audit_shop_not_found": "Zvolený e-shop nie je dostupný pre kontrolu objednávok."
+    }
+  },
+  "upgatesPush": {
+    "reasons": {
+      "selection_expands_family": "Prenos by zahŕňal aj nevybrané varianty. Celú skupinu vrátane pokladňového produktu nemožno odoslať výberom jednej položky.",
+      "identity_alias_push_blocked": "Táto skupina používa rozdielne kódy e-shopu a Hubu. Jej prenos vyžaduje kontrolu prepojení."
     }
   }
 }

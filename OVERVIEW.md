@@ -2,7 +2,7 @@
 
 Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Kompletný centrálny sklad vrátane predaja zo všetkých kanálov, rezervácií, FIFO a tabuľkovej editácie je ďalším cieľom, nie dokončenou funkciou celého systému.
 
-**Posledné porovnanie s kódom:** 23. 9. 2026, druhý implementačný balík centrálneho skladu nad základom `73bdb17b9c368966faa528bc0d5c4ef9b004be55`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
+**Posledné porovnanie s kódom:** 23. 9. 2026, podpora spoločných SKU a pokladňového produktu nad základom `c66e67eb6aed3f0b49573389281a08d67fdc4ba1`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
 
 ## Kde začať
 
@@ -130,8 +130,8 @@ Označenie „synchronizácia“ nie je zárukou rovnakého správania všetkýc
 | Cesta | Čo robí | Hranice |
 | --- | --- | --- |
 | Legacy CSV | Príprava súborov, načítanie exportu e-shopu a rozdelenie importných výstupov. | Nie je priebežnou API synchronizáciou celého skladu. |
-| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; fyzický sklad ani obstarávacie ceny nemení. | `include_stock=true` je odmietnuté; párovanie používa kanálové prepojenie a overené čiarové kódy. Obnova existujúceho produktu mení iba snímku e-shopu. Konflikty sa zobrazia; kontrolovaný otvárací stav zostáva ďalším krokom. |
-| Hub → e-shop cez `push_products_to_shop` | Prenos vybraných produktov zo zachyteného obsahu. | Aktuálne preskakuje parenty už namapované v cieli; nejde o všeobecnú aktualizáciu existujúcich produktov alebo automatickú stock sync službu. |
+| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; fyzický sklad ani obstarávacie ceny nemení. | `include_stock=true` je odmietnuté; párovanie používa kanálové prepojenie, spoločné SKU a overené čiarové kódy. Rozdielni parenti vrátane pokladňového „xTrek“ sú podporovaní. Obnova zachováva spoločné produktové údaje a môže doplniť chýbajúce overené EAN. Konflikty sa zobrazia; kontrolovaný otvárací stav zostáva ďalším krokom. |
+| Hub → e-shop cez `push_products_to_shop` | Prenos vybraných produktov zo zachyteného obsahu. | Vyžaduje výber všetkých prenášaných variantov a preskakuje už namapované položky v cieli; nejde o všeobecnú aktualizáciu existujúcich produktov alebo automatickú stock sync službu. |
 | Dodávateľský katalóg → e-shop | Výber, náhľad a založenie nových produktov cez API, skrytých a označených `validation_required=1`. | Neaktualizuje existujúce produkty a neposiela vlastné skladové množstvá. |
 | AI aktualizácia existujúceho produktu | Porovnanie pred/po a aktualizácia povolených polí s kontrolou identity a výsledku. | Všeobecná aktualizácia obsahu neposiela ceny, vlastné množstvo, aktivitu, identifikátory ani nové varianty. |
 
