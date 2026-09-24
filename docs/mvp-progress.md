@@ -57,3 +57,11 @@ Naďalej platí automatické schvaľovanie/merge PR a následné nasadenie až d
 Dodatočné kontroly: spoločný trvalý zámok AI a ručného produktového odosielania, výslovné uzavretie neistého AI pokusu, Unicode kolízie SKU a audit prvého fyzického počtu 0 pre dodávateľské produkty. Lokálne prešli build a všetkých 16 UI sád. Databázové scenáre sa overujú v PR CI s PostgreSQL; presný posledný výsledok a nasadenie sú v PR.
 
 Prvý CI beh `36004823470`: frontend prešiel; backend odhalil tri regresie importu parametrov a tri chyby pokračovania synchronizácie po rollbacku položky. Oprava obnovila odmietnutie neplatnej rodiny, obmedzila dopĺňanie kanonických parametrov na presnú zhodu SKU a uchováva identifikátor behu mimo expirovaného ORM objektu. Pôvodné regresné očakávania zostali zachované. Tento výsledok nie je schválením nasadenia; rozhoduje opakované CI opraveného commitu.
+
+## Nákupné ceny produktov a objednávok (24. 9. 2026)
+
+PR #35 bol následne nasadený ako `d8b44e2`; CI `36006570205` prešlo 731 backendových testov vrátane PostgreSQL, build a 16 UI sád. Deployment `36007429688` potvrdil migrácie 014–017 a zdravú databázu.
+
+Vlastník potom výslovne požiadal implementovať odosielanie FIFO nákupných cien. Vetva `codex/fifo-purchase-cost-sync` dopĺňa produktovú cenu najbližšieho kusa po príjme/výdaji a vážený priemer nákladov konkrétnych vydaných kusov v objednávke. Samostatný náhľad umožňuje opravu staršej objednávky z jej pôvodných FIFO alokácií bez nového výdaja. Migrácia 018 je aditívna a predvolene nič neaktivuje. [Používateľský a vývojársky postup](fifo-purchase-costs.md).
+
+Nasadenie a posledné výsledky tejto etapy treba overiť v jej PR/Actions; tento záznam vzniká pri implementácii a sám ich nepotvrdzuje. Oprava dodávateľského párovania diagnostikovaná po PR #35 zostáva samostatná téma; tento balík ju neoznačuje za vyriešenú.

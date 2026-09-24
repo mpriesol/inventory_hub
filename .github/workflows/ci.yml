@@ -108,3 +108,6 @@ jobs:
 
       - name: Physical stock correction interactions
         run: node frontend/tests/stock-adjustments-ui.cjs
+
+      - name: FIFO purchase cost publication interactions
+        run: node frontend/tests/fifo-cost-sync-ui.cjs

@@ -1,5 +1,6 @@
 """AI/manual publication claims share a durable target fence in isolated PostgreSQL."""
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 from uuid import uuid4
@@ -13,6 +14,7 @@ from inventory_hub.product_editor_models import ProductEditorPublication
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.merchandising_write_guard import require_target_available, require_availability_authority_available
 from inventory_hub.stock_sync_models import StockSyncItem, StockSyncRun, StockSyncSettings
+from inventory_hub.fifo_cost_models import FifoCostPublication
 
 
 @unittest.skipUnless(fixture.TEST_URL, "Dedicated localhost *_catalog_test database required")
@@ -24,7 +26,7 @@ class MerchandisingWriteGuardDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await fixture.CatalogDatabaseTests.asyncSetUp(self)
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
-            for filename in ("005_ai_content.sql", "015_stock_sync.sql", "016_product_publication.sql"):
+            for filename in ("005_ai_content.sql", "015_stock_sync.sql", "016_product_publication.sql", "018_fifo_cost_sync.sql"):
                 await raw.driver_connection.execute((Path(__file__).resolve().parents[2] / "infra/db-init" / filename).read_text())
         async with self.sessions() as db:
             self.shop_id = await db.scalar(select(Shop.id).where(Shop.code == "biketrek"))
@@ -77,6 +79,35 @@ class MerchandisingWriteGuardDatabaseTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(CatalogError):
                 await self.check(publication_id=str(uuid4()))
             await self.check(ai_job_id=row.id)
+
+    async def test_fifo_purchase_cost_intent_blocks_ai_and_manual_sibling_updates(self):
+        cost = FifoCostPublication(id=str(uuid4()), shop_id=self.shop_id, warehouse_id=self.warehouse_id,
+            kind="product", target_key=f"product:{self.product_id}", subject="GUARD-PART", status="sending",
+            settings_revision=1, target_fingerprint="a" * 64, source_hash="b" * 64, source={},
+            attempt_started_at=datetime.now(timezone.utc),
+            document={"identity": {"parent_code": "POS-xTrek", "variant_code": "GUARD-PART"}})
+        await self.insert(cost)
+        for state in ("sending", "uncertain"):
+            async with self.sessions() as db:
+                current = await db.get(FifoCostPublication, cost.id); current.status = state; await db.commit()
+            for exclusions in ({"ai_job_id": "another-job"}, {"publication_id": str(uuid4())}):
+                with self.assertRaises(CatalogError) as error:
+                    await self.check(parent="pos-xtrek", **exclusions)
+                self.assertEqual(error.exception.code, "merchandising_target_inflight")
+            await self.check(parent="OTHER-PARENT")
+            await self.check(shop="xtrek")
+            await self.check(fifo_publication_id=cost.id)
+        async with self.sessions() as db:
+            current = await db.get(FifoCostPublication, cost.id); current.status = "verified"; await db.commit()
+        await self.check()
+
+    async def test_fifo_purchase_cost_claim_respects_existing_ai_and_manual_fences(self):
+        for row in (self.publication(), self.ai_job()):
+            await self.insert(row)
+            with self.assertRaises(CatalogError):
+                await self.check(fifo_publication_id=str(uuid4()))
+            async with self.sessions() as db:
+                await db.delete(await db.get(type(row), row.id)); await db.commit()
 
     async def test_ready_and_terminal_rows_do_not_claim_a_target(self):
         publication = self.publication("ready"); job = self.ai_job("ready")

@@ -15,6 +15,7 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 | [Objednávky — návod pre obsluhu](docs/order-workflows.md) | Prvé spustenie, nastavenia, ručná kontrola a riešenie výnimiek. |
 | [Automatika — vývojársky kontrakt](docs/order-automation.md) | Konfigurácia, fronta, transakcie, API a obnova. |
 | [AI obsah](docs/ai-content.md) | Príprava a kontrola obsahu, existujúce produkty, pravidlá, fronta a konfigurácia. |
+| [Nákupné ceny v e-shopoch](docs/fifo-purchase-costs.md) | Prenos ďalšej FIFO ceny produktu, nákladov vydaných objednávok a konkrétnej historickej opravy. |
 | [PR kontroly](.github/workflows/ci.yml) | Automatické testy a izolovaná testovacia databáza. |
 | [Build a deployment](.github/workflows/build.yml) | Skutočný automatický postup nasadenia po zmene `main`. |
 
@@ -55,6 +56,7 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Dostupnosti a prenos `/settings/availability` | Oddelené dodávateľské a e-shopové plánovanie | Intervaly a ručné spustenie, platnosť dodávateľských údajov, predvoľby skladu a výnimky e-shopu, výsledky a obnova. Nové plánovanie je vypnuté. [Návod](docs/availability-sync.md), [dodávateľský kontrakt](docs/supplier-availability.md), [pravidelný prenos](docs/stock-sync.md). |
 | Inventúry a nové vratky | Širšia agenda zostáva plánovaná | Jednotlivá zdokumentovaná korekcia množstva a existujúce fyzické vratky/nákupné vrstvy sú dostupné; neznamenajú kompletnú inventúrnu agendu. |
 | Produkty `/products` | Kompatibilné presmerovanie do Skladu | Jediný editor je na `/stock`, bez duplicitnej položky navigácie. [Postup](docs/product-editor.md). |
+| Nákupné ceny `/settings/purchase-costs` | Samostatný zapínateľný prenos FIFO cien | Nastavenia skladu/e-shopu, ručné a pravidelné spustenie, výsledky a neisté zápisy. Produkt používa ďalšiu FIFO vrstvu; objednávka vážený náklad svojich vydaných kusov. Staršie doložené objednávky cez konkrétny náhľad. [Postup](docs/fifo-purchase-costs.md). |
 | Nákupné ceny v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
 | Roly obsluhy | Plánované | Operátorský token nie je všeobecný systém rolí. Publikovanie vybraných podporovaných produktových polí už má vlastný náhľad, zápis a overenie; chýbajúci produkt sa zakladá cez katalógový import. |
 

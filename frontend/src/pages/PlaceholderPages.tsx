@@ -105,6 +105,9 @@ export function SettingsPage() {
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/availability">
         <strong>{t('availabilitySync.title')}</strong><p>{t('availabilitySync.subtitle')}</p>
       </Link>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/purchase-costs">
+        <strong>{t('fifoCostSync.title')}</strong><p>{t('fifoCostSync.subtitle')}</p>
+      </Link>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/stock">
         <strong>{t('stockSettings.title')}</strong><p>{t('stockSettings.subtitle')}</p>
       </Link>

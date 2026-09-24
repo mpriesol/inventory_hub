@@ -64,6 +64,8 @@ Všetky fyzické zmeny, prechody a opravy cien rešpektujú trvalú blokáciu sk
 
 ## Technical contract
 
+Samostatný [prenos nákupných cien](fifo-purchase-costs.md) číta FIFO údaje a po aktivácii aktualizuje cenu ďalšieho kusa v e-shope a vážený náklad vydaných objednávok. Vie pripraviť aj opravu staršej objednávky z jej pôvodných alokácií. Nemení skladový denník ani pôvodný výdaj; jadro FIFO zostáva bez vzdialených volaní.
+
 The application runs migration `011_fifo.sql` before starting code that uses FIFO or quarantine. The migration adds FIFO state, layers, immutable issue-cost snapshots, documented cutover/receipt drafts, and return/release/cost-revision audits. It makes balance valuation and movement post-valuation nullable; old stored values and immutable movement rows are preserved.
 
 A `fifo_states` row selects FIFO for exactly one product and warehouse. Without it, existing weighted-average accounting remains explicitly legacy. Receipt layers sort by `physical_received_at, id`. `root_cost_layer_id` links returns and transfers to their price origin. `FifoState.revision` fences planned operations against physical or cost changes. Reservations never consume layers.
