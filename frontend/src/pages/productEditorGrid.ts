@@ -106,7 +106,7 @@ export function editorValueText(value: EditorValue | undefined): string {
 }
 export function normalizeEditorValue(column: EditorColumn, raw: string): { value: EditorValue; error?: string } {
   const text = raw.trim();
-  if (column.type === 'eans' && !text) return { value: [] };
+  if ((column.type === 'eans' || column.type === 'attributes') && !text) return { value: [] };
   if (column.key === 'sku' && (!text || text.length > 100 || text.includes(';'))) return { value: text, error: 'invalid_sku' };
   if (!text || (column.type === 'visibility' && text === 'inherit')) return { value: null };
   if (column.type === 'url') {
@@ -126,7 +126,7 @@ export function normalizeEditorValue(column: EditorColumn, raw: string): { value
     return { value: `${whole}.${fraction}` };
   }
   if (column.type === 'integer') return /^\d{1,9}$/.test(text) ? { value: text.replace(/^0+(?=\d)/, '') } : { value: text, error: 'invalid_minimum' };
-  const limit = column.key === 'brand' || column.key === 'location' ? 100 : column.key === 'name' || column.key === 'shop_name' || column.key.endsWith('_name') ? 500 : 4000;
+  const limit = column.key === 'color' || column.key === 'size' ? 255 : column.key === 'brand' || column.key === 'location' ? 100 : column.key === 'name' || column.key === 'shop_name' || column.key.endsWith('_name') ? 500 : 4000;
   if (text.length > limit || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) return { value: text, error: 'invalid_text' };
   return { value: text };
 }
@@ -139,7 +139,8 @@ export function changeDraft(drafts: Drafts, row: ProductEditorRow, field: string
   if (draft.status === 'invalid') { draft.status = undefined; delete draft.errors._row; }
   const attributeField = field === 'color' || field === 'size';
   if (attributeField && !error) {
-    const attributes = draft.change.variant?.attributes ?? draft.base.attributes;
+    const pending = draft.change.variant?.attributes;
+    const attributes = Array.isArray(pending) ? pending : draft.base.attributes;
     const aliases = attributeAliases[field], previous = attributes.find(item => aliases.includes(attributeName(item.name)));
     const others = attributes.filter(item => !aliases.includes(attributeName(item.name)));
     value = value === null ? others : previous ? attributes.map(item => item === previous ? { ...item, value: String(value) } : item) : [...others, { name: field === 'color' ? 'Farba' : 'Veľkosť', value: String(value) }];

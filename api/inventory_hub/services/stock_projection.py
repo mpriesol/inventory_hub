@@ -15,6 +15,7 @@ from inventory_hub.db_models import Product, Shop, Warehouse
 from inventory_hub.db_models_ext import ShopProduct, StockBalance, StockMovement
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.services.product_identity import mapping_code
+from inventory_hub.services.stock_evidence import physical_stock_evidence
 
 
 class StockProjectionError(Exception):
@@ -109,7 +110,8 @@ async def preview(db, shop_code: str, skus: list[str]) -> dict:
 
 The existing policy selects one active warehouse. Legacy default/sum-all
 availability settings do not broaden it. Missing or unverified stock is NULL,
-including a zero balance without a physical ledger record.
+including a zero balance without a physical ledger record or explicit completed
+zero-count audit. An absent balance is never inferred to mean zero.
 """
     _validate_skus(skus)
     # Even a caller with staged ORM changes cannot cause this read to flush.
@@ -129,9 +131,13 @@ including a zero balance without a physical ledger record.
         # Match the shared resolver's case-collision guard while still requiring
         # an exact SKU for the selected product. An unmapped case-only duplicate
         # must not make a stock draft certify an identity orders would reject.
+        requested_codes = sorted({form for sku in skus for form in (sku.lower(), sku.casefold())})
+        # PostgreSQL lower() does not perform Python's Unicode casefold (ß ->
+        # ss). Keep non-ASCII candidates so the resolver's collision guard is
+        # preserved without fetching every ordinary SKU/mapping in the shop.
         products = {product.sku: product for product in (await db.execute(
-            select(Product.id, Product.sku, Product.is_active).where(
-                func.lower(Product.sku).in_(sorted({sku.lower() for sku in skus}))))).all()}
+            select(Product.id, Product.sku, Product.is_active).where(or_(
+                func.lower(Product.sku).in_(requested_codes), Product.sku.op("~")(r"[^ -~]"))))).all()}
         sku_owners = defaultdict(list)
         for product in products.values():
             sku_owners[product.sku.casefold()].append(product.id)
@@ -140,22 +146,18 @@ including a zero balance without a physical ledger record.
         # plus owners of case-conflicting codes outside the selected products.
         # A regular pass must not fetch thousands of unrelated umbrella siblings
         # twice for each individual leaf.
-        requested_codes = sorted({sku.lower() for sku in skus})
         leaf_code = case((ShopProduct.is_variant.is_(True), ShopProduct.variant_code), else_=ShopProduct.external_code)
         mappings = (await db.execute(select(ShopProduct.id, ShopProduct.product_id, ShopProduct.is_variant,
             ShopProduct.variant_code, ShopProduct.external_code, ShopProduct.parent_code, ShopProduct.is_listed)
             .where(ShopProduct.shop_id == shop.id, or_(ShopProduct.product_id.in_(product_ids),
-                  func.lower(leaf_code).in_(requested_codes))))).all()
+                  func.lower(leaf_code).in_(requested_codes), leaf_code.op("~")(r"[^ -~]"))))).all()
         by_product, code_owners = defaultdict(list), defaultdict(list)
         for mapping in mappings:
             by_product[mapping.product_id].append(mapping)
             code = mapping_code(mapping)
             if code:
                 code_owners[code.casefold()].append(mapping.id)
-        has_movement = select(StockMovement.id).where(
-            StockMovement.product_id == StockBalance.product_id,
-            StockMovement.warehouse_id == StockBalance.warehouse_id,
-        ).exists()
+        has_movement = physical_stock_evidence()
         # Quantity and physical evidence use the same SQL snapshot, so a
         # concurrent first receipt cannot validate an earlier zero observation.
         balances = {balance.product_id: (balance, balance.has_movement) for balance in

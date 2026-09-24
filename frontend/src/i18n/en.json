@@ -693,7 +693,12 @@
       "ai_update_stock_unknown": "Shop stock could not be verified. Availability was not changed; refresh the comparison or leave it out of the update.",
       "ai_update_readback_mismatch": "The selected fields could not be confirmed as matching after the update.",
       "supplier_availability_changed": "Supplier availability settings changed or this preview uses older rules. Prepare a new preview.",
-      "supplier_availability_invalid": "Check availability labels in supplier configuration; each field can contain at most 100 characters."
+      "supplier_availability_invalid": "Check availability labels in supplier configuration; each field can contain at most 100 characters.",
+      "merchandising_target_inflight": "Another update for this product is sending or unresolved. Resolve its original request first.",
+      "ai_update_original_unsettled": "Values match, but the original request has not been confirmed as finished. The target remains blocked.",
+      "ai_update_still_sending": "The original update may still be running. Wait at least five minutes from its start before manual resolution.",
+      "ai_update_resolved_mismatch": "The original request is confirmed finished; current values differ from the preview. You can prepare a new comparison.",
+      "ai_availability_managed_by_stock": "The warehouse system owns availability or a stock transfer remains unresolved. Exclude availability from the AI update; other content can still be updated."
     },
     "importSelectedReady": "Import selected ready jobs",
     "selectJob": "Select job",
@@ -848,7 +853,11 @@
     "readbackValueMissing": "The shop API did not return a value for this field.",
     "updateReadbackHelp": "Compare the expected and observed values below. Missing API data does not by itself mean the change was not saved. Verify update result checks the current state without sending the changes again.",
     "supplierAvailabilityUnsetStock": "The shop stock quantity is unset. Availability will be set from the supplier; the stock quantity is unchanged.",
-    "supplierAvailabilityConfigHelp": "Availability labels come from supplier configuration under Suppliers. AI rules do not override them; items marked “overíme” remain orderable."
+    "supplierAvailabilityConfigHelp": "Availability labels come from supplier configuration under Suppliers. AI rules do not override them; items marked “overíme” remain orderable.",
+    "settleUpdateHelp": "Matching shop values do not prove the original request can no longer arrive. Verify that it has finished and document the evidence before releasing the block.",
+    "settleUpdateConfirm": "I verified that the original request can no longer arrive at the shop.",
+    "settleUpdateNote": "Reason and evidence that the original request has finished",
+    "settleUpdate": "Resolve uncertain result"
   },
   "upgatesImport": {
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",
@@ -1840,7 +1849,9 @@
     "supplierOutOfStock": "Unavailable",
     "verifyAvailability": "Will verify",
     "staleSupplier": "Observation is not current",
-    "supplierRules": "Supplier rules"
+    "supplierRules": "Supplier rules",
+    "shopUnpublished": "Saved · unpublished",
+    "shopPublished": "Publication verified"
   },
   "actions": {
     "effects": {
@@ -1951,7 +1962,14 @@
     },
     "reload": "Reload current stock",
     "unknown": "Unknown cost",
-    "derivedCost": "The decrease uses the original acquisition layers."
+    "derivedCost": "The decrease uses the original acquisition layers.",
+    "unknownQuantity": "Not verified yet",
+    "initialCountHelp": "The physical count has not been verified. Enter the quantity after actually counting; if there are no units, explicitly enter 0. Supplier availability does not verify our physical stock.",
+    "initialZeroPreview": "First verified physical count: unknown → 0 pieces.",
+    "zeroNoMovement": "A zero-count verification record will be saved. No artificial stock movement or acquisition layer will be created.",
+    "confirmInitialZero": "I confirm the physically verified zero stock and saving this record.",
+    "recordInitialZero": "Confirm initial zero",
+    "zeroCompleted": "Initial zero stock was verified and recorded without a stock movement."
   },
   "availabilitySync": {
     "back": "Settings",
@@ -2102,7 +2120,8 @@
       "supplier_availability_source_unavailable": "The availability source is currently unavailable.",
       "feed_timeout": "The supplier did not respond in time.",
       "feed_connection_failed": "The supplier connection failed.",
-      "feed_auth_failed": "The supplier rejected the credentials. Review configuration."
+      "feed_auth_failed": "The supplier rejected the credentials. Review configuration.",
+      "stock_sync_ai_availability_inflight": "An AI availability update is sending or unresolved. Resolve the original request in the AI job detail before assigning stock authority."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",

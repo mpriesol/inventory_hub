@@ -16,7 +16,11 @@ import test_product_editor_db as fixtures
 
 @unittest.skipUnless(os.environ.get('CATALOG_TEST_DATABASE_URL'), 'Requires isolated localhost *_catalog_test database')
 class PublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = fixtures.ProductEditorDatabaseTests.asyncSetUp
+    async def asyncSetUp(self):
+        await fixtures.ProductEditorDatabaseTests.asyncSetUp(self)
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            await raw.driver_connection.execute((self.sql_root / '005_ai_content.sql').read_text())
     asyncTearDown = fixtures.ProductEditorDatabaseTests.asyncTearDown
     transaction = fixtures.ProductEditorDatabaseTests.transaction
     detail = fixtures.ProductEditorDatabaseTests.detail

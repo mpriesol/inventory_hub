@@ -8,6 +8,7 @@ from inventory_hub.stock_adjustment_models import StockAdjustment
 from inventory_hub.services import fifo
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
+from inventory_hub.services.stock_evidence import audited_zero_count
 
 
 def dto(batch):
@@ -22,7 +23,7 @@ async def get(db, identifier):
     return dto(batch)
 
 
-def validate_count(balance, counted):
+def validate_count(balance, counted, *, initial_zero=False):
     current = Decimal(balance.qty_on_hand) if balance else fifo.ZERO
     reserved = Decimal(balance.qty_reserved) if balance else fifo.ZERO
     quarantined = Decimal(balance.qty_quarantined) if balance else fifo.ZERO
@@ -30,9 +31,18 @@ def validate_count(balance, counted):
         raise fifo.FifoError("adjustment_quantity_invalid")
     if counted < reserved + quarantined:
         raise fifo.FifoError("adjustment_below_committed")
-    if counted == current:
+    if counted == current and not (initial_zero and counted == fifo.ZERO):
         raise fifo.FifoError("adjustment_no_change", 422)
     return counted - current
+
+
+async def initial_zero_count(db, product, warehouse, balance, snapshot, counted):
+    if counted != fifo.ZERO or snapshot["movement_count"]:
+        return False
+    if balance is not None and any(getattr(balance, key) != fifo.ZERO
+                                  for key in ("qty_on_hand", "qty_reserved", "qty_quarantined")):
+        return False
+    return not await db.scalar(select(audited_zero_count(product.id, warehouse.id)))
 
 
 async def preview(db, payload):
@@ -57,8 +67,9 @@ async def preview(db, payload):
     snapshot = await fifo._snapshot(db, product, warehouse, balance)
     if snapshot["valuation"]["mode"] != "fifo" and (snapshot["movement_count"] or balance and balance.qty_on_hand != fifo.ZERO):
         raise fifo.FifoError("fifo_cutover_required")
-    delta = validate_count(balance, Decimal(payload.counted_quantity))
-    if delta < 0 and (payload.unit_cost is not None or payload.cost_status != "unknown"):
+    initial_zero = await initial_zero_count(db, product, warehouse, balance, snapshot, Decimal(payload.counted_quantity))
+    delta = validate_count(balance, Decimal(payload.counted_quantity), initial_zero=initial_zero)
+    if delta <= 0 and (payload.unit_cost is not None or payload.cost_status != "unknown"):
         raise fifo.FifoError("adjustment_issue_cost_derived", 422)
     plan = await fifo.plan_issue(db, balance, [{"line_key": "adjustment", "quantity": -delta}], lock=True) if delta < 0 else None
     if delta > 0:
@@ -68,7 +79,8 @@ async def preview(db, payload):
             unit_cost=Decimal(payload.unit_cost) if payload.unit_cost is not None else None,
             cost_status=payload.cost_status, stock_status="available")])
     data = {**raw, "product_id": product.id, "warehouse_id": warehouse.id,
-            "before_quantity": fifo.number(balance.qty_on_hand if balance else fifo.ZERO),
+            "before_quantity": None if initial_zero else fifo.number(balance.qty_on_hand if balance else fifo.ZERO),
+            "initial_zero_count": initial_zero,
             "delta": fifo.number(delta), "snapshot_hash": fifo.digest(snapshot), "snapshot": snapshot,
             "issue_plan": plan, "currency": "EUR", "vat_included": False}
     batch = StockAdjustment(id=str(payload.request_id), product_id=product.id, warehouse_id=warehouse.id,
@@ -98,9 +110,13 @@ async def apply(db, identifier, payload):
     if batch.expires_at <= fifo.now():
         raise fifo.FifoError("fifo_preview_expired")
     data = batch.preview_data
-    if fifo.digest(data) != batch.preview_hash or fifo.digest(await fifo._snapshot(db, product, warehouse, balance)) != data["snapshot_hash"]:
+    snapshot = await fifo._snapshot(db, product, warehouse, balance)
+    if fifo.digest(data) != batch.preview_hash or fifo.digest(snapshot) != data["snapshot_hash"]:
         raise fifo.FifoError("fifo_preview_stale")
-    delta = validate_count(balance, Decimal(data["counted_quantity"]))
+    initial_zero = await initial_zero_count(db, product, warehouse, balance, snapshot, Decimal(data["counted_quantity"]))
+    if bool(data.get("initial_zero_count")) != initial_zero:
+        raise fifo.FifoError("fifo_preview_stale")
+    delta = validate_count(balance, Decimal(data["counted_quantity"]), initial_zero=initial_zero)
     was_missing = balance is None
     try:
         balances, created_ids = await lock_stock_balances(db, {product.id}, warehouse.id)
@@ -109,6 +125,23 @@ async def apply(db, identifier, payload):
     if was_missing and product.id not in created_ids:
         raise fifo.FifoError("fifo_preview_stale")
     balance = balances[product.id]
+    if initial_zero:
+        # A confirmed absence is evidence, not a receipt or a zero-cost product.
+        # Keep the immutable movement ledger's nonzero invariant and create no layer.
+        state = await fifo.ensure_fifo(db, balance, "initial_zero_count")
+        if state is None or await fifo._layers(db, balance):
+            raise fifo.FifoError("fifo_preview_stale")
+        state.revision += 1  # invalidate any other preview even for an existing empty state
+        balance.avg_cost, balance.total_value = fifo.ZERO, fifo.ZERO
+        await db.flush()
+        result = {"adjustment_id": batch.id, "movement_id": None, "initial_zero_count": True,
+            "product_id": product.id, "warehouse_id": warehouse.id, "before_quantity": None,
+            "counted_quantity": "0", "delta": "0", "valuation": await fifo.valuation(db, balance),
+            "completed_at": fifo.now().isoformat()}
+        batch.status, batch.completed_at, batch.result = "completed", fifo.now(), result
+        await db.flush()
+        await db.commit()
+        return result
     movement = StockMovement(idempotency_key=f"stock-adjustment:{batch.id}", product_id=product.id,
         warehouse_id=warehouse.id, movement_type=MovementType.ADJUSTMENT_IN if delta > 0 else MovementType.ADJUSTMENT_OUT,
         quantity=delta, unit_cost_currency="EUR", fx_rate_to_eur=Decimal("1"),
@@ -133,7 +166,7 @@ async def apply(db, identifier, payload):
     else:
         await fifo.apply_issue(db, balance, movement, data["issue_plan"]["allocations"])
     balance.last_movement_at, balance.last_movement_id = movement.created_at, movement.id
-    result = {"adjustment_id": batch.id, "movement_id": movement.id, "product_id": product.id,
+    result = {"adjustment_id": batch.id, "movement_id": movement.id, "initial_zero_count": False, "product_id": product.id,
               "warehouse_id": warehouse.id, "before_quantity": data["before_quantity"],
               "counted_quantity": data["counted_quantity"], "delta": fifo.number(delta),
               "valuation": await fifo.valuation(db, balance), "completed_at": fifo.now().isoformat()}

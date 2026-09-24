@@ -694,7 +694,12 @@
       "ai_update_stock_unknown": "Stav vlastného skladu sa nepodarilo overiť. Dostupnosť sa nezmenila; obnov porovnanie alebo ju vynechaj z aktualizácie.",
       "ai_update_readback_mismatch": "Nepodarilo sa potvrdiť zhodu vybraných polí po aktualizácii.",
       "supplier_availability_changed": "Dostupnosť v konfigurácii dodávateľa sa zmenila alebo náhľad vznikol podľa starých pravidiel. Priprav nový náhľad.",
-      "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov."
+      "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov.",
+      "merchandising_target_inflight": "Na tento produkt sa práve odosiela iná zmena alebo zostal jej výsledok nejasný. Najskôr vyriešte pôvodné odoslanie.",
+      "ai_update_original_unsettled": "Hodnoty sa zhodujú, ale pôvodná požiadavka ešte nie je potvrdená ako ukončená. Blokovanie zostáva zachované.",
+      "ai_update_still_sending": "Pôvodné odoslanie môže ešte prebiehať. Pred ručným uzavretím počkajte aspoň päť minút od začiatku.",
+      "ai_update_resolved_mismatch": "Ukončenie pôvodnej požiadavky je potvrdené; hodnoty sa nezhodujú s náhľadom. Môžete pripraviť nové porovnanie.",
+      "ai_availability_managed_by_stock": "Dostupnosť spravuje skladový systém alebo ešte prebieha neuzavretý prenos zásob. Odstráňte dostupnosť z polí AI aktualizácie; ostatný obsah môžete aktualizovať."
     },
     "importSelectedReady": "Importovať označené pripravené",
     "selectJob": "Označiť úlohu",
@@ -849,7 +854,11 @@
     "readbackValueMissing": "API e-shopu nevrátilo hodnotu tohto poľa.",
     "updateReadbackHelp": "Porovnaj očakávané a načítané hodnoty nižšie. Chýbajúca odpoveď API sama osebe neznamená, že sa zmena neuložila. Tlačidlo Overiť výsledok aktualizácie iba skontroluje stav; zmeny znova neodošle.",
     "supplierAvailabilityUnsetStock": "Skladové množstvo e-shopu nie je vyplnené. Dostupnosť sa nastaví podľa dodávateľa; skladové množstvo sa nemení.",
-    "supplierAvailabilityConfigHelp": "Texty dostupnosti sa berú z konfigurácie dodávateľa v časti Dodávatelia. AI pravidlá ich nemenia; tovar „overíme“ zostáva objednateľný."
+    "supplierAvailabilityConfigHelp": "Texty dostupnosti sa berú z konfigurácie dodávateľa v časti Dodávatelia. AI pravidlá ich nemenia; tovar „overíme“ zostáva objednateľný.",
+    "settleUpdateHelp": "Zhodná hodnota v e-shope sama nepotvrdzuje, že pôvodná požiadavka už nemôže doraziť. Pred odblokovaním overte jej ukončenie a zapíšte dôvod.",
+    "settleUpdateConfirm": "Overil som, že pôvodná požiadavka už nemôže doraziť do e-shopu.",
+    "settleUpdateNote": "Dôvod a spôsob overenia ukončenia požiadavky",
+    "settleUpdate": "Uzavrieť nejasný výsledok"
   },
   "upgatesImport": {
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",
@@ -1841,7 +1850,9 @@
     "supplierOutOfStock": "Nedostupné",
     "verifyAvailability": "overíme",
     "staleSupplier": "Údaj nie je aktuálny",
-    "supplierRules": "Pravidlá dodávateľa"
+    "supplierRules": "Pravidlá dodávateľa",
+    "shopUnpublished": "Uložené · neodoslané",
+    "shopPublished": "Odoslanie overené"
   },
   "actions": {
     "effects": {
@@ -1952,7 +1963,14 @@
     },
     "reload": "Načítať aktuálny sklad",
     "unknown": "Neznáma cena",
-    "derivedCost": "Náklad úbytku sa určí z pôvodných nákupných vrstiev."
+    "derivedCost": "Náklad úbytku sa určí z pôvodných nákupných vrstiev.",
+    "unknownQuantity": "Zatiaľ neoverené",
+    "initialCountHelp": "Fyzický stav ešte nie je potvrdený. Po skutočnom spočítaní zadaj množstvo; ak nemáme žiadny kus, zadaj výslovne 0. Dostupnosť dodávateľa tento stav nepotvrdzuje.",
+    "initialZeroPreview": "Prvé potvrdenie fyzického stavu: neoverené → 0 ks.",
+    "zeroNoMovement": "Uloží sa doklad o overení nuly. Nevznikne fiktívny skladový pohyb ani nákupná vrstva.",
+    "confirmInitialZero": "Potvrdzujem fyzicky overenú nulovú zásobu a uloženie tohto záznamu.",
+    "recordInitialZero": "Potvrdiť počiatočnú nulu",
+    "zeroCompleted": "Počiatočná nulová zásoba bola overená a zaznamenaná bez skladového pohybu."
   },
   "availabilitySync": {
     "back": "Nastavenia",
@@ -2103,7 +2121,8 @@
       "supplier_availability_source_unavailable": "Zdroj dostupnosti je momentálne nedostupný.",
       "feed_timeout": "Dodávateľ neodpovedal včas.",
       "feed_connection_failed": "Pripojenie k dodávateľovi zlyhalo.",
-      "feed_auth_failed": "Dodávateľ odmietol prihlasovacie údaje. Over konfiguráciu."
+      "feed_auth_failed": "Dodávateľ odmietol prihlasovacie údaje. Over konfiguráciu.",
+      "stock_sync_ai_availability_inflight": "AI aktualizácia dostupnosti sa ešte odosiela alebo jej výsledok zostal nejasný. Najskôr v detaile AI úlohy vyriešte pôvodnú požiadavku."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",

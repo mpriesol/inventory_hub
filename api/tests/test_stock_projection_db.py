@@ -39,6 +39,7 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((sql_root / "002_invoice_management.sql").read_text())
             await connection.execute((sql_root / "007_order_stock.sql").read_text())
             await connection.execute((sql_root / "011_fifo.sql").read_text())
+            await connection.execute((sql_root / "017_stock_adjustments.sql").read_text())
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -177,3 +178,27 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(service.StockProjectionError) as raised:
             await self.preview()
         self.assertEqual(raised.exception.code, "stock_projection_warehouse_unavailable")
+
+
+    async def test_unicode_casefold_collisions_outside_selected_product_are_not_lost(self):
+        await self.seed("SKU-A")
+        async with self.sessions() as db:
+            product = await db.get(Product, self.products["SKU-A"])
+            product.sku = "STRASSE"
+            selected = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
+                                                                  ShopProduct.product_id == product.id))
+            selected.variant_code = "STRASSE"
+            other = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
+                                                               ShopProduct.product_id == self.products["SKU-B"]))
+            other.variant_code = "Straße"
+            await db.commit()
+        row = (await self.preview(skus=["STRASSE"]))["rows"][0]
+        self.assertEqual(row["errors"], ["stock_projection_mapping_ambiguous"])
+        async with self.sessions() as db:
+            other = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
+                                                               ShopProduct.product_id == self.products["SKU-B"]))
+            other.variant_code = "SKU-B"
+            db.add(Product(sku="Straße", name="Unmapped Unicode collision"))
+            await db.commit()
+        row = (await self.preview(skus=["STRASSE"]))["rows"][0]
+        self.assertEqual(row["errors"], ["stock_projection_product_ambiguous"])

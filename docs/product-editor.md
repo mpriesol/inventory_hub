@@ -87,14 +87,14 @@ A save body contains `request_id` (UUID), optional `warehouse_code`, literal boo
 
 ```json
 {
-  "common": {"name": "Example", "brand": null, "internal_note": "Shelf label"},
-  "variant": {"sale_price_gross": "29.90", "vat_rate": null, "note": null},
+  "common": {"name": "Example", "brand": null, "internal_note": "Shelf label", "image_url": null},
+  "variant": {"sale_price_gross": "29.90", "vat_rate": null, "note": null, "attributes": [{"name": "Size", "value": "M"}]},
   "warehouse": {"location": "A-2", "min_quantity": "2"},
   "shops": {"biketrek": {"name": null, "sale_price_gross": "31.90", "visible": false}}
 }
 ```
 
-Absent fields are unchanged; explicit null deletes that override. A warehouse patch requires an explicit active warehouse. Shop keys must identify active Upgates shops. Names are at most 500 characters, brand/location 100, notes 4000. Money uses nonnegative decimal **strings**, at most two decimal places and a maximum of `9999999999.99`; VAT is nullable or a string from 0 through 100 with at most two decimal places. Minimum quantity is a whole string from 0 through 999999999. The UI normalizes decimal commas; the API accepts dot-decimal canonical syntax. Boolean and numeric coercion, extra fields, malformed Unicode and control characters are rejected. The encoded batch is bounded to 1 MB.
+Absent fields are unchanged; explicit null deletes a merchandising override. `variant.eans` is an explicit canonical barcode list (maximum 20); `[]` clears it and null performs no identity edit. `variant.sku` is a validated rename for an unmapped product only. `variant.attributes` is at most 100 `{name,value}` pairs (name 100, value 255 characters), `[]` clears attributes and null removes the manual override. `common.image_url` must be a bounded HTTPS URL without credentials, or null to inherit the imported image. A warehouse patch requires an explicit active warehouse. Shop keys must identify active Upgates shops. Names are at most 500 characters, brand/location 100, notes 4000. Money uses nonnegative decimal **strings**, at most two decimal places and a maximum of `9999999999.99`; VAT is nullable or a string from 0 through 100 with at most two decimal places. Minimum quantity is a whole string from 0 through 999999999. The UI normalizes decimal commas; the API accepts dot-decimal canonical syntax. Boolean and numeric coercion, extra fields, malformed Unicode and control characters are rejected. The encoded batch is bounded to 1 MB.
 
 Results have `status: completed`, `external_write_enabled: false`, and per-row `status` values `saved`, `conflict`, `invalid` or `missing`, plus sanitized errors and an optional effective `row`. Top-level invalid input rejects the request; row validation preserves valid rows. Duplicate product IDs in one batch are invalid. No-op patches return the current row without incrementing revision or creating an audit entry.
 
@@ -145,6 +145,8 @@ Variant titles are parent-only in the documented Upgates API; uploading a varian
 Price publication means **base pricelist price**, not the discounted final customer price. The publisher verifies active Slovak/EUR language, exactly one default pricelist, actual shop VAT mode and actual leaf VAT. It converts the Hub gross amount with Decimal and rounds the outgoing base price to cents. Existing `product_discount` and `price_sale` remain unchanged and are visible in the before/after preview. An incompatible manually entered VAT rate blocks price sending. There is no guessed VAT or currency conversion.
 
 After acknowledged PUT and matching readback, per-field desired-value receipts are merged into override metadata under the identity lock. Manual revision is unchanged; normal saves re-read and preserve these receipts. A newly edited value remains unpublished even when an older publication later completes. Publication history remains in table 016; the read-only table response need not query it. No endpoint writes own stock or supplier observations.
+
+On application rollback, retain all durable publication records and in-flight fences. Do not blindly resend `sending` or `uncertain` operations, or revert to code that ignores them. First establish that the original request has settled and use the explicit resolution flow; fix publication problems with a forward change. Reverting application code does not undo a remote update.
 
 The variant parameter normalizer accepts documented `parameters_new` descriptions/values, legacy localized name/value maps and historical simple pairs. Display fallback reads only the exact cached leaf and supplier attributes, never the POS parent axes. Normal Upgates product snapshots may omit axes entirely: **Obnoviť parametre** reads the targeted variant when needed. It does not invent missing values. Source URLs are validated before rendering; images support leaf `image` and `images`, then group/supplier fallback.
 

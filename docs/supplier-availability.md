@@ -6,7 +6,7 @@ V obrazovke **Dostupnosti a synchronizácia** má každý dodávateľ samostatn�
 
 Interval je od 5 minút po 7 dní. Platnosť údajov musí pokryť aspoň jeden interval; najviac môže byť 30 dní. Predvolené hodnoty sú 1 hodina a 6 hodín. Čas posledného úspechu je začiatok prijatého načítania, nie okamih neskoršieho uloženia. Pri staršom feede tak údaje nedostanú umelo dlhšiu platnosť.
 
-**Minimálne pokrytie** chráni pred neúplným feedom. Predvolene musí nový feed obsahovať aspoň 100 % počtu položiek z posledného úspechu. Ak dodávateľ legitímne zúži ponuku, môžete tento prah znížiť a spustiť nový pokus. Vynechané položky sa nikdy automaticky nemenia na nulu: posledná prijatá dostupnosť ostáva platná len do pôvodného termínu. Prázdny, chybný alebo podlimitný feed sa odmietne celý a posledný úspech sa zachová.
+**Minimálne pokrytie** kontroluje pokles počtu riadkov. Nevie dokázať úplnosť prvého feedu ani zachytiť všetky výmeny položiek pri nezmenenom počte. Predvolene musí nový feed obsahovať aspoň 100 % počtu položiek z posledného úspechu. Ak dodávateľ legitímne zúži ponuku, môžete tento prah znížiť a spustiť nový pokus. Vynechané položky sa nikdy automaticky nemenia na nulu: posledná prijatá dostupnosť ostáva platná len do pôvodného termínu. Prázdny, chybný alebo podlimitný feed sa odmietne celý a posledný úspech sa zachová.
 
 Dostupnosť dodávateľa je oddelená od fyzického skladu. Hodnota `6+` znamená najmenej šesť kusov, údaj áno/nie vyjadruje dostupnosť bez presného počtu. Ani jeden nevytvára príjem alebo vlastnú zásobu. Na e-shop sa publikuje iba vlastné overené voľné množstvo; dodávateľ môže ovplyvniť dodaciu dostupnosť.
 

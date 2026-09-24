@@ -41,8 +41,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((root/'001_schema.sql').read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid','partial','paid')")
-            for name in ('002_invoice_management.sql','006_opening_stock.sql','007_order_stock.sql','008_order_collection.sql',
-                         '009_stock_automation.sql','010_stock_publication.sql','011_fifo.sql','015_stock_sync.sql'):
+            for name in ('002_invoice_management.sql','005_ai_content.sql','006_opening_stock.sql','007_order_stock.sql','008_order_collection.sql',
+                         '009_stock_automation.sql','010_stock_publication.sql','011_fifo.sql','015_stock_sync.sql','017_stock_adjustments.sql'):
                 await connection.execute((root/name).read_text())
         finally:
             await connection.close()
@@ -281,3 +281,18 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True))
         self.assertEqual(raised.exception.code,'stock_sync_authority_changed')
         service.source.write_once.assert_not_awaited()
+
+
+    async def test_authority_configure_rejects_unresolved_ai_availability_update(self):
+        from inventory_hub.ai_content_models import AiBatch, AiJob
+        async with self.session() as db:
+            batch=AiBatch(id=uuid4().hex,request_hash='a'*64)
+            db.add(batch);await db.flush()
+            db.add(AiJob(id=uuid4().hex,batch_id=batch.id,kind='product',status='review',
+                context={'shop':'biketrek','code':'xTrek','update_preview':{'fields':['availability'],'state':'uncertain'}},
+                checks={},events=[],usage={},reserved_usd=0))
+        with self.assertRaises(service.SyncError) as raised:
+            await self.invoke('configure',self.config())
+        self.assertEqual(raised.exception.code,'stock_sync_ai_availability_inflight')
+        async with self.session() as db:
+            self.assertIsNone(await db.get(StockSyncSettings,self.shop_id))

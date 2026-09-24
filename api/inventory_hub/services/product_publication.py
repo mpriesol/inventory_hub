@@ -164,6 +164,11 @@ async def send(db, identifier):
     await _assert_mapping(db, current, current_shop, shop_id)
     if source_signature(current, document['shop_code']) != document['signature']:
         raise ERROR('product_editor_changed')
+    from inventory_hub.services.merchandising_write_guard import require_target_available
+    try:
+        await require_target_available(db, document['shop_code'], document['identity']['parent_code'], publication_id=record.id)
+    except CatalogError as exc:
+        raise ERROR('product_publication_inflight', exc.status) from None
     record.state, record.updated_at = 'sending', editor.now()
     await db.commit()  # durable intent before one possible remote side effect
     error, state, observed = None, 'uncertain', None

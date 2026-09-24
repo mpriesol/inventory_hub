@@ -5,7 +5,7 @@ import re
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from inventory_hub.catalog_types import ShopImportOptions
 
@@ -210,3 +210,11 @@ class UpdatePreviewRequest(StrictModel):
 class UpdateConfirm(StrictModel):
     expected_revision: int
     preview_id: str
+    original_request_settled: StrictBool = False
+    resolution_note: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def documented_settlement(self):
+        if self.original_request_settled and (not self.resolution_note or len(self.resolution_note.strip()) < 10):
+            raise ValueError("Document why the original request can no longer land")
+        return self

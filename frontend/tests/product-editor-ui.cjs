@@ -53,6 +53,7 @@ const reply = value => ({ ok: true, json: async () => clone(value) });
 const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.toString(16).padStart(4, '0')}`.padEnd(64, 'a');
 const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
   attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
+  supplier_availability: { available: true, fresh: id !== 2, label: id === 2 ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
   supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
   common: { name: `Fixture product ${id}`, brand: 'Fixture', internal_note: '' },
   variant: { sale_price_gross: '199.90', vat_rate: '23.00', note: '' },
@@ -204,6 +205,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(cell(1, 'image_url').querySelector('img').getAttribute('src'), 'https://images.example.test/item.jpg');
   assert.equal(cell(1, 'biketrek').querySelector('a').getAttribute('href'), 'https://biketrek.example.test/product-1');
   assert.equal(cell(1, 'xtrek').querySelectorAll('a')[1].getAttribute('href'), 'https://xtrek.example.test/admin/product-1');
+  assert(cellText(1, 'supplier_quantity').includes('6+')); assert(!cellText(2, 'supplier_quantity').includes('900'), 'Stale supplier quantity is never presented as current');
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost').includes('0.0000'), 'A known zero cost stays an exact decimal string');
@@ -331,7 +333,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(required('row-1').hasAttribute('data-dirty'));
   await click('columns'); await click('column-attributes'); await click('column-ean'); await click('columns');
   assert(cellText(1, 'attributes').includes('Wheel size: 29') && cellText(1, 'attributes').includes('Veľkosť: M'), 'Editing colour preserves other named attributes');
-  await edit(1, 'size', 'XL'); assert(cellText(1, 'attributes').includes('Veľkosť: XL'));
+  await edit(1, 'attributes', 'broken text'); await edit(1, 'size', 'XL'); assert(cellText(1, 'attributes').includes('Veľkosť: XL'));
   await edit(1, 'ean', '12345678, 1234567890123'); assert.equal(cellText(1, 'ean'), '12345678, 1234567890123');
   await edit(1, 'image_url', 'javascript:alert(1)'); assert.equal(cell(1, 'image_url').getAttribute('aria-invalid'), 'true', 'Image editing rejects unsafe protocols');
   await click('select-1'); assert(cannotUse('upload-biketrek'), 'Upload is blocked until all local drafts are saved or discarded');

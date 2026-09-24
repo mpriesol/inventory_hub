@@ -31,11 +31,12 @@ const key = (id = 1, warehouse = 'main') => `stock-adjustment:${id}:${warehouse}
 const writes = [], reads = [], prepared = new Map(), committed = new Map(), counts = new Map();
 let nextResponse = '', heldResponse, nextReadHeld = false, heldRead, rejectCode = '', movementCount = 0;
 let oldChanges = 0, newChanges = 0;
+const missingBalances = new Set([3]);
 const quantity = product => String(counts.get(product) ?? 5);
 const stock = (product, warehouse) => ({ product_id: product, sku: `PART-${product}`, warehouse: { id: warehouse === 'main' ? 2 : 3, code: warehouse, name: `${warehouse} warehouse` },
-  balance: { qty_on_hand: quantity(product), qty_reserved: '1', qty_quarantined: '1', qty_available: String(Number(quantity(product)) - 2) },
-  valuation: { mode: 'fifo', revision: 1, known_value: null, provisional_value: '0', unknown_qty: quantity(product), provisional_qty: '0',
-    quarantined_qty: '1', value_complete: false, avg_cost: null, total_value: null }, layers: [], total: 0, limit: 50, offset: 0, snapshot_hash: 'a'.repeat(64) });
+  balance: missingBalances.has(product) ? null : { qty_on_hand: quantity(product), qty_reserved: product === 3 ? '0' : '1', qty_quarantined: product === 3 ? '0' : '1', qty_available: String(Number(quantity(product)) - (product === 3 ? 0 : 2)) },
+  valuation: { mode: missingBalances.has(product) ? 'missing' : 'fifo', revision: 1, known_value: null, provisional_value: '0', unknown_qty: quantity(product), provisional_qty: '0',
+    quarantined_qty: product === 3 ? '0' : '1', value_complete: product === 3 && !missingBalances.has(product), avg_cost: product === 3 && !missingBalances.has(product) ? '0' : null, total_value: product === 3 && !missingBalances.has(product) ? '0' : null }, layers: [], total: 0, limit: 50, offset: 0, snapshot_hash: 'a'.repeat(64) });
 global.fetch = async (url, options = {}) => {
   const parsed = new URL(url, 'https://hub.example.test'), path = parsed.pathname;
   assert(path.startsWith('/api/fifo/stock') || path.startsWith('/api/stock-adjustments/'), 'Only local recount APIs are used');
@@ -53,8 +54,9 @@ global.fetch = async (url, options = {}) => {
     assert.match(body.request_id, /^[0-9a-f-]{36}$/i);
     if (!prepared.has(body.request_id)) {
       const product = Number(body.sku.split('-').at(-1));
+      const initialZero = missingBalances.has(product) && body.counted_quantity === '0';
       prepared.set(body.request_id, { id: body.request_id, status: 'prepared', preview_hash: 'b'.repeat(64),
-        preview: { ...body, product_id: product, before_quantity: quantity(product), delta: String(Number(body.counted_quantity) - Number(quantity(product))) }, result: null });
+        preview: { ...body, product_id: product, initial_zero_count: initialZero, before_quantity: initialZero ? null : quantity(product), delta: initialZero ? '0' : String(Number(body.counted_quantity) - Number(quantity(product))) }, result: null });
     }
     result = prepared.get(body.request_id);
   } else {
@@ -63,9 +65,10 @@ global.fetch = async (url, options = {}) => {
     assert.equal(body.preview_hash, preview.preview_hash); assert.equal(body.confirmed, true);
     assert.equal(body.quantities_verified, true); assert.equal(body.costs_documented, true);
     if (!committed.has(id)) {
-      movementCount++;
+      if (!preview.preview.initial_zero_count) movementCount++;
+      missingBalances.delete(preview.preview.product_id);
       counts.set(preview.preview.product_id, Number(preview.preview.counted_quantity));
-      committed.set(id, { adjustment_id: id, movement_id: movementCount, product_id: preview.preview.product_id,
+      committed.set(id, { adjustment_id: id, movement_id: preview.preview.initial_zero_count ? null : movementCount, initial_zero_count: preview.preview.initial_zero_count, before_quantity: preview.preview.before_quantity, product_id: preview.preview.product_id,
         warehouse_id: 2, counted_quantity: preview.preview.counted_quantity, delta: preview.preview.delta });
     }
     result = committed.get(id);
@@ -75,6 +78,11 @@ global.fetch = async (url, options = {}) => {
   if (mode === 'bad-body') return { ok: true, status: 200, json: async () => { throw new SyntaxError('Truncated response'); } };
   if (mode === 'http502') return reply({ detail: 'Proxy lost upstream response' }, 502);
   if (mode === 'malformed') return reply({});
+  if (mode === 'zero-without-audit') return reply({ ...result, movement_id: null, initial_zero_count: undefined, before_quantity: null, counted_quantity: '0', delta: '0' });
+  if (mode === 'zero-with-nonzero-count') return reply({ ...result, movement_id: null, initial_zero_count: true, before_quantity: null, counted_quantity: '1', delta: '0' });
+  if (mode === 'zero-with-wrong-product') return reply({ ...result, movement_id: null, initial_zero_count: true, product_id: 999, before_quantity: null, counted_quantity: '0', delta: '0' });
+  if (mode === 'zero-with-wrong-adjustment') return reply({ ...result, adjustment_id: '00000000-0000-4000-8000-000000000000', movement_id: null, initial_zero_count: true, before_quantity: null, counted_quantity: '0', delta: '0' });
+  if (mode === 'nonpositive-movement-id') return reply({ ...result, movement_id: -1 });
   if (mode === 'held') return new Promise(resolve => { heldResponse = () => resolve(reply(result)); });
   return reply(result);
 };
@@ -155,7 +163,7 @@ async function apply() { await click('adjustment-confirm'); await click('adjustm
   assert(required('adjustment-submit').disabled, 'Recovering documented cost still requires fresh confirmation');
   await apply();
 
-  for (const responseMode of ['lost', 'http502', 'bad-body', 'malformed']) {
+  for (const responseMode of ['lost', 'http502', 'bad-body', 'malformed', 'zero-without-audit', 'zero-with-nonzero-count', 'zero-with-wrong-product', 'zero-with-wrong-adjustment', 'nonpositive-movement-id']) {
     await preview(String(Number(quantity(1)) + 1)); nextResponse = responseMode;
     const before = movementCount;
     await apply(); const request = writes.at(-1);
@@ -181,6 +189,30 @@ async function apply() { await click('adjustment-confirm'); await click('adjustm
   assert(!required('adjustment-confirm').checked);
   await input('adjustment-count', String(Number(externallyChangedQuantity) - 1));
   assert.equal(find('adjustment-known'), null, 'Direction and cost classification use the refreshed balance');
+
+  // Supplier-only products need an explicitly verified physical zero, not an inferred balance.
+  await render(3); const beforeZeroWrites = writes.length, beforeZeroMovements = movementCount;
+  assert.equal(required('adjustment-count').value, '', 'Missing balance never pre-fills a presumed zero');
+  assert(document.body.textContent.includes(i18n.t('stockAdjustment.unknownQuantity')));
+  assert(required('adjustment-initial-count-help')); assert(required('adjustment-submit').disabled);
+  await input('adjustment-operator', 'Zero counter'); await input('adjustment-source', 'COUNT-ZERO-1'); await input('adjustment-reason', 'No physical units found');
+  await click('adjustment-confirm'); assert(required('adjustment-submit').disabled, 'A count must be explicitly entered before even previewing zero');
+  await input('adjustment-count', '0'); assert(!required('adjustment-confirm').checked);
+  await click('adjustment-confirm'); await click('adjustment-submit');
+  assert.equal(writes.length, beforeZeroWrites + 1); assert.equal(writes.at(-1).body.counted_quantity, '0');
+  assert.equal(writes.at(-1).body.unit_cost, null); assert.equal(writes.at(-1).body.cost_status, 'unknown');
+  assert(required('adjustment-preview').textContent.includes(i18n.t('stockAdjustment.initialZeroPreview')));
+  assert(required('adjustment-preview-cost').textContent.includes(i18n.t('stockAdjustment.zeroNoMovement')));
+  assert(required('adjustment-submit').disabled && movementCount === beforeZeroMovements, 'Verified zero still requires a second explicit confirmation');
+  nextResponse = 'lost'; await apply(); const lostZero = writes.at(-1), zeroCallbacks = oldChanges;
+  assert(required('adjustment-retry')); assert.equal(movementCount, beforeZeroMovements, 'Initial zero creates an audit but no movement');
+  await remount(3); await click('adjustment-retry');
+  assert.deepEqual(writes.at(-1), lostZero, 'Initial zero recovery uses the original adjustment');
+  assert.equal(find('adjustment-retry'), null); assert.equal(sessionStorage.getItem(key(3)), null);
+  assert.equal(required('adjustment-count').value, '0'); assert.equal(movementCount, beforeZeroMovements);
+  assert.equal(oldChanges, zeroCallbacks + 1); assert(document.body.textContent.includes(i18n.t('stockAdjustment.zeroCompleted')));
+  assert(!document.body.textContent.includes(i18n.t('stockAdjustment.completed')), 'Zero initialization never claims a movement was posted');
+  await render();
 
   // A late result from an old page cannot remove a newer saved apply request.
   nextResponse = 'held'; await preview(String(Number(quantity(1)) + 1)); const oldPreviewResponse = heldResponse;

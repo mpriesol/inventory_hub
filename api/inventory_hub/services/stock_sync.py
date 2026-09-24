@@ -193,6 +193,15 @@ async def configure_warehouse(db, payload):
 
 
 async def configure(db, payload):
+    if payload.authorized:
+        # Serialize authority activation with AI availability intents before
+        # taking shop/warehouse locks (same identity-first lock order).
+        from inventory_hub.services.merchandising_write_guard import require_availability_authority_available
+        from inventory_hub.services.catalog import CatalogError
+        try:
+            await require_availability_authority_available(db, payload.shop_code)
+        except CatalogError as error:
+            raise SyncError(error.code, error.status) from None
     shop, warehouse, policy, _, values = await scope(db, payload.shop_code, True)
     if warehouse is None:
         raise SyncError('stock_sync_order_policy_required')
@@ -313,6 +322,9 @@ async def process_item(db, item_id):
         return
     run = await one(db, Run, Run.id == item.run_id)
     shop_code = await db.scalar(select(Shop.code).where(Shop.id == run.shop_id))
+    # Rollback expires every ORM instance, including the caller's run. Keep
+    # scalar intent data for error recovery before any path can roll back.
+    fingerprint = run.target_fingerprint
     started = False
     try:
         shop, warehouse, policy, _, values = await scope(db, shop_code, True)
@@ -324,7 +336,6 @@ async def process_item(db, item_id):
         if await db.scalar(select(Item.id).where(Item.shop_id == shop.id, Item.sku == item.sku, Item.status.in_(FENCED)).limit(1)):
             raise SyncError('stock_sync_target_uncertain')
         target, value = await desired(db, shop_code, item.sku)
-        fingerprint = run.target_fingerprint
         await db.commit()
         observation = await source.read(shop_code, target, fingerprint)
         # Recompute after the remote GET; local receipts/reservations are not
@@ -368,7 +379,7 @@ async def process_item(db, item_id):
             # Share rate-limit pressure with collector/maintenance readers.
             from inventory_hub.services.stock_publication import _remember_rate_limit
             await db.commit()
-            await _remember_rate_limit(db, shop_code, run.target_fingerprint, error)
+            await _remember_rate_limit(db, shop_code, fingerprint, error)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -378,7 +389,8 @@ async def process_item(db, item_id):
 
 
 async def process_run(db, identifier):
-    run = await one(db, Run, Run.id == identifier)
+    run_id = identifier
+    run = await one(db, Run, Run.id == run_id)
     if run is None or run.status not in ACTIVE:
         await db.commit()
         return
@@ -409,9 +421,11 @@ async def process_run(db, identifier):
             await db.flush()
             pending.append(item.id)
     await db.commit()
-    for identifier in pending:
-        await process_item(db, identifier)
-    run = await one(db, Run, Run.id == run.id, True)
+    for item_id in pending:
+        await process_item(db, item_id)
+    # A skipped/failed item rolls back its transaction and expires this run.
+    # Reload using the frozen scalar key, never run.id from the expired object.
+    run = await one(db, Run, Run.id == run_id, True)
     run.last_batch_at = now()
     policy = await one(db, Policy, Policy.shop_id == run.shop_id)
     if run.cursor_product_id >= run.max_product_id:
@@ -431,10 +445,10 @@ async def resolve(db, identifier, payload):
     shop_code = await db.scalar(select(Shop.code).where(Shop.id == item.shop_id))
     if run.target_fingerprint != target_fingerprint(shop_code):
         raise SyncError('stock_sync_target_changed')
-    target, value, run_id = item.target, item.desired, run.id
+    target, value, run_id, fingerprint = item.target, item.desired, run.id, run.target_fingerprint
     await db.commit()
     try:
-        observed = await source.read(shop_code, target, run.target_fingerprint)
+        observed = await source.read(shop_code, target, fingerprint)
     except source.SourceError as error:
         raise SyncError(error.code, error.status) from None
     item = await one(db, Item, Item.id == identifier, True)

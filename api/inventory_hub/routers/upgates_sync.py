@@ -57,7 +57,7 @@ from inventory_hub.services.product_identity import (
     IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes,
 )
 from inventory_hub.services.upgates import (
-    UpgatesClient, UpgatesError, product_title, variant_params_text,
+    UpgatesClient, UpgatesError, UpgatesParameterError, product_title, variant_params_text,
 )
 
 router = APIRouter(prefix="/shops", tags=["upgates-sync"])
@@ -156,7 +156,7 @@ def _product_key(p: Dict[str, Any]) -> str:
 
 def _variant_params(v: Dict[str, Any]) -> List[Tuple[str, str]]:
     from inventory_hub.services.upgates import variant_attributes
-    return [(item["name"], item["value"]) for item in variant_attributes(v)]
+    return [(item["name"], item["value"]) for item in variant_attributes(v, strict=True)]
 
 
 def _main_price(obj: Dict[str, Any]) -> Optional[Decimal]:
@@ -408,8 +408,10 @@ async def import_upgates_products(
                 manual_barcodes = dict((await db.execute(select(ProductEditorOverride.product_id,
                     ProductEditorOverride.data["variant"]["eans"]).where(ProductEditorOverride.product_id.in_(leaf_ids)))).all())
                 for (identity, obj), resolution, product in zip(family["leaves"], resolutions, leaf_products):
-                    if product.id not in attributed:
-                        params = _variant_params(obj) if variants else []
+                    params = _variant_params(obj) if variants else []
+                    # An EAN-linked shop alias is not authoritative for canonical
+                    # axes. Backfill only the same exact shared physical SKU.
+                    if product.id not in attributed and identity.code == product.sku:
                         for order, (name, value) in enumerate(params):
                             db.add(ProductVariantAttribute(product_id=product.id, attribute_name=name,
                                                            attribute_value=value, display_order=order))
@@ -457,7 +459,7 @@ async def import_upgates_products(
                 else:
                     content.data, content.pulled_at = p, now
                 await db.flush()
-        except (IntegrityError, DataError):
+        except (IntegrityError, DataError, UpgatesParameterError):
             conflict = {"code": code, "reasons": ["identity_changed"], "candidate_product_ids": []}
             conflicts.append(conflict)
             skipped.append({"code": code, "reason": "identity_changed"})

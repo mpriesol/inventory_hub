@@ -236,13 +236,28 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(observedColumns.every(column => column.closest('details').open), 'Mismatch comparisons are opened for the operator');
   await click(button('Overiť výsledok aktualizácie'));
   assert.equal(calls.findLast(c => c.path.endsWith('/update-confirm')).body.preview_id,'update-fixture', 'Operator can reconcile the same update intent without creating a new update');
+  assert.equal(calls.findLast(c => c.path.endsWith('/update-confirm')).body.original_request_settled, undefined, 'Readback alone never claims the original request is settled');
+  const resolveButton = () => document.querySelector('[data-testid="ai-update-resolve"]');
+  const settleCheckbox = () => document.querySelector('[data-testid="ai-update-settled"]');
+  const resolutionNote = () => document.querySelector('[data-testid="ai-update-resolution-note"]');
+  assert(resolveButton().disabled, 'Releasing uncertainty requires explicit documented confirmation');
+  await input(resolutionNote(), 'Original request confirmed terminated');
+  await click(settleCheckbox()); assert(!resolveButton().disabled);
+  await input(resolutionNote(), 'Original request confirmed completed by operator');
+  assert(!settleCheckbox().checked && resolveButton().disabled, 'Editing settlement evidence revokes the old confirmation');
+  await click(settleCheckbox()); await click(resolveButton());
+  assert.equal(calls.findLast(c => c.path.endsWith('/update-confirm')).body.original_request_settled, true);
+  assert.equal(calls.findLast(c => c.path.endsWith('/update-confirm')).body.resolution_note, 'Original request confirmed completed by operator');
 
   await act(async () => { root.render(React.createElement(AiJobDetail,{key:'pending-content',job:{...uncertainReadback,status:'review',update_only:false},onChange:() => {}})); await tick(); });
   assert([...document.querySelectorAll('label')].find(label => label.textContent.startsWith('Názov')).querySelector('textarea').disabled, 'Pending updates keep content immutable until reconciled');
   assert(!button('Uložiť koncept obsahu') && !button('Nová AI príprava s odhadom') && !button("Zrušiť túto úlohu"), 'Blocked edit, fork and cancel actions are absent while the update is pending');
   assert(!button('Overiť výsledok aktualizácie').disabled, 'An uncertain update retains its reconciliation action');
-  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'sending-content',job:{...uncertainReadback,update_preview:{...comparison,state:'sending'},update_state:'sending',update_result:{status:'sending',fields:comparison.fields}},onChange:() => {}})); await tick(); });
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'sending-content',job:{...uncertainReadback,update_preview:{...comparison,state:'sending',sending_at:new Date().toISOString()},update_state:'sending',update_result:{status:'sending',fields:comparison.fields}},onChange:() => {}})); await tick(); });
   assert(!button('Overiť výsledok aktualizácie'), 'An active send displays its pending state without a redundant submission control');
+  assert.equal(resolveButton(), null, 'A currently active send has no early settlement control');
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'old-sending-content',job:{...uncertainReadback,update_preview:{...comparison,state:'sending',sending_at:new Date(Date.now()-6*60*1000).toISOString()},update_state:'sending'},onChange:() => {}})); await tick(); });
+  assert(resolveButton().disabled && !settleCheckbox().checked, 'An abandoned sending intent can be resolved only with fresh evidence and confirmation');
 
   const existingReview = { ...updateJob, update_only: true, source_kind: 'shop', update_preview: null, status: 'review',
     applied_rules: [{id:'common',name:'Overené spoločné pravidlá',text:'Použitá konkrétna inštrukcia.'}], parameter_registry: [{name:'Materiál',scope:'parent',values:['Hliník'],required:true}],

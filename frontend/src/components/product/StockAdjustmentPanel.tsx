@@ -7,7 +7,7 @@ import './fifoPanel.css';
 
 type Pending = { path: string; body: Record<string, unknown> };
 type Preview = { id: string; status: string; preview_hash: string; preview: {
-  sku: string; warehouse_code: string; before_quantity: string; counted_quantity: string; delta: string;
+  sku: string; warehouse_code: string; before_quantity: string | null; initial_zero_count?: boolean; counted_quantity: string; delta: string;
   reason: string; source_reference: string; unit_cost: string | null; cost_status: string;
   operator_name: string; counted_at: string;
 }; result: unknown };
@@ -48,7 +48,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
     setCount(''); setReason(''); setSource(''); setOperator(''); setCost(''); setKnown(false);
     setError(''); running.current = false; setBusy(false);
     if (warehouseCode && hubUnlocked()) fifoStock(productId, warehouseCode, 0, controller.signal)
-      .then(value => { if (own === generation.current) { setStock(value); setCount(value.balance?.qty_on_hand == null ? '0' : String(Number(value.balance.qty_on_hand))); } })
+      .then(value => { if (own === generation.current) { setStock(value); setCount(value.balance?.qty_on_hand == null ? '' : String(Number(value.balance.qty_on_hand))); } })
       .catch(() => { if (!controller.signal.aborted && own === generation.current) setError(c('readFailed')); });
     return () => { generation.current++; controller.abort(); };
   }, [productId, warehouseCode, credential, refresh]);
@@ -71,7 +71,13 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
       const result: any = await hubRequest(request.path, request.body);
       if (request.path.endsWith('/preview')) {
         if (result?.id !== request.body.request_id || !result?.preview_hash || !result?.preview) throw new Error('invalid response');
-      } else if (!result?.movement_id || result?.adjustment_id !== request.path.split('/')[3]) throw new Error('invalid response');
+      } else {
+        const initialZero = result?.initial_zero_count === true && result?.movement_id === null
+          && result?.before_quantity === null && result?.counted_quantity === '0' && result?.delta === '0';
+        const postedMovement = result?.initial_zero_count !== true && Number.isSafeInteger(result?.movement_id) && result.movement_id > 0;
+        if ((!initialZero && !postedMovement) || result?.adjustment_id !== request.path.split('/')[3]
+          || result?.product_id !== productId || !Number.isSafeInteger(result?.warehouse_id) || result.warehouse_id <= 0) throw new Error('invalid response');
+      }
       clearOriginal();
       if (own !== generation.current) return;
       setPending(null); setConfirmed(false);
@@ -80,7 +86,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
         setSource(result.preview.source_reference); setOperator(result.preview.operator_name);
         setKnown(result.preview.cost_status === 'known'); setCost(result.preview.unit_cost ?? '');
       }
-      else { setPreview(null); setMessage(c('completed')); setRefresh(value => value + 1); onChanged?.(); }
+      else { setPreview(null); setMessage(c(result.initial_zero_count === true ? 'zeroCompleted' : 'completed')); setRefresh(value => value + 1); onChanged?.(); }
     } catch (e: any) {
       if (own !== generation.current) return;
       // Validation/conflict responses are definitive and contain no committed movement.
@@ -104,7 +110,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
     {!hubUnlocked() && <p>{c('unlock')}</p>}
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     {pending && <div><p>{c('uncertain')}</p><button type="button" data-testid="adjustment-retry" disabled={busy} onClick={() => void command(pending)}>{c('retry')}</button></div>}
-    {stock && <><p>{sku} · {stock.warehouse.name} · {c('current')}: {stock.balance?.qty_on_hand ?? '0'}</p>
+    {stock && <><p>{sku} · {stock.warehouse.name} · {c('current')}: {stock.balance?.qty_on_hand ?? c('unknownQuantity')}</p>{!stock.balance && <p data-testid="adjustment-initial-count-help">{c('initialCountHelp')}</p>}
       <fieldset disabled={immutable}><div className="fifo-fields">
         <label>{c('count')}<input data-testid="adjustment-count" inputMode="numeric" value={count} onChange={e => changing(() => setCount(e.target.value))} /></label>
         <label>{c('operator')}<input data-testid="adjustment-operator" value={operator} onChange={e => changing(() => setOperator(e.target.value))} /></label>
@@ -113,10 +119,10 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
         {incoming && <><label><input data-testid="adjustment-known" type="checkbox" checked={known} onChange={e => changing(() => setKnown(e.target.checked))} />{c('known')}</label>
           {known && <label>{c('cost')}<input data-testid="adjustment-cost" value={cost} onChange={e => changing(() => setCost(e.target.value))} /></label>}</>}
       </div></fieldset>
-      {preview && <div data-testid="adjustment-preview"><p>{preview.preview.sku} · {preview.preview.warehouse_code}</p><p>{c('change', { before: preview.preview.before_quantity, after: preview.preview.counted_quantity, delta: preview.preview.delta })}</p><p>{preview.preview.reason} · {preview.preview.source_reference} · {preview.preview.operator_name} · {new Date(preview.preview.counted_at).toLocaleString()}</p>
-        <p data-testid="adjustment-preview-cost">{Number(preview.preview.delta) > 0 ? `${c('cost')}: ${preview.preview.unit_cost ?? c('unknown')}` : c('derivedCost')}</p></div>}
-      <label><input data-testid="adjustment-confirm" type="checkbox" disabled={busy || !!pending} checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />{c(preview ? 'confirmApply' : 'confirmCount')}</label>
-      <div className="fifo-actions"><span className="action-control"><button type="button" data-testid="adjustment-submit" disabled={busy || !!pending || !confirmed || (!preview && !valid)} onClick={submit}>{c(preview ? 'apply' : 'preview')}</button><ActionScope effects={['hub-write']} /></span>
+      {preview && <div data-testid="adjustment-preview"><p>{preview.preview.sku} · {preview.preview.warehouse_code}</p><p>{preview.preview.initial_zero_count ? c('initialZeroPreview') : c('change', { before: preview.preview.before_quantity ?? c('unknownQuantity'), after: preview.preview.counted_quantity, delta: preview.preview.delta })}</p><p>{preview.preview.reason} · {preview.preview.source_reference} · {preview.preview.operator_name} · {new Date(preview.preview.counted_at).toLocaleString()}</p>
+        <p data-testid="adjustment-preview-cost">{preview.preview.initial_zero_count ? c('zeroNoMovement') : Number(preview.preview.delta) > 0 ? `${c('cost')}: ${preview.preview.unit_cost ?? c('unknown')}` : c('derivedCost')}</p></div>}
+      <label><input data-testid="adjustment-confirm" type="checkbox" disabled={busy || !!pending} checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />{c(preview?.preview.initial_zero_count ? 'confirmInitialZero' : preview ? 'confirmApply' : 'confirmCount')}</label>
+      <div className="fifo-actions"><span className="action-control"><button type="button" data-testid="adjustment-submit" disabled={busy || !!pending || !confirmed || (!preview && !valid)} onClick={submit}>{c(preview?.preview.initial_zero_count ? 'recordInitialZero' : preview ? 'apply' : 'preview')}</button><ActionScope effects={['hub-write']} /></span>
         {preview && !pending && <button type="button" disabled={busy} onClick={() => { setPreview(null); setConfirmed(false); }}>{c('edit')}</button>}
         <button type="button" data-testid="adjustment-reload" disabled={busy || !!pending} onClick={() => setRefresh(value => value + 1)}>{c('reload')}</button></div>
     </>}

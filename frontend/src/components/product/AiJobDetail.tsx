@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AiContent, AiJob, aiRequest } from '../../api/aiContent';
 import { AiParameterValues, missingRequiredParameterValues } from './AiParameterValues';
@@ -41,8 +41,13 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
   const [selectedIds, setSelectedIds] = useState<number[]>(job.product_ids);
   const [updateFields, setUpdateFields] = useState(['title','short_description','long_description','seo_title','seo_description','metas']);
   const [importOpen, setImportOpen] = useState(false);
+  const [settled, setSettled] = useState(false);
+  const [resolutionNote, setResolutionNote] = useState('');
+  useEffect(() => { setSettled(false); setResolutionNote(''); }, [job.id, job.revision, job.update_preview?.id, job.update_preview?.state]);
   const updateState = job.update_preview?.state || job.update_state;
   const pendingUpdate = ['sending','uncertain'].includes(updateState || '');
+  const canResolveUpdate = updateState === 'uncertain' || (updateState === 'sending'
+    && Date.now() - Date.parse(job.update_preview?.sending_at || job.updated_at) >= 5 * 60 * 1000);
   const editable = !pendingUpdate && ['review', 'blocked', 'ready'].includes(job.status) && job.kind === 'product';
   const missingParameters = missingRequiredParameterValues(job.kind === 'product' ? job.output?.parameters || [] : [], job.parameter_registry || [], job.facts || []);
   async function perform(fn: () => Promise<AiJob>) { setBusy(true); setError(''); try { const updated = await fn(); onChange(updated); setDirty(false); } catch (e) { setError(t(`ai.errors.${(e as Error & {code?: string}).code}`, {defaultValue:(e as Error).message})); } finally { setBusy(false); } }
@@ -96,6 +101,12 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
         </div>
       </details>)}
       {!['completed','rejected','sending'].includes(job.update_preview.state) && <button disabled={busy || dirty} className="ai-primary" onClick={() => perform(() => aiRequest(`/jobs/${job.id}/update-confirm`, {expected_revision:job.revision,preview_id:job.update_preview!.id}))}>{t(job.update_preview.state === 'ready' ? 'ai.confirmUpdate' : 'ai.reconcileUpdate')}</button>}
+      {canResolveUpdate && <div className="ai-notice"><p>{t('ai.settleUpdateHelp')}</p>
+        <label className="ai-check"><input data-testid="ai-update-settled" type="checkbox" disabled={busy} checked={settled} onChange={e => setSettled(e.target.checked)} />{t('ai.settleUpdateConfirm')}</label>
+        <label>{t('ai.settleUpdateNote')}<input data-testid="ai-update-resolution-note" disabled={busy} value={resolutionNote} onChange={e => { setResolutionNote(e.target.value); setSettled(false); }} /></label>
+        <button data-testid="ai-update-resolve" disabled={busy || dirty || !settled || resolutionNote.trim().length < 10} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/update-confirm`, {
+          expected_revision:job.revision, preview_id:job.update_preview!.id, original_request_settled:true, resolution_note:resolutionNote.trim(),
+        }))}>{t('ai.settleUpdate')}</button></div>}
     </div>}
     {canFork && <details><summary>{t('ai.prepareAgain')}</summary><p>{t('ai.partialHelp')}</p>{job.facts?.map(f => <label className="ai-check" key={f.id}><input type="checkbox" checked={selectedIds.includes(f.id)} onChange={e => setSelectedIds(old => e.target.checked ? [...old,f.id] : old.filter(id => id !== f.id))} />{f.name} · {f.variant_attributes?.map(a => a.value).join(' / ')}</label>)}<div className="ai-actions">{job.output && <button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:true,use_ai:true}))}>{t('ai.copySelectedContent')}</button>}<button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:false,use_ai:true}))}>{t('ai.newAiPreparation')}</button><button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:false,use_ai:false}))}>{t('ai.useOriginalSelected')}</button></div></details>}
     {!job.update_only && job.preview && <div className="ai-actions"><button disabled={busy || dirty} onClick={() => setImportOpen(true)}>{t(job.import_result ? 'ai.showImportResult' : 'ai.showImportPreview')}</button></div>}

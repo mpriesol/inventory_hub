@@ -21,7 +21,7 @@ Pravidelný prenos vyžaduje výslovné nastavenie Hubu ako autority zásob. Pre
 - Na všetkých kanáloch spoločného skladu je zapnuté pravidelné načítanie objednávok a automatické lokálne rezervácie alebo výdaje. Objednávky vyžadujúce kontrolu treba vyriešiť.
 - Správca povolil serverový prepínač `STOCK_SYNC_WRITE_ENABLED=true`. Tento prepínač je nezávislý od `STOCK_PUBLICATION_WRITE_ENABLED` pre údržbu.
 
-Ak sa nedá výlučné zapisovanie zásob v konkrétnom nastavení Upgates zabezpečiť, pravidelný prenos nezapínaj; ostáva dostupné riadené údržbové odosielanie. Zmena pripojenia, politiky skladu alebo zoznamu jeho predajných kanálov vyžaduje nové potvrdenie autority.
+Ak sa nedá výlučné zapisovanie zásob v konkrétnom nastavení Upgates zabezpečiť, pravidelný prenos nezapínaj; ostáva dostupné riadené údržbové odosielanie. Zmena pripojenia, politiky skladu alebo zoznamu jeho predajných kanálov vyžaduje nové potvrdenie autority. Kým má e-shop priradenú skladovú autoritu alebo zostáva neistý skladový zápis, AI úpravy nesmú meniť jeho dostupnosť. Opačne, rozpracovaný alebo neistý AI zápis dostupnosti treba vyriešiť pred pridelením skladovej autority.
 
 Pravidelná synchronizácia pracuje s oneskorením načítania objednávok. Nejde o okamžitú spoločnú pokladňovú rezerváciu medzi oboma e-shopmi. Kontrola aktuálnosti znižuje riziko starej projekcie, ale nedokazuje, že tesne pred odoslaním nevznikla nová objednávka. Kratší interval načítania objednávok a prenosu znižuje túto medzeru. Hub kontroluje čerstvé dokončené načítanie, kurzor objednávok a chýbajúce alebo nedokončené spracovanie na všetkých zúčastnených kanáloch.
 
@@ -35,7 +35,7 @@ Vlastné voľné množstvo je fyzické množstvo mínus rezervácie mínus karan
 
 Aj tovar s dostupnosťou `overíme` zostáva objednateľný. Odosielané sú iba `stock`, `availability` a `can_add_to_basket_yn` pre presný skladový list. Variant pod rodičom „xTrek“ v BIKETREK sa aktualizuje samostatne; nemenia sa ostatné varianty ani názov rodiča. Ceny, názvy, obrázky a aktivita produktu nie sú súčasťou tohto prenosu.
 
-Chýbajúci alebo neoverený lokálny stav nie je nula. Taká položka sa preskočí s dôvodom a najprv vyžaduje riadne zaevidovanie počiatočného stavu alebo príjmu. To platí aj pre produkt iba načítaný z katalógu dodávateľa. Platnosť ponúk dodávateľov sa kontroluje aj bez nového feedu, takže po uplynutí platnosti ďalší priechod prenesie `overíme`.
+Chýbajúci alebo neoverený lokálny stav nie je nula. Taká položka sa preskočí s dôvodom a najprv vyžaduje riadne zaevidovanie počiatočného stavu alebo príjmu. Potvrdená počiatočná nulová bilancia z manuálnej inventúrnej korekcie je tiež platným podkladom: má vlastný audit, nevytvára fiktívny pohyb ani nákupnú vrstvu. Pri dodávateľskom produkte, ktorý fyzicky nemáme, možno v [oprave množstva](stock-adjustments.md) výslovne zdokumentovať prvé spočítanie **0 kusov**, bez fiktívneho pohybu. To platí aj pre produkt iba načítaný z katalógu dodávateľa. Platnosť ponúk dodávateľov sa kontroluje aj bez nového feedu, takže po uplynutí platnosti ďalší priechod prenesie `overíme`.
 
 Úspešná položka znamená následne overené vzdialené hodnoty. **Dokončený priechod** môže obsahovať preskočené položky; skontroluj počty a dôvody. Úspešný prenos nikdy nevytvára lokálny skladový pohyb.
 
@@ -65,3 +65,5 @@ Identita aj vlastná bilancia sa znovu vyhodnotia po vzdialenom čítaní pred u
 Transport zdieľa overovanie HTTPS, presnej identity, veľkosti odpovede a jednoznačného potvrdenia s údržbovým transportom. Nepoužíva presmerovania ani automatické opakovanie zápisu. Oficiálny kontrakt podporuje sklad a dostupnosť aj na variantoch cez [PUT products](https://docs.upgates.com/api-reference/produkty) a samostatné načítanie variantov cez [produktové zoznamy](https://docs.upgates.com/api-reference/produkty-seznamy). Verejný kontrakt nedokumentuje podmienený zápis či idempotentný kľúč; preto výlučná autorita a explicitné riešenie neistoty zostávajú nevyhnutnou súčasťou aktivácie.
 
 Vypnutie plánovača necháva ručný prenos dostupný pri zachovanom oprávnení. Odobratie oprávnenia zastaví nové pokusy rozpracovaných priechodov, ale nezruší už odoslanú sieťovú požiadavku. Návrat staršej verzie aplikácie ani vypnutie serverového prepínača nevracajú vzdialené zásoby späť; na opravu sa použije dopredná zmena po zosúladení neistých pokusov.
+
+Po pridelení skladovej autority dostupnosť nesmie súbežne prepisovať AI obsah. AI úprava môže pokračovať bez poľa dostupnosti; jeho riadenie patrí skladovej projekcii. Aktiváciu autority blokuje prebiehajúci/neistý AI zápis dostupnosti a nevyriešený skladový zápis blokuje takú AI zmenu aj po odvolaní autority.

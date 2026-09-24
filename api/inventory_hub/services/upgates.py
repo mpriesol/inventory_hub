@@ -259,7 +259,11 @@ def product_title(p: Dict[str, Any], preferred_lang: str = "sk") -> str:
     return str(p.get("title") or p.get("code") or "")
 
 
-def variant_attributes(v: Dict[str, Any], preferred_lang: str = "sk") -> List[Dict[str, str]]:
+class UpgatesParameterError(ValueError):
+    """A leaf's parameter set cannot be imported without dropping evidence."""
+
+
+def variant_attributes(v: Dict[str, Any], preferred_lang: str = "sk", *, strict: bool = False) -> List[Dict[str, str]]:
     """Normalize documented and historical parameter shapes without inventing axes.
 
     Prefer Slovak, then Czech, then an available language. These are leaf values;
@@ -281,10 +285,14 @@ def variant_attributes(v: Dict[str, Any], preferred_lang: str = "sk") -> List[Di
         return ""
     out, seen = [], set()
     parameters = v.get("parameters_new") or v.get("parameters") or []
-    if not isinstance(parameters, list):
+    if not isinstance(parameters, list) or len(parameters) > 100:
+        if strict:
+            raise UpgatesParameterError("Invalid variant parameters")
         return []
-    for item in parameters[:100]:
+    for item in parameters:
         if not isinstance(item, dict):
+            if strict:
+                raise UpgatesParameterError("Invalid variant parameters")
             continue
         name = localized(item.get("descriptions"), "name") or localized(item.get("name"), "name")
         values = []
@@ -293,9 +301,17 @@ def variant_attributes(v: Dict[str, Any], preferred_lang: str = "sk") -> List[Di
             if text and text not in values:
                 values.append(text)
         text = ", ".join(values) or localized(item.get("value"), "value")
-        if name and text and name.casefold() not in seen and len(name) <= 100 and len(text) <= 255:
-            out.append({"name": name, "value": text})
-            seen.add(name.casefold())
+        if name.casefold() in seen:
+            if strict:
+                raise UpgatesParameterError("Ambiguous duplicate variant parameter")
+            # Ambiguous cached data is unknown, never an arbitrarily chosen axis.
+            return []
+        if not name or not text or len(name) > 100 or len(text) > 255:
+            if strict:
+                raise UpgatesParameterError("Invalid variant parameters")
+            continue
+        out.append({"name": name, "value": text})
+        seen.add(name.casefold())
     return out
 
 

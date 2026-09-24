@@ -25,6 +25,7 @@ from inventory_hub.services.upgates import variant_attributes
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.catalog import _http_url
 from inventory_hub.services.supplier_availability import project as supplier_availability_projection
+from inventory_hub.services.stock_evidence import physical_stock_evidence
 
 
 class EditorError(Exception):
@@ -98,9 +99,12 @@ SELECT sp.id,
       WHEN jsonb_typeof(coalesce(leaf.value->'active_yn', c.data->'active_yn')) = 'boolean'
       THEN (coalesce(leaf.value->'active_yn', c.data->'active_yn') #>> '{}')::boolean ELSE NULL END AS visible,
  substring(coalesce(jsonb_path_query_first(leaf.value, '$.images[*] ? (@.main_yn == true).url') #>> '{}',
-   leaf.value #>> '{images,0,url}', jsonb_path_query_first(c.data, '$.images[*] ? (@.main_yn == true).url') #>> '{}',
-   leaf.value #>> '{image,url}', CASE WHEN jsonb_typeof(leaf.value->'image') = 'string' THEN leaf.value->>'image' END, c.data #>> '{images,0,url}'), 1, 2001) AS image_url,
- coalesce(leaf.value->'parameters_new', leaf.value->'parameters', '[]'::jsonb) AS parameters,
+   leaf.value #>> '{images,0,url}', leaf.value #>> '{image,url}',
+   CASE WHEN jsonb_typeof(leaf.value->'image') = 'string' THEN leaf.value->>'image' END,
+   jsonb_path_query_first(c.data, '$.images[*] ? (@.main_yn == true).url') #>> '{}',
+   c.data #>> '{images,0,url}'), 1, 2001) AS image_url,
+ coalesce(nullif(nullif(leaf.value->'parameters_new', 'null'::jsonb), '[]'::jsonb),
+   nullif(leaf.value->'parameters', 'null'::jsonb), '[]'::jsonb) AS parameters,
  substring(coalesce(jsonb_path_query_first(leaf.value, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
    jsonb_path_query_first(c.data, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
    c.data #>> '{descriptions,0,url}', c.data->>'url'), 1, 2001) AS shop_url,
@@ -189,8 +193,7 @@ async def _rows(db, ids, warehouse):
     supplier_availability = await supplier_availability_projection(db, ids)
     balances, fifo_states, fifo_values = {}, set(), {}
     if warehouse:
-        evidence = exists(select(StockMovement.id).where(StockMovement.product_id == StockBalance.product_id,
-            StockMovement.warehouse_id == StockBalance.warehouse_id))
+        evidence = physical_stock_evidence()
         for balance, verified in (await db.execute(select(StockBalance, evidence).where(StockBalance.product_id.in_(ids),
                 StockBalance.warehouse_id == warehouse["id"]))).all():
             balances[balance.product_id] = (balance, verified)
@@ -214,13 +217,13 @@ async def _rows(db, ids, warehouse):
         codes = {(code, identifier.value) for identifier, code in identifiers[product.id]
                  if str(getattr(identifier.identifier_type, "value", identifier.identifier_type)) == "supplier_sku"}
         codes.update((supplier, sku) for supplier, sku, _, _ in sources[product.id])
-        shop_values, image_urls = [], [group.main_image_url] if group else []
+        shop_values, image_urls = [], []
         fallback_attributes = []
         for shop in shops:
             mapping = mappings[product.id].get(shop.id)
             raw = observed.get(mapping.id, {}) if mapping else {}
             image_urls.append(raw.get("image_url"))
-            if not fallback_attributes:
+            if not fallback_attributes and mapping and mapping.variant_code == product.sku:
                 fallback_attributes = variant_attributes({"parameters": raw.get("parameters")})
             shop_values.append({"shop_code": shop.code, "mapped": bool(mapping and mapping.is_listed),
                 "mapping": {"id": mapping.id, "external_id": mapping.external_id, "code": mapping.external_code,
@@ -228,6 +231,8 @@ async def _rows(db, ids, warehouse):
                 "shop_url": _http_url(raw.get("shop_url")), "shop_admin_url": _http_url(raw.get("shop_admin_url")),
                 "observed": {"name": raw.get("name"), "price": _decimal(mapping.shop_price) if mapping else None,
                              "price_basis": "unknown", "visible": raw.get("visible")}})
+        if group:
+            image_urls.append(group.main_image_url)
         image_urls.extend(url for _, _, url, _ in sources[product.id])
         for _, _, _, attrs in sources[product.id]:
             if not fallback_attributes and isinstance(attrs, list):

@@ -22,8 +22,8 @@ Aktualizované 24. 9. 2026. Vlastník odsúhlasil implementáciu podľa odpoved�
 | --- | --- | --- |
 | A | Identita príjmu/importov, request ID skenera, opravy prehľadu, označenie akcií a história pohybov | Nasadené cez [PR #34](https://github.com/mpriesol/inventory_hub/pull/34); CI 658 backend testov vrátane PostgreSQL bez preskočenia, build a 14 UI sád; deployment 35989256455 a zdravá DB overené |
 | B1 | Šírky/poradie/stĺpce tabuľky, variantné parametre a práca so skupinami | Implementované súbežne s A; interakčné testy prešli |
-| B2 | Editor → náhľad → publikovanie vybraných polí do konkrétneho shopu | Čaká; dnešné uloženie zostáva lokálne |
-| C | Scheduler feedov, čerstvosť, dostupnosti, automatický dávkový skladový prenos a porovnávanie | Čaká; maintenance publisher nie je bežná automatika |
+| B2 | Editor → náhľad → publikovanie vybraných polí do konkrétneho shopu | Implementované v PR #35; overenie a nasadenie podľa záznamu nižšie. Samotné uloženie zostáva lokálne |
+| C | Scheduler feedov, čerstvosť, dostupnosti, automatický dávkový skladový prenos a porovnávanie | Implementované v PR #35; prevádzková aktivácia je samostatný krok, predvolene vypnutá |
 | D | Dokončenie jednoduchého príjmu/dokladov, skutočné tržby a hrubá marža, malý servisný výdaj | Čaká; nákladové vrstvy už existujú |
 | E | Pilot aktuálneho rozsahu a spoločný prechod | Čaká |
 
@@ -50,6 +50,10 @@ Prvý balík používa migráciu `013` pre idempotentné požiadavky skenera; je
 
 Vlastník presunul **dodávateľské dostupnosti a pravidelný prenos zásob** pred B2. Súbežne požaduje opravu odchodu z dokončeného príjmu, prázdnych parametrov, jednu tabuľku Sklad/Produkty s obrázkami a stĺpcami oboch e-shopov, manuálnymi bunkami a odoslaním. Pôvodné poradie B2→C už neplatí.
 
-Rozpracovaná vetva `codex/supplier-sync-unified-stock`: scheduler feedov a čerstvosť, samostatný pravidelný publisher s dedičnými intervalmi a ručným spustením, jednotná tabuľka, vybrané produktové publikovanie a dokumentované korekčné pohyby. Migrácie 014–017. Nasadenie tejto etapy a overenia budú doplnené podľa skutočných výsledkov PR; prítomnosť súborov nie je dôkaz nasadenia.
+[PR #35](https://github.com/mpriesol/inventory_hub/pull/35), vetva `codex/supplier-sync-unified-stock`: scheduler feedov a čerstvosť, samostatný pravidelný publisher s dedičnými intervalmi a ručným spustením, jednotná tabuľka, vybrané produktové publikovanie a dokumentované korekčné pohyby. Migrácie 014–017. Nasadenie tejto etapy a overenia budú doplnené podľa skutočných výsledkov PR; prítomnosť súborov nie je dôkaz nasadenia.
 
 Naďalej platí automatické schvaľovanie/merge PR a následné nasadenie až do odvolania, výslovne znovu potvrdené vlastníkom. Neaktivuje to samo osebe ostrú skladovú autoritu, dodávateľské intervaly ani hromadné živé zápisy.
+
+Dodatočné kontroly: spoločný trvalý zámok AI a ručného produktového odosielania, výslovné uzavretie neistého AI pokusu, Unicode kolízie SKU a audit prvého fyzického počtu 0 pre dodávateľské produkty. Lokálne prešli build a všetkých 16 UI sád. Databázové scenáre sa overujú v PR CI s PostgreSQL; presný posledný výsledok a nasadenie sú v PR.
+
+Prvý CI beh `36004823470`: frontend prešiel; backend odhalil tri regresie importu parametrov a tri chyby pokračovania synchronizácie po rollbacku položky. Oprava obnovila odmietnutie neplatnej rodiny, obmedzila dopĺňanie kanonických parametrov na presnú zhodu SKU a uchováva identifikátor behu mimo expirovaného ORM objektu. Pôvodné regresné očakávania zostali zachované. Tento výsledok nie je schválením nasadenia; rozhoduje opakované CI opraveného commitu.

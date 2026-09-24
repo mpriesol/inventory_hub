@@ -40,3 +40,11 @@ class StockAdjustmentInputTests(unittest.TestCase):
         self.assertEqual(validate_count(stock, Decimal(5)), Decimal(-5))
         with self.assertRaisesRegex(FifoError, "no_change"):
             validate_count(stock, Decimal(10))
+
+    def test_zero_is_not_implicitly_known_without_explicit_initial_count(self):
+        with self.assertRaisesRegex(FifoError, "no_change"):
+            validate_count(None, Decimal(0))
+        self.assertEqual(validate_count(None, Decimal(0), initial_zero=True), Decimal(0))
+        with self.assertRaisesRegex(FifoError, "no_change"):
+            validate_count(SimpleNamespace(qty_on_hand=Decimal(3), qty_reserved=Decimal(0), qty_quarantined=Decimal(0)),
+                           Decimal(3), initial_zero=True)

@@ -10,7 +10,7 @@ Tento dokument opisuje kontrakt tejto implementácie. Výsledky CI, nasadenie a 
 
 Otvoriť ho možno cez **Sklad → Odoslať sklad do e-shopu** (`/stock/publication`). Uložené nastavenie a výsledky sa načítavajú výslovne; zadanie tokenu samo neodosiela požiadavku na zmenu zásob.
 
-Odosiela sa **vlastná voľná zásoba = fyzická zásoba − rezervácie** v sklade priradenom potvrdenej politike e-shopu. Dodávateľské množstvá sa nepripočítavajú. Zápis nemení ceny, texty, viditeľnosť ani lokálne skladové pohyby.
+Odosiela sa **vlastná voľná zásoba = fyzická zásoba − rezervácie − karanténa** v sklade priradenom potvrdenej politike e-shopu. Dodávateľské množstvá sa nepripočítavajú. Zápis nemení ceny, texty, viditeľnosť ani lokálne skladové pohyby.
 
 Vyberajú sa konkrétne SKU. Variant pod pokladňovým rodičom „xTrek“ v BIKETREK sa odosiela samostatne podľa svojho kódu; ostatné tisíce variantov tohto rodiča sa nepridávajú. Neznáma bilancia alebo nejednoznačné mapovanie operáciu blokujú. Neznámy stav sa nesmie poslať ako nula.
 

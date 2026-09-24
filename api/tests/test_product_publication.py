@@ -7,7 +7,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 from inventory_hub.product_editor_types import EditorRowPatch, PublicationResolveRequest, PublicationSendRequest
 from inventory_hub.services import product_editor as editor, product_publication_source as source
-from inventory_hub.services.upgates import variant_attributes
+from inventory_hub.services.upgates import UpgatesParameterError, variant_attributes
 
 
 def remote():
@@ -77,6 +77,13 @@ class ProductPublicationPureTests(TestCase):
         self.assertEqual(variant_attributes({'parameters': [{'name': {'sk': a['name']}, 'values': [{'sk': a['value']}]} for a in expected]}), expected)
         self.assertEqual(variant_attributes({'parameters': expected}), expected)
         self.assertEqual(variant_attributes({'parameters': None}), [])
+        ambiguous = {'parameters': [{'name': 'Size', 'value': 'L'}, {'name': 'Size', 'value': 'XL'}]}
+        with self.assertRaises(UpgatesParameterError):
+            variant_attributes(ambiguous, strict=True)
+        self.assertEqual(variant_attributes(ambiguous), [])
+        for malformed in ({'parameters': 'invalid'}, {'parameters': [{'name': 'Size'}]}):
+            with self.assertRaises(UpgatesParameterError):
+                variant_attributes(malformed, strict=True)
 
     def test_operator_confirmation_and_identifiers_are_exact(self):
         for value in (1, 'true', False):
