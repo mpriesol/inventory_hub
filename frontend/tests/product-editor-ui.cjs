@@ -53,13 +53,14 @@ const reply = value => ({ ok: true, json: async () => clone(value) });
 const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.toString(16).padStart(4, '0')}`.padEnd(64, 'a');
 const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
   attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
-  supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: null, revision: 3, snapshot_hash: hash(id, 3),
+  supplier_availability: { available: true, fresh: id !== 2, label: id === 2 ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
+  supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
   common: { name: `Fixture product ${id}`, brand: 'Fixture', internal_note: '' },
   variant: { sale_price_gross: '199.90', vat_rate: '23.00', note: '' },
   warehouse: { code: 'main', location: `A-${String(id).padStart(2, '0')}`, min_quantity: '0' },
   stock: id === 2 ? { known: false, qty_on_hand: null, qty_reserved: null, qty_quarantined: null, qty_available: null, avg_cost: null, total_value: null }
     : { known: true, qty_on_hand: '3', qty_reserved: '3', qty_quarantined: '0', qty_available: '0', avg_cost: '0.0000', total_value: '0.0000' },
-  shops: ['biketrek', 'xtrek'].map(shop_code => ({ shop_code, mapped: true, overrides: { name: null, sale_price_gross: null, visible: null },
+  shops: ['biketrek', 'xtrek'].map(shop_code => ({ shop_code, mapped: true, shop_url: `https://${shop_code}.example.test/product-${id}`, shop_admin_url: `https://${shop_code}.example.test/admin/product-${id}`, overrides: { name: null, sale_price_gross: null, visible: null },
     effective: { name: `Fixture product ${id}`, sale_price_gross: '199.90', visible: true },
     observed: { name: `Observed ${shop_code} ${id}`, price: '189.90', price_basis: 'unknown', visible: false }, state: 'inherited' })),
   overrides: { common: {}, variant: {}, warehouses: {}, shops: {} },
@@ -68,6 +69,7 @@ const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = make
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
   warehouses: [{ id: 7, code: 'main', name: 'Main fixture' }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 const calls = [], saves = new Map(), saveBodies = new Map();
+const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave;
 const saveCalls = () => calls.filter(call => call.path === '/api/product-editor/save');
 const rowForWarehouse = (row, warehouseCode) => ({ ...clone(row), warehouse: warehouseCode ? clone(row.warehouse) : null });
@@ -92,6 +94,31 @@ global.fetch = async (path, init = {}) => {
       currency: 'EUR', price_basis: 'incl_vat' };
     if (listMode === 'pending') return new Promise(resolve => { resolveList = () => resolve(reply(snapshot)); });
     return reply(snapshot);
+  }
+  const historyMatch = url.pathname.match(/^\/api\/product-editor\/products\/(\d+)\/publications$/);
+  if (historyMatch) return reply({ items: [...publications.values()].filter(item => item.product_id === Number(historyMatch[1])).reverse() });
+  const previewMatch = url.pathname.match(/^\/api\/product-editor\/products\/(\d+)\/publication\/preview$/);
+  if (previewMatch) {
+    assert.equal(init.method, 'POST');
+    const product = rows.get(Number(previewMatch[1])); assert.equal(body.expected_revision, product.revision);
+    assert.equal(body.shop_code, 'biketrek'); assert.deepEqual(body.fields, ['sale_price_gross', 'visible']);
+    const publication = { id: `00000000-0000-4000-8000-${String(publications.size + 1).padStart(12, '0')}`, product_id: product.id,
+      shop_code: body.shop_code, state: 'ready', revision: product.revision, fields: body.fields,
+      before: { sale_price_gross: '189.90', visible: false }, after: { sale_price_gross: product.variant.sale_price_gross, visible: true },
+      expires_at: '2026-12-31T12:00:00Z', created_at: '2026-09-24T12:00:00Z', error: null };
+    publications.set(publication.id, publication); return reply(publication);
+  }
+  const publicationMatch = url.pathname.match(/^\/api\/product-editor\/publications\/([^/]+)(?:\/(send|resolve))?$/);
+  if (publicationMatch) {
+    const publication = publications.get(publicationMatch[1]); assert(publication);
+    if (publicationMatch[2] === 'send') {
+      assert.equal(init.method, 'POST'); assert.deepEqual(body, { confirmed: true }); publicationWrites++;
+      publication.state = publicationMode === 'lost' ? 'uncertain' : 'completed';
+      if (publicationMode === 'lost') throw new TypeError('Lost shop publication result');
+    } else if (publicationMatch[2] === 'resolve') {
+      assert.equal(body.original_request_settled, true); assert.equal(body.confirmed, true); assert(body.note.length >= 10); publication.state = 'resolved';
+    } else assert.equal(init.method, 'GET');
+    return reply(publication);
   }
   const detailMatch = url.pathname.match(/^\/api\/product-editor\/products\/(\d+)$/);
   if (detailMatch) {
@@ -157,7 +184,7 @@ global.fetch = async (path, init = {}) => {
   throw new Error('Unexpected synthetic endpoint ' + path);
 };
 const cell = (id, field) => required(`cell-${id}-${field}`);
-const cellText = (id, field) => cell(id, field).querySelector('.product-editor-cell-value').textContent;
+const cellText = (id, field) => cell(id, field).querySelector('.product-editor-cell-value').textContent.trim();
 async function edit(id, field, value, commit = 'Enter') {
   await key(cell(id, field), 'Enter'); await input('cell-editor', value); await key('cell-editor', commit);
 }
@@ -173,7 +200,12 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(calls.length, 2, 'First explicit load requests options and one product page');
   assert.equal(calls[0].path, '/api/product-editor/options');
   assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('page_size'), '50');
-  assert.equal(required('mode-common').getAttribute('aria-selected'), 'true');
+  assert(!element('mode-common') && !element('mode-biketrek') && !element('mode-xtrek'), 'One unified grid replaces the three shop tabs');
+  assert(element('cell-1-image_url') && element('cell-1-biketrek') && element('cell-1-xtrek'), 'Image and both shop-presence columns are visible by default');
+  assert.equal(cell(1, 'image_url').querySelector('img').getAttribute('src'), 'https://images.example.test/item.jpg');
+  assert.equal(cell(1, 'biketrek').querySelector('a').getAttribute('href'), 'https://biketrek.example.test/product-1');
+  assert.equal(cell(1, 'xtrek').querySelectorAll('a')[1].getAttribute('href'), 'https://xtrek.example.test/admin/product-1');
+  assert(cellText(1, 'supplier_quantity').includes('6+')); assert(!cellText(2, 'supplier_quantity').includes('900'), 'Stale supplier quantity is never presented as current');
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost').includes('0.0000'), 'A known zero cost stays an exact decimal string');
@@ -232,6 +264,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await key(cell(1, 'name'), 'F2'); await input('cell-editor', 'Cancelled name'); await key('cell-editor', 'Escape');
   assert.equal(cellText(1, 'name'), 'Fixture product 1'); assert(cannotUse('save'));
   await edit(1, 'name', 'Staged name');
+  assert.equal(required('row-1').getAttribute('data-dirty'), 'true'); assert.equal(cell(1, 'name').getAttribute('data-dirty'), 'true'); assert(!cell(1, 'brand').hasAttribute('data-dirty'), 'Row and exact modified cell are both marked');
   assert.equal(cellText(1, 'name'), 'Staged name'); assert(!cannotUse('save')); assert.equal(saveCalls().length, 0);
   await key(cell(1, 'name'), 'F2'); await input('cell-editor', 'Cancelled replacement'); await key('cell-editor', 'Escape');
   assert.equal(cellText(1, 'name'), 'Staged name', 'Escape keeps a previously staged value');
@@ -242,7 +275,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await key(cell(1, 'name'), 'ArrowRight'); assert.equal(focusedCell(), 'cell-1-brand');
   const originalCell = cell(1, 'name'), grid = originalCell.closest('table,[role="grid"]');
   assert(grid); const scrollContainer = grid.parentElement; scrollContainer.scrollTop = 147;
-  await click('detail-1'); await click('detail-tab-audit');
+  await click('open-1-name'); assert(document.querySelector('[role=dialog][aria-modal=true]'), 'Name opens the stock-style popup'); await click('detail-tab-audit');
   assert.equal(required('movement-history').getAttribute('href'), '/stock/movements?sku=SKU-1');
   const audit = document.querySelector('.product-editor-audit');
   assert(audit && audit.textContent.includes('Audit previous name') && audit.textContent.includes('Audit current name'), 'Audit history shows the actual before and after names');
@@ -283,16 +316,44 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
 
   await edit(1, 'sale_price_gross', '179,90');
   assert.equal(cellText(1, 'sale_price_gross'), '179.90');
-  const beforeMode = calls.length; await click('mode-biketrek'); assert.equal(calls.length, beforeMode);
-  await edit(1, 'shop_name', 'BIKETREK desired name'); await edit(1, 'shop_price', '159.95'); await edit(1, 'shop_visible', 'false');
-  await click('mode-xtrek');
-  assert(!cellText(1, 'shop_name').includes('BIKETREK desired name'), 'Shop drafts do not leak across channel modes');
-  await edit(1, 'shop_name', 'xTrek desired name');
-  await click('mode-common'); assert.equal(cellText(1, 'sale_price_gross'), '179.90', 'Common drafts survive channel-mode changes');
+  const beforeMode = calls.length; await click('columns');
+  for (const field of ['biketrek_name', 'biketrek_price', 'biketrek_visible', 'xtrek_name']) await click(`column-${field}`);
+  await click('columns'); assert.equal(calls.length, beforeMode, 'Revealing shop-specific columns is local');
+  await edit(1, 'biketrek_name', 'BIKETREK desired name'); await edit(1, 'biketrek_price', '159.95'); await edit(1, 'biketrek_visible', 'false');
+  assert(!cellText(1, 'xtrek_name').includes('BIKETREK desired name'), 'Shop drafts stay in separate columns/scopes');
+  await edit(1, 'xtrek_name', 'xTrek desired name');
+  assert.equal(cellText(1, 'sale_price_gross'), '179.90', 'Shop edits preserve the common value');
   await click('save');
   assert.deepEqual(saveCalls().at(-1).body.changes, [{ product_id: 1, expected_revision: 3, snapshot_hash: hash(1, 3),
     variant: { sale_price_gross: '179.90' }, shops: { biketrek: { name: 'BIKETREK desired name', sale_price_gross: '159.95', visible: false }, xtrek: { name: 'xTrek desired name' } } }]);
   assert(cannotUse('save'), 'A confirmed successful local save clears those drafts');
+
+  await edit(1, 'color', 'Black');
+  assert.equal(cellText(1, 'color'), 'Black'); assert(!cell(1, 'size').hasAttribute('data-dirty'), 'Editing colour marks that attribute only');
+  assert(required('row-1').hasAttribute('data-dirty'));
+  await click('columns'); await click('column-attributes'); await click('column-ean'); await click('columns');
+  assert(cellText(1, 'attributes').includes('Wheel size: 29') && cellText(1, 'attributes').includes('Veľkosť: M'), 'Editing colour preserves other named attributes');
+  await edit(1, 'attributes', 'broken text'); await edit(1, 'size', 'XL'); assert(cellText(1, 'attributes').includes('Veľkosť: XL'));
+  await edit(1, 'ean', '12345678, 1234567890123'); assert.equal(cellText(1, 'ean'), '12345678, 1234567890123');
+  await edit(1, 'image_url', 'javascript:alert(1)'); assert.equal(cell(1, 'image_url').getAttribute('aria-invalid'), 'true', 'Image editing rejects unsafe protocols');
+  await click('select-1'); assert(cannotUse('upload-biketrek'), 'Upload is blocked until all local drafts are saved or discarded');
+  await click('discard'); assert(!cannotUse('upload-biketrek'));
+  await click('upload-biketrek');
+  assert(element('publication-product')); assert(!required('publication-field-name').checked, 'Variant parent-only name is not implicitly published');
+  assert.equal(publicationWrites, 0, 'Opening Upload reads local history without any shop write');
+  await click('publication-preview');
+  assert(required('publication-preview-result').textContent.includes('189.90') && required('publication-preview-result').textContent.includes('179.90'), 'Frozen preview pairs remote and desired values');
+  assert(cannotUse('publication-send') && publicationWrites === 0, 'Preview alone never sends');
+  await click('publication-confirm'); await click('publication-send');
+  assert.equal(publicationWrites, 1); assert(cannotUse('publication-send'), 'A completed publication cannot be submitted again');
+  await click('publication-preview'); await click('publication-confirm'); publicationMode = 'lost';
+  await click('publication-send'); assert(element('publication-recover') && cannotUse('publication-send'));
+  const sent = publicationWrites; await click('publication-recover');
+  assert.equal(publicationWrites, sent, 'Reading a lost result never replays its shop PUT');
+  assert(element('publication-settled')); await click('publication-settled'); await input('publication-resolution-note', 'Original remote request has been settled by support');
+  await click('publication-resolve'); assert.equal(publicationWrites, sent, 'Resolving a settled remote request reads and records without resending');
+  await click('publication-close'); publicationMode = 'valid';
+  await click('columns'); await click('column-attributes'); await click('column-ean'); await click('columns');
 
   await edit(1, 'name', 'Local conflict draft'); await edit(2, 'brand', 'Saved second brand'); conflictId = 1;
   await click('save'); const conflictSaveCount = saveCalls().length;
@@ -353,10 +414,9 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(cellText(1, 'internal_note'), 'Explicit retry note');
   assert(cannotUse('save') && !element('retry-save'), 'Successful retry resolves the retained draft and recovery state');
 
-  await click('mode-biketrek'); await edit(1, 'shop_price', ''); await click('save');
+  await edit(1, 'biketrek_price', ''); await click('save');
   assert.deepEqual(saveCalls().at(-1).body.changes[0].shops, { biketrek: { sale_price_gross: null } }, 'Clearing an existing shop price sends an explicit null override');
-  assert.equal(cellText(1, 'shop_price'), '179.90', 'Cleared shop price inherits the desired common sale price, not the observed external price');
-  await click('mode-common');
+  assert.equal(cellText(1, 'biketrek_price'), '179.90', 'Cleared shop price inherits the desired common sale price, not the observed external price');
 
   const beforeFilter = calls.length; await input('search', 'SUP-51'); await input('shop-filter', 'xtrek'); await input('page-size', '25');
   assert.equal(calls.length, beforeFilter, 'Filter edits are applied only by an explicit load');
@@ -400,7 +460,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
   const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
   assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);
-  assert.deepEqual(sanitized.visible, ['sku', 'name']); assert.deepEqual(sanitized.widths, { sku: 80, name: 640 });
+  assert(sanitized.visible.includes('sku') && sanitized.visible.includes('name') && sanitized.visible.includes('biketrek') && !sanitized.visible.includes('constructor'), 'New default columns migrate into existing browser preferences'); assert.deepEqual(sanitized.widths, { sku: 80, name: 640 });
   dom.window.localStorage.setItem(COLUMN_PREFERENCES_KEY, '{invalid-json');
   assert.deepEqual(loadColumnPreferences(), columnPreferences(), 'Corrupt browser data falls back to valid default columns');
   console.log('Product editor UI behavior checks passed');

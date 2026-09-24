@@ -16,3 +16,4 @@ export { InvoiceDetailPage } from './InvoiceDetailPage';
 export { ShopsPage, SettingsPage } from './PlaceholderPages';
 export { ProductEditorPage } from './ProductEditorPage';
 export { ProductDetailPage } from './ProductDetailPage';
+export { AvailabilitySyncPage } from './AvailabilitySyncPage';

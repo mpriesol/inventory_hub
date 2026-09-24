@@ -28,7 +28,6 @@ const navigation: NavItem[] = [
   { id: 'dashboard', nameKey: 'nav.dashboard', href: '/', icon: LayoutDashboard, badge: null },
   { id: 'invoices', nameKey: 'nav.invoices', href: '/invoices', icon: FileText, badge: null },
   { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: null },
-  { id: 'products', nameKey: 'nav.products', href: '/products', icon: Package, badge: null },
   { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: null },
   { id: 'stock-history', nameKey: 'nav.stockHistory', href: '/stock/movements', icon: ClipboardList, badge: null },
   { id: 'order-audit', nameKey: 'nav.orderAudit', href: '/orders', icon: ClipboardList, badge: null },
@@ -56,7 +55,7 @@ export function Sidebar() {
     if (href === '/') {
       return location.pathname === '/';
     }
-    if (href === '/stock') return location.pathname === '/stock';
+    if (href === '/stock') return location.pathname === '/stock' || location.pathname.startsWith('/products');
     return location.pathname.startsWith(href);
   };
 

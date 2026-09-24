@@ -31,3 +31,14 @@ class ProductEditorAudit(Base):
     before_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     after_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProductEditorPublication(Base):
+    __tablename__ = "product_editor_publications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
+    shop_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("shops.id", ondelete="RESTRICT"), nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

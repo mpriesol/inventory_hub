@@ -259,17 +259,64 @@ def product_title(p: Dict[str, Any], preferred_lang: str = "sk") -> str:
     return str(p.get("title") or p.get("code") or "")
 
 
-def variant_params_text(v: Dict[str, Any]) -> str:
-    parts: List[str] = []
-    for prm in v.get("parameters") or []:
-        if not isinstance(prm, dict):
+class UpgatesParameterError(ValueError):
+    """A leaf's parameter set cannot be imported without dropping evidence."""
+
+
+def variant_attributes(v: Dict[str, Any], preferred_lang: str = "sk", *, strict: bool = False) -> List[Dict[str, str]]:
+    """Normalize documented and historical parameter shapes without inventing axes.
+
+    Prefer Slovak, then Czech, then an available language. These are leaf values;
+    callers must never pass a POS parent as the variant fallback.
+    """
+    def localized(value, key):
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            return next((value[lang].strip() for lang in (preferred_lang, "cs", *value)
+                         if isinstance(value.get(lang), str) and value[lang].strip()), "")
+        if isinstance(value, list):
+            rows = [row for row in value if isinstance(row, dict)]
+            for lang in (preferred_lang, "cs", None):
+                found = next((row.get(key) for row in rows if (lang is None or row.get("language") == lang)
+                              and isinstance(row.get(key), str) and row[key].strip()), None)
+                if found:
+                    return found.strip()
+        return ""
+    out, seen = [], set()
+    parameters = v.get("parameters_new") or v.get("parameters") or []
+    if not isinstance(parameters, list) or len(parameters) > 100:
+        if strict:
+            raise UpgatesParameterError("Invalid variant parameters")
+        return []
+    for item in parameters:
+        if not isinstance(item, dict):
+            if strict:
+                raise UpgatesParameterError("Invalid variant parameters")
             continue
-        val = prm.get("value")
-        if isinstance(val, list):  # per-language values
-            val = next((x.get("value") for x in val if isinstance(x, dict) and x.get("value")), None)
-        if val:
-            parts.append(str(val))
-    return ", ".join(parts)
+        name = localized(item.get("descriptions"), "name") or localized(item.get("name"), "name")
+        values = []
+        for value in item.get("values", []) if isinstance(item.get("values"), list) else []:
+            text = localized(value.get("descriptions"), "value") if isinstance(value, dict) and "descriptions" in value else localized(value, "value")
+            if text and text not in values:
+                values.append(text)
+        text = ", ".join(values) or localized(item.get("value"), "value")
+        if name.casefold() in seen:
+            if strict:
+                raise UpgatesParameterError("Ambiguous duplicate variant parameter")
+            # Ambiguous cached data is unknown, never an arbitrarily chosen axis.
+            return []
+        if not name or not text or len(name) > 100 or len(text) > 255:
+            if strict:
+                raise UpgatesParameterError("Invalid variant parameters")
+            continue
+        out.append({"name": name, "value": text})
+        seen.add(name.casefold())
+    return out
+
+
+def variant_params_text(v: Dict[str, Any]) -> str:
+    return ", ".join(item["value"] for item in variant_attributes(v))
 
 
 def first_ean(obj: Dict[str, Any]) -> str:

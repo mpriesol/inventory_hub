@@ -8,9 +8,10 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 import httpx
+from pydantic import ValidationError
 from fastapi import FastAPI
 from catalog_fixtures import product
-from inventory_hub.ai_content_types import Rule, RuleBook, Scope, JobAction, JobFork, UpdatePreviewRequest
+from inventory_hub.ai_content_types import Rule, RuleBook, Scope, JobAction, JobFork, UpdatePreviewRequest, UpdateConfirm
 from inventory_hub.services.ai_content_rules import resolve
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_merchandising import category_rows, category_chain, apply_availability, availability_policy
@@ -264,7 +265,7 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.preview = {'id':'p','state':'ready','target':'target','fields':['title'],'payload':copy.deepcopy(self.payload),
             'supplier_availability': availability_policy('paul-lange'),
             'identity':identity(self.remote),'before':projection(self.remote,self.payload),'after':projection(self.payload,self.payload),'expires_at':'2999-01-01'}
-        self.job = SimpleNamespace(revision=1,context={'shop':'test','supplier':'paul-lange','code':'A','update_preview':self.preview},status='review',events=[])
+        self.job = SimpleNamespace(id='job-a',revision=1,context={'shop':'test','supplier':'paul-lange','code':'A','update_preview':self.preview},status='review',events=[])
         self.client = SimpleNamespace(put=Mock(return_value={'products':[{'code':'A','updated_yn':True}]}))
         self.db = AsyncMock()
         self.db.scalar.return_value = 1
@@ -276,6 +277,7 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.supplier_config = self.stack.enter_context(patch.object(update.imports,'supplier_config',return_value={}))
         self.stack.enter_context(patch.object(update.imports,'_target',return_value='target'))
         self.stack.enter_context(patch.object(service,'summary',return_value={}))
+        self.target_guard = self.stack.enter_context(patch.object(update, 'require_target_available', AsyncMock()))
 
     async def run_confirm(self, reads):
         with patch.object(update,'read_product',side_effect=reads) as read:
@@ -302,6 +304,26 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         read = await self.run_confirm([])
         read.assert_not_called()
         self.client.put.assert_called_once()
+
+    async def test_unresolved_manual_publication_blocks_ai_before_sending_intent_or_put(self):
+        self.target_guard.side_effect = CatalogError('merchandising_target_inflight', 'Unresolved publication', 409)
+        with self.assertRaisesRegex(CatalogError, 'Unresolved publication'):
+            await self.run_confirm([self.remote])
+        self.target_guard.assert_awaited_once_with(self.db, 'test', 'A', ai_job_id='job-a', availability=False)
+        self.assertEqual(self.job.context['update_preview']['state'], 'ready')
+        self.db.commit.assert_not_awaited()
+        self.client.put.assert_not_called()
+
+    async def test_stock_owned_availability_is_checked_before_ai_intent_and_put(self):
+        self.preview['fields'].append('availability')
+        self.preview['shop_stock'] = 0
+        self.target_guard.side_effect = CatalogError('ai_availability_managed_by_stock', 'Availability owned by stock', 409)
+        with self.assertRaisesRegex(CatalogError, 'Availability owned by stock'):
+            await self.run_confirm([self.remote])
+        self.target_guard.assert_awaited_once_with(self.db, 'test', 'A', ai_job_id='job-a', availability=True)
+        self.assertEqual(self.job.context['update_preview']['state'], 'ready')
+        self.db.commit.assert_not_awaited()
+        self.client.put.assert_not_called()
 
     async def test_recreated_code_is_blocked_even_when_selected_text_is_unchanged(self):
         remote = {**self.remote,'product_id':99}
@@ -361,12 +383,56 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(error.exception.code,code)
         self.client.put.assert_not_called()
 
-    async def test_timeout_after_accepted_put_is_successful_after_readback(self):
+    async def test_timeout_keeps_fence_even_when_matching_readback_then_explicit_settlement_completes(self):
         self.client.put.side_effect=UpgatesError('do not expose upstream detail')
         after = {**self.remote,'descriptions':self.payload['descriptions']}
         await self.run_confirm([self.remote,self.remote,after])
-        self.assertEqual(self.job.context['update_result'],{'status':'completed','fields':['title']})
+        self.assertEqual(self.job.context['update_result']['status'],'uncertain')
+        self.assertEqual(self.job.context['update_result']['error'],'ai_update_original_unsettled')
+        self.request.expected_revision = self.job.revision
+        await self.run_confirm([after])
+        self.assertEqual(self.job.context['update_preview']['state'],'uncertain', 'A matching GET cannot retract an older request')
+        self.request.expected_revision = self.job.revision
+        self.request.original_request_settled = True
+        self.request.resolution_note = 'Original connection is confirmed settled'
+        await self.run_confirm([after])
+        self.assertEqual(self.job.context['update_preview']['state'],'completed')
+        self.assertTrue(self.job.context['update_preview']['original_request_settled'])
         self.client.put.assert_called_once()
+
+    async def test_explicitly_settled_mismatch_allows_new_preview_without_put(self):
+        self.preview['state'] = 'uncertain'
+        self.request.original_request_settled = True
+        self.request.resolution_note = 'Original request terminated without applying'
+        await self.run_confirm([self.remote])
+        self.assertEqual(self.job.context['update_preview']['state'], 'rejected')
+        self.assertEqual(self.job.context['update_result']['error'], 'ai_update_resolved_mismatch')
+        self.client.put.assert_not_called()
+
+    async def test_recent_sending_cannot_be_settled_while_original_handler_runs(self):
+        self.preview.update(state='sending', sending_at=service.now().isoformat())
+        self.request.original_request_settled = True
+        self.request.resolution_note = 'Trying to resolve too early'
+        with self.assertRaises(CatalogError) as error:
+            await self.run_confirm([])
+        self.assertEqual(error.exception.code, 'ai_update_still_sending')
+        self.client.put.assert_not_called()
+
+    async def test_settlement_input_requires_real_boolean_and_documented_evidence(self):
+        for value in (1, 'true'):
+            with self.assertRaises(ValidationError):
+                UpdateConfirm(expected_revision=1, preview_id='p', original_request_settled=value, resolution_note='Original request confirmed stopped')
+        for note in (None, '', '          ', 'short'):
+            with self.assertRaises(ValidationError):
+                UpdateConfirm(expected_revision=1, preview_id='p', original_request_settled=True, resolution_note=note)
+        self.assertFalse(UpdateConfirm(expected_revision=1, preview_id='p').original_request_settled)
+
+    async def test_malformed_write_acknowledgement_stays_fenced_even_if_readback_matches(self):
+        after = {**self.remote,'descriptions':self.payload['descriptions']}
+        self.client.put.return_value = {}
+        await self.run_confirm([self.remote,self.remote,after])
+        self.assertEqual(self.job.context['update_preview']['state'], 'uncertain')
+        self.assertEqual(self.job.context['update_result']['error'], 'ai_update_original_unsettled')
 
     async def test_readback_failure_preserves_durable_uncertainty_and_reconcile_never_puts(self):
         await self.run_confirm([self.remote,self.remote,CatalogError('upgates_read_failed','private body',502)])
@@ -421,6 +487,8 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.preview['payload']={'code':'A','parameters':parameters,'categories':[{'code':'SYSTEM','main_yn':False},{'code':'LEAF','main_yn':True}]}
         self.preview['after']=projection(self.preview['payload'],self.preview['payload'])
         remote={**self.remote,'parameters':parameters,'categories':[{'code':'LEAF','main_yn':True}]}
+        self.request.original_request_settled = True
+        self.request.resolution_note = 'Historical original operation confirmed finished'
         with patch.object(update.imports,'cached_import_options',return_value={'categories':[{'code':'SYSTEM','system_root':True}]}):
             read=await self.run_confirm([remote])
         self.assertEqual(self.job.context['update_preview']['state'],'completed')
@@ -501,7 +569,7 @@ class UpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
             preview['id']=name
             preview['payload']['descriptions'][0]['title']=name
             preview['after']=projection(preview['payload'],preview['payload'])
-            job=SimpleNamespace(revision=1,context={'shop':'test','code':'A','update_preview':preview},status='review',events=[])
+            job=SimpleNamespace(id=name,revision=1,context={'shop':'test','code':'A','update_preview':preview},status='review',events=[])
             jobs.append(job)
             try:
                 await confirm(db,job,SimpleNamespace(expected_revision=1,preview_id=name))

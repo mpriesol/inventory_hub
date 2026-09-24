@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import math
 import re
+import time
 import unicodedata
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -60,12 +61,13 @@ def source_config(supplier: str, cfg: dict, feed_key: str, *, require_parser: bo
     return source, parser_name
 
 
-def _download(supplier: str, source: dict, feed_key: str) -> Path:
+def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds: int | None = None) -> Path:
     directory = config_io.supplier_path(supplier).parent / "feeds" / "xml"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"catalog_{feed_key}_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{uuid4().hex[:8]}.xml"
     temporary = destination.with_suffix(".part")
     limit = 100 * 1024 * 1024
+    started_monotonic = time.monotonic()
     try:
         if source.get("mode", "remote") == "local":
             local = Path(source.get("local_path") or "")
@@ -109,6 +111,8 @@ def _download(supplier: str, source: dict, feed_key: str) -> Path:
                     size = 0
                     with temporary.open("wb") as output:
                         for chunk in response.iter_content(65536):
+                            if max_elapsed_seconds is not None and time.monotonic() - started_monotonic > max_elapsed_seconds:
+                                raise CatalogError("feed_timeout", "The supplier exceeded the feed download deadline", 504)
                             size += len(chunk)
                             if size > limit:
                                 raise CatalogError("feed_too_large", "Feed exceeds the 100 MB download limit", 413)

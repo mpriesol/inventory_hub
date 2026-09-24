@@ -78,6 +78,8 @@ async def lifespan(app: FastAPI):
     collection_worker = None
     processing_worker = None
     publication_worker = None
+    supplier_availability_worker = None
+    stock_sync_worker = None
     if settings.USE_POSTGRES:
         from inventory_hub.services.ai_content_worker import run
         worker = asyncio.create_task(run(), name="ai-content-queue")
@@ -87,6 +89,10 @@ async def lifespan(app: FastAPI):
         processing_worker = asyncio.create_task(process_orders(), name="order-processing")
         from inventory_hub.services.stock_publication_worker import run as publish_stock
         publication_worker = asyncio.create_task(publish_stock(), name="stock-publication")
+        from inventory_hub.services.supplier_availability_worker import run as refresh_supplier_availability
+        supplier_availability_worker = asyncio.create_task(refresh_supplier_availability(), name="supplier-availability")
+        from inventory_hub.services.stock_sync_worker import run as sync_stock
+        stock_sync_worker = asyncio.create_task(sync_stock(), name="stock-sync")
     yield
     if worker:
         worker.cancel()
@@ -104,6 +110,11 @@ async def lifespan(app: FastAPI):
         publication_worker.cancel()
         with suppress(asyncio.CancelledError):
             await publication_worker
+    for background_worker in (supplier_availability_worker, stock_sync_worker):
+        if background_worker:
+            background_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await background_worker
     # Shutdown
     if settings.USE_POSTGRES:
         await close_db()
@@ -185,6 +196,12 @@ if settings.USE_POSTGRES:
     app.include_router(stock_settings_router)
     from inventory_hub.routers.stock_publication import router as stock_publication_router
     app.include_router(stock_publication_router)
+    from inventory_hub.routers.supplier_availability import router as supplier_availability_router
+    from inventory_hub.routers.stock_sync import router as stock_sync_router
+    from inventory_hub.routers.stock_adjustments import router as stock_adjustments_router
+    app.include_router(supplier_availability_router)
+    app.include_router(stock_sync_router)
+    app.include_router(stock_adjustments_router)
     from inventory_hub.routers.order_processing import router as order_processing_router
     app.include_router(order_processing_router)
     from inventory_hub.routers.catalog import router as catalog_router

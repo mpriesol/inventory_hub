@@ -1,7 +1,7 @@
 """Explicit field-selected content updates, with stale-data checks and durable intent."""
 import asyncio
 import copy
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 from urllib.parse import quote
@@ -19,6 +19,7 @@ from inventory_hub.services.ai_content_validation import overlay, validate_conte
 from inventory_hub.services.catalog import CatalogError, selected_products
 from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
+from inventory_hub.services.merchandising_write_guard import require_target_available
 
 TEXT_FIELDS = {'title', 'short_description', 'long_description', 'seo_title', 'seo_description'}
 
@@ -297,6 +298,15 @@ async def confirm(db, job, request):
         raise CatalogError('ai_update_state', 'Prepare a valid update preview first', 409)
     if preview['state'] == 'completed':
         return service.summary(job, detail=True)
+    recovering = preview['state'] in ('sending', 'uncertain')
+    settled = recovering and getattr(request, 'original_request_settled', False) is True
+    if settled and preview['state'] == 'sending':
+        started = preview.get('sending_at')
+        started = datetime.fromisoformat(started) if started else getattr(job, 'updated_at', service.now())
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if service.now() - started < timedelta(minutes=5):
+            raise CatalogError('ai_update_still_sending', 'The original update may still be running; wait before resolving it.', 409)
     if preview['target'] != imports._target(imports.shop_config(job.context['shop'])):
         raise CatalogError('shop_target_changed', 'Shop connection changed', 409)
     client = UpgatesClient.from_shop(job.context['shop'])
@@ -305,7 +315,7 @@ async def confirm(db, job, request):
         from inventory_hub.services.catalog_merchandising import system_category_codes
         options = await asyncio.to_thread(imports.cached_import_options, job.context['shop'], client)
         preview['system_category_codes'] = sorted(system_category_codes(options['categories']))
-    error = None
+    error, write_uncertain = None, False
     try:
         remote = await asyncio.to_thread(read_product, client, job.context['code'], include_parameters=include_parameters)
     except CatalogError as exc:
@@ -318,7 +328,10 @@ async def confirm(db, job, request):
         check_before(remote, preview)
         if 'availability' in preview['fields']:
             imports.assert_supplier_availability(job.context['supplier'], preview.get('supplier_availability'))
+        await require_target_available(db, job.context['shop'], job.context['code'], ai_job_id=job.id,
+            availability='availability' in preview['fields'])
         preview['state'] = 'sending'
+        preview['sending_at'] = service.now().isoformat()
         job.context = {**job.context, 'update_preview':preview}
         service.event(job,job.status,'Update intent recorded; no automatic repeated PUT')
         await db.commit()
@@ -340,12 +353,17 @@ async def confirm(db, job, request):
                 response = await asyncio.to_thread(client.put, 'products', {'products':[preview['payload']]})
                 # HTTP 200 can still carry a per-product rejection.
                 rows = response.get('products') or [] if isinstance(response, dict) else []
+                rows = rows if isinstance(rows, list) else []
                 rejected = any(row.get('code') == job.context['code'] and row.get('updated_yn') is False
                                for row in rows if isinstance(row, dict))
+                acknowledged = (len(rows) == 1 and isinstance(rows[0], dict)
+                    and rows[0].get('code') == job.context['code'] and rows[0].get('updated_yn') is True)
+                write_uncertain = not rejected and not acknowledged
                 if rejected:
                     error = 'upgates_update_rejected'
             except UpgatesError as exc:
                 rejected = exc.status_code in (400, 401, 403, 422, 429)
+                write_uncertain = not rejected
                 error = f'upgates_update_http_{exc.status_code}' if rejected else 'ai_update_uncertain'
                 # Do not immediately repeat rejected authentication/rate-limited calls.
                 if exc.status_code in (401, 403, 429):
@@ -374,6 +392,16 @@ async def confirm(db, job, request):
             error = 'ai_update_readback_mismatch'
         elif remote is not None and not confirmed_identity:
             error = 'ai_update_identity'
+        if write_uncertain or (recovering and not settled):
+            preview['state'] = 'uncertain'
+            if confirmed_identity and not mismatches:
+                error = 'ai_update_original_unsettled'
+        elif settled and confirmed_identity:
+            preview['original_request_settled'] = True
+            preview['resolution_note'] = request.resolution_note.strip()
+            preview['resolved_at'] = service.now().isoformat()
+            if mismatches:
+                preview['state'], error = 'rejected', 'ai_update_resolved_mismatch'
     if preview['state'] == 'completed':
         error = None
         await cache_confirmed(db, job.context['shop'], job.context['code'], remote)
@@ -389,5 +417,7 @@ async def confirm(db, job, request):
     job.context = {**job.context,'update_preview':preview,'update_result':result}
     notes = {'completed':'Updated fields verified in shop', 'rejected':'Shop rejected the update; prepare a new comparison',
              'uncertain':'Update requires reconciliation; do not resend'}
+    if preview['state'] == 'rejected' and preview.get('original_request_settled'):
+        notes['rejected'] = 'Original request confirmed settled; observed fields differ; prepare a new comparison'
     service.event(job, job.status, notes[preview['state']])
     return service.summary(job,detail=True)

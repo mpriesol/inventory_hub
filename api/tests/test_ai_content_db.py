@@ -38,7 +38,8 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await catalog_db.CatalogDatabaseTests.asyncSetUp(self)
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
-            await raw.driver_connection.execute((Path(__file__).resolve().parents[2] / "infra/db-init/005_ai_content.sql").read_text())
+            for filename in ("005_ai_content.sql", "015_stock_sync.sql", "016_product_publication.sql"):
+                await raw.driver_connection.execute((Path(__file__).resolve().parents[2] / "infra/db-init" / filename).read_text())
         await self.refresh()
         async with self.sessions() as db:
             page = await catalog.catalog_page(db, "paul-lange")

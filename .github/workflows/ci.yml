@@ -102,3 +102,9 @@ jobs:
 
       - name: Movement history and dashboard interactions
         run: node frontend/tests/stock-history-ui.cjs
+
+      - name: Supplier availability and regular transfer interactions
+        run: node frontend/tests/availability-sync-ui.cjs
+
+      - name: Physical stock correction interactions
+        run: node frontend/tests/stock-adjustments-ui.cjs

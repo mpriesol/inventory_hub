@@ -57,7 +57,7 @@ from inventory_hub.services.product_identity import (
     IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes,
 )
 from inventory_hub.services.upgates import (
-    UpgatesClient, UpgatesError, product_title, variant_params_text,
+    UpgatesClient, UpgatesError, UpgatesParameterError, product_title, variant_params_text,
 )
 
 router = APIRouter(prefix="/shops", tags=["upgates-sync"])
@@ -155,20 +155,8 @@ def _product_key(p: Dict[str, Any]) -> str:
 
 
 def _variant_params(v: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """[(name, value), ...] tolerant to per-language value lists."""
-    out: List[Tuple[str, str]] = []
-    for prm in v.get("parameters") or []:
-        if not isinstance(prm, dict):
-            continue
-        name = prm.get("name")
-        if isinstance(name, list):
-            name = next((x.get("name") or x.get("value") for x in name if isinstance(x, dict)), None)
-        val = prm.get("value")
-        if isinstance(val, list):
-            val = next((x.get("value") for x in val if isinstance(x, dict) and x.get("value")), None)
-        if name and val:
-            out.append((str(name)[:100], str(val)[:255]))
-    return out
+    from inventory_hub.services.upgates import variant_attributes
+    return [(item["name"], item["value"]) for item in variant_attributes(v, strict=True)]
 
 
 def _main_price(obj: Dict[str, Any]) -> Optional[Decimal]:
@@ -413,9 +401,17 @@ async def import_upgates_products(
                     db.add_all(created_rows)
                     # Obtain IDs in one batched ORM flush, not once per leaf.
                     await db.flush()
+                from inventory_hub.product_editor_models import ProductEditorOverride
+                leaf_ids = [product.id for product in leaf_products]
+                attributed = set(await db.scalars(select(ProductVariantAttribute.product_id)
+                    .where(ProductVariantAttribute.product_id.in_(leaf_ids))))
+                manual_barcodes = dict((await db.execute(select(ProductEditorOverride.product_id,
+                    ProductEditorOverride.data["variant"]["eans"]).where(ProductEditorOverride.product_id.in_(leaf_ids)))).all())
                 for (identity, obj), resolution, product in zip(family["leaves"], resolutions, leaf_products):
-                    if resolution.product_id is None:
-                        params = _variant_params(obj) if variants else []
+                    params = _variant_params(obj) if variants else []
+                    # An EAN-linked shop alias is not authoritative for canonical
+                    # axes. Backfill only the same exact shared physical SKU.
+                    if product.id not in attributed and identity.code == product.sku:
                         for order, (name, value) in enumerate(params):
                             db.add(ProductVariantAttribute(product_id=product.id, attribute_name=name,
                                                            attribute_value=value, display_order=order))
@@ -423,6 +419,9 @@ async def import_upgates_products(
                     # barcode evidence. Append missing verified identifiers only;
                     # never replace an existing identifier or its primary flag.
                     for position, barcode in enumerate(verified_barcodes(identity.barcodes)):
+                        allowed = manual_barcodes.get(product.id)
+                        if isinstance(allowed, list) and barcode not in allowed:
+                            continue  # An explicit operator correction is not undone by an old shop snapshot.
                         if barcode not in index.product_barcodes.get(product.id, set()):
                             identifier = ProductIdentifier(
                                 product_id=product.id, value=barcode,
@@ -460,7 +459,7 @@ async def import_upgates_products(
                 else:
                     content.data, content.pulled_at = p, now
                 await db.flush()
-        except (IntegrityError, DataError):
+        except (IntegrityError, DataError, UpgatesParameterError):
             conflict = {"code": code, "reasons": ["identity_changed"], "candidate_product_ids": []}
             conflicts.append(conflict)
             skipped.append({"code": code, "reason": "identity_changed"})

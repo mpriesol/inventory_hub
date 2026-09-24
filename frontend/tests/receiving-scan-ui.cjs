@@ -29,11 +29,12 @@ async function scan(code) { await input(code); await act(async () => {
   find('receiving-scan-code').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick();
 }); }
 const response = (value, status = 200) => ({ ok: status < 400, status, statusText: status === 200 ? 'OK' : 'Conflict',
-  headers: { get: () => 'application/json' }, text: async () => JSON.stringify(value) });
+  headers: { get: () => 'application/json' }, text: async () => JSON.stringify(value), json: async () => value });
 const calls = [], scans = [], scanSessions = [], applied = new Map();
 let navigation;
 function RouteControl() { navigation = useNavigate(); return null; }
 let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
+let sessionStatus = 'in_progress', pauseMode = 'ok';
 const line = () => ({ id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '0123456789012', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
 const summary = () => ({ matched: received >= 20 ? 1 : 0, partial: received > 0 && received < 20 ? 1 : 0, pending: received ? 0 : 1, overage: 0, unexpected: 0 });
 global.fetch = async (path, options = {}) => {
@@ -41,11 +42,24 @@ global.fetch = async (path, options = {}) => {
   assert(path.startsWith('/api/suppliers/fixture/'), 'Only local receiving APIs are used');
   if (path.endsWith('/summary')) {
     if (failSummary) { failSummary = false; throw new TypeError('Synthetic local refresh lost'); }
-    const snapshot = { lines: [line()], summary: summary() };
+    const snapshot = { invoice_no: 'test-invoice', status: sessionStatus, lines: [line()], summary: summary() };
     if (holdSummary) { holdSummary = false; return new Promise(resolve => { resolveSummary = () => resolve(response(snapshot)); }); }
     return response(snapshot);
   }
   if (path.endsWith('/note')) return response({ note: '' });
+  if (path.endsWith('/received-items')) return response({ success: true });
+  if (path.endsWith('/pause')) {
+    if (pauseMode === 'failed') return response({ detail: 'Synthetic pause failure' }, 500);
+    sessionStatus = pauseMode === 'completed' ? 'completed' : 'paused';
+    if (pauseMode !== 'ok') throw new TypeError('Synthetic lost pause acknowledgement');
+    return response({ success: true });
+  }
+  if (path.endsWith('/finalize')) {
+    sessionStatus = 'completed';
+    return response({ success: true, invoice_no: 'test-invoice', session_id: 'session-A', completed_at: '2026-09-24T10:00:00Z',
+      stats: { total_lines: 1, received_complete: 1, received_partial: 0, received_overage: 0, not_received: 0, total_scans: received, unexpected_scans: 0 },
+      total_ordered: 20, total_received: received, received_items_count: 1, message: 'Completed' });
+  }
   assert(path.endsWith('/scan'), 'No stock mutation or finalization is triggered by scanning');
   const body = JSON.parse(options.body); scans.push(body); scanSessions.push(path.match(/sessions\/([^/]+)\/scan/)[1]);
   assert.match(body.request_id, /^[0-9a-f-]{36}$/i);
@@ -65,7 +79,14 @@ global.fetch = async (path, options = {}) => {
   return response(result);
 };
 function page() { return React.createElement(MemoryRouter, { initialEntries: [{ pathname: '/receiving/test-invoice', state: { sessionId: 'session-A', supplier: 'fixture', lines: [line()] } }] },
-  React.createElement(React.Fragment, null, React.createElement(RouteControl), React.createElement(Routes, null, React.createElement(Route, { path: '/receiving/:invoiceId', element: React.createElement(ReceivingSessionPage) })))); }
+  React.createElement(React.Fragment, null, React.createElement(RouteControl), React.createElement(Routes, null,
+    React.createElement(Route, { path: '/receiving', element: React.createElement('div', { 'data-testid': 'receiving-list' }, 'Receiving list') }),
+    React.createElement(Route, { path: '/receiving/:invoiceId', element: React.createElement(ReceivingSessionPage) })))); }
+async function mountReceipt(status = 'in_progress') {
+  await act(async () => { root.render(null); await tick(); });
+  sessionStatus = status;
+  await act(async () => { root.render(page()); await tick(); });
+}
 (async () => {
   await act(async () => { root.render(page()); await tick(); });
   assert(document.querySelector('[data-action-effects="hub-write"]'), 'Scan is visibly a local change');
@@ -160,14 +181,14 @@ function page() { return React.createElement(MemoryRouter, { initialEntries: [{ 
   holdSummary = true;
   await act(async () => { root.render(page()); await tick(); });
   const staleSummary = resolveSummary;
-  await scan('0123456789012');
-  await act(async () => { button('Zobraziť položky')?.click(); await tick(); });
-  const beforeStaleSummary = received;
+  assert(find('receiving-scan-code').disabled, 'Navigation-state lines cannot enable scans before server session status is read');
+  assert.equal(find('receiving-finalize'), null, 'Unknown status cannot finalize');
+  sessionStatus = 'completed';
+  await act(async () => { navigation('/receiving/closed-invoice', { state: { sessionId: 'closed-session', supplier: 'fixture', lines: [line()] } }); await tick(); });
+  assert(find('receiving-session-status'), 'The new session is closed');
   await act(async () => { staleSummary(); await tick(); });
-  assert(document.body.textContent.includes(`Prijaté: ${beforeStaleSummary}/20`), 'The latest scan stays visible after an older initial summary resolves');
-  const linesToggle = [...document.querySelectorAll('button')].find(el => el.textContent.includes('položky') && !el.textContent.includes('všetko'));
-  if (!document.querySelector('tbody') && linesToggle) await act(async () => { linesToggle.click(); await tick(); });
-  assert(document.querySelector('tbody tr').querySelectorAll('td')[3].textContent.trim() === String(beforeStaleSummary), 'Initial summary cannot overwrite the more recent received quantity');
+  assert.equal(find('receiving-scan-code'), null, 'A late active summary for the previous session cannot unlock a completed receipt');
+  await mountReceipt();
 
   // Switch the same mounted component while A is still sending.
   hold = true; await scan('0123456789012');
@@ -187,6 +208,88 @@ function page() { return React.createElement(MemoryRouter, { initialEntries: [{ 
   await act(async () => { find('receiving-scan-retry').click(); await tick(); });
   assert.equal(received, beforeAReplay, 'Returning to A recovers the original scan without duplication');
   assert.deepEqual(scans.at(-1), requestA);
+
+  // Both exit controls leave historical/paused sessions without any writes.
+  for (const status of ['completed', 'cancelled', 'paused']) {
+    for (const control of ['receiving-back', 'receiving-exit']) {
+      await mountReceipt(status);
+      assert(find('receiving-session-status'));
+      assert.equal(find('receiving-scan-code'), null, `${status}: no new scan entry`);
+      assert.equal(find('receiving-finalize'), null, `${status}: cannot finalize again`);
+      assert(find('receiving-note').readOnly, `${status}: notes are read-only`);
+      await act(async () => { button('Zobraziť položky').click(); await tick(); });
+      assert.equal(find('receiving-edit-line-0'), null, `${status}: no quantity editor`);
+      assert.equal(button('Prijať všetko'), undefined);
+      assert.equal(button('Resetovať'), undefined);
+      const beforeExit = calls.length;
+      await act(async () => { find(control).click(); await tick(); });
+      assert(find('receiving-list'), `${status}: ${control} returns to the receiving list`);
+      assert.equal(calls.length, beforeExit, `${status}: navigating never pauses or writes invoice metadata`);
+    }
+  }
+
+  await mountReceipt();
+  sessionStatus = 'completed';
+  let beforeExit = calls.length;
+  await act(async () => { find('receiving-exit').click(); await tick(); });
+  assert(find('receiving-list'), 'Exit notices completion by another tab');
+  assert(calls.slice(beforeExit).every(call => call.method === 'GET'), 'A remotely completed receipt is not mutated');
+
+  await mountReceipt(); pauseMode = 'failed';
+  await act(async () => { find('receiving-exit').click(); await tick(); });
+  assert.equal(find('receiving-list'), null, 'A failed pause keeps the active receipt open');
+  assert(document.body.textContent.includes(i18n.t('receiving.pauseError')));
+  assert(!find('receiving-scan-code').disabled, 'The draft remains usable after a pause failure');
+  for (const mode of ['lost', 'completed']) {
+    await mountReceipt(); pauseMode = mode;
+    await act(async () => { find('receiving-back').click(); await tick(); });
+    assert(find('receiving-list'), `Status reconciliation permits exit after ${mode} pause response`);
+  }
+  pauseMode = 'ok';
+  await mountReceipt();
+  beforeExit = calls.length;
+  await act(async () => { find('receiving-exit').click(); await tick(); });
+  assert(find('receiving-list'), 'A successful active pause returns to the list');
+  assert.equal(calls.slice(beforeExit).filter(call => call.path.endsWith('/pause')).length, 1, 'An active receipt is paused exactly once');
+
+  // Acknowledgement recovery stays possible after another tab finalized. The
+  // original UUID is retained even when the operator chooses to leave first.
+  await mountReceipt(); lose = true;
+  await scan('0123456789012');
+  const closedScan = scans.at(-1), countAtClose = received;
+  await mountReceipt('completed');
+  assert(find('receiving-scan-retry'));
+  assert(!find('receiving-exit').disabled, 'An idle uncertain scan does not trap a completed receipt');
+  beforeExit = calls.length;
+  await act(async () => { find('receiving-exit').click(); await tick(); });
+  assert(find('receiving-list')); assert.equal(calls.length, beforeExit);
+  assert.equal(JSON.parse(sessionStorage.getItem('receiving-scans:fixture:session-A'))[0].request_id, closedScan.request_id);
+  await mountReceipt('completed');
+  hold = true;
+  await act(async () => { find('receiving-scan-retry').click(); await tick(); });
+  assert(find('receiving-exit').disabled, 'Exit waits while acknowledgement recovery is actively sending');
+  await act(async () => { resolveHeld(); await tick(); });
+  assert.deepEqual(scans.at(-1), closedScan, 'Completed-session recovery reuses the exact operation');
+  assert.equal(received, countAtClose, 'Recovery after completion cannot add another piece');
+  assert.equal(find('receiving-scan-code'), null, 'The replay snapshot cannot reopen a completed receipt');
+  assert.equal(sessionStorage.getItem('receiving-scans:fixture:session-A'), null);
+
+  await mountReceipt();
+  await act(async () => { find('receiving-finalize').click(); await tick(); });
+  assert.equal(find('receiving-finalize'), null, 'A successful finalization immediately switches the receipt to read-only');
+  assert(find('receiving-session-status')); assert.equal(find('receiving-scan-code'), null);
+  await mountReceipt('completed');
+  beforeExit = calls.length;
+  await act(async () => { find('receiving-back').click(); await tick(); });
+  assert(find('receiving-list')); assert.equal(calls.length, beforeExit, 'Reopening after finalization does not require another finalize or pause call');
+
+  await mountReceipt('future-status');
+  assert(find('receiving-scan-code').disabled, 'An unknown server status never enables edits');
+  assert(document.body.textContent.includes(i18n.t('actions.receiving.summaryFailed')));
+  beforeExit = calls.length;
+  await act(async () => { find('receiving-exit').click(); await tick(); });
+  assert(find('receiving-list'), 'A failed initial read does not trap navigation');
+  assert.equal(calls.length, beforeExit, 'Leaving an unloaded receipt never attempts a mutation');
   await act(async () => { root.unmount(); });
-  console.log('Receiving UI: ten fast scans, distinct UUIDs, duplicate click, durable uncertain retry, and ambiguous identity passed');
+  console.log('Receiving UI: scan UUID/retry/context protections, readonly completed receipts, both exit controls, stale-status reconciliation and active pause errors passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

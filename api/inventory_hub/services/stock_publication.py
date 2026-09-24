@@ -202,6 +202,13 @@ async def configure(db, payload):
 async def open_hold(db, payload):
     scope = await _scope(db, payload.shop_code, lock=True)
     hold = scope["hold"]
+    # Shared warehouse lock serializes this check with regular publication's
+    # durable sending intent. An uncertain PUT must finish before maintenance.
+    from inventory_hub.services.stock_sync import assert_no_inflight, SyncError
+    try:
+        await assert_no_inflight(db, scope["warehouse"].id)
+    except SyncError as error:
+        raise PublicationError(error.code, error.status) from None
     if hold is None:
         hold = Hold(id=str(uuid4()), shop_id=scope["shop"].id, warehouse_id=scope["warehouse"].id,
                     active=True, created_at=now(), assertions={"external_writers_paused": True,

@@ -11,7 +11,7 @@ from uuid import UUID
 from types import SimpleNamespace
 
 from pydantic import ValidationError
-from sqlalchemy import case, exists, func, literal, or_, select, text
+from sqlalchemy import case, delete, exists, func, literal, or_, select, text
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.exc import IntegrityError
 
@@ -21,6 +21,11 @@ from inventory_hub.product_editor_models import ProductEditorAudit, ProductEdito
 from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+from inventory_hub.services.upgates import variant_attributes
+from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.catalog import _http_url
+from inventory_hub.services.supplier_availability import project as supplier_availability_projection
+from inventory_hub.services.stock_evidence import physical_stock_evidence
 
 
 class EditorError(Exception):
@@ -94,8 +99,16 @@ SELECT sp.id,
       WHEN jsonb_typeof(coalesce(leaf.value->'active_yn', c.data->'active_yn')) = 'boolean'
       THEN (coalesce(leaf.value->'active_yn', c.data->'active_yn') #>> '{}')::boolean ELSE NULL END AS visible,
  substring(coalesce(jsonb_path_query_first(leaf.value, '$.images[*] ? (@.main_yn == true).url') #>> '{}',
-   leaf.value #>> '{images,0,url}', jsonb_path_query_first(c.data, '$.images[*] ? (@.main_yn == true).url') #>> '{}',
-   c.data #>> '{images,0,url}'), 1, 2001) AS image_url
+   leaf.value #>> '{images,0,url}', leaf.value #>> '{image,url}',
+   CASE WHEN jsonb_typeof(leaf.value->'image') = 'string' THEN leaf.value->>'image' END,
+   jsonb_path_query_first(c.data, '$.images[*] ? (@.main_yn == true).url') #>> '{}',
+   c.data #>> '{images,0,url}'), 1, 2001) AS image_url,
+ coalesce(nullif(nullif(leaf.value->'parameters_new', 'null'::jsonb), '[]'::jsonb),
+   nullif(leaf.value->'parameters', 'null'::jsonb), '[]'::jsonb) AS parameters,
+ substring(coalesce(jsonb_path_query_first(leaf.value, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
+   jsonb_path_query_first(c.data, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
+   c.data #>> '{descriptions,0,url}', c.data->>'url'), 1, 2001) AS shop_url,
+ substring(coalesce(leaf.value->>'admin_url', c.data->>'admin_url'), 1, 2001) AS shop_admin_url
 FROM shop_products sp
 JOIN shop_product_content c ON c.shop_id = sp.shop_id
  AND c.external_code = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
@@ -106,8 +119,8 @@ WHERE sp.product_id = ANY(:ids)
 
 
 def _make_row(facts, data, revision, warehouse, stock):
-    common = {"name": facts["name"], "brand": facts["brand"], "internal_note": None, **data.get("common", {})}
-    variant = {"sale_price_gross": None, "vat_rate": None, "note": None, **data.get("variant", {})}
+    common = {"name": facts["name"], "brand": facts["brand"], "internal_note": None, "image_url": facts["image_url"], **data.get("common", {})}
+    variant = {"sale_price_gross": None, "vat_rate": None, "note": None, "attributes": facts["attributes"], "eans": facts["eans"], "sku": facts["sku"], **data.get("variant", {})}
     warehouse_values = ({"code": warehouse["code"], "location": None, "min_quantity": facts.get("warehouse_min_quantity"),
                          **data.get("warehouses", {}).get(warehouse["code"], {})} if warehouse else None)
     shops = []
@@ -117,14 +130,25 @@ def _make_row(facts, data, revision, warehouse, stock):
         effective = {"name": overrides["name"] if overrides["name"] is not None else common["name"],
                      "sale_price_gross": overrides["sale_price_gross"] if overrides["sale_price_gross"] is not None else variant["sale_price_gross"],
                      "visible": overrides["visible"] if overrides["visible"] is not None else shop["observed"]["visible"]}
-        desired = bool(data.get("shops", {}).get(shop["shop_code"]) or "name" in data.get("common", {})
-                       or "sale_price_gross" in data.get("variant", {}))
-        shops.append({**shop, "overrides": overrides, "effective": effective,
-                      "state": "saved_unpublished" if desired else "inherited"})
+        desired = set()
+        shop_overrides = data.get("shops", {}).get(shop["shop_code"], {})
+        for key in ("name", "sale_price_gross", "visible"):
+            if key in shop_overrides or key in data.get("common", {}) or key in data.get("variant", {}):
+                desired.add(key)
+        desired.update({"ean"} if "eans" in data.get("variant", {}) else set())
+        desired.update({"attributes"} if "attributes" in data.get("variant", {}) else set())
+        desired.update({"image_url"} if "image_url" in data.get("common", {}) else set())
+        values = publication_values(common, variant, effective)
+        receipts = data.get("published", {}).get(shop["shop_code"], {})
+        published = sorted(key for key, receipt in receipts.items() if receipt.get("value") == values.get(key))
+        shops.append({**shop, "overrides": overrides, "effective": effective, "published_fields": published,
+                      "state": ("published" if desired <= set(published) else "saved_unpublished") if desired else "inherited"})
     return {"id": facts["id"], "sku": facts["sku"], "is_active": facts["is_active"], "group": facts["group"],
-            "attributes": facts["attributes"], "eans": facts["eans"], "supplier_codes": facts["supplier_codes"],
-            "image_url": facts["image_url"], "revision": revision,
-            "snapshot_hash": _digest({"warehouse_code": warehouse["code"] if warehouse else None, "facts": facts}),
+            "attributes": variant["attributes"], "eans": facts["eans"], "supplier_codes": facts["supplier_codes"],
+            "image_url": common["image_url"], "revision": revision,
+            "snapshot_hash": _digest({"warehouse_code": warehouse["code"] if warehouse else None,
+                                      "facts": {key: value for key, value in facts.items() if key != "supplier_availability"}}),
+            "supplier_availability": facts.get("supplier_availability"),
             "common": common, "variant": variant, "warehouse": warehouse_values, "stock": stock,
             "shops": shops, "overrides": deepcopy(data), "_facts": facts, "_warehouse": warehouse}
 
@@ -158,17 +182,18 @@ async def _rows(db, ids, warehouse):
     observed = {row["id"]: row for row in (await db.execute(text(OBSERVED_SQL), {"ids": list(ids)})).mappings().all()}
     sources = defaultdict(list)
     supplier_query = select(Product.id, Supplier.code, SupplierProduct.supplier_sku,
-        func.substr(func.coalesce(SupplierProduct.images[0]["url"].astext, SupplierProduct.images[0].astext), 1, 2001)).select_from(Product)
+        func.substr(func.coalesce(SupplierProduct.images[0]["url"].astext, SupplierProduct.images[0].astext), 1, 2001),
+        SupplierProduct.attributes["catalog"]["variant_attributes"]).select_from(Product)
     supplier_query = supplier_query.join(SupplierProduct, or_(SupplierProduct.id == Product.source_supplier_product_id,
         exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id,
             ProductSupplySource.supplier_product_id == SupplierProduct.id).correlate(Product, SupplierProduct)))).join(Supplier, SupplierProduct.supplier_id == Supplier.id)
-    for product_id, supplier_code, code, image_url in (await db.execute(supplier_query.where(Product.id.in_(ids))
+    for product_id, supplier_code, code, image_url, supplier_attributes in (await db.execute(supplier_query.where(Product.id.in_(ids))
             .order_by(Supplier.code, SupplierProduct.supplier_sku))).all():
-        sources[product_id].append((supplier_code, code, image_url))
+        sources[product_id].append((supplier_code, code, image_url, supplier_attributes))
+    supplier_availability = await supplier_availability_projection(db, ids)
     balances, fifo_states, fifo_values = {}, set(), {}
     if warehouse:
-        evidence = exists(select(StockMovement.id).where(StockMovement.product_id == StockBalance.product_id,
-            StockMovement.warehouse_id == StockBalance.warehouse_id))
+        evidence = physical_stock_evidence()
         for balance, verified in (await db.execute(select(StockBalance, evidence).where(StockBalance.product_id.in_(ids),
                 StockBalance.warehouse_id == warehouse["id"]))).all():
             balances[balance.product_id] = (balance, verified)
@@ -191,27 +216,37 @@ async def _rows(db, ids, warehouse):
                                 main_image_url=product.group_image) if product.group_id else None
         codes = {(code, identifier.value) for identifier, code in identifiers[product.id]
                  if str(getattr(identifier.identifier_type, "value", identifier.identifier_type)) == "supplier_sku"}
-        codes.update((supplier, sku) for supplier, sku, _ in sources[product.id])
-        shop_values, image_urls = [], [group.main_image_url] if group else []
+        codes.update((supplier, sku) for supplier, sku, _, _ in sources[product.id])
+        shop_values, image_urls = [], []
+        fallback_attributes = []
         for shop in shops:
             mapping = mappings[product.id].get(shop.id)
             raw = observed.get(mapping.id, {}) if mapping else {}
             image_urls.append(raw.get("image_url"))
+            if not fallback_attributes and mapping and mapping.variant_code == product.sku:
+                fallback_attributes = variant_attributes({"parameters": raw.get("parameters")})
             shop_values.append({"shop_code": shop.code, "mapped": bool(mapping and mapping.is_listed),
                 "mapping": {"id": mapping.id, "external_id": mapping.external_id, "code": mapping.external_code,
                     "variant_code": mapping.variant_code, "parent_code": mapping.parent_code, "is_variant": mapping.is_variant} if mapping else None,
+                "shop_url": _http_url(raw.get("shop_url")), "shop_admin_url": _http_url(raw.get("shop_admin_url")),
                 "observed": {"name": raw.get("name"), "price": _decimal(mapping.shop_price) if mapping else None,
                              "price_basis": "unknown", "visible": raw.get("visible")}})
-        image_urls.extend(url for _, _, url in sources[product.id])
+        if group:
+            image_urls.append(group.main_image_url)
+        image_urls.extend(url for _, _, url, _ in sources[product.id])
+        for _, _, _, attrs in sources[product.id]:
+            if not fallback_attributes and isinstance(attrs, list):
+                fallback_attributes = variant_attributes({"parameters": attrs})
         balance, verified = balances.get(product.id, (None, False))
         minimum = (str(int(balance.min_quantity)) if balance.min_quantity == balance.min_quantity.to_integral_value()
                    else _decimal(balance.min_quantity)) if balance is not None else None
         facts = {"id": product.id, "sku": product.sku, "name": product.name, "brand": product.brand,
             "is_active": product.is_active, "group": {"id": group.id, "code": group.code, "name": group.name} if group else None,
-            "attributes": attributes[product.id], "eans": [identifier.value for identifier, _ in identifiers[product.id]
+            "attributes": attributes[product.id] or fallback_attributes, "eans": [identifier.value for identifier, _ in identifiers[product.id]
                 if str(getattr(identifier.identifier_type, "value", identifier.identifier_type)) in ("ean", "upc", "unverified_barcode")],
             "supplier_codes": [{"supplier_code": supplier, "code": sku} for supplier, sku in sorted(codes, key=lambda item: (item[0] or "", item[1]))],
             "shops": shop_values, "warehouse_min_quantity": minimum,
+            "supplier_availability": supplier_availability.get(product.id),
             "image_url": next((url for value in image_urls if (url := _image(value))), None)}
         stock = {"known": False, "qty_on_hand": None, "qty_reserved": None, "qty_quarantined": None,
                  "qty_available": None, "avg_cost": None, "total_value": None, "valuation_complete": False,
@@ -337,7 +372,7 @@ def _apply_patch(data, patch, warehouse_code):
     for scope in ("common", "variant"):
         value = getattr(patch, scope)
         if value is not None:
-            merge(result.setdefault(scope, {}), value.model_dump(exclude_unset=True))
+            merge(result.setdefault(scope, {}), value.model_dump(exclude_unset=True, exclude={"sku"} if scope == "variant" else set()))
     if patch.warehouse is not None:
         merge(result.setdefault("warehouses", {}).setdefault(warehouse_code, {}), patch.warehouse.model_dump(exclude_unset=True))
     for shop, changes in (patch.shops or {}).items():
@@ -350,7 +385,7 @@ def _apply_patch(data, patch, warehouse_code):
 
 
 def _audit_values(row):
-    return {key: deepcopy(row[key]) for key in ("common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
+    return {key: deepcopy(row[key]) for key in ("sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
 
 
 async def get_save(db, request_id):
@@ -403,7 +438,7 @@ async def save(db, payload: ProductEditorSaveRequest):
         except ValidationError as invalid:
             response = error("invalid", "product_editor_invalid_value")
             allowed = {"product_id", "expected_revision", "snapshot_hash", "common", "variant", "warehouse", "shops",
-                       "name", "brand", "internal_note", "sale_price_gross", "vat_rate", "note", "location", "min_quantity", "visible"} | shops
+                       "name", "brand", "internal_note", "sale_price_gross", "vat_rate", "note", "location", "min_quantity", "visible", "image_url", "eans", "attributes", "sku", "value"} | shops
             response["errors"] = [{"code": "product_editor_invalid_value", **({"field": ".".join(item["loc"])}
                 if item["loc"] and all(isinstance(part, str) and part in allowed for part in item["loc"]) else {})}
                 for item in invalid.errors(include_input=False)]
@@ -426,11 +461,16 @@ async def save(db, payload: ProductEditorSaveRequest):
             results.append(error("invalid", "product_editor_shop_missing"))
             continue
         changed = _apply_patch(row["overrides"], patch, payload.warehouse_code)
-        if changed == row["overrides"]:
+        identity_fields = patch.variant.model_fields_set & {"eans", "sku"} if patch.variant else set()
+        identity_changed = bool(identity_fields and any(getattr(patch.variant, field) is not None
+            and getattr(patch.variant, field) != row[field] for field in identity_fields))
+        if changed == row["overrides"] and not identity_changed:
             results.append({"product_id": product_id, "status": "saved", "row": _public(row), "errors": []})
             continue
         try:
             async with db.begin_nested():
+                if identity_changed:
+                    await _edit_identity(db, product_id, patch.variant, row)
                 override = await db.get(ProductEditorOverride, product_id)
                 revision = row["revision"] + 1
                 if override is None:
@@ -438,15 +478,51 @@ async def save(db, payload: ProductEditorSaveRequest):
                     db.add(override)
                 else:
                     override.revision, override.data, override.updated_at = revision, changed, now()
-                saved = _make_row(row["_facts"], changed, revision, warehouse, row["stock"])
+                facts = deepcopy(row["_facts"])
+                if identity_changed:
+                    for field in identity_fields:
+                        if getattr(patch.variant, field) is not None:
+                            facts[field] = getattr(patch.variant, field)
+                saved = _make_row(facts, changed, revision, warehouse, row["stock"])
                 db.add(ProductEditorAudit(request_id=identifier, product_id=product_id, revision=revision,
                     before_data=_audit_values(row), after_data=_audit_values(saved)))
                 await db.flush()
             results.append({"product_id": product_id, "status": "saved", "row": _public(saved), "errors": []})
+        except EditorError as invalid:
+            results.append(error("invalid", invalid.code))
         except IntegrityError:
-            results.append(error("invalid", "product_editor_save_failed"))
+            results.append(error("invalid", "product_editor_identity_conflict" if identity_changed else "product_editor_save_failed"))
     request.result = {"request_id": identifier, "status": "completed", "results": results, "external_write_enabled": False}
     await db.flush()
     response = request.result
     await db.commit()
     return response
+
+
+async def _edit_identity(db, product_id, patch, row):
+    """Caller holds the shared identity lock and per-product lock; audit is atomic."""
+    if patch.sku is not None and patch.sku != row["sku"]:
+        if any(shop.get("mapping") for shop in row["shops"]):
+            raise EditorError("product_editor_mapped_sku_rename")
+        if (await db.scalar(select(Product.id).where(Product.sku == patch.sku, Product.id != product_id))
+                or await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value == patch.sku, ProductIdentifier.product_id != product_id))):
+            raise EditorError("product_editor_identity_conflict")
+        product = await db.get(Product, product_id)
+        product.sku = patch.sku
+    if patch.eans is not None and patch.eans != row["eans"]:
+        if await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value.in_(patch.eans),
+                ProductIdentifier.product_id != product_id)):
+            raise EditorError("product_editor_identity_conflict")
+        await db.execute(delete(ProductIdentifier).where(ProductIdentifier.product_id == product_id,
+            ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES)))
+        for index, code in enumerate(patch.eans):
+            db.add(ProductIdentifier(product_id=product_id, value=code,
+                identifier_type=ProductIdentifierService.classify_barcode(code), is_primary=index == 0))
+        await db.flush()
+
+
+def publication_values(common, variant, effective):
+    return {"name": effective["name"], "sale_price_gross": effective["sale_price_gross"],
+        "visible": effective["visible"], "ean": list(variant["eans"]),
+        "attributes": sorted(variant["attributes"], key=lambda item: item["name"]),
+        "image_url": common["image_url"]}
