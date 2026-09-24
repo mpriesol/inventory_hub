@@ -20,7 +20,8 @@ const { createRoot } = require('react-dom/client');
 const { MemoryRouter } = require('react-router-dom');
 const { ProductEditorPage } = require('../src/pages/ProductEditorPage.tsx');
 const { unlockHub } = require('../src/api/access.ts');
-const root = createRoot(document.getElementById('root'));
+const { COLUMN_PREFERENCES_KEY, columnPreferences, loadColumnPreferences } = require('../src/pages/productEditorGrid.ts');
+let root = createRoot(document.getElementById('root'));
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const t = key => i18n.t(`productEditor.${key}`);
 const element = id => document.querySelector(`[data-testid="${id}"]`);
@@ -51,13 +52,13 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const reply = value => ({ ok: true, json: async () => clone(value) });
 const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.toString(16).padStart(4, '0')}`.padEnd(64, 'a');
 const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
-  attributes: [{ name: 'Size', value: id === 1 ? 'M' : 'L' }], eans: [`000000000${String(id).padStart(4, '0')}`],
+  attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
   supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: null, revision: 3, snapshot_hash: hash(id, 3),
   common: { name: `Fixture product ${id}`, brand: 'Fixture', internal_note: '' },
   variant: { sale_price_gross: '199.90', vat_rate: '23.00', note: '' },
   warehouse: { code: 'main', location: `A-${String(id).padStart(2, '0')}`, min_quantity: '0' },
-  stock: id === 2 ? { known: false, qty_on_hand: null, qty_reserved: null, qty_available: null, avg_cost: null, total_value: null }
-    : { known: true, qty_on_hand: '3', qty_reserved: '3', qty_available: '0', avg_cost: '0.0000', total_value: '0.0000' },
+  stock: id === 2 ? { known: false, qty_on_hand: null, qty_reserved: null, qty_quarantined: null, qty_available: null, avg_cost: null, total_value: null }
+    : { known: true, qty_on_hand: '3', qty_reserved: '3', qty_quarantined: '0', qty_available: '0', avg_cost: '0.0000', total_value: '0.0000' },
   shops: ['biketrek', 'xtrek'].map(shop_code => ({ shop_code, mapped: true, overrides: { name: null, sale_price_gross: null, visible: null },
     effective: { name: `Fixture product ${id}`, sale_price_gross: '199.90', visible: true },
     observed: { name: `Observed ${shop_code} ${id}`, price: '189.90', price_basis: 'unknown', visible: false }, state: 'inherited' })),
@@ -183,6 +184,51 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await click('load'); assert.equal(calls.length, beforeWarehouse + 1);
   assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('warehouse_code'), 'main');
 
+  assert.equal(cellText(1, 'size'), 'M'); assert.equal(cellText(2, 'size'), 'L');
+  assert.equal(cellText(1, 'color'), 'Blue'); assert.equal(cellText(2, 'color'), 'Blue', 'Colour and size aliases share named columns without inventing product relationships');
+  assert(cell(1, 'sku').querySelector('small').textContent.includes('Veľkosť: M'), 'Inline parameters have names, not just unexplained values');
+  const beforeColumnEdits = calls.length;
+  await key('resize-name', 'ArrowRight');
+  assert.equal(required('header-name').style.width, '275px');
+  await act(async () => {
+    required('resize-name').dispatchEvent(new dom.window.MouseEvent('mousedown', { clientX: 200, button: 0, bubbles: true }));
+    window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 250, bubbles: true }));
+    window.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true })); await tick();
+  });
+  assert.equal(required('header-name').style.width, '325px', 'Mouse resize changes the actual table column width');
+  await key('resize-name', 'Home'); assert.equal(required('header-name').style.width, '80px');
+  await key('resize-name', 'End'); assert.equal(required('header-name').style.width, '640px');
+  await click('columns'); await input('width-name', '345'); await click('column-up-brand');
+  assert.equal(required('header-name').style.width, '345px');
+  assert.equal(required('header-brand').nextElementSibling, required('header-name'), 'Column order is changed by accessible controls');
+  await click('column-attributes'); await click('column-quarantined'); await click('column-channels');
+  assert(cellText(1, 'attributes').includes('Wheel size: 29'));
+  assert.equal(cellText(1, 'quarantined'), '0'); assert.equal(cellText(2, 'quarantined'), t('unknown'));
+  assert.equal(cellText(1, 'channels'), 'BIKETREK, xTrek');
+  await key(cell(1, 'quarantined'), 'Enter'); assert(!element('cell-editor'), 'Quarantine is an operation, never an editable quantity');
+  await paste(cell(1, 'brand'), 'Reordered brand\tReordered name');
+  assert.equal(cellText(1, 'brand'), 'Reordered brand'); assert.equal(cellText(1, 'name'), 'Reordered name', 'TSV follows the current visible column order');
+  await click('reset-columns');
+  assert.equal(cellText(1, 'name'), 'Reordered name', 'Resetting presentation does not discard draft data');
+  assert.equal(required('header-name').style.width, '265px');
+  assert.equal(required('header-name').nextElementSibling, required('header-brand'));
+  await click('columns'); await click('discard');
+  assert.equal(calls.length, beforeColumnEdits, 'Column settings and clipboard edits do not call the server');
+
+  await click('select-family-10');
+  assert(required('select-1').checked && required('select-2').checked && !required('select-3').checked, 'Family selection targets exactly its loaded physical rows');
+  await edit(2, 'brand', 'Hidden family draft'); await click('toggle-family-10');
+  assert(!element('cell-1-name') && !element('cell-2-name')); assert(cannotUse('select-family-10'));
+  assert(!element('bulk-apply'), 'Collapsing a family deselects hidden descendants');
+  assert(required('family-10').textContent.includes(t('familyDrafts')), 'Collapsed families retain and disclose existing drafts');
+  await paste(cell(3, 'name'), 'Visible three\nVisible four');
+  assert.equal(cellText(3, 'name'), 'Visible three'); assert.equal(cellText(4, 'name'), 'Visible four');
+  await click('select-page'); assert(required('select-3').checked);
+  await click('toggle-family-10');
+  assert(!required('select-1').checked && !required('select-2').checked, 'Select visible page cannot silently select collapsed descendants');
+  assert.equal(cellText(2, 'brand'), 'Hidden family draft');
+  await click('select-page'); await click('select-page'); await click('discard');
+
   await key(cell(1, 'name'), 'F2'); await input('cell-editor', 'Cancelled name'); await key('cell-editor', 'Escape');
   assert.equal(cellText(1, 'name'), 'Fixture product 1'); assert(cannotUse('save'));
   await edit(1, 'name', 'Staged name');
@@ -197,6 +243,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   const originalCell = cell(1, 'name'), grid = originalCell.closest('table,[role="grid"]');
   assert(grid); const scrollContainer = grid.parentElement; scrollContainer.scrollTop = 147;
   await click('detail-1'); await click('detail-tab-audit');
+  assert.equal(required('movement-history').getAttribute('href'), '/stock/movements?sku=SKU-1');
   const audit = document.querySelector('.product-editor-audit');
   assert(audit && audit.textContent.includes('Audit previous name') && audit.textContent.includes('Audit current name'), 'Audit history shows the actual before and after names');
   assert(audit.textContent.includes('109.90') && audit.textContent.includes('119.95') && audit.textContent.includes(t('fields.sale_price_gross')), 'Audit prices are paired with their edited field and retain exact decimal strings');
@@ -334,8 +381,27 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await act(async () => { unlockHub('synthetic-replacement-token'); await tick(); staleList(); await tick(); });
   assert(staleRequest.signal.aborted); assert.equal(calls.length, beforeToken, 'Credential changes do not reload protected data automatically');
   assert(!element('cell-1-name') && !document.body.textContent.includes('Secret unsaved draft'), 'Credential changes clear drafts and ignore delayed reads');
-  assert.equal(dom.window.localStorage.length, 0); assert.equal(dom.window.sessionStorage.length, 0);
+  assert.equal(dom.window.localStorage.length, 1); assert.equal(dom.window.sessionStorage.length, 0);
+  const stored = dom.window.localStorage.getItem(COLUMN_PREFERENCES_KEY);
+  assert(stored && !stored.includes('Secret') && !stored.includes('synthetic-') && !stored.includes('Fixture'), 'Only whitelisted presentation keys and widths persist, never credentials or product data');
+  assert.deepEqual(Object.keys(JSON.parse(stored)).sort(), ['order', 'version', 'visible', 'widths']);
   assert(!dom.window.location.href.includes('synthetic-'));
+  listMode = 'valid';
+  await click('columns'); await input('width-name', '375'); await click('column-up-brand'); await click('column-ean'); await click('column-size');
+  await act(async () => { root.unmount(); await tick(); });
+  root = createRoot(document.getElementById('root'));
+  const beforeRemount = calls.length;
+  await act(async () => { root.render(React.createElement(MemoryRouter, null, React.createElement(ProductEditorPage))); await tick(); });
+  assert.equal(calls.length, beforeRemount, 'Restoring column preferences does not load protected rows');
+  await click('load');
+  assert.equal(required('header-name').style.width, '375px');
+  assert.equal(required('header-brand').nextElementSibling, required('header-name'));
+  assert(element('cell-1-ean') && !element('cell-1-size'), 'Visibility, width and order survive a new page instance');
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
+  const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
+  assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);
+  assert.deepEqual(sanitized.visible, ['sku', 'name']); assert.deepEqual(sanitized.widths, { sku: 80, name: 640 });
+  dom.window.localStorage.setItem(COLUMN_PREFERENCES_KEY, '{invalid-json');
+  assert.deepEqual(loadColumnPreferences(), columnPreferences(), 'Corrupt browser data falls back to valid default columns');
   console.log('Product editor UI behavior checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

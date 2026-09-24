@@ -14,6 +14,7 @@ import {
   ReceivingPage,
   ReceivingSessionPage,
   StockPage,
+  StockHistoryPage,
   OpeningStockPage,
   OrdersAuditPage,
   OrdersStockPage,
@@ -48,6 +49,7 @@ function App() {
 
           {/* Stock */}
           <Route path="/stock" element={<StockPage />} />
+          <Route path="/stock/movements" element={<StockHistoryPage />} />
           <Route path="/stock/opening" element={<OpeningStockPage />} />
           <Route path="/stock/publication" element={<StockPublicationPage />} />
           <Route path="/orders" element={<OrdersAuditPage />} />

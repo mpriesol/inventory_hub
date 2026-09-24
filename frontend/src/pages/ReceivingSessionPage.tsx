@@ -6,8 +6,9 @@ import {
   Edit2, CheckCircle, RotateCcw, MessageSquare, Loader2
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
+import { ActionScope } from '../components/ui/ActionScope';
+import { useReceivingScanner } from '../hooks/useReceivingScanner';
 import {
-  scanCode as scanCodeApi,
   getReceivingSummary,
   finalizeReceiving,
   pauseReceiving,
@@ -16,7 +17,6 @@ import {
   resetAllItems,
   type ReceivingLine,
   type ReceivingSummary,
-  type ScanResult,
   type FinalizeResult,
 } from '../api/receiving';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
@@ -37,12 +37,16 @@ export function ReceivingSessionPage() {
   const sessionId = state?.sessionId || '';
   const supplier  = state?.supplier  || 'paul-lange';
 
+  const receiptKey = `${supplier}:${sessionId}`;
+  const receiptContext = useRef({ key: receiptKey, revision: 0 });
+  if (receiptContext.current.key !== receiptKey) receiptContext.current = { key: receiptKey, revision: 0 };
+  const [summaryReady, setSummaryReady] = useState(!!state?.lines);
+
   const [scannedCode,    setScannedCode]    = useState('');
   const [quantity,       setQuantity]       = useState(1);
   const [lastScan,       setLastScan]       = useState<{ code: string; product: string; sku: string; received: number; expected: number; status: string } | null>(null);
   const [stats,          setStats]          = useState<ReceivingSummary>({ matched: 0, partial: 0, pending: state?.lines?.length || 0, overage: 0, unexpected: 0 });
   const [lines,          setLines]          = useState<ReceivingLine[]>(state?.lines || []);
-  const [loading,        setLoading]        = useState(false);
   const [finalizing,     setFinalizing]     = useState(false);
   const [error,          setError]          = useState<string | null>(null);
   const [showConfirm,    setShowConfirm]    = useState(false);
@@ -68,19 +72,32 @@ export function ReceivingSessionPage() {
   }, [sessionId, navigate, state]);
 
   useEffect(() => {
-    if (sessionId) {
-      getReceivingSummary(supplier, sessionId)
-        .then(data => { setLines(data.lines || []); setStats(data.summary || stats); })
-        .catch(err => console.error('Failed to load summary:', err));
-    }
+    const context = receiptContext.current;
+    const revision = context.revision;
+    let active = true;
+    setLines(state?.lines || []);
+    setStats({ matched: 0, partial: 0, pending: state?.lines?.length || 0, overage: 0, unexpected: 0 });
+    setSummaryReady(!!state?.lines); setLastScan(null); setError(null); setEditingLine(null);
+    setShowConfirm(false); setFinalizeResult(null); setDoneItems({});
+    scanInput.current = ''; setScannedCode(''); setQuantity(1);
+    if (sessionId) getReceivingSummary(supplier, sessionId).then(data => {
+      if (active && receiptContext.current === context && context.revision === revision) {
+        setLines(data.lines); setStats(data.summary); setSummaryReady(true);
+      }
+    }).catch(() => {
+      if (active && receiptContext.current === context && context.revision === revision) setError(t('actions.receiving.summaryFailed'));
+    });
+    return () => { active = false; };
   }, [sessionId, supplier]);
 
   useEffect(() => {
-    if (!invoiceId || !supplier) return;
-    fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`)
+    let active = true;
+    setInvoiceNote('');
+    if (invoiceId && supplier) fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`)
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.note) setInvoiceNote(data.note); })
+      .then(data => { if (active && data?.note) setInvoiceNote(data.note); })
       .catch(() => {});
+    return () => { active = false; };
   }, [invoiceId, supplier]);
 
   const isLineDone = (line: ReceivingLine): boolean => {
@@ -117,24 +134,47 @@ export function ReceivingSessionPage() {
     } catch (e) { console.error('Failed to save received items:', e); }
   };
 
-  const handleScan = async () => {
-    if (!scannedCode.trim() || !sessionId) return;
-    setLoading(true); setError(null);
-    try {
-      const result: ScanResult = await scanCodeApi(supplier, sessionId, scannedCode, quantity);
-      setLastScan(result.line
-        ? { code: scannedCode, product: result.line.title || 'Neznámy produkt', sku: result.line.product_code || result.line.scm || '', received: result.line.received_qty, expected: result.line.ordered_qty, status: result.status }
-        : { code: scannedCode, product: 'Nenájdené na faktúre', sku: '', received: 0, expected: 0, status: result.status });
+  const scanInput = useRef('');
+  const mutation = useRef(false);
+  const scanner = useReceivingScanner(supplier, sessionId, async (result, code) => {
+    const context = receiptContext.current;
+    context.revision += 1;
+    setLastScan(result.line
+      ? { code, product: result.line.title || 'Neznámy produkt', sku: result.line.product_code || result.line.scm || '', received: result.line.received_qty, expected: result.line.ordered_qty, status: result.status }
+      : { code, product: 'Nenájdené na faktúre', sku: '', received: 0, expected: 0, status: result.status });
+    if (result.replayed) {
+      // The replay response is its original snapshot. Keep this queue item
+      // pending until the current local receipt is read successfully.
+      const current = await getReceivingSummary(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setLines(current.lines); setStats(current.summary); setSummaryReady(true);
+    } else {
       setStats(result.summary);
-      if (result.line) {
-        setLines(prev => prev.map(l => l.scm === result.line?.scm || l.ean === result.line?.ean ? { ...l, ...result.line } : l));
-      }
-      setScannedCode(''); setQuantity(1);
-    } catch { setError('Chyba pri skenovaní'); } finally { setLoading(false); inputRef.current?.focus(); }
+      if (result.line) setLines(previous => previous.map(line => {
+        const matched = result.line!.id !== undefined ? line.id === result.line!.id
+          : !!result.line!.scm && line.scm === result.line!.scm;
+        return matched ? { ...line, ...result.line } : line;
+      }));
+    }
+  }, kind => setError(t(`actions.receiving.${kind}`)));
+  const loading = scanner.busy || scanner.pending > 0;
+  const handleScan = () => {
+    const code = scanInput.current.trim();
+    if (!code || !sessionId || !summaryReady || mutation.current || finalizing || finalizeResult || pausing) return;
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 999999999.999 || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001) {
+      setError(t('actions.receiving.invalidQuantity')); return;
+    }
+    receiptContext.current.revision += 1;
+    // Consume the input synchronously: a double click cannot queue it twice.
+    // A separately entered identical code is always a new physical scan.
+    scanInput.current = ''; setScannedCode(''); setQuantity(1);
+    if (!scanner.uncertain) setError(null);
+    scanner.enqueue(code, quantity); inputRef.current?.focus();
   };
 
   const doFinalize = async () => {
-    if (!sessionId) return;
+    if (!sessionId || mutation.current || scanner.hasPending()) return;
+    mutation.current = true;
     setFinalizing(true); setError(null); setShowConfirm(false);
     try {
       if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
@@ -147,16 +187,16 @@ export function ReceivingSessionPage() {
         ? t('stockPublication.errors.stock_publication_warehouse_held')
         : 'Nepodarilo sa dokončiť príjem. Skúste to znova.');
       setFinalizing(false);
-    }
+    } finally { mutation.current = false; }
   };
 
   const handleExit = async () => {
-    if (pausing || loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
+    if (mutation.current || scanner.hasPending() || pausing || loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
     if (!sessionId || finalizeResult) {
       navigate('/receiving');
       return;
     }
-    setPausing(true); setError(null);
+    mutation.current = true; setPausing(true); setError(null);
     try {
       if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
       await saveReceivedItems();
@@ -165,33 +205,34 @@ export function ReceivingSessionPage() {
     } catch {
       setError(t('receiving.pauseError'));
     } finally {
-      setPausing(false);
+      mutation.current = false; setPausing(false);
     }
   };
 
-  const openEditModal = (index: number, line: ReceivingLine) => { setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
+  const openEditModal = (index: number, line: ReceivingLine) => { if (scanner.hasPending() || mutation.current) return; setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
 
   const handleSaveEdit = async () => {
-    if (!editingLine || !sessionId) return;
+    if (!editingLine || !sessionId || mutation.current || scanner.hasPending()) return;
+    mutation.current = true; receiptContext.current.revision += 1;
     setSavingEdit(true); setError(null);
     try {
       const result = await setLineQuantity(supplier, sessionId, editingLine.index, parseFloat(editQty) || 0, editNote || undefined);
       setLines(prev => prev.map((l, i) => i === editingLine.index ? result.line : l));
       setStats(result.summary); setEditingLine(null);
-    } catch { setError('Nepodarilo sa uložiť zmenu'); } finally { setSavingEdit(false); }
+    } catch { setError('Nepodarilo sa uložiť zmenu'); } finally { mutation.current = false; setSavingEdit(false); }
   };
 
   const handleAcceptAll = async () => {
-    if (!sessionId) return; setBulkLoading(true);
+    if (!sessionId || mutation.current || scanner.hasPending()) return; mutation.current = true; receiptContext.current.revision += 1; setBulkLoading(true);
     try { const r = await acceptAllItems(supplier, sessionId, true); setLines(r.lines); setStats(r.summary); }
-    catch { setError('Nepodarilo sa prijať všetky položky'); } finally { setBulkLoading(false); }
+    catch { setError('Nepodarilo sa prijať všetky položky'); } finally { mutation.current = false; setBulkLoading(false); }
   };
 
   const handleResetAll = async () => {
-    if (!sessionId || !confirm('Naozaj chcete vynulovať všetky prijaté množstvá?')) return;
-    setBulkLoading(true);
+    if (!sessionId || mutation.current || scanner.hasPending() || !confirm('Naozaj chcete vynulovať všetky prijaté množstvá?')) return;
+    mutation.current = true; receiptContext.current.revision += 1; setBulkLoading(true);
     try { const r = await resetAllItems(supplier, sessionId); setLines(r.lines); setStats(r.summary); }
-    catch { setError('Nepodarilo sa vynulovať množstvá'); } finally { setBulkLoading(false); }
+    catch { setError('Nepodarilo sa vynulovať množstvá'); } finally { mutation.current = false; setBulkLoading(false); }
   };
 
   const sc: Record<string, { bg: string; border: string; icon: string; label: string }> = {
@@ -222,7 +263,7 @@ export function ReceivingSessionPage() {
             {sessionId && <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>Session: {sessionId}</div>}
           </div>
         </div>
-        <Button variant="danger" onClick={handleExit} loading={pausing} disabled={loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)}><X size={16} /> Ukončiť</Button>
+        <span className="action-control"><Button variant="danger" onClick={handleExit} loading={pausing} disabled={loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)}><X size={16} /> Ukončiť</Button><ActionScope effects={['hub-write']} /></span>
       </div>
 
       {error && <div className="p-4 rounded-lg border" style={{ backgroundColor: 'var(--color-error-subtle)', borderColor: 'var(--color-error)', color: 'var(--color-error)' }}>{error}</div>}
@@ -237,14 +278,18 @@ export function ReceivingSessionPage() {
           <h2 className="text-lg font-medium mt-4" style={{ color: 'var(--color-text-primary)' }}>Naskenuj čiarový kód</h2>
           <p className="text-sm mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Použi skener alebo zadaj kód manuálne</p>
           <div className="mt-6 flex gap-2">
-            <input ref={inputRef} type="text" value={scannedCode} onChange={e => setScannedCode(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleScan()}
-              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} autoFocus disabled={loading || pausing} />
-            <Button variant="primary" onClick={handleScan} loading={loading} disabled={!scannedCode.trim() || !sessionId || pausing}>Scan</Button>
+            <input ref={inputRef} type="text" value={scannedCode} onChange={e => { scanInput.current = e.target.value; setScannedCode(e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleScan(); } }}
+              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} data-testid="receiving-scan-code" autoFocus disabled={!summaryReady || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult} />
+            <Button data-testid="receiving-scan" variant="primary" onClick={handleScan} disabled={!scannedCode.trim() || !sessionId || !summaryReady || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult}>{t('actions.receiving.scan')}</Button>
           </div>
+          <p className="text-sm mt-3">{t('actions.receiving.help')}</p>
+          <ActionScope effects={['hub-write']}>{t('actions.receiving.local')}</ActionScope>
+          {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t('actions.receiving.pending', { count: scanner.pending })}</p>}
+          {scanner.uncertain && <Button data-testid="receiving-scan-retry" disabled={scanner.busy} onClick={() => { setError(null); scanner.retry(); }}>{t('actions.receiving.retry')}</Button>}
           <div className="flex items-center justify-center gap-4 mt-4">
             <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               Množstvo:
-              <input type="number" value={quantity} onChange={e => setQuantity(Number(e.target.value) || 1)} min={-999} step={1} className="w-20 text-center py-1" />
+              <input data-testid="receiving-scan-quantity" type="number" value={Number.isNaN(quantity) ? '' : quantity} onChange={e => setQuantity(e.target.value === '' ? NaN : Number(e.target.value))} min={0.001} max={999999999.999} step={1} className="w-20 text-center py-1" />
             </label>
           </div>
         </div>
@@ -294,16 +339,16 @@ export function ReceivingSessionPage() {
           <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: 'var(--color-border-subtle)' }}>
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>{lines.length} položiek</span>
             <div className="flex gap-2">
-              <button onClick={handleAcceptAll} disabled={bulkLoading || pausing || stats.pending === 0}
+              <span className="action-control"><button onClick={handleAcceptAll} disabled={loading || savingEdit || bulkLoading || pausing || stats.pending === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}>
                 <CheckCircle size={14} /> Prijať všetko ({stats.pending})
-              </button>
-              <button onClick={handleResetAll} disabled={bulkLoading || pausing || (stats.matched === 0 && stats.partial === 0)}
+              </button><ActionScope effects={['hub-write']} /></span>
+              <span className="action-control"><button onClick={handleResetAll} disabled={loading || savingEdit || bulkLoading || pausing || (stats.matched === 0 && stats.partial === 0)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>
                 <RotateCcw size={14} /> Resetovať
-              </button>
+              </button><ActionScope effects={['hub-write']} /></span>
             </div>
           </div>
           <div className="max-h-96 overflow-y-auto">
@@ -382,7 +427,7 @@ export function ReceivingSessionPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setEditingLine(null)}>Zrušiť</Button>
-              <Button variant="primary" onClick={handleSaveEdit} loading={savingEdit} disabled={pausing}>Uložiť</Button>
+              <span className="action-control"><Button variant="primary" onClick={handleSaveEdit} loading={savingEdit} disabled={pausing || loading || bulkLoading}>Uložiť</Button><ActionScope effects={['hub-write']} /></span>
             </div>
           </div>
         </div>
@@ -435,7 +480,7 @@ export function ReceivingSessionPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setShowConfirm(false)}>Pokračovať v skenovaní</Button>
-              <Button variant="primary" onClick={doFinalize}>Áno, dokončiť</Button>
+              <span className="action-control"><Button variant="primary" disabled={loading || finalizing} onClick={doFinalize}>Áno, dokončiť</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
             </div>
           </div>
         </div>

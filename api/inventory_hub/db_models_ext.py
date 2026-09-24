@@ -572,7 +572,7 @@ class ReceivingLine(TimestampMixin, Base):
     product_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("products.id", ondelete="SET NULL"))
     line_number: Mapped[int] = mapped_column(Integer, nullable=False)  # v12 FINAL: NOT NULL
     supplier_sku: Mapped[Optional[str]] = mapped_column(String(100))
-    ean: Mapped[Optional[str]] = mapped_column(String(20))
+    ean: Mapped[Optional[str]] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text)
     ordered_qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     received_qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, nullable=False)

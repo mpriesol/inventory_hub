@@ -1,78 +1,42 @@
-// src/api/dashboard.ts
-// API calls for dashboard KPIs and stats
-
+// Dashboard reads local Hub data only; no Upgates request is made here.
 import { API_BASE, fetchJSON } from "./client";
-import { getInvoicesIndex, type InvoiceIndexItem } from "./invoices";
+import { hubUnlocked } from './access';
+import { getMovements } from './stockHistory';
 
 export interface DashboardStats {
   totalProducts: number;
   lowStockCount: number;
   openOrders: number;
   inventoryValue: number | null;
-  pendingInvoices: number;
-  syncStatus: {
-    percentage: number;
-    lastSync: string | null;
-    shopsConnected: number;
-  };
+  onHand: number;
+  reserved: number;
+  available: number;
+  quarantined: number;
 }
-
 export interface ActivityItem {
-  id: string;
-  timestamp: string;
-  type: 'receiving' | 'sync' | 'invoice' | 'count' | 'other';
-  message: string;
-  details?: Record<string, any>;
+  id: string; timestamp: string; sku: string; name: string; quantity: string;
+  movementType: string; reference: string | null;
 }
-
-// Get dashboard overview stats — real numbers from DB (/stock/summary)
-// plus real pending invoices from the invoice index.
 export async function getDashboardStats(): Promise<DashboardStats> {
-  const empty: DashboardStats = {
-    totalProducts: 0,
-    lowStockCount: 0,
-    openOrders: 0,
-    inventoryValue: null,
-    pendingInvoices: 0,
-    syncStatus: { percentage: 0, lastSync: null, shopsConnected: 0 },
+  const value = await fetchJSON<{
+    products_total: number; inventory_value: number | null; low_stock_count: number;
+    open_managed_orders: number; on_hand_total: number; reserved_total: number;
+    available_total: number; quarantined_total: number;
+  }>(`${API_BASE}/stock/summary`);
+  return {
+    totalProducts: value.products_total, inventoryValue: value.inventory_value,
+    lowStockCount: value.low_stock_count, openOrders: value.open_managed_orders,
+    onHand: value.on_hand_total, reserved: value.reserved_total,
+    available: value.available_total, quarantined: value.quarantined_total,
   };
-
-  let pendingInvoices = 0;
-  try {
-    const invoicesRes = await getInvoicesIndex('paul-lange');
-    pendingInvoices = (invoicesRes?.items || [])
-      .filter(inv => inv.status !== 'processed')
-      .length;
-  } catch (error) {
-    console.error('Failed to fetch invoices index:', error);
-  }
-
-  try {
-    const summary = await fetchJSON<{
-      products_total: number;
-      inventory_value: number | null;
-      low_stock_count: number;
-    }>(`${API_BASE}/stock/summary`);
-    return {
-      ...empty,
-      totalProducts: summary.products_total,
-      lowStockCount: summary.low_stock_count,
-      inventoryValue: summary.inventory_value,
-      pendingInvoices,
-      // openOrders / syncStatus: no orders module and no Upgates API sync
-      // exist yet — keep honest zeros instead of fake numbers.
-    };
-  } catch (error) {
-    console.error('Failed to fetch stock summary:', error);
-    return { ...empty, pendingInvoices };
-  }
 }
-
-// Get recent activity — no backend activity log exists yet.
-// Returns empty list (UI shows "no activity") instead of fake entries.
-// TODO: implement real audit feed (sync_log / receiving sessions / uploads).
 export async function getRecentActivity(): Promise<ActivityItem[]> {
-  return [];
+  if (!hubUnlocked()) return [];
+  const value = await getMovements({q: '', sku: '', warehouse_code: '', movement_type: '', date_from: '', date_to: ''}, 1, 25);
+  return value.items.slice(0, 6).map(row => ({ id: String(row.id), timestamp: row.created_at,
+    sku: row.sku, name: row.product_name, quantity: row.quantity, movementType: row.movement_type,
+    reference: row.reference_label || row.reference_id,
+  }));
 }
 
 // Suppliers list

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { ClipboardList, Lock } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
+import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { AuditClassification, fetchOrderAudit, OrderAudit } from '../api/orderAudit';
 import './OrdersAuditPage.css';
@@ -22,13 +23,14 @@ export function OrdersAuditPage() {
   const [error, setError] = useState('');
   const requestId = useRef(0);
   const controller = useRef<AbortController | null>(null);
+  const inFlight = useRef(false);
 
   function clearResult() {
     requestId.current += 1;
     controller.current?.abort();
     controller.current = null;
     setLoaded(null);
-    setBusy(false);
+    setBusy(false); inFlight.current = false;
   }
   useEffect(() => {
     clearResult();
@@ -36,7 +38,8 @@ export function OrdersAuditPage() {
   }, [revision]);
 
   async function load(page = 1) {
-    if (!hubUnlocked()) return;
+    if (!hubUnlocked() || inFlight.current) return;
+    inFlight.current = true;
     controller.current?.abort();
     const currentController = new AbortController();
     controller.current = currentController;
@@ -57,7 +60,7 @@ export function OrdersAuditPage() {
         setError(t(`orderAudit.errors.${code}`, { defaultValue: t('orderAudit.requestError') }));
       }
     } finally {
-      if (current()) setBusy(false);
+      if (current()) { setBusy(false); inFlight.current = false; }
     }
   }
   const reason = (code: string) => t(`orderAudit.reasons.${code}`, { defaultValue: t('orderAudit.candidate.review') });
@@ -92,7 +95,7 @@ export function OrdersAuditPage() {
         <label>{t('orderAudit.period')}<select value={days} onChange={event => { clearResult(); setError(''); setDays(Number(event.target.value)); }}>
           {[7, 30, 90].map(value => <option key={value} value={value}>{t('orderAudit.periodDays', { count: value })}</option>)}
         </select></label>
-        <Button type="submit" loading={busy}>{t(busy ? 'common.loading' : 'orderAudit.load')}</Button>
+        <span className="action-control"><Button type="submit" loading={busy}>{t(busy ? 'common.loading' : 'orderAudit.load')}</Button><ActionScope effects={['upgates-read']} shop={shop} calls={{ kind: 'known', count: 2 }} /></span>
       </form>
       {!result && !busy && !error && <p className="orders-audit-muted">{t('orderAudit.prompt')}</p>}
       <div aria-live="polite" aria-busy={busy}>
@@ -130,9 +133,9 @@ export function OrdersAuditPage() {
             </div>
           </details>)}
           <nav className="orders-audit-pagination" aria-label={t('orderAudit.title')}>
-            <Button variant="secondary" disabled={busy || result.page <= 1} onClick={() => load(result.page - 1)}>{t('orderAudit.previous')}</Button>
+            <span className="action-control"><Button variant="secondary" disabled={busy || result.page <= 1} onClick={() => load(result.page - 1)}>{t('orderAudit.previous')}</Button><ActionScope effects={['upgates-read']} shop={shop} calls={{ kind: 'known', count: 2 }} /></span>
             <span>{t('orderAudit.page', { page: result.page, pages: Math.max(1, result.number_of_pages) })}</span>
-            <Button variant="secondary" disabled={busy || !result.has_more || result.page >= 1000} onClick={() => load(result.page + 1)}>{t('orderAudit.next')}</Button>
+            <span className="action-control"><Button variant="secondary" disabled={busy || !result.has_more || result.page >= 1000} onClick={() => load(result.page + 1)}>{t('orderAudit.next')}</Button><ActionScope effects={['upgates-read']} shop={shop} calls={{ kind: 'known', count: 2 }} /></span>
           </nav>
         </>}
       </div>

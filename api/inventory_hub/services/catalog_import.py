@@ -22,7 +22,7 @@ from inventory_hub import config_io
 from inventory_hub.adapters.pl_feed_convert import DEFAULT_COEFFS
 from inventory_hub.catalog_types import CatalogProduct, ImportItem, ImportPriceLine, ShopImportOptions, ShopImportPreview, ShopImportPreviewRequest
 from inventory_hub.database import get_session_context
-from inventory_hub.db_models import Product, ProductGroup, ProductIdentifier, Shop, Supplier
+from inventory_hub.db_models import Product, ProductGroup, Shop, Supplier
 from inventory_hub.db_models_ext import ProductSupplySource, ShopProduct, ShopProductContent
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
 from inventory_hub.services.catalog_html import clean_description
@@ -30,6 +30,7 @@ from inventory_hub.services.catalog_identity import cached_identities, connectio
 from inventory_hub.services.catalog_sort import variant_sort_key
 from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
 
 
@@ -540,30 +541,30 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
 
 
 async def local_identities(db: AsyncSession, products: list[CatalogProduct]) -> tuple[dict[int, int], set[int]]:
-    sku_rows = (await db.execute(select(Product.id, Product.sku).where(Product.sku.in_([p.shop_code for p in products])))).all()
-    by_sku = {p.sku: p.id for p in sku_rows}
-    all_eans = {ean for p in products for ean in p.eans}
-    identifiers = (await db.execute(select(ProductIdentifier.product_id, ProductIdentifier.value).where(
-        ProductIdentifier.value.in_(all_eans), ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES)))).all()
-    by_ean = {}
-    for row in identifiers:
-        by_ean.setdefault(row.value, set()).add(row.product_id)
+    supplier_codes = {product.supplier for product in products}
+    supplier_rows = (await db.execute(select(Supplier).where(Supplier.code.in_(supplier_codes)))).scalars()
+    supplier_ids = {supplier.code: supplier.id for supplier in supplier_rows}
+    identities = [RemoteIdentity(0, product.shop_code, barcodes=tuple(product.eans),
+        supplier_id=supplier_ids.get(product.supplier), supplier_sku=product.code)
+        for product in products]
+    index = await load_identity_index(db, 0, identities, local=True)
     matches, conflicts = {}, set()
-    for product in products:
-        ids = set().union(*(by_ean.get(ean, set()) for ean in product.eans))
-        if product.shop_code in by_sku:
-            ids.add(by_sku[product.shop_code])
-        if len(ids) > 1:
+    for product, identity in zip(products, identities):
+        resolution = index.resolve(identity)
+        if resolution.status == "conflict":
             conflicts.add(product.id)
-        elif ids:
-            matches[product.id] = ids.pop()
+        elif resolution.product_id is not None:
+            matches[product.id] = resolution.product_id
+    # Two selected leaves must never acquire the same canonical product.
+    duplicate_ids = {id for id, count in Counter(matches.values()).items() if count > 1}
+    conflicts.update(id for id, product_id in matches.items() if product_id in duplicate_ids)
     return matches, conflicts
 
 
 async def register_created(db: AsyncSession, shop: str, item: dict, sources: dict[int, CatalogProduct], remote: dict) -> None:
     # Only catalog identity/content is registered. No stock balance or movement is created.
     products = [sources[id] for id in item["product_ids"]]
-    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 643128702193})
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     existing, conflicts = await local_identities(db, products)
     if conflicts:
         raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)

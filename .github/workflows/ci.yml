@@ -96,3 +96,9 @@ jobs:
 
       - name: FIFO inventory interactions
         run: node frontend/tests/fifo-ui.cjs
+
+      - name: Receiving scanner replay and queue interactions
+        run: node frontend/tests/receiving-scan-ui.cjs
+
+      - name: Movement history and dashboard interactions
+        run: node frontend/tests/stock-history-ui.cjs

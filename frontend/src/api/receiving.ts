@@ -7,9 +7,10 @@ export interface ReceivingSession {
 }
 
 export interface ReceivingLine {
+  id?: number;
   ean: string;
   scm: string;
-  product_code: string;
+  product_code: string | null;
   title: string;
   ordered_qty: number;
   received_qty: number;
@@ -17,6 +18,8 @@ export interface ReceivingLine {
 }
 
 export interface ScanResult {
+  request_id?: string | null;
+  replayed?: boolean;
   status: 'matched' | 'partial' | 'pending' | 'overage' | 'unexpected' | 'unknown';
   line: ReceivingLine | null;
   summary: ReceivingSummary;
@@ -50,6 +53,17 @@ export interface FinalizeResult {
   message: string;
 }
 
+const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const nonnegative = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const validSummary = (value: unknown): value is ReceivingSummary => object(value)
+  && ['matched', 'partial', 'pending', 'overage', 'unexpected'].every(key => nonnegative(value[key]) && Number.isInteger(value[key]));
+const validLine = (value: unknown): value is ReceivingLine => object(value)
+  && (value.id === undefined || (Number.isSafeInteger(value.id) && Number(value.id) > 0))
+  && ['ean', 'scm', 'title'].every(key => typeof value[key] === 'string')
+  && (value.product_code === null || typeof value.product_code === 'string')
+  && nonnegative(value.ordered_qty) && nonnegative(value.received_qty)
+  && ['pending', 'partial', 'matched', 'overage'].includes(String(value.status));
+
 export async function createReceivingSession(supplier: string, invoice_id: string): Promise<ReceivingSession> {
   return fetchJSON<ReceivingSession>(`${API_BASE}/suppliers/${supplier}/receiving/sessions`, {
     method: "POST",
@@ -62,20 +76,34 @@ export async function scanCode(
   supplier: string, 
   session_id: string, 
   code: string, 
-  qty: number = 1
+  qty: number = 1,
+  request_id: string = crypto.randomUUID()
 ): Promise<ScanResult> {
-  return fetchJSON<ScanResult>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/scan`, {
+  const result = await fetchJSON<unknown>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, qty })
+    body: JSON.stringify({ code, qty, request_id })
   });
+  if (!object(result) || result.request_id !== request_id || typeof result.replayed !== 'boolean'
+    || !['matched', 'partial', 'pending', 'overage', 'unexpected', 'unknown'].includes(String(result.status))
+    || !validSummary(result.summary)
+    || (['unexpected', 'unknown'].includes(String(result.status)) ? result.line !== null
+      : !validLine(result.line) || result.line.status !== result.status)) {
+    // HTTP 200 alone does not acknowledge a scan. Keep the operation retryable.
+    throw new Error('receiving_scan_response_invalid');
+  }
+  return result as unknown as ScanResult;
 }
 
 export async function getReceivingSummary(
   supplier: string, 
   session_id: string
 ): Promise<{ invoice_no: string; lines: ReceivingLine[]; summary: ReceivingSummary }> {
-  return fetchJSON(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/summary`);
+  const result = await fetchJSON<unknown>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/summary`);
+  if (!object(result) || !Array.isArray(result.lines) || !result.lines.every(validLine) || !validSummary(result.summary)) {
+    throw new Error('receiving_summary_response_invalid');
+  }
+  return result as unknown as { invoice_no: string; lines: ReceivingLine[]; summary: ReceivingSummary };
 }
 
 export async function finalizeReceiving(

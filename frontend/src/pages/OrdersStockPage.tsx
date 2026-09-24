@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
+import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { applyOrderStock, configureOrderStock, getOrderStockOptions, OrderStockAction, OrderStockError,
   OrderStockOptions, OrderStockPreview, OrderStockPreviewInfo, previewOrderStock, recentOrderStock, recoverOrderStock } from '../api/orderStock';
@@ -159,7 +160,7 @@ export function OrdersStockPage() {
     </form> : <>
       <section className="opening-stock-panel">
         <div className="opening-stock-actions"><label>{t('orderStock.shop')}<select disabled={locked} value={shop} onChange={event => changeShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label>
-          <Button variant="secondary" disabled={!!busy || uncertain === 'apply'} onClick={loadOptions}>{t('orderStock.loadOptions')}</Button></div>
+          <span className="action-control"><Button variant="secondary" disabled={!!busy || uncertain === 'apply'} onClick={loadOptions}>{t('orderStock.loadOptions')}</Button><ActionScope effects={['upgates-read']} shop={shop} calls={{ kind: 'known', count: 1 }} /></span></div>
         {uncertain === 'configure' && <div className="opening-stock-notice" role="alert">{t('orderStock.configUncertain')}</div>}
         {options && <details className="order-stock-config" open={!options.policy || configDirty}>
           <summary>{t('orderStock.configTitle')}</summary>
@@ -172,21 +173,21 @@ export function OrdersStockPage() {
               {actions.filter(action => (options.allowed_actions[String(status.id)] || ['review']).includes(action)).map(action => <option key={action} value={action}>{t(`orderStock.actions.${action}`)}</option>)}</select></td><td>{t(`orderStock.actions.${options.suggested_actions[String(status.id)] || 'review'}`)}</td></tr>)}
           </tbody></table></div>
           <div className="opening-stock-confirmations"><label><input type="checkbox" checked={configConfirmed} disabled={locked} onChange={event => setConfigConfirmed(event.target.checked)} />{t('orderStock.configConfirm')}</label>
-            <Button disabled={!!busy || !!uncertain || !warehouse || !configConfirmed} onClick={configure}>{t(options.policy ? 'orderStock.saveConfig' : 'orderStock.activate')}</Button></div>
+            <span className="action-control"><Button disabled={!!busy || !!uncertain || !warehouse || !configConfirmed} onClick={configure}>{t(options.policy ? 'orderStock.saveConfig' : 'orderStock.activate')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></span></div>
         </details>}
       </section>
       <section className="opening-stock-panel">
         <h2>{t('orderStock.orderTitle')}</h2><div className="opening-stock-actions order-stock-order-input"><label className="opening-stock-grow">{t('orderStock.orderNumber')}<input maxLength={100} value={order} disabled={locked} onChange={event => { invalidate(); setOrder(event.target.value); }} /></label>
-          <Button disabled={!options?.policy || configDirty || !!busy || !!uncertain || !order.trim()} onClick={prepare}>{t('orderStock.preview')}</Button></div>
+          <span className="action-control"><Button disabled={!options?.policy || configDirty || !!busy || !!uncertain || !order.trim()} onClick={prepare}>{t('orderStock.preview')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></span></div>
         {configDirty && <p className="opening-stock-muted">{t('orderStock.saveBeforePreview')}</p>}
         <p className="opening-stock-muted">{t('orderStock.previewHelp')}</p>
         <p className="opening-stock-muted">{t('orderStock.posHelp')}</p>
       </section>
       <section className="opening-stock-panel">
-        <div className="opening-stock-actions"><h2>{t('orderStock.recovery')}</h2><Button variant="secondary" disabled={!!busy} onClick={() => read('recent', signal => recentOrderStock(shop, signal), result => setRecent(result.previews))}>{t('orderStock.loadRecent')}</Button></div>
+        <div className="opening-stock-actions"><h2>{t('orderStock.recovery')}</h2><span className="action-control"><Button variant="secondary" disabled={!!busy} onClick={() => read('recent', signal => recentOrderStock(shop, signal), result => setRecent(result.previews))}>{t('orderStock.loadRecent')}</Button><ActionScope effects={['hub-read']} /></span></div>
         <div className="opening-stock-actions order-stock-order-input"><label className="opening-stock-grow">{t('orderStock.previewId')}<input value={recoverId} disabled={locked} onChange={event => { invalidate(); setRecoverId(event.target.value); }} /></label>
-          <Button variant="secondary" disabled={!!busy || !recoverId.trim() || uncertain === 'configure'} onClick={() => recover()}>{t('orderStock.recover')}</Button></div>
-        {recent && <div className="opening-stock-recent">{!recent.length && <p>{t('orderStock.noRecent')}</p>}{recent.map(item => <div key={item.id}><div><strong>{item.order_number || item.source?.order_number}</strong><small>{date(item.created_at)} · {t(`orderStock.actions.${item.action}`)} · {t(`orderStock.previewStatus.${item.status}`)}</small></div><Button size="sm" variant="secondary" disabled={!!busy || !!uncertain} onClick={() => recover(item.id)}>{t('orderStock.openPreview')}</Button></div>)}</div>}
+          <span className="action-control"><Button variant="secondary" disabled={!!busy || !recoverId.trim() || uncertain === 'configure'} onClick={() => recover()}>{t('orderStock.recover')}</Button><ActionScope effects={['hub-read']} /></span></div>
+        {recent && <div className="opening-stock-recent">{!recent.length && <p>{t('orderStock.noRecent')}</p>}{recent.map(item => <div key={item.id}><div><strong>{item.order_number || item.source?.order_number}</strong><small>{date(item.created_at)} · {t(`orderStock.actions.${item.action}`)} · {t(`orderStock.previewStatus.${item.status}`)}</small></div><span className="action-control"><Button size="sm" variant="secondary" disabled={!!busy || !!uncertain} onClick={() => recover(item.id)}>{t('orderStock.openPreview')}</Button><ActionScope effects={['hub-read']} /></span></div>)}</div>}
       </section>
       {!!errors.length && <div className="opening-stock-errors" role="alert"><strong>{t('orderStock.planErrors')}</strong><ul>{errors.slice(0, 100).map((item, index) => <li key={index}>{message(item.code)}{errorIdentity(item) && <strong> · {errorIdentity(item)}</strong>}</li>)}</ul>{errors.length > 100 && <p>{t('orderStock.moreErrors', { count: errors.length - 100 })}</p>}</div>}
       {preview && <section className="opening-stock-panel" aria-live="polite">
@@ -200,11 +201,11 @@ export function OrdersStockPage() {
           {preview.plan.lines.slice(linePage * 100, (linePage + 1) * 100).map(item => <tr key={item.line_key}><td><code>{item.sku}</code></td><td>{item.quantity}</td><td>{item.old_allocation} → {item.allocation}</td><td>{item.shortage}</td></tr>)}
         </tbody></table></div>{pagination(preview.plan.lines.length, linePage, setLinePage)}</details>
         {!!preview.plan.excluded_lines.length && <div className="order-stock-excluded"><h3>{t('orderStock.excluded')}</h3><p>{t('orderStock.excludedHelp')}</p><ul>{preview.plan.excluded_lines.slice(excludedPage * 100, (excludedPage + 1) * 100).map((item, index) => <li key={`${item.line_key}:${index}`}><strong>{item.title || item.name || item.code || item.line_key}</strong> {item.code && <code>{item.code}</code>} · {t(`orderStock.excludedTypes.${item.classification || 'manual'}`, { defaultValue: t('orderStock.excludedTypes.manual') })}</li>)}</ul>{pagination(preview.plan.excluded_lines.length, excludedPage, setExcludedPage)}</div>}
-        {preview.status === 'completed' ? <div className="opening-stock-success"><strong>{t('orderStock.completed')}</strong><p>{t('orderStock.completedHelp')}</p>{preview.result && <p>{t('orderStock.movements', { count: preview.result.movements_created })}</p>}</div> : uncertain === 'apply' ? <div className="opening-stock-notice" role="alert"><p>{t('orderStock.applyUncertain')}</p><Button variant="secondary" disabled={!!busy} onClick={() => recover(preview.id)}>{t('orderStock.recover')}</Button></div> : <>
+        {preview.status === 'completed' ? <div className="opening-stock-success"><strong>{t('orderStock.completed')}</strong><p>{t('orderStock.completedHelp')}</p>{preview.result && <p>{t('orderStock.movements', { count: preview.result.movements_created })}</p>}</div> : uncertain === 'apply' ? <div className="opening-stock-notice" role="alert"><p>{t('orderStock.applyUncertain')}</p><span className="action-control"><Button variant="secondary" disabled={!!busy} onClick={() => recover(preview.id)}>{t('orderStock.recover')}</Button><ActionScope effects={['hub-read']} /></span></div> : <>
           {(!preview.plan.ready || expired) && <div className="opening-stock-notice">{t(expired ? 'orderStock.expired' : 'orderStock.blocked')}</div>}
           <div className="opening-stock-confirmations"><label><input type="checkbox" checked={confirmed} disabled={!!busy || !preview.plan.ready || !!expired || configDirty} onChange={event => setConfirmed(event.target.checked)} />{t('orderStock.applyConfirm')}</label>
             {preview.action === 'issue' && <label><input type="checkbox" checked={physical} disabled={!!busy || !preview.plan.ready || !!expired || configDirty} onChange={event => setPhysical(event.target.checked)} />{t('orderStock.physicalConfirm')}</label>}
-            <Button disabled={!!busy || !preview.plan.ready || !!expired || !confirmed || (preview.action === 'issue' && !physical) || configDirty} loading={busy === 'apply'} onClick={apply}>{t('orderStock.apply')}</Button></div>
+            <span className="action-control"><Button disabled={!!busy || !preview.plan.ready || !!expired || !confirmed || (preview.action === 'issue' && !physical) || configDirty} loading={busy === 'apply'} onClick={apply}>{t('orderStock.apply')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></span></div>
         </>}
       </section>}
     </>}{error && <div className="opening-stock-errors" role="alert">{message(error)}</div>}

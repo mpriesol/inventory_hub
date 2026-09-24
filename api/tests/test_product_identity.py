@@ -17,8 +17,8 @@ def product(id, sku, group_id=None):
     return SimpleNamespace(id=id, sku=sku, group_id=group_id)
 
 
-def identifier(id, value, kind=IdentifierType.ean):
-    return SimpleNamespace(product_id=id, value=value, identifier_type=kind)
+def identifier(id, value, kind=IdentifierType.ean, supplier_id=None):
+    return SimpleNamespace(product_id=id, value=value, identifier_type=kind, supplier_id=supplier_id)
 
 
 def mapping(id, product_id, code, *, shop_id=1, variant=False, external_id=None, legacy_parent=False):
@@ -154,6 +154,55 @@ class IdentityResolverTests(unittest.TestCase):
         self.assertEqual(verified_barcodes(("0000000000000", "00000000")), ())
 
 
+    def test_local_supplier_alias_cannot_override_the_shared_sku_or_barcode(self):
+        index = IdentityIndex(0, [product(1, "SHARED"), product(2, "OTHER")], identifiers=[
+            identifier(2, "supplier-code", IdentifierType.supplier_sku, supplier_id=7),
+            identifier(1, EAN_A)])
+        result = index.resolve(RemoteIdentity(0, "SHARED", barcodes=(EAN_A,),
+            supplier_id=7, supplier_sku="supplier-code"))
+        self.assertEqual(result.status, "conflict")
+        self.assertEqual(result.reasons, ["supplier_identifier_conflict"])
+        self.assertEqual(result.candidate_product_ids, [1, 2])
+
+    def test_supplier_codes_are_scoped_and_unverified_barcodes_do_not_join(self):
+        index = IdentityIndex(0, [product(1, "A"), product(2, "B")], identifiers=[
+            identifier(1, "CODE", IdentifierType.supplier_sku, supplier_id=7),
+            identifier(2, "CODE", IdentifierType.supplier_sku, supplier_id=8),
+            identifier(1, "12345", IdentifierType.unverified_barcode),
+            identifier(2, "12345", IdentifierType.unverified_barcode)])
+        for supplier_id, product_id in ((7, 1), (8, 2)):
+            result = index.resolve(RemoteIdentity(0, barcodes=("12345",), supplier_id=supplier_id, supplier_sku="CODE"))
+            self.assertEqual(result.product_id, product_id)
+            self.assertEqual(result.matched_by, "supplier_sku")
+        self.assertEqual(index.resolve(RemoteIdentity(0, barcodes=("12345",))).status, "unresolved")
+
+    def test_assigned_product_is_revalidated_against_current_code_and_ean(self):
+        index = IdentityIndex(0, [product(1, "SHARED"), product(2, "OTHER")],
+            identifiers=[identifier(2, EAN_A)])
+        result = index.resolve(RemoteIdentity(0, "SHARED", barcodes=(EAN_A,), expected_product_id=1))
+        self.assertEqual(result.status, "conflict")
+        self.assertEqual(result.reasons, ["assigned_product_changed"])
+        self.assertEqual(index.resolve(RemoteIdentity(0, expected_product_id=99)).reasons, ["assigned_product_missing"])
+
+    def test_unflushed_orm_active_default_does_not_change_identity_classification(self):
+        pending_product = Product(id=1, sku="SHARED", name="Canonical")
+        self.assertIsNone(pending_product.is_active, "ORM defaults apply on insert, not construction")
+        index = IdentityIndex(1, [pending_product])
+        result = index.resolve(RemoteIdentity(1, "SHARED"))
+        self.assertEqual((result.status, result.product_id, result.matched_by), ("identified", 1, "shared_sku"))
+        pending_product.is_active = False
+        self.assertEqual(index.resolve(RemoteIdentity(1, "SHARED")).reasons, ["inactive_product"])
+
+    def test_assigned_product_without_new_evidence_and_inactive_product(self):
+        active = product(1, "SHARED")
+        inactive = product(2, "OLD")
+        inactive.is_active = False
+        index = IdentityIndex(0, [active, inactive])
+        result = index.resolve(RemoteIdentity(0, expected_product_id=1))
+        self.assertEqual((result.product_id, result.matched_by), (1, "assigned_product"))
+        self.assertEqual(index.resolve(RemoteIdentity(0, "OLD")).reasons, ["inactive_product"])
+
+
 class RemotePreflightTests(unittest.TestCase):
     def test_duplicate_remote_leaf_codes_block_every_affected_family(self):
         families = _pull_families(1, [{"code": "PARENT", "variants": [{"code": "DUP"}]},
@@ -203,9 +252,14 @@ class ReadOnlyIdentityDatabase:
             else:
                 rows = [row for row in self.products if row.id in params["id_1"]]
         elif entity is ProductIdentifier:
-            rows = [row for row in self.identifiers if row.identifier_type in params["identifier_type_1"]]
+            kinds = params["identifier_type_1"]
+            if not isinstance(kinds, (tuple, list)):
+                kinds = [kinds]
+            rows = [row for row in self.identifiers if row.identifier_type in kinds]
             if "value_1" in params:
                 rows = [row for row in rows if row.value in params["value_1"]]
+            elif "param_1" in params:
+                rows = [row for row in rows if (row.supplier_id, row.value) in params["param_1"]]
             else:
                 rows = [row for row in rows if row.product_id in params["product_id_1"]]
         else:
@@ -243,3 +297,18 @@ class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
                 if isinstance(value, (list, tuple)):
                     self.assertLessEqual(len(value), 500)
         self.assertEqual(index.product_barcodes[1], {EAN_A})
+
+
+    async def test_local_loader_batches_supplier_aliases_and_assigned_products_without_shop_mappings(self):
+        db = ReadOnlyIdentityDatabase(products=[product(1, "CANONICAL"), product(2, "OTHER")],
+            mappings=[mapping(7, 1, "SHOP-ALIAS", shop_id=1)], identifiers=[
+                identifier(1, "RAW", IdentifierType.supplier_sku, supplier_id=7),
+                identifier(2, "RAW", IdentifierType.supplier_sku, supplier_id=8), identifier(1, EAN_A)])
+        incoming = RemoteIdentity(0, "NEW-ALIAS", barcodes=(EAN_A,), supplier_id=7,
+            supplier_sku="RAW", expected_product_id=1)
+        index = await load_identity_index(db, 0, [incoming], local=True)
+        self.assertEqual(index.resolve(incoming).product_id, 1)
+        self.assertEqual(index.by_supplier_sku[(7, "RAW")], {1})
+        self.assertFalse(index.by_supplier_sku.get((8, "RAW")))
+        self.assertTrue(all(query.column_descriptions[0]["entity"] is not ShopProduct for query in db.queries))
+        self.assertTrue(all(str(query).startswith("SELECT ") for query in db.queries))

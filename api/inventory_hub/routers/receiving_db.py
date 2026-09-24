@@ -11,9 +11,12 @@ from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
 import csv, io, re
+import hashlib
+import json
+from uuid import UUID
 import logging
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,6 +32,8 @@ from inventory_hub.db_models_ext import (
     StockMovement, StockBalance
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes
+from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
@@ -188,9 +193,11 @@ class CreateSessionRequest(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    code: str
+    code: str = Field(min_length=1, max_length=100, pattern=r"\S")
+    request_id: Optional[UUID] = None
+    line_id: Optional[int] = Field(default=None, gt=0)
     qty: Decimal = Field(default=Decimal("1"), gt=0, max_digits=12, decimal_places=3)
-    scanned_by: str = "scanner"
+    scanned_by: str = Field(default="scanner", min_length=1, max_length=100)
 
 
 class SetQtyRequest(BaseModel):
@@ -228,8 +235,10 @@ def _line_dict(line: ReceivingLine, prefix: str) -> Dict[str, Any]:
     Canonical names: supplier_sku, description, line_number.
     Backward-compatible aliases for the frontend contract: scm, title.
     """
-    product_code = f"{prefix}{line.supplier_sku}" if line.supplier_sku else None
+    product = line.__dict__.get("product")  # Never trigger async lazy loading during serialization.
+    product_code = product.sku if product is not None else (f"{prefix}{line.supplier_sku}" if line.supplier_sku else None)
     return {
+        "id": line.id,
         "line_number": line.line_number,
         "ean": line.ean or "",
         "supplier_sku": line.supplier_sku or "",
@@ -297,7 +306,7 @@ async def _get_session_for_supplier(
 ) -> ReceivingSession:
     stmt = (
         select(ReceivingSession)
-        .options(selectinload(ReceivingSession.lines))
+        .options(selectinload(ReceivingSession.lines).selectinload(ReceivingLine.product))
         .options(selectinload(ReceivingSession.supplier))
         .where(ReceivingSession.id == session_id)
     )
@@ -316,6 +325,32 @@ async def _get_session_for_supplier(
 ACTIVE_STATUSES = (ReceivingStatus.new, ReceivingStatus.in_progress, ReceivingStatus.paused)
 
 
+def _receiving_identity(supplier: Supplier, line: ReceivingLine, prefix: str) -> RemoteIdentity:
+    sku = (line.supplier_sku or "").strip()
+    return RemoteIdentity(0, f"{prefix}{sku}" if sku else "", barcodes=(line.ean or "",),
+        supplier_id=supplier.id, supplier_sku=sku, expected_product_id=line.product_id)
+
+
+def _identity_error(line: ReceivingLine, resolution) -> HTTPException:
+    return HTTPException(409, detail={
+        "code": "receiving_identity_conflict",
+        "message": f"Riadok {line.line_number}: kód, EAN alebo uložené priradenie označujú odlišné produkty. Skontroluj identifikáciu produktu.",
+        "line_number": line.line_number, "reasons": resolution.reasons,
+        "candidate_product_ids": resolution.candidate_product_ids,
+    })
+
+
+async def _resolve_line(
+    db: AsyncSession, supplier: Supplier, line: ReceivingLine, prefix: str,
+) -> tuple[Optional[Product], Optional[str]]:
+    identity = _receiving_identity(supplier, line, prefix)
+    index = await load_identity_index(db, 0, [identity], local=True)
+    resolution = index.resolve(identity)
+    if resolution.status == "conflict":
+        raise _identity_error(line, resolution)
+    return index.products.get(resolution.product_id), resolution.matched_by
+
+
 async def _ensure_product_for_line(
     db: AsyncSession,
     supplier: Supplier,
@@ -324,95 +359,75 @@ async def _ensure_product_for_line(
     invoice_no: str,
     identifier_service: ProductIdentifierService,
 ) -> tuple[Optional[Product], bool, Optional[str]]:
-    """
-    Return (product, created, skip_reason) for a receiving line.
+    """Revalidate every evidence source before linking or creating a receipt leaf.
 
-    Order: re-match by EAN -> re-match by supplier SKU -> lookup by SKU
-    (product may exist without identifiers) -> auto-create with provenance
-    created_from_source='invoice:<no>' (approved decision: new products on
-    an invoice are created automatically at finalize).
+    The caller holds IDENTITY_WRITE_LOCK, shared with catalog imports and shop
+    pulls. An existing product_id is evidence to verify, never a bypass.
     """
     ean = (line.ean or "").strip()
     sku_raw = (line.supplier_sku or "").strip()
-
-    if ean:
-        product = await identifier_service.find_product_by_barcode(ean)
-        if product:
-            return product, False, None
-    if sku_raw:
-        product = await identifier_service.find_product_by_identifier(
-            sku_raw, IdentifierType.supplier_sku, supplier.id
-        )
-        if product:
-            return product, False, None
-
-    if not sku_raw and not ean:
-        return None, False, "no supplier SKU and no EAN on line"
-
-    product_sku = f"{prefix}{sku_raw}" if sku_raw else f"{prefix}EAN-{ean}"
-    result = await db.execute(select(Product).where(Product.sku == product_sku))
-    product = result.scalar_one_or_none()
+    product, matched_by = await _resolve_line(db, supplier, line, prefix)
     created = False
-
-    if not product:
-        product = Product(
-            sku=product_sku,
-            supplier_id=supplier.id,
-            name=(line.description or product_sku)[:500],
-            created_from_source=f"invoice:{invoice_no}",
-            validation_required=True,
-            validation_reason="auto-created from receiving finalize",
-        )
-        db.add(product)
-        await db.flush()
-        created = True
-
-    # Attach identifiers so future scans/imports match this product. A
-    # savepoint keeps the transaction usable for an ownership check after a
-    # duplicate insert; a conflicting owner aborts the entire receipt.
-    if ean:
-        try:
-            async with db.begin_nested():
-                await identifier_service.add_identifier(product.id, ean, is_primary=created)
-        except IntegrityError:
-            existing = await identifier_service.find_product_by_barcode(ean)
-            if existing is None or existing.id != product.id:
-                raise HTTPException(409, detail=(
-                    f"Riadok {line.line_number}: EAN je priradený inému produktu. "
-                    "Príjem nebol dokončený; skontroluj identifikáciu produktu."
-                ))
-    if sku_raw:
-        try:
-            async with db.begin_nested():
-                await identifier_service.add_identifier(
-                    product.id, sku_raw, IdentifierType.supplier_sku, supplier_id=supplier.id
-                )
-        except IntegrityError:
-            existing = await identifier_service.find_product_by_identifier(
-                sku_raw, IdentifierType.supplier_sku, supplier.id
-            )
-            if existing is None or existing.id != product.id:
-                raise HTTPException(409, detail=(
-                    f"Riadok {line.line_number}: kód dodávateľa je priradený inému produktu. "
-                    "Príjem nebol dokončený; skontroluj identifikáciu produktu."
-                ))
-
-    # supplier_products link (unique per supplier+sku)
-    if sku_raw:
-        existing_sp = await db.execute(select(SupplierProduct).where(
-            SupplierProduct.supplier_id == supplier.id,
-            SupplierProduct.supplier_sku == sku_raw,
-        ))
-        if existing_sp.scalar_one_or_none() is None:
-            db.add(SupplierProduct(
-                supplier_id=supplier.id,
-                supplier_sku=sku_raw,
-                ean=ean or None,
+    if product is None:
+        barcodes = verified_barcodes((ean,))
+        if not sku_raw and not barcodes:
+            return None, False, "no supplier SKU or verified EAN on line"
+        product_sku = f"{prefix}{sku_raw}" if sku_raw else f"{prefix}EAN-{barcodes[0]}"
+        # Generated EAN SKUs follow the existing invoice creation convention;
+        # check the generated code through the resolver as well.
+        identity = RemoteIdentity(0, product_sku, barcodes=(ean,))
+        index = await load_identity_index(db, 0, [identity], local=True)
+        resolution = index.resolve(identity)
+        if resolution.status == "conflict":
+            raise _identity_error(line, resolution)
+        product = index.products.get(resolution.product_id)
+        if product is None:
+            product = Product(
+                sku=product_sku, supplier_id=supplier.id,
                 name=(line.description or product_sku)[:500],
-                purchase_price=line.unit_price,
-            ))
+                created_from_source=f"invoice:{invoice_no}", validation_required=True,
+                validation_reason="auto-created from receiving finalize",
+            )
+            db.add(product)
             await db.flush()
+            created = True
+    line.match_method = "auto_created" if created else matched_by or "shared_sku"
 
+    # Split compound EANs, preserving leading zeros and per-type uniqueness.
+    # We deliberately never turn an unverified short barcode into global identity.
+    identifiers = list(dict.fromkeys(identifier_service.split_compound_ean(ean)))
+    identifiers = [item for item in identifiers if item[0].strip("0")]
+    identifiers.sort(key=lambda item: item[0] not in verified_barcodes((ean,)))
+    if sku_raw:
+        identifiers.append((sku_raw, IdentifierType.supplier_sku))
+    primary_set = bool(await identifier_service.get_primary_barcode(product.id))
+    for value, kind in identifiers:
+        conditions = [ProductIdentifier.product_id == product.id,
+                      ProductIdentifier.value == value, ProductIdentifier.identifier_type == kind]
+        if kind == IdentifierType.supplier_sku:
+            conditions.append(ProductIdentifier.supplier_id == supplier.id)
+        existing = await db.scalar(select(ProductIdentifier.id).where(*conditions))
+        if existing is not None:
+            continue
+        primary = not primary_set and kind in identifier_service.BARCODE_TYPES
+        try:
+            async with db.begin_nested():
+                await identifier_service.add_identifier(product.id, value, kind,
+                    supplier_id=supplier.id if kind == IdentifierType.supplier_sku else None,
+                    is_primary=primary)
+        except IntegrityError:
+            raise HTTPException(409, detail={"code": "receiving_identity_conflict",
+                "message": f"Riadok {line.line_number}: identifikátor medzitým prevzal iný produkt. Príjem nebol dokončený.",
+                "line_number": line.line_number}) from None
+        primary_set = primary_set or primary
+
+    if sku_raw:
+        existing_sp = await db.scalar(select(SupplierProduct).where(
+            SupplierProduct.supplier_id == supplier.id, SupplierProduct.supplier_sku == sku_raw))
+        if existing_sp is None:
+            db.add(SupplierProduct(supplier_id=supplier.id, supplier_sku=sku_raw,
+                ean=ean or None, name=(line.description or product.sku)[:500], purchase_price=line.unit_price))
+            await db.flush()
     return product, created, None
 
 
@@ -619,39 +634,21 @@ async def create_session(
     await db.flush()
 
     prefix = _product_code_prefix(supplier_code)
-    identifier_service = ProductIdentifierService(db)
 
     lines_out: List[Dict[str, Any]] = []
     for line_number, row in enumerate(rows, start=1):
-        product = None
-        match_method = None
-
-        if row["ean"]:
-            product = await identifier_service.find_product_by_barcode(row["ean"])
-            if product:
-                match_method = "ean"
-
-        if not product and row["supplier_sku"]:
-            product = await identifier_service.find_product_by_identifier(
-                row["supplier_sku"], IdentifierType.supplier_sku, supplier.id
-            )
-            if product:
-                match_method = "supplier_sku"
-
         line = ReceivingLine(
-            session_id=session.id,
-            line_number=line_number,
-            product_id=product.id if product else None,
-            supplier_sku=row["supplier_sku"],
-            ean=row["ean"],
-            description=row["description"],
-            ordered_qty=row["ordered_qty"],
-            received_qty=Decimal("0"),
-            unit_price=row["unit_price"],
-            status="pending",
-            match_method=match_method,
+            session_id=session.id, line_number=line_number,
+            supplier_sku=row["supplier_sku"], ean=row["ean"], description=row["description"],
+            ordered_qty=row["ordered_qty"], received_qty=Decimal("0"),
+            unit_price=row["unit_price"], status="pending",
         )
+        product, match_method = await _resolve_line(db, supplier, line, prefix)
+        line.product_id = product.id if product else None
+        line.product = product
+        line.match_method = match_method
         db.add(line)
+        await db.flush()
         lines_out.append(_line_dict(line, prefix))
 
     await db.flush()
@@ -672,66 +669,105 @@ async def scan_code(
     request: ScanRequest,
     db: AsyncSession = Depends(get_session),
 ):
-    """Process a barcode scan: match EAN first, then supplier SKU."""
+    """One physical scan per request UUID; never deduplicate by EAN or time."""
     session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
+    code = request.code.strip()
+    qty = request.qty
+    fingerprint = hashlib.sha256(json.dumps({
+        "session_id": session_id, "code": code, "qty": format(qty.quantize(Decimal(".001")), "f"),
+        "scanned_by": request.scanned_by, "line_id": request.line_id,
+    }, sort_keys=True).encode()).hexdigest()
+    if request.request_id is not None:
+        # Session locking serializes quantities; the UUID lock also catches
+        # accidental reuse between two different receiving sessions.
+        lock_key = int.from_bytes(hashlib.sha256(request.request_id.bytes).digest()[:8], "big", signed=True)
+        await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+        previous = await db.get(ReceivingScanRequest, request.request_id)
+        if previous is not None:
+            if previous.session_id != session_id or previous.request_hash != fingerprint:
+                raise HTTPException(409, detail={"code": "scan_request_conflict",
+                    "message": "Identifikátor skenu už bol použitý s inými údajmi. Nový fyzický sken musí mať nové ID."})
+            return {**previous.response, "replayed": True}
 
     if session.status == ReceivingStatus.paused:
         raise HTTPException(400, detail="Session is paused — resume it first")
-    if session.status == ReceivingStatus.completed:
-        raise HTTPException(400, detail="Session already finalized")
+    if session.status not in (ReceivingStatus.new, ReceivingStatus.in_progress):
+        raise HTTPException(400, detail="Session already finalized or cancelled")
+
+    prefix = _product_code_prefix(supplier_code)
+    identifier_service = ProductIdentifierService(db)
+    # A scan can name a listed invoice barcode, a supplier code or a canonical
+    # prefixed SKU. Multiple invoice lines need an explicit selection because
+    # their prices may differ even when the physical product is identical.
+    lines = _lines_sorted(session)
+    candidates = [line for line in lines if
+        code in {value for value, _kind in identifier_service.split_compound_ean(line.ean or "")}
+        or (line.supplier_sku and code in (line.supplier_sku.strip(), f"{prefix}{line.supplier_sku.strip()}"))]
+    # Also allow an alternative registered EAN for an already assigned product.
+    scan_identity = RemoteIdentity(0, code, barcodes=(code,),
+        supplier_id=session.supplier_id, supplier_sku=code)
+    index = await load_identity_index(db, 0, [scan_identity], local=True)
+    scan_resolution = index.resolve(scan_identity)
+    if scan_resolution.status == "conflict":
+        raise HTTPException(409, detail={"code": "receiving_identity_conflict",
+            "message": "Naskenovaný kód označuje viac produktov. Skontroluj identifikátory.",
+            "reasons": scan_resolution.reasons, "candidate_product_ids": scan_resolution.candidate_product_ids})
+    if scan_resolution.product_id is not None:
+        for line in lines:
+            if line.product_id == scan_resolution.product_id and line not in candidates:
+                candidates.append(line)
+    if request.line_id is not None:
+        matched_line = next((line for line in candidates if line.id == request.line_id), None)
+        if matched_line is None:
+            raise HTTPException(409, detail={"code": "scan_line_mismatch",
+                "message": "Vybraný riadok nepatrí k tomuto kódu a príjmu."})
+    elif len(candidates) > 1:
+        raise HTTPException(409, detail={"code": "scan_line_ambiguous",
+            "message": "Kód zodpovedá viacerým riadkom. Vyber konkrétny riadok alebo uprav jeho množstvo ručne.",
+            "line_numbers": [line.line_number for line in candidates], "line_ids": [line.id for line in candidates]})
+    else:
+        matched_line = candidates[0] if candidates else None
+    product = index.products.get(scan_resolution.product_id)
+    if matched_line is not None:
+        line_product, matched_by = await _resolve_line(db, session.supplier, matched_line, prefix)
+        if product is not None and line_product is not None and product.id != line_product.id:
+            raise HTTPException(409, detail={"code": "receiving_identity_conflict",
+                "message": "Naskenovaný kód a faktúrový riadok označujú odlišné produkty."})
+        product = line_product or product
+        if product is not None:
+            matched_line.product_id = product.id
+            matched_line.product = product
+            matched_line.match_method = matched_by or scan_resolution.matched_by
+        if matched_line.received_qty + qty > fifo.MAX_QUANTITY:
+            raise HTTPException(409, detail={"code": "scan_quantity_out_of_range", "message": "Prijaté množstvo je príliš veľké."})
+        matched_line.received_qty += qty
+        matched_line.status = _status_for(matched_line.received_qty, matched_line.ordered_qty)
 
     if session.status == ReceivingStatus.new:
         session.status = ReceivingStatus.in_progress
-        session.started_at = datetime.utcnow()
-
-    code = (request.code or "").strip()
-    qty = Decimal(str(request.qty))
-
-    # 1) EAN match, 2) supplier SKU match
-    matched_line: Optional[ReceivingLine] = None
-    for line in _lines_sorted(session):
-        if code and line.ean and line.ean.strip() == code:
-            matched_line = line
-            break
-    if not matched_line:
-        for line in _lines_sorted(session):
-            if code and line.supplier_sku and line.supplier_sku.strip() == code:
-                matched_line = line
-                break
-
-    identifier_service = ProductIdentifierService(db)
-    product = await identifier_service.find_product_by_barcode(code)
-
-    scan_status = "unexpected"
-    if matched_line:
-        matched_line.received_qty += qty
-        matched_line.status = _status_for(matched_line.received_qty, matched_line.ordered_qty)
-        scan_status = matched_line.status
-
+        session.started_at = datetime.now(timezone.utc)
     scan_event = ScanEvent(
-        session_type=ScanSessionType.receiving,
-        receiving_session_id=session.id,
-        receiving_line_id=matched_line.id if matched_line else None,
-        scanned_code=code,
-        scanned_code_type=identifier_service.classify_barcode(code) if code else None,
+        session_type=ScanSessionType.receiving, receiving_session_id=session.id,
+        receiving_line_id=matched_line.id if matched_line else None, scanned_code=code,
+        scanned_code_type=identifier_service.classify_barcode(code),
         product_id=product.id if product else None,
-        match_method="ean" if matched_line and matched_line.ean == code else (
-            "supplier_sku" if matched_line else None
-        ),
-        quantity=qty,
-        status=ScanStatus.active,
-        scanned_by=request.scanned_by,
+        match_method=(matched_line.match_method or "invoice_code") if matched_line else None,
+        quantity=qty, status=ScanStatus.active, scanned_by=request.scanned_by,
     )
     db.add(scan_event)
-
     unexpected = await _count_unexpected(db, session.id)
-    prefix = _product_code_prefix(supplier_code)
-
-    return {
-        "status": scan_status,
+    result = {
+        "status": matched_line.status if matched_line else "unexpected",
         "line": _line_dict(matched_line, prefix) if matched_line else None,
         "summary": _summary_counts(session, unexpected),
+        "request_id": str(request.request_id) if request.request_id is not None else None,
+        "replayed": False,
     }
+    if request.request_id is not None:
+        db.add(ReceivingScanRequest(request_id=request.request_id, session_id=session.id,
+            scan_event_id=scan_event.id, request_hash=fingerprint, response=result))
+        await db.flush()
+    return result
 
 
 @router.get("/suppliers/{supplier_code}/receiving/sessions/{session_id}/summary")
@@ -781,11 +817,18 @@ async def set_line_quantity(
         session.status = ReceivingStatus.in_progress
         session.started_at = datetime.utcnow()
 
+    # This is a manual quantity event, not a scan of the complete invoice EAN
+    # source. Keep that source on the line and use one real bounded identifier
+    # here; never truncate a barcode into a different invented identifier.
+    product = line.__dict__.get("product")
+    event_codes = (*verified_barcodes((line.ean or "",)), line.supplier_sku or "",
+                   product.sku if product is not None else "")
+    event_code = next((value for value in event_codes if value and len(value) <= 100), "")
     db.add(ScanEvent(
         session_type=ScanSessionType.receiving,
         receiving_session_id=session.id,
         receiving_line_id=line.id,
-        scanned_code=line.ean or line.supplier_sku or "",
+        scanned_code=event_code,
         quantity=new_qty - old_qty,
         match_method="manual",
         status=ScanStatus.active,
@@ -936,28 +979,20 @@ async def finalize_session(
     products_created = 0
     resolved = []
 
-    # Serialize invoice-created identities for this supplier before creating
-    # products or supplier links. Existing matched products do not need it.
-    if any(line.received_qty > 0 and not line.product_id for line in lines):
-        await db.execute(select(Supplier.id).where(Supplier.id == supplier.id).with_for_update())
-
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     for line in lines:
         if line.received_qty <= 0:
             continue
-        product = await db.get(Product, line.product_id) if line.product_id else None
+        product, created, reason = await _ensure_product_for_line(
+            db, supplier, line, prefix, session.invoice_number, identifier_service
+        )
         if product is None:
-            product, created, reason = await _ensure_product_for_line(
-                db, supplier, line, prefix, session.invoice_number, identifier_service
-            )
-            if product is None:
-                raise HTTPException(409, detail=(
-                    f"Riadok {line.line_number}: produkt nemožno priradiť ({reason}). "
-                    "Oprav identifikáciu produktu pred dokončením príjmu."
-                ))
-            products_created += int(created)
-            line.product_id = product.id
-            if not line.match_method:
-                line.match_method = "auto_created"
+            raise HTTPException(409, detail=(
+                f"Riadok {line.line_number}: produkt nemožno priradiť ({reason}). "
+                "Oprav identifikáciu produktu pred dokončením príjmu."
+            ))
+        products_created += int(created)
+        line.product_id = product.id
         resolved.append((line, product))
 
     balances = await _lock_stock_balances(db, session.warehouse_id, {product.id for _, product in resolved})

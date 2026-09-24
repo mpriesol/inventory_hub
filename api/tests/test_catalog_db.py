@@ -15,8 +15,8 @@ from sqlalchemy.pool import NullPool
 
 from catalog_fixtures import FakeUpgates, northfinder_product, northfinder_variant, xml_item
 from inventory_hub import config_io
-from inventory_hub.catalog_types import ShopImportPreviewRequest
-from inventory_hub.db_models import Product, Shop, SupplierFeedRun, SupplierProduct
+from inventory_hub.catalog_types import ShopImportPreviewRequest, CatalogProduct, CatalogPrices
+from inventory_hub.db_models import Product, Shop, Supplier, SupplierFeedRun, SupplierProduct, ProductIdentifier, IdentifierType
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
 from inventory_hub.services import catalog, catalog_import
 
@@ -269,3 +269,55 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(page.items[0].product.shop_url, "https://shop.example.test/p/mixed-case")
             self.assertTrue((await catalog.catalog_detail(db, "paul-lange", item.id, shop="case-shop"))["product"].listed)
             self.assertEqual((await catalog.catalog_selection(db, "paul-lange", shop="case-shop", listing="unlisted")).total, 2)
+
+
+    async def test_catalog_identity_reuses_shared_sku_and_blocks_disjoint_ean(self):
+        async with self.sessions() as db:
+            product = Product(sku="COMMON", name="Physical item")
+            db.add(product)
+            await db.flush()
+            db.add(ProductIdentifier(product_id=product.id, identifier_type=IdentifierType.ean, value="4006381333931"))
+            await db.flush()
+            source = CatalogProduct(id=5, supplier="paul-lange", code="RAW", shop_code="COMMON",
+                name="Item", prices=CatalogPrices(currency="EUR"))
+            self.assertEqual(await catalog_import.local_identities(db, [source]), ({5: product.id}, set()))
+            source.eans = ["5901234123457"]
+            self.assertEqual(await catalog_import.local_identities(db, [source]), ({}, {5}))
+            source.eans = ["4006381333931"]
+            self.assertEqual(await catalog_import.local_identities(db, [source]), ({5: product.id}, set()))
+
+    async def test_catalog_identity_checks_supplier_alias_case_collision_and_duplicate_leaves(self):
+        async with self.sessions() as db:
+            supplier = Supplier(code="test-local", name="Supplier")
+            first, second = Product(sku="COMMON", name="First"), Product(sku="OTHER", name="Second")
+            db.add_all([supplier, first, second])
+            await db.flush()
+            db.add(ProductIdentifier(product_id=second.id, identifier_type=IdentifierType.supplier_sku,
+                supplier_id=supplier.id, value="RAW"))
+            db.add(ProductIdentifier(product_id=first.id, identifier_type=IdentifierType.ean, value="4006381333931"))
+            await db.flush()
+            source = CatalogProduct(id=5, supplier="test-local", code="RAW", shop_code="COMMON",
+                name="Item", prices=CatalogPrices(currency="EUR"))
+            self.assertEqual(await catalog_import.local_identities(db, [source]), ({}, {5}))
+            source.code = "DIFFERENT"
+            source.shop_code = "common"
+            self.assertEqual(await catalog_import.local_identities(db, [source]), ({}, {5}))
+            source.shop_code = "COMMON"
+            source.eans = ["4006381333931"]
+            alias = source.model_copy(update={"id": 6, "shop_code": "ALIAS"})
+            matches, conflicts = await catalog_import.local_identities(db, [source, alias])
+            self.assertEqual(matches, {5: first.id, 6: first.id})
+            self.assertEqual(conflicts, {5, 6})
+
+    async def test_catalog_never_matches_a_shared_unverified_short_barcode(self):
+        async with self.sessions() as db:
+            first, second = Product(sku="A", name="First"), Product(sku="B", name="Second")
+            db.add_all([first, second])
+            await db.flush()
+            for product in (first, second):
+                db.add(ProductIdentifier(product_id=product.id, identifier_type=IdentifierType.unverified_barcode,
+                    value="12345"))
+            await db.flush()
+            source = CatalogProduct(id=5, supplier="paul-lange", code="RAW", shop_code="NEW", eans=["12345"],
+                name="Item", prices=CatalogPrices(currency="EUR"))
+            self.assertEqual(await catalog_import.local_identities(db, [source]), ({}, set()))

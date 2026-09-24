@@ -163,6 +163,8 @@ if settings.USE_POSTGRES:
     app.include_router(receiving_router_db)
     from inventory_hub.routers.stock import router as stock_router
     app.include_router(stock_router)
+    from inventory_hub.routers.stock_history import router as stock_history_router
+    app.include_router(stock_history_router)
     from inventory_hub.routers.fifo import router as fifo_router
     from inventory_hub.routers.fifo_returns import router as fifo_returns_router
     from inventory_hub.routers.product_editor import router as product_editor_router
