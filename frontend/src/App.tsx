@@ -1,5 +1,6 @@
 import React from 'react';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
+import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
@@ -70,6 +71,7 @@ function App() {
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/availability" element={<AvailabilitySyncPage />} />
+          <Route path="/settings/purchase-costs" element={<FifoCostSyncPage />} />
           <Route path="/settings/stock" element={<StockSettingsPage />} />
           <Route path="/settings/ai-content" element={<AiContentPage />} />
           <Route path="/ai-content" element={<AiContentPage />} />

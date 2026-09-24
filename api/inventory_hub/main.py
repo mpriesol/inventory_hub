@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
     publication_worker = None
     supplier_availability_worker = None
     stock_sync_worker = None
+    fifo_cost_worker = None
     if settings.USE_POSTGRES:
         from inventory_hub.services.ai_content_worker import run
         worker = asyncio.create_task(run(), name="ai-content-queue")
@@ -93,6 +94,8 @@ async def lifespan(app: FastAPI):
         supplier_availability_worker = asyncio.create_task(refresh_supplier_availability(), name="supplier-availability")
         from inventory_hub.services.stock_sync_worker import run as sync_stock
         stock_sync_worker = asyncio.create_task(sync_stock(), name="stock-sync")
+        from inventory_hub.services.fifo_cost_worker import run as sync_fifo_costs
+        fifo_cost_worker = asyncio.create_task(sync_fifo_costs(), name="fifo-cost-sync")
     yield
     if worker:
         worker.cancel()
@@ -110,7 +113,7 @@ async def lifespan(app: FastAPI):
         publication_worker.cancel()
         with suppress(asyncio.CancelledError):
             await publication_worker
-    for background_worker in (supplier_availability_worker, stock_sync_worker):
+    for background_worker in (supplier_availability_worker, stock_sync_worker, fifo_cost_worker):
         if background_worker:
             background_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -202,6 +205,8 @@ if settings.USE_POSTGRES:
     app.include_router(supplier_availability_router)
     app.include_router(stock_sync_router)
     app.include_router(stock_adjustments_router)
+    from inventory_hub.routers.fifo_cost_sync import router as fifo_cost_sync_router
+    app.include_router(fifo_cost_sync_router)
     from inventory_hub.routers.order_processing import router as order_processing_router
     app.include_router(order_processing_router)
     from inventory_hub.routers.catalog import router as catalog_router

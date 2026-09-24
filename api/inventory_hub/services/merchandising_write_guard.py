@@ -1,7 +1,7 @@
-"""One durable parent-target claim shared by AI and manual field publishers.
+"""One durable parent-target claim shared by AI, manual and FIFO cost publishers.
 
 Call immediately before recording a sending intent and commit that intent in
-the same transaction. The shared identity lock serializes the two table checks
+the same transaction. The shared identity lock serializes the publication checks
 and claim; sending/uncertain rows keep the fence after the transaction exits.
 """
 from sqlalchemy import func, select, text
@@ -10,11 +10,12 @@ from inventory_hub.ai_content_models import AiJob
 from inventory_hub.db_models import Shop
 from inventory_hub.product_editor_models import ProductEditorPublication
 from inventory_hub.stock_sync_models import StockSyncItem, StockSyncSettings
+from inventory_hub.fifo_cost_models import FifoCostPublication
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 
 
-async def require_target_available(db, shop_code, parent_code, *, publication_id=None, ai_job_id=None, availability=False):
+async def require_target_available(db, shop_code, parent_code, *, publication_id=None, ai_job_id=None, fifo_publication_id=None, availability=False):
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     if availability:
         owned = await db.scalar(select(StockSyncSettings.shop_id).join(Shop, Shop.id == StockSyncSettings.shop_id)
@@ -40,7 +41,15 @@ async def require_target_available(db, shop_code, parent_code, *, publication_id
     )
     if ai_job_id is not None:
         jobs = jobs.where(AiJob.id != ai_job_id)
-    if await db.scalar(publications.limit(1)) is not None or await db.scalar(jobs.limit(1)) is not None:
+    fifo_costs = select(FifoCostPublication.id).join(Shop, Shop.id == FifoCostPublication.shop_id).where(
+        Shop.code == shop_code, FifoCostPublication.kind == "product",
+        func.lower(FifoCostPublication.document["identity"]["parent_code"].astext) == parent_code.lower(),
+        FifoCostPublication.status.in_(("sending", "uncertain")),
+    )
+    if fifo_publication_id is not None:
+        fifo_costs = fifo_costs.where(FifoCostPublication.id != fifo_publication_id)
+    if (await db.scalar(publications.limit(1)) is not None or await db.scalar(jobs.limit(1)) is not None
+            or await db.scalar(fifo_costs.limit(1)) is not None):
         raise CatalogError("merchandising_target_inflight",
             "Another update of this shop product is sending or unresolved. Resolve its original request first.", 409)
 

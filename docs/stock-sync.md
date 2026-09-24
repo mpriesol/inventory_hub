@@ -41,6 +41,8 @@ Chýbajúci alebo neoverený lokálny stav nie je nula. Taká položka sa presko
 
 ## Neistý výsledok
 
+Nákupné ceny majú samostatný [prenos z FIFO](fifo-purchase-costs.md) s vlastným povolením a intervalom. Bežný skladový prenos uvedený vyššie zostáva obmedzený na množstvo, dostupnosť a objednateľnosť.
+
 Pri výpadku po začatí zápisu môže Upgates požiadavku ešte spracovať. Hub taký pokus automaticky neopakuje a blokuje ďalšie zápisy rovnakého SKU do rovnakého e-shopu. Ostatné SKU môžu pokračovať. Neistý pravidelný zápis bráni aj začatiu údržbového uzáveru dotknutého skladu.
 
 Po overení, že pôvodná požiadavka už definitívne skončila, použi **Vyriešiť neistý prenos**. Obnova iba načíta aktuálny vzdialený stav: zhoda potvrdí pôvodný výsledok, nezhoda ho uzavrie ako neúspešný. Obnova sama neposiela nový PUT. Až ďalší bežný priechod môže preniesť aktuálny lokálny stav.
