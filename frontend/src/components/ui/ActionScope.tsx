@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import './ActionScope.css';
 
-export type ActionEffect = 'hub-read' | 'hub-write' | 'upgates-read' | 'upgates-write' | 'queued-upgates';
+export type ActionEffect = 'hub-read' | 'hub-write' | 'upgates-read' | 'upgates-write' | 'queued-upgates' | 'supplier-read' | 'queued-supplier';
 export type ActionCalls = { kind: 'known'; count: number } | { kind: 'unknown' } | { kind: 'variable' };
 export interface ActionScopeProps {
   effects: ActionEffect[];
@@ -19,7 +19,7 @@ export interface ActionScopeProps {
 export function ActionScope({ effects, shop, calls, actualCalls, children, className = '' }: ActionScopeProps) {
   const { t } = useTranslation();
   const unique = [...new Set(effects)];
-  const external = unique.some(effect => effect.includes('upgates'));
+  const external = unique.some(effect => effect.includes('upgates') || effect.includes('supplier'));
   const target = shop === 'biketrek' ? 'BIKETREK' : shop === 'xtrek' ? 'xTrek' : shop;
   const count = calls?.kind === 'known' && Number.isInteger(calls.count) && calls.count >= 0 ? calls.count : null;
   const measured = actualCalls !== undefined && Number.isInteger(actualCalls) && actualCalls >= 0;

@@ -2,18 +2,18 @@
 
 ## Návod pre obsluhu
 
-Editor je lokálna tabuľka všetkých evidovaných produktov BIKETREK a xTrek vrátane položiek bez skladovej bilancie. Riadok predstavuje jeden fyzický produkt alebo variant s vlastným spoločným SKU. Pokladňový parent „xTrek“ neurčuje skupinu na hromadnú úpravu.
+Sekcia **Sklad** je spoločná pracovná tabuľka všetkých evidovaných produktov BIKETREK a xTrek vrátane položiek bez skladovej bilancie. Riadok predstavuje jeden fyzický produkt alebo variant s vlastným spoločným SKU. Pokladňový parent „xTrek“ neurčuje skupinu na hromadnú úpravu.
 
-Uloženie mení ručné údaje v Hube. **Názvy, predajné ceny a viditeľnosť sa týmto editorom zatiaľ neposielajú do Upgates.** Označenie „uložené“ alebo API stav `saved_unpublished` znamená lokálne uloženú požadovanú hodnotu. Nie je to čakajúca synchronizácia ani potvrdenie zmeny e-shopu. Samostatné publikovanie vlastných zásob má iný postup v [stock-publication.md](stock-publication.md).
+Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do Upgates.** Samostatné tlačidlá Upload do BIKETREK / xTrek otvoria výber polí, živý náhľad a výslovné odoslanie konkrétneho produktu. Označenie „uložené“ alebo API stav `saved_unpublished` znamená lokálne uloženú požadovanú hodnotu. Nie je to čakajúca synchronizácia ani potvrdenie zmeny e-shopu. Samostatné publikovanie vlastných zásob má iný postup v [stock-publication.md](stock-publication.md).
 
 ### Načítanie a výber
 
-1. Otvorte produktový editor a odomknite ho existujúcim operátorským tokenom.
+1. Otvorte **Sklad** (starý odkaz `/products` vás sem presmeruje) a odomknite ho existujúcim operátorským tokenom.
 2. Nastavte hľadanie, značku, zalistovanie v e-shope a prípadne sklad. Potvrďte načítanie. Hľadanie prehľadáva SKU, názov, čiarové kódy a dodávateľské kódy; pri názvoch podporuje slovenskú a českú diakritiku.
-3. Vyberte zobrazenie **Spoločné**, **BIKETREK** alebo **xTrek**. Zmena zobrazenia nemení vybraný sklad.
+3. Spoločný sklad má jednu tabuľku. Stĺpce **BIKETREK** a **xTrek** zobrazujú prítomnosť a odkazy do obchodu aj administrácie. Kliknutím na SKU alebo názov otvoríte detail; vlastnosti e-shopov sú ďalšie voliteľné stĺpce.
 4. Počet produktov na stránku je 25, 50 alebo 100. Usporiadanie môže byť podľa lokálnej rodiny → farby → veľkosti, SKU alebo názvu. Veľkosti sa radia XS → S → M → L → XL → XXL; číselné veľkosti/SKU prirodzene, napríklad 2 pred 10. Zoradenie sa vykoná na serveri ešte pred stránkovaním.
 
-Pri načítaní a uložení je uvedený účinok **Hub · čítanie** alebo **Hub · zmena**. Obe akcie používajú iba uložené údaje; nevolajú Upgates. V detaile produktu je odkaz **História pohybov**, ktorý otvorí skladovú históriu s filtrom na presné SKU.
+Kliknutie na SKU alebo názov otvorí detail v okne nad tabuľkou, bez straty filtrov, pozície alebo rozpracovaných buniek. Obsahuje parametre, obrázok, e-shopové odkazy, históriu úprav, skladové operácie a nákupné ceny. Pri načítaní a uložení je uvedený účinok **Hub · čítanie** alebo **Hub · zmena**. Obe akcie používajú iba uložené údaje; nevolajú Upgates. V detaile produktu je odkaz **História pohybov**, ktorý otvorí skladovú históriu s filtrom na presné SKU.
 
 Výber bez konkrétneho skladu zobrazuje katalóg. Množstvá sa v tomto režime nesčítavajú cez sklady. Umiestnenie a minimum možno meniť až po výslovnom výbere skladu. Zmena skladového filtra je pri rozpracovaných úpravách blokovaná; najprv ich uložte alebo zahoďte.
 
@@ -21,23 +21,23 @@ Výber bez konkrétneho skladu zobrazuje katalóg. Množstvá sa v tomto režime
 
 | Oblasť | Polia | Význam |
 | --- | --- | --- |
-| Spoločné | Názov, značka, interná poznámka | Ručné hodnoty konkrétneho fyzického riadka. Zmena názvu neprepisuje názov rodiny ani ostatné varianty. |
-| Variant | Základná predajná cena, sadzba DPH, poznámka | Predajná cena je EUR s DPH. Sadzba DPH je samostatný ručný údaj; chýbajúca sadzba sa neodhaduje. |
+| Spoločné | Názov, značka, interná poznámka, HTTPS URL obrázka | Ručné hodnoty konkrétneho fyzického riadka. Zmena názvu neprepisuje názov rodiny ani ostatné varianty. |
+| Variant | Základná predajná cena, sadzba DPH, poznámka, farba, veľkosť, parametre, čiarové kódy | Predajná cena je EUR s DPH. Sadzba DPH je samostatný ručný údaj; chýbajúca sadzba sa neodhaduje. |
 | Vybraný sklad | Umiestnenie, minimálne množstvo | Platí len pre zvolený sklad. Samotné uloženie nevytvorí skladovú bilanciu. |
-| BIKETREK / xTrek | Požadovaný názov, predajná cena, viditeľnosť | Samostatné ručné hodnoty e-shopu, zatiaľ bez publikovania. |
+| BIKETREK / xTrek | Požadovaný názov, predajná cena, viditeľnosť | Samostatné ručné hodnoty e-shopu; vybrané polia možno odoslať cez Upload. |
 
-Niektoré polia, napríklad interná poznámka, DPH a poznámka variantu, sú predvolene skryté. Zapnete ich cez výber stĺpcov. SKU, EAN, dodávateľské kódy, variantné atribúty a skladové množstvá sú v tabuľke iba na čítanie. Nákupná cena je odvodená zo skladu; jej zmena patrí do kontrolovaného [postupu nákupných cien](fifo.md).
+Niektoré polia, napríklad interná poznámka, DPH a poznámka variantu, sú predvolene skryté. Zapnete ich cez výber stĺpcov. Čiarové kódy sa upravujú priamo v evidencii identifikátorov; prázdny zoznam ich odstráni. Kolízia s iným produktom sa odmietne. SKU možno zmeniť len pred vytvorením prepojenia na e-shop, aby nevznikol iný tovar pod existujúcou vzdialenou identitou. Dodávateľské kódy sú zdrojové identifikátory; skladové množstvá a odvodené nákupné hodnoty používajú opravné skladové operácie, nie prepísanie histórie. Nákupná cena je odvodená zo skladu; jej zmena patrí do kontrolovaného [postupu nákupných cien](fifo.md).
 
 ### Stĺpce a produktové rodiny
 
 - Hranicu hlavičky potiahnite myšou. Na zameranej hranici fungujú šípky doľava/doprava po 10 px (Shift po 40 px), Home/End pre minimum/maximum a dvojklik pre predvolenú šírku. Šírku 80–640 px možno zadať aj číselne v ponuke **Stĺpce**.
 - V ponuke **Stĺpce** možno zapnúť/vypnúť polia a meniť ich poradie šípkami. SKU zostáva viditeľný ako prvý stĺpec. Obnovenie predvoleného nastavenia nemení rozpracované úpravy.
 - Viditeľnosť, poradie a šírky sa pamätajú iba v konkrétnom prehliadači. Nejde o nastavenia používateľského účtu. Do tohto úložiska sa neukladajú tokeny, údaje produktov ani rozpracované hodnoty. Pri zablokovanom úložisku zostáva nastavenie funkčné pre otvorenú stránku.
-- Samostatné stĺpce **Farba** a **Veľkosť** používajú existujúce pomenované atribúty (slovenské, české a anglické názvy). Ostatné parametre s pôvodnými názvami zobrazí stĺpec **Parametre variantu**. Chýbajúce údaje sa nedopĺňajú odhadom. Cez výber stĺpcov sú dostupné aj EAN, dodávateľské kódy, prepojené e-shopy, karanténa a nákupná hodnota skladu.
+- Samostatné upraviteľné stĺpce **Farba** a **Veľkosť** používajú pomenované atribúty (slovenské, české a anglické názvy). Ostatné parametre s pôvodnými názvami zobrazí stĺpec **Parametre variantu**. Parametre sa načítajú z kanonických atribútov, uloženého konkrétneho variantu e-shopu alebo presného dodávateľského záznamu. Chýbajúce údaje sa nedopĺňajú odhadom; v detaile možno výslovne spustiť **Načítať parametre z e-shopu**. Táto akcia číta Upgates a aktualizuje lokálny import, do e-shopu nič nepíše. Rozpracované úpravy treba najprv uložiť alebo zahodiť. Cez výber stĺpcov sú dostupné aj EAN, dodávateľské kódy, prepojené e-shopy, karanténa a nákupná hodnota skladu.
 - Pri zoradení podľa rodín možno rozbaliť/zabaliť iba skutočnú lokálnu rodinu. Hlavička výslovne uvádza počet variantov **na tejto stránke**; rodina môže pokračovať na ďalšej stránke. Výber rodiny označí iba jej načítané varianty, nikdy vzdialeného pokladňového parenta ani nenačítané produkty.
 - Zabalenie rodiny odznačí skryté varianty, zachová ich rozpracované úpravy a upozorní na ne v hlavičke. Výber celej stránky označuje len viditeľné fyzické riadky. Uloženie stále uloží všetky rozpracované produkty, aj tie na inej stránke alebo v zabalenej rodine.
 
-Prázdna editovaná bunka odstráni ručnú hodnotu a obnoví dedenie. Spoločný názov a značka potom používajú importovaný produkt. Názov e-shopu dedí spoločný názov a jeho požadovaná cena základnú predajnú cenu variantu. Viditeľnosť bez ručnej hodnoty používa zachytenú viditeľnosť e-shopu. Minimum bez override používa existujúce minimum skladovej bilancie; ak bilancia neexistuje, zostáva neznáme. Umiestnenie a poznámky bez ručnej hodnoty zostávajú prázdne.
+Prázdna editovaná bunka odstráni ručnú hodnotu a obnoví dedenie; výnimkou sú čiarové kódy, kde prázdny zoznam výslovne vymaže lokálne kódy. Spoločný názov a značka potom používajú importovaný produkt. Názov e-shopu dedí spoločný názov a jeho požadovaná cena základnú predajnú cenu variantu. Viditeľnosť bez ručnej hodnoty používa zachytenú viditeľnosť e-shopu. Minimum bez override používa existujúce minimum skladovej bilancie; ak bilancia neexistuje, zostáva neznáme. Umiestnenie a poznámky bez ručnej hodnoty zostávajú prázdne.
 
 Zachytená cena e-shopu sa v detaile ukazuje oddelene s **neznámym daňovým základom**. Importované pole nemusí jednoznačne rozlišovať cenu s DPH a bez DPH, preto sa automaticky nepoužíva ako základná požadovaná cena. Nulová cena je platný výslovný údaj; prázdna cena je neznáma/dedená hodnota. Ceny majú najviac dve desatinné miesta, minimum je nezáporný celý počet kusov.
 
@@ -47,7 +47,17 @@ Zachytená cena e-shopu sa v detaile ukazuje oddelene s **neznámym daňovým z�
 - Enter potvrdí bunku do lokálneho konceptu. Tab / Shift+Tab potvrdí a presunie sa na ďalšiu / predchádzajúcu upraviteľnú bunku. Escape zruší práve otvorenú úpravu.
 - Zo schránky možno vložiť obdĺžnik buniek oddelených tabulátormi, napríklad z tabuľkového editora. Vkladanie začína v aktívnej bunke a rešpektuje aktuálne poradie viditeľných stĺpcov a viditeľných fyzických riadkov. Zabalené varianty a hlavičky rodín sa neprepisujú. Celý vložený blok sa odmietne, ak presahuje aktuálnu stránku, obsahuje zamknutý stĺpec alebo neplatnú hodnotu. Nevkladá sa automaticky na ďalšiu stránku.
 - Hromadné nastavenie platí iba pre označené fyzické riadky aktuálnej stránky. Nevyhľadáva ďalšie varianty parenta a nemení neoznačených súrodencov.
-- Rozpracované úpravy môžu zostať cez prepínanie stránok a zobrazení; najviac 100 produktov naraz. Zmeny sú dovtedy iba v pamäti otvorenej stránky. Tlačidlo Uložiť potvrdí aktuálnu dávku na serveri.
+- Rozpracované úpravy môžu zostať cez prepínanie stránok; najviac 100 produktov naraz. Zmeny sú dovtedy iba v pamäti otvorenej stránky. Tlačidlo Uložiť potvrdí aktuálnu dávku na serveri.
+
+### Dodávateľ a odoslanie do e-shopov
+
+Stĺpce **U dodávateľa** a **Dodávateľská dostupnosť** ukazujú prijaté pozorovanie dodávateľa. `6+` znamená najmenej šesť kusov, potvrdené „skladom“ bez počtu nevymýšľa množstvo a neaktuálny údaj je výslovne označený. Tieto zásoby sa nepripočítavajú k fyzickému skladu. Odkaz **Pravidlá dodávateľa** otvorí intervaly, platnosť údajov a ručné spustenie synchronizácie.
+
+Upload posiela iba zvolené polia konkrétneho fyzického riadka. Neodosiela súrodencov pod nadradeným produktom, skladové množstvá, rezervácie ani nákupné náklady. Pri viacerých označených riadkoch zvoľte produkt v okne a postupne skontrolujte jeho náhľad. Cena je **základná cenníková cena s DPH**, existujúce zľavy a akciové ceny zostávajú zachované a viditeľné v náhľade. Rozdielna alebo neznáma DPH/cenník sa nesmie obísť odhadom.
+
+Upgates týmto rozhraním nepodporuje samostatný názov variantu, preto odoslanie názvu variantu odmietne a vysvetlí dôvod; nikdy nezmení názov pokladňového nadradeného produktu „xTrek“. Obrázok a parametre tento postup posiela iba presnému variantu. Upgates prijíma jeden EAN na variant; viac lokálnych EAN treba pred odoslaním vyriešiť. Produkt bez prepojenia otvorí cestu **Zalistovať nový produkt** do kontrolovaného dodávateľského importu; nevydáva sa za úspešne odoslaný.
+
+Úspech znamená potvrdenie spätným čítaním e-shopu. Pri strate odpovede sa PUT automaticky neopakuje. Okno načíta posledné uložené operácie produktu aj po opätovnom otvorení; tlačidlo **Načítať uložený výsledok** iba číta stav. Ak zostane nejasný, postup **Vyriešiť nejasný výsledok** vyžaduje výslovné overenie, že pôvodná požiadavka už nemôže dobehnúť, a vysvetlenie. Samotná zhoda pri čítaní nie je dôkazom, že oneskorená požiadavka už nemôže prepísať novšie údaje. Po zmene údajov alebo vypršaní náhľadu pripravte nový náhľad.
 
 ### Konflikt alebo prerušené uloženie
 
@@ -98,9 +108,9 @@ The stock DTO preserves decimal strings and nulls: `known`, quantities including
 
 ### Ownership, concurrency and recovery
 
-Imported `Product`, `ShopProduct.shop_price`, content snapshots, supplier feeds, identifiers and stock history remain source records. Manual values live in separate overrides; subsequent imports cannot overwrite them. `effective(db, product_ids, warehouse_code=None)` supplies full selected display rows (maximum 100 IDs). `effective_names(db, product_ids=None)` is the lightweight common-name/brand override lookup used by existing stock views; it does not read shop parent content. Consumers needing warehouse minimum use the explicit override with fallback to `StockBalance.min_quantity`.
+Imported product content, `ShopProduct.shop_price`, shop snapshots, supplier feeds and stock history remain source records. Explicit `variant.eans` edits atomically replace canonical barcode identifiers under the shared identity lock with audit; old shop imports respect the manual barcode override. `variant.sku` renames are limited to products without any shop mapping and reject identifier collisions. Manual values live in separate overrides; subsequent imports cannot overwrite them. `effective(db, product_ids, warehouse_code=None)` supplies full selected display rows (maximum 100 IDs). `effective_names(db, product_ids=None)` is the lightweight common-name/brand override lookup used by existing stock views; it does not read shop parent content. Consumers needing warehouse minimum use the explicit override with fallback to `StockBalance.min_quantity`.
 
-The snapshot hash covers imported display/identity facts, observed shop values, selected warehouse and its inherited minimum. Dynamic stock quantities/costs are excluded; override concurrency is guarded separately by revision. Saves acquire a request-specific advisory lock, the shared product identity write lock, the selected warehouse lock, sorted product locks and relevant mapping/content locks before re-reading facts. Each changed row uses a savepoint. Audit and the completed batch result commit with the successful overrides. This is an optimistic compare-and-swap, not a last-write-wins replacement.
+The snapshot hash covers imported display/identity facts, observed shop values, selected warehouse and its inherited minimum. Supplier observation freshness and dynamic counts are not editable editor fields. Dynamic stock quantities/costs are excluded; override concurrency is guarded separately by revision. Saves acquire a request-specific advisory lock, the shared product identity write lock, the selected warehouse lock, sorted product locks and relevant mapping/content locks before re-reading facts. Each changed row uses a savepoint. Audit and the completed batch result commit with the successful overrides. This is an optimistic compare-and-swap, not a last-write-wins replacement.
 
 The first accepted UUID stores its normalized request hash and exact result. Same UUID/same body replays that result; same UUID/different body returns `product_editor_request_reused` (409). A replay remains the original result even after later source or override changes. Browser recovery is currently limited to the open page; the durable API result itself survives restarts.
 
@@ -115,7 +125,30 @@ The first accepted UUID stores its normalized request hash and exact result. Sam
 
 Migration 012 creates these objects without altering product, balance or movement history and supports reruns. `python -m inventory_hub.product_editor_migrate` uses the shared migration advisory lock. Deployment wiring runs 011 before 012; test schemas using the editor need the FIFO tables too.
 
-There is no product-editor publisher or editor-owned sync queue in this increment. Existing AI selected-field publication does not provide a safe substitute for price/visibility publication and cannot be treated as a general leaf editor, especially under POS umbrellas. A future publisher needs a frozen desired-field preview, exact remote leaf identity, explicit price-list/VAT semantics, narrow writes, readback and uncertain-write recovery.
+### Selected-field publication (migration 016)
+
+`services/product_publication.py` and `product_publication_source.py` implement an explicit, durable publisher. Additive `016_product_publication.sql` stores frozen previews and creates a unique in-flight `(product_id, shop_id)` fence for sending/uncertain operations. Deployment must run `python -m inventory_hub.product_publication_migrate` before restart.
+
+| Method / path | Contract |
+| --- | --- |
+| `POST /product-editor/products/{id}/publication/preview` | `{shop_code, expected_revision, fields}`; fields are `name`, `sale_price_gross`, `visible`, `ean`, `attributes`, `image_url`. Live exact-leaf GET only, no write. |
+| `POST /product-editor/publications/{id}/send` | `{confirmed:true}`; freezes sending intent before one narrow PUT, then performs readback. Repeated send returns the same durable operation without another PUT. |
+| `GET /product-editor/publications/{id}` | Recovery of ready/sending/completed/uncertain/rejected/resolved state. |
+| `GET /product-editor/products/{id}/publications` | Last 20 publication operations. |
+| `POST /product-editor/publications/{id}/resolve` | `{confirmed:true, original_request_settled:true, note}`; operator first proves the original request can no longer arrive. Readback alone never releases uncertainty. Sending state must be at least five minutes old. No PUT is sent. |
+| `POST /product-editor/products/{id}/refresh-attributes` | Live read of one exact mapped variant, fills missing canonical axes only; preserves manual values and existing axes, never changes remote product or stock. |
+
+A variant update contains its parent code plus **one** variant code and selected fields. Parent descriptions, sibling variants, stock, discounts, action prices and unspecified fields are never copied from cached product JSON into PUT. The connection/login fingerprint, exact product/variant IDs, current editor revision/source signature and selected remote-before values are revalidated. This protects the BIKETREK POS umbrella.
+
+Variant titles are parent-only in the documented Upgates API; uploading a variant `name` is blocked. `attributes` and the single `image` publication currently target variants only. EAN publication accepts at most one barcode because the shop field is singular. Missing shop mapping is an explicit error: use the existing supplier catalog preview/create workflow to list absent goods first; the editor does not claim they were uploaded.
+
+Price publication means **base pricelist price**, not the discounted final customer price. The publisher verifies active Slovak/EUR language, exactly one default pricelist, actual shop VAT mode and actual leaf VAT. It converts the Hub gross amount with Decimal and rounds the outgoing base price to cents. Existing `product_discount` and `price_sale` remain unchanged and are visible in the before/after preview. An incompatible manually entered VAT rate blocks price sending. There is no guessed VAT or currency conversion.
+
+After acknowledged PUT and matching readback, per-field desired-value receipts are merged into override metadata under the identity lock. Manual revision is unchanged; normal saves re-read and preserve these receipts. A newly edited value remains unpublished even when an older publication later completes. Publication history remains in table 016; the read-only table response need not query it. No endpoint writes own stock or supplier observations.
+
+The variant parameter normalizer accepts documented `parameters_new` descriptions/values, legacy localized name/value maps and historical simple pairs. Display fallback reads only the exact cached leaf and supplier attributes, never the POS parent axes. Normal Upgates product snapshots may omit axes entirely: **Obnoviť parametre** reads the targeted variant when needed. It does not invent missing values. Source URLs are validated before rendering; images support leaf `image` and `images`, then group/supplier fallback.
+
+Official contract inspected 2026-09-24: [products API](https://docs.upgates.com/api-reference/produkty) and [variant list API](https://docs.upgates.com/api-reference/produkty-seznamy). No live shop mutation was performed for implementation tests.
 
 ### Verification and remaining limits
 
@@ -123,4 +156,11 @@ Local verification on 2026-09-23: 13 pure/API tests passed, covering validation,
 
 On 2026-09-24, the expanded product-editor interaction suite and Vite build passed locally. It covers mouse/keyboard resizing, accessible reordering, persistence across page remount, malformed preference recovery, named attributes, family selection/collapse, draft preservation, TSV against reordered columns, quarantine read-only behavior and the movement-history link, alongside existing save/conflict/recovery cases. Thirteen pure/API tests passed; 21 guarded PostgreSQL tests, including a new 32-variant colour/size pagination scenario, were skipped locally pending an isolated database. No browser layout or live shop delivery was verified. The full legacy TypeScript check still reports unrelated repository errors and existing ES2020/Array.at compatibility errors; Vite build success is not a claim of a clean global type check.
 
-Current limits include per-product common values rather than editable family records, no identity/EAN/image editor, no editor-specific shop publisher, shared operator access rather than individual roles, and SK/CZ accent folding rather than a universal linguistic search index. Supplier-specific and imported observations remain separate from manual ownership.
+Current limits include per-product common values rather than editable family records, guarded mapped-SKU renames, source-owned supplier codes, unsupported variant-only title publication, shared operator access rather than individual roles, and SK/CZ accent folding rather than a universal linguistic search index. Supplier-specific and imported observations remain separate from manual ownership.
+
+
+2026-09-24 implementation checks for the new publisher: five focused pure tests passed locally (exact targeted variant read/payload, Decimal VAT conversion while preserving discounts, unsupported parent effects, current/legacy parameter shapes and strict confirmation/identifier validation). Four new PostgreSQL cases cover durable retry recovery, uncertainty fencing/resolution, stale local edits and canonical barcode collisions; they require the isolated CI database and were skipped locally. Deployment and live shop verification must be reported separately.
+
+### Unified table verification (2026-09-24)
+
+The unified table is `/stock`; `/products` redirects and the duplicate navigation entry is removed. The product detail is a modal with the existing cost-layer workflow and the new guarded quantity-adjustment panel. Exact row/cell draft markers, images, shop links, independent shop override columns, array-valued attribute/EAN editing and safe image URL rejection have interaction coverage. Publication tests use synthetic APIs and cover preview-before-send, saved-revision targeting, explicit confirmation, lost-response recovery, no duplicate remote write and settlement resolution. Vite build and the product-editor interaction suite passed locally; this does not claim live Upgates delivery or browser layout verification.

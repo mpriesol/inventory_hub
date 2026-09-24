@@ -1,6 +1,6 @@
 # MVP — rozhodnutia a stav pokračovania
 
-Aktualizované 24. 9. 2026. Vlastník odsúhlasil implementáciu podľa odpovedí k 30 bodom a N1–N8. Základ: `main c2a32ac` (PR #33). Tento súbor odlišuje rozpracovanie, overenie a nasadenie; plán nie je hotová funkcia.
+Aktualizované 24. 9. 2026. Vlastník odsúhlasil implementáciu podľa odpovedí k 30 bodom a N1–N8. Základ aktuálnej etapy: `main 6bdfd71` (nasadený PR #34). Tento súbor odlišuje rozpracovanie, overenie a nasadenie; plán nie je hotová funkcia.
 
 ## Platné rozhodnutia
 
@@ -20,7 +20,7 @@ Aktualizované 24. 9. 2026. Vlastník odsúhlasil implementáciu podľa odpoved�
 
 | Balík | Obsah | Stav |
 | --- | --- | --- |
-| A | Identita príjmu/importov, request ID skenera, opravy prehľadu, označenie akcií a história pohybov | Implementované na `codex/mvp-clarity-receiving`; lokálne overené, [PR #34](https://github.com/mpriesol/inventory_hub/pull/34), dokončuje sa PostgreSQL overenie |
+| A | Identita príjmu/importov, request ID skenera, opravy prehľadu, označenie akcií a história pohybov | Nasadené cez [PR #34](https://github.com/mpriesol/inventory_hub/pull/34); CI 658 backend testov vrátane PostgreSQL bez preskočenia, build a 14 UI sád; deployment 35989256455 a zdravá DB overené |
 | B1 | Šírky/poradie/stĺpce tabuľky, variantné parametre a práca so skupinami | Implementované súbežne s A; interakčné testy prešli |
 | B2 | Editor → náhľad → publikovanie vybraných polí do konkrétneho shopu | Čaká; dnešné uloženie zostáva lokálne |
 | C | Scheduler feedov, čerstvosť, dostupnosti, automatický dávkový skladový prenos a porovnávanie | Čaká; maintenance publisher nie je bežná automatika |
@@ -46,4 +46,10 @@ Prvý balík používa migráciu `013` pre idempotentné požiadavky skenera; je
 - Reálny vizuálny layout v prehliadači nebol overený. Celkový `tsc` má existujúce chyby aj v starších kópiách; build a cielené interakčné kontroly nie sú tvrdenie o čistej globálnej typovej kontrole.
 - [PR #34](https://github.com/mpriesol/inventory_hub/pull/34), prvý CI beh `35986870111`: frontend/build a 14 UI sád prešli; backend 630 z 655 prešlo, 25 príjmových testov zastavila závislosť existujúceho view `v_invoice_lines_detail` na rozširovanom EAN. Oprava migrácie obnovuje tento známy odvodený pohľad v transakcii; tri ďalšie testy overujú existujúce údaje, práva, opakovanie a rollback pri neznámych závislostiach. Opakované CI a deploy musia byť overené pred označením balíka za nasadený. Aktuálny výsledok je pri PR a jeho následnom main workflow; tento záznam zachytáva stav pred merge.
 
-Ďalší súdržný balík: B2, potvrdené publikovanie vybraných produktových polí z editoru do konkrétneho e-shopu. Zachovať presné mapovanie fyzického variantu a žiadny rozptyl zmien na súrodencov pod pokladňovým parentom xTrek. Potom C (dostupnosť a bežná automatika), D (tržby/hrubá marža a zjednodušený príjem), E (spoločný pilot). Súčasné uloženie editoru je stále lokálne.
+## Aktuálna požiadavka vlastníka (24. 9. 2026)
+
+Vlastník presunul **dodávateľské dostupnosti a pravidelný prenos zásob** pred B2. Súbežne požaduje opravu odchodu z dokončeného príjmu, prázdnych parametrov, jednu tabuľku Sklad/Produkty s obrázkami a stĺpcami oboch e-shopov, manuálnymi bunkami a odoslaním. Pôvodné poradie B2→C už neplatí.
+
+Rozpracovaná vetva `codex/supplier-sync-unified-stock`: scheduler feedov a čerstvosť, samostatný pravidelný publisher s dedičnými intervalmi a ručným spustením, jednotná tabuľka, vybrané produktové publikovanie a dokumentované korekčné pohyby. Migrácie 014–017. Nasadenie tejto etapy a overenia budú doplnené podľa skutočných výsledkov PR; prítomnosť súborov nie je dôkaz nasadenia.
+
+Naďalej platí automatické schvaľovanie/merge PR a následné nasadenie až do odvolania, výslovne znovu potvrdené vlastníkom. Neaktivuje to samo osebe ostrú skladovú autoritu, dodávateľské intervaly ani hromadné živé zápisy.

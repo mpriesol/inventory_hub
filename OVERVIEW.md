@@ -1,8 +1,8 @@
 # Inventory Hub — prehľad projektu
 
-Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Automatické doručovanie produktových zmien a kompletná prevádzka centrálneho skladu zo všetkých kanálov ešte nie sú dokončené.
+Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Obsahuje aj oddelené plánované čítanie dodávateľských dostupností, pravidelný prenos zásob a potvrdené odoslanie vybraných produktových polí. Prevzatie skladovej autority zostáva výslovne zapínateľné; nasadenie kódu nie je ostrý pilot.
 
-**Posledné porovnanie s kódom:** 24. 9. 2026, balík príjmu, tabuľky a histórie nad `main c2a32ac` (PR #33). Aktuálny stav overenia a nadväzujúce priority sú v [MVP postupe](docs/mvp-progress.md). Popis kódu nepotvrdzuje obsah produkčnej DB ani celú serverovú konfiguráciu.
+**Posledné porovnanie s kódom:** 24. 9. 2026, dostupnosti, pravidelný prenos a jednotná tabuľka nad `main 6bdfd71` (nasadený PR #34). Aktuálny stav overenia a nadväzujúce priority sú v [MVP postupe](docs/mvp-progress.md). Popis kódu nepotvrdzuje obsah produkčnej DB ani celú serverovú konfiguráciu.
 
 ## Kde začať
 
@@ -38,7 +38,7 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Dashboard `/` | Údaje zo skladu a reálne posledné pohyby | Súčet fyzických, rezervovaných, voľných a karanténnych kusov, nákupná hodnota a rozpracované objednávky evidované Hubom. Žiadne ukážkové udalosti ani vymyslené percentá synchronizácie. Chyba nie je nulový stav. |
 | Faktúry `/invoices`, `/invoices/:invoiceId` | Nahrávanie, evidencia, filtre a detail | `routers/invoices.py`, `invoices_unified.py` a príslušné stránky. Nahratie súboru neznamená univerzálne OCR ani rozpoznanie každého formátu. |
 | Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile Nákupné ceny. Nové skeny majú request UUID; replay nepridá druhý kus. [Kontrakt identity a skenera](docs/receiving-identity.md). |
-| Sklad `/stock` | Čiastočné pracovné rozhranie | `routers/stock.py`, `StockPage.tsx`: stavy, rezervované/voľné množstvo, priemerná cena, detail a Upgates operácie. Editor buniek a stránkovanie sú na `/products`; starý prehľad má odkaz na editor. CSV export zostáva neaktívny. |
+| Sklad `/stock` | Jednotná produktová a skladová tabuľka | Obrázky, parametre, manuálne bunky, označenie zmenenej bunky aj riadka, prítomnosť/odkazy BIKETREK a xTrek, detail po kliknutí na SKU/názov. Oddelené uloženie v Hube a potvrdené odoslanie vybraných polí. Fyzické množstvo cez [opravný pohyb](docs/stock-adjustments.md). |
 | História `/stock/movements` | Chránené čítanie nemennej evidencie | Filtre celého skladu alebo presného SKU, doklad, dôvod, pôvodný náklad a množstvo pred/po. Bez zápisov a Upgates volaní. [Návod a API](docs/stock-history.md). |
 | Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie celej dávky vytvorí `INITIAL` pohyby iba bez existujúcej bilancie či histórie daného tovaru v sklade. Výpadok sa overuje čítaním uloženého výsledku. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
@@ -52,10 +52,11 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Automatický zber `/orders/inbox` | Zapínateľný čítací worker, trvalý inbox a obnova | Hlavičky objednávok od potvrdeného začiatku evidencie, kontrolné prechody a viditeľné chyby. Samotné načítanie nemení rezervácie ani zásobu; otvorenie objednávky vedie na čerstvý potvrdený postup. |
 | Návrh zásob v `/orders/inbox` | Čítacia projekcia 1–100 SKU | Vlastné voľné celé kusy z potvrdeného skladu, presné mapovanie jednotlivých variantov vrátane rodiča xTrek. Neznámy stav nie je nula. Bez outboxu a externého odosielania. |
 | Automatické skladové spracovanie | Voliteľný samostatný worker a trvalá fronta | Režimy ručne / rezervácie / rezervácie a výdaj, nové objednávky od výslovnej aktivácie, opakovanie nedostatku a kontrola vydaných objednávok. Predvolene vypnuté. |
-| Inventúry, vratky a doručovanie zásob do e-shopov | Nedokončený celkový workflow | Automatické lokálne rezervácie a výdaje nezapínajú externé odosielanie zásob. |
-| Produkty `/products` | Tabuľkový editor lokálnych údajov | Bunky, klávesnica, TSV, vybrané riadky, konflikty, audit, zapamätané šírky/poradie/viditeľnosť stĺpcov, pomenované parametre a rozbalenie rodín iba na načítanej stránke; mená/ceny/viditeľnosť pre e-shopy sa ukladajú ako neodoslané. [Postup](docs/product-editor.md). |
+| Dostupnosti a prenos `/settings/availability` | Oddelené dodávateľské a e-shopové plánovanie | Intervaly a ručné spustenie, platnosť dodávateľských údajov, predvoľby skladu a výnimky e-shopu, výsledky a obnova. Nové plánovanie je vypnuté. [Návod](docs/availability-sync.md), [dodávateľský kontrakt](docs/supplier-availability.md), [pravidelný prenos](docs/stock-sync.md). |
+| Inventúry a nové vratky | Širšia agenda zostáva plánovaná | Jednotlivá zdokumentovaná korekcia množstva a existujúce fyzické vratky/nákupné vrstvy sú dostupné; neznamenajú kompletnú inventúrnu agendu. |
+| Produkty `/products` | Kompatibilné presmerovanie do Skladu | Jediný editor je na `/stock`, bez duplicitnej položky navigácie. [Postup](docs/product-editor.md). |
 | Nákupné ceny v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
-| Roly obsluhy a úplné doručovanie produktových zmien | Plánované | Operátorský token nie je všeobecný systém rolí; lokálne uložená zmena sa nevydáva za potvrdený zápis do Upgates. |
+| Roly obsluhy | Plánované | Operátorský token nie je všeobecný systém rolí. Publikovanie vybraných podporovaných produktových polí už má vlastný náhľad, zápis a overenie; chýbajúci produkt sa zakladá cez katalógový import. |
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx), [exporty stránok](frontend/src/pages/index.ts), [zástupné stránky](frontend/src/pages/PlaceholderPages.tsx).
 
@@ -260,3 +261,9 @@ Lokálne rezervácie/výdaje, FIFO a editácia produktov sú implementované; pr
 Po aktivácii FIFO sa nemožno vrátiť k starému kódu váženého priemeru bez kontrolovaného plánu. Ponechaj nové tabuľky aj nemenné pohyby a použi opravu vpred; podrobnosti v [FIFO](docs/fifo.md).
 
 Kontrolované publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md). Automatické periodické posielanie zásob ostáva plánované: Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného odpočtu z pokladne alebo košíka. Táto etapa vyžaduje externú údržbu a kontrolu objednávok; trvalá blokácia v Hube sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.
+
+## Nové oddelené workflow (014–017)
+
+Dodávateľský worker `supplier_availability_worker` uchováva prijaté pozorovania a vyhodnocuje ich platnosť. Zlyhanie alebo neúplný feed nikdy nevynuluje fyzickú zásobu. `stock_sync_worker` prenáša vlastné voľné kusy, dostupnosť a objednateľnosť iba pri výslovne nastavenej skladovej autorite, čerstvých objednávkach a povolenom serverovom zápise `STOCK_SYNC_WRITE_ENABLED` (default false). Údržbový publisher zostáva samostatný.
+
+Migrácie `014_supplier_availability.sql`, `015_stock_sync.sql`, `016_product_publication.sql` a `017_stock_adjustments.sql` sú aditívne, zabalené v API obraze a zapojené do deploymentu po `013` pred spustením nového API. Nezapínajú nové plánovanie ani hromadné zápisy. Príslušné zámery, nejasné pokusy a účtovné výsledky sa pri návrate verzie nemažú; pre riešenie nasadenej chyby uprednostni kompatibilnú doprednú opravu.

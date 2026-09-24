@@ -2,6 +2,8 @@
 
 BIKETREK a xTrek môžu pre vybrané skladové položky pripraviť vlastné voľné množstvo na odoslanie do Upgates. Ide o osobitnú operáciu po kontrole, nie o pravidelnú synchronizáciu počas predaja. Nasadenie tejto funkcie samo nepovoľuje živé zápisy.
 
+Bežný plánovaný prenos s vlastným oprávnením a bez údržbového uzáveru opisuje [pravidelná synchronizácia](stock-sync.md). Jeho aktivácia vyžaduje výlučnú autoritu Hubu a vypnuté samostatné skladové zápisy v predajných kanáloch.
+
 Tento dokument opisuje kontrakt tejto implementácie. Výsledky CI, nasadenie a prípadné neskoršie živé overenie treba uvádzať samostatne. Bez živého overenia nemožno tvrdiť, že zásoby konkrétneho e-shopu boli zmenené.
 
 ## Používateľský postup

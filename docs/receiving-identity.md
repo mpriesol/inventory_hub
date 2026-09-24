@@ -11,6 +11,9 @@ Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity
 - Rozpor kódu, EAN a uloženého produktu treba opraviť pred príjmom. Ani „dokončiť napriek neprijatým riadkom“ neobíde konflikt identity.
 - Pri dokončení sa kontroluje aj produkt, ktorý bol priradený už pri otvorení faktúry. Zmena jeho identifikátorov medzi otvorením a dokončením nemôže potichu naskladniť iný produkt.
 - Jeden fyzický produkt môže mať viac EAN aj viac dodávateľských kódov. Rovnaký krátky neoverený číselný kód sám osebe nespája produkty od rôznych dodávateľov.
+- Dokončený alebo zrušený príjem sa pri opätovnom otvorení zobrazí iba na čítanie. Šípka späť aj **Ukončiť** vrátia zoznam bez pozastavovania, ďalšieho dokončenia či zmeny skladu. Pozastavený príjem treba najskôr obnoviť cez **Pokračovať** na zozname príjmov.
+- Pred skenovaním sa vždy načíta aktuálny stav relácie. Samotných 100 % prijatých položiek neznamená, že príjem bol dokončený; rozhoduje uložený stav. Pri odchode z rozpracovaného príjmu sa stav znovu overí a až potom sa príjem pozastaví. Ak pozastavenie zlyhá a server stále eviduje rozpracovaný príjem, stránka zostane otvorená s chybou.
+- Nepotvrdené skeny dokončeného alebo pozastaveného príjmu možno overiť pôvodným tlačidlom opakovania. Samotná neodosielajúca sa uložená fronta neblokuje návrat na zoznam a nezmaže sa pri odchode. Počas práve prebiehajúcej požiadavky treba počkať na odpoveď.
 
 Kompletná administrácia opráv identifikátorov a priraďovanie neskôr prijatej faktúry k už vykonanému príjmu zostávajú ďalšími krokmi. Chýbajúca nákupná cena vo faktúrovom príjme sa naďalej musí vyriešiť pred jeho dokončením. Samostatný príjem bez známej ceny používa existujúci postup v [dokumentácii nákupných vrstiev](fifo.md).
 
@@ -54,6 +57,8 @@ Odpoveď naďalej obsahuje `status`, `line`, `summary`; dopĺňa `request_id` a 
 
 Neúspešná transakcia neukladá úspešné potvrdenie UUID. Úspešný sken možno zopakovať aj po pozastavení či dokončení relácie. Jeho uložená odpoveď je historická: napríklad po ďalších skenoch alebo ručnom vynulovaní zobrazuje pôvodné množstvo. Klient po obnove načíta aktuálny súhrn, neprenesie starú odpoveď ako nový stav skladu.
 
+Klient vyžaduje platný `status` z `GET .../summary` (`new`, `in_progress`, `paused`, `completed`, `cancelled`). Množstvá odovzdané navigáciou neautorizujú nové skeny pred týmto čítaním. Iba `new` a `in_progress` povoľujú úpravy. Načítanie aj replay sú viazané na aktuálnu reláciu, takže oneskorená odpoveď predchádzajúcej relácie nemôže znovu odomknúť dokončený príjem. Odchod z aktívnej relácie používa nové čítanie stavu; po chybe pozastavenia čítaním rozlíši skutočné zlyhanie od stratenej odpovede alebo súbežného dokončenia. Neistá odpoveď bez potvrdeného neaktívneho stavu neznamená úspešné pozastavenie.
+
 Zámok relácie chráni súčet množstiev. Transakčný zámok UUID chráni aj súbežné použitie rovnakého ID v rôznych reláciách. `receiving_scan_requests` ukladá otlačok požiadavky, odpoveď a väzbu na `scan_events` v rovnakej transakcii ako množstvo. Klient pri neistej odpovedi zachová UUID aj payload a nesmie vygenerovať nové UUID iba kvôli retry. Načítanie stránky či reštart API nemaže uložené potvrdenia.
 
 ## Migrácia a overenie
@@ -65,6 +70,8 @@ Migrácia vytvorí tabuľku potvrdení skenov a rozšíri existujúci `receiving
 Nezmenia sa vstupné hodnoty riadkov, pohyby ani ceny. Žiadny `CASCADE` sa nepoužíva. Ďalší pohľad priamo nad EAN alebo nad `v_invoice_lines_detail` migráciu zastaví a celá transakcia sa vráti späť. Vlastné pravidlá, triggery, grantové reťazce od iných grantorov, predvolené hodnoty či bezpečnostné štítky na známom pohľade vyžadujú osobitnú kontrolu; migrácia ich nesmie zahodiť. Opakované spustenie je bezpečné. Pri oprave použiť postup vpred; tabuľku potvrdení nevymazávať, inak sa stratia dôkazy pre retry.
 
 Regresie v `test_receiving_db.py` pokrývajú desať samostatných skenov, retry vrátane stavu po dokončení a resete, súbeh rovnakého UUID, konflikt payloadu, neočakávaný sken, zložené EAN, dve ceny rovnakého produktu a opätovnú kontrolu už priradených produktov. `test_product_identity.py` a `test_catalog_db.py` pokrývajú spoločný SKU, overené EAN, dodávateľský rozsah a konflikty importu. Databázové testy vyžadujú izolovanú lokálnu PostgreSQL databázu podľa `AGENTS.md`.
+
+`frontend/tests/receiving-scan-ui.cjs` overuje reálnu stránku nad syntetickým API: frontu a opakovanie UUID, oba odchody z dokončeného/zrušeného/pozastaveného príjmu bez zápisu, zlyhanie pozastavenia aktívneho príjmu, súbežné dokončenie, stratenú odpoveď pozastavenia, neznámy stav a obnovu čakajúceho skenu po dokončení. Test nepoužíva produkčné doklady ani e-shopy a neoveruje rozloženie v reálnom prehliadači.
 
 
 `test_receiving_migration_db.py` začína na skutočnej schéme 001 + 002 pred prvým spustením 013. Overuje zachovanie existujúceho riadka a fingerprintu, funkčný pohľad vrátane dlhého EAN, jeho vlastníka a oprávnení, bezpečné opakovanie migrácie a rollback pri oboch druhoch neznámej závislosti. Nevyhodnocuje prázdnu databázu ako dôkaz zachovania historických dát.

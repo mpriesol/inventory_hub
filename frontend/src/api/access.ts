@@ -18,9 +18,9 @@ export function subscribeAccess(listener: () => void) {
   return () => { listeners.delete(listener); };
 }
 
-export async function hubRequest<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function hubRequest<T>(path: string, body?: unknown, signal?: AbortSignal, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
   const response = await fetch(path, {
-    method: body === undefined ? 'GET' : 'POST',
+    method: body === undefined ? 'GET' : method,
     headers: { Authorization: `Bearer ${accessToken}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',

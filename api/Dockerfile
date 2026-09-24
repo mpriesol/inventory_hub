@@ -33,6 +33,10 @@ COPY infra/db-init/010_stock_publication.sql /app/inventory_hub/migrations/010_s
 COPY infra/db-init/011_fifo.sql /app/inventory_hub/migrations/011_fifo.sql
 COPY infra/db-init/012_product_editor.sql /app/inventory_hub/migrations/012_product_editor.sql
 COPY infra/db-init/013_receiving_scan_requests.sql /app/inventory_hub/migrations/013_receiving_scan_requests.sql
+COPY infra/db-init/014_supplier_availability.sql /app/inventory_hub/migrations/014_supplier_availability.sql
+COPY infra/db-init/015_stock_sync.sql /app/inventory_hub/migrations/015_stock_sync.sql
+COPY infra/db-init/016_product_publication.sql /app/inventory_hub/migrations/016_product_publication.sql
+COPY infra/db-init/017_stock_adjustments.sql /app/inventory_hub/migrations/017_stock_adjustments.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

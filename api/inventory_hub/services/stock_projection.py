@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 
 from inventory_hub.db_models import Product, Shop, Warehouse
 from inventory_hub.db_models_ext import ShopProduct, StockBalance, StockMovement
@@ -135,18 +135,23 @@ including a zero balance without a physical ledger record.
         sku_owners = defaultdict(list)
         for product in products.values():
             sku_owners[product.sku.casefold()].append(product.id)
-        # One query for the whole shop detects duplicate/case-conflicting leaf
-        # codes even when the other owner is outside the requested SKU subset.
+        product_ids = [products[sku].id for sku in skus if sku in products]
+        # Include every mapping of selected products (alias/ambiguity guards),
+        # plus owners of case-conflicting codes outside the selected products.
+        # A regular pass must not fetch thousands of unrelated umbrella siblings
+        # twice for each individual leaf.
+        requested_codes = sorted({sku.lower() for sku in skus})
+        leaf_code = case((ShopProduct.is_variant.is_(True), ShopProduct.variant_code), else_=ShopProduct.external_code)
         mappings = (await db.execute(select(ShopProduct.id, ShopProduct.product_id, ShopProduct.is_variant,
             ShopProduct.variant_code, ShopProduct.external_code, ShopProduct.parent_code, ShopProduct.is_listed)
-            .where(ShopProduct.shop_id == shop.id))).all()
+            .where(ShopProduct.shop_id == shop.id, or_(ShopProduct.product_id.in_(product_ids),
+                  func.lower(leaf_code).in_(requested_codes))))).all()
         by_product, code_owners = defaultdict(list), defaultdict(list)
         for mapping in mappings:
             by_product[mapping.product_id].append(mapping)
             code = mapping_code(mapping)
             if code:
                 code_owners[code.casefold()].append(mapping.id)
-        product_ids = [products[sku].id for sku in skus if sku in products]
         has_movement = select(StockMovement.id).where(
             StockMovement.product_id == StockBalance.product_id,
             StockMovement.warehouse_id == StockBalance.warehouse_id,

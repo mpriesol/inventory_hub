@@ -33,6 +33,15 @@ export interface ReceivingSummary {
   unexpected: number;
 }
 
+export type ReceivingStatus = 'new' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
+
+export interface ReceivingSessionSummary {
+  invoice_no: string;
+  status: ReceivingStatus;
+  lines: ReceivingLine[];
+  summary: ReceivingSummary;
+}
+
 export interface FinalizeResult {
   success: boolean;
   invoice_no: string;
@@ -98,12 +107,13 @@ export async function scanCode(
 export async function getReceivingSummary(
   supplier: string, 
   session_id: string
-): Promise<{ invoice_no: string; lines: ReceivingLine[]; summary: ReceivingSummary }> {
+): Promise<ReceivingSessionSummary> {
   const result = await fetchJSON<unknown>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/summary`);
-  if (!object(result) || !Array.isArray(result.lines) || !result.lines.every(validLine) || !validSummary(result.summary)) {
+  if (!object(result) || !['new', 'in_progress', 'paused', 'completed', 'cancelled'].includes(String(result.status))
+    || !Array.isArray(result.lines) || !result.lines.every(validLine) || !validSummary(result.summary)) {
     throw new Error('receiving_summary_response_invalid');
   }
-  return result as unknown as { invoice_no: string; lines: ReceivingLine[]; summary: ReceivingSummary };
+  return result as unknown as ReceivingSessionSummary;
 }
 
 export async function finalizeReceiving(

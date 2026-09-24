@@ -1,6 +1,7 @@
 import React from 'react';
+import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
 import { AiContentPage } from './pages/AiContentPage';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 // Styles
 import './styles/design-system.css';
@@ -13,7 +14,6 @@ import {
   DashboardPage,
   ReceivingPage,
   ReceivingSessionPage,
-  StockPage,
   StockHistoryPage,
   OpeningStockPage,
   OrdersAuditPage,
@@ -48,7 +48,7 @@ function App() {
           <Route path="/receiving/:invoiceId" element={<ReceivingSessionPage />} />
 
           {/* Stock */}
-          <Route path="/stock" element={<StockPage />} />
+          <Route path="/stock" element={<ProductEditorPage />} />
           <Route path="/stock/movements" element={<StockHistoryPage />} />
           <Route path="/stock/opening" element={<OpeningStockPage />} />
           <Route path="/stock/publication" element={<StockPublicationPage />} />
@@ -57,7 +57,7 @@ function App() {
           <Route path="/orders/inbox" element={<OrdersInboxPage />} />
 
           {/* Products */}
-          <Route path="/products" element={<ProductEditorPage />} />
+          <Route path="/products" element={<Navigate to="/stock" replace />} />
           <Route path="/products/:sku" element={<ProductDetailPage />} />
 
           {/* Suppliers */}
@@ -69,6 +69,7 @@ function App() {
 
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/availability" element={<AvailabilitySyncPage />} />
           <Route path="/settings/stock" element={<StockSettingsPage />} />
           <Route path="/settings/ai-content" element={<AiContentPage />} />
           <Route path="/ai-content" element={<AiContentPage />} />

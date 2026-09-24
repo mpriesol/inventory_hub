@@ -3,6 +3,7 @@ from decimal import Decimal
 import re
 from typing import Literal
 from uuid import UUID
+from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
 
@@ -40,6 +41,18 @@ class CommonPatch(EditorModel):
     name: StrictStr | None = None
     brand: StrictStr | None = None
     internal_note: StrictStr | None = None
+    image_url: StrictStr | None = None
+
+    @field_validator("image_url")
+    @classmethod
+    def image_valid(cls, value):
+        if value is None:
+            return None
+        safe_text(value, maximum=2000, blank=False)
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("HTTPS image URL required")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -57,10 +70,57 @@ class CommonPatch(EditorModel):
         return safe_text(value, maximum=4000)
 
 
+class AttributePatch(EditorModel):
+    name: StrictStr
+    value: StrictStr
+
+    @field_validator("name")
+    @classmethod
+    def name_valid(cls, value):
+        return safe_text(value, maximum=100, blank=False).strip()
+
+    @field_validator("value")
+    @classmethod
+    def value_valid(cls, value):
+        return safe_text(value, maximum=255, blank=False).strip()
+
+
 class VariantPatch(EditorModel):
     sale_price_gross: StrictStr | None = None
     vat_rate: StrictStr | None = None
     note: StrictStr | None = None
+    attributes: list[AttributePatch] | None = Field(default=None, max_length=100)
+    eans: list[StrictStr] | None = Field(default=None, max_length=20)
+    sku: StrictStr | None = None
+
+    @field_validator("sku")
+    @classmethod
+    def sku_valid(cls, value):
+        if value is None:
+            return None
+        safe_text(value, maximum=100, blank=False)
+        if value != value.strip() or ";" in value:
+            raise ValueError("Invalid code")
+        return value
+
+    @field_validator("eans")
+    @classmethod
+    def eans_valid(cls, value):
+        if value is None:
+            return None
+        from inventory_hub.services.identifiers import ProductIdentifierService
+        if len(value) != len(set(value)) or any(not code.isascii() or not code.isdigit() or not code.strip("0")
+                or ProductIdentifierService.classify_barcode(code) not in ProductIdentifierService.BARCODE_TYPES
+                for code in value):
+            raise ValueError("Invalid barcode")
+        return value
+
+    @field_validator("attributes")
+    @classmethod
+    def attributes_valid(cls, value):
+        if value is not None and len({item.name.casefold() for item in value}) != len(value):
+            raise ValueError("Duplicate attribute")
+        return value
 
     @field_validator("sale_price_gross")
     @classmethod
@@ -140,4 +200,40 @@ class ProductEditorSaveRequest(EditorModel):
     def confirmed_valid(cls, value):
         if value is not True:
             raise ValueError("Explicit confirmation required")
+        return value
+
+
+class PublicationPreviewRequest(EditorModel):
+    shop_code: StrictStr = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,49}$")
+    expected_revision: StrictInt = Field(ge=0)
+    fields: list[Literal["name", "sale_price_gross", "visible", "ean", "attributes", "image_url"]] = Field(min_length=1, max_length=6)
+
+    @field_validator("fields")
+    @classmethod
+    def fields_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("Repeated field")
+        return value
+
+
+class PublicationSendRequest(EditorModel):
+    confirmed: Literal[True]
+
+    @field_validator("confirmed", mode="before")
+    @classmethod
+    def exact_confirmation(cls, value):
+        if value is not True:
+            raise ValueError("Explicit confirmation required")
+        return value
+
+
+class PublicationResolveRequest(PublicationSendRequest):
+    original_request_settled: Literal[True]
+    note: StrictStr = Field(min_length=10, max_length=1000)
+
+    @field_validator("original_request_settled", mode="before")
+    @classmethod
+    def settled_confirmation(cls, value):
+        if value is not True:
+            raise ValueError("Confirm original request can no longer land")
         return value

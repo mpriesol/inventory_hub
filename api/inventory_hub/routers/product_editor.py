@@ -71,3 +71,38 @@ async def save(payload: ProductEditorSaveRequest, db: AsyncSession = Depends(get
 @router.get("/saves/{request_id}")
 async def saved(request_id: UUID, db: AsyncSession = Depends(get_session)):
     return await _call(service.get_save(db, str(request_id)))
+
+
+# Publication is explicit and selected-field only; ordinary save remains local.
+from inventory_hub.product_editor_types import PublicationPreviewRequest, PublicationSendRequest, PublicationResolveRequest
+from inventory_hub.services import product_publication
+
+
+@router.post("/products/{product_id}/publication/preview")
+async def publication_preview(product_id: int, payload: PublicationPreviewRequest, db: AsyncSession = Depends(get_session)):
+    return await _call(product_publication.preview(db, product_id, payload))
+
+
+@router.get("/products/{product_id}/publications")
+async def publications(product_id: int, db: AsyncSession = Depends(get_session)):
+    return await _call(product_publication.history(db, product_id))
+
+
+@router.get("/publications/{publication_id}")
+async def publication(publication_id: UUID, db: AsyncSession = Depends(get_session)):
+    return await _call(product_publication.get(db, str(publication_id)))
+
+
+@router.post("/publications/{publication_id}/send")
+async def publication_send(publication_id: UUID, payload: PublicationSendRequest, db: AsyncSession = Depends(get_session)):
+    return await _call(product_publication.send(db, str(publication_id)))
+
+
+@router.post("/publications/{publication_id}/resolve")
+async def publication_resolve(publication_id: UUID, payload: PublicationResolveRequest, db: AsyncSession = Depends(get_session)):
+    return await _call(product_publication.resolve(db, str(publication_id), payload))
+
+
+@router.post("/products/{product_id}/refresh-attributes")
+async def refresh_attributes(product_id: int, db: AsyncSession = Depends(get_session)):
+    return await _call(product_publication.refresh_attributes(db, product_id))

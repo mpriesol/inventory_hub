@@ -17,6 +17,7 @@ import {
   resetAllItems,
   type ReceivingLine,
   type ReceivingSummary,
+  type ReceivingStatus,
   type FinalizeResult,
 } from '../api/receiving';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
@@ -32,6 +33,7 @@ export function ReceivingSessionPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const resultsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[] } | null;
   const sessionId = state?.sessionId || '';
@@ -40,7 +42,11 @@ export function ReceivingSessionPage() {
   const receiptKey = `${supplier}:${sessionId}`;
   const receiptContext = useRef({ key: receiptKey, revision: 0 });
   if (receiptContext.current.key !== receiptKey) receiptContext.current = { key: receiptKey, revision: 0 };
-  const [summaryReady, setSummaryReady] = useState(!!state?.lines);
+  const [summaryReady, setSummaryReady] = useState(false);
+  const [sessionState, setSessionState] = useState<{ key: string; status: ReceivingStatus } | null>(null);
+  const sessionStatus = sessionState?.key === receiptKey ? sessionState.status : null;
+  const canEdit = summaryReady && (sessionStatus === 'new' || sessionStatus === 'in_progress');
+  const inactive = sessionStatus === 'completed' || sessionStatus === 'cancelled' || sessionStatus === 'paused';
 
   const [scannedCode,    setScannedCode]    = useState('');
   const [quantity,       setQuantity]       = useState(1);
@@ -75,19 +81,20 @@ export function ReceivingSessionPage() {
     const context = receiptContext.current;
     const revision = context.revision;
     let active = true;
+    if (resultsTimer.current) clearTimeout(resultsTimer.current);
     setLines(state?.lines || []);
     setStats({ matched: 0, partial: 0, pending: state?.lines?.length || 0, overage: 0, unexpected: 0 });
-    setSummaryReady(!!state?.lines); setLastScan(null); setError(null); setEditingLine(null);
+    setSummaryReady(false); setSessionState(null); setLastScan(null); setError(null); setEditingLine(null);
     setShowConfirm(false); setFinalizeResult(null); setDoneItems({});
     scanInput.current = ''; setScannedCode(''); setQuantity(1);
     if (sessionId) getReceivingSummary(supplier, sessionId).then(data => {
       if (active && receiptContext.current === context && context.revision === revision) {
-        setLines(data.lines); setStats(data.summary); setSummaryReady(true);
+        setLines(data.lines); setStats(data.summary); setSessionState({ key: receiptKey, status: data.status }); setSummaryReady(true);
       }
     }).catch(() => {
       if (active && receiptContext.current === context && context.revision === revision) setError(t('actions.receiving.summaryFailed'));
     });
-    return () => { active = false; };
+    return () => { active = false; if (resultsTimer.current) clearTimeout(resultsTimer.current); };
   }, [sessionId, supplier]);
 
   useEffect(() => {
@@ -106,12 +113,13 @@ export function ReceivingSessionPage() {
   };
 
   const toggleDone = (line: ReceivingLine) => {
+    if (!canEdit) return;
     const scm = getRawScm(line);
     setDoneItems(prev => ({ ...prev, [scm]: !prev[scm] }));
   };
 
   const saveNote = async (note: string) => {
-    if (!invoiceId) return;
+    if (!invoiceId || !canEdit) return;
     setSavingNote(true);
     try {
       await fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`, {
@@ -147,7 +155,7 @@ export function ReceivingSessionPage() {
       // pending until the current local receipt is read successfully.
       const current = await getReceivingSummary(supplier, sessionId);
       if (receiptContext.current !== context) return;
-      setLines(current.lines); setStats(current.summary); setSummaryReady(true);
+      setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status }); setSummaryReady(true);
     } else {
       setStats(result.summary);
       if (result.line) setLines(previous => previous.map(line => {
@@ -160,7 +168,7 @@ export function ReceivingSessionPage() {
   const loading = scanner.busy || scanner.pending > 0;
   const handleScan = () => {
     const code = scanInput.current.trim();
-    if (!code || !sessionId || !summaryReady || mutation.current || finalizing || finalizeResult || pausing) return;
+    if (!code || !sessionId || !canEdit || mutation.current || finalizing || finalizeResult || pausing) return;
     if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 999999999.999 || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001) {
       setError(t('actions.receiving.invalidQuantity')); return;
     }
@@ -173,15 +181,18 @@ export function ReceivingSessionPage() {
   };
 
   const doFinalize = async () => {
-    if (!sessionId || mutation.current || scanner.hasPending()) return;
-    mutation.current = true;
+    if (!sessionId || !canEdit || mutation.current || scanner.hasPending()) return;
+    const context = receiptContext.current;
+    mutation.current = true; context.revision += 1;
     setFinalizing(true); setError(null); setShowConfirm(false);
     try {
       if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
       await saveReceivedItems();
       const result = await finalizeReceiving(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setSessionState({ key: receiptKey, status: 'completed' });
       setFinalizeResult(result);
-      setTimeout(() => setShowCsvModal(true), 2000);
+      resultsTimer.current = setTimeout(() => { if (receiptContext.current === context) setShowCsvModal(true); }, 2000);
     } catch (error) {
       setError(error instanceof Error && error.message.includes('stock_publication_warehouse_held')
         ? t('stockPublication.errors.stock_publication_warehouse_held')
@@ -191,28 +202,47 @@ export function ReceivingSessionPage() {
   };
 
   const handleExit = async () => {
-    if (mutation.current || scanner.hasPending() || pausing || loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
-    if (!sessionId || finalizeResult) {
+    if (mutation.current || scanner.busy || (canEdit && scanner.hasPending()) || pausing || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
+    if (!sessionId || inactive || finalizeResult || !summaryReady) {
       navigate('/receiving');
       return;
     }
+    const context = receiptContext.current;
     mutation.current = true; setPausing(true); setError(null);
     try {
+      // Another tab may already have completed or paused this receipt. Leaving
+      // a historical session must not write notes/items or attempt to pause it.
+      const current = await getReceivingSummary(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setSessionState({ key: receiptKey, status: current.status });
+      if (current.status !== 'new' && current.status !== 'in_progress') {
+        navigate('/receiving'); return;
+      }
       if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
       await saveReceivedItems();
       await pauseReceiving(supplier, sessionId);
-      navigate('/receiving');
+      if (receiptContext.current === context) navigate('/receiving');
     } catch {
-      setError(t('receiving.pauseError'));
+      // A response can be lost after pausing, or completion can win the race
+      // after the preflight read. Only a confirmed inactive status permits exit.
+      try {
+        const current = await getReceivingSummary(supplier, sessionId);
+        if (receiptContext.current !== context) return;
+        setSessionState({ key: receiptKey, status: current.status });
+        if (current.status !== 'new' && current.status !== 'in_progress') {
+          navigate('/receiving'); return;
+        }
+      } catch { /* Preserve the active draft and report the pause failure. */ }
+      if (receiptContext.current === context) setError(t('receiving.pauseError'));
     } finally {
       mutation.current = false; setPausing(false);
     }
   };
 
-  const openEditModal = (index: number, line: ReceivingLine) => { if (scanner.hasPending() || mutation.current) return; setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
+  const openEditModal = (index: number, line: ReceivingLine) => { if (!canEdit || scanner.hasPending() || mutation.current) return; setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
 
   const handleSaveEdit = async () => {
-    if (!editingLine || !sessionId || mutation.current || scanner.hasPending()) return;
+    if (!editingLine || !sessionId || !canEdit || mutation.current || scanner.hasPending()) return;
     mutation.current = true; receiptContext.current.revision += 1;
     setSavingEdit(true); setError(null);
     try {
@@ -223,13 +253,13 @@ export function ReceivingSessionPage() {
   };
 
   const handleAcceptAll = async () => {
-    if (!sessionId || mutation.current || scanner.hasPending()) return; mutation.current = true; receiptContext.current.revision += 1; setBulkLoading(true);
+    if (!sessionId || !canEdit || mutation.current || scanner.hasPending()) return; mutation.current = true; receiptContext.current.revision += 1; setBulkLoading(true);
     try { const r = await acceptAllItems(supplier, sessionId, true); setLines(r.lines); setStats(r.summary); }
     catch { setError('Nepodarilo sa prijať všetky položky'); } finally { mutation.current = false; setBulkLoading(false); }
   };
 
   const handleResetAll = async () => {
-    if (!sessionId || mutation.current || scanner.hasPending() || !confirm('Naozaj chcete vynulovať všetky prijaté množstvá?')) return;
+    if (!sessionId || !canEdit || mutation.current || scanner.hasPending() || !confirm('Naozaj chcete vynulovať všetky prijaté množstvá?')) return;
     mutation.current = true; receiptContext.current.revision += 1; setBulkLoading(true);
     try { const r = await resetAllItems(supplier, sessionId); setLines(r.lines); setStats(r.summary); }
     catch { setError('Nepodarilo sa vynulovať množstvá'); } finally { mutation.current = false; setBulkLoading(false); }
@@ -244,13 +274,15 @@ export function ReceivingSessionPage() {
     pending:    { bg: 'var(--color-bg-tertiary)',    border: 'var(--color-border-subtle)', icon: '○', label: 'Čaká' },
   };
 
+  const exitDisabled = pausing || scanner.busy || (canEdit && scanner.pending > 0) || bulkLoading || savingEdit || (finalizing && !finalizeResult);
+
   return (
     <div className="space-y-6">
 
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <button onClick={handleExit} disabled={pausing || loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)} className="p-2 rounded-lg transition-colors"
+          <button onClick={handleExit} data-testid="receiving-back" aria-label={t('receiving.backToList')} disabled={exitDisabled} className="p-2 rounded-lg transition-colors"
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-bg-secondary)'; e.currentTarget.style.color = 'var(--color-text-primary)'; }}
             onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}>
@@ -263,13 +295,17 @@ export function ReceivingSessionPage() {
             {sessionId && <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>Session: {sessionId}</div>}
           </div>
         </div>
-        <span className="action-control"><Button variant="danger" onClick={handleExit} loading={pausing} disabled={loading || bulkLoading || savingEdit || (finalizing && !finalizeResult)}><X size={16} /> Ukončiť</Button><ActionScope effects={['hub-write']} /></span>
+        <span className="action-control"><Button data-testid="receiving-exit" variant="danger" onClick={handleExit} loading={pausing} disabled={exitDisabled}><X size={16} /> Ukončiť</Button>{canEdit && <ActionScope effects={['hub-write']} />}</span>
       </div>
 
       {error && <div className="p-4 rounded-lg border" style={{ backgroundColor: 'var(--color-error-subtle)', borderColor: 'var(--color-error)', color: 'var(--color-error)' }}>{error}</div>}
 
+      {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
+      {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t(inactive ? 'receiving.closedPendingScans' : 'actions.receiving.pending', { count: scanner.pending })}</p>}
+      {scanner.uncertain && <Button data-testid="receiving-scan-retry" disabled={!summaryReady || scanner.busy} onClick={() => { setError(null); scanner.retry(); }}>{t('actions.receiving.retry')}</Button>}
+
       {/* Scan */}
-      <div className="rounded-xl border p-8" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
+      {!inactive && <div className="rounded-xl border p-8" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
         <div className="max-w-md mx-auto text-center">
           <div className="w-20 h-20 rounded-2xl border-2 border-dashed flex items-center justify-center mx-auto"
             style={{ backgroundColor: 'var(--color-accent-subtle)', borderColor: 'var(--color-border-accent)', color: 'var(--color-accent)' }}>
@@ -279,21 +315,19 @@ export function ReceivingSessionPage() {
           <p className="text-sm mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Použi skener alebo zadaj kód manuálne</p>
           <div className="mt-6 flex gap-2">
             <input ref={inputRef} type="text" value={scannedCode} onChange={e => { scanInput.current = e.target.value; setScannedCode(e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleScan(); } }}
-              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} data-testid="receiving-scan-code" autoFocus disabled={!summaryReady || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult} />
-            <Button data-testid="receiving-scan" variant="primary" onClick={handleScan} disabled={!scannedCode.trim() || !sessionId || !summaryReady || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult}>{t('actions.receiving.scan')}</Button>
+              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} data-testid="receiving-scan-code" autoFocus disabled={!canEdit || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult} />
+            <Button data-testid="receiving-scan" variant="primary" onClick={handleScan} disabled={!scannedCode.trim() || !sessionId || !canEdit || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult}>{t('actions.receiving.scan')}</Button>
           </div>
           <p className="text-sm mt-3">{t('actions.receiving.help')}</p>
           <ActionScope effects={['hub-write']}>{t('actions.receiving.local')}</ActionScope>
-          {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t('actions.receiving.pending', { count: scanner.pending })}</p>}
-          {scanner.uncertain && <Button data-testid="receiving-scan-retry" disabled={scanner.busy} onClick={() => { setError(null); scanner.retry(); }}>{t('actions.receiving.retry')}</Button>}
           <div className="flex items-center justify-center gap-4 mt-4">
             <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               Množstvo:
-              <input data-testid="receiving-scan-quantity" type="number" value={Number.isNaN(quantity) ? '' : quantity} onChange={e => setQuantity(e.target.value === '' ? NaN : Number(e.target.value))} min={0.001} max={999999999.999} step={1} className="w-20 text-center py-1" />
+              <input data-testid="receiving-scan-quantity" disabled={!canEdit || pausing || finalizing} type="number" value={Number.isNaN(quantity) ? '' : quantity} onChange={e => setQuantity(e.target.value === '' ? NaN : Number(e.target.value))} min={0.001} max={999999999.999} step={1} className="w-20 text-center py-1" />
             </label>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Last scan */}
       {lastScan && (
@@ -338,7 +372,7 @@ export function ReceivingSessionPage() {
         <div className="rounded-xl border overflow-hidden" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
           <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: 'var(--color-border-subtle)' }}>
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>{lines.length} položiek</span>
-            <div className="flex gap-2">
+            {canEdit && <div className="flex gap-2">
               <span className="action-control"><button onClick={handleAcceptAll} disabled={loading || savingEdit || bulkLoading || pausing || stats.pending === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}>
@@ -349,7 +383,7 @@ export function ReceivingSessionPage() {
                 style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>
                 <RotateCcw size={14} /> Resetovať
               </button><ActionScope effects={['hub-write']} /></span>
-            </div>
+            </div>}
           </div>
           <div className="max-h-96 overflow-y-auto">
             <table className="w-full">
@@ -381,7 +415,7 @@ export function ReceivingSessionPage() {
                       </td>
                       <td className="px-4 py-2 text-center">
                         {partial ? (
-                          <button onClick={() => toggleDone(line)} title={done ? 'Hotovo (odznač)' : 'Označiť ako hotovo'}
+                          <button disabled={!canEdit} onClick={() => toggleDone(line)} title={done ? 'Hotovo (odznač)' : 'Označiť ako hotovo'}
                             className="w-6 h-6 rounded border-2 flex items-center justify-center mx-auto transition-colors"
                             style={{ borderColor: done ? 'var(--color-success)' : 'var(--color-border-subtle)', backgroundColor: done ? 'var(--color-success-subtle)' : 'transparent', color: done ? 'var(--color-success)' : 'transparent' }}>
                             <Check size={12} />
@@ -392,8 +426,8 @@ export function ReceivingSessionPage() {
                           <span style={{ color: 'var(--color-text-tertiary)' }}>–</span>
                         )}
                       </td>
-                      <td className="px-4 py-2 text-center cursor-pointer" onClick={() => openEditModal(idx, line)}>
-                        <Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+                      <td className="px-4 py-2 text-center">
+                        {canEdit && <button data-testid={`receiving-edit-line-${idx}`} aria-label={t('receiving.editQuantity')} onClick={() => openEditModal(idx, line)}><Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} /></button>}
                       </td>
                     </tr>
                   );
@@ -405,7 +439,7 @@ export function ReceivingSessionPage() {
       )}
 
       {/* Edit modal */}
-      {editingLine && (
+      {canEdit && editingLine && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }} onClick={() => setEditingLine(null)}>
           <div className="rounded-xl border p-6 max-w-md w-full" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }} onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}>Upraviť prijaté množstvo</h3>
@@ -439,7 +473,7 @@ export function ReceivingSessionPage() {
           <MessageSquare size={14} /> Poznámka k faktúre
           {savingNote && <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}><Loader2 size={10} className="inline animate-spin mr-1" />ukladám...</span>}
         </label>
-        <textarea value={invoiceNote} onChange={e => setInvoiceNote(e.target.value)} onBlur={e => saveNote(e.target.value.trim())}
+        <textarea readOnly={!canEdit} data-testid="receiving-note" value={invoiceNote} onChange={e => setInvoiceNote(e.target.value)} onBlur={e => saveNote(e.target.value.trim())}
           placeholder="Napr. 3 položky nedodané, reklamácia na ..." className="w-full py-2 px-3 rounded-lg text-sm resize-none" rows={2}
           style={{ backgroundColor: 'var(--color-bg-primary)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-primary)' }} />
       </div>
@@ -449,13 +483,13 @@ export function ReceivingSessionPage() {
         <Button variant="secondary" onClick={() => setShowLines(!showLines)}>
           <List size={16} /> {showLines ? 'Skryť položky' : 'Zobraziť položky'}
         </Button>
-        <Button variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || finalizing || pausing}>
+        {canEdit && <Button data-testid="receiving-finalize" variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || loading || savingEdit || bulkLoading || finalizing || pausing}>
           <Check size={16} /> Dokončiť príjem
-        </Button>
+        </Button>}
       </div>
 
       {/* Confirm modal */}
-      {showConfirm && (
+      {canEdit && showConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}>
           <div className="rounded-xl border p-6 max-w-md w-full" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
             <div className="flex items-start gap-4">

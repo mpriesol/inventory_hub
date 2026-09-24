@@ -1,0 +1,22 @@
+.availability-sync h3 { font: 17px/1.5 var(--font-display); margin: 18px 0 12px; }
+.availability-suppliers { display: grid; gap: 18px; margin-top: 20px; }
+.availability-supplier { padding: 18px; background: var(--color-bg-primary); border: 1px solid var(--color-border-subtle); border-radius: 8px; }
+.availability-supplier header { margin: 0; align-items: center; }
+.availability-supplier h3 { margin: 0; }
+.availability-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 18px 0; }
+.availability-sync .availability-check { display: flex; flex-direction: row; gap: 10px; align-items: flex-start; line-height: 1.6; margin: 12px 0; font-size: 13px; }
+.availability-check input { accent-color: var(--color-accent); flex: 0 0 auto; margin-top: 3px; width: 16px; height: 16px; }
+.availability-actions { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 18px; }
+.availability-status { display: flex; flex-wrap: wrap; gap: 18px 40px; margin: 18px 0; }
+.availability-status dt { color: var(--color-text-secondary); font-size: 12px; }
+.availability-status dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+.availability-dirty { border-color: var(--color-accent); }
+.availability-change { color: var(--color-accent); font-size: 12px; }
+.availability-warehouse { border-bottom: 1px solid var(--color-border-subtle); padding: 18px 0; }
+.availability-warehouse summary { cursor: pointer; color: var(--color-accent); }
+.availability-shop-selector { max-width: 360px; }
+.availability-run { border-top: 1px solid var(--color-border-subtle); margin-top: 24px; padding-top: 16px; }
+.availability-error-code { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--color-error) !important; }
+.availability-sync .availability-recovery { min-width: 250px; max-width: 450px; white-space: normal; }
+.availability-sync a { color: var(--color-accent); }
+@media (max-width: 650px) { .availability-fields { grid-template-columns: 1fr; } .availability-supplier { padding: 14px; } }
