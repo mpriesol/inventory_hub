@@ -60,6 +60,11 @@ Zámok relácie chráni súčet množstiev. Transakčný zámok UUID chráni aj 
 
 Pred spustením nového API treba zabaliť a vykonať `013_receiving_scan_requests.sql` cez `python -m inventory_hub.receiving_scan_migrate`.
 
-Migrácia vytvorí tabuľku potvrdení skenov a rozšíri existujúci `receiving_lines.ean` z 20 na 255 znakov. Kvôli PostgreSQL závislosti typu obnoví odvodený stĺpec `line_fingerprint` s rovnakým pôvodným výrazom v jednej transakcii. Nezmení vstupné hodnoty riadkov, pohyby ani ceny. Žiadny `CASCADE` sa nepoužíva; neznáma závislosť migráciu zastaví. Opakované spustenie je bezpečné. Pri oprave použiť postup vpred; tabuľku potvrdení nevymazávať, inak sa stratia dôkazy pre retry.
+Migrácia vytvorí tabuľku potvrdení skenov a rozšíri existujúci `receiving_lines.ean` z 20 na 255 znakov. PostgreSQL vyžaduje obnovu odvodeného stĺpca `line_fingerprint` aj známeho pohľadu `v_invoice_lines_detail` z migrácie 002. Oba sa obnovia v jednej transakcii; fingerprint zachová pôvodný výraz a pohľad skutočnú uloženú definíciu, vlastníka, oprávnenia tabuľky aj stĺpcov vrátane možnosti udeľovať práva, komentáre a voľby pohľadu. Nové predvolené granty nesmú rozšíriť pôvodné práva obnoveného pohľadu.
+
+Nezmenia sa vstupné hodnoty riadkov, pohyby ani ceny. Žiadny `CASCADE` sa nepoužíva. Ďalší pohľad priamo nad EAN alebo nad `v_invoice_lines_detail` migráciu zastaví a celá transakcia sa vráti späť. Vlastné pravidlá, triggery, grantové reťazce od iných grantorov, predvolené hodnoty či bezpečnostné štítky na známom pohľade vyžadujú osobitnú kontrolu; migrácia ich nesmie zahodiť. Opakované spustenie je bezpečné. Pri oprave použiť postup vpred; tabuľku potvrdení nevymazávať, inak sa stratia dôkazy pre retry.
 
 Regresie v `test_receiving_db.py` pokrývajú desať samostatných skenov, retry vrátane stavu po dokončení a resete, súbeh rovnakého UUID, konflikt payloadu, neočakávaný sken, zložené EAN, dve ceny rovnakého produktu a opätovnú kontrolu už priradených produktov. `test_product_identity.py` a `test_catalog_db.py` pokrývajú spoločný SKU, overené EAN, dodávateľský rozsah a konflikty importu. Databázové testy vyžadujú izolovanú lokálnu PostgreSQL databázu podľa `AGENTS.md`.
+
+
+`test_receiving_migration_db.py` začína na skutočnej schéme 001 + 002 pred prvým spustením 013. Overuje zachovanie existujúceho riadka a fingerprintu, funkčný pohľad vrátane dlhého EAN, jeho vlastníka a oprávnení, bezpečné opakovanie migrácie a rollback pri oboch druhoch neznámej závislosti. Nevyhodnocuje prázdnu databázu ako dôkaz zachovania historických dát.
