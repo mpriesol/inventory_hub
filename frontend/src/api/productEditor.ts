@@ -12,7 +12,7 @@ export interface ProductEditorRow {
   revision: number; snapshot_hash: string; common: { name: string; brand: string | null; internal_note: string | null };
   variant: { sale_price_gross: string | null; vat_rate: string | null; note: string | null };
   warehouse: { code: string; location: string | null; min_quantity: string | null } | null;
-  stock: { known: boolean; qty_on_hand: string | null; qty_reserved: string | null; qty_available: string | null; avg_cost: string | null; total_value: string | null };
+  stock: { known: boolean; qty_on_hand: string | null; qty_reserved: string | null; qty_quarantined: string | null; qty_available: string | null; avg_cost: string | null; total_value: string | null };
   shops: { shop_code: string; mapped: boolean; overrides: ProductShopValues; effective: ProductShopValues;
     observed: { name: string | null; price: string | null; price_basis: 'unknown'; visible: boolean | null }; state: 'inherited' | 'saved_unpublished' }[];
   overrides: { common?: Record<string, unknown>; variant?: Record<string, unknown>; warehouses?: Record<string, Record<string, unknown>>; shops?: Record<string, Record<string, unknown>> };

@@ -21,6 +21,13 @@ from inventory_hub.db_models import (
 )
 
 
+class IdentifierConflict(ValueError):
+    """The identifier has several owners and must not select an arbitrary row."""
+    def __init__(self, product_ids):
+        self.product_ids = sorted(set(product_ids))
+        super().__init__("Identifier belongs to several products")
+
+
 class ProductIdentifierService:
     """Service for managing product identifiers with multi-EAN support."""
     
@@ -281,10 +288,12 @@ class ProductIdentifierService:
                 ProductIdentifier.identifier_type.in_(self.BARCODE_TYPES),
                 Product.is_active == True,
             )
-            .limit(1)
         )
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        products = list(result.scalars().unique())
+        if len(products) > 1:
+            raise IdentifierConflict(product.id for product in products)
+        return products[0] if products else None
     
     async def find_product_by_identifier(
         self,
@@ -307,17 +316,21 @@ class ProductIdentifierService:
         if identifier_type:
             conditions.append(ProductIdentifier.identifier_type == identifier_type)
         
-        if supplier_id and identifier_type == IdentifierType.supplier_sku:
+        if identifier_type == IdentifierType.supplier_sku:
+            if supplier_id is None:
+                raise ValueError("supplier_id is required for supplier_sku lookup")
             conditions.append(ProductIdentifier.supplier_id == supplier_id)
         
         stmt = (
             select(Product)
             .join(ProductIdentifier)
             .where(and_(*conditions))
-            .limit(1)
         )
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        products = list(result.scalars().unique())
+        if len(products) > 1:
+            raise IdentifierConflict(product.id for product in products)
+        return products[0] if products else None
     
     async def get_all_barcodes(self, product_id: int) -> List[str]:
         """Get all barcode values for product."""

@@ -2,9 +2,8 @@
 """
 Stock overview endpoints — real data from stock_balances + products.
 
-Read-only for now. Stock balances are populated by receiving finalize
-(stock_movements) once that is implemented; until then these endpoints
-honestly return an empty stock instead of mock data.
+Read-only projections of locally recorded balances, valuation and orders.
+Physical writers live in receiving and the dedicated stock services.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.database import get_session
 from inventory_hub.db_models import Product, Shop, Warehouse
-from inventory_hub.db_models_ext import StockBalance
+from inventory_hub.db_models_ext import StockBalance, ShopOrder
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.services.product_editor import effective_names
 from inventory_hub.product_editor_models import ProductEditorOverride
@@ -133,11 +132,14 @@ async def stock_summary(db: AsyncSession = Depends(get_session)) -> Dict[str, An
         func.sum(case((balances.c.qty_on_hand - balances.c.qty_reserved - balances.c.qty_quarantined <= balances.c.min_quantity, 1), else_=0)).label("low_stock")))).one()
     values = valuation_output(row)
     products_total = (await db.execute(select(func.count(Product.id)))).scalar() or 0
+    open_orders = int(await db.scalar(select(func.count(ShopOrder.id)).where(
+        ShopOrder.stock_state.in_(("pending", "reserved")))) or 0)
     return {"products_total": int(products_total), "products_with_stock": int(row.products_with_stock or 0),
             "inventory_value": values["total_value"], "known_inventory_value": values["known_value"],
             "provisional_inventory_value": values["provisional_value"], "value_complete": values["value_complete"],
             "unknown_quantity": values["unknown_quantity"], "provisional_quantity": values["provisional_quantity"],
-            "quarantined_total": values["quarantined"], "reserved_total": values["reserved"], "low_stock_count": int(row.low_stock or 0)}
+            "quarantined_total": values["quarantined"], "reserved_total": values["reserved"], "low_stock_count": int(row.low_stock or 0),
+            "on_hand_total": values["on_hand"], "available_total": values["available"], "open_managed_orders": open_orders}
 
 
 # ============================================================================

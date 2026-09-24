@@ -2,7 +2,7 @@
 
 Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Automatické doručovanie produktových zmien a kompletná prevádzka centrálneho skladu zo všetkých kanálov ešte nie sú dokončené.
 
-**Posledné porovnanie s kódom:** 23. 9. 2026, konfigurovateľný zber a voliteľné automatické lokálne spracovanie objednávok nad základom `2c198857d1ca83c0e0ef7836e590bca504df2b1f`. Tento stav vychádza z aktívneho kódu a workflow v repozitári. Nepotvrdzuje aktuálny obsah produkčnej DB, celú serverovú konfiguráciu ani funkčnosť všetkých obrazoviek v prehliadači. Pri ďalších zmenách aktualizuj stav a rozsah overenia.
+**Posledné porovnanie s kódom:** 24. 9. 2026, balík príjmu, tabuľky a histórie nad `main c2a32ac` (PR #33). Aktuálny stav overenia a nadväzujúce priority sú v [MVP postupe](docs/mvp-progress.md). Popis kódu nepotvrdzuje obsah produkčnej DB ani celú serverovú konfiguráciu.
 
 ## Kde začať
 
@@ -35,12 +35,12 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 
 | Oblasť / cesta UI | Stav podľa kódu | Hranice a zdroje |
 | --- | --- | --- |
-| Dashboard `/` | Implementovaný prehľad | `DashboardPage.tsx`; počítadlo nedokazuje dokončený obchodný proces. |
+| Dashboard `/` | Údaje zo skladu a reálne posledné pohyby | Súčet fyzických, rezervovaných, voľných a karanténnych kusov, nákupná hodnota a rozpracované objednávky evidované Hubom. Žiadne ukážkové udalosti ani vymyslené percentá synchronizácie. Chyba nie je nulový stav. |
 | Faktúry `/invoices`, `/invoices/:invoiceId` | Nahrávanie, evidencia, filtre a detail | `routers/invoices.py`, `invoices_unified.py` a príslušné stránky. Nahratie súboru neznamená univerzálne OCR ani rozpoznanie každého formátu. |
-| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile FIFO. |
+| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile Nákupné ceny. Nové skeny majú request UUID; replay nepridá druhý kus. [Kontrakt identity a skenera](docs/receiving-identity.md). |
 | Sklad `/stock` | Čiastočné pracovné rozhranie | `routers/stock.py`, `StockPage.tsx`: stavy, rezervované/voľné množstvo, priemerná cena, detail a Upgates operácie. Editor buniek a stránkovanie sú na `/products`; starý prehľad má odkaz na editor. CSV export zostáva neaktívny. |
+| História `/stock/movements` | Chránené čítanie nemennej evidencie | Filtre celého skladu alebo presného SKU, doklad, dôvod, pôvodný náklad a množstvo pred/po. Bez zápisov a Upgates volaní. [Návod a API](docs/stock-history.md). |
 | Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie celej dávky vytvorí `INITIAL` pohyby iba bez existujúcej bilancie či histórie daného tovaru v sklade. Výpadok sa overuje čítaním uloženého výsledku. |
-| Produkty `/products` | „V príprave“ | `ProductsPage` z `PlaceholderPages.tsx`. Samostatný detail `/products/:sku` už používa produktové komponenty. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
 | Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Parsery pre Paul Lange a Northfinder. |
 | Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |
@@ -53,8 +53,8 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Návrh zásob v `/orders/inbox` | Čítacia projekcia 1–100 SKU | Vlastné voľné celé kusy z potvrdeného skladu, presné mapovanie jednotlivých variantov vrátane rodiča xTrek. Neznámy stav nie je nula. Bez outboxu a externého odosielania. |
 | Automatické skladové spracovanie | Voliteľný samostatný worker a trvalá fronta | Režimy ručne / rezervácie / rezervácie a výdaj, nové objednávky od výslovnej aktivácie, opakovanie nedostatku a kontrola vydaných objednávok. Predvolene vypnuté. |
 | Inventúry, vratky a doručovanie zásob do e-shopov | Nedokončený celkový workflow | Automatické lokálne rezervácie a výdaje nezapínajú externé odosielanie zásob. |
-| Produkty `/products` | Tabuľkový editor lokálnych údajov | Bunky, klávesnica, TSV, vybrané riadky, konflikty, audit; mená/ceny/viditeľnosť pre e-shopy sa ukladajú ako neodoslané. [Postup](docs/product-editor.md). |
-| FIFO v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
+| Produkty `/products` | Tabuľkový editor lokálnych údajov | Bunky, klávesnica, TSV, vybrané riadky, konflikty, audit, zapamätané šírky/poradie/viditeľnosť stĺpcov, pomenované parametre a rozbalenie rodín iba na načítanej stránke; mená/ceny/viditeľnosť pre e-shopy sa ukladajú ako neodoslané. [Postup](docs/product-editor.md). |
+| Nákupné ceny v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
 | Roly obsluhy a úplné doručovanie produktových zmien | Plánované | Operátorský token nie je všeobecný systém rolí; lokálne uložená zmena sa nevydáva za potvrdený zápis do Upgates. |
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx), [exporty stránok](frontend/src/pages/index.ts), [zástupné stránky](frontend/src/pages/PlaceholderPages.tsx).
@@ -78,7 +78,7 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `main.py`, `database.py`, `settings.py` | Routery, životný cyklus API/AI workeru, spojenia a konfigurácia. |
 | `db_models.py`, `db_models_ext.py`, `ai_content_models.py` | Hlavné relačné modely; ďalšie modely sú aj v príslušných feature moduloch. |
 | `config_io.py`, `config_normalize.py` | Súborové konfigurácie. |
-| `routers/receiving_db.py`, `routers/stock.py` | Príjem a čítanie skladových údajov. |
+| `routers/receiving_db.py`, `routers/stock.py`, `routers/stock_history.py`, `services/stock_history.py` | Príjem, čítanie skladových údajov a nemennej histórie. |
 | `routers/opening_stock.py`, `services/opening_stock.py`, `services/stock_balances.py` | Počiatočný stav a spoločné transakčné zámky bilancií s príjmom. |
 | `routers/order_stock.py`, `services/order_stock.py`, `order_stock_source.py`, `order_stock_ledger.py` | Potvrdená politika stavov, čerstvý zdroj objednávky, rezervácie a jednorazový výdaj. Posledné dva moduly sú v `services/`. |
 | `routers/stock_settings.py`, `services/stock_settings.py`, `routers/order_processing.py`, `services/order_processing*.py` | Dedené nastavenia, samostatná autorizácia automatiky, trvalé úlohy a lokálne skladové spracovanie. |
@@ -102,7 +102,7 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `product_groups`, `products`, `product_identifiers`, `product_variant_attributes` | Rodiny, predajné položky, identifikátory a variantné atribúty. |
 | `product_supply_sources` | Model väzieb skladovej položky na dodávateľské ponuky. |
 | `uploaded_invoices`, `uploaded_invoice_lines` | Nahrané faktúry a položky. |
-| `receiving_sessions`, `receiving_lines`, `scan_events` | Príjem a skenovanie. |
+| `receiving_sessions`, `receiving_lines`, `scan_events`, `receiving_scan_requests` | Príjem a skenovanie. |
 | `warehouses`, `stock_balances`, `stock_movements` | Sklady, aktuálne množstvá a nemenná história pohybov. |
 | `opening_stock_batches`, `opening_stock_lines` | Uložené náhľady, pôvod, riadky a výsledky zaúčtovania počiatočného stavu. |
 | `shops`, `shop_products`, `shop_product_content` | Kanály, mapovania a zachytený obsah z Upgates. |
@@ -183,15 +183,17 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `007_order_stock.sql` | Politiky, náhľady a stav skladového spracovania; presný náklad nového výdaja. Neznáme predajné ceny a mena objednávky smú byť `NULL`. Žiadny historický výdaj ani rezervácia sa nevytvorí migráciou. |
 | `008_order_collection.sql` | Aktivácia zberu, trvalé behy a inbox hlavičiek. Migrácia nezapína e-shopy a nemení fyzický sklad. |
 | `009_stock_automation.sql` | Dedené prevádzkové nastavenia, jednorazové načítanie a trvalá fronta spracovania. Predvolene ručný režim; žiadne spätné zaúčtovanie. |
+| `010_stock_publication.sql` | Kontrolované publikovanie, dávky a trvalé skladové blokácie. Zápis do e-shopov zostáva predvolene vypnutý. |
 | `011_fifo.sql` | FIFO vrstvy, alokácie výdajov, prechody, príjmy, vratky, karanténa a opravy ceny. Nullable ocenenie a prepočet generovaného voľného množstva; nezakladá historické vrstvy. |
 | `012_product_editor.sql` | Ručné produktové overrides, revízie, uložené výsledky dávok a audit; prirodzené radenie kódov. |
+| `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005` až `012`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py), [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py) , [stock_publication_migrate.py](api/inventory_hub/stock_publication_migrate.py), [fifo_migrate.py](api/inventory_hub/fifo_migrate.py) a [product_editor_migrate.py](api/inventory_hub/product_editor_migrate.py), pod transakčnými DB zámkami a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých osem SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Aktuálny deployment spúšťa `005` až `013`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py), [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py) , [stock_publication_migrate.py](api/inventory_hub/stock_publication_migrate.py), [fifo_migrate.py](api/inventory_hub/fifo_migrate.py) [product_editor_migrate.py](api/inventory_hub/product_editor_migrate.py) a [receiving_scan_migrate.py](api/inventory_hub/receiving_scan_migrate.py), pod transakčnými DB zámkami a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých deväť SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`012` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`013` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -217,7 +219,7 @@ npm --prefix frontend run dev
 
 API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.ts). Konfigurácie ani dáta nevymýšľaj, aby sa aplikácia tvárila funkčne.
 
-Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a deväť jsdom sád vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
+Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a štrnásť jsdom sád vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
 
 ## Produkčné nasadzovanie a diagnostika
 
@@ -226,7 +228,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `012` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `013` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
 5. Skontroluje `/api/health` a `/api/ai-content/status` a vykoná existujúce čistenie nepoužívaných obrazov.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.

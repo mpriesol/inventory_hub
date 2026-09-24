@@ -4,21 +4,22 @@ import os
 import unittest
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import asyncpg
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from inventory_hub.db_models import Product, Supplier, Warehouse, ReceivingStatus
-from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement
+from inventory_hub.db_models import Product, Supplier, Warehouse, ReceivingStatus, ProductIdentifier, IdentifierType
+from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement, ScanEvent
 from inventory_hub.routers import receiving_db as receiving
-from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.identifiers import ProductIdentifierService, IdentifierConflict
+from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -26,6 +27,16 @@ D = Decimal
 
 
 class ReceivingInputTests(unittest.TestCase):
+    def test_scan_operation_id_code_and_line_selection_validation(self):
+        for data in ({"code": ""}, {"code": "   "}, {"code": "A" * 101},
+                     {"code": "EAN", "request_id": "not-a-uuid"},
+                     {"code": "EAN", "line_id": 0}, {"code": "EAN", "scanned_by": ""}):
+            with self.subTest(data=data), self.assertRaises(ValidationError):
+                receiving.ScanRequest(**data)
+        request_id = uuid4()
+        self.assertEqual(receiving.ScanRequest(code="EAN", request_id=str(request_id)).request_id, request_id)
+        self.assertIsNone(receiving.ScanRequest(code="EAN").request_id)
+
     def test_invalid_quantities_are_rejected_before_database_writes(self):
         for value in ("0", "-1", "NaN", "Infinity", "0.0001"):
             with self.subTest(scan=value), self.assertRaises(ValidationError):
@@ -56,6 +67,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((root / "007_order_stock.sql").read_text())
             await connection.execute((root / "010_stock_publication.sql").read_text())
             await connection.execute((root / "011_fifo.sql").read_text())
+            await connection.execute((root / "013_receiving_scan_requests.sql").read_text())
         finally:
             await connection.close()
         self.engine = create_async_engine(
@@ -306,7 +318,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         result = await self.finalize(session_id)
         self.assertEqual(result["movements_created"], 1)
 
-    async def test_cross_supplier_concurrent_ean_conflict_cannot_receive_wrong_identity(self):
+    async def test_cross_supplier_concurrent_receipts_share_one_barcode_identity(self):
         async with self.sessions() as db:
             supplier = Supplier(code="receipt-other", name="Other test supplier")
             db.add(supplier)
@@ -315,29 +327,254 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         ean = "4006381333931"
         first_id = await self.make_session([{"supplier_sku": "new-a", "ean": ean, "received_qty": D("2"), "unit_price": D("5")}])
         second_id = await self.make_session([{"supplier_sku": "new-b", "ean": ean, "received_qty": D("2"), "unit_price": D("5")}], supplier_id)
-        original = ProductIdentifierService.find_product_by_barcode
-        both_unmatched, calls = asyncio.Event(), []
-
-        async def concurrent_lookup(service, code):
-            result = await original(service, code)
-            if code == ean and result is None:
-                calls.append(service)
-                if len(calls) == 2:
-                    both_unmatched.set()
-                await asyncio.wait_for(both_unmatched.wait(), 5)
-            return result
-
-        with patch.object(ProductIdentifierService, "find_product_by_barcode", concurrent_lookup):
-            results = await asyncio.wait_for(asyncio.gather(
-                self.finalize(first_id), self.finalize(second_id, "receipt-other"), return_exceptions=True,
-            ), 10)
-        errors = [result for result in results if isinstance(result, Exception)]
-        self.assertEqual(len(errors), 1, results)
-        self.assertIsInstance(errors[0], HTTPException)
-        self.assertEqual(errors[0].status_code, 409)
+        # Different supplier aliases for the same unique verified barcode reuse
+        # one physical product, as shop pulls and catalog imports already do.
+        results = await asyncio.wait_for(asyncio.gather(
+            self.finalize(first_id), self.finalize(second_id, "receipt-other")), 10)
+        self.assertEqual(sum(result["products_created"] for result in results), 1)
         async with self.sessions() as db:
             products = (await db.execute(select(Product).where(Product.sku.in_(("TEST-new-a", "TEST-new-b"))))).scalars().all()
             self.assertEqual(len(products), 1)
-            count = (await db.execute(select(func.count()).where(StockMovement.reference_id.in_((str(first_id), str(second_id))),
-                                                               StockMovement.reference_type == "receiving_session"))).scalar_one()
-            self.assertEqual(count, 1)
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == products[0].id))
+            self.assertEqual(balance.qty_on_hand, D("4"))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductIdentifier).where(
+                ProductIdentifier.product_id == products[0].id,
+                ProductIdentifier.identifier_type == IdentifierType.supplier_sku)), 2)
+
+    async def scan(self, session_id, request):
+        async with self.sessions() as db:
+            try:
+                result = await receiving.scan_code("receipt-test", session_id, request, db)
+                await db.commit()
+                return result
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def test_ten_physical_scans_and_retries_add_exactly_ten_then_finalize_once(self):
+        ean = "4006381333931"
+        session_id = await self.make_session([{"product_id": self.product_id, "ean": ean,
+            "ordered_qty": D("10"), "unit_price": D("5")}])
+        requests = [receiving.ScanRequest(code=ean, request_id=uuid4()) for _ in range(10)]
+        for position, request in enumerate(requests, 1):
+            result = await self.scan(session_id, request)
+            self.assertEqual(result["line"]["received_qty"], position)
+            self.assertFalse(result["replayed"])
+            self.assertEqual(result["line"]["product_code"], "RECEIPT-A")
+        first_retry = await self.scan(session_id, requests[0])
+        self.assertEqual(first_retry["line"]["received_qty"], 1, "Replay returns the original committed result")
+        self.assertTrue(first_retry["replayed"])
+        result = await self.finalize(session_id)
+        replay = await self.scan(session_id, requests[-1])
+        self.assertTrue(replay["replayed"], "A successful old scan is recoverable after finalize")
+        self.assertEqual(result, await self.finalize(session_id))
+        async with self.sessions() as db:
+            line = await db.scalar(select(ReceivingLine).where(ReceivingLine.session_id == session_id))
+            self.assertEqual(line.received_qty, D("10"))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ScanEvent).where(
+                ScanEvent.receiving_session_id == session_id)), 10)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ReceivingScanRequest).where(
+                ReceivingScanRequest.session_id == session_id)), 10)
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
+            self.assertEqual(balance.qty_on_hand, D("10"))
+
+    async def test_simultaneous_same_scan_uuid_adds_once_and_payload_reuse_conflicts(self):
+        session_id = await self.make_session([{"product_id": self.product_id, "supplier_sku": "scan-item", "unit_price": D("5")}])
+        request = receiving.ScanRequest(code="scan-item", request_id=uuid4())
+        results = await asyncio.wait_for(asyncio.gather(self.scan(session_id, request), self.scan(session_id, request)), 5)
+        self.assertEqual(sorted(result["replayed"] for result in results), [False, True])
+        self.assertTrue(all(result["line"]["received_qty"] == 1 for result in results))
+        for changed in ({"qty": "2"}, {"code": "other"}, {"scanned_by": "other"}):
+            with self.subTest(changed=changed), self.assertRaises(HTTPException) as error:
+                await self.scan(session_id, receiving.ScanRequest(**{**request.model_dump(), **changed}))
+            self.assertEqual(error.exception.status_code, 409)
+            self.assertEqual(error.exception.detail["code"], "scan_request_conflict")
+        second_id = await self.make_session([{"product_id": self.product_id, "supplier_sku": "scan-item", "unit_price": D("5")}])
+        with self.assertRaises(HTTPException) as error:
+            await self.scan(second_id, request)
+        self.assertEqual(error.exception.detail["code"], "scan_request_conflict")
+
+    async def test_scan_retry_after_quantity_reset_does_not_reapply_old_operation(self):
+        session_id = await self.make_session([{"product_id": self.product_id, "supplier_sku": "scan-item", "unit_price": D("5")}])
+        request = receiving.ScanRequest(code="scan-item", request_id=uuid4())
+        await self.scan(session_id, request)
+        async with self.sessions() as db:
+            await receiving.reset_all_items("receipt-test", session_id, db)
+            await db.commit()
+        self.assertTrue((await self.scan(session_id, request))["replayed"])
+        async with self.sessions() as db:
+            line = await db.scalar(select(ReceivingLine).where(ReceivingLine.session_id == session_id))
+            self.assertEqual(line.received_qty, D("0"))
+
+    async def test_unexpected_scan_is_idempotent_too(self):
+        session_id = await self.make_session()
+        request = receiving.ScanRequest(code="UNKNOWN-CODE", request_id=uuid4())
+        result = await self.scan(session_id, request)
+        replay = await self.scan(session_id, request)
+        self.assertEqual(result["status"], "unexpected")
+        self.assertEqual(result["summary"]["unexpected"], 1)
+        self.assertEqual(replay, {**result, "replayed": True})
+
+    async def test_ambiguous_invoice_rows_need_explicit_line_and_keep_costs_separate(self):
+        ean = "4006381333931"
+        session_id = await self.make_session([
+            {"product_id": self.product_id, "ean": ean, "ordered_qty": D("1"), "unit_price": D("80")},
+            {"product_id": self.product_id, "ean": ean, "ordered_qty": D("1"), "unit_price": D("90")},
+        ])
+        with self.assertRaises(HTTPException) as error:
+            await self.scan(session_id, receiving.ScanRequest(code=ean, request_id=uuid4()))
+        self.assertEqual(error.exception.detail["code"], "scan_line_ambiguous")
+        for line_id in error.exception.detail["line_ids"]:
+            await self.scan(session_id, receiving.ScanRequest(code=ean, request_id=uuid4(), line_id=line_id))
+        with self.assertRaises(HTTPException) as error:
+            await self.scan(session_id, receiving.ScanRequest(code="OTHER", request_id=uuid4(), line_id=line_id))
+        self.assertEqual(error.exception.detail["code"], "scan_line_mismatch")
+        await self.finalize(session_id)
+        async with self.sessions() as db:
+            movements = (await db.execute(select(StockMovement).where(
+                StockMovement.reference_type == "receiving_session", StockMovement.reference_id == str(session_id)
+            ).order_by(StockMovement.id))).scalars().all()
+            self.assertEqual([(row.quantity, row.unit_cost) for row in movements], [(D("1"), D("80")), (D("1"), D("90"))])
+
+    async def test_finalize_revalidates_preassigned_product_and_rolls_back_every_line(self):
+        ean = "4006381333931"
+        async with self.sessions() as db:
+            other = Product(sku="TEST-collision", name="Other owner")
+            db.add(other)
+            await db.flush()
+            await ProductIdentifierService(db).add_identifier(other.id, ean)
+            await db.commit()
+        for identity in ({"ean": ean}, {"supplier_sku": "collision"}):
+            with self.subTest(identity=identity):
+                session_id = await self.make_session([
+                    {"product_id": self.product_id, "received_qty": D("2"), "unit_price": D("5")},
+                    {"product_id": self.product_id, "received_qty": D("2"), "unit_price": D("5"), **identity},
+                ])
+                with self.assertRaises(HTTPException) as error:
+                    await self.finalize(session_id)
+                self.assertEqual(error.exception.detail["code"], "receiving_identity_conflict")
+                self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
+
+    async def test_compound_ean_receipt_matches_each_barcode_and_creates_individual_identifiers(self):
+        eans = ("5901234123457", "4006381333931")
+        session_id = await self.make_session([{"supplier_sku": "compound", "ean": "/".join(eans), "unit_price": D("5")}])
+        for ean in eans:
+            await self.scan(session_id, receiving.ScanRequest(code=ean, request_id=uuid4()))
+        result = await self.finalize(session_id)
+        self.assertEqual(result["products_created"], 1)
+        async with self.sessions() as db:
+            product = await db.scalar(select(Product).where(Product.sku == "TEST-compound"))
+            values = await ProductIdentifierService(db).get_all_barcodes(product.id)
+            self.assertEqual(set(values), set(eans))
+
+    async def test_unverified_barcode_lookup_never_selects_first_owner(self):
+        async with self.sessions() as db:
+            other = Product(sku="SECOND-UNVERIFIED", name="Other product")
+            db.add(other)
+            await db.flush()
+            identifiers = ProductIdentifierService(db)
+            await identifiers.add_identifier(self.product_id, "12345")
+            await identifiers.add_identifier(other.id, "12345")
+            with self.assertRaises(IdentifierConflict) as error:
+                await identifiers.find_product_by_barcode("12345")
+            self.assertEqual(error.exception.product_ids, sorted([self.product_id, other.id]))
+            with self.assertRaises(ValueError):
+                await identifiers.find_product_by_identifier("ANY", IdentifierType.supplier_sku)
+
+
+    async def test_scan_migration_is_repeatable_preserves_receipt_and_widens_compound_ean(self):
+        session_id = await self.make_session([{"product_id": self.product_id, "ean": "5901234123457/4006381333931",
+            "ordered_qty": D("2"), "unit_price": D("5")}])
+        async with self.sessions() as db:
+            before = (await db.execute(text("SELECT line_fingerprint, ean FROM receiving_lines WHERE session_id=:id"),
+                {"id": session_id})).one()
+        connection = await asyncpg.connect(TEST_URL)
+        try:
+            await connection.execute(f'SET search_path TO "{self.schema}"')
+            root = Path(__file__).resolve().parents[2] / "infra" / "db-init"
+            await connection.execute((root / "013_receiving_scan_requests.sql").read_text())
+            maximum = await connection.fetchval("SELECT character_maximum_length FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name='receiving_lines' AND column_name='ean'")
+            self.assertEqual(maximum, 255)
+        finally:
+            await connection.close()
+        async with self.sessions() as db:
+            after = (await db.execute(text("SELECT line_fingerprint, ean FROM receiving_lines WHERE session_id=:id"),
+                {"id": session_id})).one()
+            self.assertEqual(after, before)
+
+
+    async def test_same_uuid_in_concurrent_different_sessions_is_a_conflict_not_two_scans(self):
+        rows = [{"product_id": self.product_id, "supplier_sku": "scan-item", "unit_price": D("5")}]
+        first_id, second_id = await self.make_session(rows), await self.make_session(rows)
+        request = receiving.ScanRequest(code="scan-item", request_id=uuid4())
+        results = await asyncio.wait_for(asyncio.gather(
+            self.scan(first_id, request), self.scan(second_id, request), return_exceptions=True), 5)
+        errors = [result for result in results if isinstance(result, Exception)]
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], HTTPException)
+        self.assertEqual(errors[0].detail["code"], "scan_request_conflict")
+        async with self.sessions() as db:
+            total = await db.scalar(select(func.sum(ReceivingLine.received_qty)).where(
+                ReceivingLine.session_id.in_((first_id, second_id))))
+            self.assertEqual(total, D("1"))
+
+    async def test_failed_scan_rolls_back_quantity_and_original_uuid_can_be_retried(self):
+        session_id = await self.make_session([{"product_id": self.product_id, "supplier_sku": "scan-item", "unit_price": D("5")}])
+        request = receiving.ScanRequest(code="scan-item", request_id=uuid4())
+        with patch.object(receiving, "_count_unexpected", AsyncMock(side_effect=RuntimeError("test before commit"))):
+            with self.assertRaises(RuntimeError):
+                await self.scan(session_id, request)
+        result = await self.scan(session_id, request)
+        self.assertEqual(result["line"]["received_qty"], 1)
+        self.assertFalse(result["replayed"])
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ScanEvent).where(
+                ScanEvent.receiving_session_id == session_id)), 1)
+
+    async def test_receipt_accepts_another_registered_ean_for_the_same_assigned_product(self):
+        first_ean, second_ean = "5901234123457", "4006381333931"
+        async with self.sessions() as db:
+            identifiers = ProductIdentifierService(db)
+            await identifiers.add_identifier(self.product_id, first_ean)
+            await identifiers.add_identifier(self.product_id, second_ean)
+            await db.commit()
+        session_id = await self.make_session([{"product_id": self.product_id, "ean": first_ean, "unit_price": D("5")}])
+        result = await self.scan(session_id, receiving.ScanRequest(code=second_ean, request_id=uuid4()))
+        self.assertEqual(result["line"]["product_id"], self.product_id)
+        self.assertEqual(result["line"]["received_qty"], 1)
+
+
+    async def test_manual_quantity_preserves_long_compound_ean_without_overflowing_scan_event(self):
+        ean = "5901234123457"
+        raw_ean = "/".join([ean, "4006381333931"] * 5)
+        self.assertGreater(len(raw_ean), 100)
+        session_id = await self.make_session([{"product_id": self.product_id, "ean": raw_ean,
+            "ordered_qty": D("2"), "unit_price": D("5")}])
+        async with self.sessions() as db:
+            result = await receiving.set_line_quantity("receipt-test", session_id,
+                receiving.SetQtyRequest(line_index=0, received_qty="2"), db)
+            await db.commit()
+            self.assertEqual(result["line"]["ean"], raw_ean)
+            event = await db.scalar(select(ScanEvent).where(ScanEvent.receiving_session_id == session_id))
+            self.assertEqual((event.scanned_code, event.match_method, event.quantity), (ean, "manual", D("2")))
+            line = await db.get(ReceivingLine, event.receiving_line_id)
+            self.assertEqual(line.ean, raw_ean)
+        result = await self.finalize(session_id)
+        self.assertEqual(result["total_received"], 2)
+        self.assertEqual(result["movements_created"], 1)
+
+    async def test_manual_quantity_uses_real_supplier_or_canonical_code_without_truncating_source(self):
+        source = "/".join(["not-a-barcode"] * 12)
+        for supplier_sku, expected_code in (("REAL-SUPPLIER-CODE", "REAL-SUPPLIER-CODE"), (None, "RECEIPT-A")):
+            with self.subTest(supplier_sku=supplier_sku):
+                session_id = await self.make_session([{"product_id": self.product_id, "ean": source,
+                    "supplier_sku": supplier_sku, "unit_price": D("5")}])
+                async with self.sessions() as db:
+                    await receiving.set_line_quantity("receipt-test", session_id,
+                        receiving.SetQtyRequest(line_index=0, received_qty="1"), db)
+                    await db.commit()
+                    event = await db.scalar(select(ScanEvent).where(ScanEvent.receiving_session_id == session_id))
+                    self.assertEqual(event.scanned_code, expected_code)
+                    line = await db.get(ReceivingLine, event.receiving_line_id)
+                    self.assertEqual(line.ean, source)

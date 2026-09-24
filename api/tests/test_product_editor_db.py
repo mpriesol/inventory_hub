@@ -198,6 +198,33 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(unknown["stock"]["avg_cost"])
         self.assertIsNone(unknown["stock"]["total_value"])
 
+    async def test_family_color_and_apparel_size_order_is_applied_before_pagination(self):
+        sizes = ["XS", "S", "M", "L", "XL", "XXL", "2", "10"]
+        expected = [(color, size) for color in ("Blue", "Green", "Red", "White") for size in sizes]
+        async with self.transaction() as db:
+            family = ProductGroup(code="AXIS-FAMILY", name="Axis family")
+            db.add(family)
+            await db.flush()
+            # Deliberately reversed insertion/SKU ordering and size before colour
+            # in display_order must not override the declared family axis order.
+            for index, (color, size) in enumerate(reversed(expected)):
+                product = Product(sku=f"AXIS-{index + 1}", name="Axis fixture", group_id=family.id)
+                db.add(product)
+                await db.flush()
+                db.add_all([
+                    ProductVariantAttribute(product_id=product.id, attribute_name=" Veľkosť ", attribute_value=size, display_order=0),
+                    ProductVariantAttribute(product_id=product.id, attribute_name="Colour", attribute_value=color, display_order=1),
+                ])
+        first = await self.listing(q="AXIS-", sort="group_sku", page_size=25)
+        second = await self.listing(q="AXIS-", sort="group_sku", page=2, page_size=25)
+        def axes(row):
+            values = {attribute["name"].strip(): attribute["value"] for attribute in row["attributes"]}
+            return values["Colour"], values["Veľkosť"]
+        self.assertEqual(first["total"], 32)
+        self.assertEqual([axes(row) for row in first["items"] + second["items"]], expected)
+        descending = await self.listing(q="AXIS-", sort="group_sku", direction="desc", page_size=100)
+        self.assertEqual([axes(row) for row in descending["items"]], list(reversed(expected)))
+
     async def test_selected_variant_observations_and_image_do_not_include_umbrella_siblings(self):
         marker = "UNRELATED-SIBLING-PRIVATE-CONTENT"
         async with self.transaction() as db:

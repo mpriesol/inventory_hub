@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
+import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { getStockSettingsOptions, getWarehouseSettings, saveShopStockSettings, saveWarehouseSettings,
   STOCK_SETTING_FIELDS, ProcessingMode, StockSettingKey, StockSettingValues, StockSettingsOptions, WarehouseSettings } from '../api/stockSettings';
@@ -132,7 +133,7 @@ export function StockSettingsPage() {
       <Button data-testid="unlock" type="submit" disabled={!token.trim()}>{t('stockSettings.unlock')}</Button>
     </form> : <>
       <section className="opening-stock-panel"><div className="opening-stock-actions"><label>{t('stockSettings.shop')}<select data-testid="shop" value={shop} disabled={writing} onChange={event => { reset(); setShop(event.target.value); }}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label>
-        <Button data-testid="load-options" variant="secondary" disabled={!!busy} onClick={loadOptions}>{t('stockSettings.loadOptions')}</Button></div>
+        <span className="action-control"><Button data-testid="load-options" variant="secondary" disabled={!!busy} onClick={loadOptions}>{t('stockSettings.loadOptions')}</Button><ActionScope effects={['hub-read']} /></span></div>
         <p><Link to={`/orders/inbox?shop=${encodeURIComponent(shop)}`}>{t('orderCollection.open')}</Link> · <Link to={`/orders/stock?shop=${encodeURIComponent(shop)}`}>{t('stockSettings.policyLink')}</Link></p>
       </section>
       {uncertain && <div role="alert" className="opening-stock-notice">{t(uncertain === 'warehouse' ? 'stockSettings.warehouseUncertain' : 'stockSettings.shopUncertain')}</div>}
@@ -140,11 +141,11 @@ export function StockSettingsPage() {
       {options && <>
         <section className="opening-stock-panel"><h2>{t('stockSettings.warehouseTitle')}</h2><p>{t('stockSettings.warehouseHelp')}</p>
           <div className="opening-stock-actions"><label>{t('stockSettings.warehouse')}<select data-testid="warehouse" value={warehouseCode} disabled={writing} onChange={event => changeWarehouse(event.target.value)}><option value="">{t('stockSettings.chooseWarehouse')}</option>{options.warehouses.map(item => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label>
-            <Button data-testid="load-warehouse" variant="secondary" disabled={!!busy || !warehouseCode} onClick={loadWarehouse}>{t('stockSettings.loadWarehouse')}</Button></div>
+            <span className="action-control"><Button data-testid="load-warehouse" variant="secondary" disabled={!!busy || !warehouseCode} onClick={loadWarehouse}>{t('stockSettings.loadWarehouse')}</Button><ActionScope effects={['hub-read']} /></span></div>
           {warehouse && <>{fields('warehouse', false)}<details><summary>{t('stockSettings.advanced')}</summary>{fields('warehouse', true)}</details>
             <div className="opening-stock-confirmations"><label><input data-testid="warehouse-paused" type="checkbox" checked={paused} disabled={!!busy} onChange={event => { clearConfirmations(); setPaused(event.target.checked); }} />{t('stockSettings.processingPaused')}</label><small>{t('stockSettings.pauseHelp')}</small>
               <label><input data-testid="warehouse-confirm" type="checkbox" checked={warehouseConfirm} disabled={!!busy || !!uncertain} onChange={event => setWarehouseConfirm(event.target.checked)} />{t('stockSettings.warehouseConfirm')}</label></div>
-            <Button data-testid="save-warehouse" disabled={!!busy || !!uncertain || !warehouseConfirm || !numbers(warehouseValues)} onClick={() => save('warehouse')}>{t('stockSettings.saveWarehouse')}</Button>
+            <span className="action-control"><Button data-testid="save-warehouse" disabled={!!busy || !!uncertain || !warehouseConfirm || !numbers(warehouseValues)} onClick={() => save('warehouse')}>{t('stockSettings.saveWarehouse')}</Button><ActionScope effects={['hub-write']} /></span>
           </>}
         </section>
         <section className="opening-stock-panel"><h2>{t('stockSettings.shopTitle', { shop: options.shop.name })}</h2>
@@ -157,7 +158,7 @@ export function StockSettingsPage() {
             <p className="opening-stock-muted">{t('stockSettings.activationDates', { automation: date(options.shop_settings?.automation_starts_at), issue: date(options.shop_settings?.issue_starts_at) })}</p>
             <div className="opening-stock-confirmations"><label><input data-testid="shop-confirm" type="checkbox" checked={shopConfirm} disabled={!!busy || !!uncertain} onChange={event => setShopConfirm(event.target.checked)} />{t('stockSettings.shopConfirm')}</label>
               {mode === 'fulfill' && <label><input data-testid="fulfillment-confirm" type="checkbox" checked={fulfillmentConfirm} disabled={!!busy || !!uncertain} onChange={event => setFulfillmentConfirm(event.target.checked)} />{t('stockSettings.fulfillmentConfirm')}</label>}</div>
-            <Button data-testid="save-shop" disabled={!!busy || !!uncertain || !shopConfirm || (mode === 'fulfill' && !fulfillmentConfirm) || !options.warehouse || !numbers(overrides, options.warehouse.values)} onClick={() => save('shop')}>{t('stockSettings.saveShop')}</Button>
+            <span className="action-control"><Button data-testid="save-shop" disabled={!!busy || !!uncertain || !shopConfirm || (mode === 'fulfill' && !fulfillmentConfirm) || !options.warehouse || !numbers(overrides, options.warehouse.values)} onClick={() => save('shop')}>{t('stockSettings.saveShop')}</Button><ActionScope effects={mode === 'manual' ? ['hub-write'] : ['hub-write', 'queued-upgates', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span>
           </>}
         </section>
       </>}

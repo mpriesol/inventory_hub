@@ -15,7 +15,45 @@ export const EDITOR_COLUMNS: EditorColumn[] = [
   { key: 'internal_note', editable: true, type: 'text', modes: 'common', hidden: true },
   { key: 'vat_rate', editable: true, type: 'vat', modes: 'common', hidden: true },
   { key: 'note', editable: true, type: 'text', modes: 'common', hidden: true },
+  { key: 'color' }, { key: 'size' }, { key: 'attributes', hidden: true },
+  { key: 'quarantined', hidden: true }, { key: 'total_value', hidden: true }, { key: 'channels', hidden: true },
 ];
+
+export const COLUMN_PREFERENCES_KEY = 'product-editor-columns-v1';
+export const MIN_COLUMN_WIDTH = 80, MAX_COLUMN_WIDTH = 640;
+export interface ColumnPreferences { version: 1; order: string[]; visible: string[]; widths: Record<string, number> }
+const defaultWidths: Record<string, number> = { sku: 165, name: 265, shop_name: 265, internal_note: 300, note: 300,
+  state: 175, on_hand: 110, reserved: 110, available: 110, cost: 110, attributes: 280, supplier_codes: 220, ean: 170 };
+export const defaultColumnWidth = (key: string) => defaultWidths[key] || 135;
+export const clampColumnWidth = (value: number) => Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.round(value)));
+export function columnPreferences(value?: unknown): ColumnPreferences {
+  const defaults: ColumnPreferences = { version: 1, order: EDITOR_COLUMNS.map(column => column.key),
+    visible: EDITOR_COLUMNS.filter(column => !column.hidden).map(column => column.key), widths: {} };
+  if (!value || typeof value !== 'object' || (value as ColumnPreferences).version !== 1) return defaults;
+  const saved = value as ColumnPreferences, allowed = new Set(defaults.order);
+  const keys = (values: unknown) => Array.isArray(values) ? [...new Set(values.filter((key): key is string => typeof key === 'string' && allowed.has(key)))] : [];
+  const order = keys(saved.order);
+  const widths: Record<string, number> = {};
+  for (const key of defaults.order) {
+    const width = saved.widths?.[key];
+    if (typeof width === 'number' && Number.isFinite(width)) widths[key] = clampColumnWidth(width);
+  }
+  return { version: 1, order: ['sku', ...order.filter(key => key !== 'sku'), ...defaults.order.filter(key => key !== 'sku' && !order.includes(key))],
+    visible: Array.isArray(saved.visible) ? ['sku', ...keys(saved.visible).filter(key => key !== 'sku')] : defaults.visible, widths };
+}
+export function loadColumnPreferences(): ColumnPreferences {
+  try { return columnPreferences(JSON.parse(window.localStorage.getItem(COLUMN_PREFERENCES_KEY) || 'null')); }
+  catch { return columnPreferences(); }
+}
+export function saveColumnPreferences(preferences: ColumnPreferences): boolean {
+  try { window.localStorage.setItem(COLUMN_PREFERENCES_KEY, JSON.stringify(columnPreferences(preferences))); return true; }
+  catch { return false; }
+}
+const attributeName = (name: string) => name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const attributeAliases: Record<string, string[]> = { color: ['farba', 'barva', 'color', 'colour'], size: ['velkost', 'velikost', 'size'] };
+export function namedAttribute(row: ProductEditorRow, field: string) {
+  return row.attributes.filter(item => attributeAliases[field]?.includes(attributeName(item.name))).map(item => item.value).join(' / ');
+}
 export interface EditorDraft { base: ProductEditorRow; change: ProductEditorChange; errors: Record<string, string>; status?: string; latest?: ProductEditorRow }
 export type Drafts = Record<number, EditorDraft>;
 export function fieldPath(field: string, mode: EditorMode): string[] {
@@ -31,9 +69,12 @@ export function originalValue(row: ProductEditorRow, field: string, mode: Editor
   if (['sku'].includes(field)) return row.sku;
   if (field === 'ean') return row.eans.join(', ');
   if (field === 'supplier_codes') return row.supplier_codes.map(item => `${item.supplier_code}: ${item.code}`).join(', ');
-  if (['on_hand', 'reserved', 'available', 'cost'].includes(field)) {
+  if (field === 'color' || field === 'size') return namedAttribute(row, field);
+  if (field === 'attributes') return row.attributes.map(item => `${item.name}: ${item.value}`).join(' · ');
+  if (field === 'channels') return row.shops.filter(item => item.mapped).map(item => item.shop_code === 'biketrek' ? 'BIKETREK' : item.shop_code === 'xtrek' ? 'xTrek' : item.shop_code).join(', ');
+  if (['on_hand', 'reserved', 'quarantined', 'available', 'cost', 'total_value'].includes(field)) {
     if (!row.stock.known) return null;
-    return readPath(row.stock, [({ on_hand: 'qty_on_hand', reserved: 'qty_reserved', available: 'qty_available', cost: 'avg_cost' } as Record<string, string>)[field]]) ?? null;
+    return readPath(row.stock, [({ on_hand: 'qty_on_hand', reserved: 'qty_reserved', quarantined: 'qty_quarantined', available: 'qty_available', cost: 'avg_cost', total_value: 'total_value' } as Record<string, string>)[field]]) ?? null;
   }
   return readPath(row, fieldPath(field, mode)) ?? null;
 }

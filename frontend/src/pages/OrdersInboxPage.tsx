@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
+import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { CollectionRun, CollectionStockPreview, configureCollection, getCollectionRuns, getCollectionStatus,
   getOrderInbox, getOrderProcessingJobs, OrderCollectionStatus, OrderInbox, OrderProcessingJobs, previewCollectionStock, refreshCollection } from '../api/orderCollection';
@@ -108,7 +109,7 @@ export function OrdersInboxPage() {
     </form> : <>
       <section className="opening-stock-panel">
         <div className="opening-stock-actions"><label>{t('orderCollection.shop')}<select value={shop} disabled={writing} onChange={event => { reset(); setShop(event.target.value); }}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label>
-          <Button variant="secondary" disabled={!!busy} onClick={load}>{t('orderCollection.load')}</Button></div>
+          <span className="action-control"><Button variant="secondary" disabled={!!busy} onClick={load}>{t('orderCollection.load')}</Button><ActionScope effects={['hub-read']} /></span></div>
         {uncertain && <div className="opening-stock-notice" role="alert">{t('orderCollection.uncertain')}</div>}
         {refreshQueued && <div className="opening-stock-notice" role="status">{t('orderCollection.refreshQueued')}</div>}
         {view && <>
@@ -125,9 +126,9 @@ export function OrdersInboxPage() {
           {view.status.effective?.retry_after_at && <p className="opening-stock-muted">{t('orderCollection.retryAfter', { at: date(view.status.effective.retry_after_at) })}</p>}
           {view.status.collector?.manual_pending && <p role="status" className="opening-stock-notice">{t('orderCollection.manualPending')}</p>}
           <div className="opening-stock-confirmations">{!view.status.collector?.enabled && <label><input type="checkbox" checked={confirmed} disabled={!!busy || uncertain} onChange={event => setConfirmed(event.target.checked)} />{t('orderCollection.enableConfirm')}</label>}
-            <div className="opening-stock-actions">{view.status.collector?.enabled ? <Button variant="secondary" disabled={!!busy || uncertain} onClick={() => changeCollection('configure', false)}>{t('orderCollection.pause')}</Button>
-              : <Button disabled={!!busy || uncertain || !confirmed || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false} onClick={() => changeCollection('configure', true)}>{t('orderCollection.enable')}</Button>}
-              <Button variant="secondary" disabled={!!busy || uncertain || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false || !!view.status.collector?.manual_pending} onClick={() => changeCollection('refresh')}>{t('orderCollection.fetchNow')}</Button></div>
+            <div className="opening-stock-actions">{view.status.collector?.enabled ? <span className="action-control"><Button variant="secondary" disabled={!!busy || uncertain} onClick={() => changeCollection('configure', false)}>{t('orderCollection.pause')}</Button><ActionScope effects={['hub-write']} /></span>
+              : <span className="action-control"><Button disabled={!!busy || uncertain || !confirmed || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false} onClick={() => changeCollection('configure', true)}>{t('orderCollection.enable')}</Button><ActionScope effects={['hub-write', 'queued-upgates', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span>}
+              <span className="action-control"><Button variant="secondary" disabled={!!busy || uncertain || !view.status.policy || !view.status.connection_configured || view.status.connection_matches === false || !!view.status.collector?.manual_pending} onClick={() => changeCollection('refresh')}>{t('orderCollection.fetchNow')}</Button><ActionScope effects={['hub-write', 'queued-upgates', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span></div>
           </div>
         </>}
       </section>
@@ -139,9 +140,9 @@ export function OrdersInboxPage() {
             <td>{state(entry.stock_state)}{entry.stock_issued_at && <small className="orders-inbox-subline">{date(entry.stock_issued_at)}</small>}</td>
             <td>{!entry.deleted && entry.review_reason === null && entry.source_uuid && entry.order_number && <Link to={`/orders/stock?shop=${encodeURIComponent(shop)}&order=${encodeURIComponent(entry.order_number)}`}>{t('orderCollection.openStock')}</Link>}</td>
           </tr>)}</tbody></table></div>}
-          <div className="opening-stock-pagination"><Button variant="secondary" size="sm" disabled={!!busy || view.inbox.offset === 0} onClick={() => page(Math.max(0, view.inbox.offset - view.inbox.limit))}>{t('orderCollection.previous')}</Button>
+          <div className="opening-stock-pagination"><span className="action-control"><Button variant="secondary" size="sm" disabled={!!busy || view.inbox.offset === 0} onClick={() => page(Math.max(0, view.inbox.offset - view.inbox.limit))}>{t('orderCollection.previous')}</Button><ActionScope effects={['hub-read']} /></span>
             <span>{t('orderCollection.range', { from: view.inbox.total ? view.inbox.offset + 1 : 0, to: view.inbox.offset + view.inbox.entries.length, total: view.inbox.total })}</span>
-            <Button variant="secondary" size="sm" disabled={!!busy || view.inbox.offset + view.inbox.limit >= view.inbox.total} onClick={() => page(view.inbox.offset + view.inbox.limit)}>{t('orderCollection.next')}</Button></div>
+            <span className="action-control"><Button variant="secondary" size="sm" disabled={!!busy || view.inbox.offset + view.inbox.limit >= view.inbox.total} onClick={() => page(view.inbox.offset + view.inbox.limit)}>{t('orderCollection.next')}</Button><ActionScope effects={['hub-read']} /></span></div>
         </section>
         <section className="opening-stock-panel"><h2>{t('orderCollection.processingTitle')}</h2><p className="opening-stock-muted">{t('orderCollection.processingHelp')}</p>
           {!view.jobs.jobs.length ? <p>{t('orderCollection.noJobs')}</p> : <div className="opening-stock-table-scroll"><table><thead><tr>{['orderNumber', 'processingStatus', 'processingChecked', 'processingNext', 'processingResult', 'runError', 'action'].map(key => <th key={key}>{t(`orderCollection.${key}`)}</th>)}</tr></thead><tbody>{view.jobs.jobs.map(job => <tr key={job.id}>
@@ -149,9 +150,9 @@ export function OrdersInboxPage() {
             <td>{job.result?.action ? t(`orderStock.actions.${job.result.action}`, { defaultValue: t('orderCollection.unknown') }) : '—'}{job.result?.stock_state && <small className="orders-inbox-subline">{state(job.result.stock_state)}</small>}</td>
             <td>{job.error ? processingError(job.error) : '—'}</td><td>{job.order_number && <Link to={`/orders/stock?shop=${encodeURIComponent(shop)}&order=${encodeURIComponent(job.order_number)}`}>{t('orderCollection.reviewStock')}</Link>}</td>
           </tr>)}</tbody></table></div>}
-          <div className="opening-stock-pagination"><Button data-testid="jobs-previous" variant="secondary" size="sm" disabled={!!busy || view.jobs.offset === 0} onClick={() => read('jobs', signal => getOrderProcessingJobs(shop, Math.max(0, view.jobs.offset - view.jobs.limit), signal), jobs => setLoaded(previous => previous ? { ...previous, jobs } : null))}>{t('orderCollection.previous')}</Button>
+          <div className="opening-stock-pagination"><span className="action-control"><Button data-testid="jobs-previous" variant="secondary" size="sm" disabled={!!busy || view.jobs.offset === 0} onClick={() => read('jobs', signal => getOrderProcessingJobs(shop, Math.max(0, view.jobs.offset - view.jobs.limit), signal), jobs => setLoaded(previous => previous ? { ...previous, jobs } : null))}>{t('orderCollection.previous')}</Button><ActionScope effects={['hub-read']} /></span>
             <span>{t('orderCollection.range', { from: view.jobs.total ? view.jobs.offset + 1 : 0, to: view.jobs.offset + view.jobs.jobs.length, total: view.jobs.total })}</span>
-            <Button data-testid="jobs-next" variant="secondary" size="sm" disabled={!!busy || view.jobs.offset + view.jobs.limit >= view.jobs.total} onClick={() => read('jobs', signal => getOrderProcessingJobs(shop, view.jobs.offset + view.jobs.limit, signal), jobs => setLoaded(previous => previous ? { ...previous, jobs } : null))}>{t('orderCollection.next')}</Button></div>
+            <span className="action-control"><Button data-testid="jobs-next" variant="secondary" size="sm" disabled={!!busy || view.jobs.offset + view.jobs.limit >= view.jobs.total} onClick={() => read('jobs', signal => getOrderProcessingJobs(shop, view.jobs.offset + view.jobs.limit, signal), jobs => setLoaded(previous => previous ? { ...previous, jobs } : null))}>{t('orderCollection.next')}</Button><ActionScope effects={['hub-read']} /></span></div>
         </section>
         <section className="opening-stock-panel"><h2>{t('orderCollection.runs')}</h2>{!view.runs.length ? <p>{t('orderCollection.noRuns')}</p> : <div className="opening-stock-table-scroll"><table><thead><tr>{['runMode', 'runStatus', 'startedAt', 'completedAt', 'interval', 'runCount', 'runError'].map(key => <th key={key}>{t(`orderCollection.${key}`)}</th>)}</tr></thead><tbody>{view.runs.map(run => <tr key={run.id}>
           <td>{t(`orderCollection.modes.${run.mode}`)}{run.trigger && <small className="orders-inbox-subline">{t(`orderCollection.triggers.${run.trigger}`)}</small>}</td><td>{t(`orderCollection.runStates.${run.status}`)}</td><td>{date(run.started_at)}</td><td>{date(run.completed_at)}</td><td>{date(run.from_at)} → {date(run.until_at)}</td><td>{run.observed_count}</td><td>{run.error ? message(run.error) : '—'}</td>
@@ -159,7 +160,7 @@ export function OrdersInboxPage() {
       </>}
       <section className="opening-stock-panel"><h2>{t('orderCollection.stockTitle')}</h2><p>{t('orderCollection.stockHelp')}</p>
         <label>{t('orderCollection.skus')}<textarea rows={5} maxLength={11000} spellCheck={false} value={skuText} onChange={event => changeSkus(event.target.value)} /></label>
-        <Button disabled={!!busy || !skuText.trim()} onClick={stockPreview}>{t('orderCollection.previewStock')}</Button>
+        <span className="action-control"><Button disabled={!!busy || !skuText.trim()} onClick={stockPreview}>{t('orderCollection.previewStock')}</Button><ActionScope effects={['hub-read']} /></span>
         {stock && <div aria-live="polite"><p>{stock.warehouse.name} · {t('orderCollection.capturedAt')}: {date(stock.captured_at)}</p><p className="opening-stock-muted">{t('orderCollection.draftOnly')}</p>
           <div className="opening-stock-table-scroll"><table><thead><tr>{['sku', 'target', 'onHand', 'reserved', 'available', 'rowErrors'].map(key => <th key={key}>{t(`orderCollection.${key}`)}</th>)}</tr></thead><tbody>{stock.rows.map((row, index) => <tr key={`${row.sku}:${index}`}>
             <td><code>{row.sku}</code></td><td>{row.target ? <><code>{row.target.code}</code>{row.target.variant_code && <small className="orders-inbox-subline">{t('orderCollection.parent')}: {row.target.parent_code}</small>}</> : '—'}</td>

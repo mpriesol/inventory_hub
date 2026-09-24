@@ -1,0 +1,18 @@
+.stock-history { display: grid; gap: 1rem; color: var(--color-text-primary); }
+.stock-history h1 { font-size: 1.5rem; font-weight: 650; }
+.stock-history header { display: grid; gap: .5rem; }
+.stock-history a { color: var(--color-accent); text-decoration: underline; }
+.stock-history-filters, .stock-history-unlock { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+.stock-history label { display: grid; gap: .25rem; font-size: .85rem; }
+.stock-history input, .stock-history select, .stock-history button { padding: .45rem .65rem; border: 1px solid var(--color-border-default, #cbd5e1); border-radius: .3rem; background: var(--color-bg-secondary); color: inherit; }
+.stock-history button:disabled { opacity: .45; cursor: not-allowed; }
+.stock-history button:focus-visible, .stock-history input:focus-visible, .stock-history select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.stock-history-scroll { overflow: auto; border: 1px solid var(--color-border-default, #cbd5e1); border-radius: .4rem; }
+.stock-history table { min-width: 1150px; width: 100%; font-size: .85rem; border-collapse: collapse; }
+.stock-history th, .stock-history td { text-align: left; padding: .6rem; border-bottom: 1px solid var(--color-border-subtle); vertical-align: top; }
+.stock-history th { background: var(--color-bg-secondary); }
+.stock-history small { display: block; color: var(--color-text-secondary); max-width: 260px; overflow-wrap: anywhere; }
+.stock-history-number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stock-history footer { display: flex; align-items: center; gap: .75rem; }
+.stock-history-note { font-size: .8rem; color: var(--color-text-secondary); }
+.stock-history [role=alert] { color: var(--color-error, #b91c1c); }

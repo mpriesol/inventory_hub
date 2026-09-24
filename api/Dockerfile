@@ -32,6 +32,7 @@ COPY infra/db-init/009_stock_automation.sql /app/inventory_hub/migrations/009_st
 COPY infra/db-init/010_stock_publication.sql /app/inventory_hub/migrations/010_stock_publication.sql
 COPY infra/db-init/011_fifo.sql /app/inventory_hub/migrations/011_fifo.sql
 COPY infra/db-init/012_product_editor.sql /app/inventory_hub/migrations/012_product_editor.sql
+COPY infra/db-init/013_receiving_scan_requests.sql /app/inventory_hub/migrations/013_receiving_scan_requests.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

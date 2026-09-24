@@ -77,6 +77,7 @@ global.fetch = async (path, init = {}) => {
   assert(aiUnlocked(), 'AI and audit share memory-only Hub credentials');
   assert.equal(document.querySelector('input[type="password"]'), null);
   assert(!document.body.innerHTML.includes('synthetic-audit-token'));
+  assert.equal(button('load').closest('.action-control').querySelector('[data-action-effects]').dataset.actionEffects, 'upgates-read', 'Audit is marked as an upstream read');
   await click(button('load'));
   assert.equal(calls.length, 1, 'One action requests one upstream page');
   assert.equal(calls[0].headers.Authorization, 'Bearer synthetic-audit-token');
@@ -108,7 +109,9 @@ global.fetch = async (path, init = {}) => {
   await click(button('load')); assert(calls.at(-1).path.includes('days=7&page=1'));
 
   defer = true;
-  await click(button('load'));
+  const beforeDouble = calls.length;
+  await act(async () => { const load = button('load'); load.click(); load.click(); await tick(); });
+  assert.equal(calls.length, beforeDouble + 1, 'A rapid double submit performs only one audit request');
   const staleShop = pending;
   const staleRequest = calls.at(-1);
   await input(select('shop'), 'biketrek');

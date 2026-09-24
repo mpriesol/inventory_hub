@@ -266,11 +266,26 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
     total = await db.scalar(select(func.count()).select_from(statement.subquery()))
     natural = func.product_editor_natural_key
     if sort == "group_sku":
-        variant_order = select(func.string_agg(ProductVariantAttribute.attribute_value,
-            aggregate_order_by(literal(" "), ProductVariantAttribute.display_order, ProductVariantAttribute.attribute_name))).where(
-            ProductVariantAttribute.product_id == Product.id).scalar_subquery()
+        # Sort canonical variant axes before pagination. Shop parent membership,
+        # including the POS umbrella, is never used as a product family.
+        attribute_name = _sql_fold(func.trim(ProductVariantAttribute.attribute_name))
+        axes = select(ProductVariantAttribute.product_id,
+            func.min(case((attribute_name.in_(("farba", "barva", "color", "colour")), ProductVariantAttribute.attribute_value))).label("color"),
+            func.min(case((attribute_name.in_(("velkost", "velikost", "size")), ProductVariantAttribute.attribute_value))).label("size"),
+            func.string_agg(ProductVariantAttribute.attribute_value, aggregate_order_by(literal(" "),
+                ProductVariantAttribute.display_order, ProductVariantAttribute.attribute_name)).label("attributes"))
+        axes = axes.group_by(ProductVariantAttribute.product_id).subquery()
+        statement = statement.outerjoin(axes, axes.c.product_id == Product.id)
+        color, size = axes.c.color, axes.c.size
+        normalized_size = func.upper(func.trim(size))
+        size_rank = case(
+            (normalized_size.in_(("XXXS", "3XS")), 0), (normalized_size.in_(("XXS", "2XS")), 1),
+            (normalized_size == "XS", 2), (normalized_size == "S", 3), (normalized_size == "M", 4),
+            (normalized_size == "L", 5), (normalized_size == "XL", 6),
+            (normalized_size.in_(("XXL", "2XL")), 7), (normalized_size.in_(("XXXL", "3XL")), 8),
+            (normalized_size.in_(("XXXXL", "4XL")), 9), (normalized_size.in_(("XXXXXL", "5XL")), 10), else_=100)
         keys = [natural(func.coalesce(ProductGroup.name, name)), func.coalesce(ProductGroup.id, -Product.id),
-                natural(variant_order), natural(Product.sku), Product.id]
+                natural(color), size_rank, natural(size), natural(axes.c.attributes), natural(Product.sku), Product.id]
     else:
         keys = [natural(Product.sku if sort == "sku" else name), Product.id]
     ids = (await db.scalars(statement.order_by(*(key.desc() if direction == "desc" else key.asc() for key in keys))

@@ -154,6 +154,7 @@ global.fetch = async (path, init = {}) => {
   assert.equal(calls.length, 0, 'Unlocking never reads or publishes automatically');
   assert.equal(required('shop').value, 'xtrek');
   await click('load-options');
+  assert.equal(required('load-options').closest('.action-control').querySelector('[data-action-effects]').dataset.actionEffects, 'hub-read');
   assert.equal(calls.length, 1); assert.equal(calls[0].path, '/api/stock-publication/options?shop_code=xtrek');
   assert.equal(posts().length, 0); assert(!required('policy-enabled').checked);
   assert(cannotUse('save-policy'));

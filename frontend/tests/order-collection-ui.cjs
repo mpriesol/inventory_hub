@@ -122,6 +122,11 @@ const posts = () => calls.filter(call => call.method === 'POST');
   assert([...jobsTable.querySelectorAll('a')].some(link => link.getAttribute('href') === '/orders/stock?shop=xtrek&order=REVIEW%20%2F%201%3Fx%3D2'),
     'The review link preserves the exact order number through URL encoding');
 
+  assert.equal(button('load').closest('.action-control').querySelector('[data-action-effects]').dataset.actionEffects, 'hub-read');
+  const fetchScope = button('fetchNow').closest('.action-control').querySelector('[data-action-effects]');
+  assert.equal(fetchScope.dataset.actionEffects, 'hub-write queued-upgates upgates-read', 'Queued collection makes the eventual Upgates read explicit');
+  assert(fetchScope.textContent.includes(i18n.t('actions.callsVariable')), 'Page count is not invented');
+  assert(fetchScope.textContent.includes(i18n.t('actions.callsUnmeasured')), 'Missing backend measurement never becomes zero');
   await click(button('fetchNow'));
   assert.deepEqual(calls.at(-1).body, { shop_code: 'xtrek', expected_revision: null, confirmed: true });
   assert.equal(collector.enabled, false, 'A first manual collection creates a paused collector');
