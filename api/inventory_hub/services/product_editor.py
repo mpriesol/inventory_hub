@@ -285,10 +285,15 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
     statement = statement.outerjoin(ProductGroup, ProductGroup.id == Product.group_id)
     if q:
         pattern = "%" + _fold(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        supplier_match = exists(select(SupplierProduct.id).where(_sql_fold(SupplierProduct.supplier_sku).like(pattern, escape="\\"),
-            or_(SupplierProduct.id == Product.source_supplier_product_id, exists(select(ProductSupplySource.id).where(
-                ProductSupplySource.product_id == Product.id, ProductSupplySource.supplier_product_id == SupplierProduct.id)
-                .correlate(Product, SupplierProduct)))))
+        # Keep supplier-code matching independent of the outer product row.
+        # A correlated OR/EXISTS can rescan the entire supplier catalog for
+        # every nonmatching product, for both COUNT and the requested page.
+        supplier_code_match = _sql_fold(SupplierProduct.supplier_sku).like(pattern, escape="\\")
+        matching_sources = select(SupplierProduct.id).where(supplier_code_match)
+        matching_linked_products = select(ProductSupplySource.product_id).join(SupplierProduct,
+            SupplierProduct.id == ProductSupplySource.supplier_product_id).where(supplier_code_match)
+        supplier_match = or_(Product.source_supplier_product_id.in_(matching_sources),
+                             Product.id.in_(matching_linked_products))
         identifier_match = exists(select(ProductIdentifier.id).where(ProductIdentifier.product_id == Product.id,
             _sql_fold(ProductIdentifier.value).like(pattern, escape="\\")))
         statement = statement.where(or_(_sql_fold(Product.sku).like(pattern, escape="\\"), _sql_fold(name).like(pattern, escape="\\"),
