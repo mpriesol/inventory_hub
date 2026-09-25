@@ -63,6 +63,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2] / "infra" / "db-init"
             await connection.execute((root / "001_schema.sql").read_text())
+            await connection.execute((root / "019_stock_tracking.sql").read_text())
             # 002 checks enum names across all schemas, so create this schema's
             # enum explicitly when other isolated test schemas already exist.
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
@@ -229,6 +230,8 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_balance_concurrent_receipts_preserve_quantity_and_value(self):
         async with self.sessions() as db:
+            from stock_tracking_fixture import confirmed_inventory
+            db.add(confirmed_inventory(self.product_id, self.warehouse_id))
             db.add(StockBalance(product_id=self.product_id, warehouse_id=self.warehouse_id,
                                 qty_on_hand=D("2"), avg_cost=D("5"), total_value=D("10")))
             await db.commit()

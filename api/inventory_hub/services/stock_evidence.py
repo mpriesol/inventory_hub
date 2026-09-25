@@ -1,7 +1,7 @@
-"""A zero balance is known only after an explicit physical count or a real movement."""
-from sqlalchemy import and_, exists, or_, select
+"""Explicit confirmation distinguishes physical stock from historical imports."""
+from sqlalchemy import exists, select
 
-from inventory_hub.db_models_ext import StockBalance, StockMovement
+from inventory_hub.db_models_ext import StockBalance
 from inventory_hub.stock_adjustment_models import StockAdjustment
 
 
@@ -18,9 +18,6 @@ def audited_zero_count(product_id, warehouse_id):
 
 
 def physical_stock_evidence(balance=StockBalance):
-    """SQL expression, evaluated with quantities in the same database snapshot."""
-    movement = exists(select(StockMovement.id).where(
-        StockMovement.product_id == balance.product_id, StockMovement.warehouse_id == balance.warehouse_id))
-    counted_zero = and_(balance.qty_on_hand == 0, balance.qty_reserved == 0, balance.qty_quarantined == 0,
-        audited_zero_count(balance.product_id, balance.warehouse_id))
-    return or_(movement, counted_zero)
+    """Only the explicit new inventory start certifies a physical balance."""
+    from inventory_hub.services.stock_tracking import confirmed_stock
+    return confirmed_stock(balance.product_id, balance.warehouse_id)

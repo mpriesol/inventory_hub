@@ -19,6 +19,8 @@ from inventory_hub.opening_stock_models import OpeningStockBatch, OpeningStockLi
 from inventory_hub.opening_stock_types import OpeningFinalizeRequest, OpeningPreviewRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
+from inventory_hub.services import stock_tracking
+from inventory_hub.stock_tracking_models import StockTracking
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
 
@@ -171,7 +173,7 @@ async def _occupied(db: AsyncSession, warehouse_id: int, product_ids: set[int]) 
     occupied = set()
     ids = sorted(product_ids)
     for start in range(0, len(ids), 500):
-        for model in (StockBalance, StockMovement):
+        for model in (StockTracking,):
             occupied.update((await db.scalars(select(model.product_id).where(
                 model.warehouse_id == warehouse_id, model.product_id.in_(ids[start:start + 500])).distinct())).all())
     return occupied
@@ -290,13 +292,14 @@ async def finalize(db: AsyncSession, batch_id: str, payload: OpeningFinalizeRequ
         balances, newly_created = await lock_stock_balances(db, set(ids), batch.warehouse_id)
     except StockPublicationHoldError as error:
         raise OpeningError(error.code, error.status) from None
-    if newly_created != set(ids):
+    if await _occupied(db, batch.warehouse_id, set(ids)):
         raise OpeningError("opening_existing_stock")
-    for start in range(0, len(ids), 500):
-        history = await db.scalar(select(StockMovement.id).where(StockMovement.warehouse_id == batch.warehouse_id,
-                                  StockMovement.product_id.in_(ids[start:start + 500])).limit(1))
-        if history is not None:
-            raise OpeningError("opening_existing_stock")
+    for product_id in ids:
+        try:
+            await stock_tracking.activate(db, balances[product_id], source_type="opening_stock", source_id=batch.id,
+                                         operator_name=batch.operator_name)
+        except fifo.FifoError as error:
+            raise OpeningError(error.code, error.status) from None
     movements = []
     for line in lines:
         movement = StockMovement(

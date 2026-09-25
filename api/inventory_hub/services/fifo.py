@@ -14,6 +14,7 @@ from inventory_hub.db_models_ext import StockBalance, StockMovement
 from inventory_hub.fifo_models import FifoState, FifoLayer, FifoAllocation, FifoCutover, FifoReceipt
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
+from inventory_hub.services import stock_tracking
 
 ZERO = Decimal("0")
 MONEY = Decimal("0.0001")
@@ -61,6 +62,8 @@ async def lock_state(db, balance):
 
 
 async def ensure_fifo(db, balance, activation_kind, previous_qty=None, excluded_movement_id=None):
+    if not await stock_tracking.is_confirmed(db, balance.product_id, balance.warehouse_id):
+        raise FifoError("stock_tracking_required")
     state = await lock_state(db, balance)
     if state is not None:
         return state
@@ -68,7 +71,8 @@ async def ensure_fifo(db, balance, activation_kind, previous_qty=None, excluded_
     if previous != ZERO:
         return None
     query = select(StockMovement.id).where(StockMovement.product_id == balance.product_id,
-                                           StockMovement.warehouse_id == balance.warehouse_id)
+                                           StockMovement.warehouse_id == balance.warehouse_id,
+                                           stock_tracking.current_movement())
     if excluded_movement_id is not None:
         query = query.where(StockMovement.id != excluded_movement_id)
     if await db.scalar(query.limit(1)) is not None:
@@ -82,7 +86,8 @@ async def ensure_fifo(db, balance, activation_kind, previous_qty=None, excluded_
 
 async def _layers(db, balance, lock=False):
     query = select(FifoLayer).where(FifoLayer.product_id == balance.product_id,
-                                    FifoLayer.warehouse_id == balance.warehouse_id).order_by(FifoLayer.id)
+                                    FifoLayer.warehouse_id == balance.warehouse_id,
+                                    stock_tracking.current_layer()).order_by(FifoLayer.id)
     if lock:
         query = query.with_for_update()
     return list((await db.scalars(query.execution_options(populate_existing=True))).all())
@@ -117,8 +122,8 @@ def summarize(layers, revision=0):
 
 
 async def valuation(db, balance, lock=False):
-    if balance is None:
-        return {"mode": "missing", "revision": 0, "quantity": None, "known_value": None,
+    if balance is None or not await stock_tracking.is_confirmed(db, balance.product_id, balance.warehouse_id):
+        return {"mode": "missing" if balance is None else "unconfirmed", "revision": 0, "quantity": None, "known_value": None,
                 "provisional_value": None, "unknown_qty": None, "provisional_qty": None,
                 "quarantined_qty": None, "value_complete": False, "avg_cost": None, "total_value": None, "next_layer": None, "last_purchase_cost_status": "unknown"}
     query = select(FifoState).where(FifoState.product_id == balance.product_id, FifoState.warehouse_id == balance.warehouse_id)
@@ -151,6 +156,8 @@ async def valuation(db, balance, lock=False):
 
 
 async def revalue(db, balance, state=None):
+    if not await stock_tracking.is_confirmed(db, balance.product_id, balance.warehouse_id):
+        raise FifoError("stock_tracking_required")
     await db.flush()
     if state is None:
         state = await lock_state(db, balance)
@@ -340,6 +347,7 @@ async def _snapshot(db, product, warehouse, balance):
         StockMovement.product_id == product.id, StockMovement.warehouse_id == warehouse.id))).one()
     return {"product_id": product.id, "sku": product.sku, "warehouse_id": warehouse.id,
             "balance": _balance(balance), "last_movement_id": last, "movement_count": count,
+            "tracking_confirmed": await stock_tracking.is_confirmed(db, product.id, warehouse.id),
             "valuation": await valuation(db, balance)}
 
 
@@ -357,12 +365,14 @@ def _layer_dto(layer):
 
 async def stock(db, product_id, warehouse_code, limit=50, offset=0):
     product, warehouse, balance = await _product_scope(db, product_id=product_id, warehouse_code=warehouse_code)
-    condition = (FifoLayer.product_id == product.id) & (FifoLayer.warehouse_id == warehouse.id)
+    condition = (FifoLayer.product_id == product.id) & (FifoLayer.warehouse_id == warehouse.id) & stock_tracking.current_layer()
     rows = (await db.scalars(select(FifoLayer).where(condition).order_by(FifoLayer.physical_received_at, FifoLayer.id)
                             .limit(limit).offset(offset))).all()
     snapshot = await _snapshot(db, product, warehouse, balance)
     return {"product_id": product.id, "sku": product.sku, "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
-            "balance": _balance(balance), "valuation": snapshot["valuation"], "snapshot_hash": digest(snapshot),
+            "balance": _balance(balance) if snapshot["tracking_confirmed"] else None,
+            "tracking_confirmed": snapshot["tracking_confirmed"],
+            "valuation": snapshot["valuation"], "snapshot_hash": digest(snapshot),
             "layers": [_layer_dto(row) for row in rows],
             "total": await db.scalar(select(func.count()).select_from(FifoLayer).where(condition)), "limit": limit, "offset": offset}
 
@@ -410,6 +420,8 @@ async def cutover_preview(db, payload):
         result = _cutover_dto(existing)
         await db.commit()
         return result
+    if not await stock_tracking.is_confirmed(db, product.id, warehouse.id):
+        raise FifoError("stock_tracking_required")
     if balance is None:
         raise FifoError("fifo_balance_missing")
     if await lock_state(db, balance) is not None:
@@ -507,7 +519,9 @@ async def receipt_preview(db, payload):
     if payload.physical_received_at > at:
         raise FifoError("fifo_date_invalid", 422)
     snapshot = await _snapshot(db, product, warehouse, balance)
-    if snapshot["valuation"]["mode"] != "fifo" and (snapshot["movement_count"] or balance and balance.qty_on_hand != ZERO):
+    if not snapshot["tracking_confirmed"]:
+        await stock_tracking.validate_start(db, balance)
+    if snapshot["tracking_confirmed"] and snapshot["valuation"]["mode"] != "fifo" and (snapshot["movement_count"] or balance and balance.qty_on_hand != ZERO):
         raise FifoError("fifo_cutover_required")
     from types import SimpleNamespace
     layers = await _layers(db, balance) if balance else []
@@ -553,6 +567,8 @@ async def receipt_apply(db, identifier, payload):
         raise FifoError("fifo_preview_stale")
     balance = balances[product.id]
     data = batch.preview_data
+    await stock_tracking.activate(db, balance, source_type="fifo_receipt", source_id=batch.id,
+                                 operator_name=data["operator_name"])
     quantity = Decimal(data["quantity"])
     cost = Decimal(data["unit_cost"]) if data["unit_cost"] is not None else None
     projected = await receipt_valuation(db, balance, quantity, cost, data["cost_status"])

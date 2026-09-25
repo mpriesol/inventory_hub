@@ -132,6 +132,8 @@ async def _balances(db, product_id, warehouse_ids, *, create_ids=frozenset(), ac
                                           create_missing=warehouse_id in create_ids)
         if product_id not in rows:
             raise FifoReturnError("fifo_balance_missing")
+        if not await fifo.stock_tracking.is_confirmed(db, product_id, warehouse_id):
+            raise FifoReturnError("stock_tracking_required")
         balances[warehouse_id] = rows[product_id]
     return balances
 
@@ -150,6 +152,8 @@ async def _issue(db, movement_id):
     movement = await db.get(StockMovement, movement_id)
     if movement is None:
         raise FifoReturnError("fifo_issue_not_found", 404)
+    if not await db.scalar(select(fifo.stock_tracking.current_movement()).where(StockMovement.id == movement.id)):
+        raise FifoReturnError("stock_tracking_historical_issue")
     if movement.movement_type != MovementType.SALE_OUT or movement.quantity >= 0:
         raise FifoReturnError("fifo_return_requires_sale_issue")
     if movement.quantity != movement.quantity.to_integral_value():
@@ -291,6 +295,8 @@ async def release_quarantine(db, payload):
     initial = await db.get(FifoLayer, payload.source_layer_id)
     if initial is None:
         raise FifoReturnError("fifo_layer_not_found", 404)
+    if not await db.scalar(select(fifo.stock_tracking.current_layer()).where(FifoLayer.id == initial.id)):
+        raise FifoReturnError("stock_tracking_historical_layer")
     balances = await _balances(db, initial.product_id, [initial.warehouse_id, payload.target_warehouse_id],
                               create_ids={payload.target_warehouse_id}, active=True)
     states = {}
@@ -363,6 +369,8 @@ async def _root(db, root_id):
     root = await db.get(FifoLayer, root_id)
     if root is None:
         raise FifoReturnError("fifo_layer_not_found", 404)
+    if not await db.scalar(select(fifo.stock_tracking.current_layer()).where(FifoLayer.id == root.id)):
+        raise FifoReturnError("stock_tracking_historical_layer")
     if root.root_cost_layer_id != root.id:
         raise FifoReturnError("fifo_cost_requires_root_layer")
     return root

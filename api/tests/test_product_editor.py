@@ -213,7 +213,7 @@ class ProductEditorProtectedRouteTests(TestCase):
                 self.assertEqual(response.json(), {"ok": name})
                 self.assertEqual(response.headers["cache-control"], "no-store")
             methods["list_products"].assert_awaited_once_with(self.db, q="diel", brand=None, shop_code=None,
-                warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc")
+                warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc", stock_scope="all")
             methods["detail"].assert_awaited_once_with(self.db, 12, warehouse_code="central")
             self.assertIsInstance(methods["save"].await_args.args[1], ProductEditorSaveRequest)
 

@@ -73,3 +73,12 @@ Vlastník určil opravu Paul Lange dostupností za bezprostrednú prioritu a sch
 Vetva `codex/supplier-prefix-availability` pridáva register prefixov, jednotný parser, automatické dopĺňanie jednoznačných väzieb a lokálne tlačidlo **Prepojiť dostupnosti** nad už stiahnutými údajmi. Chýbajúca väzba, konflikt, chýbajúce pozorovanie a starý feed sú rozlíšené. Nepridáva SQL migráciu, nezapína prenos zásob/cien ani pilotnú skladovú autoritu. [Návod a kontrakt](supplier-identity.md).
 
 Lokálne prešli priebežné testy prefixov, chráneného opravného API, príjmových pomocných funkcií a tri dotknuté UI sady s buildom. Úplná finálna sada, databázové CI, číslo PR a nasadenie sa doplnia podľa skutočného výsledku; táto implementačná poznámka ich sama nepotvrdzuje. PostgreSQL sa lokálne nepodarilo zriadiť pre obmedzenia prostredia, databázové scenáre preto musí overiť PR CI.
+
+
+## 25. 9. 2026 — potvrdený začiatok skladu (pripravené, nenasadené)
+
+Vetva `codex/confirmed-stock-start` oddeľuje historické importy/testy od nových potvrdených zásob cez aditívnu migráciu 019. Podrobný postup a hranice: [stock-tracking.md](stock-tracking.md). Register je po nasadení prázdny; historické pohyby ani vrstvy sa nemažú. Nový príjem 3 kusov k starému neoverenému stavu 100 kusov začne evidenciu na 3 kusoch. Potvrdená nula zostáva odlíšená od neovereného stavu vrátane detailu produktu a prenášania zásob/cien.
+
+Lokálne overenie: kompilácia backendu, 503 úspešných testov bez PostgreSQL (335 databázových testov preskočených), frontend build a 9 UI sád: product-editor, stock-history, fifo, opening-stock, stock-adjustments, stock-publication, order-stock, fifo-cost-sync a upgates-import. Databázové scenáre sú doplnené, ale tu neboli vykonané: prostredie nepodporuje lokálneho používateľa na spustenie PostgreSQL. Pred merge musia prejsť izolované PostgreSQL testy v existujúcom PR workflow.
+
+Vzdialená vetva bola založená na `main 45d33c6`. Používateľ 25. 9. v nadväzujúcom chate výslovne potvrdil zápis opravy do `mpriesol/inventory_hub` a postup PR → databázové testy → merge a nasadenie po úspešných kontrolách. Výsledky vzdialených testov a nasadenia treba overiť v príslušnom PR/workflow. Žiadny nový produkčný skladový stav ani prenos do e-shopu nebol vyvolaný.

@@ -36,6 +36,7 @@ from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteI
 from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
+from inventory_hub.services import stock_tracking
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.config_io import claim_supplier_prefix
@@ -440,6 +441,12 @@ async def _write_stock_for_line(
     """
     qty = line.received_qty
     unit_cost = line.unit_price
+
+    try:
+        await stock_tracking.activate(db, balance, source_type="receiving_session", source_id=session.id,
+                                     operator_name="receiving")
+    except fifo.FifoError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
 
     old_qty = balance.qty_on_hand or Decimal("0")
     old_avg = balance.avg_cost

@@ -49,11 +49,11 @@
   },
   "dashboard": {
     "title": "Warehouse overview",
-    "subtitle": "Current records in Hub.",
+    "subtitle": "Totals from confirmed inventory only. Old imports and unconfirmed items are excluded.",
     "localOnly": "This overview does not trigger shop synchronization.",
     "loading": "Loading overview…",
     "loadError": "Could not load the overview. Refresh the page and try again.",
-    "products": "Stock products",
+    "products": "Catalog products",
     "lowStock": "Low stock",
     "lowStockHint": "Available quantity at or below the product minimum",
     "openOrders": "Open orders managed by Hub",
@@ -71,8 +71,10 @@
     "settingsHint": "Intervals and modes by warehouse and shop",
     "recent": "Recent stock movements",
     "unlockHistory": "Unlock history with the operator token",
-    "noActivity": "No stock movements recorded yet.",
-    "allMovements": "Full movement history"
+    "noActivity": "No movements in the new inventory yet.",
+    "allMovements": "Full movement history",
+    "confirmedProducts": "Confirmed items: {{count}}. A zero total does not mean the entire warehouse has been counted.",
+    "openStock": "Open active inventory"
   },
   "receiving": {
     "title": "Goods Receiving",
@@ -1008,8 +1010,8 @@
   "openingStock": {
     "title": "Opening stock",
     "back": "Back to stock",
-    "subtitle": "Record a verified physical count and its acquisition costs.",
-    "scope": "This operation writes physical stock to the Hub. Use it only for items with no existing balance or movements in the selected warehouse. Do not import stock already recorded through receiving.",
+    "subtitle": "Start new inventory from physically counted units. Old imports are not added; they remain in history. Correct already confirmed SKUs using Quantity correction.",
+    "scope": "This confirms physically counted stock in Hub. Use it for items without a confirmed inventory start in the selected warehouse. Old unconfirmed quantities are closed in history. Do not count an already confirmed receipt twice.",
     "lock": "Lock",
     "token": "Hub access token",
     "tokenHelp": "Use the same token as for AI content and order audit. It stays in memory only until page reload or locking.",
@@ -1083,14 +1085,14 @@
       "csv_too_many_rows": "The CSV can contain at most 5,000 items.",
       "csv_unknown_columns": "The CSV contains unsupported columns. Keep only sku, quantity, unit_cost and unit.",
       "duplicate_sku": "The SKU appears more than once. Include the product once with the correct total quantity.",
-      "existing_stock": "The product already has a balance or movements in this warehouse. Opening stock cannot overwrite it.",
+      "existing_stock": "The item already has confirmed inventory. Use the quantity correction workflow.",
       "invalid_quantity": "Quantity must be a positive whole number, at most 999,999,999 pieces.",
       "invalid_sku": "Enter a valid product SKU, at most 100 characters.",
       "invalid_unit_cost": "Cost must be a nonnegative number in EUR excluding VAT, no more than 99,999,999.9999 and with at most four decimal places.",
       "line_value_too_large": "The row value exceeds the supported range. Check quantity and cost.",
       "missing_unit_cost": "Unit acquisition cost in EUR excluding VAT is missing.",
       "opening_batch_not_found": "No batch was found with this ID. Check the ID or load recent batches.",
-      "opening_existing_stock": "A balance or movement was created after the preview. The batch was not posted; review receiving and stock.",
+      "opening_existing_stock": "The item already has confirmed inventory. Use the quantity correction workflow.",
       "opening_invalid_limit": "The requested batch count is invalid. Reload the page and try again.",
       "opening_invalid_request": "Check the required fields, time and confirmations.",
       "opening_preview_changed": "The stored preview does not match the confirmation. Check the stored batch state.",
@@ -1102,7 +1104,13 @@
       "unsupported_unit": "Only ks and whole pieces are supported. Metres or packs are not converted.",
       "warehouse_unavailable": "The selected warehouse is unavailable or disabled. Load the current warehouse list.",
       "zero_unit_cost": "Zero acquisition cost: verify that this is explicitly correct.",
-      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold."
+      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
+      "stock_tracking_required": "Confirm a physical count or a new receipt for this item first.",
+      "stock_tracking_committed_stock": "The old balance has reservations or quarantine. Reconcile them before starting new inventory.",
+      "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
+      "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
+      "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
     }
   },
   "orderStock": {
@@ -1235,7 +1243,13 @@
       "order_stock_source_unavailable": "The order or statuses could not be loaded from the shop. Try reading again later.",
       "order_stock_upgates_access": "The shop rejected API access. Check its configuration.",
       "order_stock_invalid_request": "Check required fields and confirmations.",
-      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold."
+      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
+      "stock_tracking_required": "Confirm a physical count or a new receipt for this item first.",
+      "stock_tracking_committed_stock": "The old balance has reservations or quarantine. Reconcile them before starting new inventory.",
+      "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
+      "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
+      "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
     },
     "posHelp": "A paid and completed cash-register sale in the base received status with reservations enabled is proposed for issue. Payment alone never triggers issue of a web order.",
     "moreErrors": "{{count}} more errors. Correct the source and prepare a new preview."
@@ -1344,7 +1358,7 @@
       "stock_projection_mapping_alias": "The shop item code differs from the exact Hub SKU. Review the mapping.",
       "stock_projection_mapping_invalid": "The mapping to the shop’s parent product is invalid.",
       "stock_projection_balance_missing": "No balance exists in the selected warehouse. Quantity remains unknown.",
-      "stock_projection_balance_unverified": "The balance has no supporting physical stock movement. Quantity needs review.",
+      "stock_projection_balance_unverified": "Stock has not been confirmed by a new physical count or receipt.",
       "stock_projection_quantity_invalid": "On-hand and reserved quantities are invalid. Stock review is needed.",
       "stock_projection_unit_unsupported": "This draft supports whole pieces only; fractional quantities are not converted.",
       "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold."
@@ -1772,7 +1786,8 @@
       "xtrek_price": "xTrek · price incl. VAT",
       "xtrek_visible": "xTrek · visibility",
       "supplier_quantity": "At supplier",
-      "supplier_availability": "Supplier availability"
+      "supplier_availability": "Supplier availability",
+      "tracking": "Stock tracking status"
     },
     "rowStates": {
       "dirty": "Unsaved changes",
@@ -1864,7 +1879,21 @@
       "conflict": "Ambiguous supplier link – review required",
       "unknown": "Availability has not been verified yet",
       "unknown_quantity": "The source has no known availability for this code"
-    }
+    },
+    "stockScope": "Stock tracking",
+    "stockScopes": {
+      "confirmed": "Confirmed items only",
+      "in_stock": "Confirmed and physically in stock",
+      "unconfirmed": "Unconfirmed items",
+      "all": "All products"
+    },
+    "tracking": {
+      "confirmed": "Confirmed inventory",
+      "unconfirmed": "Awaiting count / first receipt",
+      "no_warehouse": "Select a warehouse"
+    },
+    "trackingHelp": "Active stock contains only items confirmed by a physical count or a new receipt. Old imports remain in history. For the first count select Unconfirmed items and open the detail → Quantity correction.",
+    "openingStock": "Batch opening stock"
   },
   "actions": {
     "effects": {
@@ -1941,7 +1970,13 @@
       "ADJUSTMENT_IN": "Adjustment in",
       "ADJUSTMENT_OUT": "Adjustment out"
     },
-    "accessError": "Access was denied. Enter a valid operator token; if access is not configured, ask the administrator to configure it."
+    "accessError": "Access was denied. Enter a valid operator token; if access is not configured, ask the administrator to configure it.",
+    "scope": "Inventory scope",
+    "scopes": {
+      "current": "New confirmed inventory",
+      "historical": "Historical records",
+      "all": "All movements"
+    }
   },
   "stockAdjustment": {
     "title": "Correct physical quantity",
@@ -1971,13 +2006,19 @@
       "fifo_cutover_required": "Complete the legacy stock cutover under Acquisition costs before correcting stock.",
       "fifo_preview_stale": "Stock changed after the preview. Reload the current state and create a new preview.",
       "fifo_preview_expired": "The preview expired. Create a new preview.",
-      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Post the correction after the hold ends."
+      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Post the correction after the hold ends.",
+      "stock_tracking_required": "Confirm a physical count or a new receipt for this item first.",
+      "stock_tracking_committed_stock": "The old balance has reservations or quarantine. Reconcile them before starting new inventory.",
+      "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
+      "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
+      "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
     },
     "reload": "Reload current stock",
     "unknown": "Unknown cost",
     "derivedCost": "The decrease uses the original acquisition layers.",
     "unknownQuantity": "Not verified yet",
-    "initialCountHelp": "The physical count has not been verified. Enter the quantity after actually counting; if there are no units, explicitly enter 0. Supplier availability does not verify our physical stock.",
+    "initialCountHelp": "This SKU has no confirmed inventory. Enter the complete physical count, including 0. Confirmation starts new inventory without adding the historical quantity.",
     "initialZeroPreview": "First verified physical count: unknown → 0 pieces.",
     "zeroNoMovement": "A zero-count verification record will be saved. No artificial stock movement or acquisition layer will be created.",
     "confirmInitialZero": "I confirm the physically verified zero stock and saving this record.",
@@ -2391,7 +2432,13 @@
       "fifo_cost_processing_failed": "Processing could not be completed. Open details and check the evidence.",
       "hub_access_required": "Operator access is invalid or not configured.",
       "hub_access_not_configured": "Operator access is invalid or not configured.",
-      "fifo_cost_retry_later": "The API temporarily limited requests. The next attempt is available after the displayed time."
+      "fifo_cost_retry_later": "The API temporarily limited requests. The next attempt is available after the displayed time.",
+      "stock_tracking_required": "Confirm a physical count or a new receipt for this item first.",
+      "stock_tracking_committed_stock": "The old balance has reservations or quarantine. Reconcile them before starting new inventory.",
+      "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
+      "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
+      "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
     },
     "remoteValues": "Values sent to Upgates",
     "remoteWithVat": "Upgates unit prices are in EUR including VAT. Conversion uses each line’s VAT rate. FIFO costs above exclude VAT.",

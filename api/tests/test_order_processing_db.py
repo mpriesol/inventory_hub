@@ -52,6 +52,7 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((sql_root / "001_schema.sql").read_text())
+            await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
                              "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql"):
@@ -126,6 +127,8 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def seed(self, quantity="5"):
         async with self.transaction() as db:
+            from stock_tracking_fixture import confirmed_inventory
+            db.add(confirmed_inventory(self.product_id, self.warehouse_id))
             db.add(StockBalance(product_id=self.product_id, warehouse_id=self.warehouse_id,
                 qty_on_hand=D(quantity), qty_reserved=D("0"), avg_cost=D("3"), total_value=D(quantity) * 3))
 

@@ -9,7 +9,8 @@ export interface FifoLayer {
 export interface FifoStock {
   product_id: number; sku: string; warehouse: { id: number; code: string; name: string };
   balance: { qty_on_hand: string; qty_reserved: string; qty_quarantined: string; qty_available: string; last_purchase_price?: string | null; last_purchase_at?: string | null } | null;
-  valuation: { mode: 'fifo' | 'legacy' | 'missing'; revision: number; known_value: string | null;
+  tracking_confirmed?: boolean;
+  valuation: { mode: 'fifo' | 'legacy' | 'missing' | 'unconfirmed'; revision: number; known_value: string | null;
     provisional_value: string | null; unknown_qty: string | null; provisional_qty: string | null;
     quarantined_qty: string | null; value_complete: boolean; avg_cost: string | null; total_value: string | null;
     next_layer?: { id: number; unit_cost: string | null; cost_status: CostStatus; physical_received_at: string } | null;

@@ -4,6 +4,7 @@ export const fifoCopy = {
     legacyCost: 'Pôvodná cena',
     legacy: 'Tento zostatok používa pôvodné priemerné ocenenie. Ocenenie podľa jednotlivých príjmov zapnete po ich overení.',
     missing: 'Zatiaľ nie je evidovaný skladový zostatok. Prvý potvrdený príjem začne evidenciu nákupných cien.',
+    unconfirmed: 'Starý zostatok nie je potvrdený. Inventúra alebo nový príjem začne novú evidenciu; historické množstvá a ceny sa nepripočítajú.',
     complete: 'Ocenenie je úplné', incomplete: 'Ocenenie je neúplné', unknown: 'Neznáma', provisional: 'Predbežná', known: 'Doložená',
     physical: 'Fyzicky', reserved: 'Rezervované', quarantine: 'Karanténa', available: 'Voľné na predaj',
     knownValue: 'Doložená hodnota', provisionalValue: 'Predbežná hodnota', unknownQty: 'Kusy bez ceny', avg: 'Priemerná cena zostávajúcich kusov',
@@ -34,6 +35,7 @@ export const fifoCopy = {
     legacyCost: 'Legacy cost',
     legacy: 'This balance uses the previous average valuation. Enable receipt-based costs after verifying the opening receipts.',
     missing: 'No stock balance is recorded yet. The first confirmed receipt starts purchase cost tracking.',
+    unconfirmed: 'The old balance is unconfirmed. A physical count or new receipt starts new inventory without adding historical quantities or costs.',
     complete: 'Valuation is complete', incomplete: 'Valuation is incomplete', unknown: 'Unknown', provisional: 'Provisional', known: 'Documented',
     physical: 'Physical', reserved: 'Reserved', quarantine: 'Quarantine', available: 'Available for sale',
     knownValue: 'Documented value', provisionalValue: 'Provisional value', unknownQty: 'Units without cost', avg: 'Average remaining unit cost',
@@ -63,6 +65,10 @@ export const fifoCopy = {
 
 export const fifoErrors: Record<'sk' | 'en', Record<string, string>> = {
   sk: {
+    stock_tracking_required: 'Najprv potvrďte inventúru alebo nový príjem položky v danom sklade.',
+    stock_tracking_committed_stock: 'Starý stav má rezervácie alebo karanténu. Najprv ich treba zosúladiť.',
+    stock_tracking_historical_issue: 'Tento výdaj patrí do starej evidencie. Nemožno ním vytvoriť vratku do novej evidencie.',
+    stock_tracking_historical_layer: 'Táto nákupná vrstva patrí do starej evidencie.',
     fifo_preview_stale: 'Zásoba sa od náhľadu zmenila. Obnovte údaje a pripravte nový náhľad.',
     fifo_preview_expired: 'Náhľad vypršal. Pripravte nový náhľad.',
     fifo_cutover_required: 'K staršiemu zostatku najprv priraďte overené príjmy a nákupné ceny.',
@@ -78,6 +84,10 @@ export const fifoErrors: Record<'sk' | 'en', Record<string, string>> = {
     stock_publication_warehouse_held: 'Sklad je blokovaný pre prebiehajúcu údržbu synchronizácie. Dokončite ju pred skladovým zápisom.',
   },
   en: {
+    stock_tracking_required: 'First confirm a physical count or new receipt for this item and warehouse.',
+    stock_tracking_committed_stock: 'Reconcile the old reservations or quarantine before starting new inventory.',
+    stock_tracking_historical_issue: 'This issue belongs to historical inventory and cannot create a return in the new inventory.',
+    stock_tracking_historical_layer: 'This purchase layer belongs to historical inventory.',
     fifo_preview_stale: 'Stock changed after the preview. Refresh and prepare a new preview.',
     fifo_preview_expired: 'The preview expired. Prepare a new preview.',
     fifo_cutover_required: 'First assign verified receipts and purchase costs to the legacy balance.',

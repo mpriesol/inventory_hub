@@ -16,6 +16,7 @@ from inventory_hub.db_models import MovementType, Product, Shop, Warehouse
 from inventory_hub.db_models_ext import ShopProduct, StockBalance, StockMovement
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.services import stock_projection as service
+from stock_tracking_fixture import confirmed_inventory
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -35,6 +36,7 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((sql_root / "001_schema.sql").read_text())
+            await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             await connection.execute((sql_root / "002_invoice_management.sql").read_text())
             await connection.execute((sql_root / "007_order_stock.sql").read_text())
@@ -77,6 +79,7 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(StockBalance(product_id=self.products[sku], warehouse_id=warehouse_id,
                 qty_on_hand=D(on_hand), qty_reserved=D(reserved), avg_cost=D("1"), total_value=D(on_hand)))
             if evidence:
+                db.add(confirmed_inventory(self.products[sku], warehouse_id))
                 quantity = D(on_hand) if D(on_hand) > 0 else D("1")
                 db.add(StockMovement(idempotency_key=uuid4().hex, product_id=self.products[sku], warehouse_id=warehouse_id,
                     movement_type=MovementType.INITIAL, quantity=quantity, unit_cost=D("1"),

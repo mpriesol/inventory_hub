@@ -58,6 +58,7 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((sql_root / "001_schema.sql").read_text())
+            await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "006_opening_stock.sql", "007_order_stock.sql", "008_order_collection.sql",
                              "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql", "015_stock_sync.sql", "017_stock_adjustments.sql"):
@@ -105,6 +106,8 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     variant_code=target["variant_code"], is_variant=target["variant_code"] is not None))
                 db.add(StockBalance(product_id=product.id, warehouse_id=warehouse.id, qty_on_hand=D("7"),
                     qty_reserved=D("3"), avg_cost=D("3"), total_value=D("21")))
+                from stock_tracking_fixture import confirmed_inventory
+                db.add(confirmed_inventory(product.id, warehouse.id))
                 db.add(StockMovement(idempotency_key=uuid4().hex, product_id=product.id, warehouse_id=warehouse.id,
                     movement_type=MovementType.INITIAL, quantity=D("7"), unit_cost=D("3"),
                     balance_after=D("7"), avg_cost_after=D("3")))
