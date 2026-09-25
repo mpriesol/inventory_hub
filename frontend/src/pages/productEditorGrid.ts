@@ -9,7 +9,7 @@ export const EDITOR_COLUMNS: EditorColumn[] = [
   { key: 'biketrek' }, { key: 'xtrek' }, { key: 'supplier_quantity' }, { key: 'supplier_availability' },
   { key: 'location', editable: true, type: 'text', warehouse: true },
   { key: 'min_quantity', editable: true, type: 'integer', warehouse: true },
-  { key: 'on_hand' }, { key: 'reserved' }, { key: 'available' }, { key: 'cost' }, { key: 'state' },
+  { key: 'tracking' }, { key: 'on_hand' }, { key: 'reserved' }, { key: 'available' }, { key: 'cost' }, { key: 'state' },
   { key: 'ean', editable: true, type: 'eans', hidden: true }, { key: 'supplier_codes', hidden: true },
   { key: 'internal_note', editable: true, type: 'text', hidden: true },
   { key: 'vat_rate', editable: true, type: 'vat', hidden: true },

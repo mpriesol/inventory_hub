@@ -1,6 +1,6 @@
 """Protected local ledger reading; no Upgates calls and no mutation routes."""
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
@@ -43,6 +43,7 @@ async def movements(q: Annotated[str, Query(max_length=200)] = "",
     sku: Annotated[str | None, Query(max_length=100)] = None,
     warehouse_code: Annotated[str | None, Query(max_length=50)] = None,
     movement_type: MovementType | None = None, date_from: date | None = None, date_to: date | None = None,
+    tracking_scope: Literal["all", "current", "historical"] = "all",
     page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=25, le=100)] = 50,
     snapshot_id: Annotated[int | None, Query(ge=0, le=9223372036854775807)] = None,
     db: AsyncSession = Depends(get_session)):
@@ -52,4 +53,4 @@ async def movements(q: Annotated[str, Query(max_length=200)] = "",
         raise HTTPException(422, detail={"code": "stock_history_invalid_dates"})
     return await service.list_movements(db, q=q.strip(), sku=sku, warehouse_code=warehouse_code,
         movement_type=movement_type, date_from=date_from, date_to=date_to, page=page, page_size=page_size,
-        snapshot_id=snapshot_id)
+        snapshot_id=snapshot_id, tracking_scope=tracking_scope)

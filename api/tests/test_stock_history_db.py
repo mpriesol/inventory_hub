@@ -38,6 +38,7 @@ class StockHistoryDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((sql_root / "001_schema.sql").read_text())
+            await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "006_opening_stock.sql", "007_order_stock.sql",
                              "011_fifo.sql", "012_product_editor.sql"):

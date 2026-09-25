@@ -632,10 +632,18 @@ async def push_products_to_shop(
             skipped.append({"sku": parent, "reason": f"už existuje v shope {shop_code}"})
             continue
         # Every sibling is sent, so every quantity must come from canonical balances.
+        from inventory_hub.services.stock_tracking import confirmed_stock
+        known_family = True
         for product in family_products:
-            bal = (await db.execute(select(func.coalesce(func.sum(StockBalance.qty_on_hand - StockBalance.qty_reserved - StockBalance.qty_quarantined), 0)).where(
-                StockBalance.product_id == product.id))).scalar()
-            local_stock[product.sku] = float(bal or 0)
+            bal = (await db.execute(select(func.sum(StockBalance.qty_on_hand - StockBalance.qty_reserved - StockBalance.qty_quarantined)).where(
+                StockBalance.product_id == product.id, confirmed_stock()))).scalar()
+            if bal is None:
+                skipped.append({"sku": product.sku, "reason": "Skladový stav nie je potvrdený inventúrou alebo novým príjmom."})
+                known_family = False
+            else:
+                local_stock[product.sku] = float(bal)
+        if not known_family:
+            continue
         to_send.append(_build_push_payload(data, local_stock))
 
     now = datetime.utcnow()

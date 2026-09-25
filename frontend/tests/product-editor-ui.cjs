@@ -67,7 +67,7 @@ const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: '
 });
 const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = makeRow(index + 1); return [row.id, row]; }));
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
-  warehouses: [{ id: 7, code: 'main', name: 'Main fixture' }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
+  warehouses: [{ id: 7, code: 'main', name: 'Main fixture' }, { id: 8, code: 'other', name: 'Other fixture' }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave;
@@ -200,6 +200,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(calls.length, 2, 'First explicit load requests options and one product page');
   assert.equal(calls[0].path, '/api/product-editor/options');
   assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('page_size'), '50');
+  assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('stock_scope'), 'confirmed', 'Active inventory defaults to explicitly confirmed stocks');
   assert(!element('mode-common') && !element('mode-biketrek') && !element('mode-xtrek'), 'One unified grid replaces the three shop tabs');
   assert(element('cell-1-image_url') && element('cell-1-biketrek') && element('cell-1-xtrek'), 'Image and both shop-presence columns are visible by default');
   assert.equal(cell(1, 'image_url').querySelector('img').getAttribute('src'), 'https://images.example.test/item.jpg');

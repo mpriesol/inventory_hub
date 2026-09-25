@@ -205,10 +205,11 @@ export function ProductDetailView({ sku, compact = false }: { sku: string; compa
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: number }) {
+function MiniStat({ label, value }: { label: string; value: number | null }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-lg border px-2.5 py-1.5" style={{ borderColor: 'var(--color-border-subtle)' }}>
-      <div className="text-base font-semibold" style={{ color: 'var(--color-text-primary)' }}>{value}</div>
+      <div className="text-base font-semibold" style={{ color: 'var(--color-text-primary)' }}>{value == null ? t('productEditor.tracking.unconfirmed') : value}</div>
       <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
     </div>
   );

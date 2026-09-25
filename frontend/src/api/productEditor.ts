@@ -13,12 +13,13 @@ export interface ProductEditorRow {
   revision: number; snapshot_hash: string; common: { name: string; brand: string | null; internal_note: string | null; image_url?: string | null };
   variant: { sale_price_gross: string | null; vat_rate: string | null; note: string | null; attributes?: { name: string; value: string }[] | null; eans?: string[] | null };
   warehouse: { code: string; location: string | null; min_quantity: string | null } | null;
-  stock: { known: boolean; qty_on_hand: string | null; qty_reserved: string | null; qty_quarantined: string | null; qty_available: string | null; avg_cost: string | null; total_value: string | null };
+  stock: { known: boolean; tracking_status?: 'confirmed' | 'unconfirmed' | 'no_warehouse'; started_at?: string | null; qty_on_hand: string | null; qty_reserved: string | null; qty_quarantined: string | null; qty_available: string | null; avg_cost: string | null; total_value: string | null };
   shops: { shop_code: string; mapped: boolean; shop_url?: string | null; shop_admin_url?: string | null; overrides: ProductShopValues; effective: ProductShopValues;
     observed: { name: string | null; price: string | null; price_basis: 'unknown'; visible: boolean | null }; published_fields?: ProductPublicationField[]; state: 'inherited' | 'saved_unpublished' | 'published' }[];
   overrides: { common?: Record<string, unknown>; variant?: Record<string, unknown>; warehouses?: Record<string, Record<string, unknown>>; shops?: Record<string, Record<string, unknown>> };
 }
 export interface ProductEditorFilters {
+  stock_scope: 'all' | 'confirmed' | 'unconfirmed' | 'in_stock';
   q: string; brand: string; shop_code: string; warehouse_code: string; page: number; page_size: number;
   sort: 'group_sku' | 'sku' | 'name'; direction: 'asc' | 'desc';
 }

@@ -6,6 +6,8 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 
 ## Kde začať
 
+Aktuálna oprava evidencie pridáva [potvrdený začiatok skladu](docs/stock-tracking.md) (migrácia 019). Historické importy a testy zostávajú neoverené; aktívne množstvá, rezervácie a synchronizácia vyžadujú nový potvrdený príjem alebo fyzický počet pre konkrétne SKU/sklad. V nasledujúcich starších popisoch má tento kontrakt prednosť pred odvodzovaním potvrdenia zo samotnej existencie pohybov.
+
 | Zdroj | Úloha |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | Rozsah práce, platnosť udelených oprávnení a pravidlá zmien. |
@@ -42,7 +44,7 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 | Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile Nákupné ceny. Nové skeny majú request UUID; replay nepridá druhý kus. [Kontrakt identity a skenera](docs/receiving-identity.md). |
 | Sklad `/stock` | Jednotná produktová a skladová tabuľka | Obrázky, parametre, manuálne bunky, označenie zmenenej bunky aj riadka, prítomnosť/odkazy BIKETREK a xTrek, detail po kliknutí na SKU/názov. Oddelené uloženie v Hube a potvrdené odoslanie vybraných polí. Fyzické množstvo cez [opravný pohyb](docs/stock-adjustments.md). |
 | História `/stock/movements` | Chránené čítanie nemennej evidencie | Filtre celého skladu alebo presného SKU, doklad, dôvod, pôvodný náklad a množstvo pred/po. Bez zápisov a Upgates volaní. [Návod a API](docs/stock-history.md). |
-| Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie celej dávky vytvorí `INITIAL` pohyby iba bez existujúcej bilancie či histórie daného tovaru v sklade. Výpadok sa overuje čítaním uloženého výsledku. |
+| Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie vytvorí `INITIAL` pohyby iba bez potvrdeného začiatku evidencie daného tovaru v sklade; neoverený historický zostatok sa auditne uzavrie. Výpadok sa overuje čítaním uloženého výsledku. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
 | Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Parsery pre Paul Lange a Northfinder. |
 | Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |

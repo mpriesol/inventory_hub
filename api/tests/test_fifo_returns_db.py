@@ -44,6 +44,7 @@ class FifoReturnsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((sql_root / "001_schema.sql").read_text())
+            await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "004_shop_product_content.sql", "006_opening_stock.sql", "007_order_stock.sql",
                              "008_order_collection.sql", "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql",
@@ -61,6 +62,8 @@ class FifoReturnsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.flush()
             self.product_id = product.id
             self.warehouse_a, self.warehouse_b = [warehouse.id for warehouse in warehouses]
+            from stock_tracking_fixture import confirmed_inventory
+            db.add_all([confirmed_inventory(product.id, warehouse.id) for warehouse in warehouses])
             self.shop_id = await db.scalar(select(Shop.id).where(Shop.code == "biketrek"))
             await db.commit()
 

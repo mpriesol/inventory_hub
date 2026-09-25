@@ -85,12 +85,13 @@ def project_product(product, warehouse, balance, state, layers, roots=None) -> d
 
 async def product_cost(db, product_id: int, warehouse_id: int) -> dict:
     root = aliased(FifoLayer)
-    query = (select(Product, Warehouse, StockBalance, FifoState, FifoLayer, root)
+    query = (select(Product, Warehouse, StockBalance, FifoState, FifoLayer, root,
+                    fifo.stock_tracking.confirmed_stock(Product.id, Warehouse.id))
         .select_from(Product).join(Warehouse, true())
         .outerjoin(StockBalance, and_(StockBalance.product_id == Product.id, StockBalance.warehouse_id == Warehouse.id))
         .outerjoin(FifoState, and_(FifoState.product_id == Product.id, FifoState.warehouse_id == Warehouse.id))
         .outerjoin(FifoLayer, and_(FifoLayer.product_id == Product.id, FifoLayer.warehouse_id == Warehouse.id,
-                                  FifoLayer.quantity_remaining > 0))
+                                  FifoLayer.quantity_remaining > 0, fifo.stock_tracking.current_layer()))
         .outerjoin(root, root.id == FifoLayer.root_cost_layer_id)
         .where(Product.id == product_id, Warehouse.id == warehouse_id)
         .order_by(FifoLayer.id).execution_options(populate_existing=True))
@@ -98,6 +99,8 @@ async def product_cost(db, product_id: int, warehouse_id: int) -> dict:
         rows = (await db.execute(query)).all()
     if not rows:
         _fail("product_or_warehouse_not_found", 404)
+    if not rows[0][6]:
+        _fail("stock_unconfirmed")
     product, warehouse, balance, state = rows[0][:4]
     return project_product(product, warehouse, balance, state,
         [row[4] for row in rows if row[4] is not None], {row[5].id: row[5] for row in rows if row[5] is not None})
@@ -237,7 +240,8 @@ physical product can consume different layers and have different unit costs.
 
 async def order_cost(db, order_id: int) -> dict:
     root = aliased(FifoLayer)
-    query = (select(ShopOrder, ShopOrderItem, Reservation, StockMovement, FifoAllocation, FifoLayer, root)
+    query = (select(ShopOrder, ShopOrderItem, Reservation, StockMovement, FifoAllocation, FifoLayer, root,
+                    fifo.stock_tracking.current_movement())
         .select_from(ShopOrder)
         .outerjoin(ShopOrderItem, and_(ShopOrderItem.order_id == ShopOrder.id, ShopOrderItem.stock_managed.is_(True)))
         .outerjoin(Reservation, Reservation.shop_order_item_id == ShopOrderItem.id)
@@ -251,7 +255,9 @@ async def order_cost(db, order_id: int) -> dict:
         rows = (await db.execute(query)).all()
     if not rows:
         _fail("order_not_found", 404)
-    return project_order(rows[0][0], [tuple(row[1:]) for row in rows])
+    if any(row[3] is not None and not row[7] for row in rows):
+        _fail("stock_unconfirmed")
+    return project_order(rows[0][0], [tuple(row[1:7]) for row in rows])
 
 
 product_cost_projection = product_cost

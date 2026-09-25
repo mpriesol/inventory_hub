@@ -22,6 +22,7 @@ from inventory_hub.product_editor_models import ProductEditorAudit, ProductEdito
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.product_editor_types import ProductEditorSaveRequest
 from inventory_hub.services import product_editor as service
+from stock_tracking_fixture import confirmed_inventory
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -41,6 +42,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((self.sql_root / "001_schema.sql").read_text())
+            await connection.execute((self.sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "004_shop_product_content.sql", "007_order_stock.sql",
                              "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql"):
@@ -99,6 +101,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     qty_reserved=D("1") if sku == "BIKE-2" else D("0"), avg_cost=D(cost) if cost is not None else None,
                     total_value=D(quantity) * D(cost) if cost is not None else None))
                 if evidence:
+                    db.add(confirmed_inventory(self.products[sku], warehouse.id))
                     moved = D(quantity) if D(quantity) else D("1")
                     db.add(StockMovement(idempotency_key=uuid4().hex, product_id=self.products[sku], warehouse_id=warehouse.id,
                         movement_type=MovementType.INITIAL, quantity=moved, unit_cost=D(cost) if cost is not None else None,

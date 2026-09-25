@@ -45,6 +45,7 @@ class FifoDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((sql_root / "001_schema.sql").read_text())
+            await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "006_opening_stock.sql", "007_order_stock.sql",
                              "008_order_collection.sql", "009_stock_automation.sql", "010_stock_publication.sql"):
@@ -139,8 +140,11 @@ class FifoDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(plan["ready"], plan)
             return await ledger.apply_order(db, order, observed, action, self.warehouse_id, plan)
 
-    async def seed_legacy(self, sku="LEGACY", quantity="2", reserved="0", cost="85"):
+    async def seed_legacy(self, sku="LEGACY", quantity="2", reserved="0", cost="85", *, confirmed=True):
         async with self.transaction() as db:
+            if confirmed:
+                from stock_tracking_fixture import confirmed_inventory
+                db.add(confirmed_inventory(self.products[sku], self.warehouse_id))
             db.add(StockBalance(product_id=self.products[sku], warehouse_id=self.warehouse_id,
                 qty_on_hand=D(quantity), qty_reserved=D(reserved), avg_cost=D(cost), total_value=D(quantity) * D(cost)))
             db.add(StockMovement(idempotency_key=uuid4().hex, product_id=self.products[sku], warehouse_id=self.warehouse_id,

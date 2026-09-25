@@ -19,6 +19,7 @@ from inventory_hub.db_models_ext import StockBalance, ShopOrder
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.services.product_editor import effective_names
 from inventory_hub.product_editor_models import ProductEditorOverride
+from inventory_hub.services.stock_tracking import confirmed_stock, current_layer
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -62,7 +63,7 @@ def valuation_balances():
         func.sum(case((FifoLayer.cost_status == "provisional", func.round(FifoLayer.quantity_remaining * FifoLayer.unit_cost, 4)), else_=0)).label("provisional_value"),
         func.sum(case((FifoLayer.cost_status == "provisional", FifoLayer.quantity_remaining), else_=0)).label("provisional_quantity"),
         func.sum(case((FifoLayer.cost_status == "unknown", FifoLayer.quantity_remaining), else_=0)).label("unknown_quantity"),
-    ).group_by(FifoLayer.product_id, FifoLayer.warehouse_id).subquery()
+    ).where(current_layer()).group_by(FifoLayer.product_id, FifoLayer.warehouse_id).subquery()
     active = FifoState.product_id.is_not(None)
     unknown = case((active, func.coalesce(layers.c.unknown_quantity, 0)),
                    (StockBalance.total_value.is_(None), StockBalance.qty_on_hand), else_=0)
@@ -77,7 +78,7 @@ def valuation_balances():
         func.coalesce(layers.c.provisional_value, 0).label("provisional_value"),
         unknown.label("unknown_quantity"), provisional.label("provisional_quantity"),
         case((and_(unknown == 0, provisional == 0, StockBalance.total_value.is_not(None)), 0), else_=1).label("incomplete"),
-    ).join(Warehouse, Warehouse.id == StockBalance.warehouse_id)\
+    ).where(confirmed_stock()).join(Warehouse, Warehouse.id == StockBalance.warehouse_id)\
      .outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == StockBalance.product_id)\
      .outerjoin(FifoState, and_(FifoState.product_id == StockBalance.product_id,
                                FifoState.warehouse_id == StockBalance.warehouse_id))\
@@ -135,6 +136,8 @@ async def stock_summary(db: AsyncSession = Depends(get_session)) -> Dict[str, An
     open_orders = int(await db.scalar(select(func.count(ShopOrder.id)).where(
         ShopOrder.stock_state.in_(("pending", "reserved")))) or 0)
     return {"products_total": int(products_total), "products_with_stock": int(row.products_with_stock or 0),
+            "confirmed_products": int(row.products_with_stock or 0),
+            "unconfirmed_products": int(products_total) - int(row.products_with_stock or 0),
             "inventory_value": values["total_value"], "known_inventory_value": values["known_value"],
             "provisional_inventory_value": values["provisional_value"], "value_complete": values["value_complete"],
             "unknown_quantity": values["unknown_quantity"], "provisional_quantity": values["provisional_quantity"],
@@ -198,8 +201,14 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
     )).scalars().all()
 
     balances = valuation_balances()
-    valuation = valuation_output((await db.execute(select(*valuation_fields(balances))
-        .where(balances.c.product_id == product.id))).one())
+    stock_row = (await db.execute(select(*valuation_fields(balances),
+        func.count(balances.c.product_id).label("confirmed_warehouses"))
+        .where(balances.c.product_id == product.id))).one()
+    valuation = valuation_output(stock_row)
+    if not stock_row.confirmed_warehouses:
+        valuation = {key: None for key in valuation}
+        valuation["value_complete"] = False
+    valuation["known"] = bool(stock_row.confirmed_warehouses)
 
     shop_rows = (await db.execute(
         select(ShopProduct, Shop.code)

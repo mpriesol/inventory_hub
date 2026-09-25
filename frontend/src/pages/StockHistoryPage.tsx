@@ -7,7 +7,7 @@ import { CatalogApiError } from '../api/catalog';
 import { ActionScope } from '../components/ui/ActionScope';
 import './StockHistoryPage.css';
 
-const emptyFilters: MovementFilters = { q: '', sku: '', warehouse_code: '', movement_type: '', date_from: '', date_to: '' };
+const emptyFilters: MovementFilters = { q: '', sku: '', warehouse_code: '', movement_type: '', date_from: '', date_to: '', tracking_scope: 'current' };
 
 export function StockHistoryPage() {
   const { t, i18n } = useTranslation();
@@ -84,6 +84,7 @@ export function StockHistoryPage() {
         <label>SKU<input data-testid="history-sku" value={filters.sku} maxLength={100} onChange={event => field('sku', event.target.value)} /></label>
         <label>{t('stockHistory.warehouse')}<select value={filters.warehouse_code} onChange={event => field('warehouse_code', event.target.value)}><option value="">{t('stockHistory.all')}</option>{options?.warehouses.map(row => <option key={row.code} value={row.code}>{row.name}</option>)}</select></label>
         <label>{t('stockHistory.type')}<select data-testid="history-type" value={filters.movement_type} onChange={event => field('movement_type', event.target.value)}><option value="">{t('stockHistory.all')}</option>{options?.movement_types.map(type => <option key={type} value={type}>{t(`stockHistory.types.${type}`, type)}</option>)}</select></label>
+        <label>{t('stockHistory.scope')}<select data-testid="history-scope" value={filters.tracking_scope} onChange={event => field('tracking_scope', event.target.value)}>{['current', 'historical', 'all'].map(scope => <option value={scope} key={scope}>{t(`stockHistory.scopes.${scope}`)}</option>)}</select></label>
         <label>{t('stockHistory.from')}<input type="date" value={filters.date_from} onChange={event => field('date_from', event.target.value)} /></label>
         <label>{t('stockHistory.to')}<input type="date" value={filters.date_to} min={filters.date_from || undefined} onChange={event => field('date_to', event.target.value)} /></label>
         <button data-testid="history-load" type="submit" disabled={busy}>{t(busy ? 'stockHistory.loading' : 'stockHistory.load')}</button>
@@ -96,7 +97,7 @@ export function StockHistoryPage() {
         <div className="stock-history-scroll"><table data-testid="history-table"><thead><tr>
           {['time', 'product', 'warehouse', 'type', 'quantity', 'before', 'after', 'reference', 'reason', 'author', 'unitCost'].map(key => <th key={key}>{t(`stockHistory.${key}`)}</th>)}
         </tr></thead><tbody>{data.items.map(row => <tr key={row.id}>
-          <td>{new Date(row.created_at).toLocaleString(i18n.language)}<small>#{row.id}</small></td>
+          <td>{new Date(row.created_at).toLocaleString(i18n.language)}<small>#{row.id}</small><small>{row.tracking_scope && t(`stockHistory.scopes.${row.tracking_scope}`)}</small></td>
           <td><Link to={`/products/${encodeURIComponent(row.sku)}`}>{row.sku}</Link><small>{row.product_name}</small></td>
           <td>{row.warehouse_name}</td><td>{t(`stockHistory.types.${row.movement_type}`, row.movement_type)}</td>
           <td className="stock-history-number">{Number(row.quantity) > 0 ? '+' : ''}{readNumber(row.quantity)}</td>

@@ -140,6 +140,8 @@ The current deployment explicitly runs `inventory_hub.ai_content_migrate` for `0
 
 ## Domain rules
 
+Migration `019_stock_tracking.sql` adds an initially empty physical-stock confirmation registry, explicitly run after 018 and packaged in the API image. Old movements do not confirm current quantities. Use `services/stock_tracking.py` for stock readers/writers and preserve historical movements/layers outside the new start. See `docs/stock-tracking.md`; tests using stock/evidence queries require migration 019. Never backfill confirmation from imported balances or enable shop publication through this migration.
+
 - Do not invent EAN, SKU, supplier identifiers, prices, VAT, stock quantities, invoice values, or product relationships.
 - Keep monetary calculations explicit about VAT and rounding. Use decimal-safe logic on the backend; do not rely on binary floating point for persisted financial values.
 - EAN is not the only product identity. Respect the multi-identifier model in `product_identifiers` and its uniqueness rules.

@@ -15,7 +15,7 @@ import { changeDraft, clampColumnWidth, columnPreferences, defaultColumnWidth, D
   editorValueText, EditorValue, fieldPath, loadColumnPreferences, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, normalizeEditorValue, originalValue, parseEditorTsv, saveColumnPreferences } from './productEditorGrid';
 import './ProductEditorPage.css';
 
-const initialFilters: ProductEditorFilters = { q: '', brand: '', shop_code: '', warehouse_code: '', page: 1, page_size: 50, sort: 'group_sku', direction: 'asc' };
+const initialFilters: ProductEditorFilters = { q: '', brand: '', shop_code: '', warehouse_code: '', stock_scope: 'confirmed', page: 1, page_size: 50, sort: 'group_sku', direction: 'asc' };
 interface Editing { row: ProductEditorRow; column: EditorColumn; mode: EditorMode; value: string }
 
 export function ProductEditorPage() {
@@ -109,7 +109,12 @@ export function ProductEditorPage() {
     busyRef.current = 'load'; setBusy('load'); setError(''); setSelected(new Set());
     const current = () => id === generation.current && credential === accessRevision() && !abort.signal.aborted;
     try {
-      if (!options) { const value = await getProductEditorOptions(abort.signal); if (!current()) return; setOptions(value); }
+      if (!options) {
+        const value = await getProductEditorOptions(abort.signal); if (!current()) return; setOptions(value);
+        if (!next.warehouse_code && value.warehouses.length === 1) {
+          next = { ...next, warehouse_code: value.warehouses[0].code }; setFilters(next);
+        }
+      }
       const value = await getEditorProducts(next, abort.signal); if (current()) { setLoaded({ data: value, filters: next, revision: credential }); setActive(value.items.length ? { id: value.items[0].id, field: 'sku' } : null); }
     } catch (value) { if (current()) report(value); }
     finally { if (current()) { busyRef.current = null; setBusy(null); } }
@@ -282,6 +287,7 @@ export function ProductEditorPage() {
   const fieldLabel = (column: EditorColumn, scope: EditorMode) => `${scope === 'common' ? '' : scope === 'biketrek' ? 'BIKETREK · ' : 'xTrek · '}${t(`productEditor.fields.${column.key}`)}`;
   const changeValue = (value: EditorValue | undefined) => value === null || value === undefined ? t('productEditor.inherit') : typeof value === 'boolean' ? t(value ? 'productEditor.visible' : 'productEditor.hidden') : editorValueText(value) || '—';
   function display(row: ProductEditorRow, column: EditorColumn) {
+    if (column.key === 'tracking') return <span className="product-editor-presence"><strong>{t(`productEditor.tracking.${row.stock.tracking_status || (row.stock.known ? 'confirmed' : warehouse ? 'unconfirmed' : 'no_warehouse')}`)}</strong>{row.stock.started_at && <small>{new Date(row.stock.started_at).toLocaleString()}</small>}</span>;
     const staged = draftValue(drafts[row.id], column.key, mode), value = staged !== undefined ? staged : originalValue(row, column.key, mode);
     if (column.key === 'state') {
       if (drafts[row.id]?.status) return t(`productEditor.rowStates.${drafts[row.id].status}`);
@@ -318,12 +324,14 @@ export function ProductEditorPage() {
           <button data-testid={`column-up-${column.key}`} aria-label={t('productEditor.moveLeft', { column: t(`productEditor.fields.${column.key}`) })} disabled={index < 2 || locked || !!busy} onClick={() => reorderColumn(column.key, -1)}>↑</button>
           <button data-testid={`column-down-${column.key}`} aria-label={t('productEditor.moveRight', { column: t(`productEditor.fields.${column.key}`) })} disabled={column.key === 'sku' || index === availableColumns.length - 1 || locked || !!busy} onClick={() => reorderColumn(column.key, 1)}>↓</button>
         </div>)}</div><Button data-testid="reset-columns" size="sm" variant="ghost" disabled={locked || !!busy} onClick={() => { finishEdit(); setActive(null); setPreferences(columnPreferences()); }}>{t('productEditor.resetColumns')}</Button></div>}
+      <p className="product-editor-shared-note">{t('productEditor.trackingHelp')} <Link to="/stock/opening">{t('productEditor.openingStock')}</Link></p>
       <form className="product-editor-filters" onSubmit={event => { event.preventDefault(); load(); }}>
         <label className="product-editor-search"><span><Search size={15} />{t('productEditor.search')}</span><input data-testid="search" value={filters.q} maxLength={200} disabled={locked} onChange={event => changeFilter('q', event.target.value)} placeholder={t('productEditor.searchHint')} /></label>
         <label>{t('productEditor.brand')}<select data-testid="brand" value={filters.brand} disabled={locked} onChange={event => changeFilter('brand', event.target.value)}><option value="">{t('productEditor.allBrands')}</option>{options?.brands.map(brand => <option key={brand}>{brand}</option>)}</select></label>
         <label>{t('productEditor.listing')}<select data-testid="shop-filter" value={filters.shop_code} disabled={locked} onChange={event => changeFilter('shop_code', event.target.value)}><option value="">{t('productEditor.allProducts')}</option>{options?.shops.map(shop => <option key={shop.code} value={shop.code}>{shop.name}</option>)}</select></label>
         <label title={dirtyCount ? t('productEditor.warehouseDirty') : ''}>{t('productEditor.warehouse')}<select data-testid="warehouse" value={filters.warehouse_code} disabled={locked || dirtyCount > 0} onChange={event => changeFilter('warehouse_code', event.target.value)}><option value="">{t('productEditor.allWarehouses')}</option>{options?.warehouses.map(item => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label>
         <label>{t('productEditor.sort')}<select data-testid="sort" value={filters.sort} disabled={locked} onChange={event => changeFilter('sort', event.target.value as ProductEditorFilters['sort'])}>{['group_sku', 'sku', 'name'].map(value => <option value={value} key={value}>{t(`productEditor.sorts.${value}`)}</option>)}</select></label>
+        <label>{t('productEditor.stockScope')}<select data-testid="stock-scope" value={filters.stock_scope} disabled={locked} onChange={event => changeFilter('stock_scope', event.target.value as ProductEditorFilters['stock_scope'])}>{['confirmed', 'in_stock', 'unconfirmed', 'all'].map(value => <option value={value} key={value}>{t(`productEditor.stockScopes.${value}`)}</option>)}</select></label>
         <div className="product-editor-scoped-action"><Button data-testid="load" type="submit" variant="secondary" disabled={!!busy || uncertain}>{t(busy === 'load' ? 'productEditor.loading' : 'productEditor.load')}</Button><ActionScope effects={['hub-read']} /></div>
       </form>
       <div className="product-editor-savebar"><div><strong>{dirtyCount ? t('productEditor.dirtyCount', { count: dirtyCount }) : t('productEditor.noChanges')}</strong><small>{t('productEditor.localOnly')}</small></div>

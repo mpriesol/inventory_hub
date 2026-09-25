@@ -45,7 +45,7 @@ global.fetch = async (path, options = {}) => {
   if (url.pathname === '/api/stock/summary') {
     if (summaryFail) return reply({ detail: 'Unavailable' }, 500);
     return reply({ products_total: 3, inventory_value: null, low_stock_count: 1, open_managed_orders: 2,
-      on_hand_total: 10, reserved_total: 2, available_total: 7, quarantined_total: 1 });
+      confirmed_products: 2, on_hand_total: 10, reserved_total: 2, available_total: 7, quarantined_total: 1 });
   }
   assert.equal(options.cache, 'no-store'); assert.equal(options.headers.Authorization, 'Bearer synthetic-history-token');
   if (rejectAccess) return reply({ detail: { code: 'hub_access_required' } }, 401);
@@ -66,6 +66,9 @@ async function mountHistory(path = '/stock/history') {
   assert.equal(calls.length, 2, 'Unlock loads options and one bounded history page');
   assert.equal(reads()[0].url.searchParams.get('sku'), oddSku, 'SKU query preserves slash, query characters and Unicode exactly');
   assert.equal(reads()[0].url.searchParams.get('page_size'), '50');
+  assert.equal(reads()[0].url.searchParams.get('tracking_scope'), 'current');
+  await input('history-scope', 'historical'); await click('history-load');
+  assert.equal(reads().at(-1).url.searchParams.get('tracking_scope'), 'historical');
   assert.equal(required('history-sku').value, oddSku);
   assert.equal(document.querySelector('[data-action-effects]').dataset.actionEffects, 'hub-read');
   const rows = [...required('history-table').querySelectorAll('tbody tr')];
@@ -133,12 +136,13 @@ async function mountHistory(path = '/stock/history') {
   unlockHub('synthetic-history-token');
   const activity = await getRecentActivity();
   assert.equal(activity.length, 2);
+  assert.equal(reads().at(-1).url.searchParams.get('tracking_scope'), 'current', 'Dashboard excludes historical imports and closures');
   assert.equal(activity[0].id, '100'); assert.equal(activity[0].sku, oddSku); assert.equal(activity[0].reference, 'BT-100');
   assert.equal(activity[0].quantity, '-1.000');
   empty = true; assert.deepEqual(await getRecentActivity(), [], 'Empty ledger stays empty; no fake recent receipt or sync is synthesized');
   empty = false;
   const stats = await getDashboardStats();
-  assert.equal(stats.totalProducts, 3); assert.equal(stats.openOrders, 2); assert.equal(stats.inventoryValue, null);
+  assert.equal(stats.confirmedProducts, 2); assert.equal(stats.totalProducts, 3); assert.equal(stats.openOrders, 2); assert.equal(stats.inventoryValue, null);
   assert.equal(stats.available, 7); assert.equal(stats.quarantined, 1);
   summaryFail = true; await assert.rejects(getDashboardStats(), /500/, 'Summary failure is not converted to zero stats'); summaryFail = false;
 

@@ -40,6 +40,7 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((self.sql_root / "001_schema.sql").read_text())
+            await connection.execute((self.sql_root / "019_stock_tracking.sql").read_text())
             # The deployed 002 enum guard looks across schemas, so explicitly
             # create this schema's enum before invoking that historical file.
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
@@ -262,6 +263,8 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_zero_balance_blocks_whole_batch_and_rolls_back_new_sibling_balance(self):
         batch = await self.batch(csv_text=HEADER + "EXACT-SKU;2;10;ks\nSECOND-SKU;3;20;ks\n")
         async with self.sessions() as db:
+            from stock_tracking_fixture import confirmed_inventory
+            db.add(confirmed_inventory(self.second_id, self.warehouse_id))
             db.add(StockBalance(product_id=self.second_id, warehouse_id=self.warehouse_id))
             await db.commit()
         before = await self.physical_snapshot()
@@ -269,7 +272,7 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.finalize(batch)
         self.assertEqual(await self.physical_snapshot(), before)
 
-    async def test_historical_ledger_without_balance_is_never_opened_again(self):
+    async def test_unconfirmed_history_without_balance_can_start_new_count_without_deleting_history(self):
         batch = await self.batch()
         async with self.sessions() as db:
             db.add(StockMovement(idempotency_key="fixture-history", product_id=self.first_id,
@@ -277,9 +280,10 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 quantity=D("1"), unit_cost=D("5"), balance_after=D("1"), avg_cost_after=D("5")))
             await db.commit()
         before = await self.physical_snapshot()
-        with self.assertRaises(opening.OpeningError):
-            await self.finalize(batch)
-        self.assertEqual(await self.physical_snapshot(), before)
+        result = await self.finalize(batch)
+        self.assertEqual(result["movements_created"], 1)
+        after = await self.physical_snapshot()
+        self.assertEqual(after["stock_movements"][:1], before["stock_movements"])
 
     async def run_held_opening(self, first_batch, second_call):
         entered, release = asyncio.Event(), asyncio.Event()

@@ -6,9 +6,9 @@ from inventory_hub.db_models import MovementType
 from inventory_hub.db_models_ext import StockMovement
 from inventory_hub.stock_adjustment_models import StockAdjustment
 from inventory_hub.services import fifo
+from inventory_hub.services import stock_tracking
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
-from inventory_hub.services.stock_evidence import audited_zero_count
 
 
 def dto(batch):
@@ -37,12 +37,7 @@ def validate_count(balance, counted, *, initial_zero=False):
 
 
 async def initial_zero_count(db, product, warehouse, balance, snapshot, counted):
-    if counted != fifo.ZERO or snapshot["movement_count"]:
-        return False
-    if balance is not None and any(getattr(balance, key) != fifo.ZERO
-                                  for key in ("qty_on_hand", "qty_reserved", "qty_quarantined")):
-        return False
-    return not await db.scalar(select(audited_zero_count(product.id, warehouse.id)))
+    return counted == fifo.ZERO and not snapshot["tracking_confirmed"]
 
 
 async def preview(db, payload):
@@ -65,10 +60,12 @@ async def preview(db, payload):
     if payload.counted_at > at:
         raise fifo.FifoError("fifo_date_invalid", 422)
     snapshot = await fifo._snapshot(db, product, warehouse, balance)
-    if snapshot["valuation"]["mode"] != "fifo" and (snapshot["movement_count"] or balance and balance.qty_on_hand != fifo.ZERO):
+    if not snapshot["tracking_confirmed"]:
+        await stock_tracking.validate_start(db, balance)
+    if snapshot["tracking_confirmed"] and snapshot["valuation"]["mode"] != "fifo" and (snapshot["movement_count"] or balance and balance.qty_on_hand != fifo.ZERO):
         raise fifo.FifoError("fifo_cutover_required")
     initial_zero = await initial_zero_count(db, product, warehouse, balance, snapshot, Decimal(payload.counted_quantity))
-    delta = validate_count(balance, Decimal(payload.counted_quantity), initial_zero=initial_zero)
+    delta = validate_count(balance if snapshot["tracking_confirmed"] else None, Decimal(payload.counted_quantity), initial_zero=initial_zero)
     if delta <= 0 and (payload.unit_cost is not None or payload.cost_status != "unknown"):
         raise fifo.FifoError("adjustment_issue_cost_derived", 422)
     plan = await fifo.plan_issue(db, balance, [{"line_key": "adjustment", "quantity": -delta}], lock=True) if delta < 0 else None
@@ -79,7 +76,8 @@ async def preview(db, payload):
             unit_cost=Decimal(payload.unit_cost) if payload.unit_cost is not None else None,
             cost_status=payload.cost_status, stock_status="available")])
     data = {**raw, "product_id": product.id, "warehouse_id": warehouse.id,
-            "before_quantity": None if initial_zero else fifo.number(balance.qty_on_hand if balance else fifo.ZERO),
+            "before_quantity": None if not snapshot["tracking_confirmed"] else fifo.number(balance.qty_on_hand if balance else fifo.ZERO),
+            "starts_tracking": not snapshot["tracking_confirmed"],
             "initial_zero_count": initial_zero,
             "delta": fifo.number(delta), "snapshot_hash": fifo.digest(snapshot), "snapshot": snapshot,
             "issue_plan": plan, "currency": "EUR", "vat_included": False}
@@ -116,7 +114,7 @@ async def apply(db, identifier, payload):
     initial_zero = await initial_zero_count(db, product, warehouse, balance, snapshot, Decimal(data["counted_quantity"]))
     if bool(data.get("initial_zero_count")) != initial_zero:
         raise fifo.FifoError("fifo_preview_stale")
-    delta = validate_count(balance, Decimal(data["counted_quantity"]), initial_zero=initial_zero)
+    delta = validate_count(balance if snapshot["tracking_confirmed"] else None, Decimal(data["counted_quantity"]), initial_zero=initial_zero)
     was_missing = balance is None
     try:
         balances, created_ids = await lock_stock_balances(db, {product.id}, warehouse.id)
@@ -125,13 +123,17 @@ async def apply(db, identifier, payload):
     if was_missing and product.id not in created_ids:
         raise fifo.FifoError("fifo_preview_stale")
     balance = balances[product.id]
+    await stock_tracking.activate(db, balance, source_type="stock_adjustment", source_id=batch.id,
+                                 operator_name=data["operator_name"])
     if initial_zero:
         # A confirmed absence is evidence, not a receipt or a zero-cost product.
         # Keep the immutable movement ledger's nonzero invariant and create no layer.
         state = await fifo.ensure_fifo(db, balance, "initial_zero_count")
         if state is None or await fifo._layers(db, balance):
             raise fifo.FifoError("fifo_preview_stale")
-        state.revision += 1  # invalidate any other preview even for an existing empty state
+        state.activation_kind = "initial_zero_count"
+        # Starting tracking already advances the state revision; the registry also
+        # invalidates every preview prepared before the confirmed zero count.
         balance.avg_cost, balance.total_value = fifo.ZERO, fifo.ZERO
         await db.flush()
         result = {"adjustment_id": batch.id, "movement_id": None, "initial_zero_count": True,

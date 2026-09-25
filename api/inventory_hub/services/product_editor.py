@@ -26,6 +26,8 @@ from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.catalog import _http_url
 from inventory_hub.services.supplier_availability import project as supplier_availability_projection
 from inventory_hub.services.stock_evidence import physical_stock_evidence
+from inventory_hub.services.stock_tracking import confirmed_stock, current_layer
+from inventory_hub.stock_tracking_models import StockTracking
 
 
 class EditorError(Exception):
@@ -191,8 +193,10 @@ async def _rows(db, ids, warehouse):
             .order_by(Supplier.code, SupplierProduct.supplier_sku))).all():
         sources[product_id].append((supplier_code, code, image_url, supplier_attributes))
     supplier_availability = await supplier_availability_projection(db, ids)
-    balances, fifo_states, fifo_values = {}, set(), {}
+    balances, fifo_states, fifo_values, tracking = {}, set(), {}, {}
     if warehouse:
+        tracking = {row.product_id: row for row in (await db.scalars(select(StockTracking).where(
+            StockTracking.product_id.in_(ids), StockTracking.warehouse_id == warehouse["id"]))).all()}
         evidence = physical_stock_evidence()
         for balance, verified in (await db.execute(select(StockBalance, evidence).where(StockBalance.product_id.in_(ids),
                 StockBalance.warehouse_id == warehouse["id"]))).all():
@@ -208,7 +212,7 @@ async def _rows(db, ids, warehouse):
                 func.sum(case((FifoLayer.cost_status == "provisional", func.round(remaining * FifoLayer.unit_cost, 4)), else_=0)).label("provisional_value"),
                 func.sum(case((FifoLayer.cost_status == "unknown", remaining), else_=0)).label("unknown_qty"),
                 func.sum(case((FifoLayer.cost_status == "provisional", remaining), else_=0)).label("provisional_qty"))
-            fifo_values = {row.product_id: row for row in (await db.execute(sums.where(FifoLayer.product_id.in_(fifo_states),
+            fifo_values = {row.product_id: row for row in (await db.execute(sums.where(current_layer(), FifoLayer.product_id.in_(fifo_states),
                 FifoLayer.warehouse_id == warehouse["id"]).group_by(FifoLayer.product_id))).all()}
     result = {}
     for product in products:
@@ -270,12 +274,16 @@ async def _rows(db, ids, warehouse):
                      "total_value": _decimal(balance.total_value) if complete else None, "valuation_complete": complete,
                      "known_value": _decimal(known_value), "provisional_value": _decimal(provisional_value),
                      "unknown_qty": _decimal(unknown_qty), "provisional_qty": _decimal(provisional_qty)}
+        stock["tracking_status"] = "confirmed" if verified else "unconfirmed" if warehouse else "no_warehouse"
+        stock["started_at"] = tracking[product.id].started_at.isoformat() if product.id in tracking else None
         override = overrides.get(product.id)
         result[product.id] = _make_row(facts, override.data if override else {}, override.revision if override else 0, warehouse, stock)
     return result
 
 
-async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=None, page=1, page_size=50, sort="group_sku", direction="asc"):
+async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=None, page=1, page_size=50, sort="group_sku", direction="asc", stock_scope="all"):
+    if stock_scope not in ("all", "confirmed", "unconfirmed", "in_stock"):
+        raise EditorError("product_editor_invalid_request", 422)
     if page < 1 or page_size not in (25, 50, 100) or sort not in ("group_sku", "sku", "name") or direction not in ("asc", "desc"):
         raise EditorError("product_editor_invalid_request", 422)
     warehouse = await _warehouse(db, warehouse_code)
@@ -303,6 +311,14 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
     if shop_code:
         statement = statement.where(exists(select(ShopProduct.id).join(Shop, ShopProduct.shop_id == Shop.id)
             .where(ShopProduct.product_id == Product.id, Shop.code == shop_code, ShopProduct.is_listed.is_(True))))
+    if stock_scope != "all":
+        tracked = select(StockBalance.product_id).where(confirmed_stock())
+        if warehouse:
+            tracked = tracked.where(StockBalance.warehouse_id == warehouse["id"])
+        if stock_scope == "in_stock":
+            tracked = tracked.where(StockBalance.qty_on_hand > 0)
+        condition = Product.id.in_(tracked)
+        statement = statement.where(~condition if stock_scope == "unconfirmed" else condition)
     total = await db.scalar(select(func.count()).select_from(statement.subquery()))
     natural = func.product_editor_natural_key
     if sort == "group_sku":

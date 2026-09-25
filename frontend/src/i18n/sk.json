@@ -50,11 +50,11 @@
   },
   "dashboard": {
     "title": "Prehľad skladu",
-    "subtitle": "Aktuálne údaje evidované v Hube.",
+    "subtitle": "Súčty iba z potvrdenej skladovej evidencie. Staré importy a neoverené položky sa nezapočítavajú.",
     "localOnly": "Prehľad nevyvoláva synchronizáciu e-shopov.",
     "loading": "Načítavam prehľad…",
     "loadError": "Prehľad sa nepodarilo načítať. Obnovte stránku a skúste to znova.",
-    "products": "Skladové produkty",
+    "products": "Produkty v katalógu",
     "lowStock": "Nízky stav",
     "lowStockHint": "Voľné množstvo na minime produktu alebo pod ním",
     "openOrders": "Rozpracované objednávky v Hube",
@@ -72,8 +72,10 @@
     "settingsHint": "Intervaly a režimy podľa skladu a e-shopu",
     "recent": "Posledné skladové pohyby",
     "unlockHistory": "Odomknúť históriu operátorským tokenom",
-    "noActivity": "Zatiaľ nie sú evidované skladové pohyby.",
-    "allMovements": "Celá história pohybov"
+    "noActivity": "V novej skladovej evidencii zatiaľ nie sú pohyby.",
+    "allMovements": "Celá história pohybov",
+    "confirmedProducts": "Potvrdené položky: {{count}}. Nulový súčet neznamená, že bol celý sklad spočítaný.",
+    "openStock": "Otvoriť aktívny sklad"
   },
   "receiving": {
     "title": "Príjem tovaru",
@@ -1009,8 +1011,8 @@
   "openingStock": {
     "title": "Počiatočný stav skladu",
     "back": "Späť na sklad",
-    "subtitle": "Kontrolované založenie fyzicky spočítanej zásoby a jej obstarávacej ceny.",
-    "scope": "Táto operácia zapisuje skutočnú zásobu do Hubu. Použi ju iba pre položky, ktoré v zvolenom sklade ešte nemajú evidovaný stav ani pohyby. Zásobu už zaúčtovanú príjmom nenahrávaj druhýkrát.",
+    "subtitle": "Založte novú evidenciu z fyzicky spočítaných kusov. Staré importy sa nepripočítajú; zostanú v histórii. Už potvrdené SKU opravujte cez Opravu množstva.",
+    "scope": "Táto operácia potvrdí fyzicky spočítanú zásobu v Hube. Použi ju pre položky bez potvrdeného začiatku evidencie v zvolenom sklade. Staré neoverené množstvo sa uzavrie v histórii. Už potvrdený príjem nenahrávaj druhýkrát.",
     "lock": "Uzamknúť",
     "token": "Prístupový token Hubu",
     "tokenHelp": "Použi rovnaký token ako pre AI obsah a kontrolu objednávok. Uchováva sa iba v pamäti do obnovenia stránky alebo uzamknutia.",
@@ -1055,14 +1057,14 @@
       "csv_too_many_rows": "CSV môže obsahovať najviac 5 000 položiek.",
       "csv_unknown_columns": "CSV obsahuje nepodporované stĺpce. Ponechaj iba sku, quantity, unit_cost a unit.",
       "duplicate_sku": "SKU sa v dávke opakuje. Uveď produkt iba raz so správnym celkovým množstvom.",
-      "existing_stock": "Produkt už má v tomto sklade evidovaný stav alebo pohyby. Počiatočný stav ho nemôže prepísať.",
+      "existing_stock": "Položka už má potvrdenú skladovú evidenciu. Použite Opravu množstva.",
       "invalid_quantity": "Množstvo musí byť kladné celé číslo, najviac 999 999 999 ks.",
       "invalid_sku": "Vyplň platné SKU produktu, najviac 100 znakov.",
       "invalid_unit_cost": "Cena musí byť nezáporné číslo v EUR bez DPH, najviac 99 999 999,9999 a so štyrmi desatinnými miestami.",
       "line_value_too_large": "Hodnota riadka presahuje povolený rozsah. Skontroluj množstvo a cenu.",
       "missing_unit_cost": "Chýba jednotková obstarávacia cena v EUR bez DPH.",
       "opening_batch_not_found": "Dávka s týmto ID sa nenašla. Over ID alebo načítaj posledné dávky.",
-      "opening_existing_stock": "Po náhľade vznikol skladový stav alebo pohyb. Dávka nebola zaúčtovaná; skontroluj príjmy a sklad.",
+      "opening_existing_stock": "Položka už má potvrdenú skladovú evidenciu. Použite Opravu množstva.",
       "opening_invalid_limit": "Požadovaný počet dávok nie je platný. Obnov stránku a skús to znova.",
       "opening_invalid_request": "Skontroluj povinné údaje, čas a potvrdenia.",
       "opening_preview_changed": "Uložený náhľad sa nezhoduje s potvrdením. Over uložený stav dávky.",
@@ -1074,7 +1076,13 @@
       "unsupported_unit": "Podporovaná je iba jednotka ks a celé kusy. Metre ani balenia sa neprepočítavajú.",
       "warehouse_unavailable": "Vybraný sklad nie je dostupný alebo je vypnutý. Načítaj aktuálny zoznam skladov.",
       "zero_unit_cost": "Nulová obstarávacia cena: over, že je výslovne správna.",
-      "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni."
+      "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
+      "stock_tracking_required": "Najprv potvrďte inventúru alebo nový príjem tejto položky.",
+      "stock_tracking_committed_stock": "Starý stav má rezervácie alebo karanténu. Najprv ich treba zosúladiť; nová evidencia sa nezačala.",
+      "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
+      "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
+      "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
     },
     "warnings": "Upozornenia",
     "row": "Riadok",
@@ -1236,7 +1244,13 @@
       "order_stock_source_unavailable": "Objednávku alebo stavy sa nepodarilo načítať z e-shopu. Skús čítanie znova neskôr.",
       "order_stock_upgates_access": "E-shop odmietol prístup API. Skontroluj jeho konfiguráciu.",
       "order_stock_invalid_request": "Skontroluj povinné údaje a potvrdenia.",
-      "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni."
+      "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
+      "stock_tracking_required": "Najprv potvrďte inventúru alebo nový príjem tejto položky.",
+      "stock_tracking_committed_stock": "Starý stav má rezervácie alebo karanténu. Najprv ich treba zosúladiť; nová evidencia sa nezačala.",
+      "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
+      "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
+      "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
     },
     "posHelp": "Zaplatený a dokončený pokladňový predaj v základnom prijatom stave so zapnutou rezerváciou sa navrhne na výdaj. Samotná platba webovej objednávky výdaj nespustí.",
     "moreErrors": "Ďalších {{count}} chýb. Oprav podklad a priprav nový náhľad."
@@ -1345,7 +1359,7 @@
       "stock_projection_mapping_alias": "Kód položky e-shopu sa nezhoduje s presným SKU v Hube. Prepojenie vyžaduje kontrolu.",
       "stock_projection_mapping_invalid": "Prepojenie na nadradený produkt e-shopu nie je platné.",
       "stock_projection_balance_missing": "V zvolenom sklade chýba evidovaný stav. Množstvo zostáva neznáme.",
-      "stock_projection_balance_unverified": "Evidovaný stav nemá podklad vo fyzickom skladovom pohybe. Množstvo vyžaduje kontrolu.",
+      "stock_projection_balance_unverified": "Skladový stav nie je potvrdený novou inventúrou alebo príjmom.",
       "stock_projection_quantity_invalid": "Fyzické a rezervované množstvá nie sú platné. Je potrebná kontrola skladu.",
       "stock_projection_unit_unsupported": "Náhľad podporuje iba celé kusy; desatinné množstvo sa neprepočíta.",
       "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni."
@@ -1773,7 +1787,8 @@
       "xtrek_price": "xTrek · cena s DPH",
       "xtrek_visible": "xTrek · viditeľnosť",
       "supplier_quantity": "U dodávateľa",
-      "supplier_availability": "Dodávateľská dostupnosť"
+      "supplier_availability": "Dodávateľská dostupnosť",
+      "tracking": "Stav skladovej evidencie"
     },
     "rowStates": {
       "dirty": "Neuložené zmeny",
@@ -1865,7 +1880,21 @@
       "conflict": "Nejednoznačné prepojenie – treba kontrolu",
       "unknown": "Dostupnosť zatiaľ nie je overená",
       "unknown_quantity": "Zdroj neuvádza známu dostupnosť pre tento kód"
-    }
+    },
+    "stockScope": "Skladová evidencia",
+    "stockScopes": {
+      "confirmed": "Len potvrdené položky",
+      "in_stock": "Potvrdené a fyzicky skladom",
+      "unconfirmed": "Nepotvrdené položky",
+      "all": "Všetky produkty"
+    },
+    "tracking": {
+      "confirmed": "Potvrdená evidencia",
+      "unconfirmed": "Čaká na inventúru / prvý príjem",
+      "no_warehouse": "Vyberte sklad"
+    },
+    "trackingHelp": "Aktívny sklad obsahuje iba položky potvrdené inventúrou alebo novým príjmom. Staré importy zostávajú v histórii. Pre prvé spočítanie vyberte Nepotvrdené položky a otvorte detail → Oprava množstva.",
+    "openingStock": "Hromadný počiatočný stav"
   },
   "actions": {
     "effects": {
@@ -1942,7 +1971,13 @@
       "ADJUSTMENT_IN": "Korekcia príjmom",
       "ADJUSTMENT_OUT": "Korekcia výdajom"
     },
-    "accessError": "Prístup bol odmietnutý. Zadajte platný operátorský token; ak nie je nastavený, musí ho nakonfigurovať správca."
+    "accessError": "Prístup bol odmietnutý. Zadajte platný operátorský token; ak nie je nastavený, musí ho nakonfigurovať správca.",
+    "scope": "Evidencia",
+    "scopes": {
+      "current": "Nová potvrdená evidencia",
+      "historical": "Historické údaje",
+      "all": "Všetky pohyby"
+    }
   },
   "stockAdjustment": {
     "title": "Opraviť fyzické množstvo",
@@ -1972,13 +2007,19 @@
       "fifo_cutover_required": "Pred opravou dokonči prechod starých zásob v časti Nákupné ceny.",
       "fifo_preview_stale": "Sklad sa po náhľade zmenil. Načítaj aktuálny stav a priprav nový náhľad.",
       "fifo_preview_expired": "Náhľad vypršal. Priprav nový náhľad.",
-      "stock_publication_warehouse_held": "Sklad je uzavretý na kontrolovaný prenos. Opravu možno zaúčtovať po ukončení uzáveru."
+      "stock_publication_warehouse_held": "Sklad je uzavretý na kontrolovaný prenos. Opravu možno zaúčtovať po ukončení uzáveru.",
+      "stock_tracking_required": "Najprv potvrďte inventúru alebo nový príjem tejto položky.",
+      "stock_tracking_committed_stock": "Starý stav má rezervácie alebo karanténu. Najprv ich treba zosúladiť; nová evidencia sa nezačala.",
+      "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
+      "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
+      "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
     },
     "reload": "Načítať aktuálny sklad",
     "unknown": "Neznáma cena",
     "derivedCost": "Náklad úbytku sa určí z pôvodných nákupných vrstiev.",
     "unknownQuantity": "Zatiaľ neoverené",
-    "initialCountHelp": "Fyzický stav ešte nie je potvrdený. Po skutočnom spočítaní zadaj množstvo; ak nemáme žiadny kus, zadaj výslovne 0. Dostupnosť dodávateľa tento stav nepotvrdzuje.",
+    "initialCountHelp": "Toto SKU ešte nemá potvrdenú evidenciu. Zadajte celý fyzicky spočítaný stav, aj 0. Potvrdenie začne novú evidenciu; historické množstvo sa nepripočíta.",
     "initialZeroPreview": "Prvé potvrdenie fyzického stavu: neoverené → 0 ks.",
     "zeroNoMovement": "Uloží sa doklad o overení nuly. Nevznikne fiktívny skladový pohyb ani nákupná vrstva.",
     "confirmInitialZero": "Potvrdzujem fyzicky overenú nulovú zásobu a uloženie tohto záznamu.",
@@ -2392,7 +2433,13 @@
       "fifo_cost_processing_failed": "Spracovanie sa nepodarilo dokončiť. Otvor detail a over podklady.",
       "hub_access_required": "Operátorský prístup je neplatný alebo nie je nakonfigurovaný.",
       "hub_access_not_configured": "Operátorský prístup je neplatný alebo nie je nakonfigurovaný.",
-      "fifo_cost_retry_later": "API dočasne obmedzilo volania. Ďalší pokus bude možný po uvedenom čase."
+      "fifo_cost_retry_later": "API dočasne obmedzilo volania. Ďalší pokus bude možný po uvedenom čase.",
+      "stock_tracking_required": "Najprv potvrďte inventúru alebo nový príjem tejto položky.",
+      "stock_tracking_committed_stock": "Starý stav má rezervácie alebo karanténu. Najprv ich treba zosúladiť; nová evidencia sa nezačala.",
+      "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
+      "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
+      "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
     },
     "remoteValues": "Hodnoty odosielané do Upgates",
     "remoteWithVat": "Jednotkové ceny v Upgates sú v EUR s DPH. Prepočet používa DPH konkrétnej položky. FIFO náklady vyššie sú bez DPH.",

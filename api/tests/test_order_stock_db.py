@@ -45,6 +45,7 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((self.sql_root / "001_schema.sql").read_text())
+            await connection.execute((self.sql_root / "019_stock_tracking.sql").read_text())
             # Historical 002 checks enum names globally; create this schema's
             # own enum before applying it, as the receiving suite also does.
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
@@ -146,6 +147,8 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def seed(self, sku, quantity="10", cost="10", total=None):
         async with self.sessions() as db:
+            from stock_tracking_fixture import confirmed_inventory
+            db.add(confirmed_inventory(self.products[sku], self.warehouse_id))
             db.add(StockBalance(product_id=self.products[sku], warehouse_id=self.warehouse_id,
                 qty_on_hand=D(quantity), avg_cost=D(cost), total_value=D(total) if total is not None else D(quantity) * D(cost)))
             await db.commit()
@@ -172,8 +175,9 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             return [(item.external_item_id, reservation.product_id, reservation.quantity, reservation.shortage_qty, reservation.status.value)
                     for reservation, item in rows]
 
-    async def test_preview_has_no_physical_effect_and_partial_reservation_keeps_backorder_balance_absent(self):
+    async def test_preview_has_no_physical_effect_and_backorder_preserves_confirmed_zero(self):
         await self.seed("SKU-A", "2")
+        await self.seed("SKU-B", "0")
         raw = raw_order(raw_line(quantity="5"), raw_line(code="SKU-B", quantity="3"))
         before = await self.physical_snapshot()
         preview = await self.preview(raw)
@@ -192,7 +196,8 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             ))).all()
             self.assertEqual(prices, [(None, None), (None, None)])
         self.assertEqual((await self.balance("SKU-A"))[:2], (D("2"), D("2")))
-        self.assertIsNone(await self.balance("SKU-B"), "An unavailable supplier/backorder item must not fabricate a physical balance")
+        self.assertEqual((await self.balance("SKU-B"))[:2], (D("0"), D("0")),
+                         "An unavailable supplier/backorder item must not fabricate physical stock")
         rows = {product: (quantity, shortage) for _, product, quantity, shortage, _ in await self.holds(raw)}
         self.assertEqual(rows, {self.products["SKU-A"]: (D("5"), D("3")), self.products["SKU-B"]: (D("3"), D("3"))})
         self.assertEqual(await self.movements(), [])

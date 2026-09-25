@@ -20,6 +20,8 @@ export interface StockItem {
 export interface StockSummary {
   products_total: number;
   products_with_stock: number;
+  confirmed_products: number;
+  unconfirmed_products: number;
   inventory_value: number | null;
   known_inventory_value: number;
   value_complete: boolean;
@@ -51,7 +53,7 @@ export interface ProductDetail {
   image_url: string | null;
   attributes: { name: string; value: string }[];
   identifiers: { type: string; value: string; is_primary: boolean }[];
-  stock: { on_hand: number; reserved: number; available: number; avg_cost: number | null };
+  stock: { known: boolean; on_hand: number | null; reserved: number | null; available: number | null; avg_cost: number | null };
   shops: { shop: string; external_code: string; parent_code?: string | null; variant_code: string | null; shop_availability: string | null; shop_stock: number | null; last_pull_at: string | null }[];
 }
 

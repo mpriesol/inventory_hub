@@ -34,6 +34,7 @@ export function DashboardPage() {
     {loading && <p role="status">{t('dashboard.loading')}</p>}
     {error && <p role="alert">{t('dashboard.loadError')}</p>}
     {stats && <>
+      <p data-testid="dashboard-confirmed-stock">{t('dashboard.confirmedProducts', { count: stats.confirmedProducts ?? 0 })} <Link to="/stock">{t('dashboard.openStock')}</Link></p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard icon="📦" value={number(stats.totalProducts)} label={t('dashboard.products')} />
         <StatsCard icon="⚠" value={number(stats.lowStockCount)} label={t('dashboard.lowStock')} sublabel={t('dashboard.lowStockHint')} />

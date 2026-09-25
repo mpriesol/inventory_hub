@@ -18,6 +18,7 @@ from inventory_hub.db_models import MovementType, OrderStatus, Product, Reservat
 from inventory_hub.db_models_ext import Reservation, ShopOrder, ShopOrderItem, StockBalance, StockMovement
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
+from inventory_hub.stock_tracking_models import StockTracking
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
 
@@ -191,10 +192,15 @@ async def _plan(db, order, source_order, action, warehouse_id, *, lock):
         balances = {row.product_id: row for row in (await db.execute(select(StockBalance).where(
             StockBalance.product_id.in_(sorted(ids)), StockBalance.warehouse_id == warehouse_id,
         ).execution_options(populate_existing=True))).scalars()}
+    confirmed_ids = set(await db.scalars(select(StockTracking.product_id).where(
+        StockTracking.warehouse_id == warehouse_id, StockTracking.product_id.in_(ids))))
     effects, planned_lines = [], []
     for product_id in sorted(ids):
         product, balance = products.get(product_id), balances.get(product_id)
         current = by_product[product_id]
+        if product_id not in confirmed_ids:
+            errors.append(_error("stock_unconfirmed", product_id=product_id))
+            continue
         if product is None or any(line["sku"] != product.sku for line in current):
             errors.append(_error("line_identity", product_id=product_id))
             continue

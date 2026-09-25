@@ -74,7 +74,7 @@ class StockHistoryRoutesTests(TestCase):
             self.assertEqual(response.headers.get("cache-control"), "no-store")
             listing.assert_awaited_once_with(self.db, q="INV-24", sku="Case-SKU-01", warehouse_code="central",
                 movement_type=MovementType.RECEIVING_IN, date_from=date(2026, 9, 1), date_to=date(2026, 9, 24),
-                page=2, page_size=25, snapshot_id=87)
+                page=2, page_size=25, snapshot_id=87, tracking_scope="all")
             upstream.assert_not_called()
         self.db.commit.assert_not_awaited()
         self.db.flush.assert_not_awaited()
@@ -120,13 +120,15 @@ class StockHistoryPresentationTests(IsolatedAsyncioTestCase):
                 reference_id=None, reference_source=None, created_by="operator",
                 created_at=datetime(2026, 9, 24, tzinfo=timezone.utc))
             rows.append(Row(movement=movement, sku="SKU-1", product_name="Product", warehouse_code="central",
-                warehouse_name="Central", reference_label=None, document=None, shop_code=None, supplier_code=None))
+                warehouse_name="Central", reference_label=None, document=None, shop_code=None, supplier_code=None,
+                current_inventory=identifier == 2))
         db = SimpleNamespace(scalar=AsyncMock(side_effect=[2, 2]),
             execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)))
         with patch.object(UpgatesClient, "from_shop") as upstream:
             result = await service.list_movements(db)
             upstream.assert_not_called()
         incoming, outgoing = result["items"]
+        self.assertEqual((incoming["tracking_scope"], outgoing["tracking_scope"]), ("historical", "current"))
         self.assertIsNone(incoming["unit_cost"])
         self.assertIsNone(incoming["total_cost"])
         self.assertEqual((incoming["balance_before"], incoming["balance_after"]), ("0", "5"))
@@ -148,4 +150,3 @@ class StockHistoryPresentationTests(IsolatedAsyncioTestCase):
         result = await service.list_movements(DB(), sku="Exact-SKU", q="INV_%", warehouse_code="central",
             movement_type=MovementType.RECEIVING_IN, date_from=date(2026, 9, 1), date_to=date(2026, 9, 24))
         self.assertEqual((result["items"], result["snapshot_id"], result["total"]), ([], 0, 0))
-

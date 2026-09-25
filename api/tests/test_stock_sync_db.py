@@ -40,6 +40,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             await connection.execute((root/'001_schema.sql').read_text())
+            await connection.execute((root/'019_stock_tracking.sql').read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid','partial','paid')")
             for name in ('002_invoice_management.sql','005_ai_content.sql','006_opening_stock.sql','007_order_stock.sql','008_order_collection.sql',
                          '009_stock_automation.sql','010_stock_publication.sql','011_fifo.sql','015_stock_sync.sql','017_stock_adjustments.sql'):
@@ -77,6 +78,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 reconcile_cursor_at=self.clock,last_completed_at=self.clock,next_poll_at=self.clock))
             db.add(ShopProduct(shop_id=shop.id,product_id=product.id,external_code='xTrek',parent_code='xTrek',variant_code='SKU-A',is_variant=True))
             db.add(StockBalance(product_id=product.id,warehouse_id=warehouse.id,qty_on_hand=7,qty_reserved=2,qty_quarantined=1,avg_cost=3,total_value=21))
+            from stock_tracking_fixture import confirmed_inventory
+            db.add(confirmed_inventory(product.id, warehouse.id))
             db.add(StockMovement(product_id=product.id,warehouse_id=warehouse.id,movement_type=MovementType.INITIAL,quantity=7,
                 unit_cost=3,balance_after=7,avg_cost_after=3,idempotency_key=uuid4().hex))
 

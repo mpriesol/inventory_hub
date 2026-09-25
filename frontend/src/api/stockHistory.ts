@@ -2,6 +2,7 @@ import { API_BASE } from './client';
 import { hubRequest } from './access';
 
 export interface Movement {
+  tracking_scope?: 'current' | 'historical';
   id: number; product_id: number; sku: string; product_name: string;
   warehouse_code: string; warehouse_name: string; movement_type: string;
   quantity: string; balance_before: string; balance_after: string;
@@ -15,6 +16,7 @@ export interface MovementPage {
   source: 'hub'; upgates_calls: 0;
 }
 export interface MovementFilters {
+  tracking_scope?: 'all' | 'current' | 'historical';
   q: string; sku: string; warehouse_code: string; movement_type: string; date_from: string; date_to: string;
 }
 export interface HistoryOptions { warehouses: { code: string; name: string }[]; movement_types: string[]; date_timezone: string }

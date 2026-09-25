@@ -8,13 +8,14 @@ from inventory_hub.db_models_ext import ReceivingSession, ShopOrder, StockMoveme
 from inventory_hub.fifo_models import FifoReceipt
 from inventory_hub.opening_stock_models import OpeningStockBatch
 from inventory_hub.product_editor_models import ProductEditorOverride
+from inventory_hub.services.stock_tracking import current_movement
 
 
 def decimal_text(value):
     return None if value is None else format(value, "f")
 
 
-def history_query(*, q="", sku=None, warehouse_code=None, movement_type=None, date_from=None, date_to=None, snapshot_id=None):
+def history_query(*, q="", sku=None, warehouse_code=None, movement_type=None, date_from=None, date_to=None, snapshot_id=None, tracking_scope="all"):
     movement = StockMovement
     name = func.coalesce(ProductEditorOverride.data["common"]["name"].astext, Product.name)
     document = func.coalesce(ReceivingSession.invoice_number,
@@ -22,7 +23,7 @@ def history_query(*, q="", sku=None, warehouse_code=None, movement_type=None, da
     reference = func.coalesce(ShopOrder.external_code, ShopOrder.external_id, document, movement.reference_source)
     statement = select(movement, Product.sku, name.label("product_name"), Warehouse.code.label("warehouse_code"),
         Warehouse.name.label("warehouse_name"), reference.label("reference_label"), document.label("document"),
-        Shop.code.label("shop_code"), Supplier.code.label("supplier_code"))\
+        Shop.code.label("shop_code"), Supplier.code.label("supplier_code"), current_movement().label("current_inventory"))\
         .join(Product, Product.id == movement.product_id).join(Warehouse, Warehouse.id == movement.warehouse_id)\
         .outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == Product.id)\
         .outerjoin(ReceivingSession, and_(movement.reference_type == "receiving_session",
@@ -32,6 +33,8 @@ def history_query(*, q="", sku=None, warehouse_code=None, movement_type=None, da
         .outerjoin(Shop, Shop.id == ShopOrder.shop_id)\
         .outerjoin(FifoReceipt, and_(movement.reference_type == "fifo_receipt", movement.reference_id == FifoReceipt.id))\
         .outerjoin(OpeningStockBatch, and_(movement.reference_type == "opening_stock", movement.reference_id == OpeningStockBatch.id))
+    if tracking_scope != "all":
+        statement = statement.where(current_movement() if tracking_scope == "current" else ~current_movement())
     if snapshot_id is not None:
         statement = statement.where(movement.id <= snapshot_id)
     if sku:
@@ -62,6 +65,7 @@ async def list_movements(db, *, page=1, page_size=50, snapshot_id=None, **filter
     for row in rows:
         movement = row[0]
         items.append({"id": movement.id, "product_id": movement.product_id, "sku": row.sku,
+            "tracking_scope": "current" if row.current_inventory else "historical",
             "product_name": row.product_name, "warehouse_code": row.warehouse_code, "warehouse_name": row.warehouse_name,
             "movement_type": movement.movement_type.value, "quantity": decimal_text(movement.quantity),
             "balance_before": decimal_text(movement.balance_after - movement.quantity),
