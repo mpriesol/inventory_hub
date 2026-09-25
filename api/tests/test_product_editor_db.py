@@ -7,6 +7,7 @@ import unittest
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -167,6 +168,65 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             result = await self.listing(q=query)
             self.assertEqual({row["sku"] for row in result["items"]}, expected, query)
         self.assertEqual((await self.listing(q="REMOTE-ONLY"))["total"], 0)
+
+    async def test_supplier_code_search_preserves_legacy_and_explicit_links_without_duplicates(self):
+        async with self.transaction() as db:
+            legacy_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-001", name="Legacy source")
+            linked_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-002", name="Linked source")
+            other_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-003", name="Second linked source")
+            orphan = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ORPHAN", name="No local product")
+            wildcard = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-100%_CODE", name="Literal wildcard")
+            db.add_all([legacy_source, linked_source, other_source, orphan, wildcard])
+            await db.flush()
+            legacy = Product(sku="PL-LEGACY-SEARCH", name="Legacy only", source_supplier_product_id=legacy_source.id)
+            linked = Product(sku="PL-LINKED-SEARCH", name="Explicit only")
+            literal = Product(sku="PL-LITERAL-SEARCH", name="Literal code only", source_supplier_product_id=wildcard.id)
+            db.add_all([legacy, linked, literal])
+            await db.flush()
+            db.add_all([ProductSupplySource(product_id=linked.id, supplier_product_id=linked_source.id),
+                ProductSupplySource(product_id=linked.id, supplier_product_id=other_source.id)])
+        for query, expected in (("raw-zlta-001", {"PL-LEGACY-SEARCH"}), ("raw-zlta-002", {"PL-LINKED-SEARCH"}),
+                                ("raw-zlta", {"PL-LEGACY-SEARCH", "PL-LINKED-SEARCH"}),
+                                ("PL-LINKED-SEARCH", {"PL-LINKED-SEARCH"}), ("raw-orphan", set()),
+                                ("raw-missing", set()), ("100%_CODE", {"PL-LITERAL-SEARCH"}), ("100X_CODE", set())):
+            with self.subTest(query=query):
+                result = await self.listing(q=query)
+                self.assertEqual({row["sku"] for row in result["items"]}, expected)
+                self.assertEqual(result["total"], len(expected))
+
+    async def test_unmatched_sku_search_does_not_rescan_supplier_catalog_per_product(self):
+        async with self.transaction() as db:
+            db.add_all([Product(sku=f"PERF-PRODUCT-{number}", name="Unrelated product") for number in range(1000)])
+            db.add_all([SupplierProduct(supplier_id=self.supplier_id, supplier_sku=f"PERF-SOURCE-{number}",
+                name="Unrelated supplier item") for number in range(1000)])
+        async with self.sessions() as db:
+            count_statements = []
+            original_scalar = db.scalar
+
+            async def capture(statement, *args, **kwargs):
+                count_statements.append(statement)
+                return await original_scalar(statement, *args, **kwargs)
+
+            with patch.object(db, "scalar", side_effect=capture):
+                result = await service.list_products(db, q="PL-NOT-IN-SUPPLIER-CATALOG")
+            self.assertEqual(result["total"], 0)
+            count_sql = str(count_statements[0].compile(dialect=db.bind.dialect, compile_kwargs={"literal_binds": True}))
+            plan = await db.scalar(text("EXPLAIN (ANALYZE, FORMAT JSON) " + count_sql))
+            if isinstance(plan, str):
+                plan = json.loads(plan)
+            nodes, supplier_scans = [plan[0]["Plan"]], []
+            while nodes:
+                node = nodes.pop()
+                if node.get("Relation Name") == "supplier_products":
+                    supplier_scans.append(node)
+                nodes.extend(node.get("Plans", []))
+            self.assertTrue(supplier_scans, "The query plan must inspect supplier identities")
+            catalog_size = await db.scalar(select(func.count()).select_from(SupplierProduct))
+            visited = sum((node["Actual Rows"] + node.get("Rows Removed by Filter", 0)) * node["Actual Loops"]
+                for node in supplier_scans)
+            # Permit alternative index/join plans, but not a catalog-sized scan
+            # for each of the 1,000 unrelated products. Avoid timing thresholds.
+            self.assertLessEqual(visited, catalog_size * 3, supplier_scans)
 
     async def test_brand_and_shop_filters_use_exact_canonical_mapping_scope(self):
         self.assertEqual((await self.listing(brand="Trek"))["total"], 2)
