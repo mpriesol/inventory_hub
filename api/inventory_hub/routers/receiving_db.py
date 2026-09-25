@@ -38,6 +38,8 @@ from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
+from inventory_hub.config_io import claim_supplier_prefix
+from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 from inventory_hub.routers.receiving import _update_invoice_status
 
 router = APIRouter(tags=["Receiving"])
@@ -147,26 +149,9 @@ def _parse_invoice_csv(p: Path) -> List[Dict[str, Any]]:
 def _product_code_prefix(supplier_code: str) -> str:
     """Get product code prefix from supplier config."""
     try:
-        cfg = load_supplier_config(supplier_code)
-        paths = [
-            ("adapter_settings", "mapping", "postprocess", "product_code_prefix"),
-            ("adapter_settings", "product_code_prefix"),
-            ("product_code_prefix",),
-        ]
-        for path in paths:
-            cur = cfg
-            for key in path:
-                cur = getattr(cur, key, None) if hasattr(cur, key) else (cur.get(key) if isinstance(cur, dict) else None)
-                if cur is None:
-                    break
-            if cur and str(cur).strip():
-                return str(cur).strip()
-    except Exception:
-        pass
-
-    if supplier_code in ("paul-lange", "paul_lange"):
-        return "PL-"
-    return ""
+        return get_supplier_prefix(load_supplier_config(supplier_code, write_back_on_load=False))
+    except SupplierPrefixError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
 
 
 def _invoice_csv_path(supplier_code: str, invoice_no: str) -> Path:
@@ -366,15 +351,18 @@ async def _ensure_product_for_line(
     """
     ean = (line.ean or "").strip()
     sku_raw = (line.supplier_sku or "").strip()
+    if sku_raw:
+        try:
+            claim_supplier_prefix(supplier.code, prefix)
+        except SupplierPrefixError as error:
+            raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
     product, matched_by = await _resolve_line(db, supplier, line, prefix)
     created = False
     if product is None:
-        barcodes = verified_barcodes((ean,))
-        if not sku_raw and not barcodes:
-            return None, False, "no supplier SKU or verified EAN on line"
-        product_sku = f"{prefix}{sku_raw}" if sku_raw else f"{prefix}EAN-{barcodes[0]}"
-        # Generated EAN SKUs follow the existing invoice creation convention;
-        # check the generated code through the resolver as well.
+        if not sku_raw:
+            return None, False, "missing supplier SKU for new product"
+        product_sku = canonical_supplier_sku(prefix, sku_raw)
+        # Revalidate the final canonical code before creating a new product.
         identity = RemoteIdentity(0, product_sku, barcodes=(ean,))
         index = await load_identity_index(db, 0, [identity], local=True)
         resolution = index.resolve(identity)
@@ -428,6 +416,12 @@ async def _ensure_product_for_line(
             db.add(SupplierProduct(supplier_id=supplier.id, supplier_sku=sku_raw,
                 ean=ean or None, name=(line.description or product.sku)[:500], purchase_price=line.unit_price))
             await db.flush()
+        from inventory_hub.services.supplier_links import reconcile_supplier_links
+        report = await reconcile_supplier_links(db, supplier.code, product_ids=[product.id])
+        if report["conflicts"]:
+            raise HTTPException(409, detail={"code": "receiving_identity_conflict",
+                "message": f"Riadok {line.line_number}: dodávateľský kód označuje iný produkt. Skontroluj prepojenie.",
+                "line_number": line.line_number, "conflicts": report["conflicts"]})
     return product, created, None
 
 

@@ -12,6 +12,7 @@ from lxml import etree
 
 from inventory_hub.adapters.pl_feed_convert import _get_text, read_feed_items
 from inventory_hub.catalog_types import CatalogParameter, CatalogPrices, CatalogProduct
+from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
 
 
 def http_url(value: str | None) -> str | None:
@@ -57,7 +58,7 @@ def _source_fields(item) -> Any:
 
 def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "products") -> list[tuple[CatalogProduct, dict]]:
     adapter = cfg.get("adapter_settings") or {}
-    prefix = ((adapter.get("mapping") or {}).get("postprocess") or {}).get("product_code_prefix") or adapter.get("product_code_prefix") or ""
+    prefix = get_supplier_prefix(cfg)
     catalog = adapter.get("catalog") or {}
     currency = str(catalog.get("currency") or cfg.get("default_currency") or "EUR").upper()
     if not re.fullmatch(r"[A-Z]{3}", currency):
@@ -113,7 +114,7 @@ def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "product
         external_flag = {"ano": True, "áno": True, "nie": False}.get(external_raw.casefold())
         static = item.find("STA_PARAMS")
         product = CatalogProduct(
-            supplier=supplier, feed_key=feed_key, code=code, shop_code=prefix + code,
+            supplier=supplier, feed_key=feed_key, code=code, shop_code=canonical_supplier_sku(prefix, code),
             manufacturer_code=_get_text(item, "MANUFACTURER_CODE") or None,
             eans=eans, name=name, brand=_get_text(item, "MANUFACTURER") or None,
             description=_get_text(item, "DESCRIPTION"),

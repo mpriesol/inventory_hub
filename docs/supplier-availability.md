@@ -14,6 +14,8 @@ Text dodacej dostupnosti sa upravuje v konfigurácii konkrétneho dodávateľa v
 
 Pri viacerých dodávateľoch sa použije prvý čerstvý dostupný zdroj podľa primárneho zdroja a priority. Vypnuté alebo neobjednateľné väzby sa nepoužijú. Samotné vypnutie automatického sťahovania neruší už získané údaje; tie dožijú svoju platnosť.
 
+Čerstvý feed musí byť prepojený s konkrétnym skladovým produktom. Jednoznačné väzby sa dopĺňajú pri importe; pre už stiahnuté údaje slúži lokálne tlačidlo **Prepojiť dostupnosti** pri dodávateľovi. Nesťahuje feed ani nevolá Upgates. Tabuľka rozlišuje chýbajúcu väzbu, konflikt identity, chýbajúce pozorovanie a starý údaj. Podrobnosti vrátane uzamknutia prefixu a pravidla `PL-` + dodávateľský kód sú v [dodávateľskej identite](supplier-identity.md).
+
 Ručné spustenie počas prebiehajúceho načítania pripraví jeden ďalší beh. Opakované kliknutia nevytvárajú paralelné sťahovania. Zmena konfigurácie počas sťahovania zneplatní rozpracovaný výsledok a vyžiada nový beh.
 
 ## Pre vývojárov
@@ -27,6 +29,7 @@ API používa existujúci operator token a `Cache-Control: no-store`:
 | `GET /supplier-availability` | Zoznam konfigurácií a prevádzkového stavu bez prihlasovacích údajov zdrojov |
 | `PUT /supplier-availability/{supplier}` | Uloženie s `expected_revision`; striktne validované `enabled`, `feed_key`, `interval_seconds`, `freshness_seconds`, `min_coverage_percent` |
 | `POST /supplier-availability/{supplier}/run` | Trvalé zaradenie ručného behu s `expected_revision`; odpoveď 202 |
+| `POST /supplier-availability/{supplier}/links/reconcile` | Lokálna dávka prepojenia existujúcich údajov; `after_product_id`, limit 1–500, konflikty a pokračovací kurzor |
 
 Revizia 0 znamená ešte neuložené nastavenia. Interval a plánovanie sú v PostgreSQL `supplier_availability_settings`; prihlasovacie údaje, parser a texty dostupnosti ostávajú v existujúcom súborovom dodávateľskom configu. Každý beh zachová hash celého configu a jeho revíziu. Pred prijatím sa znovu overia. Do auditu sa neukladá URL ani autentizácia.
 

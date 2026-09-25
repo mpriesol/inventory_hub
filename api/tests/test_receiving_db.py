@@ -1,9 +1,11 @@
 """Receiving ledger regressions in a guarded, disposable localhost PostgreSQL schema."""
 import asyncio
+import json
 import os
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -16,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from inventory_hub.db_models import Product, Supplier, Warehouse, ReceivingStatus, ProductIdentifier, IdentifierType
+from inventory_hub import config_io
 from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement, ScanEvent
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services.identifiers import ProductIdentifierService, IdentifierConflict
@@ -68,6 +71,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((root / "010_stock_publication.sql").read_text())
             await connection.execute((root / "011_fifo.sql").read_text())
             await connection.execute((root / "013_receiving_scan_requests.sql").read_text())
+            await connection.execute((root / "014_supplier_availability.sql").read_text())
         finally:
             await connection.close()
         self.engine = create_async_engine(
@@ -79,6 +83,12 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.index = self.index_patch.start()
         self.prefix_patch = patch.object(receiving, "_product_code_prefix", return_value="TEST-")
         self.prefix_patch.start()
+        self.config_folder = TemporaryDirectory()
+        self.config_patch = patch.object(config_io, "DATA_ROOT", Path(self.config_folder.name))
+        self.config_patch.start()
+        config_path = config_io.supplier_path("receipt-test")
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({"product_code_prefix": "TEST-"}))
         async with self.sessions() as db:
             supplier = Supplier(code="receipt-test", name="Test receiving supplier")
             warehouse = Warehouse(code="receipt-test", name="Test warehouse")
@@ -88,6 +98,8 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.supplier_id, self.warehouse_id, self.product_id = supplier.id, warehouse.id, product.id
 
     async def asyncTearDown(self):
+        self.config_patch.stop()
+        self.config_folder.cleanup()
         self.prefix_patch.stop()
         self.index_patch.stop()
         await self.engine.dispose()
@@ -293,6 +305,29 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
         self.index.assert_not_called()
 
+    async def test_new_ean_without_supplier_code_is_not_a_generated_product(self):
+        session_id = await self.make_session([{"ean": "4006381333931", "received_qty": D("1"), "unit_price": D("5")}])
+        with self.assertRaises(HTTPException) as error:
+            await self.finalize(session_id)
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIn("missing supplier SKU", str(error.exception.detail))
+        self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
+        async with self.sessions() as db:
+            self.assertIsNone(await db.scalar(select(Product).where(Product.sku == "TEST-EAN-4006381333931")))
+
+    async def test_receiving_links_supplier_source_without_changing_existing_canonical_sku(self):
+        from inventory_hub.db_models_ext import ProductSupplySource
+        from inventory_hub.db_models import SupplierProduct
+        session_id = await self.make_session([{"product_id": self.product_id, "supplier_sku": "001234",
+            "received_qty": D("1"), "unit_price": D("5")}])
+        await self.finalize(session_id)
+        async with self.sessions() as db:
+            source = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id,
+                SupplierProduct.supplier_sku == "001234"))
+            self.assertIsNotNone(await db.scalar(select(ProductSupplySource).where(
+                ProductSupplySource.supplier_product_id == source.id, ProductSupplySource.product_id == self.product_id)))
+            self.assertEqual((await db.get(Product, self.product_id)).sku, "RECEIPT-A")
+
     async def test_zero_quantity_does_not_create_product_balance_or_movement(self):
         session_id = await self.make_session([{"received_qty": D("0"), "unit_price": None}])
         result = await self.finalize(session_id, force=True)
@@ -319,6 +354,9 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["movements_created"], 1)
 
     async def test_cross_supplier_concurrent_receipts_share_one_barcode_identity(self):
+        config_path = config_io.supplier_path("receipt-other")
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({"product_code_prefix": "OTHER-"}))
         async with self.sessions() as db:
             supplier = Supplier(code="receipt-other", name="Other test supplier")
             db.add(supplier)
@@ -329,11 +367,12 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         second_id = await self.make_session([{"supplier_sku": "new-b", "ean": ean, "received_qty": D("2"), "unit_price": D("5")}], supplier_id)
         # Different supplier aliases for the same unique verified barcode reuse
         # one physical product, as shop pulls and catalog imports already do.
-        results = await asyncio.wait_for(asyncio.gather(
-            self.finalize(first_id), self.finalize(second_id, "receipt-other")), 10)
+        with patch.object(receiving, "_product_code_prefix", side_effect=lambda code: "OTHER-" if code == "receipt-other" else "TEST-"):
+            results = await asyncio.wait_for(asyncio.gather(
+                self.finalize(first_id), self.finalize(second_id, "receipt-other")), 10)
         self.assertEqual(sum(result["products_created"] for result in results), 1)
         async with self.sessions() as db:
-            products = (await db.execute(select(Product).where(Product.sku.in_(("TEST-new-a", "TEST-new-b"))))).scalars().all()
+            products = (await db.execute(select(Product).where(Product.sku.in_(("TEST-new-a", "OTHER-new-b"))))).scalars().all()
             self.assertEqual(len(products), 1)
             balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == products[0].id))
             self.assertEqual(balance.qty_on_hand, D("4"))

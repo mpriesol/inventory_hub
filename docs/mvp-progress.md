@@ -65,3 +65,11 @@ PR #35 bol následne nasadený ako `d8b44e2`; CI `36006570205` prešlo 731 backe
 Vlastník potom výslovne požiadal implementovať odosielanie FIFO nákupných cien. Vetva `codex/fifo-purchase-cost-sync` dopĺňa produktovú cenu najbližšieho kusa po príjme/výdaji a vážený priemer nákladov konkrétnych vydaných kusov v objednávke. Samostatný náhľad umožňuje opravu staršej objednávky z jej pôvodných FIFO alokácií bez nového výdaja. Migrácia 018 je aditívna a predvolene nič neaktivuje. [Používateľský a vývojársky postup](fifo-purchase-costs.md).
 
 Nasadenie a posledné výsledky tejto etapy treba overiť v jej PR/Actions; tento záznam vzniká pri implementácii a sám ich nepotvrdzuje. Oprava dodávateľského párovania diagnostikovaná po PR #35 zostáva samostatná téma; tento balík ju neoznačuje za vyriešenú.
+
+## Prefixy a párovanie dostupností (25. 9. 2026)
+
+Vlastník určil opravu Paul Lange dostupností za bezprostrednú prioritu a schválil implementáciu. Platí spoločné SKU `prefix dodávateľa + jeho kód variantu`, vlastné nemenné interné ID produktu a samostatné dodávateľské kódy. Pri ďalšom dodávateľovi zostáva pôvodné SKU. Prefix je jedinečný, po použití uzamknutý aj voči konfigurácii cez API a obnove histórie. Existujúce neprázdne prefixy sa pri zavedení ochrany uzamknú; staré SKU sa neprečíslujú.
+
+Vetva `codex/supplier-prefix-availability` pridáva register prefixov, jednotný parser, automatické dopĺňanie jednoznačných väzieb a lokálne tlačidlo **Prepojiť dostupnosti** nad už stiahnutými údajmi. Chýbajúca väzba, konflikt, chýbajúce pozorovanie a starý feed sú rozlíšené. Nepridáva SQL migráciu, nezapína prenos zásob/cien ani pilotnú skladovú autoritu. [Návod a kontrakt](supplier-identity.md).
+
+Lokálne prešli priebežné testy prefixov, chráneného opravného API, príjmových pomocných funkcií a tri dotknuté UI sady s buildom. Úplná finálna sada, databázové CI, číslo PR a nasadenie sa doplnia podľa skutočného výsledku; táto implementačná poznámka ich sama nepotvrdzuje. PostgreSQL sa lokálne nepodarilo zriadiť pre obmedzenia prostredia, databázové scenáre preto musí overiť PR CI.

@@ -181,6 +181,10 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
         await db.flush()
         path = await asyncio.to_thread(_download, supplier, source, feed_key)
         records = await asyncio.to_thread(PARSERS[parser_name], path, supplier, cfg, feed_key)
+        # Order identity/source locks consistently with receiving and local
+        # repair. Acquire only after the supplier download/parse has finished.
+        from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+        await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
         old = {row.supplier_sku: row for row in (await db.execute(
             select(SupplierProduct.id, SupplierProduct.supplier_sku, SupplierProduct.source_feed_id,
                    SupplierProduct.attributes["catalog"]["source_hash"].astext.label("source_hash"))
@@ -241,11 +245,15 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
                                "last_successful_run_id": run.id,
                                "xml_path": path.relative_to(config_io.DATA_ROOT).as_posix()}
         await db.flush()
+        from inventory_hub.services.supplier_links import reconcile_source_codes
+        link_reports = await reconcile_source_codes(db, supplier, [product.code for product, _raw in records], cfg)
         return {"supplier": supplier, "feed_key": feed_key, "run_id": run.id,
                 "status": "completed", "items": len(records), "new": new_count,
                 "updated": updated_count, "fetched_at": now,
                 "groups": len({p.group_code for p, _ in records if p.group_code}),
-                "warnings": sum(bool(p.warnings) for p, _ in records)}
+                "warnings": sum(bool(p.warnings) for p, _ in records),
+                "supplier_links": {"linked": sum(report["linked"] for report in link_reports),
+                    "conflicts": sum(len(report["conflicts"]) for report in link_reports)}}
     except Exception as error:
         await db.rollback()
         # Keep the old catalog, but commit a separate failed-run audit record.

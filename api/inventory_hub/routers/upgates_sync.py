@@ -365,6 +365,7 @@ async def import_upgates_products(
              "linked_products": 0, "content_saved": 0, "stock_initialized": 0, "ean_conflicts": 0}
     now = datetime.utcnow()
     source = f"upgates:{shop_code}"
+    imported_product_ids = set()
 
     for family in selected:
         resolutions, conflict = _family_resolution(family, index)
@@ -479,8 +480,13 @@ async def import_upgates_products(
         stats["updated_products"] += not bool(created_rows)
         stats["linked_products"] += linked
         stats["content_saved"] += 1
+        imported_product_ids.update(leaf_ids)
 
+    from inventory_hub.services.supplier_links import reconcile_product_links
+    link_reports = await reconcile_product_links(db, imported_product_ids)
     return {"shop": shop_code, **stats, "ean_conflict_details": [], "skipped": skipped,
+            "supplier_links": {"linked": sum(report["linked"] for report in link_reports),
+                "conflicts": [conflict for report in link_reports for conflict in report["conflicts"]]},
             "conflict_count": len(conflicts), "conflicts": conflicts,
             "message": (f"Nové: {stats['created_products']} produktov ({stats['created_variants']} variantov), "
                         f"priradené: {stats['linked_products']}, obnovené záznamy: {stats['updated_products']}, "

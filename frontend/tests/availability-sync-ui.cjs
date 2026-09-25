@@ -45,6 +45,7 @@ let run = { id: '22222222-2222-4222-8222-222222222222', shop_code: 'xtrek', trig
   completed_at: null, error: null, counts: { verified: 0, skipped: 0, failed: 0, uncertain: 0, pending: 0 }, items: [], more_pending: true };
 let hasRun = false, supplierSaveMode = 'ok', stockSaveMode = 'ok', optionsMode = 'ok', runMode = 'ok';
 let rejectSupplier, rejectStock, resolveOptions, rejectRun;
+let repairMode = 'ok', finishRepair;
 const options = shop => ({ shop: { code: shop, name: shop }, warehouse: { code: 'main', name: 'Main warehouse' }, warehouse_settings: clone(defaults),
   settings: clone(shops[shop]), effective: Object.fromEntries(['interval_seconds','batch_size','max_order_age_seconds'].map(key => [key, shops[shop][key] ?? defaults[key]])),
   blockers: !shops[shop].authorized ? ['stock_sync_authority_required'] : authorityChanged ? ['stock_sync_authority_changed'] : [],
@@ -62,6 +63,15 @@ global.fetch = async (path, init = {}) => {
     return reply(supplier);
   }
   if (url.pathname === '/api/supplier-availability/fixture/run') { assert.equal(body.expected_revision, supplier.revision); supplier.manual_requested_at = '2026-09-24T10:00:00Z'; return reply({ supplier: 'fixture', queued: true }); }
+  if (url.pathname === '/api/supplier-availability/fixture/links/reconcile') {
+    assert.equal(init.method, 'POST'); assert.equal(body.limit, 500);
+    const result = body.after_product_id === 0 ? { supplier: 'fixture', scanned: 500, linked: 20, existing: 475, skipped: 4, conflicts: [{ product_id: 18, sku: 'TEST-18', supplier_sku: '18', reason: 'supplier_link_conflict' }], skipped_details: [], next_after_product_id: 700 }
+      : { supplier: 'fixture', scanned: 40, linked: 10, existing: 30, skipped: 0, conflicts: [], skipped_details: [], next_after_product_id: null };
+    assert([0, 700].includes(body.after_product_id), 'Reconciliation follows the server cursor');
+    if (repairMode === 'pending' && body.after_product_id === 0) return new Promise(resolve => { finishRepair = () => resolve(reply(result)); });
+    if (repairMode === 'lost' && body.after_product_id === 700) throw new TypeError('Synthetic lost link result');
+    return reply(result);
+  }
   if (url.pathname === '/api/stock-sync/options') {
     assert.equal(init.method, 'GET'); const value = options(url.searchParams.get('shop_code'));
     if (optionsMode === 'pending') return new Promise(resolve => { resolveOptions = () => resolve(reply(value)); });
@@ -112,6 +122,27 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   supplier.manual_requested_at = null; await click('load-suppliers'); await input('supplier-fixture-interval', '3600'); assert(required('supplier-fixture-run').disabled, 'Manual run cannot silently use unsaved settings');
   await click('supplier-fixture-save'); assert.equal(writes().at(-1).body.expected_revision, 1);
 
+  const beforeRepair = writes().length;
+  repairMode = 'pending';
+  await act(async () => { required('supplier-fixture-reconcile').click(); required('supplier-fixture-reconcile').click(); await tick(); });
+  assert.equal(writes().length, beforeRepair + 1, 'Double click starts only one local reconciliation');
+  assert(required('load-suppliers').disabled && required('supplier-fixture-save').disabled && required('supplier-fixture-run').disabled);
+  assert.equal(required('supplier-fixture-reconcile').parentElement.querySelector('[data-action-effects]').getAttribute('data-action-effects'), 'hub-write', 'Link repair has no supplier or shop API effect');
+  await act(async () => { finishRepair(); await tick(); });
+  assert.equal(writes().length, beforeRepair + 2);
+  assert.equal(writes().at(-1).body.after_product_id, 700);
+  assert(required('supplier-fixture-link-result').textContent.includes('540'));
+  assert(required('supplier-fixture-link-result').textContent.includes('Nové väzby: 30'));
+  assert(required('supplier-fixture-link-result').textContent.includes('TEST-18'), 'Unresolved identities remain visible');
+
+  repairMode = 'lost'; await click('supplier-fixture-reconcile');
+  const afterLostRepair = writes().length;
+  assert(required('supplier-fixture-reconcile').disabled, 'A failed batch requires operator recovery');
+  assert(required('supplier-fixture-link-result').textContent.includes('500'), 'Completed batches remain visible after a later failure');
+  await tick(); assert.equal(writes().length, afterLostRepair, 'A lost local repair result never starts automatic retries');
+  repairMode = 'ok'; await click('load-suppliers');
+  assert(!required('supplier-fixture-reconcile').disabled);
+
   await click('load-stock-sync'); assert(required('run-stock-sync').disabled); assert(required('sync-inherit-interval_seconds').checked);
   assert(required('sync-shop-interval_seconds').disabled, 'Inherited value stays an inheritance');
   await input('sync-warehouse-interval_seconds', '59'); assert(required('save-sync-warehouse').disabled);
@@ -154,7 +185,12 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   await act(async () => { late(); await tick(); }); assert(!element('sync-enabled'), 'An old credential response cannot repopulate editable settings');
   optionsMode = 'ok'; await input('sync-shop', 'biketrek'); await click('load-stock-sync'); assert(!required('sync-authorized').checked);
   assert(calls.at(-1).path.endsWith('shop_code=biketrek')); assert(calls.at(-1).headers.Authorization === 'Bearer synthetic-new-token');
+  await click('load-suppliers'); repairMode = 'pending'; await click('supplier-fixture-reconcile');
+  const repairRequest = calls.at(-1), finishOldRepair = finishRepair, countBeforeLock = calls.length;
   await click('lock-sync'); assert(!element('load-suppliers') && element('sync-token')); assert.equal(required('sync-token').value, '');
+  assert(repairRequest.signal.aborted);
+  await act(async () => { finishOldRepair(); await tick(); });
+  assert.equal(calls.length, countBeforeLock, 'Locking access stops cursor continuation after the current batch');
   assert.equal(dom.window.localStorage.length, 0); assert.equal(dom.window.sessionStorage.length, 0);
   await act(async () => { root.unmount(); await tick(); });
   console.log('availability-sync-ui: supplier validation, CAS, inheritance, central authority, manual jobs, recovery, credentials and stale responses passed');

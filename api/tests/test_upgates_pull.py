@@ -1,9 +1,11 @@
 """Product pulls keep shop snapshots separate from physical inventory."""
 import os
+import json
 import unittest
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlsplit
@@ -17,8 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from inventory_hub.database import get_session
-from inventory_hub.db_models import IdentifierType, MovementType, Product, ProductGroup, ProductIdentifier, Warehouse, Shop
-from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, StockBalance, StockMovement, ProductVariantAttribute
+from inventory_hub import config_io
+from inventory_hub.db_models import IdentifierType, MovementType, Product, ProductGroup, ProductIdentifier, Warehouse, Shop, Supplier, SupplierProduct
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, StockBalance, StockMovement, ProductVariantAttribute, ProductSupplySource
 from inventory_hub.routers import stock, upgates_sync
 from inventory_hub.services.product_identity import IdentityIndex
 
@@ -92,7 +95,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2]
-            for name in ("001_schema.sql", "004_shop_product_content.sql", "007_order_stock.sql", "011_fifo.sql", "012_product_editor.sql"):
+            for name in ("001_schema.sql", "004_shop_product_content.sql", "007_order_stock.sql", "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql"):
                 await connection.execute((root / "infra" / "db-init" / name).read_text())
         finally:
             await connection.close()
@@ -122,6 +125,32 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 table: (await db.execute(text(f"SELECT * FROM {table} ORDER BY id"))).mappings().all()
                 for table in ("stock_balances", "stock_movements")
             }
+
+    async def test_shop_pull_attaches_exact_supplier_source_without_creating_stock(self):
+        with TemporaryDirectory() as folder, patch.object(config_io, "DATA_ROOT", Path(folder)):
+            config_path = config_io.supplier_path("paul-lange")
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({"product_code_prefix": "PL-"}))
+            async with self.sessions() as db:
+                supplier = Supplier(code="paul-lange", name="Paul Lange")
+                db.add(supplier)
+                await db.flush()
+                source = SupplierProduct(supplier_id=supplier.id, supplier_sku="001234", name="Supplier item",
+                    ean="5901234123457")
+                db.add(source)
+                await db.commit()
+                source_id = source.id
+            self.remote[:] = [{**PRODUCTS[0], "code": "PL-001234"}]
+            before = await self.stock_snapshot()
+            result = await self.pull()
+            self.assertEqual(result["supplier_links"]["linked"], 1)
+            self.assertEqual(await self.stock_snapshot(), before)
+            async with self.sessions() as db:
+                product = await db.scalar(select(Product).where(Product.sku == "PL-001234"))
+                link = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == product.id))
+                self.assertEqual(link.supplier_product_id, source_id)
+            second = await self.pull(update_existing=True)
+            self.assertEqual(second["supplier_links"]["linked"], 0)
 
     async def test_repeated_two_shop_pull_keeps_quantities_and_prices_as_snapshots_only(self):
         # Product-only pulls work before a default physical warehouse is configured.

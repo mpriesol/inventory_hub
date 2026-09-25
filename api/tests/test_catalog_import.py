@@ -86,6 +86,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         self.addCleanup(patch.stopall)
         patch.object(config_io, "DATA_ROOT", self.root).start()
+        config_io.save_supplier("paul-lange", {"product_code_prefix": "PL-"})
         cfg_path = config_io.shop_path("test-shop")
         cfg_path.parent.mkdir(parents=True)
         cfg_path.write_text(json.dumps({"upgates_api_base_url": "https://test.example.com/api/v2", "upgates_login": "test-fixture", "upgates_api_key": "test-fixture"}))
@@ -129,6 +130,29 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         sent = self.client.sent[0][1]["products"][0]
         self.assertEqual(sent["prices"][0]["pricelists"][0]["price_original"], 119.99)
         self.assertEqual(sent["prices"][0]["price_common"], 123)
+
+    async def test_supplier_prefix_is_locked_before_remote_product_create(self):
+        from inventory_hub.supplier_prefix import SupplierPrefixError
+        original = self.client.post
+        attempted = []
+
+        def post(endpoint, payload):
+            if endpoint == "products":
+                with self.assertRaises(SupplierPrefixError) as error:
+                    config_io.save_supplier("paul-lange", {"product_code_prefix": "OTHER-"})
+                attempted.append(error.exception.code)
+            return original(endpoint, payload)
+
+        with patch.object(self.client, "post", side_effect=post):
+            await self.run_import()
+        self.assertEqual(attempted, ["supplier_prefix_locked"])
+        self.assertEqual(self.client.sent[0][1]["products"][0]["code"], "PL-A-001")
+
+    async def test_changed_unused_prefix_rejects_prepared_codes_before_post(self):
+        config_io.save_supplier("paul-lange", {"product_code_prefix": "OTHER-"})
+        result = await self.run_import()
+        self.assertEqual(result["items"][0]["errors"], ["supplier_prefix_changed"])
+        self.assertEqual(self.client.sent, [])
 
     async def test_config_availability_overrides_ai_rules_and_preserves_metadata_review_flags(self):
         from test_ai_content import content

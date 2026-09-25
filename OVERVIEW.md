@@ -11,6 +11,7 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 | [AGENTS.md](AGENTS.md) | Rozsah práce, platnosť udelených oprávnení a pravidlá zmien. |
 | Tento dokument | Mapa projektu, hranice implementácie a prevádzkové súvislosti. |
 | [Dodávateľský katalóg](docs/supplier-catalog.md) | Kontrakty feedov, identity, náhľadov, importu a obnovy. |
+| [Dodávateľská identita](docs/supplier-identity.md) | Uzamknuté prefixy, spoločné SKU a doplnenie väzieb dostupností z už načítaných údajov. |
 | [Centrálny sklad](docs/central-stock.md) | Schválené obchodné pravidlá, prvý bezpečnostný balík a hranice ďalšej implementácie. |
 | [Objednávky — návod pre obsluhu](docs/order-workflows.md) | Prvé spustenie, nastavenia, ručná kontrola a riešenie výnimiek. |
 | [Automatika — vývojársky kontrakt](docs/order-automation.md) | Konfigurácia, fronta, transakcie, API a obnova. |
@@ -103,7 +104,7 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | --- | --- |
 | `suppliers`, `supplier_feeds`, `supplier_feed_runs`, `supplier_products` | Dodávatelia a normalizované feedové dáta. |
 | `product_groups`, `products`, `product_identifiers`, `product_variant_attributes` | Rodiny, predajné položky, identifikátory a variantné atribúty. |
-| `product_supply_sources` | Model väzieb skladovej položky na dodávateľské ponuky. |
+| `product_supply_sources` | Väzby skladovej položky na dodávateľské ponuky; používané dostupnosťami, importmi a lokálnou opravou párovania. |
 | `uploaded_invoices`, `uploaded_invoice_lines` | Nahrané faktúry a položky. |
 | `receiving_sessions`, `receiving_lines`, `scan_events`, `receiving_scan_requests` | Príjem a skenovanie. |
 | `warehouses`, `stock_balances`, `stock_movements` | Sklady, aktuálne množstvá a nemenná história pohybov. |
@@ -253,19 +254,25 @@ Návrat kódu rieš kontrolovaným revert PR a bežným nasadením. Revert nevra
 
 ## Ďalšie kroky centrálneho skladu
 
-Lokálne rezervácie/výdaje, FIFO a editácia produktov sú implementované; prevádzkové zapnutie a overenie každého kanála zostáva samostatným krokom. Editor ukladá požadované údaje pre BIKETREK a xTrek, ale tento balík ešte nepridáva ich odosielanie do Upgates. Zostáva najmä:
+Lokálne rezervácie/výdaje, FIFO, editácia produktov a odoslanie podporovaných vybraných polí sú implementované; prevádzkové zapnutie a overenie každého kanála zostáva samostatným krokom. Zostáva najmä:
 
-- doručovanie požadovaných názvov, cien a viditeľnosti s overením výsledku na konkrétnom variante;
+- rozšírenie podporovaných editovateľných polí a používateľské overenie publikovania na konkrétnom variante;
 - kompletné tržby bez DPH, zľavy a refundácie pre výpočet hrubej marže; FIFO zatiaľ poskytuje náklady;
 - historické vratky bez FIFO alokácií, odpis poškodeného tovaru, všeobecné merné jednotky a roly;
-- prevádzkové zosúladenie objednávok vrátane tvrdých zmazaní a bezpečná automatická publikácia zásob.
+- prevádzkové zosúladenie objednávok vrátane tvrdých zmazaní a pilot pravidelného prenosu zásob s jednotným rozsahom vybraných SKU.
 
 Po aktivácii FIFO sa nemožno vrátiť k starému kódu váženého priemeru bez kontrolovaného plánu. Ponechaj nové tabuľky aj nemenné pohyby a použi opravu vpred; podrobnosti v [FIFO](docs/fifo.md).
 
-Kontrolované publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md). Automatické periodické posielanie zásob ostáva plánované: Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného odpočtu z pokladne alebo košíka. Táto etapa vyžaduje externú údržbu a kontrolu objednávok; trvalá blokácia v Hube sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.
+Kontrolované údržbové publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md); samostatný implementovaný pravidelný prenos v [stock-sync.md](docs/stock-sync.md). Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného nezávislého odpočtu. Pravidelný prenos preto vyžaduje nastavenú skladovú autoritu a spracovanie objednávok. Údržbová cesta vyžaduje externú údržbu; jej lokálna blokácia sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.
 
 ## Nové oddelené workflow (014–017)
 
 Dodávateľský worker `supplier_availability_worker` uchováva prijaté pozorovania a vyhodnocuje ich platnosť. Zlyhanie alebo neúplný feed nikdy nevynuluje fyzickú zásobu. `stock_sync_worker` prenáša vlastné voľné kusy, dostupnosť a objednateľnosť iba pri výslovne nastavenej skladovej autorite, čerstvých objednávkach a povolenom serverovom zápise `STOCK_SYNC_WRITE_ENABLED` (default false). Údržbový publisher zostáva samostatný.
 
 Migrácie `014_supplier_availability.sql`, `015_stock_sync.sql`, `016_product_publication.sql` a `017_stock_adjustments.sql` sú aditívne, zabalené v API obraze a zapojené do deploymentu po `013` pred spustením nového API. Nezapínajú nové plánovanie ani hromadné zápisy. Príslušné zámery, nejasné pokusy a účtovné výsledky sa pri návrate verzie nemažú; pre riešenie nasadenej chyby uprednostni kompatibilnú doprednú opravu.
+
+## Dodávateľské prefixy a väzby dostupností
+
+Etapa `codex/supplier-prefix-availability` zjednocuje prefixy a dopĺňanie dodávateľských väzieb. Nový produkt používa spoločné SKU `prefix + kód variantu dodávateľa`, ale jeho nemenná identita zostáva interné produktové ID. Použitý prefix chráni trvalý filesystem register; existujúce neprázdne prefixy sa konzervatívne uzamknú. Zmena nemení staré SKU ani skladovú históriu.
+
+`services/supplier_links.py` prepája iba jednoznačné lokálne identity. Chránené `POST /supplier-availability/{supplier}/links/reconcile` a tlačidlo **Prepojiť dostupnosti** doplnia väzby aj z už prijatých dát bez nového sťahovania či Upgates volaní. Skladová tabuľka rozlišuje chýbajúcu väzbu a konflikt od chýbajúceho alebo starého pozorovania. Nová SQL migrácia nie je potrebná; etapa nezapína prenos zásob ani cien. Podrobný kontrakt: [supplier-identity.md](docs/supplier-identity.md). Nasadenie a testy sú vedené samostatne v `docs/mvp-progress.md`.

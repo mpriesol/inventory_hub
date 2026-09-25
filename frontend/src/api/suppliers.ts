@@ -11,6 +11,9 @@ export interface SupplierSummary {
   name: string;
   is_active: boolean;
   product_prefix: string;
+  product_prefix_locked?: boolean;
+  product_prefix_lock_reason?: string | null;
+  config_error?: string | null;
   invoice_count: number;
   feed_mode: 'remote' | 'local' | 'none';
   download_strategy: 'web' | 'manual' | 'api' | 'disabled' | 'paul-lange-web' | 'northfinder-web';
@@ -34,6 +37,10 @@ export interface ValidationResult {
 }
 
 export interface SupplierConfig {
+  // Server-owned identity metadata; editable configuration cannot unlock a prefix.
+  product_prefix?: string;
+  product_prefix_locked?: boolean;
+  product_prefix_lock_reason?: string | null;
   name?: string;
   is_active?: boolean;
   feeds: {

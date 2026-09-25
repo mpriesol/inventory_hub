@@ -35,7 +35,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2]
-            for name in ("001_schema.sql", "004_shop_product_content.sql"):
+            for name in ("001_schema.sql", "004_shop_product_content.sql", "014_supplier_availability.sql"):
                 await connection.execute((root / "infra" / "db-init" / name).read_text())
         finally:
             await connection.close()

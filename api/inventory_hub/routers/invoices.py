@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from inventory_hub.settings import settings
 from inventory_hub.config_io import load_supplier as load_supplier_config
+from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 from inventory_hub.adapters.paul_lange_web import (
     LoginConfig,
     refresh_invoices_web as paul_lange_refresh_invoices_web,
@@ -175,8 +176,11 @@ def _canon_from_invoice(inv_rec: dict, supplier: str) -> dict:
             unit_inc = unit_ex * (1.0 + float(vat_rate)/100.0)
 
     unit_inc_eur = (unit_inc or 0.0) * rate_to_eur
-    prefix = postp.get("product_code_prefix") or ""
-    product_code = f"{prefix}{scm}" if (prefix and scm) else scm
+    try:
+        prefix = get_supplier_prefix(load_supplier_config(supplier))
+        product_code = canonical_supplier_sku(prefix, scm) if scm else ""
+    except SupplierPrefixError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
 
     return {
         "SCM": scm, "EAN": ean, "TITLE": title, "QTY": qty,
@@ -661,9 +665,14 @@ def enriched_preview(
     ]
     out_headers = src_headers + [c for c in add_cols if c not in src_headers]
 
+    try:
+        supplier_prefix = get_supplier_prefix(load_supplier_config(supplier))
+    except SupplierPrefixError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
+
     def _pc_to_scm(pc: str) -> str:
         pc = str(pc or "")
-        return pc[3:] if pc.startswith("PL-") else pc
+        return pc[len(supplier_prefix):] if supplier_prefix and pc.startswith(supplier_prefix) else pc
 
     def _only_digits(s: str) -> str:
         s = str(s or "").strip().replace(" ", "")

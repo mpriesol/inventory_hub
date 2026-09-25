@@ -9,7 +9,7 @@ export interface ProductShopValues { name: string | null; sale_price_gross: stri
 export interface ProductEditorRow {
   id: number; sku: string; group: { id: number; code: string; name: string } | null;
   attributes: { name: string; value: string }[]; eans: string[]; supplier_codes: { supplier_code: string; code: string }[]; image_url: string | null;
-  supplier_availability?: { available: boolean | null; fresh: boolean; label: string; source: string | null; quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown'; observed_at: string | null; expires_at: string | null; orderable: true };
+  supplier_availability?: { available: boolean | null; fresh: boolean; label: string; source: string | null; quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown'; observed_at: string | null; expires_at: string | null; orderable: true; status?: 'missing_link' | 'unavailable_source' | 'missing_observation' | 'stale' | 'fresh' | 'conflict'; reason?: string | null; supplier?: string; supplier_sku?: string };
   revision: number; snapshot_hash: string; common: { name: string; brand: string | null; internal_note: string | null; image_url?: string | null };
   variant: { sale_price_gross: string | null; vat_rate: string | null; note: string | null; attributes?: { name: string; value: string }[] | null; eans?: string[] | null };
   warehouse: { code: string; location: string | null; min_quantity: string | null } | null;

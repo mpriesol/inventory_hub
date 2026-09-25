@@ -22,8 +22,8 @@ from inventory_hub import config_io
 from inventory_hub.adapters.pl_feed_convert import DEFAULT_COEFFS
 from inventory_hub.catalog_types import CatalogProduct, ImportItem, ImportPriceLine, ShopImportOptions, ShopImportPreview, ShopImportPreviewRequest
 from inventory_hub.database import get_session_context
-from inventory_hub.db_models import Product, ProductGroup, Shop, Supplier
-from inventory_hub.db_models_ext import ProductSupplySource, ShopProduct, ShopProductContent
+from inventory_hub.db_models import IdentifierType, Product, ProductGroup, ProductIdentifier, Shop, Supplier
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.services.catalog_identity import cached_identities, connection_fingerprint, parent_shop_code, read_cache
@@ -561,9 +561,24 @@ async def local_identities(db: AsyncSession, products: list[CatalogProduct]) -> 
     return matches, conflicts
 
 
+def _claim_product_prefix(products: list[CatalogProduct]) -> None:
+    """Freeze the exact prepared identity before any product POST or local write."""
+    from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
+    try:
+        for supplier in {product.supplier for product in products}:
+            prefix = get_supplier_prefix(config_io.load_supplier(supplier, write_back_on_load=False))
+            if any(product.supplier == supplier and product.shop_code != canonical_supplier_sku(prefix, product.code)
+                   for product in products):
+                raise CatalogError("supplier_prefix_changed", "Supplier SKU changed since the import was prepared", 409)
+            config_io.claim_supplier_prefix(supplier, prefix)
+    except SupplierPrefixError as error:
+        raise CatalogError(error.code, str(error), error.status) from None
+
+
 async def register_created(db: AsyncSession, shop: str, item: dict, sources: dict[int, CatalogProduct], remote: dict) -> None:
     # Only catalog identity/content is registered. No stock balance or movement is created.
     products = [sources[id] for id in item["product_ids"]]
+    _claim_product_prefix(products)
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     existing, conflicts = await local_identities(db, products)
     if conflicts:
@@ -608,8 +623,17 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
         mapping.parent_code = item["code"] if variant else None
         mapping.is_variant, mapping.is_listed = variant, True
         mapping.last_push_at, mapping.last_push_status = now(), "catalog_created"
-        await db.execute(insert(ProductSupplySource).values(product_id=product_id, supplier_product_id=source.id)
-                         .on_conflict_do_nothing(constraint="uq_supply_sources"))
+        # local_identities above has checked the supplier-scoped alias together
+        # with canonical SKU and EAN. Persist that approved evidence so an
+        # additional supplier does not rename or duplicate an existing product.
+        await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
+            identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
+            .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
+                index_where=text("identifier_type = 'supplier_sku'")))
+        from inventory_hub.services.supplier_links import reconcile_supplier_links
+        link_report = await reconcile_supplier_links(db, source.supplier, product_ids=[product_id])
+        if link_report["conflicts"]:
+            raise CatalogError("local_identity_conflict", "Supplier identities require manual reconciliation", 409)
     content = insert(ShopProductContent).values(shop_id=shop_id, external_code=item["code"], data=remote, pulled_at=now())
     await db.execute(content.on_conflict_do_update(index_elements=[ShopProductContent.shop_id, ShopProductContent.external_code],
                                                  set_={"data": remote, "pulled_at": now()}))
@@ -832,6 +856,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     continue
                 _assert_payload(item["payload"], expected_active=bool(document.get("content_approval", {}).get("active_after_import", False)))
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
+                _claim_product_prefix([sources[id] for id in item["product_ids"]])
                 item.update(status="uncertain", errors=["import_outcome_unknown"])
                 result["updated_at"] = now().isoformat()
                 _item_checkpoint(path, result, item)

@@ -27,7 +27,9 @@ Uložený `ReceivingLine.product_id` sa odovzdáva ako `expected_product_id` a p
 
 Zápisy identity pri dokončení príjmu používajú ten istý transakčný advisory lock `IDENTITY_WRITE_LOCK` ako registrácia katalógového importu a načítanie produktov. Až po vyriešení všetkých prijatých riadkov sa zamykajú zostatky a zapisujú skladové pohyby. Konflikt vracia celú nedokončenú transakciu späť. Pri súbežnom príjme rovnakého overeného EAN od dvoch dodávateľov vznikne jedna fyzická identita s dvomi dodávateľskými identifikátormi.
 
-Zložené EAN z faktúry sa zachovajú v `receiving_lines.ean` a pri zápise sa rozdelia na jednotlivé identifikátory. Úvodné nuly sa nestrácajú. Udalosť ručnej zmeny množstva odkazuje na faktúrový riadok a do poľa kódu ukladá jeden overený EAN, prípadne reálny dodávateľský alebo kanonický SKU do 100 znakov. Dlhý pôvodný zdroj EAN zostáva celý na riadku; kód sa neskracuje na vymyslený identifikátor. Pôvodný spôsob automatického založenia neznámeho faktúrového produktu zostáva: dodávateľský prefix + kód, prípadne prefix + `EAN-` + prvý overený EAN, vždy s povinnou kontrolou nového produktu.
+Zložené EAN z faktúry sa zachovajú v `receiving_lines.ean` a pri zápise sa rozdelia na jednotlivé identifikátory. Úvodné nuly sa nestrácajú. Udalosť ručnej zmeny množstva odkazuje na faktúrový riadok a do poľa kódu ukladá jeden overený EAN, prípadne reálny dodávateľský alebo kanonický SKU do 100 znakov. Dlhý pôvodný zdroj EAN zostáva celý na riadku; kód sa neskracuje na vymyslený identifikátor. Nový neznámy produkt vyžaduje dodávateľský kód a používa uzamknutý prefix + kód. Existujúci produkt možno naďalej identifikovať overeným EAN; staré SKU s `EAN-` sa nemenia. Samotný EAN už nevytvára nové náhradné SKU neznámeho produktu.
+
+Príjem dopĺňa aj jednoznačnú väzbu na dodávateľskú ponuku, aby ďalší skladový feed našiel ten istý produkt. Pravidlá prefixu, konfliktov a lokálnej opravy starých väzieb sú v [supplier-identity.md](supplier-identity.md).
 
 ## API skenera
 

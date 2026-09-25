@@ -148,6 +148,8 @@ async def accept_run(db, plan, records, source_bytes=0):
         raise AvailabilityError("supplier_availability_changed")
     observed = plan["observed_at"]
     expires = observed + timedelta(seconds=row.freshness_seconds)
+    from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     products = dict((await db.execute(select(SupplierProduct.supplier_sku, SupplierProduct.id)
                       .where(SupplierProduct.supplier_id == plan["supplier_id"]))).all())
     for start in range(0, len(records), 500):
@@ -174,6 +176,11 @@ async def accept_run(db, plan, records, source_bytes=0):
     if row.manual_requested_at is None:
         row.next_run_at = completed + timedelta(seconds=row.interval_seconds)
     await db.flush()
+    from inventory_hub.services.supplier_links import reconcile_source_codes
+    reports = await reconcile_source_codes(db, plan["supplier"], [item.sku for item in records], plan["config"])
+    run.error_details = {**(run.error_details or {}), "supplier_links": {
+        "linked": sum(report["linked"] for report in reports),
+        "conflicts": sum(len(report["conflicts"]) for report in reports)}}
 
 
 async def fail_run(db, supplier_id, run_id, code):
@@ -199,7 +206,10 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
         "source": supplier, "quantity": str(observation.quantity) if fresh and observation.quantity is not None else None,
         "quantity_kind": observation.quantity_kind if fresh else "unknown",
         "observed_at": observation.observed_at.isoformat() if observation else None,
-        "expires_at": expires.isoformat() if expires else None, "orderable": True}
+        "expires_at": expires.isoformat() if expires else None, "orderable": True,
+        "status": "fresh" if fresh else "stale" if observation else "missing_observation",
+        "reason": ("supplier_quantity_unknown" if fresh and available is None else None) if fresh
+            else "supplier_observation_expired" if observation else "supplier_observation_missing"}
 
 
 async def project(db, product_ids, at=None):
@@ -211,6 +221,8 @@ changes availability even when no newer feed has arrived. No data is turned into
     at = at or now()
     product_ids = list(dict.fromkeys(product_ids))
     result = {identifier: project_observation(None, "overíme", None, at) for identifier in product_ids}
+    for value in result.values():
+        value.update(status="missing_link", reason="supplier_link_missing")
     if not product_ids:
         return result
     links = (await db.execute(select(ProductSupplySource.product_id, ProductSupplySource.supplier_product_id,
@@ -224,6 +236,8 @@ changes availability even when no newer feed has arrived. No data is turned into
     candidates.extend((product_id, source, 100, False) for product_id, source in
         (await db.execute(select(Product.id, Product.source_supplier_product_id).where(
             Product.id.in_(product_ids), Product.source_supplier_product_id.is_not(None)))).all() if product_id not in linked)
+    for product_id in linked | {candidate[0] for candidate in candidates}:
+        result[product_id].update(status="unavailable_source", reason="supplier_source_disabled")
     ids = {row[1] for row in candidates}
     sources = {product.id: (product, supplier, observation, settings) for product, supplier, observation, settings in
         (await db.execute(select(SupplierProduct, Supplier, SupplierAvailabilityObservation, SupplierAvailabilitySettings)
@@ -240,6 +254,8 @@ changes availability even when no newer feed has arrived. No data is turned into
         if source_id not in sources or result[product_id]["available"] is True:
             continue
         product, supplier, observation, settings = sources[source_id]
+        if result[product_id]["status"] == "unavailable_source":
+            result[product_id].update(status="missing_observation", reason="supplier_observation_missing")
         if supplier.code not in labels:
             try:
                 cfg = catalog.supplier_config(supplier.code)
@@ -253,4 +269,9 @@ changes availability even when no newer feed has arrived. No data is turned into
         candidate = project_observation(observation, label, supplier.code, at, settings.freshness_seconds)
         if result[product_id]["source"] is None or candidate["available"] is True:
             result[product_id] = candidate
+    from inventory_hub.services.supplier_links import missing_link_diagnostics
+    diagnostics = await missing_link_diagnostics(db, [identifier for identifier, value in result.items()
+        if value["status"] == "missing_link"])
+    for identifier, detail in diagnostics.items():
+        result[identifier].update(detail)
     return result

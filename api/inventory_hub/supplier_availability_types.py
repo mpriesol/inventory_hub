@@ -21,3 +21,10 @@ class SupplierAvailabilityInput(BaseModel):
 class SupplierAvailabilityRunInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
+
+
+class SupplierLinkReconcileInput(BaseModel):
+    """A bounded local identity repair; never an upstream download or publication."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    after_product_id: int = Field(default=0, ge=0)
+    limit: int = Field(default=500, ge=1, le=500)

@@ -21,11 +21,13 @@ from pydantic import BaseModel
 from inventory_hub.settings import settings
 from inventory_hub.config_normalize import normalize_supplier_availability
 from inventory_hub.config_io import (
-    load_supplier as io_load_supplier,
-    save_supplier as io_save_supplier,
+    load_supplier as _load_supplier,
+    save_supplier as _save_supplier,
+    supplier_prefix_status,
     supplier_path,
     DATA_ROOT,
 )
+from inventory_hub.supplier_prefix import SupplierPrefixError, get_supplier_prefix
 
 from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
 
@@ -47,6 +49,9 @@ class SupplierSummary(BaseModel):
     name: str
     is_active: bool
     product_prefix: str
+    product_prefix_locked: bool = False
+    product_prefix_lock_reason: Optional[str] = None
+    config_error: Optional[str] = None
     invoice_count: int
     feed_mode: str  # "remote" | "local" | "none"
     download_strategy: str  # "web" | "manual" | "api" | "disabled"
@@ -82,6 +87,31 @@ class SupplierCreateRequest(BaseModel):
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
+def _prefix_http_error(error: SupplierPrefixError) -> HTTPException:
+    return HTTPException(status_code=error.status, detail={"code": error.code, "message": str(error)})
+
+
+def io_load_supplier(supplier: str, write_back_on_load: bool = True) -> Dict[str, Any]:
+    try:
+        return _load_supplier(supplier, write_back_on_load=write_back_on_load)
+    except SupplierPrefixError as error:
+        raise _prefix_http_error(error) from None
+
+
+def io_save_supplier(supplier: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return _save_supplier(supplier, cfg)
+    except SupplierPrefixError as error:
+        raise _prefix_http_error(error) from None
+
+
+def _config_response(supplier: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return {**cfg, **supplier_prefix_status(supplier)}
+    except SupplierPrefixError as error:
+        raise _prefix_http_error(error) from None
+
+
 def _suppliers_root() -> Path:
     """Root directory for all suppliers"""
     return DATA_ROOT / "suppliers"
@@ -181,10 +211,7 @@ def _get_download_strategy(cfg: Dict[str, Any]) -> str:
 
 def _get_product_prefix(cfg: Dict[str, Any]) -> str:
     """Extract product code prefix from config"""
-    adapter = cfg.get('adapter_settings', {})
-    mapping = adapter.get('mapping', {})
-    postprocess = mapping.get('postprocess', {})
-    return postprocess.get('product_code_prefix', '')
+    return get_supplier_prefix(cfg)
 
 
 def _get_supplier_name(cfg: Dict[str, Any], code: str) -> str:
@@ -342,24 +369,30 @@ def list_suppliers() -> List[SupplierSummary]:
     for code in codes:
         try:
             cfg = io_load_supplier(code, write_back_on_load=False)
+            identity = supplier_prefix_status(code)
 
             summaries.append(SupplierSummary(
                 code=code,
                 name=_get_supplier_name(cfg, code),
                 is_active=cfg.get('is_active', True),
                 product_prefix=_get_product_prefix(cfg),
+                product_prefix_locked=identity['product_prefix_locked'],
+                product_prefix_lock_reason=identity['product_prefix_lock_reason'],
                 invoice_count=_count_invoices(code),
                 feed_mode=_get_feed_mode(cfg),
                 download_strategy=_get_download_strategy(cfg),
                 last_invoice_date=_get_last_invoice_date(code),
                 last_feed_sync=cfg.get('last_feed_sync'),
             ))
-        except Exception:
+        except Exception as error:
             summaries.append(SupplierSummary(
                 code=code,
                 name=code,
                 is_active=False,
                 product_prefix="",
+                product_prefix_locked=True,
+                config_error=(error.detail.get('message') if isinstance(error, HTTPException) and isinstance(error.detail, dict)
+                              else str(error) if isinstance(error, SupplierPrefixError) else "Supplier configuration could not be read"),
                 invoice_count=0,
                 feed_mode="none",
                 download_strategy="disabled",
@@ -372,6 +405,11 @@ def list_suppliers() -> List[SupplierSummary]:
 def create_supplier(req: SupplierCreateRequest) -> Dict[str, Any]:
     """Create new supplier with basic config"""
     code = _sanitize_code(req.code)
+    try:
+        if not get_supplier_prefix({"product_code_prefix": req.product_prefix}):
+            raise SupplierPrefixError("supplier_prefix_required", "New suppliers require a unique product prefix")
+    except SupplierPrefixError as error:
+        raise _prefix_http_error(error) from None
 
     if not code:
         raise HTTPException(status_code=400, detail="Invalid supplier code")
@@ -468,7 +506,7 @@ def create_supplier(req: SupplierCreateRequest) -> Dict[str, Any]:
         }
     }
 
-    return io_save_supplier(code, initial_config)
+    return _config_response(code, io_save_supplier(code, initial_config))
 
 
 @router.get("/suppliers/{supplier}/config")
@@ -477,7 +515,7 @@ def get_supplier_config(supplier: str) -> Dict[str, Any]:
     cfg = io_load_supplier(supplier, write_back_on_load=True)
     if not cfg:
         raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
-    return cfg
+    return _config_response(supplier, cfg)
 
 
 @router.put("/suppliers/{supplier}/config")
@@ -501,7 +539,7 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
     except Exception:
         pass
 
-    return io_save_supplier(supplier, payload or {})
+    return _config_response(supplier, io_save_supplier(supplier, payload or {}))
 
 
 @router.get("/suppliers/{supplier}/history", response_model=List[SupplierHistoryEntry])
@@ -531,7 +569,7 @@ def restore_supplier_version(supplier: str, version: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return io_save_supplier(supplier, old_cfg)
+    return _config_response(supplier, io_save_supplier(supplier, old_cfg))
 
 
 @router.post("/suppliers/{supplier}/validate", response_model=ValidationResult)
