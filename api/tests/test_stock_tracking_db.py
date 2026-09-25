@@ -71,7 +71,8 @@ class StockTrackingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.old_receipt()
         async with self.transaction() as db:
             before = (await db.execute(text("SELECT * FROM stock_movements ORDER BY id"))).mappings().all()
-            await db.execute(text((Path(__file__).resolve().parents[2] / "infra/db-init/019_stock_tracking.sql").read_text()))
+            raw = await (await db.connection()).get_raw_connection()
+            await raw.driver_connection.execute((Path(__file__).resolve().parents[2] / "infra/db-init/019_stock_tracking.sql").read_text())
             self.assertEqual(await db.scalar(select(func.count()).select_from(StockTracking)), 0)
             self.assertEqual((await stock_summary(db))["on_hand_total"], 0)
             self.assertEqual((await stock_summary(db))["confirmed_products"], 0)
