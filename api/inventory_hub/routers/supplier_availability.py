@@ -8,8 +8,11 @@ from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.routers.stock_settings import NoStoreRoute
 from inventory_hub.services import supplier_availability as service
+from inventory_hub.services import supplier_links
 from inventory_hub.services.supplier_availability_source import AvailabilityError
-from inventory_hub.supplier_availability_types import SupplierAvailabilityInput, SupplierAvailabilityRunInput
+from inventory_hub.supplier_availability_types import (
+    SupplierAvailabilityInput, SupplierAvailabilityRunInput, SupplierLinkReconcileInput,
+)
 
 router = APIRouter(prefix="/supplier-availability", tags=["supplier-availability"], route_class=NoStoreRoute,
                    dependencies=[Depends(operator_access)])
@@ -36,3 +39,11 @@ async def configure(supplier: SupplierCode, payload: SupplierAvailabilityInput, 
 @router.post("/{supplier}/run", status_code=202)
 async def run(supplier: SupplierCode, payload: SupplierAvailabilityRunInput, db: AsyncSession = Depends(get_session)):
     return await _call(service.request_run(db, supplier, payload))
+
+
+@router.post("/{supplier}/links/reconcile")
+async def reconcile_links(supplier: SupplierCode, payload: SupplierLinkReconcileInput,
+                          db: AsyncSession = Depends(get_session)):
+    """Attach exact existing supplier identities using only local downloaded data."""
+    return await _call(supplier_links.reconcile_supplier_links(
+        db, supplier, after_product_id=payload.after_product_id, limit=payload.limit))

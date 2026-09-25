@@ -7,7 +7,8 @@ from datetime import datetime
 import csv, json, io, re
 
 from inventory_hub.settings import settings
-from inventory_hub.config_io import load_supplier as load_supplier_config
+from inventory_hub.config_io import load_supplier as load_supplier_config, claim_supplier_prefix
+from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 
 router = APIRouter()
 
@@ -58,24 +59,21 @@ def _cfg_try_get(obj: Any, path: Tuple[str, ...]) -> Optional[Any]:
     return cur
 
 def _product_code_prefix_for_supplier(supplier: str) -> str:
-    cfg = load_supplier_config(supplier)
-    candidates: List[Tuple[str, ...]] = [
-        ("adapter_settings", "mapping", "postprocess", "product_code_prefix"),
-        ("adapter_settings", "product_code_prefix"),
-        ("product_code_prefix",),
-    ]
-    for path in candidates:
-        v = _cfg_try_get(cfg, path)
-        if v is not None and str(v).strip():
-            return str(v).strip()
-    if supplier in ("paul-lange", "paul_lange"):
-        return "PL-"
-    return ""
+    try:
+        return get_supplier_prefix(load_supplier_config(supplier))
+    except SupplierPrefixError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
 
 def _product_code_for_supplier(supplier: str, scm: str) -> str:
     scm = _norm_text(scm)
+    if not scm:
+        return ""
     prefix = _product_code_prefix_for_supplier(supplier)
-    return f"{prefix}{scm}" if (prefix and scm) else scm
+    try:
+        claim_supplier_prefix(supplier, prefix)
+        return canonical_supplier_sku(prefix, scm)
+    except SupplierPrefixError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
 
 def _status_for(received: float, ordered: float) -> str:
     if received <= 0: return "pending"

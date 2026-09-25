@@ -102,9 +102,9 @@ def load_supplier_config(supplier_code: str) -> Dict[str, Any]:
     return {}
 
 def save_supplier_config(supplier_code: str, cfg: Dict[str, Any]) -> None:
-    p = supplier_config_path(supplier_code)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Legacy callers must use the same prefix authority as the config API.
+    from inventory_hub.config_io import save_supplier
+    save_supplier(supplier_code, cfg.model_dump() if hasattr(cfg, "model_dump") else cfg)
 
 # CSV helpers
 def read_csv_smart(path: Path, max_rows: int | None = None) -> pd.DataFrame:

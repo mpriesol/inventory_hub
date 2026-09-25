@@ -187,7 +187,11 @@
       "orderable": "Item in stock at supplier",
       "unknown": "Unknown supplier availability",
       "defaults": "Empty values use “do 5 dní” and “overíme”. Customers can also order items with unknown availability."
-    }
+    },
+    "prefixHelp": "The SKU combines a unique prefix with the original supplier code. The prefix locks after its first use.",
+    "prefixLocked": "The prefix is locked to preserve existing codes and links. JSON edits and restoring history cannot change it.",
+    "prefixStatusUnknown": "The prefix lock status could not be verified. Reload the configuration before editing the prefix.",
+    "prefixConfigError": "The prefix configuration needs review: {{code}}"
   },
   "stock": {
     "title": "Stock",
@@ -1851,7 +1855,16 @@
     "staleSupplier": "Observation is not current",
     "supplierRules": "Supplier rules",
     "shopUnpublished": "Saved · unpublished",
-    "shopPublished": "Publication verified"
+    "shopPublished": "Publication verified",
+    "supplierStatus": {
+      "missing_link": "Supplier item link is missing",
+      "unavailable_source": "Availability source is inactive",
+      "missing_observation": "The linked code has no feed observation",
+      "stale": "The feed observation has expired",
+      "conflict": "Ambiguous supplier link – review required",
+      "unknown": "Availability has not been verified yet",
+      "unknown_quantity": "The source has no known availability for this code"
+    }
   },
   "actions": {
     "effects": {
@@ -2121,13 +2134,43 @@
       "feed_timeout": "The supplier did not respond in time.",
       "feed_connection_failed": "The supplier connection failed.",
       "feed_auth_failed": "The supplier rejected the credentials. Review configuration.",
-      "stock_sync_ai_availability_inflight": "An AI availability update is sending or unresolved. Resolve the original request in the AI job detail before assigning stock authority."
+      "stock_sync_ai_availability_inflight": "An AI availability update is sending or unresolved. Resolve the original request in the AI job detail before assigning stock authority.",
+      "supplier_prefix_locked": "The prefix is locked. Reload the supplier configuration.",
+      "supplier_prefix_missing": "The supplier has no prefix. Set it in the supplier configuration first.",
+      "supplier_prefix_duplicate": "This prefix overlaps another supplier prefix. Prefixes must differ and neither may start with the other.",
+      "supplier_prefix_conflict": "The configured prefix differs from the saved identity and needs review.",
+      "supplier_prefix_invalid": "The supplier prefix is invalid. Check the configuration.",
+      "supplier_config_invalid": "The supplier configuration is invalid or unreadable. The original file was preserved and needs repair before continuing.",
+      "supplier_prefix_validation_incomplete": "Prefix uniqueness cannot be verified because another supplier configuration is unreadable. Repair that configuration first.",
+      "supplier_prefix_registry_invalid": "The prefix registry could not be read. Identity changes are blocked until the registry is restored or repaired.",
+      "supplier_prefix_required": "Configure a unique supplier prefix first.",
+      "supplier_prefix_changed": "The prefix changed after these data were prepared. Reload the supplier data before trying again."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",
     "previous": "Previous",
     "next": "Next",
-    "itemPage": "Items {{first}} – {{last}} of {{total}}"
+    "itemPage": "Items {{first}} – {{last}} of {{total}}",
+    "reconcileLinks": "Link supplier availability",
+    "linksHelp": "Adds unambiguous links between existing products and supplier codes using saved data. SKUs and stock quantities stay unchanged; nothing is sent to shops. Refresh the stock table afterwards.",
+    "linksComplete": "Linking completed. Products checked: {{scanned}}.",
+    "linksProgress": "Linking in progress. Products checked: {{scanned}}.",
+    "linksCounts": "New links: {{linked}} · Existing: {{existing}} · Skipped: {{skipped}} · Conflicts: {{conflicts}}",
+    "linksIssues": "Items to review (up to 50)",
+    "linkNeedsReview": "Review this identity; the product was not linked automatically.",
+    "linksIncomplete": "Linking is incomplete. Confirmed products checked: {{scanned}}.",
+    "linkReasons": {
+      "supplier_item_missing": "The supplier code is missing from the saved catalog and availability data.",
+      "supplier_source_inactive": "The supplier or its item is inactive.",
+      "inactive_product": "The stock product is inactive.",
+      "supplier_source_multiple_products": "The supplier item is already assigned to another product.",
+      "supplier_link_already_configured": "The product already has another link to this supplier.",
+      "assigned_product_changed": "The code or EAN points to different products.",
+      "assigned_product_missing": "The previously assigned product is unavailable.",
+      "supplier_identifier_conflict": "The supplier code has an ambiguous owner.",
+      "identifier_conflict": "The EAN or code conflicts with an existing product.",
+      "unmapped_sku_collision": "The SKU is ambiguous or differs in letter case."
+    }
   },
   "productPublication": {
     "intro": "Choose a saved product and fields. Review the proposed change first; the shop changes only after you confirm sending.",

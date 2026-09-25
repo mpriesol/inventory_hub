@@ -13,6 +13,7 @@ from lxml import etree
 from inventory_hub.adapters.paul_lange_catalog import _number, _source_fields, http_url
 from inventory_hub.adapters.pl_feed_convert import _get_text
 from inventory_hub.catalog_types import CatalogParameter, CatalogPrices, CatalogProduct
+from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
 
 
 def _url(value: str) -> str | None:
@@ -31,7 +32,7 @@ def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "product
         ("rrp_field", "recomended_retail_price"), ("rrp_sale_field", "recomended_retail_sale_price"))}
     if any(not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tag) for tag in tags.values()):
         raise ValueError("Invalid Northfinder field mapping")
-    prefix = ((adapter.get("mapping") or {}).get("postprocess") or {}).get("product_code_prefix") or adapter.get("product_code_prefix") or ""
+    prefix = get_supplier_prefix(cfg)
     vat = Decimal(str(adapter.get("vat", cfg.get("vat_rate", 23))))
     if not vat.is_finite() or not 0 <= vat <= 100:
         raise ValueError("Invalid supplier VAT setting")
@@ -109,7 +110,7 @@ def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "product
                 etree.SubElement(fragment, "variants").append(deepcopy(variant))
                 fields = {**parent_fields, "variants": [{tags["variant_tag"]: [_source_fields(variant)]}]}
             product = CatalogProduct(
-                supplier=supplier, feed_key=feed_key, code=code, shop_code=prefix + code,
+                supplier=supplier, feed_key=feed_key, code=code, shop_code=canonical_supplier_sku(prefix, code),
                 eans=eans, name=name, brand="NORTHFINDER",
                 description=description,
                 category=" | ".join(filter(None, categories)) or None,

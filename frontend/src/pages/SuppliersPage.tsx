@@ -138,6 +138,7 @@ function SupplierCard({ supplier, onEdit, onCatalog }: SupplierCardProps) {
           <span>Posledná faktúra: {supplier.last_invoice_date}</span>
         )}
       </div>
+      {supplier.config_error && <p role="alert" className="mt-3 text-sm text-red-400">{t('suppliers.prefixConfigError', { code: supplier.config_error })}</p>}
       <Button variant="secondary" size="sm" className="mt-4" icon={<Package size={14} />}
         onClick={(event) => { event.stopPropagation(); onCatalog(supplier.code); }}>
         {t('catalog.openCatalog')}
@@ -156,6 +157,7 @@ interface CreateSupplierModalProps {
 }
 
 function CreateSupplierModal({ open, onClose, onCreated }: CreateSupplierModalProps) {
+  const { t } = useTranslation();
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [prefix, setPrefix] = useState('');
@@ -233,15 +235,18 @@ function CreateSupplierModal({ open, onClose, onCreated }: CreateSupplierModalPr
 
         <div>
           <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-            Prefix produktov
+            {t('suppliers.productPrefix')} *
           </label>
           <input
             type="text"
             value={prefix}
+            required
+            maxLength={20}
             onChange={(e) => setPrefix(e.target.value.toUpperCase())}
             placeholder="napr. SE-"
             className="w-full"
           />
+          <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.prefixHelp')}</p>
         </div>
 
         <div>
@@ -293,6 +298,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
   const [error, setError] = useState<string | null>(null);
   const [hasChanges, setHasChanges] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
+  const [jsonInvalid, setJsonInvalid] = useState(false);
 
   // History state
   const [history, setHistory] = useState<SupplierHistoryEntry[]>([]);
@@ -359,7 +365,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
 
   // Save config
   const handleSave = async () => {
-    if (!config) return;
+    if (!config || (activeTab === 'json' && jsonInvalid)) return;
     setSaving(true);
     setError(null);
     try {
@@ -533,7 +539,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
             <Button
               onClick={handleSave}
               loading={saving}
-              disabled={!hasChanges}
+              disabled={!hasChanges || (activeTab === 'json' && jsonInvalid)}
               icon={<Save size={16} />}
             >
               Uložiť
@@ -637,6 +643,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
           {activeTab === 'general' && (
             <GeneralTab
               config={config}
+              identity={originalConfig}
               updateConfig={updateConfig}
               showPasswords={showPasswords}
               setShowPasswords={setShowPasswords}
@@ -662,7 +669,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
             <MappingTab config={config} updateConfig={updateConfig} />
           )}
           {activeTab === 'json' && (
-            <JsonTab config={config} setConfig={setConfig} setHasChanges={setHasChanges} originalConfig={originalConfig} />
+            <JsonTab config={config} setConfig={setConfig} setHasChanges={setHasChanges} originalConfig={originalConfig} setInvalid={setJsonInvalid} />
           )}
           {activeTab === 'history' && (
             <HistoryTab
@@ -704,7 +711,7 @@ interface TabProps {
   setShowPasswords?: (show: boolean) => void;
 }
 
-function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords }: TabProps) {
+function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords, identity }: TabProps & { identity: SupplierConfig | null }) {
   const { t } = useTranslation();
 
   return (
@@ -776,11 +783,15 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords }: T
       </div>
 
       <div>
-        <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-          Prefix produktových kódov
+        <label htmlFor="supplier-product-prefix" className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+          {t('suppliers.productPrefix')}
         </label>
         <input
+          id="supplier-product-prefix"
           type="text"
+          maxLength={20}
+          disabled={identity?.product_prefix_locked !== false}
+          aria-describedby="supplier-prefix-help"
           value={config.adapter_settings?.mapping?.postprocess?.product_code_prefix || ''}
           onChange={(e) =>
             updateConfig((cfg) => ({
@@ -800,6 +811,9 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords }: T
           placeholder="napr. PL-"
           className="w-full"
         />
+        <p id="supplier-prefix-help" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t(identity?.product_prefix_locked === true ? 'suppliers.prefixLocked' : identity?.product_prefix_locked === false ? 'suppliers.prefixHelp' : 'suppliers.prefixStatusUnknown')}
+        </p>
       </div>
 
       <fieldset className="space-y-3">
@@ -1352,28 +1366,44 @@ function JsonTab({
   setConfig,
   setHasChanges,
   originalConfig,
+  setInvalid,
 }: {
   config: SupplierConfig;
   setConfig: (cfg: SupplierConfig) => void;
   setHasChanges: (has: boolean) => void;
   originalConfig: SupplierConfig | null;
+  setInvalid: (value: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const [jsonText, setJsonText] = useState(() => JSON.stringify(config, null, 2));
   const [parseError, setParseError] = useState<string | null>(null);
 
   useEffect(() => {
     setJsonText(JSON.stringify(config, null, 2));
+    setInvalid(false);
   }, [config]);
 
   const handleJsonChange = (text: string) => {
     setJsonText(text);
     try {
       const parsed = JSON.parse(text);
+      if (originalConfig?.product_prefix_locked !== false && parsed?.adapter_settings?.mapping?.postprocess?.product_code_prefix !== originalConfig?.adapter_settings?.mapping?.postprocess?.product_code_prefix) {
+        setParseError(t('suppliers.prefixLocked'));
+        setInvalid(true);
+        return;
+      }
+      // A JSON draft may edit configuration, never server-owned lock metadata.
+      for (const key of ['product_prefix', 'product_prefix_locked', 'product_prefix_lock_reason'] as const) {
+        if (originalConfig && key in originalConfig) parsed[key] = originalConfig[key];
+        else delete parsed[key];
+      }
       setParseError(null);
+      setInvalid(false);
       setConfig(parsed);
       setHasChanges(JSON.stringify(parsed) !== JSON.stringify(originalConfig));
     } catch (e: any) {
       setParseError(e.message);
+      setInvalid(true);
     }
   };
 
@@ -1381,7 +1411,6 @@ function JsonTab({
     try {
       const parsed = JSON.parse(jsonText);
       setJsonText(JSON.stringify(parsed, null, 2));
-      setParseError(null);
     } catch (e: any) {
       setParseError(e.message);
     }
@@ -1408,6 +1437,8 @@ function JsonTab({
           </Button>
         </div>
       </div>
+
+      {parseError && <p role="alert" className="text-sm text-red-400">{parseError}</p>}
 
       <div
         className="rounded-lg border overflow-hidden"

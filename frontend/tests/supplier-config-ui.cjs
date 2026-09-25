@@ -25,6 +25,7 @@ const { SuppliersPage } = require('../src/pages/SuppliersPage.tsx');
 
 const fixture = {
   name: 'Fixture supplier', is_active: true,
+  product_prefix: 'TEST-', product_prefix_locked: true, product_prefix_lock_reason: 'used_for_product_identity',
   feeds: { current_key: 'products', sources: { products: { mode: 'remote', remote: { url: 'https://supplier.example.test/feed.xml', auth: { mode: 'none' } } } } },
   invoices: { layout: 'yearly', months_back_default: 3, download: { strategy: 'manual', web: { notes: 'Keep invoice settings' } } },
   adapter_settings: {
@@ -36,6 +37,7 @@ const fixture = {
 const original = structuredClone(fixture);
 let stored = structuredClone(fixture);
 let failSave = false;
+let lockOnSave = false;
 const writes = [];
 global.fetch = async (path, init = {}) => {
   const url = new URL(path, 'https://hub.example.test');
@@ -55,10 +57,13 @@ global.fetch = async (path, init = {}) => {
           orderable: availability.orderable?.trim() || 'do 5 dní',
           unknown: availability.unknown?.trim() || 'overíme',
         } } };
+        if (lockOnSave) stored = { ...stored, product_prefix: stored.adapter_settings.mapping.postprocess.product_code_prefix, product_prefix_locked: true, product_prefix_lock_reason: 'used_for_product_identity' };
         data = structuredClone(stored);
       }
     } else data = structuredClone(stored);
-  } else throw new Error(`Unexpected endpoint: ${url.pathname}`);
+  } else if (url.pathname === '/api/suppliers/fixture/history') data = [{ version: 'older', timestamp: '2026-09-01T12:00:00Z', size_bytes: 100 }];
+  else if (url.pathname === '/api/suppliers/fixture/restore/older') { status = 409; data = { detail: { code: 'supplier_prefix_locked', message: 'Prefix remains locked on restore' } }; }
+  else throw new Error(`Unexpected endpoint: ${url.pathname}`);
   return { ok: status === 200, status, statusText: status === 200 ? 'OK' : 'Unprocessable Entity', headers: { get: () => 'application/json' }, text: async () => JSON.stringify(data) };
 };
 const root = createRoot(document.getElementById('root'));
@@ -74,7 +79,7 @@ async function click(element) {
 }
 async function input(element, value) {
   await act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(element, value);
+    Object.getOwnPropertyDescriptor(element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value);
     element.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
   });
@@ -87,6 +92,7 @@ async function input(element, value) {
   assert.equal(field('orderable').maxLength, 100);
   assert.equal(button('Uložiť').disabled, true, 'Opening the editor does not manufacture unsaved changes');
   assert.equal(writes.length, 0);
+  assert(document.getElementById('supplier-product-prefix').disabled, 'Server-owned prefix lock disables the form');
 
   await input(field('orderable'), 'do 7 dní');
   await input(field('unknown'), 'overíme u dodávateľa');
@@ -125,6 +131,45 @@ async function input(element, value) {
   assert.deepEqual(writes.at(-1).adapter_settings.availability.retained_extension, { mode: 'fixture' }, 'Unknown nested availability settings survive edits');
   assert.equal(stored.adapter_settings.availability.orderable, 'do 8 dní');
   assert.equal(stored.adapter_settings.availability.unknown, 'overíme');
+
+  await click(button('JSON'));
+  let draft = JSON.parse(document.querySelector('textarea').value);
+  draft.product_prefix_locked = false;
+  draft.adapter_settings.mapping.postprocess.product_code_prefix = 'FORGED-';
+  const beforeTamper = writes.length;
+  await input(document.querySelector('textarea'), JSON.stringify(draft));
+  assert(button('Uložiť').disabled, 'JSON prefix changes cannot bypass the server lock metadata');
+  assert(document.body.textContent.includes('Prefix je uzamknutý'));
+  await click(button('Formátovať'));
+  assert(button('Uložiť').disabled, 'Formatting invalid identity changes does not re-enable saving');
+  await click(button('Obecné'));
+  assert(document.getElementById('supplier-product-prefix').disabled);
+  assert.equal(document.getElementById('supplier-product-prefix').value, 'TEST-');
+  assert.equal(writes.length, beforeTamper);
+
+  await click(button('JSON'));
+  draft = JSON.parse(document.querySelector('textarea').value);
+  draft.product_prefix_locked = false;
+  draft.name = 'Edited supplier';
+  await input(document.querySelector('textarea'), JSON.stringify(draft));
+  assert.equal(JSON.parse(document.querySelector('textarea').value).product_prefix_locked, true, 'JSON cannot forge editable server metadata');
+  await click(button('Uložiť'));
+  assert.equal(writes.at(-1).product_prefix_locked, true);
+  assert.equal(stored.name, 'Edited supplier');
+
+  global.confirm = () => true;
+  await click(button('História')); await click([...document.querySelectorAll('button')].filter(element => element.textContent.trim() === 'Obnoviť').at(-1));
+  assert(document.body.textContent.includes('Prefix remains locked on restore'), 'A restore lock rejection remains visible');
+  await click(button('Obecné')); assert(document.getElementById('supplier-product-prefix').disabled);
+
+  stored.product_prefix_locked = false; stored.product_prefix_lock_reason = null;
+  await mount('unused-prefix');
+  assert(!document.getElementById('supplier-product-prefix').disabled, 'Only a confirmed unused prefix is editable');
+  await input(document.getElementById('supplier-product-prefix'), 'NEW-');
+  lockOnSave = true;
+  await click(button('Uložiť'));
+  assert.equal(writes.at(-1).adapter_settings.mapping.postprocess.product_code_prefix, 'NEW-');
+  assert(document.getElementById('supplier-product-prefix').disabled, 'Authoritative lock returned by save takes effect immediately');
   await act(async () => root.unmount());
   console.log('Supplier configuration UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

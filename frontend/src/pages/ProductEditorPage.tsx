@@ -292,7 +292,9 @@ export function ProductEditorPage() {
     if (column.key === 'supplier_quantity' || column.key === 'supplier_availability') {
       const supplier = row.supplier_availability;
       const quantity = !supplier?.fresh ? t('productEditor.unknown') : supplier.quantity !== null ? `${supplier.quantity}${supplier.quantity_kind === 'minimum' ? '+' : ''}` : supplier.available === true ? t('productEditor.supplierInStock') : supplier.available === false ? t('productEditor.supplierOutOfStock') : t('productEditor.unknown');
-      return <span className="product-editor-presence"><span>{column.key === 'supplier_quantity' ? quantity : supplier?.label || t('productEditor.verifyAvailability')}</span>{supplier?.source && <small>{supplier.source}</small>}{supplier && !supplier.fresh && <small>{t('productEditor.staleSupplier')}</small>}{column.key === 'supplier_availability' && <Link to="/settings/availability">{t('productEditor.supplierRules')} ↗</Link>}</span>;
+      const status = supplier?.reason === 'supplier_quantity_unknown' ? 'unknown_quantity' : supplier?.status || (supplier?.fresh ? 'fresh' : 'unknown');
+      const supplierName = supplier?.source || supplier?.supplier;
+      return <span className="product-editor-presence"><span>{column.key === 'supplier_quantity' ? quantity : supplier?.label || t('productEditor.verifyAvailability')}</span>{supplierName && <small>{supplierName}</small>}{status !== 'fresh' && <small>{t(`productEditor.supplierStatus.${status}`, { defaultValue: t('productEditor.supplierStatus.unknown') })}</small>}{column.key === 'supplier_availability' && <Link to="/settings/availability">{t('productEditor.supplierRules')} ↗</Link>}</span>;
     }
     if (column.key === 'image_url' && typeof value === 'string' && normalizeEditorValue(column, value).error) return value;
     if (column.key === 'image_url') return <ProductThumb key={String(value)} url={typeof value === 'string' ? value : null} name={row.common.name} size={44} />;

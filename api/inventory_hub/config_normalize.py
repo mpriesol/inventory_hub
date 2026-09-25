@@ -2,6 +2,7 @@
 from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Optional
+from inventory_hub.supplier_prefix import normalize_prefix_config
 
 SUPPLIER_AVAILABILITY_DEFAULTS = {"orderable": "do 5 dní", "unknown": "overíme"}
 
@@ -91,7 +92,7 @@ def normalize_supplier_config(raw_in: Optional[Dict[str, Any]]) -> Dict[str, Any
     Z ľubovoľného (aj legacy) vstupu spraví kanonickú štruktúru.
     Po prvom uložen í budú configs už len v kanonike.
     """
-    raw = raw_in or {}
+    raw = normalize_prefix_config(raw_in or {})
     out = deepcopy(KANON_DEFAULT)
 
     # ---- FEEDS ----
@@ -170,4 +171,4 @@ def normalize_supplier_config(raw_in: Optional[Dict[str, Any]]) -> Dict[str, Any
         _deep_set(out, ["adapter_settings", "price_coefficients"], raw["price_coefficients"])
     out["adapter_settings"]["availability"] = normalize_supplier_availability(adapt.get("availability"))
 
-    return out
+    return normalize_prefix_config(out)

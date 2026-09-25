@@ -188,7 +188,11 @@
       "orderable": "Tovar skladom u dodávateľa",
       "unknown": "Neznáma dostupnosť dodávateľa",
       "defaults": "Prázdne hodnoty použijú „do 5 dní“ a „overíme“. Aj pri neznámej dostupnosti si zákazník môže tovar objednať."
-    }
+    },
+    "prefixHelp": "SKU vznikne spojením jedinečného prefixu a pôvodného kódu dodávateľa. Po prvom použití sa prefix uzamkne.",
+    "prefixLocked": "Prefix je uzamknutý, aby zostali zachované existujúce kódy a prepojenia. Zmeniť ho nemožno ani cez JSON alebo obnovenie histórie.",
+    "prefixStatusUnknown": "Stav uzamknutia sa nepodarilo overiť. Obnov konfiguráciu pred úpravou prefixu.",
+    "prefixConfigError": "Konfigurácia prefixu vyžaduje kontrolu: {{code}}"
   },
   "stock": {
     "title": "Sklad",
@@ -1852,7 +1856,16 @@
     "staleSupplier": "Údaj nie je aktuálny",
     "supplierRules": "Pravidlá dodávateľa",
     "shopUnpublished": "Uložené · neodoslané",
-    "shopPublished": "Odoslanie overené"
+    "shopPublished": "Odoslanie overené",
+    "supplierStatus": {
+      "missing_link": "Chýba prepojenie na položku dodávateľa",
+      "unavailable_source": "Zdroj dostupnosti nie je aktívny",
+      "missing_observation": "Pre prepojený kód chýba údaj vo feede",
+      "stale": "Platnosť údaja z feedu vypršala",
+      "conflict": "Nejednoznačné prepojenie – treba kontrolu",
+      "unknown": "Dostupnosť zatiaľ nie je overená",
+      "unknown_quantity": "Zdroj neuvádza známu dostupnosť pre tento kód"
+    }
   },
   "actions": {
     "effects": {
@@ -2122,13 +2135,43 @@
       "feed_timeout": "Dodávateľ neodpovedal včas.",
       "feed_connection_failed": "Pripojenie k dodávateľovi zlyhalo.",
       "feed_auth_failed": "Dodávateľ odmietol prihlasovacie údaje. Over konfiguráciu.",
-      "stock_sync_ai_availability_inflight": "AI aktualizácia dostupnosti sa ešte odosiela alebo jej výsledok zostal nejasný. Najskôr v detaile AI úlohy vyriešte pôvodnú požiadavku."
+      "stock_sync_ai_availability_inflight": "AI aktualizácia dostupnosti sa ešte odosiela alebo jej výsledok zostal nejasný. Najskôr v detaile AI úlohy vyriešte pôvodnú požiadavku.",
+      "supplier_prefix_locked": "Prefix je uzamknutý. Obnov konfiguráciu dodávateľa.",
+      "supplier_prefix_missing": "Dodávateľ nemá nastavený prefix. Najprv ho nastav v konfigurácii.",
+      "supplier_prefix_duplicate": "Prefix sa prekrýva s prefixom iného dodávateľa. Prefixy nesmú byť rovnaké ani sa jeden začínať druhým.",
+      "supplier_prefix_conflict": "Prefix v konfigurácii nezodpovedá uloženej identite. Vyžaduje kontrolu.",
+      "supplier_prefix_invalid": "Prefix dodávateľa nie je platný. Skontroluj konfiguráciu.",
+      "supplier_config_invalid": "Konfigurácia dodávateľa je poškodená alebo nečitateľná. Pôvodný súbor zostal zachovaný; pred pokračovaním ho treba opraviť.",
+      "supplier_prefix_validation_incomplete": "Jedinečnosť prefixu nemožno overiť, pretože konfiguráciu iného dodávateľa nemožno načítať. Najprv treba opraviť túto konfiguráciu.",
+      "supplier_prefix_registry_invalid": "Register prefixov sa nepodarilo načítať. Zmeny identít sú zablokované; register treba obnoviť alebo opraviť.",
+      "supplier_prefix_required": "Najprv nastav jedinečný prefix dodávateľa.",
+      "supplier_prefix_changed": "Prefix sa od prípravy údajov zmenil. Obnov údaje dodávateľa pred ďalším pokusom."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
     "previous": "Predchádzajúce",
     "next": "Ďalšie",
-    "itemPage": "Položky {{first}} – {{last}} z {{total}}"
+    "itemPage": "Položky {{first}} – {{last}} z {{total}}",
+    "reconcileLinks": "Prepojiť dostupnosti",
+    "linksHelp": "Doplní jednoznačné väzby medzi existujúcimi produktmi a dodávateľskými kódmi. Použije uložené údaje; nemení SKU ani množstvá a nič neodosiela do e-shopov. Potom obnov skladovú tabuľku.",
+    "linksComplete": "Prepojenie dokončené. Skontrolovaných produktov: {{scanned}}.",
+    "linksProgress": "Prepojenie prebieha. Skontrolovaných produktov: {{scanned}}.",
+    "linksCounts": "Nové väzby: {{linked}} · Existujúce: {{existing}} · Vynechané: {{skipped}} · Konflikty: {{conflicts}}",
+    "linksIssues": "Položky na kontrolu (najviac 50)",
+    "linkNeedsReview": "Väzbu treba overiť; produkt nebol automaticky prepojený.",
+    "linksIncomplete": "Prepojenie nie je dokončené. Potvrdené skontrolované produkty: {{scanned}}.",
+    "linkReasons": {
+      "supplier_item_missing": "Dodávateľský kód chýba v uloženom katalógu aj údajoch dostupnosti.",
+      "supplier_source_inactive": "Dodávateľ alebo jeho položka nie sú aktívne.",
+      "inactive_product": "Skladový produkt nie je aktívny.",
+      "supplier_source_multiple_products": "Dodávateľská položka už patrí inému produktu.",
+      "supplier_link_already_configured": "Produkt už má iné prepojenie na tohto dodávateľa.",
+      "assigned_product_changed": "Kód alebo EAN odkazujú na rozdielne produkty.",
+      "assigned_product_missing": "Pôvodne priradený produkt už nie je dostupný.",
+      "supplier_identifier_conflict": "Dodávateľský kód má nejednoznačného vlastníka.",
+      "identifier_conflict": "EAN alebo kód sú v konflikte s existujúcim produktom.",
+      "unmapped_sku_collision": "SKU nie je jednoznačné alebo sa líši veľkosťou písmen."
+    }
   },
   "productPublication": {
     "intro": "Vyberte uložený produkt a polia. Najprv sa načíta a ukáže zmena; e-shop sa zmení až po potvrdení odoslania.",

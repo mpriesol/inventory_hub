@@ -53,7 +53,7 @@ const reply = value => ({ ok: true, json: async () => clone(value) });
 const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.toString(16).padStart(4, '0')}`.padEnd(64, 'a');
 const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
   attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
-  supplier_availability: { available: true, fresh: id !== 2, label: id === 2 ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
+  supplier_availability: { available: true, fresh: ![2, 3, 4, 5].includes(id), status: ({ 2: 'stale', 3: 'missing_link', 4: 'missing_observation', 5: 'conflict' })[id] || 'fresh', label: [2, 3, 4, 5].includes(id) ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
   supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
   common: { name: `Fixture product ${id}`, brand: 'Fixture', internal_note: '' },
   variant: { sale_price_gross: '199.90', vat_rate: '23.00', note: '' },
@@ -206,6 +206,11 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(cell(1, 'biketrek').querySelector('a').getAttribute('href'), 'https://biketrek.example.test/product-1');
   assert.equal(cell(1, 'xtrek').querySelectorAll('a')[1].getAttribute('href'), 'https://xtrek.example.test/admin/product-1');
   assert(cellText(1, 'supplier_quantity').includes('6+')); assert(!cellText(2, 'supplier_quantity').includes('900'), 'Stale supplier quantity is never presented as current');
+  assert(cellText(2, 'supplier_availability').includes(t('supplierStatus.stale')));
+  assert(cellText(3, 'supplier_availability').includes(t('supplierStatus.missing_link')), 'A missing supplier link is distinguished from expired data');
+  assert(cellText(4, 'supplier_availability').includes(t('supplierStatus.missing_observation')));
+  assert(cellText(5, 'supplier_availability').includes(t('supplierStatus.conflict')));
+  assert(!cellText(3, 'supplier_quantity').includes('6'), 'An unresolved supplier link never exposes a quantity as current');
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost').includes('0.0000'), 'A known zero cost stays an exact decimal string');

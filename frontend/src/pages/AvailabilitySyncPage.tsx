@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
-import { getSupplierAvailability, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings } from '../api/supplierAvailability';
+import { getSupplierAvailability, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
 import { getStockSyncOptions, getStockSyncRun, resolveStockSyncItem, runStockSync, saveStockSyncSettings, saveStockSyncWarehouse,
   STOCK_SYNC_FIELDS, StockSyncField, StockSyncOptions, StockSyncRunDetail, StockSyncValues } from '../api/stockSync';
 import './OpeningStockPage.css';
@@ -44,6 +44,7 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
   const [enabled, setEnabled] = useState(value.enabled), [feed, setFeed] = useState(value.feed_key);
   const [interval, setInterval] = useState(String(value.interval_seconds)), [freshness, setFreshness] = useState(String(value.freshness_seconds)), [coverage, setCoverage] = useState(String(value.min_coverage_percent));
   const [saved, setSaved] = useState(false), [queued, setQueued] = useState(false);
+  const [linkResult, setLinkResult] = useState<{ scanned: number; linked: number; existing: number; skipped: number; conflicts: number; issues: SupplierLinkIssue[]; complete: boolean } | null>(null);
   useEffect(() => { setEnabled(value.enabled); setFeed(value.feed_key); setInterval(String(value.interval_seconds)); setFreshness(String(value.freshness_seconds)); setCoverage(String(value.min_coverage_percent)); operation.recovered(); setQueued(false); }, [value]);
   useEffect(() => { onBusy(value.supplier, operation.busy); return () => onBusy(value.supplier, false); }, [operation.busy, value.supplier]);
   const dirty = enabled !== value.enabled || feed !== value.feed_key || interval !== String(value.interval_seconds) || freshness !== String(value.freshness_seconds) || coverage !== String(value.min_coverage_percent);
@@ -57,10 +58,32 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
     setSaved(false);
     operation.run(true, () => saveSupplierAvailability(value.supplier, { expected_revision: value.revision, enabled, feed_key: feed, interval_seconds: Number(interval), freshness_seconds: Number(freshness), min_coverage_percent: Number(coverage) }), result => { replace(result); setSaved(true); });
   }
+  function repairLinks() {
+    if (blocked || dirty) return;
+    setLinkResult(null);
+    operation.run(true, async signal => {
+      const credential = accessRevision();
+      const totals = { scanned: 0, linked: 0, existing: 0, skipped: 0, conflicts: 0, issues: [] as SupplierLinkIssue[], complete: false };
+      let after = 0;
+      while (true) {
+        if (signal.aborted || credential !== accessRevision()) throw new DOMException('Aborted', 'AbortError');
+        const batch = await reconcileSupplierLinks(value.supplier, after, signal);
+        if (signal.aborted || credential !== accessRevision()) throw new DOMException('Aborted', 'AbortError');
+        totals.scanned += batch.scanned; totals.linked += batch.linked; totals.existing += batch.existing; totals.skipped += batch.skipped;
+        totals.conflicts += batch.conflicts.length;
+        totals.issues = [...totals.issues, ...batch.conflicts, ...(batch.skipped_details || [])].slice(0, 50);
+        totals.complete = batch.next_after_product_id === null;
+        setLinkResult({ ...totals });
+        if (totals.complete) return totals;
+        if (!Number.isSafeInteger(batch.next_after_product_id) || batch.next_after_product_id! <= after) throw new Error('Invalid reconciliation cursor');
+        after = batch.next_after_product_id!;
+      }
+    }, result => setLinkResult(result));
+  }
   return <article className={`availability-supplier${dirty ? ' availability-dirty' : ''}`} data-testid={id('card')}>
     <header><h3>{value.name}</h3><span className="opening-stock-badge">{t(`availabilitySync.${value.running ? 'running' : value.manual_requested_at || queued ? 'queued' : stale ? 'stale' : 'fresh'}`)}</span></header>
     <p>{t('availabilitySync.supplierLabels', { available: value.availability?.orderable || 'do 5 dní', unknown: value.availability?.unknown || 'overíme' })}</p>
-    <p><Link to="/suppliers">{t('availabilitySync.supplierConfig')}</Link></p>
+    <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>
     <div className="availability-fields">
       <label>{t('availabilitySync.feed')}<select data-testid={id('feed')} value={feed} disabled={blocked} onChange={event => { setFeed(event.target.value); setSaved(false); }}>{value.feed_keys.length === 0 && <option value="">{t('availabilitySync.noFeeds')}</option>}{value.feed_keys.map(key => <option key={key} value={key}>{key}</option>)}</select></label>
       <label>{t('availabilitySync.interval')}<input data-testid={id('interval')} type="number" min="300" max="604800" step="1" value={interval} disabled={blocked} onChange={event => { setInterval(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.rangeSeconds', { min: 300, max: 604800 })}</small></label>
@@ -73,9 +96,15 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
     {dirty && <p className="availability-change" role="status">{t('availabilitySync.unsaved')}</p>}
     {saved && !dirty && <p role="status" className="opening-stock-success">{t('availabilitySync.saved')}</p>}
     {queued && <p role="status">{t('availabilitySync.supplierQueued')}</p>}
+    {linkResult && <div data-testid={id('link-result')} role="status"><p>{t(linkResult.complete ? 'availabilitySync.linksComplete' : operation.busy ? 'availabilitySync.linksProgress' : 'availabilitySync.linksIncomplete', linkResult)}</p>
+      <p>{t('availabilitySync.linksCounts', linkResult)}</p>
+      {linkResult.issues.length > 0 && <details><summary>{t('availabilitySync.linksIssues')}</summary><ul>{linkResult.issues.map((issue, index) => <li key={`${issue.product_id}-${index}`}><code>{issue.sku}</code>: {t(`availabilitySync.linkReasons.${issue.reason}`, { defaultValue: t('availabilitySync.linkNeedsReview') })}</li>)}</ul></details>}
+    </div>}
     <Feedback error={operation.error} uncertain={operation.uncertain} />
     <div className="availability-actions"><span className="action-control"><Button data-testid={id('save')} disabled={blocked || !valid || (!dirty && value.revision > 0)} onClick={save}>{t('availabilitySync.save')}</Button><ActionScope effects={enabled ? ['hub-write', 'queued-supplier'] : ['hub-write']} calls={{ kind: 'variable' }} /></span>
-      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.running || !!value.manual_requested_at || queued} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => setQueued(true))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span></div>
+      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.running || !!value.manual_requested_at || queued} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => setQueued(true))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span>
+      <span className="action-control"><Button data-testid={id('reconcile')} variant="secondary" disabled={blocked || dirty} onClick={repairLinks}>{t('availabilitySync.reconcileLinks')}</Button><ActionScope effects={['hub-write']} /></span></div>
+    <p className="text-sm">{t('availabilitySync.linksHelp')}</p>
   </article>;
 }
 
