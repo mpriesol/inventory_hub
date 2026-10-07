@@ -74,7 +74,10 @@ def request_body(context: dict, kind="product") -> dict:
     # their existing provider instructions and independently scoped rule books.
     biketrek = context.get("shop") == "biketrek"
     parameter_instruction = (
-        "Prejdi každý povinný parameter z registra a zapíš potvrdenú hodnotu presne podľa číselníka. "
+        "Prejdi všetky parametre registra, posúď ich použiteľnosť a cielene dohľadaj všetky relevantné údaje. Zapíš iba potvrdené hodnoty presne podľa číselníka. "
+        "required=false znamená nepovinné pre import, nie pokyn parameter ignorovať. Nedohľadaný alebo nepoužiteľný parameter vynechaj; relevantnú medzeru pomenuj vo warnings. "
+        "Samotná chýbajúca hodnota nepovinného parametra nikdy nepatrí do missing_facts a neblokuje čiastočný import. Ani označenie Z/P alebo minimum v zdrojovom registri nemení required=false. "
+        "Pri scope=choice použi variant iba ak sa presný názov parametra nachádza vo facts.variant_attributes; zachovaj jeho presnú hodnotu a product_id. Inak patrí na parent (product_id=null). Nevytváraj nové variantové osi. "
         "Jednoznačný údaj presného SKU v určenom feede prevezmi bez druhého webového potvrdzovania; skontroluj priradenie, význam, jednotky a prenos. "
         "Cielene dohľadávaj chýbajúce údaje a rieš rozpory, nie opakované overovanie už prijatých faktov. " if biketrek else
         "Prejdi každý povinný parameter z registra, vyhľadaj jeho podklad a zapíš potvrdenú hodnotu presne podľa číselníka. ")

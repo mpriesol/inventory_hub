@@ -106,6 +106,27 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(catalog.CatalogError):
             await self.create(request.model_copy(update={"research": "official"}))
 
+    async def test_selected_leaf_survives_profile_default_and_request_is_read_only(self):
+        from inventory_hub.ai_content_types import CategoryProfile
+        from inventory_hub.routers.ai_content import job_request
+        async with self.sessions() as db:
+            previous = await rules.published(db)
+            book = RuleBook.model_validate(previous.book)
+            book.categories.append(CategoryProfile(id="bikes", name="Bikes", shop_categories={"biketrek":"ROOT"}, shop_category_matches={"biketrek":["LEAF"]}))
+            version = AiRuleVersion(book=book.model_dump(),note="Fixture registry",origin="test")
+            db.add(version); await db.flush()
+            await rules.publish(db,version.id,previous.id); await db.commit()
+        jobs = await self.create(self.request(targets=[{"shop":"biketrek","options":{"category_code":"LEAF"}}]))
+        saved = await self.job(jobs[0]["id"])
+        self.assertEqual(saved.context["category_profile"],"bikes")
+        self.assertEqual(saved.context["options"]["category_code"],"LEAF")
+        async with self.sessions() as db:
+            request = await job_request(saved.id,db)
+        self.assertEqual(request["rules_version"],saved.context["rules_version"])
+        self.assertEqual((await self.job(saved.id)).status,"estimate")
+        self.generate.assert_not_called()
+        self.assertFalse(self.clients["biketrek"].sent)
+
     async def test_human_review_does_not_import_until_confirmed(self):
         id = (await self.create())[0]["id"]
         await self.act(id, "start"); await worker.cycle()

@@ -51,6 +51,15 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
   const editable = !pendingUpdate && ['review', 'blocked', 'ready'].includes(job.status) && job.kind === 'product';
   const missingParameters = missingRequiredParameterValues(job.kind === 'product' ? job.output?.parameters || [] : [], job.parameter_registry || [], job.facts || []);
   async function perform(fn: () => Promise<AiJob>) { setBusy(true); setError(''); try { const updated = await fn(); onChange(updated); setDirty(false); } catch (e) { setError(t(`ai.errors.${(e as Error & {code?: string}).code}`, {defaultValue:(e as Error).message})); } finally { setBusy(false); } }
+  async function exportRequest() {
+    setBusy(true); setError('');
+    try {
+      const body = await aiRequest(`/jobs/${job.id}/request`);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(body, null, 2) + '\n'], {type:'application/json'}));
+      const link = document.createElement('a'); link.href = url; link.download = `ai-request-${job.id}.json`;
+      document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
   const importErrors = [...new Set([...(job.preview?.errors || []), ...(job.import_result?.errors || []), ...(job.import_result?.items || job.preview?.items || []).flatMap(i => i.errors)])];
   const unknownImport = job.import_result?.items.some(i => i.status === 'uncertain');
   const updateNeedsAttention = ['sending','uncertain','rejected'].includes(updateState || '');
@@ -61,6 +70,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
   return <section className="ai-card">
     <div className="ai-row"><h2 className="ai-grow">{job.name} · {job.shop}</h2><span className="ai-badge">{t(updateNeedsAttention ? `ai.updateStates.${updateState}` : job.update_only && job.status === 'exists' ? updateState === 'completed' ? 'ai.updatedExisting' : 'ai.readyForUpdate' : `ai.states.${job.status}`, { defaultValue: job.status })}</span></div>
     <p>{job.code} · {t('ai.publishedVersion', { version: job.rules_version })} · {job.category_profile}</p>
+    {job.use_ai && <button disabled={busy} onClick={exportRequest}>{t('ai.exportRequest')}</button>}
     <div className="ai-next-step"><strong>{t('ai.nextStep')}</strong><p>{t(updateNeedsAttention ? `ai.updateStates.${updateState}` : job.update_only ? `ai.updateNext.${updateState === 'completed' ? 'completed' : job.status}` : `ai.next.${job.status}`, { defaultValue: t(`ai.next.${job.status}`, {defaultValue:job.status}) })}</p></div>
     {importErrors.length > 0 && <div className="ai-notice ai-error" role="alert"><strong>{t('ai.importBlockers')}</strong>{importErrors.map(v => <p key={v}>{t(`catalog.codes.${v}`, { defaultValue: t(`ai.errors.${v}`, { defaultValue: v }) })}</p>)}{unknownImport && <p>{t('ai.unknownImportHelp')}</p>}</div>}
     {!job.update_only && ['import_failed','import_blocked'].includes(job.status) && <button disabled={busy} onClick={() => action('retry_import')}>{t(unknownImport ? 'ai.reconcileImport' : 'ai.retryImport')}</button>}

@@ -26,6 +26,8 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 
 Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované súbory a kópie nepovažuj za používané iba preto, že sú v repozitári. Tabuľka alebo tlačidlo samy osebe nedokazujú dokončený pracovný postup.
 
+AI registre podporujú zdieľané bloky pre vybrané profily, označené návrhy parametrov, nepovinné čiastočné údaje a rozsah podľa skutočnej variantovej osi. Presné zadanie možno stiahnuť bez generovania; detaily a hranice sú v [AI obsah](docs/ai-content.md). Nasadenie kódu samo nepublikuje súkromnú knihu pravidiel.
+
 ## Prevádzkový kontext
 
 - Repozitár: [mpriesol/inventory_hub](https://github.com/mpriesol/inventory_hub). Starý `OLD_inventory_hub` sa pri bežnej práci nepoužíva.

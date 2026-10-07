@@ -127,11 +127,7 @@ async def create(db, request: ExistingProductRequest):
     published = await rules.published(db)
     book = RuleBook.model_validate(published.book)
     main = next((c.get("code") for c in remote.get("categories") or [] if c.get("main_yn")), None)
-    profile = request.category_profile
-    if profile == "general" and (request.category_code or main):
-        mapped = [c.id for c in book.categories if c.shop_categories.get(request.shop) == (request.category_code or main)]
-        if len(mapped) == 1:
-            profile = mapped[0]
+    profile = rules.select_category_profile(book, request.shop, request.category_code or main, request.category_profile)
     # Existing products use an explicit field comparison and confirmation. The
     # published automatic-create switches never authorize updates to live data.
     resolved = rules.resolve(book, Scope(shop=request.shop, supplier=request.supplier,
@@ -140,7 +136,7 @@ async def create(db, request: ExistingProductRequest):
     if any(p["scope"] == "variant" and p["required"] for p in (resolved.get("category") or {}).get("parameters", [])):
         raise CatalogError("ai_existing_variant_registry", "This entry updates shared content and parent parameters; choose a parent-only category profile", 422)
     mapped = (resolved.get("category") or {}).get("shop_categories", {}).get(request.shop)
-    options = ShopImportOptions(category_code=mapped or request.category_code or main)
+    options = ShopImportOptions(category_code=request.category_code or main or mapped)
     ctx = {"source_kind": "shop", "update_only": True, "supplier": request.supplier, "feed_key": "shop",
         "product_ids": [], "run_id": None, "shop": request.shop, "target": imports._target(cfg),
         "code": snapshot["code"], "name": snapshot["descriptions"]["title"], "image": thumbnail(remote),

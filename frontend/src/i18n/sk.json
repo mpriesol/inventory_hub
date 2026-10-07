@@ -642,7 +642,7 @@
     "fallbackCategory": "Kategória, ak profil nemá priradenie",
     "noCategory": "Bez kategórie",
     "pricelist": "Cenník",
-    "mappingPriority": "Priradenie v profile kategórie má prednosť pred touto náhradnou kategóriou. Prepínače tu platia iba pre aktuálnu prípravu.",
+    "mappingPriority": "Výslovne zvolená cieľová kategória má prednosť; mapovanie profilu sa použije, ak cieľ nevyberieš.",
     "automaticNotice": "Po spustení sa použijú pravidlá vybraných profilov. Vypnutý odhad preskočí čakanie na náklady; vypnuté schválenie a potvrdenie umožnia automatický import. Technické chyby ho vždy zastavia.",
     "prepareBatch": "Pripraviť / spustiť podľa nastavení",
     "recentJobs": "Posledné úlohy",
@@ -879,7 +879,20 @@
     "settleUpdateHelp": "Zhodná hodnota v e-shope sama nepotvrdzuje, že pôvodná požiadavka už nemôže doraziť. Pred odblokovaním overte jej ukončenie a zapíšte dôvod.",
     "settleUpdateConfirm": "Overil som, že pôvodná požiadavka už nemôže doraziť do e-shopu.",
     "settleUpdateNote": "Dôvod a spôsob overenia ukončenia požiadavky",
-    "settleUpdate": "Uzavrieť nejasný výsledok"
+    "settleUpdate": "Uzavrieť nejasný výsledok",
+    "choice": "Podľa skutočnej voľby (P/V)",
+    "registryStatus": "Stav registra",
+    "registryStatuses": {
+      "approved": "Schválený",
+      "draft": "Návrh – nové polia sa nepoužívajú",
+      "mixed": "Schválený základ a označené návrhy",
+      "missing": "Iba spoločné parametre; vlastný register chýba"
+    },
+    "approvedParameters": "schválených parametrov",
+    "linkedCategoryInstructions": "Úplné priradené pokyny kategórie",
+    "linkedProfiles": "Platí pre profily",
+    "draftParameterHelp": "Návrh zo zdrojového dokumentu – AI toto pole zatiaľ nedostáva.",
+    "exportRequest": "Stiahnuť presné zadanie pre AI (bez spustenia)"
   },
   "upgatesImport": {
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",

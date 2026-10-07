@@ -144,6 +144,15 @@ async def job(id: str, db: DB):
     return service.summary(await service.get_job(db, id), detail=True)
 
 
+@protected.get("/jobs/{id}/request")
+async def job_request(id: str, db: DB):
+    """Inspect the real provider body without generation, billing or job mutation."""
+    from inventory_hub.services.ai_content_provider import request_body
+    value = await service.get_job(db, id)
+    return {"rules_version": value.context.get("rules_version"),
+            "generated": False, "request": request_body(value.context, value.kind)}
+
+
 @protected.post("/jobs/{id}/review")
 async def review(id: str, request: ContentReview, db: DB):
     return await service.review(db, await service.get_job(db, id, True), request)

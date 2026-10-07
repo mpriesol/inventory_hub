@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from inventory_hub.ai_content_types import Content
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_html import clean_description
+from inventory_hub.services.ai_content_rules import parameter_scope
 
 TAGS = {"p", "br", "strong", "b", "em", "i", "ul", "ol", "li", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td"}
 
@@ -55,7 +56,8 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         warnings.append("ai_meta_description_length")
     ids = {int(p["id"]) for p in context["facts"]}
     category = context["resolved"].get("category") or {}
-    definitions = {p["name"]: p for p in category.get("parameters", [])}
+    definitions = {p["name"]: {**p, "scope": parameter_scope(p, context["facts"])}
+                   for p in category.get("parameters", []) if p.get("approved", True)}
     parameters = {}
     for value in content.parameters:
         definition = definitions.get(value.name)
