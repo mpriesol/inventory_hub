@@ -78,6 +78,14 @@ nepribaľujú do verejného repozitára. Balík zachováva celé bloky, ich pôv
 revízie, rozsahy, návrhy aj históriu. História sa nepoužíva ako ďalšie účinné
 pravidlá. Prístupové URL patria do bezpečnej konfigurácie, nie do promptu.
 
+Dokument označený `required_full_read: true` zachová pri zostavení aj svoje
+referenčné a historické bloky v zodpovedajúcom rozsahu. Hlavné inštrukcie
+majú tento príznak, aby sa prečítal celý dokument vrátane histórie. Každá
+časť uvádza typ a stav; história a referencie sú výslovne označené ako
+neoperatívny kontext, ktorý neobnovuje staršie pravidlá. Pri ostatných
+dokumentoch sa naďalej vyberajú iba relevantné účinné bloky. Príznak
+neobchádza odmietnutie návrhových alebo zmiešaných pravidiel.
+
 Príklady s privátnym vstupom a výstupom mimo Git:
 
 ```sh

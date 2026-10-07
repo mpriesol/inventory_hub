@@ -166,6 +166,8 @@ def validate_packages(packages: list[dict]) -> dict:
                     _text(value, "alias value")
     for key, doc in documents.items():
         _text(doc.get("name"), key + ".name")
+        if "required_full_read" in doc and type(doc["required_full_read"]) is not bool:
+            _fail("package_schema", key + ".required_full_read")
         details = {**doc, **document_annotations.get(key, {})}
         for field, value in document_annotations.get(key, {}).items():
             if field in doc and doc[field] != value:
@@ -308,9 +310,12 @@ def compile_draft(packages: list[dict], *, shop: str, supplier: str, brand: str,
     def conditional(module):
         return module.get("selection_requires_confirmed_facts") or module.get("selection_terms")
 
+    def full_read(module):
+        return documents[module["document"]].get("required_full_read", False)
+
     selected = set()
     for key, module in modules.items():
-        if module["kind"] in ("reference", "history"):
+        if module["kind"] in ("reference", "history") and not full_read(module):
             continue
         if key in explicit:
             if conditional(module) and key not in requested_knowledge:
@@ -338,7 +343,7 @@ def compile_draft(packages: list[dict], *, shop: str, supplier: str, brand: str,
             require_product_scope(modules[ref])
             if not matches(modules[ref]):
                 _fail("package_scope_conflict", ref)
-            if modules[ref]["kind"] in ("reference", "history"):
+            if modules[ref]["kind"] in ("reference", "history") and not full_read(modules[ref]):
                 _fail("package_reference_not_instruction", ref)
             if ref not in selected:
                 selected.add(ref)
@@ -368,7 +373,10 @@ def compile_draft(packages: list[dict], *, shop: str, supplier: str, brand: str,
     for index, key in enumerate(ordered):
         module = modules[key]
         doc = documents[module["document"]]
-        header = f"Podklad: {doc['name']} | {module['revision']} | {module['section']} | {key}\n"
+        header = f"Podklad: {doc['name']} | {module['revision']} | {module['section']} | {key} | typ:{module['kind']} | stav:{module['status']}"
+        if module["kind"] in ("reference", "history"):
+            header += " | Referenčný/historický kontext na úplné prečítanie; nevytvára účinné pravidlá a staršie pokyny sa neuplatňujú."
+        header += "\n"
         if len(header) >= 2000:
             _fail("package_provenance_too_long", key)
         chunks = split_text(module["text"], 24000 - len(header) - 40)

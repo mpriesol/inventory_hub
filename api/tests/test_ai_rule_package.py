@@ -67,6 +67,33 @@ class RulePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(PackageError, "package_checksum_mismatch"):
                 load_packages(tmp)
 
+    def test_full_read_preserves_intro_and_history_as_nonoperative_context(self):
+        source = package()
+        source[0]["documents"][0].update(required_full_read=True, line_count=3)
+        source[0]["modules"][0]["source_lines"] = [2, 2]
+        source[0]["modules"][1]["source_lines"] = [3, 3]
+        intro = {**source[0]["modules"][0], "id": "intro", "kind": "reference", "text": "Úvodný kontext.\n", "source_lines": [1, 1]}
+        source[0]["modules"].append(intro)
+        source[0]["documents"].append({"id": "02", "name": "Other document", "line_count": 1})
+        source[0]["modules"].append({**intro, "id": "other-reference", "document": "02", "text": "Unrelated reference"})
+        result = compile_(source)
+        selected = result["report"]["selected_modules"]
+        self.assertEqual(selected, ["intro", "common", "history"])
+        restored = "".join(rule["instructions"].split("\n", 2)[2] for rule in result["book"]["rules"])
+        self.assertEqual(restored, intro["text"] + source[0]["modules"][0]["text"] + source[0]["modules"][1]["text"])
+        for rule in result["book"]["rules"]:
+            header = rule["instructions"].split("\n", 1)[0]
+            self.assertIn("stav:active", header)
+            if "typ:history" in header or "typ:reference" in header:
+                self.assertIn("nevytvára účinné pravidlá", header)
+                self.assertIn("staršie pokyny sa neuplatňujú", header)
+        source[0]["modules"][1]["status"] = "draft"
+        with self.assertRaisesRegex(PackageError, "package_module_unapproved"):
+            compile_(source)
+        source[0]["documents"][0]["required_full_read"] = "true"
+        with self.assertRaisesRegex(PackageError, "package_schema"):
+            validate_packages(source)
+
     def test_duplicate_and_missing_references_fail(self):
         source = package()
         source[0]["modules"].append(copy.deepcopy(source[0]["modules"][0]))
