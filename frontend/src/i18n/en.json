@@ -615,6 +615,16 @@
     "claim": "Claim",
     "source": "Source",
     "evidence": "Evidence",
+    "evidenceSourceHelp": "Use feed:<id> for feed data or the exact opened HTTPS URL for a web source. Only select a page that supports this claim; a recorded opening does not establish factual accuracy. Save corrections without generating AI content again.",
+    "openedSources": "Pages recorded as opened during this preparation",
+    "noOpenedSources": "This preparation has no recorded opened web page.",
+    "recheckContent": "Recheck content without AI",
+    "evidenceErrors": {
+      "invalid_https_url": "A valid complete HTTPS URL is required. A page title or official: label is not enough.",
+      "query_not_allowed": "The check does not accept URL query parameters after ?. Use a matching verified source; removing parameters alone does not prove the page was opened.",
+      "not_opened": "This exact URL is not among the recorded opened pages.",
+      "feed_quote_not_found": "The quote was not found in the specified feed product. Check both the source and quote."
+    },
     "missingFacts": "Missing facts – one per line",
     "saveContent": "Save content draft",
     "approveContent": "Approve content and prepare import",

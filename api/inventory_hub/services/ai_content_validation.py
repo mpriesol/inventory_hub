@@ -37,8 +37,25 @@ def feed_evidence_texts(value) -> list[str]:
     return [] if value is None else [evidence_text(str(value))]
 
 
+def official_source_error(source: str, opened: list[str]) -> str | None:
+    try:
+        url = urlsplit(source)
+        if url.scheme != "https" or not url.hostname or url.username or url.password:
+            return "invalid_https_url"
+        # Accessing port also rejects malformed values instead of interrupting a job.
+        _ = url.port
+    except ValueError:
+        return "invalid_https_url"
+    if url.query:
+        return "query_not_allowed"
+    if source not in opened:
+        return "not_opened"
+    return None
+
+
 def validate_content(content: Content, context: dict, opened: list[str] | None = None) -> dict:
     errors, warnings = [], list(content.warnings)
+    evidence_errors = []
     if content.missing_facts:
         errors.append("ai_missing_facts")
     for field in ("title", "short_description", "seo_title", "meta_description", "h1_descriptor", "future_name", "h1_descr_suffix"):
@@ -93,24 +110,27 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
                 if values is not None and values != [attribute["value"]]:
                     errors.append("ai_variant_identity_change:" + attribute["name"])
     feed_texts = {"feed:" + str(p["id"]): feed_evidence_texts(p) for p in context["facts"]}
-    for evidence in content.evidence:
+    for index, evidence in enumerate(content.evidence):
+        reason = None
         if evidence.source.startswith("feed:"):
             quote = evidence_text(evidence.quote)
             if not quote or not any(quote in text for text in feed_texts.get(evidence.source, [])):
                 errors.append("ai_unverified_feed_evidence")
+                reason = "feed_quote_not_found"
         else:
-            url = urlsplit(evidence.source)
-            host = (url.hostname or "").lower()
             # Official sites may be discovered without a preconfigured domain list.
             # The model assesses publisher identity; the server checks actual opening.
-            if (url.scheme != "https" or not host or url.username or url.password or url.query or
-                evidence.source not in (opened or [])):
+            reason = official_source_error(evidence.source, opened or [])
+            if reason:
                 errors.append("ai_unverified_official_evidence")
+        if reason:
+            evidence_errors.append({"index": index, "source": evidence.source, "reason": reason})
     if context["research"] == "official" and not any(not e.source.startswith("feed:") for e in content.evidence):
         warnings.append("ai_no_additional_official_evidence")
     if category and not category.get("automatic_import_ready", True):
         warnings.append("ai_category_requires_review")
     return {"errors": sorted(set(errors)), "warnings": sorted(set(warnings)),
+            "evidence_errors": evidence_errors,
             "automatic_ready": not errors and category.get("automatic_import_ready", True)}
 
 
