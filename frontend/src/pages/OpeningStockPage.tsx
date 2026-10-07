@@ -5,6 +5,7 @@ import { Button } from '../components/ui/Button.new';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { finalizeOpening, getOpeningBatch, getOpeningOptions, listOpeningBatches, OpeningBatch, OpeningBatchInfo,
   OpeningIssue, OpeningOptions, previewOpening } from '../api/openingStock';
+import { defaultWarehouseCode } from '../utils/warehouses';
 import './OpeningStockPage.css';
 
 const csvHeader = 'sku;quantity;unit_cost;unit\n';
@@ -43,6 +44,7 @@ export function OpeningStockPage() {
   const writeInFlight = useRef(false);
   const previewId = useRef<string | null>(null);
   const fileGeneration = useRef(0);
+  const warehouseInitialized = useRef(false);
   const lockedForm = busy === 'finalize' || uncertain;
   const expired = !!batch && new Date(batch.expires_at).getTime() <= Date.now();
 
@@ -55,12 +57,14 @@ export function OpeningStockPage() {
     setUncertain(false); setTablePage(0); setBusy(null); busyRef.current = null;
   }
   useEffect(() => {
+    warehouseInitialized.current = false;
     clearDraft(); setOptions(null); setRecent(null); setRecoverId(''); setForm(initialForm()); setToken('');
     return () => { generation.current += 1; fileGeneration.current += 1; readController.current?.abort(); };
   }, [revision]);
 
   function update(field: keyof Form, value: string) {
     if (lockedForm) return;
+    if (field === 'warehouse') warehouseInitialized.current = true;
     clearDraft(); setError(''); setRecoverId(''); setForm(previous => ({ ...previous, [field]: value }));
   }
   function reportError(value: unknown) {
@@ -81,6 +85,7 @@ export function OpeningStockPage() {
     finally { if (current()) { busyRef.current = null; setBusy(null); } }
   }
   function acceptBatch(value: OpeningBatch) {
+    warehouseInitialized.current = true;
     setLoaded({ batch: value, revision: accessRevision() }); setRecoverId(value.id);
     setIssues([]); setWarnings(value.warnings); setConfirmed(false); setReconciled(false); setUncertain(false); setTablePage(0);
     // Recovery keeps the frozen batch for finalization. Reconstructed CSV is
@@ -88,6 +93,13 @@ export function OpeningStockPage() {
     previewId.current = null;
     setForm({ warehouse: value.warehouse.code, source: value.source_reference, operator: value.operator_name,
       countedAt: localDate(value.counted_at), csv: csvHeader + value.lines.map(line => `"${line.sku.replace(/"/g, '""')}";${line.quantity};${line.unit_cost};ks`).join('\n') });
+  }
+  function acceptOptions(value: OpeningOptions) {
+    setOptions(value);
+    if (!warehouseInitialized.current) {
+      warehouseInitialized.current = true;
+      setForm(previous => ({ ...previous, warehouse: defaultWarehouseCode(value.warehouses) }));
+    }
   }
   function recover(id = recoverId) {
     if (!uuidPattern.test(id.trim())) { setError('invalid_batch_id'); return; }
@@ -181,7 +193,7 @@ export function OpeningStockPage() {
         </div>)}</div>}
       </section>
       {batch?.status !== 'completed' && <section className="opening-stock-panel">
-        <div className="opening-stock-actions"><h2>{t('openingStock.inputTitle')}</h2><Button variant="secondary" disabled={!!busy || uncertain} onClick={() => read('options', getOpeningOptions, setOptions)}>{t('openingStock.loadWarehouses')}</Button></div>
+        <div className="opening-stock-actions"><h2>{t('openingStock.inputTitle')}</h2><Button variant="secondary" disabled={!!busy || uncertain} onClick={() => read('options', getOpeningOptions, acceptOptions)}>{t('openingStock.loadWarehouses')}</Button></div>
         <fieldset disabled={lockedForm}>
           <div className="opening-stock-fields">
             <label>{t('openingStock.warehouse')}<select value={form.warehouse} onChange={event => update('warehouse', event.target.value)} disabled={!options || lockedForm}>
@@ -226,7 +238,7 @@ export function OpeningStockPage() {
             <Button disabled={!confirmed || !reconciled || !!busy || expired} loading={busy === 'finalize'} onClick={finalize}>{t('openingStock.finalize')}</Button>
           </div>}
         </>}
-        <Button variant="secondary" disabled={!!busy || uncertain} onClick={() => { clearDraft(); setForm(initialForm()); setRecoverId(''); setError(''); }}>{t('openingStock.newBatch')}</Button>
+        <Button variant="secondary" disabled={!!busy || uncertain} onClick={() => { clearDraft(); warehouseInitialized.current = options !== null; setForm({ ...initialForm(), warehouse: defaultWarehouseCode(options?.warehouses ?? []) }); setRecoverId(''); setError(''); }}>{t('openingStock.newBatch')}</Button>
       </section>}
     </>}
     {error && <div className="opening-stock-errors" role="alert">{message(error)}</div>}

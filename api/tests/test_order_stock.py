@@ -13,7 +13,7 @@ from pydantic import SecretStr, ValidationError
 
 from inventory_hub.database import get_session
 from inventory_hub.order_stock_types import (
-    OrderStockApplyRequest, OrderStockConfigureRequest, OrderStockPreviewRequest,
+    OrderStockApplyRequest, OrderStockConfigureRequest, OrderStockPreviewRequest, ShopWarehouseAssignmentRequest,
 )
 from inventory_hub.routers import order_stock as routes
 from inventory_hub.services import order_stock as service
@@ -57,6 +57,14 @@ def raw_page(*orders):
 
 
 class OrderStockInputTests(unittest.TestCase):
+    def test_warehouse_assignment_cannot_activate_stock_or_forge_quantities(self):
+        valid = {"shop_code": "biketrek", "warehouse_code": "main", "expected_assignment_hash": "a" * 64}
+        ShopWarehouseAssignmentRequest(**valid)
+        for extra in ({"confirmed": True}, {"starts_at": "2000-01-01"}, {"quantity": 10},
+                      {"status_actions": {}}, {"enabled": True}):
+            with self.subTest(extra=extra), self.assertRaises(ValidationError):
+                ShopWarehouseAssignmentRequest(**{**valid, **extra})
+
     def test_preview_takes_only_source_identity_never_client_stock_facts(self):
         valid = preview_body()
         OrderStockPreviewRequest(**valid)
@@ -114,6 +122,8 @@ class OrderStockProtectedRouteTests(unittest.TestCase):
         return [
             ("GET", "/order-stock/options?shop_code=biketrek", None, "options"),
             ("POST", "/order-stock/configure", configure_body(), "configure"),
+            ("POST", "/order-stock/warehouse-assignment", {"shop_code": "biketrek", "warehouse_code": "main",
+                "expected_assignment_hash": "a" * 64}, "assign_warehouse"),
             ("POST", "/order-stock/preview", preview_body(), "preview"),
             ("GET", "/order-stock/previews?shop_code=biketrek", None, "list_previews"),
             ("GET", f"/order-stock/previews/{identifier}", None, "get_preview"),
@@ -124,7 +134,7 @@ class OrderStockProtectedRouteTests(unittest.TestCase):
     def test_every_new_route_authenticates_before_database_and_source(self):
         with ExitStack() as stack:
             operations = {name: stack.enter_context(patch.object(service, name, AsyncMock(return_value={})))
-                          for name in ("options", "configure", "preview", "list_previews", "get_preview", "apply")}
+                          for name in ("options", "configure", "assign_warehouse", "preview", "list_previews", "get_preview", "apply")}
             fetch_source = stack.enter_context(patch.object(source, "load_source", AsyncMock()))
             for method, path, body, _ in self.calls():
                 for headers in ({}, {"Authorization": "Bearer wrong-test-token"}):
@@ -139,7 +149,7 @@ class OrderStockProtectedRouteTests(unittest.TestCase):
     def test_authenticated_routes_keep_preview_and_apply_as_explicit_separate_operations(self):
         with ExitStack() as stack:
             operations = {name: stack.enter_context(patch.object(service, name, AsyncMock(return_value={"ok": name})))
-                          for name in ("options", "configure", "preview", "list_previews", "get_preview", "apply")}
+                          for name in ("options", "configure", "assign_warehouse", "preview", "list_previews", "get_preview", "apply")}
             for method, path, body, name in self.calls():
                 response = self.client.request(method, path, json=body, headers=self.headers)
                 self.assertEqual(response.status_code, 200, (path, response.text))

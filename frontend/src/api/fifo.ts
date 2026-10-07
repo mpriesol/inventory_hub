@@ -40,7 +40,7 @@ export interface FifoCostOptions {
 }
 export interface FifoPreview { id: string; status: string; preview_hash: string; preview_data: Record<string, unknown>; result: unknown }
 const scope = (product: number, warehouse: string, offset = 0) => `product_id=${product}&warehouse_code=${encodeURIComponent(warehouse)}&limit=50&offset=${offset}`;
-export const fifoOptions = (signal?: AbortSignal) => hubRequest<{ warehouses: { id: number; code: string; name: string }[] }>('/api/fifo/options', undefined, signal);
+export const fifoOptions = (signal?: AbortSignal) => hubRequest<{ warehouses: { id: number; code: string; name: string; is_default?: boolean }[] }>('/api/fifo/options', undefined, signal);
 export const fifoStock = (product: number, warehouse: string, offset = 0, signal?: AbortSignal) => hubRequest<FifoStock>(`/api/fifo/stock?${scope(product, warehouse, offset)}`, undefined, signal);
 export const fifoHistory = (product: number, warehouse: string, offset = 0, signal?: AbortSignal) => hubRequest<{ movements: FifoMovement[]; total: number }>(`/api/fifo/history?${scope(product, warehouse, offset)}`, undefined, signal);
 export const fifoReturnOptions = (movement: number) => hubRequest<FifoReturnOptions>(`/api/fifo/issues/${movement}/return-options`);

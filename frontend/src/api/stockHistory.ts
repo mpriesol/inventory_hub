@@ -19,7 +19,7 @@ export interface MovementFilters {
   tracking_scope?: 'all' | 'current' | 'historical';
   q: string; sku: string; warehouse_code: string; movement_type: string; date_from: string; date_to: string;
 }
-export interface HistoryOptions { warehouses: { code: string; name: string }[]; movement_types: string[]; date_timezone: string }
+export interface HistoryOptions { warehouses: { code: string; name: string; is_default: boolean; is_active: boolean }[]; movement_types: string[]; date_timezone: string }
 export const getHistoryOptions = (signal?: AbortSignal) => hubRequest<HistoryOptions>(`${API_BASE}/stock-history/options`, undefined, signal);
 export function getMovements(filters: MovementFilters, page = 1, pageSize = 50, snapshotId?: number, signal?: AbortSignal) {
   const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });

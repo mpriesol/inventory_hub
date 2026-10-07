@@ -10,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
-from inventory_hub.order_stock_types import OrderStockApplyRequest, OrderStockConfigureRequest, OrderStockPreviewRequest
+from inventory_hub.order_stock_types import (OrderStockApplyRequest, OrderStockConfigureRequest,
+    OrderStockPreviewRequest, ShopWarehouseAssignmentRequest)
 from inventory_hub.services import order_stock as service
 from inventory_hub.services.order_stock_source import SourceError
+from inventory_hub.services.shop_warehouse_assignment import AssignmentError
 
 
 class NoStoreRoute(APIRoute):
@@ -43,7 +45,7 @@ ShopCode = Annotated[str, Query(pattern=r"^[a-z0-9][a-z0-9_-]{0,49}$")]
 async def _call(operation):
     try:
         return await operation
-    except (service.OrderStockError, SourceError) as error:
+    except (service.OrderStockError, SourceError, AssignmentError) as error:
         raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
 
 
@@ -55,6 +57,11 @@ async def options(shop_code: ShopCode, db: AsyncSession = Depends(get_session)):
 @router.post("/configure")
 async def configure(payload: OrderStockConfigureRequest, db: AsyncSession = Depends(get_session)):
     return await _call(service.configure(db, payload))
+
+
+@router.post("/warehouse-assignment")
+async def warehouse_assignment(payload: ShopWarehouseAssignmentRequest, db: AsyncSession = Depends(get_session)):
+    return await _call(service.assign_warehouse(db, payload))
 
 
 @router.post("/preview")

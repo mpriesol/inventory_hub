@@ -34,7 +34,12 @@ const movement = (id, changes = {}) => ({ id, product_id: id, sku: oddSku, produ
   movement_type: 'SALE_OUT', quantity: '-1.000', balance_before: '2.000', balance_after: '1.000', unit_cost: null, total_cost: null, cost_basis: 'unknown',
   reason: 'Physical handover', reference_type: 'order', reference_id: 'order-A', reference_source: 'order', reference_label: 'BT-100', document: null,
   shop_code: 'biketrek', supplier_code: null, created_by: 'fixture-operator', created_at: '2026-09-24T10:00:00Z', ...changes });
-const calls = []; let hold = false, resolveHeld, fail = false, rejectAccess = false, summaryFail = false, empty = false;
+const calls = []; let hold = false, resolveHeld, holdOptions = true, resolveOptions, failOptions = true, fail = false, rejectAccess = false, summaryFail = false, empty = false;
+const historyOptions = { warehouses: [
+  { code: 'aaa', name: 'Other warehouse', is_default: false, is_active: true },
+  { code: 'closed', name: 'Closed warehouse', is_default: true, is_active: false },
+  { code: 'main', name: 'Main warehouse', is_default: true, is_active: true },
+], movement_types: ['SALE_OUT', 'PURCHASE_IN'], date_timezone: 'Europe/Bratislava' };
 const reads = () => calls.filter(call => call.url.pathname.endsWith('/movements'));
 const dataFor = params => ({ items: empty ? [] : Number(params.get('page')) === 2 ? [movement(49, { reference_label: 'PAGE-TWO' })] : [movement(100), movement(99, { sku: 'KNOWN-ZERO', unit_cost: '0.0000', total_cost: '0.0000' })],
   total: empty ? 0 : 51, page: Number(params.get('page')), page_size: Number(params.get('page_size')), snapshot_id: Number(params.get('snapshot_id') || 100), source: 'hub', upgates_calls: 0 });
@@ -49,7 +54,11 @@ global.fetch = async (path, options = {}) => {
   }
   assert.equal(options.cache, 'no-store'); assert.equal(options.headers.Authorization, 'Bearer synthetic-history-token');
   if (rejectAccess) return reply({ detail: { code: 'hub_access_required' } }, 401);
-  if (url.pathname.endsWith('/options')) return reply({ warehouses: [{ code: 'main', name: 'Main warehouse' }], movement_types: ['SALE_OUT', 'PURCHASE_IN'], date_timezone: 'Europe/Bratislava' });
+  if (url.pathname.endsWith('/options')) {
+    if (failOptions) { failOptions = false; throw new TypeError('Synthetic options failure'); }
+    if (holdOptions) return new Promise(resolve => { resolveOptions = () => resolve(reply(historyOptions)); });
+    return reply(historyOptions);
+  }
   if (fail) throw new TypeError('Synthetic request failed');
   if (hold) return new Promise(resolve => { resolveHeld = data => resolve(reply(data || dataFor(url.searchParams))); });
   return reply(dataFor(url.searchParams));
@@ -63,10 +72,26 @@ async function mountHistory(path = '/stock/history') {
   assert.equal(calls.length, 0, 'Locked history never starts a read');
   assert(required('history-unlock').disabled);
   await input('history-token', 'synthetic-history-token'); await click('history-unlock');
-  assert.equal(calls.length, 2, 'Unlock loads options and one bounded history page');
+  assert(document.querySelector('[role="alert"]'), 'Transient options failure is visible');
+  assert(!required('history-load').disabled, 'Load can retry options without a lock/unlock cycle');
+  assert.equal(reads().length, 0, 'Failed options do not trigger an all-warehouse fallback read');
+  await act(async () => { const load = required('history-load'); load.click(); load.click(); await tick(); });
+  assert.equal(calls.length, 2, 'Immediate duplicate retries start only one new options request');
+  assert.equal(reads().length, 0, 'First history read waits for the actual warehouse default');
+  assert(required('history-load').disabled);
+  await input('history-query', 'PENDING QUERY');
+  holdOptions = false;
+  await act(async () => { resolveOptions(); await tick(); });
+  assert.equal(calls.length, 3, 'Explicit retry loads options and one bounded history page');
+  assert(!document.querySelector('[role="alert"]'), 'Successful retry clears the options failure');
+  assert.equal(required('history-query').value, 'PENDING QUERY', 'Options arrival preserves filter edits made while loading');
+  assert.equal(reads()[0].url.searchParams.get('q'), 'PENDING QUERY');
+  assert.equal(required('history-warehouse').value, 'main', 'Active default wins over alphabetical order and inactive defaults');
+  assert.equal(reads()[0].url.searchParams.get('warehouse_code'), 'main');
   assert.equal(reads()[0].url.searchParams.get('sku'), oddSku, 'SKU query preserves slash, query characters and Unicode exactly');
   assert.equal(reads()[0].url.searchParams.get('page_size'), '50');
   assert.equal(reads()[0].url.searchParams.get('tracking_scope'), 'current');
+  await input('history-query', ''); await click('history-load');
   await input('history-scope', 'historical'); await click('history-load');
   assert.equal(reads().at(-1).url.searchParams.get('tracking_scope'), 'historical');
   assert.equal(required('history-sku').value, oddSku);
@@ -96,7 +121,7 @@ async function mountHistory(path = '/stock/history') {
   assert.equal(reads().at(-1).url.searchParams.get('page_size'), '25');
   assert.equal(reads().at(-1).url.searchParams.get('snapshot_id'), null);
   assert.equal(reads().at(-1).url.searchParams.get('q'), 'NEW DOC');
-  await input(document.querySelector('select:not([data-testid])'), 'main');
+  await input('history-warehouse', 'main');
   const dates = document.querySelectorAll('input[type="date"]');
   await input(dates[0], '2026-09-01'); await input(dates[1], '2026-09-24');
   await input('history-type', 'PURCHASE_IN'); await click('history-load');
@@ -104,6 +129,18 @@ async function mountHistory(path = '/stock/history') {
   assert.equal(reads().at(-1).url.searchParams.get('warehouse_code'), 'main');
   assert.equal(reads().at(-1).url.searchParams.get('date_from'), '2026-09-01');
   assert.equal(reads().at(-1).url.searchParams.get('date_to'), '2026-09-24');
+
+  await input('history-warehouse', ''); await click('history-load');
+  assert.equal(reads().at(-1).url.searchParams.get('warehouse_code'), null, 'Explicit all-warehouses selection stays available');
+  await act(async () => { unlockHub(''); await tick(); });
+  await input('history-token', 'synthetic-history-token'); await click('history-unlock');
+  assert.equal(required('history-warehouse').value, '', 'Credential refresh preserves explicit all warehouses');
+  assert.equal(reads().at(-1).url.searchParams.get('warehouse_code'), null);
+  await input('history-warehouse', 'aaa'); await click('history-load');
+  await act(async () => { unlockHub(''); await tick(); });
+  await input('history-token', 'synthetic-history-token'); await click('history-unlock');
+  assert.equal(required('history-warehouse').value, 'aaa', 'Credential refresh preserves another explicitly chosen warehouse');
+  assert.equal(reads().at(-1).url.searchParams.get('warehouse_code'), 'aaa');
 
   hold = true; const beforeDouble = reads().length;
   await act(async () => { const load = required('history-load'); load.click(); load.click(); await tick(); });
@@ -137,6 +174,7 @@ async function mountHistory(path = '/stock/history') {
   const activity = await getRecentActivity();
   assert.equal(activity.length, 2);
   assert.equal(reads().at(-1).url.searchParams.get('tracking_scope'), 'current', 'Dashboard excludes historical imports and closures');
+  assert.equal(reads().at(-1).url.searchParams.get('warehouse_code'), null, 'Dashboard remains an all-warehouse read');
   assert.equal(activity[0].id, '100'); assert.equal(activity[0].sku, oddSku); assert.equal(activity[0].reference, 'BT-100');
   assert.equal(activity[0].quantity, '-1.000');
   empty = true; assert.deepEqual(await getRecentActivity(), [], 'Empty ledger stays empty; no fake recent receipt or sync is synthesized');

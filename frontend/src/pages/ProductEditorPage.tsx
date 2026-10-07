@@ -9,6 +9,7 @@ import { FifoPanel } from '../components/product/FifoPanel';
 import { StockAdjustmentPanel } from '../components/product/StockAdjustmentPanel';
 import { ProductPublicationPanel } from '../components/product/ProductPublicationPanel';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
+import { defaultWarehouseCode } from '../utils/warehouses';
 import { EditorMode, getEditorProduct, getEditorProducts, getEditorSave, getProductEditorOptions, ProductEditorDetail,
   ProductEditorFilters, ProductEditorOptions, ProductEditorPageData, ProductEditorRow, ProductEditorSave, ProductEditorSaveBody, refreshEditorAttributes, saveEditorProducts } from '../api/productEditor';
 import { changeDraft, clampColumnWidth, columnPreferences, defaultColumnWidth, Drafts, draftValue, EDITOR_COLUMNS, EditorColumn,
@@ -24,6 +25,7 @@ export function ProductEditorPage() {
   const [token, setToken] = useState('');
   const [options, setOptions] = useState<ProductEditorOptions | null>(null);
   const [filters, setFilters] = useState(initialFilters);
+  const warehouseInitialized = useRef(false);
   const [loaded, setLoaded] = useState<{ data: ProductEditorPageData; filters: ProductEditorFilters; revision: number } | null>(null);
   const data = loaded?.revision === revision ? loaded.data : null;
   const warehouse = loaded?.filters.warehouse_code || '';
@@ -97,6 +99,7 @@ export function ProductEditorPage() {
     setError(code);
   }
   function changeFilter<K extends keyof ProductEditorFilters>(key: K, value: ProductEditorFilters[K]) {
+    if (key === 'warehouse_code') warehouseInitialized.current = true;
     if (busyRef.current === 'load') { generation.current++; controller.current?.abort(); busyRef.current = null; setBusy(null); }
     setFilters(previous => ({ ...previous, [key]: value, page: 1 })); setError('');
   }
@@ -111,8 +114,9 @@ export function ProductEditorPage() {
     try {
       if (!options) {
         const value = await getProductEditorOptions(abort.signal); if (!current()) return; setOptions(value);
-        if (!next.warehouse_code && value.warehouses.length === 1) {
-          next = { ...next, warehouse_code: value.warehouses[0].code }; setFilters(next);
+        if (!warehouseInitialized.current) {
+          warehouseInitialized.current = true;
+          next = { ...next, warehouse_code: next.warehouse_code || defaultWarehouseCode(value.warehouses) }; setFilters(next);
         }
       }
       const value = await getEditorProducts(next, abort.signal); if (current()) { setLoaded({ data: value, filters: next, revision: credential }); setActive(value.items.length ? { id: value.items[0].id, field: 'sku' } : null); }

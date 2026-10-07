@@ -5,9 +5,13 @@ export interface OrderStockPolicy {
   warehouse_id: number; warehouse_code: string; starts_at: string; revision: number;
   status_actions: Record<string, OrderStockAction>;
 }
-export interface OrderStockOptions {
+export interface OrderStockWarehouseAssignment {
+  warehouse_assignment: { warehouse_id: number; warehouse_code: string; warehouse_name: string } | null;
+  assignment_hash: string;
+}
+export interface OrderStockOptions extends OrderStockWarehouseAssignment {
   shop: { id: number; code: string; name: string };
-  warehouses: { id: number; code: string; name: string }[];
+  warehouses: { id: number; code: string; name: string; is_default?: boolean }[];
   statuses: { id: number; name: string; type: string }[];
   status_hash: string; policy: OrderStockPolicy | null; suggested_actions: Record<string, OrderStockAction>;
   allowed_actions: Record<string, OrderStockAction[]>;
@@ -42,6 +46,7 @@ export interface OrderStockPreviewResponse { ready: boolean; errors: OrderStockE
 export interface OrderStockPreviewInfo { id: string; status: string; shop_code: string; order_number?: string; source?: { order_number: string }; action: string; created_at: string; expires_at: string }
 const base = '/api/order-stock';
 export const getOrderStockOptions = (shop: string, signal?: AbortSignal) => hubRequest<OrderStockOptions>(`${base}/options?shop_code=${encodeURIComponent(shop)}`, undefined, signal);
+export const assignOrderStockWarehouse = (body: { shop_code: string; warehouse_code: string; expected_assignment_hash: string }) => hubRequest<OrderStockWarehouseAssignment>(`${base}/warehouse-assignment`, body);
 export const configureOrderStock = (body: { shop_code: string; warehouse_code: string; status_hash: string; status_actions: Record<string, OrderStockAction>; confirmed: true }) => hubRequest<OrderStockOptions>(`${base}/configure`, body);
 export const previewOrderStock = (body: { request_id: string; shop_code: string; order_number: string }, signal?: AbortSignal) => hubRequest<OrderStockPreviewResponse>(`${base}/preview`, body, signal);
 export const recentOrderStock = (shop: string, signal?: AbortSignal) => hubRequest<{ previews: OrderStockPreviewInfo[] }>(`${base}/previews?shop_code=${encodeURIComponent(shop)}`, undefined, signal);

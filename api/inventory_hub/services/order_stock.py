@@ -17,6 +17,7 @@ from inventory_hub.order_stock_types import OrderStockApplyRequest, OrderStockCo
 from inventory_hub.services import order_stock_ledger as ledger
 from inventory_hub.services.order_stock_source import load_source, load_statuses, resolve_lines
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+from inventory_hub.services.shop_warehouse_assignment import assignment_options, assign_warehouse, ensure_assignment_matches
 
 
 EXPIRY_MINUTES = 30
@@ -102,7 +103,8 @@ async def _options(db: AsyncSession, shop: Shop, statuses: dict) -> dict:
     policy = await db.get(OrderStockPolicy, shop.id)
     selected = await db.get(Warehouse, policy.warehouse_id) if policy else None
     return {"shop": {"id": shop.id, "code": shop.code, "name": shop.name},
-            "warehouses": [{"id": row.id, "code": row.code, "name": row.name} for row in warehouses],
+            "warehouses": [{"id": row.id, "code": row.code, "name": row.name, "is_default": row.is_default} for row in warehouses],
+            **await assignment_options(db, shop.id),
             **statuses, "suggested_actions": {str(row["id"]): _suggested(row) for row in statuses["statuses"]},
             "allowed_actions": {str(row["id"]): _allowed(row) for row in statuses["statuses"]},
             "policy": {"warehouse_id": policy.warehouse_id, "warehouse_code": selected.code,
@@ -143,6 +145,7 @@ async def configure(db: AsyncSession, payload: OrderStockConfigureRequest) -> di
     policy = await db.scalar(select(OrderStockPolicy).where(OrderStockPolicy.shop_id == shop.id)
                              .with_for_update().execution_options(populate_existing=True))
     if policy is None:
+        await ensure_assignment_matches(db, shop.id, warehouse.id)
         policy = OrderStockPolicy(shop_id=shop.id, warehouse_id=warehouse.id, starts_at=now(), revision=1,
                                   status_actions=payload.status_actions, status_hash=payload.status_hash,
                                   statuses=statuses["statuses"])

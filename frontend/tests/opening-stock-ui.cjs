@@ -34,7 +34,7 @@ async function input(element, value) {
     await tick();
   });
 }
-const options = { warehouses: [{ id: 7, code: 'count-room', name: 'Count room' }], limits: { max_bytes: 1048576, max_rows: 5000, max_quantity: '999999999', max_unit_cost: '99999999.9999' }, unit: 'ks', currency: 'EUR', price_basis: 'ex_vat', expires_minutes: 30 };
+const options = { warehouses: [{ id: 7, code: 'count-room', name: 'Count room', is_default: false }, { id: 8, code: 'main', name: 'Main warehouse', is_default: true }], limits: { max_bytes: 1048576, max_rows: 5000, max_quantity: '999999999', max_unit_cost: '99999999.9999' }, unit: 'ks', currency: 'EUR', price_basis: 'ex_vat', expires_minutes: 30 };
 const makeBatch = (id, count = 1) => ({ id, status: 'prepared', preview_hash: 'f'.repeat(64), warehouse: options.warehouses[0], source_reference: 'COUNT-2026', operator_name: 'Test operator',
   counted_at: '2026-09-23T09:30:27Z', created_at: '2026-09-23T10:00:00Z', expires_at: '2100-01-01T00:00:00Z', completed_at: null,
   unit: 'ks', currency: 'EUR', price_basis: 'ex_vat', summary: { lines: count, quantity: count === 1 ? '3.000' : String(count), total_value: count === 1 ? '270002700.0003' : '0.0201' }, warnings: [], result: null,
@@ -89,7 +89,11 @@ async function confirmBoth() { for (const checkbox of checks()) if (!checkbox.ch
   assert.equal(calls.length, 0, 'Unlock does not fetch or write');
   assert(button('preview').disabled);
   await click(button('loadWarehouses'));
-  assert.equal(field('warehouse').value, '', 'Warehouse is explicitly selected, never invented');
+  assert.equal(field('warehouse').value, 'main', 'Initial warehouse follows the database default, not alphabetical order');
+  await input(field('warehouse'), ''); await click(button('loadWarehouses'));
+  assert.equal(field('warehouse').value, '', 'Reloading options preserves an explicitly cleared choice');
+  await input(field('warehouse'), 'count-room'); await click(button('loadWarehouses'));
+  assert.equal(field('warehouse').value, 'count-room', 'Reloading options preserves another chosen warehouse');
   await fillForm();
   previewMode = 'invalid'; await click(button('preview'));
   assert(document.querySelector('[role="alert"]').textContent.includes('unit_cost'));
@@ -140,10 +144,15 @@ async function confirmBoth() { for (const checkbox of checks()) if (!checkbox.ch
   assert.equal(writes().length, 1, 'GET recovery of completed batch never repeats its posting');
   assert.equal(checks().length, 0);
 
-  await click(button('newBatch')); await fillForm(); await click(button('preview')); await confirmBoth();
+  await click(button('newBatch'));
+  assert.equal(field('warehouse').value, 'main', 'A new batch starts with the default warehouse from loaded options');
+  await fillForm(); await click(button('preview')); await confirmBoth();
   finalizeMode = 'fail'; await click(button('finalize'));
   const retryId = stored.id;
   await click(button('recover'));
+  assert.equal(field('warehouse').value, 'count-room', 'Recovery uses the batch warehouse rather than the current default');
+  await click(button('loadWarehouses'));
+  assert.equal(field('warehouse').value, 'count-room', 'Options reload does not replace the recovered batch warehouse');
   assert.equal(field('csv').value.split('\n')[1], '"TEST;""SKU";3.000;90000900.0001;ks', 'Recovered CSV quotes semicolons and quotes in canonical SKU');
   assert.equal(new Date(field('countedAt').value).getSeconds(), 27, 'Recovered physical count time preserves seconds');
   assert(checks().every(checkbox => !checkbox.checked), 'Recovery of prepared batch requires fresh confirmations');
@@ -160,6 +169,13 @@ async function confirmBoth() { for (const checkbox of checks()) if (!checkbox.ch
   assert.equal(calls.length, beforeRecent + 1);
   await click(button('openBatch')); assert(document.body.textContent.includes(t('completedHelp')));
   assert.equal(writes().length, 3, 'Recent batch recovery after credential change is read-only');
+
+  await click(button('newBatch'));
+  stored = { ...stored, status: 'prepared', completed_at: null, result: null };
+  await input(field('batchId'), stored.id); await click(button('recover'));
+  assert.equal(field('warehouse').value, 'count-room', 'Recovery can choose its frozen warehouse before options are loaded');
+  await click(button('loadWarehouses'));
+  assert.equal(field('warehouse').value, 'count-room', 'First options load preserves the recovered warehouse');
 
   await click(button('newBatch')); await click(button('loadWarehouses')); await fillForm();
   previewCount = 201; await click(button('preview'));

@@ -18,6 +18,8 @@ Prvý skutočný príjem alebo potvrdený počiatočný stav automaticky aktivuj
 
 ## Prechod existujúcej zásoby
 
+Detail preberá explicitne vybraný sklad zo skladovej tabuľky. Ak taký kontext chýba, pri prvom načítaní možností predvolí aktívny `is_default` sklad. Ručný výber vrátane prázdnej voľby sa pri obnove možností nemení. Nové uvoľnenie karantény ponúkne predvolený sklad ako cieľ; ak predvolený sklad nie je dostupný, zachová doterajší návrh zdrojového skladu. Obsluha cieľ stále kontroluje a výslovne potvrdzuje.
+
 V detaile produktu vyber sklad a priprav prechod s presným SKU, časom fyzického overenia, menom obsluhy a odkazom na podklad. Zadaj doložené zostatkové vrstvy: množstvo, čas ich fyzického prijatia, nákupnú cenu bez DPH alebo výslovne neznámu/predbežnú cenu a zdrojový doklad.
 
 Súčet vrstiev musí presne zodpovedať aktuálnemu fyzickému množstvu. Návrh neslúži na inventúrne opravy množstva. Nulový historický stav môže mať prázdny zoznam vrstiev. Obsluha osobitne potvrdí overené množstvá a doloženie stavu cien; neznáma cena zostáva výslovne neznáma.

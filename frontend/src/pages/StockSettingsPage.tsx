@@ -6,6 +6,7 @@ import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { getStockSettingsOptions, getWarehouseSettings, saveShopStockSettings, saveWarehouseSettings,
   STOCK_SETTING_FIELDS, ProcessingMode, StockSettingKey, StockSettingValues, StockSettingsOptions, WarehouseSettings } from '../api/stockSettings';
+import { defaultWarehouseCode } from '../utils/warehouses';
 import './OpeningStockPage.css';
 import './StockSettingsPage.css';
 
@@ -48,9 +49,11 @@ export function StockSettingsPage() {
   const [error, setError] = useState('');
   const [saved, setSaved] = useState('');
   const generation = useRef(0), controller = useRef<AbortController | null>(null), busyRef = useRef<Operation>(null), mutation = useRef(false);
+  const warehouseSelection = useRef<string | null>(null);
   const writing = busy === 'save-shop' || busy === 'save-warehouse';
   function clearConfirmations() { setWarehouseConfirm(false); setShopConfirm(false); setFulfillmentConfirm(false); setSaved(''); setError(''); }
   function reset() {
+    warehouseSelection.current = null;
     generation.current += 1; controller.current?.abort(); busyRef.current = null; setBusy(null);
     setLoaded(null); setWarehouse(null); setWarehouseCode(''); setWarehouseValues({}); setOverrides({}); setMode('manual'); setPaused(false);
     setUncertain(null); setOptionsStale(false); clearConfirmations();
@@ -64,8 +67,13 @@ export function StockSettingsPage() {
   function acceptWarehouse(value: WarehouseSettings) { setWarehouse(value); setWarehouseCode(value.warehouse_code); setWarehouseValues(inputs(value.values)); setPaused(value.processing_paused); }
   function acceptOptions(value: StockSettingsOptions) {
     setLoaded({ shop, revision: accessRevision(), value }); setOverrides(inputs(value.shop_settings?.overrides || {})); setMode(value.shop_settings?.mode || 'manual');
-    setWarehouseCode(value.policy?.warehouse_code || ''); setWarehouse(value.warehouse);
-    setWarehouseValues(inputs(value.warehouse?.values || {})); setPaused(value.warehouse?.processing_paused || false);
+    const selected = warehouseSelection.current ?? (value.policy?.warehouse_code || defaultWarehouseCode(value.warehouses));
+    warehouseSelection.current = selected; setWarehouseCode(selected);
+    if (value.warehouse?.warehouse_code === selected) {
+      setWarehouse(value.warehouse); setWarehouseValues(inputs(value.warehouse.values)); setPaused(value.warehouse.processing_paused);
+    } else {
+      setWarehouse(null); setWarehouseValues({}); setPaused(false);
+    }
     setOptionsStale(false); setUncertain(null); clearConfirmations();
   }
   async function read<T>(operation: Operation, request: (signal: AbortSignal) => Promise<T>, accept: (value: T) => void) {
@@ -84,6 +92,7 @@ export function StockSettingsPage() {
     if (uncertain === 'warehouse') setUncertain(null);
   }); }
   function changeWarehouse(code: string) {
+    warehouseSelection.current = code;
     generation.current += 1; controller.current?.abort(); busyRef.current = null; setBusy(null); setWarehouseCode(code); setWarehouse(null); setWarehouseValues({}); clearConfirmations();
   }
   async function save(target: 'warehouse' | 'shop') {

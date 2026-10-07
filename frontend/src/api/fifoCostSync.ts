@@ -6,7 +6,7 @@ export const FIFO_COST_FIELDS = [
 ] as const;
 export type FifoCostField = typeof FIFO_COST_FIELDS[number]['key'];
 export type FifoCostValues = Record<FifoCostField, number>;
-export interface FifoCostWarehouse { code: string; name: string }
+export interface FifoCostWarehouse { code: string; name: string; is_default?: boolean }
 export interface FifoCostWarehouseSettings extends FifoCostValues { warehouse_code: string; revision: number }
 export interface FifoCostAllocation {
   id: number; layer_id: number; quantity: string; unit_cost_at_issue: string | null; total_cost_at_issue: string | null; unit_cost_current: string | null; total_cost_current: string | null;

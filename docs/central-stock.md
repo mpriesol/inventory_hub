@@ -119,6 +119,14 @@ Tento balík nezapisuje do e-shopov, fronty synchronizácie ani objednávok. Nez
 
 ## Štvrtý implementačný balík — rezervácie a uzamknutý výdaj
 
+### Samostatné priradenie skladu e-shopu
+
+Na stránke skladového spracovania možno uložiť **priradenie skladu** ešte pred aktiváciou objednávkových pravidiel. `POST /order-stock/warehouse-assignment` zapisuje iba existujúci model `ShopWarehouse`; nevytvára `OrderStockPolicy`, nenastavuje `starts_at`, nepotvrdzuje fyzický stav a nemení pohyby ani automatizáciu. BIKETREK a xTrek môžu smerovať do rovnakého skladu. Aktivácia spracovania a jej potvrdenie zostávajú samostatnou operáciou.
+
+`GET /order-stock/options` vracia `warehouse_assignment` a `assignment_hash`; uloženie vyžaduje `expected_assignment_hash`. Súbeh sa serializuje na e-shope, opakované rovnaké priradenie je idempotentné. Iná aktívna väzba pre výdaj alebo existujúca politika iného skladu zmenu odmietne; ostatné väzby sa neodstraňujú. Aj neskoršia aktivácia musí rešpektovať uložené priradenie. Endpoint používa rovnaký operátorský prístup a `no-store` ako ostatné cesty `/order-stock` a nevolá Upgates. Nová migrácia nie je potrebná.
+
+Zoznamy skladov v možnostiach vracajú `is_default`. Pri prvom výbere UI použije aktívny predvolený sklad; uložená politika alebo priradenie majú prednosť a ručný výber iného skladu či možnosti „všetky“ sa zachová. Počiatočný stav použije predvolený sklad pri načítaní možností a novej dávke; obnova rozpracovanej operácie zachová jej pôvodný sklad.
+
 **Kontrola objednávok → Skladové spracovanie** (`/orders/stock`) je samostatný chránený postup pre jednu vybranú objednávku. Pôvodný audit na `/orders` zostáva čítací. Nové API pod `/order-stock` používa existujúci operátorský token a `Cache-Control: no-store`; token sa neukladá do URL ani úložiska prehliadača. Nie je to automatický importer ani všeobecný systém používateľských rolí.
 
 ### Začiatok evidencie a stavy

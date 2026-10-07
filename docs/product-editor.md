@@ -8,6 +8,8 @@ Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do U
 
 ### Načítanie a výber
 
+Pri prvom načítaní sa predvolí aktívny sklad označený na serveri `is_default` (Hlavný sklad). Poradie ani názov skladu nerozhodujú. Ručný výber iného skladu alebo **Všetky sklady** zostáva zachovaný aj pri opätovnom načítaní možností; prázdny sklad v API naďalej znamená súhrn všetkých skladov. Samotné predvolenie nič neukladá ani neaktivuje.
+
 1. Otvorte **Sklad** (starý odkaz `/products` vás sem presmeruje) a odomknite ho existujúcim operátorským tokenom.
 2. Nastavte hľadanie, značku, zalistovanie v e-shope a prípadne sklad. Potvrďte načítanie. Hľadanie prehľadáva SKU, názov, čiarové kódy a dodávateľské kódy; pri názvoch podporuje slovenskú a českú diakritiku.
 3. Spoločný sklad má jednu tabuľku. Stĺpce **BIKETREK** a **xTrek** zobrazujú prítomnosť a odkazy do obchodu aj administrácie. Kliknutím na SKU alebo názov otvoríte detail; vlastnosti e-shopov sú ďalšie voliteľné stĺpce.

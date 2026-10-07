@@ -28,7 +28,7 @@ export interface EffectiveStockSettings {
   processing_ready?: boolean; processing_error?: string | null;
 }
 export interface StockSettingsOptions {
-  shop: { code: string; name: string }; warehouses: { id: number; code: string; name: string }[];
+  shop: { code: string; name: string }; warehouses: { id: number; code: string; name: string; is_default?: boolean }[];
   policy: { warehouse_id: number; warehouse_code: string; starts_at: string; revision: number } | null;
   warehouse: WarehouseSettings | null;
   shop_settings: { revision: number; overrides: Partial<StockSettingValues>; mode: ProcessingMode;

@@ -353,7 +353,7 @@ async def _snapshot(db, product, warehouse, balance):
 
 async def options(db):
     rows = (await db.scalars(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.code))).all()
-    return {"warehouses": [{"id": row.id, "code": row.code, "name": row.name} for row in rows]}
+    return {"warehouses": [{"id": row.id, "code": row.code, "name": row.name, "is_default": row.is_default} for row in rows]}
 
 
 def _layer_dto(layer):

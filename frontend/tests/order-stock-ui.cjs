@@ -34,9 +34,11 @@ async function input(element, value) {
     await tick();
   });
 }
-const warehouse = { id: 7, code: 'main', name: 'Main fixture warehouse' };
+const warehouse = { id: 7, code: 'main', name: 'Main fixture warehouse', is_default: true };
+const secondary = { id: 8, code: 'secondary', name: 'Other warehouse', is_default: false };
+let assignment = null, assignmentHash = 'c'.repeat(64), assignmentMode = 'ok';
 let policy = null;
-const options = shop => ({ shop: { id: shop === 'xtrek' ? 2 : 1, code: shop, name: shop }, warehouses: [warehouse],
+const options = shop => ({ shop: { id: shop === 'xtrek' ? 2 : 1, code: shop, name: shop }, warehouses: [secondary, warehouse], warehouse_assignment: assignment, assignment_hash: assignmentHash,
   statuses: [{ id: 1, name: 'Prijatá', type: 'Received' }, { id: 8, name: 'Odoslaná', type: 'Sent' }, { id: 2, name: 'Storno', type: 'Canceled' }, { id: 12, name: 'V riešení', type: 'Custom' }],
   status_hash: 'a'.repeat(64), policy, suggested_actions: { '1': 'reserve', '8': 'issue', '2': 'cancel', '12': 'review' },
   allowed_actions: { '1': ['review', 'reserve'], '8': ['review', 'issue'], '2': ['review', 'cancel'], '12': ['review', 'reserve'] } });
@@ -58,6 +60,17 @@ global.fetch = async (path, init = {}) => {
   calls.push({ path, ...init, body });
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   if (path.includes('/options?')) return { ok: true, json: async () => options(new URL(path, dom.window.location).searchParams.get('shop_code')) };
+  if (path.endsWith('/warehouse-assignment')) {
+    assert.equal(init.method, 'POST');
+    assert.deepEqual(Object.keys(body).sort(), ['expected_assignment_hash', 'shop_code', 'warehouse_code']);
+    assert.equal(body.expected_assignment_hash, assignmentHash);
+    const selected = [warehouse, secondary].find(item => item.code === body.warehouse_code);
+    assignment = { warehouse_id: selected.id, warehouse_code: selected.code, warehouse_name: selected.name };
+    assignmentHash = 'd'.repeat(64);
+    assert.equal(policy, null, 'Warehouse assignment does not activate an order policy');
+    if (assignmentMode === 'lost') throw new TypeError('Synthetic lost warehouse assignment response');
+    return { ok: true, json: async () => ({ warehouse_assignment: assignment, assignment_hash: assignmentHash }) };
+  }
   if (path.endsWith('/configure')) {
     assert.equal(init.method, 'POST'); assert.equal(body.confirmed, true); assert(!('starts_at' in body), 'Activation cannot supply a historical cutover');
     policy = { warehouse_id: 7, warehouse_code: 'main', starts_at: '2026-09-23T10:00:00Z', revision: policy ? policy.revision + 1 : 1, status_actions: body.status_actions };
@@ -99,7 +112,34 @@ const configurations = () => calls.filter(call => call.path.endsWith('/configure
   assert.deepEqual([...actionSelect('8').options].map(option => option.value), ['review', 'issue']);
   assert.deepEqual([...actionSelect('2').options].map(option => option.value), ['review', 'cancel']);
   assert.deepEqual([...actionSelect('12').options].map(option => option.value), ['review', 'reserve'], 'Custom working statuses can explicitly enable reservations');
-  assert.equal(field('warehouse').value, '');
+  assert.equal(field('warehouse').value, 'main', 'Initial selection uses the flagged default, not the first warehouse');
+  assert.equal(configurations().length, 0, 'Default selection does not configure or activate anything');
+  await input(field('warehouse'), 'secondary'); await click(button('loadOptions'));
+  assert.equal(field('warehouse').value, 'secondary', 'Reload keeps the operator warehouse draft');
+  await input(field('warehouse'), ''); await click(button('loadOptions'));
+  assert.equal(field('warehouse').value, '', 'Reload preserves an explicit empty warehouse choice');
+  assert(document.querySelector('[data-testid="assign-warehouse"]').disabled);
+  await input(field('warehouse'), 'main');
+  assignmentMode = 'lost';
+  const assignButton = document.querySelector('[data-testid="assign-warehouse"]');
+  await act(async () => { assignButton.click(); assignButton.click(); await tick(); });
+  assert.equal(calls.filter(call => call.path.endsWith('/warehouse-assignment')).length, 1, 'Double-click sends one assignment');
+  assert.equal(configurations().length, 0); assert.equal(applies().length, 0); assert.equal(policy, null);
+  assert(document.body.textContent.includes(t('assignmentUncertain')));
+  assert(document.querySelector('[data-testid="assign-warehouse"]').disabled);
+  await click(button('loadOptions'));
+  assert.equal(calls.filter(call => call.path.endsWith('/warehouse-assignment')).length, 1, 'Assignment recovery only reads current options');
+  assert.equal(configurations().length, 0); assert.equal(policy, null);
+  assert(document.querySelector('[data-testid="assign-warehouse"]').disabled, 'Already assigned warehouse needs no repeat write');
+  assert(document.querySelector('[data-testid="warehouse-assignment"]').textContent.includes(warehouse.name), 'Recovered saved assignment stays visible');
+  assignment = { warehouse_id: 8, warehouse_code: 'secondary', warehouse_name: secondary.name };
+  await input(field('shop'), 'biketrek'); await click(button('loadOptions'));
+  assert.equal(field('warehouse').value, 'secondary', 'An existing assignment wins over the main default');
+  assignment = null; assignmentMode = 'ok';
+  await input(field('shop'), 'xtrek'); await click(button('loadOptions'));
+  await click(document.querySelector('[data-testid="assign-warehouse"]'));
+  assert(document.body.textContent.includes(t('assignmentSaved')));
+  assert.equal(configurations().length, 0); assert.equal(policy, null);
   await input(field('warehouse'), 'main'); await input(actionSelect('1'), 'reserve');
   await click(field('configConfirm')); await input(actionSelect('8'), 'issue');
   assert(!field('configConfirm').checked && button('activate').disabled, 'Any config edit clears its confirmation');
@@ -179,6 +219,9 @@ const configurations = () => calls.filter(call => call.path.endsWith('/configure
   await click(button('loadOptions'));
   assert.equal(actionSelect('1').value, 'review', 'Unsupported persisted action is reset to review');
   assert(button('preview').disabled && !field('configConfirm').checked, 'Correcting persisted policy requires explicit confirmation before processing');
+  policy.warehouse_code = 'secondary'; policy.warehouse_id = 8;
+  await input(field('shop'), 'biketrek'); await click(button('loadOptions'));
+  assert.equal(field('warehouse').value, 'secondary', 'A configured shop warehouse wins over assignment and main default');
   assert.equal(dom.window.localStorage.length, 0); assert.equal(dom.window.sessionStorage.length, 0);
   assert(!dom.window.location.href.includes('synthetic-'));
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');

@@ -67,7 +67,7 @@ const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: '
 });
 const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = makeRow(index + 1); return [row.id, row]; }));
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
-  warehouses: [{ id: 7, code: 'main', name: 'Main fixture' }, { id: 8, code: 'other', name: 'Other fixture' }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
+  warehouses: [{ id: 8, code: 'other', name: 'Other fixture', is_default: false }, { id: 7, code: 'main', name: 'Main fixture', is_default: true }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave;
@@ -201,6 +201,8 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(calls[0].path, '/api/product-editor/options');
   assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('page_size'), '50');
   assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('stock_scope'), 'confirmed', 'Active inventory defaults to explicitly confirmed stocks');
+  assert.equal(required('warehouse').value, 'main', 'The server-designated default is selected even when it is not first');
+  assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('warehouse_code'), 'main');
   assert(!element('mode-common') && !element('mode-biketrek') && !element('mode-xtrek'), 'One unified grid replaces the three shop tabs');
   assert(element('cell-1-image_url') && element('cell-1-biketrek') && element('cell-1-xtrek'), 'Image and both shop-presence columns are visible by default');
   assert.equal(cell(1, 'image_url').querySelector('img').getAttribute('src'), 'https://images.example.test/item.jpg');
@@ -215,6 +217,13 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost').includes('0.0000'), 'A known zero cost stays an exact decimal string');
+  await input('warehouse', 'other'); await click('load');
+  assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('warehouse_code'), 'other', 'An explicit alternate warehouse is preserved');
+  await input('warehouse', ''); await click('load');
+  assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('warehouse_code'), null, 'Explicit all-warehouses retains the aggregate API semantics');
+  await act(async () => { unlockHub('synthetic-product-editor-refresh'); await tick(); }); await click('load');
+  assert.equal(required('warehouse').value, '', 'Reloading options after a credential refresh does not replace explicit all-warehouses');
+  assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('warehouse_code'), null);
   await key(cell(1, 'sku'), 'F2'); assert(!element('cell-editor'), 'SKU identity stays read-only');
   await key(cell(1, 'available'), 'Enter'); assert(!element('cell-editor'), 'Stock cannot be edited through the grid');
   await key(cell(1, 'location'), 'Enter'); assert(!element('cell-editor'), 'Aggregate view cannot edit warehouse-specific fields');

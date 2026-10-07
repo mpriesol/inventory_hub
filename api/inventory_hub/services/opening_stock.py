@@ -147,7 +147,7 @@ def _invalid(errors: list, warnings: list | None = None) -> dict:
 
 async def options(db: AsyncSession) -> dict:
     warehouses = (await db.scalars(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.code))).all()
-    return {"warehouses": [{"id": w.id, "code": w.code, "name": w.name} for w in warehouses],
+    return {"warehouses": [{"id": w.id, "code": w.code, "name": w.name, "is_default": w.is_default} for w in warehouses],
             "limits": {"max_bytes": MAX_BYTES, "max_rows": MAX_ROWS, "max_quantity": str(MAX_QUANTITY),
                        "max_unit_cost": str(MAX_UNIT_COST)},
             "unit": "ks", "currency": "EUR", "price_basis": "ex_vat", "expires_minutes": EXPIRY_MINUTES}

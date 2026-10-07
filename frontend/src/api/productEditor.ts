@@ -2,7 +2,7 @@ import { hubRequest } from './access';
 
 export type EditorMode = 'common' | 'biketrek' | 'xtrek';
 export interface ProductEditorOptions {
-  shops: { id: number; code: string; name: string }[]; warehouses: { id: number; code: string; name: string }[];
+  shops: { id: number; code: string; name: string }[]; warehouses: { id: number; code: string; name: string; is_default?: boolean }[];
   brands: string[]; page_sizes: number[]; currency: 'EUR'; price_basis: 'incl_vat';
 }
 export interface ProductShopValues { name: string | null; sale_price_gross: string | null; visible: boolean | null }

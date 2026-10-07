@@ -134,7 +134,7 @@ async def options(db, shop_code):
                   Publication.created_at.desc()).limit(20))).all()
     return {'shop': {'code': shop.code, 'name': shop.name},
         'warehouse': {'code': warehouse.code, 'name': warehouse.name} if warehouse else None,
-        'warehouses': [{'code': row.code, 'name': row.name} for row in warehouses],
+        'warehouses': [{'code': row.code, 'name': row.name, 'is_default': row.is_default} for row in warehouses],
         'warehouse_settings': warehouse_dto(warehouse, defaults) if warehouse else None,
         'settings': policy_dto(policy, warehouse), 'effective': values if warehouse else None,
         'server_write_enabled': enabled(), 'blockers': blockers(shop, warehouse, policy),

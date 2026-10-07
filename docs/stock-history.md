@@ -5,6 +5,7 @@
 **Sklad → História pohybov** (`/stock/movements`) číta existujúcu evidenciu Hubu. Odomyká sa rovnakým operátorským tokenom ako skladové spracovanie objednávok. Stránka nič nezaúčtuje, neopravuje ani neposiela do Upgates.
 
 - Bez filtra SKU vidíte celý sklad; cez editor produktu otvoríte históriu presného kódu variantu.
+- Pri prvom načítaní je vybraný aktívny predvolený sklad zo servera (`is_default`). Ručne možno vybrať iný sklad alebo všetky sklady; obnovenie možností tento výber neprepíše. Neaktívne sklady zostávajú dostupné na prehliadanie histórie, ale automaticky sa nepredvolia.
 - Vyhľadávanie hľadá v kóde, aktuálnom názve, doklade/objednávke a poznámke. Ďalšie filtre: sklad, typ a dátum pohybu.
 - Množstvo so znamienkom je zmena. Pred/po sú fyzické množstvá uložené pri operácii, nie dnešná dostupnosť.
 - Doklad príjmu otvára príslušnú reláciu. Ostatné operácie zobrazujú uloženú referenciu; chýbajúcu historickú poznámku ani doklad si systém nevymýšľa.
@@ -17,7 +18,7 @@ Dátumový filter používa UTC a zahŕňa celý koncový deň. Zobrazené časy
 
 ## Pre vývojárov
 
-- `GET /api/stock-history/options`: sklady a enum typov, UTC filter.
+- `GET /api/stock-history/options`: sklady vrátane `is_default` a `is_active`, enum typov, UTC filter.
 - `GET /api/stock-history/movements`: `q`, presné `sku`, `warehouse_code`, `movement_type`, ISO `date_from/date_to`, `page`, `page_size` (25/50/100), voliteľný `snapshot_id`.
 - Obe cesty používajú `operator_access`; úspech aj chyby vstupu/autorizácie majú `Cache-Control: no-store`.
 - Služba iba číta `StockMovement` a súvisiace referencie. Množstvá a peniaze posiela ako desatinné reťazce, neznáme ceny ako `null`. `total_cost` je uložená hodnota pohybu; nepoužíva sa odhad množstvo × priemerná cena.

@@ -124,7 +124,7 @@ async def options(db, shop_code):
     warehouse = next((item for item in warehouses if policy and item.id == policy.warehouse_id), None)
     row = await _one(db, StockShopSettings, StockShopSettings.shop_id == shop.id)
     return {"shop": {"code": shop.code, "name": shop.name},
-            "warehouses": [{"id": item.id, "code": item.code, "name": item.name} for item in warehouses],
+            "warehouses": [{"id": item.id, "code": item.code, "name": item.name, "is_default": item.is_default} for item in warehouses],
             "policy": {"warehouse_id": warehouse.id, "warehouse_code": warehouse.code, "starts_at": policy.starts_at,
                        "revision": policy.revision} if warehouse else None,
             "warehouse": await warehouse_settings(db, warehouse.code) if warehouse else None,

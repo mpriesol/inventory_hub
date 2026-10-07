@@ -8,6 +8,8 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 
 Aktuálna oprava evidencie pridáva [potvrdený začiatok skladu](docs/stock-tracking.md) (migrácia 019). Historické importy a testy zostávajú neoverené; aktívne množstvá, rezervácie a synchronizácia vyžadujú nový potvrdený príjem alebo fyzický počet pre konkrétne SKU/sklad. V nasledujúcich starších popisoch má tento kontrakt prednosť pred odvodzovaním potvrdenia zo samotnej existencie pohybov.
 
+Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach používajú pri prvom načítaní serverový aktívny `is_default` sklad. Uložený kontext e-shopu alebo dávky a ručný výber majú prednosť; **Všetky sklady** zostávajú súhrnným pohľadom. Predvolenie výberu nemení zásoby, potvrdenie evidencie ani povolenia automatických zápisov.
+
 | Zdroj | Úloha |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | Rozsah práce, platnosť udelených oprávnení a pravidlá zmien. |
@@ -237,7 +239,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
 4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `013` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
-5. Skontroluje `/api/health` a `/api/ai-content/status` a vykoná existujúce čistenie nepoužívaných obrazov.
+5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
 
