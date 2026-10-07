@@ -31,12 +31,16 @@ function UpdateValue({ data, field, language, title }: { data: PreviewRow; field
   return <p>{data[field] == null ? '—' : String(data[field])}</p>;
 }
 
-export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJob) => void }) {
+export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
+  job: AiJob; onChange: (job: AiJob) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
+}) {
   const { t } = useTranslation();
   const [content, setContent] = useState<AiContent | undefined>(job.kind === 'product' ? job.output : undefined);
   const [parameters, setParameters] = useState<AiContent['parameters']>(job.kind === 'product' ? job.output?.parameters || [] : []);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
   const [error, setError] = useState('');
   const [selectedIds, setSelectedIds] = useState<number[]>(job.product_ids);
   const [updateFields, setUpdateFields] = useState(['title','short_description','long_description','seo_title','seo_description','metas']);
@@ -71,6 +75,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
   return <section className="ai-card">
     <div className="ai-row"><h2 className="ai-grow">{job.name} · {job.shop}</h2><span className="ai-badge">{t(updateNeedsAttention ? `ai.updateStates.${updateState}` : job.update_only && job.status === 'exists' ? updateState === 'completed' ? 'ai.updatedExisting' : 'ai.readyForUpdate' : `ai.states.${job.status}`, { defaultValue: job.status })}</span></div>
     <p>{job.code} · {t('ai.publishedVersion', { version: job.rules_version })} · {job.category_profile}</p>
+    {job.category_selection && <div className="ai-notice"><strong>{t('ai.selectedCategory')}: {job.category_selection.path}</strong><p>{job.category_selection.reason}</p></div>}
     {job.use_ai && <button disabled={busy} onClick={exportRequest}>{t('ai.exportRequest')}</button>}
     <div className="ai-next-step"><strong>{t('ai.nextStep')}</strong><p>{t(updateNeedsAttention ? `ai.updateStates.${updateState}` : job.update_only ? `ai.updateNext.${updateState === 'completed' ? 'completed' : job.status}` : `ai.next.${job.status}`, { defaultValue: t(`ai.next.${job.status}`, {defaultValue:job.status}) })}</p></div>
     {importErrors.length > 0 && <div className="ai-notice ai-error" role="alert"><strong>{t('ai.importBlockers')}</strong>{importErrors.map(v => <p key={v}>{t(`catalog.codes.${v}`, { defaultValue: t(`ai.errors.${v}`, { defaultValue: v }) })}</p>)}{unknownImport && <p>{t('ai.unknownImportHelp')}</p>}</div>}
@@ -137,7 +142,7 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
           expected_revision:job.revision, preview_id:job.update_preview!.id, original_request_settled:true, resolution_note:resolutionNote.trim(),
         }))}>{t('ai.settleUpdate')}</button></div>}
     </div>}
-    {canFork && <details><summary>{t('ai.prepareAgain')}</summary><p>{t('ai.partialHelp')}</p>{job.facts?.map(f => <label className="ai-check" key={f.id}><input type="checkbox" checked={selectedIds.includes(f.id)} onChange={e => setSelectedIds(old => e.target.checked ? [...old,f.id] : old.filter(id => id !== f.id))} />{f.name} · {f.variant_attributes?.map(a => a.value).join(' / ')}</label>)}<div className="ai-actions">{job.output && <button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:true,use_ai:true}))}>{t('ai.copySelectedContent')}</button>}<button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:false,use_ai:true}))}>{t('ai.newAiPreparation')}</button><button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:false,use_ai:false}))}>{t('ai.useOriginalSelected')}</button></div></details>}
+    {canFork && <details><summary>{t('ai.prepareAgain')}</summary><p>{t('ai.partialHelp')}</p>{job.facts?.map(f => <label className="ai-check" key={f.id}><input type="checkbox" checked={selectedIds.includes(f.id)} onChange={e => setSelectedIds(old => e.target.checked ? [...old,f.id] : old.filter(id => id !== f.id))} />{f.name} · {f.variant_attributes?.map(a => a.value).join(' / ')}</label>)}<div className="ai-actions">{job.output && <button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:true,use_ai:true}))}>{t('ai.copySelectedContent')}</button>}<button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:false,use_ai:true,category_profile:'auto'}))}>{t('ai.newAiPreparation')}</button><button disabled={busy || !selectedIds.length} onClick={() => perform(() => aiRequest(`/jobs/${job.id}/fork`,{expected_revision:job.revision,product_ids:selectedIds,reuse_content:false,use_ai:false}))}>{t('ai.useOriginalSelected')}</button></div></details>}
     {!job.update_only && job.preview && <div className="ai-actions"><button disabled={busy || dirty} onClick={() => setImportOpen(true)}>{t(job.import_result ? 'ai.showImportResult' : 'ai.showImportPreview')}</button></div>}
     {!pendingUpdate && !['generating', 'importing', 'completed', 'exists', 'uncertain', 'cancelled'].includes(job.status) && <button disabled={busy} onClick={() => action('cancel')}>{t('ai.cancelJob')}</button>}
     <details><summary>{t('ai.history')}</summary>{job.events?.map((e, i) => <p key={i}><time>{new Date(e.at).toLocaleString()}</time> · {t(`ai.states.${e.status}`, { defaultValue: e.status })} · {e.note}</p>)}</details>

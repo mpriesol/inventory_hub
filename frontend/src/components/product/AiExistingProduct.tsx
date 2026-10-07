@@ -12,7 +12,7 @@ export function AiExistingProduct({ rules, onJob }: { rules: AiRules; onJob: (jo
   const [code, setCode] = useState('');
   const [supplier, setSupplier] = useState('');
   const [brand, setBrand] = useState('');
-  const [profile, setProfile] = useState('general');
+  const [profile, setProfile] = useState('auto');
   const [category, setCategory] = useState('');
   const [research, setResearch] = useState('official');
   const [options, setOptions] = useState<TargetOptions | null>(null);
@@ -61,7 +61,7 @@ export function AiExistingProduct({ rules, onJob }: { rules: AiRules; onJob: (jo
           <option value="">{t('ai.existing.autoBrand')}</option>{brands.map(v => <option key={v}>{v}</option>)}
         </select></label>
         <label>{t('ai.categoryProfile')}<select value={profile} onChange={e => change(setProfile, e.target.value)}>
-          {rules.book.categories.filter(c => c.parameters.every(p => p.scope === 'parent' || !p.required)).map(c => <option value={c.id} key={c.id}>{c.name}</option>)}
+          <option value="auto">{t('ai.autoCategory')}</option>{rules.book.categories.filter(c => c.parameters.every(p => p.scope === 'parent' || !p.required)).map(c => <option value={c.id} key={c.id}>{c.name}</option>)}
         </select></label>
         <label>{t('ai.existing.category')}<CategoryTree categories={options?.categories || []} value={category} onChange={v => change(setCategory, v)} /></label>
         <label>{t('ai.researchMode')}<select value={research} onChange={e => change(setResearch, e.target.value)}>

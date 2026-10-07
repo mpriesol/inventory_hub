@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import hashlib
 import json
 from collections import OrderedDict
@@ -9,7 +10,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 
 from inventory_hub.ai_content_models import AiBatch, AiContentRevision, AiJob, AiRuleVersion
 from inventory_hub.ai_content_types import BatchRequest, Content, Policy, RuleBook, Scope
@@ -71,6 +72,7 @@ def summary(job, *, detail=False):
         "checks": job.checks, "error": job.error, "preview_id": job.preview_id,
         "created_at": job.created_at, "updated_at": job.updated_at, "archived": bool(context.get("archived"))}
     if detail:
+        data['category_selection'] = context.get('category_selection')
         # Availability belongs to supplier configuration, not to historical AI
         # rules. Prefer the exact policy frozen into a displayed preview.
         import_policy = {k: v for k, v in context.get("resolved", {}).get("import_policy", {}).items()
@@ -118,7 +120,10 @@ def expect(job, revision):
 async def budget(db):
     beginning = now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     # Uncertain requests retain their reservation; all known usage remains charged.
-    used = await db.scalar(select(func.coalesce(func.sum(func.coalesce(AiJob.actual_usd, AiJob.reserved_usd)), 0))
+    charge = case((AiJob.status.in_(['queued', 'generating', 'uncertain']),
+                   func.greatest(func.coalesce(AiJob.actual_usd, 0), func.coalesce(AiJob.reserved_usd, 0))),
+                  else_=func.coalesce(AiJob.actual_usd, AiJob.reserved_usd))
+    used = await db.scalar(select(func.coalesce(func.sum(charge), 0))
         .where(AiJob.created_at >= beginning))
     return Decimal(used or 0)
 
@@ -167,6 +172,7 @@ async def create_batch(db, request: BatchRequest):
         if not await db.scalar(select(Shop.id).where(Shop.code == target.shop, Shop.is_active.is_(True))):
             raise CatalogError("shop_not_found", "Choose an active Hub shop", 404)
         cfg = catalog_import.shop_config(target.shop)
+        category_rows = None
         for code, group in groups.items():
             ids = {p.id for p in group}
             ai_ids = ids & set(request.ai_product_ids)
@@ -176,6 +182,9 @@ async def create_batch(db, request: BatchRequest):
             if len(profiles) != 1:
                 raise CatalogError("ai_family_category_conflict", "Selected variants must share a category profile", 422)
             profile = profiles.pop()
+            automatic_category = bool(ai_ids) and profile == 'auto'
+            if profile == 'auto':
+                profile = 'general'
             profile = rules.select_category_profile(book, target.shop, target.options.category_code, profile)
             resolved = rules.resolve(book, Scope(shop=target.shop, supplier=request.supplier, category=profile,
                 brand=group[0].brand or "", product=code), target.policy)
@@ -194,10 +203,20 @@ async def create_batch(db, request: BatchRequest):
                 "options": options.model_dump(mode="json"), "research": request.research,
                 "sale_price_overrides": {str(k): v for k, v in request.sale_price_overrides.items() if k in ids},
                 "model": settings.AI_CONTENT_MODEL}
+            if automatic_category:
+                from inventory_hub.services import ai_category
+                if category_rows is None:
+                    category_rows = (await asyncio.to_thread(catalog_import.cached_import_options, target.shop))['categories']
+                ctx['category_policy'] = target.policy.model_dump(exclude_none=True)
+                # Auto selection should not inherit general's fallback category.
+                ctx['category_profile'] = 'auto'
+                ctx['options']['category_code'] = target.options.category_code
+                ai_category.prepare(ctx, book, category_rows, target.options.category_code)
             # Validate prices at the existing API boundary, without making any shop calls.
             ShopImportPreviewRequest(supplier=request.supplier, product_ids=sorted(ids), options=options,
                 sale_price_overrides=ctx["sale_price_overrides"])
-            ctx["estimate_usd"] = str(provider.estimate(ctx) if ai_ids else Decimal(0))
+            if not automatic_category:
+                ctx["estimate_usd"] = str(provider.estimate(ctx) if ai_ids else Decimal(0))
             job = AiJob(id=uuid4().hex, batch_id=batch_id, context=ctx, status="estimate", revision=1,
                         events=[{"at": now().isoformat(), "status": "estimate", "note": "Selection and rule revision frozen"}])
             db.add(job)
@@ -364,8 +383,8 @@ async def fork_job(db, job, request):
     ctx = job.context
     req = BatchRequest(request_id=uuid4(), supplier=ctx["supplier"], feed_key=ctx["feed_key"],
         product_ids=sorted(ids), ai_product_ids=sorted(ids) if request.use_ai else [],
-        category_profiles={id:ctx["category_profile"] for id in ids},
-        targets=[{"shop":ctx["shop"], "options":ctx["options"],
+        category_profiles={id:(request.category_profile if not request.reuse_content and request.category_profile else ctx["category_profile"]) for id in ids},
+        targets=[{"shop":ctx["shop"], "options": {**ctx["options"], **({'category_code': None} if request.category_profile == 'auto' and not request.reuse_content else {})},
                   "policy":{**ctx["resolved"]["policy"], "show_cost_estimate":True, "review_required":True, "confirm_import":True}}],
         research=ctx["research"], sale_price_overrides={int(k):v for k,v in ctx["sale_price_overrides"].items() if int(k) in ids})
     created = await create_batch(db, req)

@@ -99,6 +99,9 @@ export function SettingsPage() {
   const { t } = useTranslation();
   return (
     <div className="space-y-6"><h1 className="text-2xl font-semibold">{t('ai.settings')}</h1>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/users">
+        <strong>{t('accounts.title')}</strong><p>{t('accounts.remember')}</p>
+      </Link>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/ai-content">
         <strong>{t('ai.title')}</strong><p>{t('ai.settingsDescription')}</p>
       </Link>

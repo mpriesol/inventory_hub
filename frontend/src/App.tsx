@@ -1,4 +1,6 @@
 import React from 'react';
+import { AccountPage } from './pages/AccountPage';
+import { SessionBootstrap } from './components/SessionBootstrap';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
 import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
@@ -35,7 +37,7 @@ import {
 function App() {
   return (
     <BrowserRouter>
-      <Routes>
+      <SessionBootstrap><Routes>
         <Route element={<Layout />}>
           {/* Dashboard */}
           <Route path="/" element={<DashboardPage />} />
@@ -68,6 +70,8 @@ function App() {
           {/* Shops */}
           <Route path="/shops" element={<ShopsPage />} />
 
+          <Route path="/login" element={<AccountPage />} />
+          <Route path="/settings/users" element={<AccountPage />} />
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/availability" element={<AvailabilitySyncPage />} />
@@ -92,7 +96,7 @@ function App() {
             }
           />
         </Route>
-      </Routes>
+      </Routes></SessionBootstrap>
     </BrowserRouter>
   );
 }

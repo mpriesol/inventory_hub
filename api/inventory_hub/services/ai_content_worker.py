@@ -5,11 +5,12 @@ so closing the browser or restarting the container does not lose the queue.
 """
 import asyncio
 import logging
+from decimal import Decimal
 
 from sqlalchemy import select, text
 
-from inventory_hub.ai_content_models import AiContentRevision, AiJob
-from inventory_hub.ai_content_types import Content
+from inventory_hub.ai_content_models import AiContentRevision, AiJob, AiRuleVersion
+from inventory_hub.ai_content_types import Content, RuleBook
 from inventory_hub import database
 from inventory_hub.database import get_session_context
 from inventory_hub.services import ai_content as service, ai_content_provider as provider, catalog_import
@@ -28,16 +29,34 @@ async def generation(id):
         context, kind = job.context, job.kind
         service.event(job, "generating", "Provider request started; automatic paid retry disabled")
     try:
+        classification_cost, classification_usage = Decimal(0), None
+        if context.get('classification_catalog'):
+            from inventory_hub.services import ai_category
+            response = await provider.generate(context, 'classification')
+            classification_usage, classification_cost = provider.usage_cost(response, context['model'])
+            async with get_session_context() as db:
+                job = await service.get_job(db, id, lock=True)
+                job.actual_usd = classification_cost
+                job.usage = {'classification': classification_usage}
+            selection, _ = provider.parse_response(response, 'classification')
+            async with get_session_context() as db:
+                job = await service.get_job(db, id, lock=True)
+                version = await db.get(AiRuleVersion, context['rules_version'])
+                context = ai_category.apply(context, RuleBook.model_validate(version.book), selection)
+                job.context = context
+                service.event(job, 'generating', 'Category selected: ' + selection['category_code'] + '; profile: ' + selection['profile_id'])
         response = await provider.generate(context, kind)
         # Record billed usage before parsing: invalid output can still cost money.
         usage, cost = provider.usage_cost(response, context["model"])
         async with get_session_context() as db:
             job = await service.get_job(db, id, lock=True)
-            job.usage, job.actual_usd = usage, cost
+            job.usage, job.actual_usd = usage, cost + classification_cost
+            if classification_usage:
+                job.usage = {**usage, 'classification': classification_usage}
         output, opened = provider.parse_response(response, kind)
         async with get_session_context() as db:
             job = await service.get_job(db, id, lock=True)
-            job.output, job.usage = output, {**usage, "opened_sources": opened}
+            job.output, job.usage = output, {**(job.usage or {}), "opened_sources": opened}
             if kind == "rules":
                 service.event(job, "review", "AI rule proposal; never auto-published")
             else:

@@ -127,7 +127,7 @@ async def create(db, request: ExistingProductRequest):
     published = await rules.published(db)
     book = RuleBook.model_validate(published.book)
     main = next((c.get("code") for c in remote.get("categories") or [] if c.get("main_yn")), None)
-    profile = rules.select_category_profile(book, request.shop, request.category_code or main, request.category_profile)
+    profile = rules.select_category_profile(book, request.shop, request.category_code or main, 'general' if request.category_profile == 'auto' else request.category_profile)
     # Existing products use an explicit field comparison and confirmation. The
     # published automatic-create switches never authorize updates to live data.
     resolved = rules.resolve(book, Scope(shop=request.shop, supplier=request.supplier,
@@ -157,7 +157,14 @@ async def create(db, request: ExistingProductRequest):
         "Neprenášaj nepodložené tvrdenia; pri oficiálnom výskume over presný model. "
         "Upravuješ spoločný obsah celej existujúcej rodiny, nevymýšľaj rozdiely variantov ani nové varianty. "
         "Z registra vyplň iba parametre s rozsahom parent, pri ktorých product_id=null. Nepovinné parametre variantov vynechaj."})
-    ctx["estimate_usd"] = str(service.provider.estimate(ctx))
+    if request.category_profile == 'auto':
+        from inventory_hub.services import ai_category
+        ctx['category_policy'] = dict(review_required=True, show_cost_estimate=True, confirm_import=True)
+        ctx['category_profile'] = 'auto'
+        rows = (await asyncio.to_thread(imports.cached_import_options, request.shop, client))['categories']
+        ai_category.prepare(ctx, book, rows, request.category_code or main)
+    else:
+        ctx["estimate_usd"] = str(service.provider.estimate(ctx))
     db.add(AiBatch(id=batch_id, request_hash=fingerprint))
     await db.flush()
     timestamp = service.now()

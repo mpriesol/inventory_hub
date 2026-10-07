@@ -149,8 +149,9 @@ async def job_request(id: str, db: DB):
     """Inspect the real provider body without generation, billing or job mutation."""
     from inventory_hub.services.ai_content_provider import request_body
     value = await service.get_job(db, id)
+    stage = 'classification' if value.context.get('classification_catalog') and not value.context.get('category_selection') else value.kind
     return {"rules_version": value.context.get("rules_version"),
-            "generated": False, "request": request_body(value.context, value.kind)}
+            "generated": False, "stage": stage, "request": request_body(value.context, stage)}
 
 
 @protected.post("/jobs/{id}/review")
