@@ -616,6 +616,16 @@
     "claim": "Tvrdenie",
     "source": "Zdroj",
     "evidence": "Podklad",
+    "evidenceSourceHelp": "Pre feed použi feed:<id>, pre web presnú otvorenú HTTPS adresu. Vyber iba stránku, ktorá dokladá dané tvrdenie; samotný záznam otvorenia nepotvrdzuje správnosť údajov. Opravu možno uložiť bez nového AI generovania.",
+    "openedSources": "Stránky zaznamenané ako otvorené pri tejto príprave",
+    "noOpenedSources": "Táto príprava nemá zaznamenanú otvorenú webovú stránku.",
+    "recheckContent": "Znovu overiť obsah bez AI",
+    "evidenceErrors": {
+      "invalid_https_url": "Chýba platná úplná HTTPS adresa. Slovný názov stránky ani označenie official: nestačí.",
+      "query_not_allowed": "Kontrola neprijíma adresu s parametrami za ?. Použi zodpovedajúci overený podklad; samotné odstránenie parametrov nepotvrdzuje otvorenie stránky.",
+      "not_opened": "Presne táto adresa nie je medzi zaznamenanými otvorenými stránkami.",
+      "feed_quote_not_found": "Citát sa nenašiel v údajoch uvedeného feedového produktu. Skontroluj zdroj aj citát."
+    },
     "missingFacts": "Chýbajúce fakty – jeden na riadok",
     "saveContent": "Uložiť koncept obsahu",
     "approveContent": "Schváliť obsah a pripraviť import",

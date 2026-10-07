@@ -28,6 +28,8 @@ Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované sú
 
 AI registre podporujú zdieľané bloky pre vybrané profily, označené návrhy parametrov, nepovinné čiastočné údaje a rozsah podľa skutočnej variantovej osi. Presné zadanie možno stiahnuť bez generovania; detaily a hranice sú v [AI obsah](docs/ai-content.md). Nasadenie kódu samo nepublikuje súkromnú knihu pravidiel.
 
+AI podklady majú explicitný formát URL, kompatibilitu so starším prefixom `official:https://…`, chyby po jednotlivých riadkoch a opravu zdroja v detaile úlohy. Uložený koncept možno znovu overiť bez generovania či importu; zhoda so skutočne otvorenými stránkami zostáva povinná.
+
 ## Prevádzkový kontext
 
 - Repozitár: [mpriesol/inventory_hub](https://github.com/mpriesol/inventory_hub). Starý `OLD_inventory_hub` sa pri bežnej práci nepoužíva.

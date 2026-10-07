@@ -191,6 +191,33 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(document.body.textContent.includes('odstráň aj tvrdenia'), 'Evidence removal explains how unsupported claims must be corrected');
   await click(button('Uložiť koncept obsahu'));
   assert.deepEqual(reviewed.content.evidence,[verifiedEvidence], 'Operator can remove the blocking source while preserving other evidence in the saved review');
+
+  const openedSource = 'https://manufacturer.example.test/product';
+  const namedEvidence = {claim:'Presná vlastnosť',source:'official:manufacturer.example.test Product',quote:'Verified property'};
+  const sourceFixJob = {...jobs[0],status:'blocked',revision:9,output:{...content,evidence:[namedEvidence,verifiedEvidence]},
+    checks:{errors:['ai_unverified_official_evidence'],evidence_errors:[{index:0,source:namedEvidence.source,reason:'invalid_https_url'}]},
+    usage:{opened_sources:[openedSource]},facts:[],events:[]};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'source-correction',job:sourceFixJob,onChange:() => {}})); await tick(); });
+  const sourceInput = document.querySelector('input[aria-label="Zdroj 1"]');
+  assert.equal(sourceInput.getAttribute('aria-invalid'),'true');
+  assert(sourceInput.closest('td').textContent.includes('Chýba platná úplná HTTPS adresa'), 'The offending row shows the specific server reason');
+  assert.deepEqual([...document.querySelectorAll('datalist option')].map(option => option.value),[openedSource], 'Only recorded opened pages are suggested');
+  const beforeRecheck = calls.length;
+  await click(button('Znovu overiť obsah bez AI'));
+  assert.deepEqual(calls.slice(beforeRecheck).map(call => call.path),['/api/ai-content/jobs/job0/review'], 'Rechecking only saves and validates the existing draft');
+  assert.equal(reviewed.approve,false);
+  assert.deepEqual(reviewed.content.evidence,[namedEvidence,verifiedEvidence]);
+  await input(sourceInput,openedSource);
+  assert.equal(sourceInput.getAttribute('aria-invalid'),'false', 'Stale diagnostics are hidden after editing until validation');
+  assert(button('Znovu overiť obsah bez AI').disabled, 'Unsaved source edits must be saved before a separate recheck');
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(reviewed.content.evidence,[{...namedEvidence,source:openedSource},verifiedEvidence], 'Source correction preserves the claim, quote and sibling evidence');
+  for (const state of [{status:'completed'}, {status:'blocked',update_state:'uncertain'}]) {
+    await act(async () => { root.render(React.createElement(AiJobDetail,{key:`source-readonly-${state.status}`,job:{...sourceFixJob,...state},onChange:() => {}})); await tick(); });
+    assert(document.querySelector('input[aria-label="Zdroj 1"]').disabled, 'Completed jobs and uncertain writes cannot change evidence');
+    assert(!button('Znovu overiť obsah bez AI'));
+  }
+
   const failedJob = { ...jobs[0], status: 'import_failed', output: content, revision: 7,
     checks: { warnings: ['EAN je vo feede, samostatný návod nebol priložený.'] },
     import_result: { errors: [], items: [{ status: 'uncertain', errors: ['import_outcome_unknown'] }] }, facts: [], events: [] };

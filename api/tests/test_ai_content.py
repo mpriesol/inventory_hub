@@ -125,6 +125,38 @@ class ContentTests(unittest.TestCase):
         value.evidence[0].quote = quote.replace("1000", "2000")
         self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["errors"])
 
+    def test_legacy_official_url_is_normalized_but_still_requires_exact_opening(self):
+        source = "https://manufacturer.example/product"
+        value = content(evidence=[{"claim": "fact", "quote": "source quote", "source": "official:" + source}])
+        self.assertEqual(value.evidence[0].source, source)
+        self.assertEqual(validate_content(value, context(), [source])["errors"], [])
+        for opened in ([], [source + "-other"], ["official:" + source]):
+            checks = validate_content(value, context(), opened)
+            self.assertIn("ai_unverified_official_evidence", checks["errors"])
+            self.assertEqual(checks["evidence_errors"], [{"index": 0, "source": source, "reason": "not_opened"}])
+
+    def test_source_diagnostics_do_not_guess_urls_or_interrupt_validation(self):
+        for source, reason in (
+            ("official:manufacturer.example Product name", "invalid_https_url"),
+            ("https://[broken", "invalid_https_url"),
+            ("https://manufacturer.example:bad/product", "invalid_https_url"),
+            ("official:http://manufacturer.example/product", "invalid_https_url"),
+            ("official:https://user:pass@manufacturer.example/product", "invalid_https_url"),
+            ("official:https://manufacturer.example/product?token=private", "query_not_allowed"),
+        ):
+            with self.subTest(source=source):
+                value = content(evidence=[{"claim": "fact", "quote": "source quote", "source": source}])
+                checks = validate_content(value, context(), [value.evidence[0].source])
+                self.assertIn("ai_unverified_official_evidence", checks["errors"])
+                self.assertFalse(checks["automatic_ready"])
+                self.assertEqual(checks["evidence_errors"][0]["reason"], reason)
+
+    def test_feed_diagnostic_identifies_only_the_failed_evidence_row(self):
+        value = content()
+        value.evidence.append(value.evidence[0].model_copy(update={"source": "feed:999"}))
+        checks = validate_content(value, context())
+        self.assertEqual(checks["evidence_errors"], [{"index": 1, "source": "feed:999", "reason": "feed_quote_not_found"}])
+
     def test_feed_evidence_checks_source_fields_without_serialization_artifacts(self):
         ctx = context()
         ctx["facts"][0].update(description="Oceľová základňa", brand="Značka", parameters=[{"name": "Tlak", "value": "4 bar"}])
@@ -233,6 +265,21 @@ class WorkerErrorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_contract_and_parsing_use_canonical_evidence_urls(self):
+        source = "https://manufacturer.example/product"
+        raw = content().model_dump()
+        raw["evidence"] = [{"claim": "fact", "quote": "source quote", "source": "official:" + source}]
+        response = {"status": "completed", "output": [
+            {"type": "web_search_call", "action": {"type": "open_page", "url": source}},
+            {"type": "message", "content": [{"type": "output_text", "text": json.dumps(raw)}]},
+        ]}
+        parsed, opened = provider.parse_response(response)
+        self.assertEqual(parsed["evidence"][0]["source"], source)
+        self.assertEqual(validate_content(Content.model_validate(parsed), context(), opened)["errors"], [])
+        body = provider.request_body(context(research="official"))
+        self.assertIn("Nepridávaj prefix official:", body["instructions"])
+        self.assertIn("exact complete https:// URL", body["text"]["format"]["schema"]["$defs"]["Evidence"]["properties"]["source"]["description"])
+
     def test_provider_diagnostics_exclude_secrets_and_arbitrary_values(self):
         error = provider.ProviderError(httpx.Response(400, json={"error": {
             "code": "unsupported_value", "param": "reasoning.effort", "message": "private input and secret",

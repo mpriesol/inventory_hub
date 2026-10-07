@@ -5,7 +5,7 @@ import re
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from inventory_hub.catalog_types import ShopImportOptions
 
@@ -146,8 +146,20 @@ class ParameterValue(StrictModel):
 
 class Evidence(StrictModel):
     claim: str = Field(min_length=1, max_length=2000)
-    source: str = Field(min_length=1, max_length=2000)
+    source: str = Field(min_length=1, max_length=2000, description=(
+        "For supplied feed data use feed:<id>. For a web source use the exact complete https:// URL "
+        "recorded by open_page or find_in_page. Never add official:, a page title, or a tool reference."
+    ))
     quote: str = Field(min_length=1, max_length=3000)
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_legacy_source(cls, value):
+        # Older generations used this label despite the URL-only contract.
+        # Only remove the label; exact opening and URL checks still apply.
+        if isinstance(value, str) and value.startswith("official:https://"):
+            return value.removeprefix("official:")
+        return value
 
 
 class Content(StrictModel):

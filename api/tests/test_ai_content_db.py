@@ -162,6 +162,32 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await worker.cycle()
         self.assertEqual(len([p for p, _ in self.clients["biketrek"].sent if p == "products"]), 1)
 
+    async def test_saved_legacy_source_can_be_rechecked_without_generation_or_import(self):
+        id = (await self.create())[0]["id"]
+        source = "https://manufacturer.example/product"
+        output = content().model_dump()
+        output["evidence"] = [{"claim": "fact", "quote": "source quote", "source": "official:" + source}]
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            job.output, job.usage = output, {"opened_sources": [source]}
+            job.actual_usd = Decimal("0.123")
+            job.checks = {"errors": ["ai_unverified_official_evidence"]}
+            service.event(job, "blocked", "Synthetic legacy result")
+            await db.commit()
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            request = ContentReview(expected_revision=job.revision, content=job.output, approve=False)
+            await service.review(db, job, request)
+            await db.commit()
+        job = await self.job(id)
+        self.assertEqual(job.status, "review")
+        self.assertEqual(job.output["evidence"][0]["source"], source)
+        self.assertEqual(job.checks["errors"], [])
+        self.assertEqual(job.actual_usd, Decimal("0.123"))
+        self.assertIsNone(job.preview_id)
+        self.generate.assert_not_called()
+        self.assertFalse(self.clients["biketrek"].sent)
+
     async def test_restart_never_repeats_unknown_paid_request(self):
         id = (await self.create())[0]["id"]
         await self.act(id, "start")
