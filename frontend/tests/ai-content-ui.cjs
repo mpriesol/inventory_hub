@@ -33,12 +33,20 @@ const families = [{ code: 'NF-G-TEST', name: 'Test bunda', image: 'https://image
   { code: 'NF-OTHER', name: 'Test nohavice', image: null, product_ids: [3], products: [{ id: 3, shop_code: 'NF-3', variant_attributes: [] }] }];
 const content = { title: 'Test bunda', short_description: 'Short', long_description: '<p>Long</p>', seo_title: 'SEO', meta_description: 'Meta', h1_descriptor: 'Bunda', future_name: 'TEST', h1_descr_suffix: '', parameters: [], evidence: [], warnings: [], missing_facts: [] };
 const calls = []; let jobs = []; let reviewed; let historicalBook = book;
+let importedReadBook = book; let rejectImportedBook = false; let failImportedRead = false;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body, headers: init.headers });
   let data;
   if (path.endsWith('/status')) data = { enabled: true, key_configured: true, access_configured: true, model: 'fixture', monthly_limit_usd: '20', job_limit_usd: '2' };
-  else if (path.endsWith('/rules')) data = body ? { id: 2 } : rules;
+  else if (path.endsWith('/rules')) {
+    if (body && rejectImportedBook) return { ok: false, json: async () => ({ detail: [{ input: 'PRIVATE_INVALID_BOOK', msg: 'Invalid uploaded rules' }] }) };
+    data = body ? { id: 2 } : rules;
+  }
   else if (path.endsWith('/rules/1')) data = { id: 1, book: historicalBook };
+  else if (path.endsWith('/rules/2')) {
+    if (failImportedRead) return { ok: false, json: async () => ({ detail: { code: 'request_failed', message: 'Read failed' } }) };
+    data = { id: 2, book: importedReadBook };
+  }
   else if (path.endsWith('/existing-products/options')) data = { shops: [{code:'biketrek',name:'BikeTrek'}] };
   else if (path.endsWith('/existing-products')) { const job = { ...jobs[0], id:'existing-job', status:'estimate', update_only:true, source_kind:'shop', product_ids:[], code:body.code }; jobs.push(job); data = {job}; }
   else if (path.endsWith('/selection')) data = families;
@@ -290,7 +298,7 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(button('Zrušiť výber')); assert.equal(selectedCategory, '');
 
   const editorRules = { ...rules, book: { ...book, rules: [...book.rules,
-    { ...book.rules[0], id: 'supplier', name: 'Paul Lange pravidlo', scope: { ...scope, supplier: 'paul-lange' }, import_policy: { orderable:'Old ignored override', unknown:'Old unknown override', hide_zero_stock:true, supplier_name:'Original name' } },
+    { ...book.rules[0], id: 'supplier', name: 'Paul Lange pravidlo', scope: { ...scope, shop: 'biketrek', supplier: 'paul-lange' }, import_policy: { orderable:'Old ignored override', unknown:'Old unknown override', hide_zero_stock:true, supplier_name:'Original name' } },
     { ...book.rules[0], id: 'brand', name: 'Zéfal pravidlo', scope: { ...scope, brand: 'Zéfal' } }] } };
   await act(async () => { root.render(React.createElement(AiRuleEditor, { rules: editorRules, onReload: () => {}, onJob: () => {} })); await tick(); });
   assert(button('Publikovať koncept').disabled, 'A missing draft has a readable action label without an invented version number');
@@ -298,7 +306,7 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(document.getElementById(button('Publikovať koncept').getAttribute('aria-describedby')).textContent.includes('Najskôr vyplň dôvod zmeny'), 'Disabled publishing explains how to enable the action');
   await click([...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Dodávatelia (')));
   const profileSelect = [...document.querySelectorAll('label')].find(l => l.textContent.startsWith('Profil')).querySelector('select');
-  assert.equal(profileSelect.options.length, 1); assert.equal(profileSelect.options[0].textContent, 'Paul Lange pravidlo', 'Rule groups filter profiles');
+  assert.equal(profileSelect.options.length, 1); assert.equal(profileSelect.options[0].textContent, 'Paul Lange pravidlo', 'A shop-scoped supplier rule remains under Suppliers; backend scope is unchanged');
   assert(document.body.textContent.includes('Texty dostupnosti sa berú z konfigurácie dodávateľa'), 'Rule editor explains where availability can be changed');
   assert(!document.querySelector('input[value="Old ignored override"]') && !document.querySelector('input[value="Old unknown override"]'), 'Obsolete availability overrides are not editable');
   assert(![...document.querySelectorAll('label')].some(label => label.textContent.startsWith('Skryť nové varianty s potvrdenou nulovou zásobou')), 'Rule editor cannot hide orderable items based on zero supplier stock');
@@ -318,7 +326,7 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(!button('Publikovať verziu #2').disabled, 'Saving a draft enables publishing the actual version');
   assert(!document.getElementById('ai-publish-help'), 'No-draft instruction disappears when a draft is available');
 
-  const legacyRule = { ...book.rules[0], id: 'legacy-category', name: 'Pôvodné pravidlo duší', scope: { ...scope, category: 'general' }, official_domains: ['example.com'], import_policy: { orderable: 'Na objednávku' } };
+  const legacyRule = { ...book.rules[0], id: 'legacy-category', name: 'Pôvodné pravidlo duší', scope: { ...scope, shop: 'biketrek', category: 'general' }, official_domains: ['example.com'], import_policy: { orderable: 'Na objednávku' } };
   historicalBook = { ...book, rules: [...book.rules, legacyRule] };
   await act(async () => { root.render(React.createElement(AiRuleEditor, { key: 'single-category-tab', rules, onReload: () => {}, onJob: () => {} })); await tick(); });
   const categoryButtons = [...document.querySelectorAll('.ai-rule-groups button')].filter(b => b.textContent.startsWith('Kategórie'));
@@ -349,6 +357,67 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(!document.body.textContent.includes('Doplnkové pravidlá zo starších verzií'), 'Removing the final legacy rule leaves only profiles');
   await click(button('Uložiť novú verziu konceptu'));
   assert.deepEqual(calls.findLast(c => c.path.endsWith('/rules') && c.body).body.book.rules, book.rules, 'Legacy deletion preserves unrelated rules');
+
+  await act(async () => { root.render(React.createElement(AiRuleEditor, { key: 'book-transfer', rules, onReload: () => {}, onJob: () => {} })); await tick(); });
+  const transferStart = calls.length;
+  const upload = async (value, name = 'reviewed-book.json', size = 1000) => {
+    const file = { name, size, text: async () => typeof value === 'string' ? value : JSON.stringify(value) };
+    const picker = document.querySelector('input[type="file"]');
+    await act(async () => { Object.defineProperty(picker, 'files', { configurable: true, value: [file] }); picker.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); });
+  };
+  const uploadedPolicy = { review_required: false, active_after_import: true, show_cost_estimate: true, confirm_import: false };
+  const preservedXtrek = { ...book.rules[0], id: 'xtrek-preserved', scope: { ...scope, shop: 'xtrek' }, policy: { ...policy } };
+  const uploadedBook = { ...book, rules: [{ ...book.rules[0], policy: uploadedPolicy }, preservedXtrek,
+    { id: 'new-source', name: 'Imported source', instructions: 'Private instructions', enabled: false }] };
+  importedReadBook = { ...uploadedBook, rules: uploadedBook.rules.map(rule => ({ ...rule, scope: rule.scope || { ...scope }, policy: rule.policy || {}, official_domains: [], import_policy: {} })) };
+  await upload({ book: uploadedBook, report: { published: false } });
+  assert(document.body.textContent.includes('reviewed-book.json · pravidlá: 3 · kategórie: 1'));
+  assert.equal(calls.length, transferStart, 'Selecting a file does not save, publish or call AI');
+  assert(!document.body.textContent.includes('Imported source'), 'Unchecked entries are not rendered in the rule editor');
+  assert(button('Uložiť importovanú knihu ako koncept').disabled, 'Imported draft requires a reason');
+  await input([...document.querySelectorAll('label')].find(l => l.textContent === 'Dôvod zmeny').querySelector('input'), 'Reviewed complete rule book');
+  await click(button('Uložiť importovanú knihu ako koncept'));
+  const importedCall = calls.findLast(c => c.path.endsWith('/rules') && c.body);
+  assert.equal(importedCall.body.expected_published, 1);
+  assert.deepEqual(importedCall.body.book, uploadedBook, 'Import sends the complete unchanged book including other shops and automation policies');
+  assert.equal(calls.at(-1).path, '/api/ai-content/rules/2', 'The editor reads server-normalized data before displaying it');
+  assert(document.body.textContent.includes('Imported source'));
+  assert(document.body.textContent.includes('Importovaný koncept #2 je uložený a načítaný. Publikovaná verzia zostáva #1.'));
+
+  let exportedBlob; let downloadName;
+  const originalCreateUrl = URL.createObjectURL; const originalRevokeUrl = URL.revokeObjectURL;
+  const originalAnchorClick = dom.window.HTMLAnchorElement.prototype.click;
+  URL.createObjectURL = blob => { exportedBlob = blob; return 'blob:synthetic-book'; }; URL.revokeObjectURL = () => {};
+  dom.window.HTMLAnchorElement.prototype.click = function () { downloadName = this.download; };
+  await click(button('Exportovať načítanú knihu JSON'));
+  assert.equal(downloadName, 'hub-ai-rules.json');
+  assert.deepEqual(JSON.parse(await exportedBlob.text()), importedReadBook, 'Export preserves the complete currently loaded book');
+  URL.createObjectURL = originalCreateUrl; URL.revokeObjectURL = originalRevokeUrl; dom.window.HTMLAnchorElement.prototype.click = originalAnchorClick;
+  await input([...document.querySelectorAll('label')].find(l => l.textContent === 'Názov profilu').querySelector('input'), 'Changed after import');
+  assert(!document.body.textContent.includes('Importovaný koncept #2 je uložený a načítaný.'), 'Editing clears the saved-import status for the previous book');
+
+  await upload({ rules: [null], categories: [] }, 'invalid-server-book.json');
+  rejectImportedBook = true;
+  await click(button('Uložiť importovanú knihu ako koncept'));
+  assert(document.body.textContent.includes('Server knihu neprijal.'));
+  assert(!document.body.textContent.includes('PRIVATE_INVALID_BOOK'), 'Server validation errors never echo uploaded private content');
+  assert(document.body.textContent.includes('Imported source'), 'Rejected imports preserve the loaded normalized book');
+  rejectImportedBook = false;
+  await upload(uploadedBook);
+  failImportedRead = true;
+  const beforeSaved = calls.filter(c => c.path.endsWith('/rules') && c.body).length;
+  await click(button('Uložiť importovanú knihu ako koncept'));
+  assert(document.body.textContent.includes('Koncept #2 bol uložený, ale nepodarilo sa ho načítať.'));
+  failImportedRead = false;
+  await click(button('Načítať uložený importovaný koncept'));
+  assert.equal(calls.filter(c => c.path.endsWith('/rules') && c.body).length, beforeSaved + 1, 'Read recovery never creates a second draft');
+  const beforeInvalid = calls.length;
+  await upload('{invalid-json', 'broken.json');
+  assert(document.body.textContent.includes('Vyber platný JSON knihy'));
+  await upload(uploadedBook, 'too-large.json', 2 * 1024 * 1024 + 1);
+  assert(document.body.textContent.includes('Súbor prekračuje limit 2 MiB.'));
+  assert.equal(calls.length, beforeInvalid, 'Invalid or oversized files never call the server');
+  assert(!calls.slice(transferStart).some(c => /\/publish$|\/batches$|\/action$/.test(c.path)), 'File transfer never publishes or runs a product/AI import');
   await act(async () => root.unmount());
   console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search and scoped rule deletion.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

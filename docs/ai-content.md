@@ -43,6 +43,8 @@ Nastavenia sa skladajú v poradí **spoločné → dodávateľ → značka → k
 
 ## Pravidlá a kategórie
 
+**Import a export knihy pravidiel** v editore prenáša celú knihu vrátane kategórií, rozsahov a politík všetkých e-shopov. Exportuje práve načítanú knihu ako JSON. Súbor pre import môže byť čistý `RuleBook` alebo výstup s objektom `book`, najviac 2 MiB. Výber súboru ukáže názov a počty; nevloží neoverené položky do editora ani ich neodošle. Po vyplnení dôvodu akcia **Uložiť importovanú knihu ako koncept** použije existujúcu serverovú validáciu a kontrolu `expected_published`, uloží novú nepublikovanú verziu a načíta jej normalizovaný obsah. Chyba načítania už uloženého konceptu sa obnovuje iba GET bez druhého uloženia. Pred uložením treba skontrolovať zachovanie ostatných e-shopov a politík; publikovanie zostáva samostatnou akciou. Import knihy nespúšťa AI ani import produktov. Úplný zdrojový balík s `documents` a `modules` nie je priamo `RuleBook`.
+
 Tlačidlo **Kategórie** otvára profily kategórií. Pokyny, povinné parametre aj mapovanie na e-shopy sa upravujú na jednom mieste; samostatné tlačidlo **Profily kategórií** ani pôvodná skupina kategóriových pravidiel už v navigácii nie sú.
 
 | Pojem v UI | Čo obsahuje | Ako sa používa |
@@ -66,6 +68,60 @@ Verzia pravidiel, pokyny, register, politika, podklady a cieľ sa zmrazia pri vy
 Pri importe sa doplnia nadradené produktové kategórie; zvolená zostane hlavná. Systémové korene menu sú viditeľné v strome, ale nemožno ich priradiť produktu. Rozpoznávajú sa z explicitných metadát Upgates, nie z názvu či pevného ID. Neúplný alebo cyklický strom blokuje prípravu. Aktualizácia zachová existujúce zaradenia, doplní rodičov a nastaví vybranú hlavnú kategóriu.
 
 ## Validácia a import
+
+### Úplné súkromné balíky pravidiel
+
+`python -m inventory_hub.ai_rule_package` pripravuje prenos úplných pravidiel
+bez spojenia s databázou, Hubom, Upgates alebo plateným AI. Vstupný adresár
+musí byť určený výslovne; produktové pokyny a chránené feedové endpointy sa
+nepribaľujú do verejného repozitára. Balík zachováva celé bloky, ich pôvod,
+revízie, rozsahy, návrhy aj históriu. História sa nepoužíva ako ďalšie účinné
+pravidlá. Prístupové URL patria do bezpečnej konfigurácie, nie do promptu.
+
+Dokument označený `required_full_read: true` zachová pri zostavení aj svoje
+referenčné a historické bloky v zodpovedajúcom rozsahu. Hlavné inštrukcie
+majú tento príznak, aby sa prečítal celý dokument vrátane histórie. Každá
+časť uvádza typ a stav; história a referencie sú výslovne označené ako
+neoperatívny kontext, ktorý neobnovuje staršie pravidlá. Pri ostatných
+dokumentoch sa naďalej vyberajú iba relevantné účinné bloky. Príznak
+neobchádza odmietnutie návrhových alebo zmiešaných pravidiel.
+
+Príklady s privátnym vstupom a výstupom mimo Git:
+
+```sh
+PYTHONPATH=api python -m inventory_hub.ai_rule_package validate --package-dir /private/rule-package
+PYTHONPATH=api python -m inventory_hub.ai_rule_package export --package-dir /private/rule-package --output /private/rules.json
+PYTHONPATH=api python -m inventory_hub.ai_rule_package draft --package-dir /private/rule-package --shop biketrek --supplier paul-lange --brand Shimano --profile general --output /private/rules-draft.json
+```
+
+Export je úplný prenosný balík s kontrolným súčtom. `draft` je koncept
+existujúceho formátu `RuleBook` pre jeden výslovne vybraný rozsah; nie je to
+nová publikovaná verzia. Celé relevantné bloky rozdelí podľa limitu polí bez
+straty textu. Návrhový alebo zmiešaný register automaticky neaktivuje.
+Podmienené znalosti vyžadujú výslovný výber opretý o potvrdené vlastnosti.
+Pri takom výbere je povinný presný parent kód cez `--product`; znalosť
+potvrdeného materiálu sa nesmie preniesť na iný produkt rovnakej značky.
+Pred prepísaním existujúceho súboru skončí chybou.
+
+Pri `--current-book` zachová nedotknuté rozsahy; kolidujúce účinné pravidlá
+alebo profil vyžadujú vedomé zjednotenie. Bez aktuálnej knihy nie je koncept
+úplnou náhradou produkčnej knihy. Až samostatné autorizované uloženie a
+publikovanie cez existujúce API s `expected_published` aktivuje novú verziu.
+Zmena `initial_book` existujúcu publikovanú verziu nemení. Rozpracované úlohy
+si zachovajú zmrazené pravidlá; nová príprava načíta aktuálnu verziu.
+
+Prítomnosť celého textového registra neznamená jeho premenu na strojové
+definície parametrov. Koncepty zostávajú s povinnou ľudskou kontrolou a bez
+automatického importu. Rodiny, galérie, B2B, kontroly A/B/C, XML nástroje a
+konkrétne dodávateľské výnimky potrebujú príslušnú vykonávaciu podporu.
+Podrobnosti ďalšieho postupu sú v [návrhu príjmu a Upgates](receiving-upgates-plan.md).
+
+Hranica zostaveného AI požiadavku je **512 000 bajtov**, aby sa úplné
+relevantné pravidlá nemuseli skracovať. Odhad nákladov používa celý skutočný
+požiadavok a existujúce rozpočtové limity zostávajú zachované. Prípravný
+nástroj meria skutočnú schému požiadavku bez produktových dát; runtime
+skontroluje kompletné dáta znovu. Žiadny úspech offline kontroly nepotvrdzuje
+kvalitu generovania, dostupnosť zdrojov ani vykonaný import.
 
 AI vracia striktne definovaný obsahový JSON, nie priamo Upgates payload. Server kontroluje povinné fakty, názvy a hodnoty parametrov, príslušnosť variantov, podporované HTML a evidenciu zdrojov. Kontrola formátu nenahrádza kontrolu faktickej správnosti; preto je počiatočne zapnutá ľudská kontrola.
 
@@ -177,7 +233,7 @@ Zmeny existujúcej úlohy vyžadujú `expected_revision`; zastaraná revízia sa
 
 Rušenie nejasnosti pri `update-confirm` navyše vyžaduje skutočný JSON boolean `original_request_settled: true` a `resolution_note` s aspoň 10 neprázdnymi znakmi po orezaní. Bez nich ide iba o čítaciu kontrolu. Spoločná blokácia potrebuje existujúce migrácie `005` a `016`; nepridáva ďalšiu tabuľku ani automaticky neopakuje neisté zápisy.
 
-Aktuálne limity: `GET /jobs` vracia predvolene posledných 100 záznamov, `limit=1..500`, voliteľne `batch_id` a `archived=true`; nemá stránkovací kurzor a filtre v UI pracujú len s načítaným zoznamom. História pravidiel vracia najviac 40 verzií; staršiu známu verziu možno načítať podľa ID. Kniha obsahuje najviac 300 pravidiel a 300 profilov, profil najviac 100 definícií parametrov. AI generovanie podporuje aktuálne schválené slovenské pravidlá, najviac 100 000 bajtov zostaveného požiadavku, 10 000 výstupných tokenov a šesť webových krokov. Neobsahuje samostatný hromadný vstup existujúcich produktov, generovanie obrázkov ani úplnú deterministickú kontrolu ETRTO.
+Aktuálne limity: `GET /jobs` vracia predvolene posledných 100 záznamov, `limit=1..500`, voliteľne `batch_id` a `archived=true`; nemá stránkovací kurzor a filtre v UI pracujú len s načítaným zoznamom. História pravidiel vracia najviac 40 verzií; staršiu známu verziu možno načítať podľa ID. Kniha obsahuje najviac 300 pravidiel a 300 profilov, profil najviac 100 definícií parametrov. AI generovanie podporuje aktuálne schválené slovenské pravidlá, najviac 512 000 bajtov zostaveného požiadavku, 10 000 výstupných tokenov a šesť webových krokov. Neobsahuje samostatný hromadný vstup existujúcich produktov, generovanie obrázkov ani úplnú deterministickú kontrolu ETRTO.
 
 ## Mapa implementácie pre ďalší vývoj
 
