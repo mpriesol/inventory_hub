@@ -731,7 +731,9 @@
       "ai_update_original_unsettled": "Hodnoty sa zhodujú, ale pôvodná požiadavka ešte nie je potvrdená ako ukončená. Blokovanie zostáva zachované.",
       "ai_update_still_sending": "Pôvodné odoslanie môže ešte prebiehať. Pred ručným uzavretím počkajte aspoň päť minút od začiatku.",
       "ai_update_resolved_mismatch": "Ukončenie pôvodnej požiadavky je potvrdené; hodnoty sa nezhodujú s náhľadom. Môžete pripraviť nové porovnanie.",
-      "ai_availability_managed_by_stock": "Dostupnosť spravuje skladový systém alebo ešte prebieha neuzavretý prenos zásob. Odstráňte dostupnosť z polí AI aktualizácie; ostatný obsah môžete aktualizovať."
+      "ai_availability_managed_by_stock": "Dostupnosť spravuje skladový systém alebo ešte prebieha neuzavretý prenos zásob. Odstráňte dostupnosť z polí AI aktualizácie; ostatný obsah môžete aktualizovať.",
+      "ai_category_uncertain": "AI nevie jednoznačne určiť kategóriu a profil. Skontroluj podklady alebo zvoľ kategóriu ručne.",
+      "ai_category_candidates_missing": "V e-shope chýbajú vhodné aktívne koncové kategórie."
     },
     "importSelectedReady": "Importovať označené pripravené",
     "selectJob": "Označiť úlohu",
@@ -903,7 +905,16 @@
     "linkedCategoryInstructions": "Úplné priradené pokyny kategórie",
     "linkedProfiles": "Platí pre profily",
     "draftParameterHelp": "Návrh zo zdrojového dokumentu – AI toto pole zatiaľ nedostáva.",
-    "exportRequest": "Stiahnuť presné zadanie pre AI (bez spustenia)"
+    "exportRequest": "Stiahnuť presné zadanie pre AI (bez spustenia)",
+    "autoCategory": "Automaticky vyberie AI",
+    "autoCategoryHelp": "AI najprv vyberie najnižšiu vhodnú kategóriu a profil pravidiel. Nadradené kategórie sa doplnia automaticky. Ručný výber zostáva voliteľný.",
+    "selectedCategory": "Kategória vybraná AI",
+    "jobDetailTitle": "Spracovanie a výsledky produktu",
+    "closeDetail": "Zavrieť detail",
+    "closeUnsaved": "V detaile sú neuložené zmeny. Chceš ich zahodiť a zavrieť okno?",
+    "keepEditing": "Pokračovať v úprave",
+    "discardClose": "Zahodiť zmeny a zavrieť",
+    "olderRules": "Táto úloha používa pravidlá #{{version}}, aktuálna verzia je #{{current}}. Nové parametre a pravidlá sa použijú až v novej príprave."
   },
   "upgatesImport": {
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",
@@ -2498,5 +2509,40 @@
     "retryPreview": "Zopakovať prípravu pôvodného náhľadu",
     "scanCompletionHelp": "Dokončený priechod znamená kontrolu položiek. Zaradené odoslania ešte môžu pokračovať; ich overený výsledok je v histórii.",
     "retryAfter": "Ďalší pokus je pozastavený do {{date}} kvôli obmedzeniu API."
+  },
+  "accounts": {
+    "login": "Prihlásiť sa",
+    "title": "Používateľské účty",
+    "back": "Späť do nastavení",
+    "username": "Používateľské meno",
+    "password": "Heslo",
+    "displayName": "Zobrazované meno",
+    "role": "Rola",
+    "roles": {
+      "admin": "Správca",
+      "operator": "Obsluha"
+    },
+    "logout": "Odhlásiť sa",
+    "usePassword": "Použiť meno a heslo",
+    "useToken": "Prvé prihlásenie / prístupový token",
+    "remember": "Prihlásenie sa zachová aj po obnovení stránky a zatvorení prehliadača. Odhlásiť sa môžeš tu.",
+    "create": "Vytvoriť účet",
+    "createHelp": "Heslo musí mať aspoň 12 znakov. Správca môže spravovať účty; obsluha používa odomknuté funkcie Hubu.",
+    "users": "Účty",
+    "noUsers": "Zatiaľ nie sú vytvorené účty. Vytvor si vlastný účet správcu a nabudúce sa prihlás menom a heslom.",
+    "created": "Účet bol vytvorený.",
+    "disable": "Deaktivovať",
+    "enable": "Aktivovať",
+    "signedOut": "Neprihlásený",
+    "requestFailed": "Požiadavku sa nepodarilo dokončiť. Skús obnoviť stránku.",
+    "errors": {
+      "hub_login_invalid": "Nesprávne meno alebo heslo.",
+      "hub_login_limited": "Príliš veľa pokusov. Skús to o päť minút.",
+      "hub_username_exists": "Toto používateľské meno už existuje.",
+      "hub_account_invalid": "Skontroluj meno a heslo. Nové heslo musí mať aspoň 12 znakov.",
+      "hub_access_required": "Prístupový token nie je správny.",
+      "hub_admin_required": "Táto operácia vyžaduje účet správcu.",
+      "hub_self_disable": "Vlastný prihlásený účet nemožno deaktivovať."
+    }
   }
 }

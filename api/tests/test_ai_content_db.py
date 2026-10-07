@@ -92,6 +92,87 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await service.action(db, job, JobAction(expected_revision=job.revision, action=action))
             await db.commit()
 
+    async def automatic_category_fixture(self, confident=True):
+        from inventory_hub.ai_content_types import CategoryProfile, ParameterDefinition
+        async with self.sessions() as db:
+            previous = await rules.published(db)
+            book = RuleBook.model_validate(previous.book)
+            book.categories.append(CategoryProfile(id='helmets', name='Prilby', shop_categories={'biketrek':'ROOT'},
+                parameters=[ParameterDefinition(name='Farba')]))
+            version = AiRuleVersion(book=book.model_dump(), note='Automatic category fixture', origin='test')
+            db.add(version); await db.flush()
+            await rules.publish(db, version.id, previous.id); await db.commit()
+        client = self.clients['biketrek']
+        original_get = client.get
+        def get(path, params=None):
+            if path == 'categories':
+                return {'categories': [
+                    {'code':'MENU','category_id':1,'parent_id':None},
+                    {'code':'ROOT','category_id':2,'parent_id':1,'descriptions':[{'language':'sk','name':'Prilby'}]},
+                    {'code':'LEAF','category_id':3,'parent_id':2,'descriptions':[{'language':'sk','name':'Cestné prilby'}]}]}
+            return original_get(path, params)
+        patched = patch.object(client, 'get', side_effect=get)
+        patched.start(); self.patches.append(patched)
+        selection = {'category_code':'LEAF','profile_id':'helmets','confident':confident,'reason':'Typ z feedu'}
+        return {**self.response, 'id':'classification_fixture', 'output':[{'type':'message', 'content':[
+            {'type':'output_text', 'text':json.dumps(selection)}]}]}
+
+    async def test_automatic_category_uses_registry_and_imports_all_product_ancestors(self):
+        classification = await self.automatic_category_fixture()
+        self.generate.side_effect = [classification, self.response]
+        id = (await self.create(self.request(category_profiles={self.id:'auto'})))[0]['id']
+        original = await self.job(id)
+        self.assertEqual(original.status, 'estimate')
+        from inventory_hub.routers.ai_content import job_request
+        async with self.sessions() as db:
+            self.assertEqual((await job_request(id, db))['stage'], 'classification')
+        self.generate.assert_not_called()
+        await self.act(id, 'start'); await worker.cycle()
+        job = await self.job(id)
+        self.assertEqual(job.status, 'review')
+        self.assertEqual(job.context['options']['category_code'], 'LEAF')
+        self.assertEqual(job.context['category_profile'], 'helmets')
+        self.assertEqual(self.generate.call_args_list[0].args[1], 'classification')
+        context = self.generate.call_args_list[1].args[0]
+        self.assertEqual(context['resolved']['category']['parameters'][0]['name'], 'Farba')
+        self.assertEqual(job.actual_usd, worker.provider.usage_cost(self.response, context['model'])[1] * 2)
+        self.assertIn('classification', job.usage)
+        self.assertFalse(self.clients['biketrek'].sent)
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            await service.review(db, job, ContentReview(expected_revision=job.revision, content=job.output, approve=True))
+            await db.commit()
+        await worker.cycle(); await self.act(id, 'import'); await worker.cycle()
+        self.assertEqual((await self.job(id)).status, 'completed')
+        sent = [body for path, body in self.clients['biketrek'].sent if path == 'products']
+        self.assertEqual(sent[0]['products'][0]['categories'], [{'code':'ROOT','main_yn':False},{'code':'LEAF','main_yn':True}])
+
+    async def test_uncertain_category_stops_before_content_and_preserves_billed_usage(self):
+        self.generate.return_value = await self.automatic_category_fixture(confident=False)
+        id = (await self.create(self.request(category_profiles={self.id:'auto'})))[0]['id']
+        await self.act(id, 'start'); await worker.cycle()
+        job = await self.job(id)
+        self.assertEqual((job.status, job.error), ('failed', 'ai_category_uncertain'))
+        self.assertIsNone(job.output)
+        self.assertGreater(job.actual_usd, 0)
+        self.assertEqual(self.generate.await_count, 1)
+        self.assertFalse(self.clients['biketrek'].sent)
+
+    async def test_timeout_after_category_keeps_full_reservation_without_paid_retry(self):
+        classification = await self.automatic_category_fixture()
+        self.generate.side_effect = [classification, catalog.CatalogError('ai_outcome_unknown', 'Synthetic timeout', 502)]
+        id = (await self.create(self.request(category_profiles={self.id:'auto'})))[0]['id']
+        await self.act(id, 'start'); await worker.cycle()
+        job = await self.job(id)
+        self.assertEqual(job.status, 'uncertain')
+        self.assertGreater(job.actual_usd, 0)
+        self.assertGreater(job.reserved_usd, job.actual_usd)
+        async with self.sessions() as db:
+            self.assertEqual(await service.budget(db), job.reserved_usd)
+        await worker.cycle()
+        self.assertEqual(self.generate.await_count, 2)
+        self.assertFalse(self.clients['biketrek'].sent)
+
     async def test_prepare_is_idempotent_and_pins_rules(self):
         request = self.request()
         first = await self.create(request); second = await self.create(request)

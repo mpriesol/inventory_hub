@@ -59,7 +59,7 @@ AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; norma
 | Nastavenia `/settings` | AI a prevádzkové nastavenia skladu | `/settings/stock`: predvolené hodnoty skladu, odchýlky e-shopu, intervaly a výslovné režimy automatického spracovania. `/settings/ai-content` zachováva AI nastavenia. |
 | Publikovanie `/stock/publication` | Kontrolované zosúladenie vybraných SKU počas údržby | Trvalá blokácia lokálneho skladu, porovnanie presných variantov, jedno odoslanie a obnova nejasného výsledku. Serverový zápis je predvolene vypnutý; pozri [návod](docs/stock-publication.md). |
 | AI obsah | Implementovaný samostatný workflow | Pravidlá, profily, príprava, kontrola, náhľad importu a aktualizácia vybraných polí. Limity v `docs/ai-content.md`. |
-| Kontrola objednávok `/orders` | Chránený čítací audit | Jedna stránka objednávok, klasifikácia identity a kandidát na operáciu. Nevytvára rezerváciu ani skladový výdaj; používa existujúci operátorský token. |
+| Kontrola objednávok `/orders` | Chránený čítací audit | Jedna stránka objednávok, klasifikácia identity a kandidát na operáciu. Nevytvára rezerváciu ani skladový výdaj; používa spoločné prihlásenie alebo operátorský token. |
 | Skladové spracovanie `/orders/stock` | Kontrolované rezervácie, uvoľnenie a jednorazový výdaj | Jedna čerstvo načítaná objednávka, potvrdené stavové ID a pevný začiatok evidencie pre každý e-shop. Náhľad a výslovné zaúčtovanie; bez automatického prechodu histórie, pollingu či zápisov do e-shopov. Len celé kusy. |
 | Automatický zber `/orders/inbox` | Zapínateľný čítací worker, trvalý inbox a obnova | Hlavičky objednávok od potvrdeného začiatku evidencie, kontrolné prechody a viditeľné chyby. Samotné načítanie nemení rezervácie ani zásobu; otvorenie objednávky vedie na čerstvý potvrdený postup. |
 | Návrh zásob v `/orders/inbox` | Čítacia projekcia 1–100 SKU | Vlastné voľné celé kusy z potvrdeného skladu, presné mapovanie jednotlivých variantov vrátane rodiča xTrek. Neznámy stav nie je nula. Bez outboxu a externého odosielania. |
@@ -69,7 +69,7 @@ AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; norma
 | Produkty `/products` | Kompatibilné presmerovanie do Skladu | Jediný editor je na `/stock`, bez duplicitnej položky navigácie. [Postup](docs/product-editor.md). |
 | Nákupné ceny `/settings/purchase-costs` | Samostatný zapínateľný prenos FIFO cien | Nastavenia skladu/e-shopu, ručné a pravidelné spustenie, výsledky a neisté zápisy. Produkt používa ďalšiu FIFO vrstvu; objednávka vážený náklad svojich vydaných kusov. Staršie doložené objednávky cez konkrétny náhľad. [Postup](docs/fifo-purchase-costs.md). |
 | Nákupné ceny v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
-| Roly obsluhy | Plánované | Operátorský token nie je všeobecný systém rolí. Publikovanie vybraných podporovaných produktových polí už má vlastný náhľad, zápis a overenie; chýbajúci produkt sa zakladá cez katalógový import. |
+| Účty `/login`, `/settings/users` | Implementované meno/heslo a trvalé relácie | Správca spravuje účty, obsluha používa doterajšie chránené funkcie. Operátorský token zostáva pre prvé prihlásenie a integrácie. Úplné rozdelenie prevádzkových oprávnení je plánované. [Postup](docs/user-accounts.md). |
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx), [exporty stránok](frontend/src/pages/index.ts), [zástupné stránky](frontend/src/pages/PlaceholderPages.tsx).
 
@@ -182,7 +182,9 @@ AI workflow používa existujúci katalóg/importer a vlastné DB tabuľky. Work
 
 Oficiálny prieskum môže vyhľadávať weby výrobcov/dodávateľov bez povinného prednastaveného zoznamu domén. Vyhľadávanie nezaručuje dostupnosť správnej hodnoty a chýbajúce povinné parametre naďalej vyžadujú vyriešenie.
 
-AI má vlastnú konfiguráciu; jeho existujúci prístupový token chráni aj audit, skladové spracovanie, zber objednávok, návrh zásob a počiatočný stav cez spoločný `access.py`. Nejde o všeobecný systém rolí. Konfigurácia: `AI_CONTENT_ENABLED`, `AI_CONTENT_MODEL`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria. Postup konfigurácie a obmedzenia sú v [docs/ai-content.md](docs/ai-content.md).
+AI, audit, skladové spracovanie a ostatné doteraz tokenom chránené funkcie používajú spoločný `access.py`: prihlásený účet s HttpOnly reláciou alebo pôvodný operátorský token. [Účty](docs/user-accounts.md) pridávajú iba rozdiel medzi správcom účtov a obsluhou, nie úplné prevádzkové RBAC. AI konfigurácia zostáva `AI_CONTENT_ENABLED`, `AI_CONTENT_MODEL`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria.
+
+Nové AI prípravy v UI predvolene vyberajú koncovú kategóriu a profil samostatným volaním pred tvorbou obsahu, aby sa použil správny register parametrov. Pôvodný importer doplní produktových predkov. Rozpočet zahŕňa obe fázy a žiadna sa po nejasnom výsledku automaticky neopakuje. Výsledky sa otvárajú v modálnom okne. Kontrakty, ručné výnimky a aktuálne limity sú v [docs/ai-content.md](docs/ai-content.md).
 
 ## Databázové migrácie
 
@@ -205,11 +207,11 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005` až `013`** cez [ai_content_migrate.py](api/inventory_hub/ai_content_migrate.py), [opening_stock_migrate.py](api/inventory_hub/opening_stock_migrate.py), [order_stock_migrate.py](api/inventory_hub/order_stock_migrate.py), [order_collection_migrate.py](api/inventory_hub/order_collection_migrate.py), [stock_automation_migrate.py](api/inventory_hub/stock_automation_migrate.py) , [stock_publication_migrate.py](api/inventory_hub/stock_publication_migrate.py), [fifo_migrate.py](api/inventory_hub/fifo_migrate.py) [product_editor_migrate.py](api/inventory_hub/product_editor_migrate.py) a [receiving_scan_migrate.py](api/inventory_hub/receiving_scan_migrate.py), pod transakčnými DB zámkami a pred reštartom API. Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých deväť SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Aktuálny deployment spúšťa `005` až `020`** explicitnými migračnými modulmi uvedenými v [.github/workflows/build.yml](.github/workflows/build.yml), pod transakčnými DB zámkami a pred reštartom API. Nová `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania; spúšťa ju [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých šestnásť upgrade SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`013` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`020` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -235,7 +237,7 @@ npm --prefix frontend run dev
 
 API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.ts). Konfigurácie ani dáta nevymýšľaj, aby sa aplikácia tvárila funkčne.
 
-Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a štrnásť jsdom sád vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
+Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a osemnásť jsdom sád vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
 
 ## Produkčné nasadzovanie a diagnostika
 
@@ -244,7 +246,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `013` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `020` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.

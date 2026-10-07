@@ -52,3 +52,10 @@
 .ai-content .ai-parameter-values .ai-parameter-missing { background: rgba(239,100,100,.09); }
 .ai-content .ai-parameter-values .ai-parameter-missing > td:first-child { border-left: 3px solid #ef6464; }
 .ai-content .ai-parameter-values .ai-parameter-missing-label { display: block; color: var(--color-text-primary); font-weight: 600; margin-top: 6px; }
+
+.ai-job-backdrop { position: fixed; inset: 0; z-index: 45; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.ai-job-modal { width: min(1400px, 100%); max-height: calc(100dvh - 40px); padding-bottom: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--color-bg-primary, #111827); border: 1px solid var(--color-border-subtle, #334155); border-radius: 14px; box-shadow: 0 20px 80px #0009; }
+.ai-job-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--color-border-subtle, #334155); flex-shrink: 0; }
+.ai-job-modal-header h2 { margin: 0; }
+.ai-job-modal-body { min-height: 0; overflow: auto; padding: 20px; overscroll-behavior: contain; }
+@media (max-width: 640px) { .ai-job-backdrop { padding: 6px; } .ai-job-modal { max-height: calc(100dvh - 12px); } .ai-job-modal-body { padding: 10px; } }

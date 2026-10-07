@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import React, { useState, useEffect, useSyncExternalStore } from 'react';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { setLanguage, getLanguage } from '../../i18n';
 import {
@@ -15,6 +15,8 @@ import {
   FileText,
   ClipboardList,
 } from 'lucide-react';
+
+import { accessRevision, hubUser, subscribeAccess } from '../../api/access';
 
 interface NavItem {
   id: string;
@@ -38,6 +40,8 @@ const navigation: NavItem[] = [
 
 export function Sidebar() {
   const location = useLocation();
+  useSyncExternalStore(subscribeAccess, accessRevision);
+  const user = hubUser();
   const { t, i18n } = useTranslation();
   const [currentLang, setCurrentLang] = useState(getLanguage());
 
@@ -206,20 +210,20 @@ export function Sidebar() {
               color: 'var(--color-text-inverse)',
             }}
           >
-            M
+            {user?.display_name.slice(0, 1) || '?'}
           </div>
           <div className="flex-1 min-w-0">
             <div
               className="text-sm truncate"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              Miro
+              <Link to={user ? '/settings/users' : '/login'}>{user?.display_name || t('accounts.login')}</Link>
             </div>
             <div
               className="text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              Admin
+              {user ? t(`accounts.roles.${user.role}`) : t('accounts.signedOut')}
             </div>
           </div>
           <ChevronRight

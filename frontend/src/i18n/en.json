@@ -730,7 +730,9 @@
       "ai_update_original_unsettled": "Values match, but the original request has not been confirmed as finished. The target remains blocked.",
       "ai_update_still_sending": "The original update may still be running. Wait at least five minutes from its start before manual resolution.",
       "ai_update_resolved_mismatch": "The original request is confirmed finished; current values differ from the preview. You can prepare a new comparison.",
-      "ai_availability_managed_by_stock": "The warehouse system owns availability or a stock transfer remains unresolved. Exclude availability from the AI update; other content can still be updated."
+      "ai_availability_managed_by_stock": "The warehouse system owns availability or a stock transfer remains unresolved. Exclude availability from the AI update; other content can still be updated.",
+      "ai_category_uncertain": "AI could not confidently select a category and profile. Check the source or select a category manually.",
+      "ai_category_candidates_missing": "No suitable active leaf categories exist in this shop."
     },
     "importSelectedReady": "Import selected ready jobs",
     "selectJob": "Select job",
@@ -902,7 +904,16 @@
     "linkedCategoryInstructions": "Full linked category instructions",
     "linkedProfiles": "Applies to profiles",
     "draftParameterHelp": "Source document proposal – this field is not sent to AI yet.",
-    "exportRequest": "Download exact AI request (no generation)"
+    "exportRequest": "Download exact AI request (no generation)",
+    "autoCategory": "Select automatically with AI",
+    "autoCategoryHelp": "AI first selects the most specific suitable category and rule profile. Parent categories are added automatically. Manual selection remains optional.",
+    "selectedCategory": "Category selected by AI",
+    "jobDetailTitle": "Product processing and results",
+    "closeDetail": "Close details",
+    "closeUnsaved": "There are unsaved changes. Discard them and close the dialog?",
+    "keepEditing": "Keep editing",
+    "discardClose": "Discard changes and close",
+    "olderRules": "This job uses rules #{{version}}; the current version is #{{current}}. New parameters and rules apply to a new preparation."
   },
   "upgatesImport": {
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",
@@ -2497,5 +2508,40 @@
     "retryPreview": "Retry original preview preparation",
     "scanCompletionHelp": "A completed scan means the items were checked. Queued sends may still be processing; history shows their verified results.",
     "retryAfter": "The next attempt is paused until {{date}} because of an API rate limit."
+  },
+  "accounts": {
+    "login": "Sign in",
+    "title": "User accounts",
+    "back": "Back to settings",
+    "username": "Username",
+    "password": "Password",
+    "displayName": "Display name",
+    "role": "Role",
+    "roles": {
+      "admin": "Administrator",
+      "operator": "Operator"
+    },
+    "logout": "Sign out",
+    "usePassword": "Use username and password",
+    "useToken": "First sign-in / access token",
+    "remember": "Sign-in persists across refreshes and browser restarts. You can sign out here.",
+    "create": "Create account",
+    "createHelp": "Use at least 12 characters for the password. Administrators manage accounts; operators use the unlocked Hub features.",
+    "users": "Accounts",
+    "noUsers": "No accounts yet. Create your administrator account, then sign in with a username and password next time.",
+    "created": "Account created.",
+    "disable": "Deactivate",
+    "enable": "Activate",
+    "signedOut": "Signed out",
+    "requestFailed": "The request could not be completed. Try refreshing the page.",
+    "errors": {
+      "hub_login_invalid": "Incorrect username or password.",
+      "hub_login_limited": "Too many attempts. Try again in five minutes.",
+      "hub_username_exists": "This username already exists.",
+      "hub_account_invalid": "Check the account fields. New passwords need at least 12 characters.",
+      "hub_access_required": "The access token is incorrect.",
+      "hub_admin_required": "An administrator account is required.",
+      "hub_self_disable": "You cannot deactivate your own signed-in account."
+    }
   }
 }

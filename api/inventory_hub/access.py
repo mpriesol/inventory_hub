@@ -1,12 +1,8 @@
-"""Shared operator-token boundary for protected Hub features.
-
-The existing server setting is retained for deployment compatibility. This is
-one operator credential, not a user/role system; never expose its value.
-"""
+"""Shared account-session boundary, with the existing operator-token fallback."""
 import secrets
 from typing import Annotated
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 from inventory_hub.settings import settings
 
@@ -27,9 +23,19 @@ def _require_token(authorization: str | None, *, ai: bool = False) -> None:
         })
 
 
-def operator_access(authorization: Annotated[str | None, Header()] = None) -> None:
+def operator_access(authorization: Annotated[str | None, Header()] = None, request: Request = None) -> None:
+    if request is not None and getattr(request.state, 'hub_user', None):
+        from inventory_hub.services.auth import csrf
+        if not getattr(request.state, 'hub_bearer', False):
+            csrf(request)
+        return
     _require_token(authorization)
 
 
-def ai_access(authorization: Annotated[str | None, Header()] = None) -> None:
+def ai_access(authorization: Annotated[str | None, Header()] = None, request: Request = None) -> None:
+    if request is not None and getattr(request.state, 'hub_user', None):
+        from inventory_hub.services.auth import csrf
+        if not getattr(request.state, 'hub_bearer', False):
+            csrf(request)
+        return
     _require_token(authorization, ai=True)

@@ -84,3 +84,16 @@ Lokálne overenie: kompilácia backendu, 503 úspešných testov bez PostgreSQL 
 Vzdialená vetva bola založená na `main 45d33c6`. Používateľ 25. 9. v nadväzujúcom chate výslovne potvrdil zápis opravy do `mpriesol/inventory_hub` a postup PR → databázové testy → merge a nasadenie po úspešných kontrolách. Výsledky vzdialených testov a nasadenia treba overiť v príslušnom PR/workflow. Žiadny nový produkčný skladový stav ani prenos do e-shopu nebol vyvolaný.
 
 [PR #39](https://github.com/mpriesol/inventory_hub/pull/39), prvý CI beh `36149351097`: frontend build a všetkých 17 UI sád prešli. Backend vykonal všetkých 838 testov vrátane PostgreSQL bez preskočenia; 835 prešlo. Dve chyby opravuje doplnenie migrácie do testov importu a spustenie viacpríkazovej SQL migrácie priamo cez asyncpg. Tretia odhalila potrebu zachovať ochranu pred nevysvetleným nenulovým stavom po potvrdení nuly: okrem začiatku evidencie sa vyžaduje nový aktuálny pohyb alebo stále nulové množstvá. Pôvodná regresná podmienka zostáva zachovaná. Nové scenáre príjmu 100→3, inventúry, potvrdenej nuly, oddelenia skladov, opakovania a rollbacku prešli. Opakované CI opraveného commitu je podmienkou merge; následný deployment a živé čítanie súhrnu musia potvrdiť nasadenie.
+
+
+## 7. 10. 2026 — účty, automatické kategórie a detail AI
+
+Vetva `codex/ai-category-accounts` dopĺňa používateľské meno/heslo a trvalú HttpOnly reláciu spoločnú pre doterajšie chránené funkcie. Správca môže vytvárať a deaktivovať účty; operátorský token ostáva pre prvé prihlásenie a integrácie. Aditívna migrácia 020 sa vykonáva po 019 pred reštartom API. Podrobnosti a návrat: [user-accounts.md](user-accounts.md).
+
+Nová AI príprava predvolene samostatne vyberie existujúcu koncovú kategóriu a profil pred tvorbou obsahu. Najbližšie mapovanie v strome obmedzuje profil, správny register sa použije už pri generovaní a pôvodný importer doplní produktových predkov bez systémového menu. Neisté zaradenie nepokračuje na generovanie obsahu. Rezervácia pokrýva obe fázy a pri prerušení sa nesmie vykonať automatický platený pokus. Detail sa otvára v modálnom okne, chráni neuložené zmeny a upozorňuje na novšie pravidlá.
+
+Lokálne overené: kompilácia backendu, 901 testov (550 úspešných, 351 PostgreSQL prípadov preskočených pre nedostupný lokálny server), frontend build a všetkých 18 UI sád. Nové izolované DB scenáre kontrolujú obe fázy AI vrátane skutočného importného payloadu s predkami, náklady pri timeout-e, relácie, roly, odhlásenie, deaktiváciu, limity a opakovateľnosť migrácie 020. Pred merge musia prejsť v PR CI. Globálny TypeScript check hlási existujúce problémy mimo nových komponentov; Vite build a interakčné kontroly prešli. Táto poznámka sama nepotvrdzuje produkčné nasadenie; výsledok treba overiť v PR a deployment workflow.
+
+Diagnostika konkrétneho plášťa potvrdila uloženú šírku v AI aj Upgates. Viditeľnosť parametra na verejnom e-shope rieši vlastník v Upgates. Produkčné pravidlá ani parametre sa pri tejto implementácii neprepisujú.
+
+[PR #45](https://github.com/mpriesol/inventory_hub/pull/45), CI beh `37692719526`: všetkých 901 backendových testov vrátane izolovanej PostgreSQL databázy prešlo bez preskočenia; frontend build a 18 UI sád prešli. Záverečný commit navyše overuje zákaz cache prihlasovacích odpovedí pri produkčnom `root_path=/api`; jeho CI musí prejsť pred merge.

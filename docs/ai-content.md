@@ -5,8 +5,8 @@ Funkcia používa OpenAI Responses API z Hubu. Nepotrebuje projekt/GPT v ChatGPT
 ## Použitie
 
 1. V katalógu dodávateľa vyber produkty a klikni **Pripraviť obsah / AI**. Jedna príprava prijíma najviac 500 vybraných variantov, päť e-shopov a 100 kombinácií rodina/e-shop.
-2. Pre každú rodinu zvoľ **Vylepšiť obsah pomocou AI** alebo pôvodný feed a profil kategórie. Pracuje sa iba s označenými variantmi. Spoločný popis nemožno zapnúť iba pre časť variantov tej istej vybranej rodiny.
-3. Vyber jeden alebo viac e-shopov. Kategória z profilu má prednosť pred náhradnou kategóriou nastavenou pre cieľ. Kódy kategórií overí existujúci náhľad importu proti Upgates.
+2. Pre každú rodinu zvoľ **Vylepšiť obsah pomocou AI** alebo pôvodný feed. Pri AI je predvolené **Automaticky vyberie AI**: profil ani kategóriu nemusíš vyberať. Pracuje sa iba s označenými variantmi. Spoločný popis nemožno zapnúť iba pre časť variantov tej istej vybranej rodiny.
+3. Vyber jeden alebo viac e-shopov. AI vyberie koncovú produktovú kategóriu z ich existujúceho stromu; import doplní všetky jej produktové nadradené kategórie. Výslovná ručná kategória obmedzí automatický výber na jej vetvu. Pri ručnom profile má výslovný cieľový kód prednosť pred predvoľbou profilu.
 4. Prepínače v príprave sú jednorazové výnimky. Trvalé nastavenia sú v **Nastavenia → AI obsah produktov → Pravidlá a kategórie**.
 5. Spusti spracovanie podľa profilu. Výsledok obsahuje pôvodné podklady, upraviteľné texty, parametre, zdroje, chýbajúce fakty, upozornenia, verziu pravidiel a históriu.
 6. Ceny sa naďalej upravujú v existujúcom náhľade importu vrátane hromadnej ceny variantov. Zmena ceny nepotrebuje nové platené AI spracovanie.
@@ -16,6 +16,8 @@ Chýbajúce povinné parametre sa v editore zobrazia automaticky podľa zmrazen�
 ## Pokračovanie v rozpracovanej úlohe
 
 Úloha zostáva uložená po zatvorení stránky. Zoznam ponúka filtrovanie podľa potrebnej pozornosti, spracovania a dokončenia; detail obsahuje ďalší krok, zmrazené pravidlá, kontroly a audit.
+
+**Otvoriť spracovanie a výsledky** otvorí samostatné modálne okno s vlastným posúvaním. Escape a zatvorenie chránia neuložené úpravy; počas prebiehajúcej požiadavky je zatvorenie dočasne vypnuté. Detail staršej úlohy upozorní, ak už existuje novšia publikovaná verzia pravidiel.
 
 | Operácia | Výsledok a obmedzenie |
 |---|---|
@@ -77,9 +79,13 @@ Pravidlo môže cez `category_profiles` odkazovať na viac profilov. Zoznam je O
 
 Podľa aktuálneho pokynu BIKETREK sa prevedené registre publikujú s `required=false`. AI má preveriť všetky relevantné polia a doplniť doložené hodnoty; nezistené nepovinné údaje vynechá a relevantné medzery uvedie vo `warnings`. Samotná medzera neblokuje import. Konflikt identity, neplatná hodnota, zmena variantu a nepodložené tvrdenie zostávajú blokujúce. Označenia Z/P v pôvodných podkladoch nesmú obnoviť povinnosť parametra. Existujúce prepínače ľudskej kontroly sa tým nemenia.
 
-Výber profilu: výslovný profil → jednoznačné presné `shop_categories` → jednoznačná zhoda v `shop_category_matches` → všeobecný profil. AI profil ani cieľový kód sama nemení; názov produktu nie je automatický klasifikátor. Zvolená konkrétna cieľová kategória má prednosť pred predvoľbou profilu. Pri existujúcom produkte sa bez výslovnej zmeny zachová jeho hlavná kategória. Zoznam zhôd nevytvára kategórie v Upgates a sám nezaraďuje do ďalších vetiev.
+**Automatický výber (`auto`)** je samostatné platené volanie pred tvorbou obsahu. Zmrazené podklady a existujúci strom umožnia vybrať iba aktívnu koncovú kategóriu a existujúci profil. Mapovanie z najbližšieho produktového predka obmedzí povolené profily. Neexistujúci kód, nadradená kategória, nekompatibilný profil alebo neistý výsledok zastaví spracovanie pred generovaním textu. Zvolený profil následne určí celý register parametrov a účinné pravidlá z pôvodnej zmrazenej verzie; detail ukáže cestu a dôvod výberu. Ide o AI klasifikáciu, nie záruku faktickej správnosti.
+
+Ručný výber zachováva poradie: výslovný profil → jednoznačné presné `shop_categories` → jednoznačná zhoda v `shop_category_matches` → všeobecný profil. API bez výslovného `auto` zachováva tento starší kontrakt. Pri načítaní existujúceho produktu automatický výber rešpektuje jeho hlavnú vetvu; zmeny kategórií sa stále odosielajú iba cez výber polí a potvrdené porovnanie. Zoznam zhôd nevytvára kategórie v Upgates ani ďalšie nesúvisiace zaradenia. **Nová AI príprava** z detailu používa aktuálne pravidlá a nový automatický výber; kopírovanie hotového obsahu nevolá klasifikátor.
 
 Detail úlohy ponúka **Stiahnuť presné zadanie pre AI (bez spustenia)**. Chránený `GET /ai-content/jobs/{id}/request` zostaví reálny provider body zo zmrazeného kontextu a aktuálnej implementácie buildera; nespustí AI, rezerváciu nákladov ani import. Ide o zadanie, ktoré by sa odoslalo teraz, nie záznam historickej HTTP komunikácie. Súbor obsahuje súkromné podklady produktu a pravidlá, nie API kľúč. Nové pravidlá sa prejavia iba v novej príprave.
+
+Pole `stage` v exporte odlišuje výber kategórie od tvorby produktu. Pred dokončením klasifikácie export obsahuje jej skutočné zadanie; potom zadanie obsahu s vybraným registrom.
 
 Súkromný prevod dokumentu Kategórie, parametre a filtre nie je súčasťou verejného Git. Jeho uloženie a publikovanie sú samostatným krokom po nasadení tejto podpory. XML nástroje, úplné automatické zoskupovanie rodín, správa galérie a nastavenie zákazníckych filtrov tým nie sú implementované.
 
@@ -164,7 +170,7 @@ Pred odoslaním sa overia aktuálne podklady, cieľ, duplicity a náhľad. Po od
 ## Existujúci produkt a aktualizácia vybraných polí
 
 1. Zvoľ aktívny Upgates e-shop a presný parent kód. Hub načíta texty, identitu rodiny a detail parametrov. Výber dodávateľa slúži na pravidlá, nepripája jeho feed.
-2. Vyber profil a prieskum, potvrď spustenie odhadu. Spracúvajú sa spoločné texty a parent parametre; povinný variantný register sa odmietne. Existujúci marketing nie je nezávislé technické overenie.
+2. Ponechaj automatický profil alebo ho vyber ručne, zvoľ prieskum a potvrď spustenie odhadu. Spracúvajú sa spoločné texty a parent parametre; povinný variantný register sa odmietne. Existujúci marketing nie je nezávislé technické overenie.
 3. Ulož obsah, označ polia a priprav **Pred / Po**. Možno použiť aj platný uložený koncept; server ho validuje a vždy vyžaduje samostatné potvrdenie aktualizácie.
 4. Potvrď náhľad platný 30 minút. Pred PUT sa znovu kontrolujú hodnoty, identita a cieľ. Zápisy rovnakého produktu sú serializované; výsledok sa overí čítaním Upgates a obnoví cache detailu.
 
@@ -194,6 +200,8 @@ Ak má e-shop potvrdenú správu zásob cez pravidelný prenos (`stock_sync_sett
 
 Odhad je konzervatívny (veľkosť vstupu, maximálny výstup a rezerva na oficiálny prieskum). Hub rezervuje rozpočet pred volaním. Známa spotreba sa zaznamená aj pri neplatnom výsledku; pri neistom výsledku ostáva rezervácia. Limity Hubu pracujú s odhadom, nie s garantovanou konečnou faktúrou. Limity a upozornenia nastav aj v API projekte. Model má explicitný cenník v `ai_content_provider.py`; neznámy model sa odmietne.
 
+Pri automatickej kategórii odhad zahŕňa klasifikáciu (bez webu, najviac 1 000 výstupných tokenov) a najväčší obsahový požiadavok z možných profilov. Ak niektorý profil vyžaduje potvrdenie odhadu, zastávka sa zachová. Spotreba klasifikácie sa uloží ešte pred parsovaním; pri prerušení následného generovania zostáva plná rezervácia. Žiadna fáza sa po nejasnom výsledku automaticky neopakuje.
+
 Režim **Feed + oficiálne zdroje** vyžaduje webové vyhľadanie (`tool_choice=required`), umožňuje automaticky nájsť oficiálne stránky výrobcu/dodávateľa bez prednastaveného zoznamu domén a najviac šesť webových krokov na volanie. AI má cielene prejsť povinné parametre, nájsť presný model podľa značky/kódu/názvu, otvoriť produktovú stránku a podľa potreby dohľadať špecifikáciu, návod alebo balenie. Odhad nákladov zahŕňa celý limit krokov. To vynucuje použitie nástroja, nie dostupnosť alebo pravdivosť všetkých údajov.
 
 Pole `official_domains` v pravidlách zostáva spätne kompatibilné, ale slúži už iba ako voliteľná pomôcka `preferred_official_domains`, nie filter vyhľadávania. Napríklad značku PRO možno dohľadať na `pro-bikegear.com` aj bez značkového pravidla. Model má overiť prevádzkovateľa a vzťah zdroja ku značke/dodávateľovi; maloobchod, marketplace, blog ani diskusia nie sú oficiálne technické podklady. Server overuje platnú HTTPS adresu a jej presnú zhodu so skutočne otvoreným zdrojom z odpovede nástroja. Samotná táto technická kontrola nezávisle nepotvrdzuje vlastníctvo webu ani správnosť tvrdenia; to zostáva úlohou prieskumu a kontroly obsahu. Výsledok bez doplňujúceho podkladu je viditeľne označený; chýbajúce povinné hodnoty zostávajú blokujúce. Rýchly režim **Iba feed** musí používateľ zvoliť výslovne. **Skopírovať obsah** nevykonáva nové vyhľadanie; pri požiadavke na nové dohľadanie alebo po zmene pravidiel použi **Nová AI príprava**.
@@ -221,14 +229,14 @@ cd /opt/inventory-hub
 docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api
 ```
 
-4. V Hube odomkni správu pomocou **Hub access tokenu**, nie OpenAI kľúča. Token je iba v pamäti stránky a po obnovení sa znovu zadáva. OpenAI kľúč nikdy neopúšťa server.
+4. V Hube sa prihlás cez **Používateľské účty**. Prvé prihlásenie podporuje **Hub access token**, potom správca vytvorí účty s menom a heslom. Relácia pretrvá obnovenie aj zatvorenie prehliadača; samotný token sa do jeho úložiska neukladá. [Správa účtov a relácií](user-accounts.md). OpenAI kľúč nikdy neopúšťa server.
 5. Pilot: jeden nový produkt, schválenie obsahu zapnuté, aktivita vypnutá, odhad aj potvrdenie zapnuté. Porovnaj feed, texty, parametre a skutočný výsledok v Upgates. Až potom znižuj počet ručných kontrol pre overené rozsahy.
 
 Bez API kľúča sa dajú spustiť automatické testy s náhradným poskytovateľom; nemožno tým potvrdiť kvalitu reálnej generácie ani skutočnú cenu volania.
 
 ## API
 
-Všetky cesty nižšie okrem `/ai-content/status` vyžadujú `Authorization: Bearer <Hub token>`.
+Všetky cesty nižšie okrem `/ai-content/status` vyžadujú platnú používateľskú reláciu alebo `Authorization: Bearer <Hub token>`. Zápisy cez cookie navyše vyžadujú rovnaký pôvod a hlavičku `X-Hub-Request: 1`.
 
 | Cesta | Účel |
 |---|---|
@@ -291,5 +299,7 @@ Zámena kategóriových pravidiel a profilov je vyriešená jedným tlačidlom *
 Migrácia `005_ai_content.sql` je aditívna a opakovateľná; pridáva iba tabuľky AI. Build ju spustí pred štartom nového API. Prázdny serverový súbor pre tajomstvá ponecháva platené spracovanie vypnuté. Mount je mimo verejného `/data`.
 
 Pri návrate nasadenia ponechaj tabuľky a audit zachované; nepoužívaj DROP. Vypnutie `AI_CONTENT_ENABLED` zastaví nové AI generovanie. Už výslovne schválené importy majú samostatné stavy; zruš čakajúce úlohy v UI pred úplným zastavením workflow. Pôvodný katalóg/import funguje nezávisle.
+
+Pred návratom na verziu bez automatickej klasifikácie vypni AI generovanie a vyrieš čakajúce nové `auto` úlohy. Starý worker ich nesmie spracovať ako všeobecný obsah. Relácie vyžadujú migráciu 020; pri návrate aplikácie sa účtové tabuľky zachovajú a stará verzia opäť používa token. Nasadenie samo nemení uložené pravidlá ani produkty v Upgates.
 
 Oficiálne zdroje: [Responses Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [web search](https://developers.openai.com/api/docs/guides/tools-web-search), [model a cenník](https://developers.openai.com/api/docs/models/gpt-5.6-sol), [ceny nástrojov](https://developers.openai.com/api/docs/pricing). Cenník overený 21. 9. 2026.

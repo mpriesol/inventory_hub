@@ -147,6 +147,13 @@ class ParameterValue(StrictModel):
     product_id: int | None
 
 
+class CategorySelection(StrictModel):
+    category_code: str = Field(max_length=100)
+    profile_id: str = Field(max_length=80)
+    confident: bool
+    reason: str = Field(max_length=1000)
+
+
 class Evidence(StrictModel):
     claim: str = Field(min_length=1, max_length=2000)
     source: str = Field(min_length=1, max_length=2000, description=(
@@ -236,6 +243,7 @@ class JobFork(StrictModel):
     product_ids: list[int] = Field(min_length=1, max_length=500)
     use_ai: bool = True
     reuse_content: bool = True
+    category_profile: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,80}$")
 
 
 class UpdatePreviewRequest(StrictModel):

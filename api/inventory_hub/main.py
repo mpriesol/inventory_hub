@@ -147,6 +147,10 @@ app.add_middleware(
 )
 app.mount("/data", StaticFiles(directory=str(settings.INVENTORY_DATA_ROOT)), name="data")
 
+if settings.USE_POSTGRES:
+    from inventory_hub.routers.auth import install as install_auth
+    install_auth(app)
+
 app.include_router(configs_router)
 # ---------------------------------------------------------
 # In-memory registry (stačí na náš účel)
