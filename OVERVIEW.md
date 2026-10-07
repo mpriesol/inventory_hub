@@ -168,6 +168,8 @@ Dodávateľská zásoba je oddelená od našej. `6+` je dolná hranica, nie pres
 
 ## AI obsah
 
+Úplné súkromné pravidlá možno pripraviť offline nástrojom `ai_rule_package`; nejde o publikovanie do databázy. Rozsahy, obmedzenia a postup sú v [AI dokumentácii](docs/ai-content.md). Overený návrh prepojenia príjmu s existujúcim importom a prenosom vybraných SKU je v [príjem → Upgates](docs/receiving-upgates-plan.md); samotné prepojenie zostáva plánované.
+
 AI workflow používa existujúci katalóg/importer a vlastné DB tabuľky. Worker beží v API procese s databázovými zámkami. Podporuje prípravu z feedu, existujúce produkty, pravidlá a kategórie, odhad nákladov, revízie a kontrolované odoslanie výsledku.
 
 Oficiálny prieskum môže vyhľadávať weby výrobcov/dodávateľov bez povinného prednastaveného zoznamu domén. Vyhľadávanie nezaručuje dostupnosť správnej hodnoty a chýbajúce povinné parametre naďalej vyžadujú vyriešenie.
