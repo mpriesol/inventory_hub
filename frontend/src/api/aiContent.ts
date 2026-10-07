@@ -6,9 +6,9 @@ export const policyKeys = ['review_required', 'active_after_import', 'show_cost_
 export type PolicyKey = typeof policyKeys[number];
 export type AiPolicy = Partial<Record<PolicyKey, boolean | null>>;
 export interface AiScope { shop: string; supplier: string; category: string; brand: string; product: string }
-export interface AiRule { id: string; name: string; scope: AiScope; instructions: string; policy: AiPolicy; enabled: boolean; official_domains: string[]; import_policy?: { orderable?: string | null; unknown?: string | null; hide_zero_stock?: boolean | null; supplier_name?: string | null } }
-export interface AiParameter { name: string; required: boolean; scope: 'parent' | 'variant'; values: string[]; unit: string; instructions: string }
-export interface AiCategory { id: string; name: string; instructions: string; parameters: AiParameter[]; shop_categories: Record<string, string>; policy: AiPolicy; automatic_import_ready: boolean }
+export interface AiRule { category_profiles?: string[]; id: string; name: string; scope: AiScope; instructions: string; policy: AiPolicy; enabled: boolean; official_domains: string[]; import_policy?: { orderable?: string | null; unknown?: string | null; hide_zero_stock?: boolean | null; supplier_name?: string | null } }
+export interface AiParameter { name: string; required: boolean; scope: 'parent' | 'variant' | 'choice'; approved?: boolean; values: string[]; unit: string; instructions: string }
+export interface AiCategory { registry_status?: "approved" | "draft" | "mixed" | "missing"; shop_category_matches?: Record<string, string[]>; id: string; name: string; instructions: string; parameters: AiParameter[]; shop_categories: Record<string, string>; policy: AiPolicy; automatic_import_ready: boolean }
 export interface AiBook { rules: AiRule[]; categories: AiCategory[] }
 export interface AiRules { published_id: number; book: AiBook; used_usd: string; versions: { id: number; note: string; origin: string; created_at: string }[] }
 export interface AiStatus { enabled: boolean; key_configured: boolean; access_configured: boolean; model: string; monthly_limit_usd: string; job_limit_usd: string }

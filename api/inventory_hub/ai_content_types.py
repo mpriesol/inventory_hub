@@ -45,6 +45,7 @@ class Rule(StrictModel):
     import_policy: ImportPolicy = Field(default_factory=ImportPolicy)
     enabled: bool = True
     official_domains: list[str] = Field(default_factory=list, max_length=20)
+    category_profiles: list[str] = Field(default_factory=list, max_length=300)
 
     @model_validator(mode="after")
     def domains(self):
@@ -57,7 +58,8 @@ class Rule(StrictModel):
 class ParameterDefinition(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     required: bool = False
-    scope: Literal["parent", "variant"] = "parent"
+    scope: Literal["parent", "variant", "choice"] = "parent"
+    approved: bool = True
     values: list[str] = Field(default_factory=list, max_length=1000)
     unit: str = Field(default="", max_length=40)
     instructions: str = Field(default="", max_length=2000)
@@ -69,6 +71,8 @@ class CategoryProfile(StrictModel):
     instructions: str = Field(default="", max_length=24000)
     parameters: list[ParameterDefinition] = Field(default_factory=list, max_length=100)
     shop_categories: dict[str, str] = Field(default_factory=dict)
+    shop_category_matches: dict[str, list[str]] = Field(default_factory=dict)
+    registry_status: Literal["approved", "draft", "mixed", "missing"] = "approved"
     policy: Policy = Field(default_factory=Policy)
     automatic_import_ready: bool = True
 
@@ -89,6 +93,9 @@ class RuleBook(StrictModel):
         for values in (self.rules, self.categories):
             if len({v.id for v in values}) != len(values):
                 raise ValueError("Duplicate rule/category ID")
+        category_ids = {c.id for c in self.categories}
+        if any(set(r.category_profiles) - category_ids for r in self.rules):
+            raise ValueError("Linked category profiles must exist")
         return self
 
 

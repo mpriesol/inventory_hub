@@ -48,6 +48,22 @@ def initial_book() -> RuleBook:
     ])
 
 
+def select_category_profile(book: RuleBook, shop: str, category_code: str | None, requested: str = "general") -> str:
+    """Explicit profile, then unambiguous exact mapping; never guess by title."""
+    if requested != "general" or not category_code:
+        return requested
+    exact = [c.id for c in book.categories if c.shop_categories.get(shop) == category_code]
+    matches = exact or [c.id for c in book.categories if category_code in c.shop_category_matches.get(shop, [])]
+    return matches[0] if len(matches) == 1 else "general"
+
+
+def parameter_scope(definition: dict, facts: list[dict]) -> str:
+    if definition.get("scope") != "choice":
+        return definition.get("scope", "parent")
+    return "variant" if any(a["name"] == definition["name"] for p in facts
+                            for a in p.get("variant_attributes", [])) else "parent"
+
+
 def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> dict:
     """Common → supplier → brand → category → shop → product → one-run override.
 
@@ -58,8 +74,11 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> d
     matches = []
     for rule in book.rules:
         fields = {k: v for k, v in rule.scope.model_dump().items() if v}
-        if rule.enabled and all(getattr(context, k).casefold() == v.casefold() for k, v in fields.items()):
+        if (rule.enabled and (not rule.category_profiles or context.category in rule.category_profiles)
+                and all(getattr(context, k).casefold() == v.casefold() for k, v in fields.items())):
             rank = max([dimensions.index(k) + 1 for k in fields] or [0])
+            if rule.category_profiles:
+                rank = max(rank, 3)
             matches.append(((rank, len(fields)), rule))
     category = next((c for c in book.categories if c.id == context.category), None)
     if context.category and category is None:
@@ -92,8 +111,11 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> d
     if override:
         for key, value in override.model_dump(exclude_none=True).items():
             policy[key], origins[key] = value, "run"
+    resolved_category = category.model_dump() if category else None
+    if resolved_category:
+        resolved_category["parameters"] = [p for p in resolved_category["parameters"] if p["approved"]]
     return {"policy": policy, "origins": origins, "instructions": instructions,
-            "import_policy": import_policy, "official_domains": sorted(set(domains)), "category": category.model_dump() if category else None}
+            "import_policy": import_policy, "official_domains": sorted(set(domains)), "category": resolved_category}
 
 
 async def published(db) -> AiRuleVersion:

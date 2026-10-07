@@ -5,9 +5,13 @@ import { AiContent, AiParameter } from '../../api/aiContent';
 type Fact = { id: number; name: string; variant_attributes: { name: string; value: string }[] };
 type Value = AiContent['parameters'][number];
 
+function parameterScope(parameter: AiParameter, facts: Fact[]) {
+  return parameter.scope === 'choice' ? (facts.some(f => f.variant_attributes.some(a => a.name === parameter.name)) ? 'variant' : 'parent') : parameter.scope;
+}
+
 export function missingRequiredParameterValues(values: Value[], registry: AiParameter[], facts: Fact[]): Value[] {
-  return registry.filter(parameter => parameter.required).flatMap(parameter =>
-    (parameter.scope === 'parent' ? [null] : facts.map(fact => fact.id))
+  return registry.filter(parameter => parameter.required && parameter.approved !== false).flatMap(parameter =>
+    (parameterScope(parameter, facts) === 'parent' ? [null] : facts.map(fact => fact.id))
       .filter(id => !values.some(value => value.name === parameter.name && value.product_id === id && value.values.some(v => v.trim())))
       .map(product_id => ({ name: parameter.name, product_id, values: [] })));
 }
@@ -16,6 +20,7 @@ export function AiParameterValues({ values, registry, facts, disabled, onChange 
   values: Value[]; registry: AiParameter[]; facts: Fact[]; disabled: boolean; onChange: (values: Value[]) => void;
 }) {
   const { t } = useTranslation();
+  registry = registry.filter(p => p.approved !== false).map(p => ({...p, scope: parameterScope(p, facts)}));
   const definitions = new Map(registry.map(parameter => [parameter.name, parameter]));
   const missing = missingRequiredParameterValues(values, registry, facts);
   const rows = [...values, ...missing.filter(slot => !values.some(value => value.name === slot.name && value.product_id === slot.product_id))];

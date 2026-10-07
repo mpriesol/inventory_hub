@@ -45,7 +45,7 @@ Nastavenia sa skladajú v poradí **spoločné → dodávateľ → značka → k
 
 **Import a export knihy pravidiel** v editore prenáša celú knihu vrátane kategórií, rozsahov a politík všetkých e-shopov. Exportuje práve načítanú knihu ako JSON. Súbor pre import môže byť čistý `RuleBook` alebo výstup s objektom `book`, najviac 2 MiB. Výber súboru ukáže názov a počty; nevloží neoverené položky do editora ani ich neodošle. Po vyplnení dôvodu akcia **Uložiť importovanú knihu ako koncept** použije existujúcu serverovú validáciu a kontrolu `expected_published`, uloží novú nepublikovanú verziu a načíta jej normalizovaný obsah. Chyba načítania už uloženého konceptu sa obnovuje iba GET bez druhého uloženia. Pred uložením treba skontrolovať zachovanie ostatných e-shopov a politík; publikovanie zostáva samostatnou akciou. Import knihy nespúšťa AI ani import produktov. Úplný zdrojový balík s `documents` a `modules` nie je priamo `RuleBook`.
 
-Tlačidlo **Kategórie** otvára profily kategórií. Pokyny, povinné parametre aj mapovanie na e-shopy sa upravujú na jednom mieste; samostatné tlačidlo **Profily kategórií** ani pôvodná skupina kategóriových pravidiel už v navigácii nie sú.
+Tlačidlo **Kategórie** otvára profily kategórií. Pokyny, registre parametrov aj mapovanie na e-shopy sa upravujú na jednom mieste; samostatné tlačidlo **Profily kategórií** ani pôvodná skupina kategóriových pravidiel už v navigácii nie sú.
 
 | Pojem v UI | Čo obsahuje | Ako sa používa |
 |---|---|---|
@@ -60,12 +60,28 @@ Podmienka `scope.category` naďalej obsahuje **ID profilu**, napríklad `inner_t
 - Profil kategórie je malý spoločný register pravidiel a parametrov, nie druhý skladový strom. Napríklad jeden profil `inner_tubes` môže mať rozdielne cieľové kódy pre BikeTrek a xTrek.
 - Počiatočné pravidlá sú odvodené prevádzkové pravidlá pre slovenský obsah, Paul Lange a Northfinder. Nahrané dokumenty, privátne URL a prihlasovacie údaje nie sú v Gite. Nie všetky podrobné kategóriové a značkové dodatky zo zdrojového balíka sú automaticky publikované; ďalšie profily sa doplnia a overia postupne.
 - Register určuje presné názvy, povinnosť, rozsah parent/variant, povolené hodnoty, jednotku a inštrukcie. Povinné fakty bez podkladu blokujú import. Variantné osi z feedu sa nemenia; pri kategórii s registrom musia byť zaregistrované.
-- AI pomocník navrhuje text vybraného publikovaného pravidla alebo kategórie a voliteľne celý register parametrov. Prijatím vznikne iba koncept. Publikovanie vždy vykonáva používateľ, nezávisle od prepínačov automatizácie produktov.
+- AI pomocník navrhuje text vybraného publikovaného pravidla alebo kategórie a voliteľne celý register parametrov. Prijatím vznikne iba koncept. Publikovanie je samostatná autorizovaná akcia, nezávisle od prepínačov automatizácie produktov.
 - Duše majú samostatný profil. `automatic_import_ready=false` ponecháva ľudskú kontrolu do implementácie a overenia deterministickej matice ETRTO v kroku C.
 
 Verzia pravidiel, pokyny, register, politika, podklady a cieľ sa zmrazia pri vytvorení úlohy. Uloženie, schválenie ani opätovné otvorenie ju neprepne na nové pravidlá; na to vytvor novú prípravu. Aj kópia variantov načítava aktuálne publikovanú verziu. Pri profile `general` a jednoznačnom mapovaní cieľovej kategórie na jeden profil sa tento profil použije automaticky.
 
 Pri importe sa doplnia nadradené produktové kategórie; zvolená zostane hlavná. Systémové korene menu sú viditeľné v strome, ale nemožno ich priradiť produktu. Rozpoznávajú sa z explicitných metadát Upgates, nie z názvu či pevného ID. Neúplný alebo cyklický strom blokuje prípravu. Aktualizácia zachová existujúce zaradenia, doplní rodičov a nastaví vybranú hlavnú kategóriu.
+
+### Štruktúrované registre a čiastočné parametre
+
+Pravidlo môže cez `category_profiles` odkazovať na viac profilov. Zoznam je OR, ostatné podmienky `scope` zostávajú AND; prázdny zoznam zachová pôvodné správanie. Spoločný blok sa pripojí raz, bez kopírovania celého textu do každého profilu. Editor kategórie zobrazuje aj úplné priradené účinné bloky. Neexistujúci odkaz sa pri uložení odmietne.
+
+`registry_status` odlišuje schválený register, návrh, zmiešaný základ a chýbajúci register. `approved=false` označuje návrhové pole: zostáva viditeľné v editore, ale resolver ho nedá do požiadavku a validátor ho neprijme. Označenie kategórie samo neschvaľuje jej jednotlivé návrhy. Staré knihy bez týchto polí zachovávajú pôvodné správanie.
+
+`scope=choice` znamená skutočnú výberovú os: ak presný názov existuje vo `facts.variant_attributes`, platí variantový rozsah a presné pôvodné hodnoty. Inak je to parameter parenta s `product_id=null`. Nevytvára sa nová os ani nové SKU. Pevné rozsahy parent/variant fungujú ako doteraz.
+
+Podľa aktuálneho pokynu BIKETREK sa prevedené registre publikujú s `required=false`. AI má preveriť všetky relevantné polia a doplniť doložené hodnoty; nezistené nepovinné údaje vynechá a relevantné medzery uvedie vo `warnings`. Samotná medzera neblokuje import. Konflikt identity, neplatná hodnota, zmena variantu a nepodložené tvrdenie zostávajú blokujúce. Označenia Z/P v pôvodných podkladoch nesmú obnoviť povinnosť parametra. Existujúce prepínače ľudskej kontroly sa tým nemenia.
+
+Výber profilu: výslovný profil → jednoznačné presné `shop_categories` → jednoznačná zhoda v `shop_category_matches` → všeobecný profil. AI profil ani cieľový kód sama nemení; názov produktu nie je automatický klasifikátor. Zvolená konkrétna cieľová kategória má prednosť pred predvoľbou profilu. Pri existujúcom produkte sa bez výslovnej zmeny zachová jeho hlavná kategória. Zoznam zhôd nevytvára kategórie v Upgates a sám nezaraďuje do ďalších vetiev.
+
+Detail úlohy ponúka **Stiahnuť presné zadanie pre AI (bez spustenia)**. Chránený `GET /ai-content/jobs/{id}/request` zostaví reálny provider body zo zmrazeného kontextu a aktuálnej implementácie buildera; nespustí AI, rezerváciu nákladov ani import. Ide o zadanie, ktoré by sa odoslalo teraz, nie záznam historickej HTTP komunikácie. Súbor obsahuje súkromné podklady produktu a pravidlá, nie API kľúč. Nové pravidlá sa prejavia iba v novej príprave.
+
+Súkromný prevod dokumentu Kategórie, parametre a filtre nie je súčasťou verejného Git. Jeho uloženie a publikovanie sú samostatným krokom po nasadení tejto podpory. XML nástroje, úplné automatické zoskupovanie rodín, správa galérie a nastavenie zákazníckych filtrov tým nie sú implementované.
 
 ## Validácia a import
 

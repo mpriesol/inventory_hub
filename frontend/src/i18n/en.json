@@ -641,7 +641,7 @@
     "fallbackCategory": "Category when the profile has no mapping",
     "noCategory": "No category",
     "pricelist": "Price list",
-    "mappingPriority": "Category profile mapping takes precedence over this fallback category. Switches here apply only to this preparation.",
+    "mappingPriority": "The selected target category takes precedence; the profile mapping is used when no target is selected.",
     "automaticNotice": "Processing follows the selected profiles. Disabling the estimate skips the cost pause; disabling approval and confirmation enables automatic import. Technical errors always stop import.",
     "prepareBatch": "Prepare / start using these settings",
     "recentJobs": "Recent jobs",
@@ -878,7 +878,20 @@
     "settleUpdateHelp": "Matching shop values do not prove the original request can no longer arrive. Verify that it has finished and document the evidence before releasing the block.",
     "settleUpdateConfirm": "I verified that the original request can no longer arrive at the shop.",
     "settleUpdateNote": "Reason and evidence that the original request has finished",
-    "settleUpdate": "Resolve uncertain result"
+    "settleUpdate": "Resolve uncertain result",
+    "choice": "Actual choice axis (parent/variant)",
+    "registryStatus": "Registry status",
+    "registryStatuses": {
+      "approved": "Approved",
+      "draft": "Draft – proposed fields are excluded",
+      "mixed": "Approved base and marked proposals",
+      "missing": "Common fields only; category registry missing"
+    },
+    "approvedParameters": "approved parameters",
+    "linkedCategoryInstructions": "Full linked category instructions",
+    "linkedProfiles": "Applies to profiles",
+    "draftParameterHelp": "Source document proposal – this field is not sent to AI yet.",
+    "exportRequest": "Download exact AI request (no generation)"
   },
   "upgatesImport": {
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",

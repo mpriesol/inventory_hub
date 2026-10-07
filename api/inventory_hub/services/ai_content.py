@@ -176,15 +176,12 @@ async def create_batch(db, request: BatchRequest):
             if len(profiles) != 1:
                 raise CatalogError("ai_family_category_conflict", "Selected variants must share a category profile", 422)
             profile = profiles.pop()
-            if profile == "general" and target.options.category_code:
-                mapped_profiles = [c.id for c in book.categories if c.shop_categories.get(target.shop) == target.options.category_code]
-                if len(mapped_profiles) == 1:
-                    profile = mapped_profiles[0]
+            profile = rules.select_category_profile(book, target.shop, target.options.category_code, profile)
             resolved = rules.resolve(book, Scope(shop=target.shop, supplier=request.supplier, category=profile,
                 brand=group[0].brand or "", product=code), target.policy)
             options = target.options.model_copy()
             mapped = (resolved.get("category") or {}).get("shop_categories", {}).get(target.shop)
-            if mapped:
+            if mapped and not options.category_code:
                 options.category_code = mapped
             if ai_ids and options.language != "sk":
                 raise CatalogError("ai_language_unsupported", "The current approved content rules support Slovak", 422)
