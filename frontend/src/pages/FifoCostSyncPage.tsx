@@ -9,6 +9,7 @@ import {
   getFifoCostOptions, saveFifoCostWarehouse, saveFifoCostSettings, runFifoCostSync, getFifoCostHistory,
   previewFifoOrderCost, getFifoCostPublication, sendFifoCostPublication, resolveFifoCostPublication,
 } from '../api/fifoCostSync';
+import { defaultWarehouseCode } from '../utils/warehouses';
 import './OpeningStockPage.css';
 import './AvailabilitySyncPage.css';
 
@@ -38,6 +39,7 @@ function CostPanel({ shop, onBusy }: { shop: string; onBusy: (value: boolean) =>
   const { t, i18n } = useTranslation();
   const operation = useOperation();
   useEffect(() => { onBusy(operation.busy); return () => onBusy(false); }, [operation.busy]);
+  const warehouseSelection = useRef<string | null>(null);
   const [options, setOptions] = useState<FifoCostOptions | null>(null), [warehouseCode, setWarehouseCode] = useState('');
   const [warehouse, setWarehouse] = useState<Inputs>({ interval_seconds: '', batch_size: '' }), [overrides, setOverrides] = useState<Partial<Inputs>>({});
   const [enabled, setEnabled] = useState(false), [products, setProducts] = useState(false), [orders, setOrders] = useState(false);
@@ -53,9 +55,13 @@ function CostPanel({ shop, onBusy }: { shop: string; onBusy: (value: boolean) =>
   function clearConfirmation() { setConfirmed(false); setSettled(false); setNote(''); }
   function clearSelection() { setPublication(null); clearConfirmation(); }
   function edit() { setMessage(''); clearSelection(); }
-  function accept(value: FifoCostOptions) {
+  function accept(value: FifoCostOptions, saved = false) {
     if (!value?.settings || !Array.isArray(value.warehouses) || !Array.isArray(value.publications)) throw new Error('Invalid options response');
-    setOptions(value); setWarehouseCode(value.settings.warehouse_code || value.warehouse?.code || '');
+    const selected = saved || warehouseSelection.current === null
+      ? value.settings.warehouse_code || value.warehouse?.code || defaultWarehouseCode(value.warehouses)
+      : warehouseSelection.current;
+    warehouseSelection.current = selected;
+    setOptions(value); setWarehouseCode(selected);
     setWarehouse(value.warehouse_settings ? inputs(value.warehouse_settings) : { interval_seconds: '', batch_size: '' });
     setOverrides(Object.fromEntries(FIFO_COST_FIELDS.filter(field => value.settings[field.key] !== null).map(field => [field.key, String(value.settings[field.key])])));
     setEnabled(value.settings.enabled); setProducts(value.settings.product_cost_enabled); setOrders(value.settings.order_cost_enabled);
@@ -108,7 +114,7 @@ function CostPanel({ shop, onBusy }: { shop: string; onBusy: (value: boolean) =>
     {options && <>
       {!options.server_write_enabled && <p role="status" className="opening-stock-notice">{t('fifoCostSync.serverDisabled')}</p>}
       {!!options.blockers.length && <div className="opening-stock-notice"><strong>{t('fifoCostSync.notReady')}</strong><ul>{options.blockers.map(code => <li key={code}>{errorText(code)} <code>{code}</code></li>)}</ul></div>}
-      <label>{t('fifoCostSync.warehouse')}<select data-testid="cost-warehouse" disabled={settingsBlocked} value={warehouseCode} onChange={event => { edit(); setWarehouseCode(event.target.value); }}><option value="">{t('fifoCostSync.selectWarehouse')}</option>{options.warehouses.map(value => <option key={value.code} value={value.code}>{value.name}</option>)}</select></label>
+      <label>{t('fifoCostSync.warehouse')}<select data-testid="cost-warehouse" disabled={settingsBlocked} value={warehouseCode} onChange={event => { edit(); warehouseSelection.current = event.target.value; setWarehouseCode(event.target.value); }}><option value="">{t('fifoCostSync.selectWarehouse')}</option>{options.warehouses.map(value => <option key={value.code} value={value.code}>{value.name}</option>)}</select></label>
       {warehouseCode && warehouseCode !== options.warehouse?.code && <p className="opening-stock-notice">{t('fifoCostSync.warehouseChanged')}</p>}
       {options.warehouse && options.warehouse_settings && <details className="availability-warehouse"><summary>{t('fifoCostSync.warehouseDefaults', { warehouse: options.warehouse.name })}</summary><p>{t('fifoCostSync.warehouseHelp')}</p>{renderFields('warehouse')}
         <span className="action-control"><Button data-testid="save-cost-warehouse" disabled={settingsBlocked || !warehouseDirty || !valid(warehouse)} onClick={() => operation.run(true, () => saveFifoCostWarehouse({ warehouse_code: options.warehouse!.code, expected_revision: options.warehouse_settings!.revision, ...numbers(warehouse), confirmed: true }), () => { setReloadRequired(true); clearSelection(); setMessage('warehouseSaved'); })}>{t('fifoCostSync.saveWarehouse')}</Button><ActionScope effects={['hub-write']} /></span>
@@ -122,7 +128,7 @@ function CostPanel({ shop, onBusy }: { shop: string; onBusy: (value: boolean) =>
       <p>{t('fifoCostSync.orderHelp')}</p>
       <label className="availability-check"><input data-testid="cost-enabled" type="checkbox" checked={enabled} disabled={settingsBlocked || (!products && !orders)} onChange={event => { edit(); setEnabled(event.target.checked); }} />{t('fifoCostSync.automatic')}</label>
       {(warehouseDirty || shopDirty) && <p role="status" className="availability-change">{t('fifoCostSync.unsaved')}</p>}
-      <div className="availability-actions"><span className="action-control"><Button data-testid="save-cost-settings" disabled={settingsBlocked || warehouseDirty || !shopDirty || !warehouseCode || !valid(effective)} onClick={() => operation.run(true, () => saveFifoCostSettings({ shop_code: shop, warehouse_code: warehouseCode, expected_revision: options.settings.revision, enabled, product_cost_enabled: products, order_cost_enabled: orders, interval_seconds: overrides.interval_seconds === undefined ? null : Number(overrides.interval_seconds), batch_size: overrides.batch_size === undefined ? null : Number(overrides.batch_size), confirmed: true }), value => { accept(value); setMessage('saved'); })}>{t('fifoCostSync.save')}</Button><ActionScope effects={enabled ? ['hub-write', 'queued-upgates'] : ['hub-write']} shop={shop} calls={{ kind: 'variable' }} /></span>
+      <div className="availability-actions"><span className="action-control"><Button data-testid="save-cost-settings" disabled={settingsBlocked || warehouseDirty || !shopDirty || !warehouseCode || !valid(effective)} onClick={() => operation.run(true, () => saveFifoCostSettings({ shop_code: shop, warehouse_code: warehouseCode, expected_revision: options.settings.revision, enabled, product_cost_enabled: products, order_cost_enabled: orders, interval_seconds: overrides.interval_seconds === undefined ? null : Number(overrides.interval_seconds), batch_size: overrides.batch_size === undefined ? null : Number(overrides.batch_size), confirmed: true }), value => { accept(value, true); setMessage('saved'); })}>{t('fifoCostSync.save')}</Button><ActionScope effects={enabled ? ['hub-write', 'queued-upgates'] : ['hub-write']} shop={shop} calls={{ kind: 'variable' }} /></span>
         <span className="action-control"><Button data-testid="run-cost-sync" variant="secondary" disabled={activityBlocked || !options.server_write_enabled || !!options.blockers.length || (!options.settings.product_cost_enabled && !options.settings.order_cost_enabled) || options.settings.scan_active} onClick={() => operation.run(true, () => runFifoCostSync(shop), value => { accept(value); setMessage('queued'); })}>{t('fifoCostSync.run')}</Button><ActionScope effects={['hub-write', 'queued-upgates']} shop={shop} calls={{ kind: 'variable' }} /></span>
       </div>
       <dl className="availability-status"><div><dt>{t('fifoCostSync.lastCompleted')}</dt><dd>{date(options.settings.last_completed_at)}</dd></div><div><dt>{t('fifoCostSync.nextRun')}</dt><dd>{options.settings.enabled ? date(options.settings.next_run_at) : t('fifoCostSync.automaticOff')}</dd></div><div><dt>{t('fifoCostSync.ordersSince')}</dt><dd>{date(options.settings.orders_since)}</dd></div></dl>

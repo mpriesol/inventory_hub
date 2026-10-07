@@ -86,7 +86,7 @@ async def options(db):
         ProductEditorOverride.product_id == Product.id).where(effective_brand.is_not(None), effective_brand != "")
         .distinct().order_by(effective_brand))).all()
     return {"shops": [{"id": row.id, "code": row.code, "name": row.name} for row in shops],
-            "warehouses": [{"id": row.id, "code": row.code, "name": row.name} for row in warehouses],
+            "warehouses": [{"id": row.id, "code": row.code, "name": row.name, "is_default": row.is_default} for row in warehouses],
             "brands": brands, "page_sizes": [25, 50, 100], "currency": "EUR", "price_basis": "incl_vat",
             "external_write_enabled": False}
 

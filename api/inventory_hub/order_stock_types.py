@@ -41,6 +41,12 @@ class OrderStockConfigureRequest(OrderStockInput):
         return value
 
 
+class ShopWarehouseAssignmentRequest(OrderStockInput):
+    shop_code: StrictStr = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,49}$")
+    warehouse_code: StrictStr = Field(min_length=1, max_length=50)
+    expected_assignment_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class OrderStockApplyRequest(OrderStockInput):
     preview_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     confirmed: Literal[True]

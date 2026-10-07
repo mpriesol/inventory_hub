@@ -80,6 +80,8 @@ async def list_movements(db, *, page=1, page_size=50, snapshot_id=None, **filter
 
 
 async def options(db):
-    warehouses = (await db.execute(select(Warehouse.code, Warehouse.name).order_by(Warehouse.name, Warehouse.code))).all()
-    return {"warehouses": [{"code": row.code, "name": row.name} for row in warehouses],
+    warehouses = (await db.execute(select(Warehouse.code, Warehouse.name, Warehouse.is_default, Warehouse.is_active)
+                                  .order_by(Warehouse.name, Warehouse.code))).all()
+    return {"warehouses": [{"code": row.code, "name": row.name, "is_default": row.is_default,
+                            "is_active": row.is_active} for row in warehouses],
             "movement_types": [item.value for item in MovementType], "date_timezone": "UTC"}

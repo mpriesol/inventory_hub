@@ -12,11 +12,11 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import asyncpg
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from inventory_hub.db_models import MovementType, Product, ProductGroup, ReceivingStatus, Shop, Supplier, Warehouse
+from inventory_hub.db_models import MovementType, Product, ProductGroup, ReceivingStatus, Shop, ShopWarehouse, Supplier, Warehouse
 from inventory_hub.db_models_ext import (
     ReceivingLine, ReceivingSession, Reservation, ShopOrder, ShopOrderItem, ShopProduct, StockBalance, StockMovement,
 )
@@ -69,6 +69,8 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.prefix_patch = patch.object(receiving, "_product_code_prefix", return_value="TEST-")
         self.prefix_patch.start()
         async with self.sessions() as db:
+            # This isolated fixture assigns its own test warehouse below.
+            await db.execute(delete(ShopWarehouse))
             warehouse = Warehouse(code="order-test", name="Order test warehouse")
             supplier = Supplier(code="order-receipt", name="Order receipt supplier")
             products = [Product(sku=sku, name=sku) for sku in ("SKU-A", "SKU-B", "SKU-C")]

@@ -91,7 +91,43 @@ jobs:
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.fifo_cost_migrate
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_tracking_migrate
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
-              sleep 5
-              curl -sf https://hub.biketrek.sk/api/health
-              curl -sf https://hub.biketrek.sk/api/ai-content/status
+              # Both routes are public; allow startup without logging response bodies.
+              readiness_deadline=$(( $(date +%s) + 60 ))
+              readiness_ok=false
+              while [ "$(date +%s)" -lt "$readiness_deadline" ]; do
+                readiness_ok=true
+                for readiness_path in health ai-content/status; do
+                  readiness_remaining=$(( readiness_deadline - $(date +%s) ))
+                  if [ "$readiness_remaining" -le 0 ]; then
+                    readiness_ok=false
+                    break
+                  fi
+                  readiness_timeout=5
+                  if [ "$readiness_remaining" -lt "$readiness_timeout" ]; then
+                    readiness_timeout=$readiness_remaining
+                  fi
+                  readiness_exit=0
+                  readiness_status=$(curl --silent --fail --output /dev/null --write-out '%{http_code}' --connect-timeout "$readiness_timeout" --max-time "$readiness_timeout" "https://hub.biketrek.sk/api/$readiness_path") || readiness_exit=$?
+                  printf 'Readiness /api/%s: HTTP %s (curl exit %s)\n' "$readiness_path" "$readiness_status" "$readiness_exit"
+                  if [ "$readiness_exit" -ne 0 ] || [ "$readiness_status" != 200 ]; then
+                    readiness_ok=false
+                  fi
+                done
+                if [ "$readiness_ok" = true ]; then
+                  break
+                fi
+                readiness_remaining=$(( readiness_deadline - $(date +%s) ))
+                if [ "$readiness_remaining" -le 0 ]; then
+                  break
+                fi
+                readiness_pause=3
+                if [ "$readiness_remaining" -lt "$readiness_pause" ]; then
+                  readiness_pause=$readiness_remaining
+                fi
+                sleep "$readiness_pause"
+              done
+              if [ "$readiness_ok" != true ]; then
+                printf '%s\n' 'Deployment readiness failed within the 60-second limit.' >&2
+                exit 1
+              fi
               docker image prune -f

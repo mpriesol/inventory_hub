@@ -1140,6 +1140,11 @@
     "shop": "Shop",
     "loadOptions": "Fetch statuses from shop",
     "configTitle": "Shop processing rules",
+    "assignWarehouse": "Assign warehouse",
+    "assignmentHelp": "Assign a warehouse to this shop. Order processing and stock publication are enabled separately.",
+    "assignmentCurrent": "Assigned warehouse: {{warehouse}}",
+    "assignmentSaved": "The warehouse is assigned to this shop.",
+    "assignmentUncertain": "The warehouse assignment could not be confirmed. Load current settings and check the result first.",
     "warehouse": "Warehouse",
     "chooseWarehouse": "Choose a warehouse",
     "status": "Order status",
@@ -1210,6 +1215,9 @@
       "non_stock": "Non-stock line"
     },
     "errors": {
+      "warehouse_assignment_policy_conflict": "The selected warehouse differs from the active order processing rules.",
+      "warehouse_assignment_conflict": "The shop has a different active warehouse assignment. Load current settings and resolve the conflict.",
+      "warehouse_assignment_changed": "The warehouse assignment has changed. Load current settings and check the selection.",
       "request_failed": "The operation could not be completed. After a lost connection, check its stored state first.",
       "hub_access_required": "Enter a valid Hub access token.",
       "hub_access_not_configured": "The Hub access token is not configured.",

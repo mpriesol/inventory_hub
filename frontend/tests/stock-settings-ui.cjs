@@ -46,12 +46,12 @@ const warehouses = {
   auxiliary: { warehouse_code: 'auxiliary', revision: 0, values: { ...defaults }, processing_paused: false },
 };
 const shopSettings = { xtrek: null, biketrek: null };
-const policy = { warehouse_id: 1, warehouse_code: 'main', starts_at: '2026-09-23T10:00:00Z', revision: 7 };
+let policy = { warehouse_id: 1, warehouse_code: 'main', starts_at: '2026-09-23T10:00:00Z', revision: 7 };
 const options = shop => {
   const settings = shopSettings[shop];
   return { shop: { code: shop, name: shop === 'xtrek' ? 'xTrek fixture' : 'BIKETREK fixture' },
-    warehouses: [{ id: 1, code: 'main', name: 'Main fixture' }, { id: 2, code: 'auxiliary', name: 'Auxiliary fixture' }],
-    policy, warehouse: warehouses.main, shop_settings: settings,
+    warehouses: [{ id: 2, code: 'auxiliary', name: 'Auxiliary fixture', is_default: false }, { id: 1, code: 'main', name: 'Main fixture', is_default: true }],
+    policy, warehouse: policy ? warehouses[policy.warehouse_code] : null, shop_settings: settings,
     effective: { values: { ...warehouses.main.values, ...settings?.overrides },
       sources: Object.fromEntries(Object.keys(defaults).map(key => [key, Object.hasOwn(settings?.overrides || {}, key) ? 'shop' : 'warehouse'])),
       configuration_hash: `synthetic-settings-${warehouses.main.revision}-${settings?.revision || 0}`,
@@ -238,6 +238,23 @@ const shopPosts = () => posts().filter(call => call.path.endsWith('/shop'));
   assert(oldCredentialRequest.signal.aborted);
   assert.equal(calls.length, beforeToken, 'Changing shared credentials never refetches automatically');
   assert(!element('mode') && !element('warehouse-poll_interval_seconds'), 'Credential changes discard configuration and confirmations');
+  optionsMode = 'valid'; policy = null;
+  const beforeDefaults = posts().length;
+  await click('load-options');
+  assert.equal(required('warehouse').value, 'main', 'Without policy, select the flagged default instead of the first warehouse');
+  assert(!element('warehouse-poll_interval_seconds'), 'Preselection does not load or invent warehouse settings');
+  await input('warehouse', 'auxiliary'); await click('load-warehouse'); await click('load-options');
+  assert.equal(required('warehouse').value, 'auxiliary', 'Options reload preserves the explicit warehouse selection');
+  assert(!element('warehouse-poll_interval_seconds'), 'Options for another warehouse cannot authorize a stale selected warehouse form');
+  await click('load-warehouse');
+  assert.equal(required('warehouse-poll_interval_seconds').value, '420', 'A new warehouse read populates the selected warehouse only');
+  await input('warehouse', ''); await click('load-options');
+  assert.equal(required('warehouse').value, '', 'An explicitly empty warehouse choice survives reloading');
+  assert(!element('warehouse-poll_interval_seconds'), 'Empty selection has no warehouse form');
+  policy = { warehouse_id: 2, warehouse_code: 'auxiliary', starts_at: '2026-09-23T10:00:00Z', revision: 7 };
+  await input('shop', 'xtrek'); await click('load-options');
+  assert.equal(required('warehouse').value, 'auxiliary', 'A configured warehouse wins over the main default in a new context');
+  assert.equal(posts().length, beforeDefaults, 'Default selection and context changes do not write settings');
   assert.equal(dom.window.localStorage.length, 0); assert.equal(dom.window.sessionStorage.length, 0);
   assert(!dom.window.location.href.includes('synthetic-'));
   const beforeIdle = calls.length; await tick(); assert.equal(calls.length, beforeIdle, 'Settings never poll or save in the background');

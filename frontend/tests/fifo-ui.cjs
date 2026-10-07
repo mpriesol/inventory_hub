@@ -49,7 +49,7 @@ global.fetch = async (url, options = {}) => {
     if (deferCommand) return new Promise(resolve => { resolveCommand = () => resolve(reply({ status: 'completed' })); });
     return reply({ status: 'completed' });
   }
-  if (path === '/api/fifo/options') return reply({ warehouses: [{ id: 2, code: 'main', name: 'Main warehouse' }] });
+  if (path === '/api/fifo/options') return reply({ warehouses: [{ id: 3, code: 'other', name: 'Other warehouse', is_default: false }, { id: 2, code: 'main', name: 'Main warehouse', is_default: true }] });
   if (path === '/api/fifo/stock') return reply(stock(Number(parsed.searchParams.get('product_id'))));
   if (path === '/api/fifo/history') return reply({ movements: [{ id: 20, movement_type: 'sale_out', quantity: '-2.000', unit_cost: null,
     total_cost: null, balance_after: '3.000', reference_id: parsed.searchParams.get('product_id') === '1' ? 'ORDER-A' : 'ORDER-B', created_at: '2026-09-10T10:00:00Z' }], total: 1 });
@@ -64,6 +64,17 @@ global.fetch = async (url, options = {}) => {
 };
 (async () => {
   await i18n.changeLanguage('en'); unlockHub('synthetic-token');
+  await act(async () => { root.render(React.createElement(FifoPanel, { productId: 1, warehouseCode: '' })); await tick(); });
+  assert.equal(required('fifo-warehouse').value, 'main', 'Without a parent selection FIFO uses the configured default, not the first warehouse');
+  await input('fifo-warehouse', 'other');
+  await act(async () => { root.render(React.createElement(FifoPanel, { productId: 1, warehouseCode: '' })); await tick(); });
+  assert.equal(required('fifo-warehouse').value, 'other', 'Unchanged parent context preserves an explicit alternate warehouse');
+  await input('fifo-warehouse', '');
+  await act(async () => { unlockHub(''); await tick(); unlockHub('synthetic-token'); await tick(); });
+  assert.equal(required('fifo-warehouse').value, '', 'Refreshing options preserves an explicit blank selection');
+  assert(!find('fifo-receive'), 'No FIFO command becomes available without a selected warehouse');
+  await act(async () => { root.render(React.createElement(FifoPanel, { productId: 1, warehouseCode: 'other' })); await tick(); });
+  assert.equal(required('fifo-warehouse').value, 'other', 'An explicit parent warehouse takes precedence over the default');
   await act(async () => { root.render(React.createElement(FifoPanel, { productId: 1, warehouseCode: 'main' })); await tick(); });
   assert(document.body.textContent.includes('Valuation is incomplete'));
   assert(document.body.textContent.includes('Unknown'));

@@ -19,7 +19,7 @@ export interface OpeningBatchInfo {
 }
 export interface OpeningBatch extends OpeningBatchInfo { lines: OpeningLine[]; result: OpeningResult | null }
 export interface OpeningOptions {
-  warehouses: OpeningWarehouse[];
+  warehouses: (OpeningWarehouse & { is_default: boolean })[];
   limits: { max_bytes: number; max_rows: number; max_quantity: string; max_unit_cost: string };
   unit: 'ks'; currency: 'EUR'; price_basis: 'ex_vat'; expires_minutes: number;
 }

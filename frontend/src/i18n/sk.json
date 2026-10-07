@@ -1141,6 +1141,11 @@
     "shop": "E-shop",
     "loadOptions": "Načítať stavy z e-shopu",
     "configTitle": "Pravidlá spracovania e-shopu",
+    "assignWarehouse": "Priradiť sklad",
+    "assignmentHelp": "Samostatné priradenie skladu k e-shopu. Spracovanie objednávok a prenos zásob sa zapínajú oddelene.",
+    "assignmentCurrent": "Priradený sklad: {{warehouse}}",
+    "assignmentSaved": "Sklad je priradený k e-shopu.",
+    "assignmentUncertain": "Priradenie skladu sa nepodarilo potvrdiť. Najprv načítaj aktuálne nastavenie a over výsledok.",
     "warehouse": "Sklad",
     "chooseWarehouse": "Vyber sklad",
     "status": "Stav objednávky",
@@ -1211,6 +1216,9 @@
       "non_stock": "Neskladová položka"
     },
     "errors": {
+      "warehouse_assignment_policy_conflict": "Zvolený sklad nezodpovedá aktívnym pravidlám spracovania objednávok.",
+      "warehouse_assignment_conflict": "E-shop má iné aktívne priradenie skladu. Načítaj aktuálne nastavenie a vyrieš tento konflikt.",
+      "warehouse_assignment_changed": "Priradenie skladu sa medzitým zmenilo. Načítaj aktuálne nastavenie a skontroluj výber.",
       "request_failed": "Operáciu sa nepodarilo dokončiť. Po prerušení spojenia najprv over uložený stav.",
       "hub_access_required": "Zadaj platný prístupový token Hubu.",
       "hub_access_not_configured": "Prístupový token Hubu nie je nastavený.",

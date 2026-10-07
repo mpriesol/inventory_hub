@@ -4,12 +4,13 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
-import { applyOrderStock, configureOrderStock, getOrderStockOptions, OrderStockAction, OrderStockError,
+import { applyOrderStock, assignOrderStockWarehouse, configureOrderStock, getOrderStockOptions, OrderStockAction, OrderStockError,
   OrderStockOptions, OrderStockPreview, OrderStockPreviewInfo, previewOrderStock, recentOrderStock, recoverOrderStock } from '../api/orderStock';
+import { defaultWarehouseCode } from '../utils/warehouses';
 import './OpeningStockPage.css';
 import './OrdersStockPage.css';
 
-type Operation = 'options' | 'configure' | 'preview' | 'recent' | 'recover' | 'apply' | null;
+type Operation = 'options' | 'assignment' | 'configure' | 'preview' | 'recent' | 'recover' | 'apply' | null;
 const actions: OrderStockAction[] = ['review', 'reserve', 'issue', 'cancel'];
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,7 +34,8 @@ export function OrdersStockPage() {
   const [error, setError] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [physical, setPhysical] = useState(false);
-  const [uncertain, setUncertain] = useState<'configure' | 'apply' | null>(null);
+  const [uncertain, setUncertain] = useState<'assignment' | 'configure' | 'apply' | null>(null);
+  const [assignmentSaved, setAssignmentSaved] = useState(false);
   const [busy, setBusy] = useState<Operation>(null);
   const [effectPage, setEffectPage] = useState(0);
   const [linePage, setLinePage] = useState(0);
@@ -42,14 +44,16 @@ export function OrdersStockPage() {
   const controller = useRef<AbortController | null>(null);
   const busyRef = useRef<Operation>(null);
   const writeInFlight = useRef(false);
-  const locked = busy === 'configure' || busy === 'apply' || !!uncertain;
+  const warehouseSelection = useRef<string | null>(null);
+  const locked = busy === 'assignment' || busy === 'configure' || busy === 'apply' || !!uncertain;
 
   function invalidate() {
     generation.current += 1; controller.current?.abort(); controller.current = null;
-    setLoaded(null); setConfirmed(false); setPhysical(false); setErrors([]); setError(''); setRecoverId('');
+    setAssignmentSaved(false); setLoaded(null); setConfirmed(false); setPhysical(false); setErrors([]); setError(''); setRecoverId('');
     setEffectPage(0); setLinePage(0); setExcludedPage(0); setBusy(null); busyRef.current = null;
   }
   useEffect(() => {
+    warehouseSelection.current = null;
     invalidate(); setOptions(null); setWarehouse(''); setStatusActions({}); setRecent(null);
     setConfigConfirmed(false); setConfigDirty(false); setUncertain(null); setToken('');
     return () => { generation.current += 1; controller.current?.abort(); };
@@ -69,14 +73,18 @@ export function OrdersStockPage() {
     catch (value) { if (current()) report(value); }
     finally { if (current()) { busyRef.current = null; setBusy(null); } }
   }
-  function acceptOptions(value: OrderStockOptions) {
-    setOptions(value); setWarehouse(value.policy?.warehouse_code || '');
+  function acceptOptions(value: OrderStockOptions, saved = false) {
+    const selected = saved || warehouseSelection.current === null
+      ? value.policy?.warehouse_code || value.warehouse_assignment?.warehouse_code || defaultWarehouseCode(value.warehouses)
+      : warehouseSelection.current;
+    warehouseSelection.current = selected;
+    setOptions(value); setWarehouse(selected);
     const next = Object.fromEntries(value.statuses.map(status => {
       const saved = value.policy?.status_actions[String(status.id)];
       const allowed = value.allowed_actions[String(status.id)] || ['review'];
       return [String(status.id), saved && allowed.includes(saved) ? saved : 'review'];
     })) as Record<string, OrderStockAction>;
-    const changed = !!value.policy && (Object.keys(value.policy.status_actions).length !== value.statuses.length
+    const changed = !!value.policy && (selected !== value.policy.warehouse_code || Object.keys(value.policy.status_actions).length !== value.statuses.length
       || value.statuses.some(status => value.policy!.status_actions[String(status.id)] !== next[String(status.id)]));
     setStatusActions(next); setConfigConfirmed(false); setConfigDirty(changed); setUncertain(null);
   }
@@ -86,12 +94,26 @@ export function OrdersStockPage() {
   }
   function changeShop(value: string) {
     if (locked) return;
+    warehouseSelection.current = null;
     invalidate(); setShop(value); setOptions(null); setWarehouse(''); setStatusActions({}); setRecent(null);
     setConfigConfirmed(false); setConfigDirty(false);
   }
   function changeConfig(nextWarehouse: string, nextActions: Record<string, OrderStockAction>) {
     if (locked) return;
+    warehouseSelection.current = nextWarehouse;
     invalidate(); setWarehouse(nextWarehouse); setStatusActions(nextActions); setConfigConfirmed(false); setConfigDirty(true);
+  }
+  async function assignWarehouse() {
+    if (!options?.assignment_hash || !warehouse || busyRef.current || writeInFlight.current || uncertain) return;
+    invalidate(); const id = generation.current, credential = accessRevision();
+    writeInFlight.current = true; busyRef.current = 'assignment'; setBusy('assignment'); setConfigConfirmed(false);
+    const current = () => id === generation.current && credential === accessRevision();
+    try {
+      const result = await assignOrderStockWarehouse({ shop_code: shop, warehouse_code: warehouse,
+        expected_assignment_hash: options.assignment_hash });
+      if (current()) { setOptions(previous => previous ? { ...previous, ...result } : previous); setAssignmentSaved(true); }
+    } catch (value) { if (current()) { setUncertain('assignment'); report(value); } }
+    finally { writeInFlight.current = false; if (current()) { busyRef.current = null; setBusy(null); } }
   }
   async function configure() {
     if (!options || !warehouse || !configConfirmed || busyRef.current || writeInFlight.current || uncertain) return;
@@ -101,7 +123,7 @@ export function OrdersStockPage() {
     try {
       const result = await configureOrderStock({ shop_code: shop, warehouse_code: warehouse,
         status_hash: options.status_hash, status_actions: statusActions, confirmed: true });
-      if (current()) acceptOptions(result);
+      if (current()) acceptOptions(result, true);
     } catch (value) { if (current()) { setUncertain('configure'); setConfigConfirmed(false); report(value); } }
     finally { writeInFlight.current = false; if (current()) { busyRef.current = null; setBusy(null); } }
   }
@@ -161,6 +183,8 @@ export function OrdersStockPage() {
       <section className="opening-stock-panel">
         <div className="opening-stock-actions"><label>{t('orderStock.shop')}<select disabled={locked} value={shop} onChange={event => changeShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label>
           <span className="action-control"><Button variant="secondary" disabled={!!busy || uncertain === 'apply'} onClick={loadOptions}>{t('orderStock.loadOptions')}</Button><ActionScope effects={['upgates-read']} shop={shop} calls={{ kind: 'known', count: 1 }} /></span></div>
+        {uncertain === 'assignment' && <div role="alert" className="opening-stock-notice">{t('orderStock.assignmentUncertain')}</div>}
+        {assignmentSaved && <div role="status" className="opening-stock-success">{t('orderStock.assignmentSaved')}</div>}
         {uncertain === 'configure' && <div className="opening-stock-notice" role="alert">{t('orderStock.configUncertain')}</div>}
         {options && <details className="order-stock-config" open={!options.policy || configDirty}>
           <summary>{t('orderStock.configTitle')}</summary>
@@ -168,6 +192,9 @@ export function OrdersStockPage() {
           <label>{t('orderStock.warehouse')}<select value={warehouse} disabled={locked || !!options.policy} onChange={event => changeConfig(event.target.value, statusActions)}><option value="">{t('orderStock.chooseWarehouse')}</option>
             {options.warehouses.map(item => <option key={item.id} value={item.code}>{item.name}</option>)}
           </select></label>
+          <p>{t('orderStock.assignmentHelp')}</p>
+          {options.warehouse_assignment && <p data-testid="warehouse-assignment">{t('orderStock.assignmentCurrent', { warehouse: options.warehouse_assignment.warehouse_name })}</p>}
+          <span className="action-control"><Button data-testid="assign-warehouse" variant="secondary" disabled={!!busy || !!uncertain || !warehouse || !options.assignment_hash || warehouse === options.warehouse_assignment?.warehouse_code} onClick={assignWarehouse}>{t('orderStock.assignWarehouse')}</Button><ActionScope effects={['hub-write']} /></span>
           <div className="opening-stock-table-scroll"><table><thead><tr><th>{t('orderStock.status')}</th><th>{t('orderStock.operation')}</th><th>{t('orderStock.suggestion')}</th></tr></thead><tbody>
             {options.statuses.map(status => <tr key={status.id}><td>{status.name} <small>#{status.id}</small></td><td><select aria-label={`${t('orderStock.statusAction')} ${status.id} ${status.name}`} value={statusActions[String(status.id)] || 'review'} disabled={locked} onChange={event => changeConfig(warehouse, { ...statusActions, [String(status.id)]: event.target.value as OrderStockAction })}>
               {actions.filter(action => (options.allowed_actions[String(status.id)] || ['review']).includes(action)).map(action => <option key={action} value={action}>{t(`orderStock.actions.${action}`)}</option>)}</select></td><td>{t(`orderStock.actions.${options.suggested_actions[String(status.id)] || 'review'}`)}</td></tr>)}

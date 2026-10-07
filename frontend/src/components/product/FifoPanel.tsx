@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next';
 import { ActionScope } from '../ui/ActionScope';
 import { accessRevision, hubUnlocked, subscribeAccess } from '../../api/access';
+import { defaultWarehouse, defaultWarehouseCode } from '../../utils/warehouses';
 import { fifoCommand, fifoCostOptions, fifoHistory, fifoOptions, fifoReturnOptions, fifoStock,
   type CostStatus, type FifoAllocation, type FifoCostOptions, type FifoLayer, type FifoMovement,
   type FifoPreview, type FifoReturnOptions, type FifoStock } from '../../api/fifo';
@@ -30,8 +31,9 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
   const language = i18n.language.startsWith('sk') ? 'sk' : 'en';
   const c = fifoCopy[language];
   const failure = (value: unknown, fallback: string) => fifoErrors[language][(value as { code?: string })?.code || ''] || fallback;
-  const [warehouses, setWarehouses] = useState<{ id: number; code: string; name: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: number; code: string; name: string; is_default?: boolean }[]>([]);
   const [warehouse, setWarehouse] = useState(warehouseCode);
+  const warehouseInitialized = useRef(!!warehouseCode);
   const [stock, setStock] = useState<FifoStock | null>(null);
   const [movements, setMovements] = useState<FifoMovement[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
@@ -66,7 +68,11 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
   const amount = (value: string | null | undefined) => value == null ? c.unknown : `${value} €`;
   const status = (value: CostStatus) => c[value];
   const reset = () => { setOperation(null); setPreview(null); setConfirmed(false); setReturnData(null); setCostData(null); setSelectedLayer(null); };
-  useEffect(() => { setWarehouse(warehouseCode); }, [productId, warehouseCode]);
+  useEffect(() => {
+    const initial = warehouseCode || defaultWarehouseCode(warehouses);
+    warehouseInitialized.current = !!initial;
+    setWarehouse(initial);
+  }, [productId, warehouseCode]);
   useEffect(() => {
     context.current += 1; reset(); setLayerOffset(0); setHistoryOffset(0); setError(''); setMessage('');
     busyRef.current = false; setBusy(false); setPending(readPending(storageKey));
@@ -75,7 +81,14 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
   useEffect(() => {
     if (!hubUnlocked()) { setWarehouses([]); return; }
     const controller = new AbortController();
-    fifoOptions(controller.signal).then(data => { if (!controller.signal.aborted) setWarehouses(data.warehouses); }).catch(e => { if (!controller.signal.aborted) setError(failure(e, c.readFailed)); });
+    fifoOptions(controller.signal).then(data => {
+      if (controller.signal.aborted) return;
+      setWarehouses(data.warehouses);
+      if (!warehouseInitialized.current) {
+        warehouseInitialized.current = true;
+        setWarehouse(defaultWarehouseCode(data.warehouses));
+      }
+    }).catch(e => { if (!controller.signal.aborted) setError(failure(e, c.readFailed)); });
     return () => controller.abort();
   }, [productId, credential]);
   useEffect(() => {
@@ -93,7 +106,7 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
     reset(); setOperation(kind); setSelectedLayer(layer || null); setMessage(''); setError('');
     setLayers(kind === 'cutover' && Number(stock?.balance?.qty_on_hand) === 0 ? [] : [blankLayer()]);
     setSource(''); setOperator(''); setReason(''); setQuantity(''); setCost(''); setCostStatus('unknown'); setDate(localDate());
-    setCondition('good'); setTargetWarehouse(String(stock?.warehouse.id || ''));
+    setCondition('good'); setTargetWarehouse(String(defaultWarehouse(warehouses)?.id || stock?.warehouse.id || ''));
   };
   const inspectIssue = async (id: number) => {
     if (busyRef.current || pending) return;
@@ -183,7 +196,7 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
   };
   const allocationTable = (rows: FifoAllocation[]) => <div className="fifo-scroll"><table><thead><tr><th>{c.layers}</th><th>{c.quantity}</th><th>{c.returned}</th><th>{c.originalCost}</th><th>{c.currentCost}</th></tr></thead><tbody>{rows.map(row => <tr key={row.id}><td>#{row.layer_id}</td><td>{row.quantity}</td><td>{row.returned_quantity}</td><td>{amount(row.total_cost_at_issue)} · {status(row.cost_status_at_issue)}</td><td>{amount(row.total_cost_current)} · {status(row.cost_status_current)}</td></tr>)}</tbody></table></div>;
   return <section className="fifo-panel" data-testid="fifo-panel">
-    <div className="fifo-toolbar"><h3>{c.title}</h3><label>{c.warehouse}<select data-testid="fifo-warehouse" value={warehouse} disabled={busy || !!pending} onChange={e => setWarehouse(e.target.value)}><option value="">{c.chooseWarehouse}</option>{warehouses.map(w => <option key={w.id} value={w.code}>{w.name}</option>)}</select></label><span className="action-control"><button type="button" disabled={busy || loading} onClick={() => setRefresh(v => v + 1)}>{c.refresh}</button><ActionScope effects={['hub-read']} /></span></div>
+    <div className="fifo-toolbar"><h3>{c.title}</h3><label>{c.warehouse}<select data-testid="fifo-warehouse" value={warehouse} disabled={busy || !!pending} onChange={e => { warehouseInitialized.current = true; setWarehouse(e.target.value); }}><option value="">{c.chooseWarehouse}</option>{warehouses.map(w => <option key={w.id} value={w.code}>{w.name}</option>)}</select></label><span className="action-control"><button type="button" disabled={busy || loading} onClick={() => setRefresh(v => v + 1)}>{c.refresh}</button><ActionScope effects={['hub-read']} /></span></div>
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     {pending && <div role="alert"><p>{c.pending}</p><span className="action-control"><button type="button" data-testid="fifo-retry" disabled={busy} onClick={() => execute(pending)}>{c.retry}</button><ActionScope effects={['hub-write']} /></span></div>}
     {loading && <p role="status">{c.loading}</p>}
