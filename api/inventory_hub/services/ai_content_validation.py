@@ -24,7 +24,10 @@ def text_of(value: str) -> str:
 
 
 def evidence_text(value: str) -> str:
-    return " ".join(text_of(value).split()).casefold()
+    # Typography-only equivalents of a hyphen; keep minus signs, range dashes,
+    # numbers and units intact so this cannot turn a changed fact into a match.
+    value = text_of(value).translate(str.maketrans({"\u2010": "-", "\u2011": "-"}))
+    return " ".join(value.split()).casefold()
 
 
 def feed_evidence_texts(value) -> list[str]:

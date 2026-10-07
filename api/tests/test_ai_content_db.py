@@ -188,6 +188,36 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.generate.assert_not_called()
         self.assertFalse(self.clients["biketrek"].sent)
 
+    async def test_feed_quote_can_be_rechecked_and_corrected_without_ai_or_import(self):
+        id = (await self.create())[0]["id"]
+        quote = "Model-A, hmotnosť 980 g."
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            facts = [{**p, "description": "Model\u2011A, hmotnosť 980 g."} for p in job.context["facts"]]
+            job.context = {**job.context, "facts": facts}
+            job.output = content(evidence=[{"claim": "Hmotnosť modelu", "source": f"feed:{self.id}", "quote": quote}]).model_dump()
+            job.actual_usd = Decimal("0.123")
+            job.checks = {"errors": ["ai_unverified_feed_evidence"]}
+            service.event(job, "blocked", "Synthetic hyphen mismatch")
+            await db.commit()
+        for next_quote, expected_status in [(quote, "review"), (quote + " Nepodložená veta.", "blocked"), (quote, "review")]:
+            async with self.sessions() as db:
+                job = await service.get_job(db, id, True)
+                request = ContentReview(expected_revision=job.revision, content={**job.output, "title": "Model — popis"}, approve=False)
+                request.content.evidence[0].quote = next_quote
+                await service.review(db, job, request)
+                await db.commit()
+            job = await self.job(id)
+            self.assertEqual(job.status, expected_status)
+            self.assertEqual(job.output["evidence"][0]["quote"], next_quote)
+            self.assertEqual(job.output["title"], "Model - popis")
+            self.assertEqual(job.checks["errors"], ["ai_unverified_feed_evidence"] if expected_status == "blocked" else [])
+            self.assertEqual(job.context["facts"], facts)
+            self.assertEqual(job.actual_usd, Decimal("0.123"))
+            self.assertIsNone(job.preview_id)
+            self.generate.assert_not_called()
+            self.assertFalse(self.clients["biketrek"].sent)
+
     async def test_restart_never_repeats_unknown_paid_request(self):
         id = (await self.create())[0]["id"]
         await self.act(id, "start")

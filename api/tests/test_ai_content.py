@@ -75,6 +75,21 @@ class RuleTests(unittest.TestCase):
 
 
 class ContentTests(unittest.TestCase):
+    def test_product_text_normalizes_dashes_and_keeps_source_evidence_intact(self):
+        fields = ("title", "short_description", "long_description", "seo_title", "meta_description",
+                  "h1_descriptor", "future_name", "h1_descr_suffix")
+        text = "Model ‐ ‑ ‒ – — ― ⸺ ⸻ ﹘ ﹣ － test &ndash; &mdash; &#8212; &#x2013; &hyphen;"
+        evidence = [{"claim": "Model – vlastnosť", "source": "https://manufacturer.example/model–a", "quote": "Model\u2011A"}]
+        parameters = [{"name": "Rozsah", "values": ["1–2"], "product_id": None}]
+        value = content(**dict.fromkeys(fields, text), evidence=evidence, parameters=parameters)
+        for field in fields:
+            self.assertEqual(getattr(value, field), "Model - - - - - - - - - - - test - - - - -")
+        self.assertEqual([e.model_dump() for e in value.evidence], evidence)
+        self.assertEqual([p.model_dump() for p in value.parameters], parameters)
+        html = content(long_description='<p>Model — popis &amp; &lt;detail&gt;: −5 °C.</p>')
+        self.assertEqual(html.long_description, '<p>Model - popis &amp; &lt;detail&gt;: −5 °C.</p>')
+        self.assertEqual(Content.model_validate(value.model_dump()), value)
+
     def test_good_content_and_empty_registry(self):
         self.assertEqual(validate_content(content(), context())["errors"], [])
         bad = content(parameters=[{"name": "Invented", "values": ["yes"], "product_id": None}])
@@ -124,6 +139,30 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(validate_content(value, ctx)["errors"], [])
         value.evidence[0].quote = quote.replace("1000", "2000")
         self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["errors"])
+
+    def test_feed_evidence_accepts_typographic_hyphens_without_changing_facts(self):
+        ctx = context()
+        ctx["facts"][0]["description"] = '<p>Model\u2011A, rozmer 50\u2010559, hmotnosť 980 g.</p>'
+        for quote in (
+            'Model-A, rozmer 50-559, hmotnosť 980 g.',
+            'Model\u2010A, rozmer 50\u2011559, hmotnosť 980 g.',
+        ):
+            with self.subTest(quote=quote):
+                value = content(evidence=[{"claim": "Údaj", "source": "feed:1", "quote": quote}])
+                self.assertEqual(validate_content(value, ctx)["errors"], [])
+                self.assertEqual(value.evidence[0].quote, quote, "Comparison must not rewrite the saved quote")
+        for quote in (
+            'Model-A, rozmer 50-559, hmotnosť 890 g.',
+            'Model-A, rozmer 50-559, hmotnosť 980 kg.',
+            'Model-A, rozmer 50-559, hmotnosť 980 g. Reflexné bočnice.',
+            'Model-A, hmotnosť 980 g.',
+            'Model-A, rozmer 50\u2212559',
+            'Model-A, rozmer 50\u2013559',
+            'Model-A, rozmer 50\u2014559',
+        ):
+            with self.subTest(quote=quote):
+                value = content(evidence=[{"claim": "Údaj", "source": "feed:1", "quote": quote}])
+                self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["errors"])
 
     def test_legacy_official_url_is_normalized_but_still_requires_exact_opening(self):
         source = "https://manufacturer.example/product"
@@ -176,10 +215,14 @@ class ContentTests(unittest.TestCase):
         source = p.model_dump()
         item = imports.build_item([p], ShopImportOptions(), {}, True, {1: Decimal("99")})
         original = copy.deepcopy(item.payload)
-        enriched = overlay(item, {"active_after_import": True, "content": content().model_dump(), "registered_parameters": False, "safety": "Noste prilbu správne."}, "sk")
+        legacy = {**content().model_dump(), "title": "TEST — prilba", "long_description": "<p>Model &ndash; popis.</p>"}
+        enriched = overlay(item, {"active_after_import": True, "content": legacy, "registered_parameters": False, "safety": "Noste prilbu správne."}, "sk")
         for key in ("code", "ean", "prices", "images", "parameters", "manufacturer"):
             self.assertEqual(enriched.payload.get(key), original.get(key))
         self.assertEqual(p.model_dump(), source)
+        self.assertEqual(enriched.payload["descriptions"][0]["title"], "TEST - prilba")
+        self.assertIn("<p>Model - popis.</p>", enriched.payload["descriptions"][0]["long_description"])
+        self.assertEqual(legacy["title"], "TEST — prilba", "Overlay must not modify the stored source dictionary")
         imports._assert_payload(enriched.payload, expected_active=True)
         with self.assertRaises(imports.CatalogError):
             imports._assert_payload(enriched.payload)
@@ -265,6 +308,14 @@ class WorkerErrorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_output_normalizes_product_dashes_before_storage(self):
+        raw = {**content().model_dump(), "title": "TEST — prilba", "long_description": "<p>Model &mdash; popis.</p>"}
+        response = {"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(raw)}]}]}
+        output, _ = provider.parse_response(response)
+        self.assertEqual(output["title"], "TEST - prilba")
+        self.assertEqual(output["long_description"], "<p>Model - popis.</p>")
+        self.assertEqual(output["evidence"], raw["evidence"])
+
     def test_provider_contract_and_parsing_use_canonical_evidence_urls(self):
         source = "https://manufacturer.example/product"
         raw = content().model_dump()

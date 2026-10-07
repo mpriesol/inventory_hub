@@ -186,7 +186,7 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   const verifiedEvidence = { claim:'Presný názov', source:'feed:1', quote:'Test bunda' };
   const unsupportedEvidence = { claim:'Nepodložené príslušenstvo', source:'https://manufacturer.example.test/unopened.pdf', quote:'Accessory' };
   await act(async () => { root.render(React.createElement(AiJobDetail,{key:'evidence-fix',job:{...jobs[0],status:'blocked',revision:4,output:{...content,evidence:[unsupportedEvidence,verifiedEvidence]},checks:{errors:['ai_unverified_official_evidence']},facts:[],events:[]},onChange:() => {}})); await tick(); });
-  const unsupportedRow = [...document.querySelectorAll('tr')].find(row => row.textContent.includes('Nepodložené príslušenstvo'));
+  const unsupportedRow = document.querySelector('textarea[aria-label="Tvrdenie 1"]').closest('tr');
   await click(unsupportedRow.querySelector('button'));
   assert(document.body.textContent.includes('odstráň aj tvrdenia'), 'Evidence removal explains how unsupported claims must be corrected');
   await click(button('Uložiť koncept obsahu'));
@@ -212,9 +212,30 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(button('Znovu overiť obsah bez AI').disabled, 'Unsaved source edits must be saved before a separate recheck');
   await click(button('Uložiť koncept obsahu'));
   assert.deepEqual(reviewed.content.evidence,[{...namedEvidence,source:openedSource},verifiedEvidence], 'Source correction preserves the claim, quote and sibling evidence');
+  const incorrectQuote = {...verifiedEvidence,claim:'Popis a nedoložený doplnok',quote:'Test bunda. Nedoložený doplnok.'};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'quote-correction',job:{...sourceFixJob,
+    output:{...content,evidence:[incorrectQuote,verifiedEvidence]},
+    checks:{errors:['ai_unverified_feed_evidence'],evidence_errors:[{index:0,source:'feed:1',reason:'feed_quote_not_found'}]},
+  },onChange:() => {}})); await tick(); });
+  const quoteInput = document.querySelector('textarea[aria-label="Podklad 1"]');
+  assert.equal(quoteInput.value,incorrectQuote.quote);
+  assert.equal(quoteInput.getAttribute('aria-invalid'),'true');
+  const beforeQuoteCorrection = calls.length;
+  await input(quoteInput,verifiedEvidence.quote);
+  await input(document.querySelector('textarea[aria-label="Tvrdenie 1"]'),verifiedEvidence.claim);
+  assert.equal(quoteInput.getAttribute('aria-invalid'),'false');
+  assert(button('Znovu overiť obsah bez AI').disabled, 'Unsaved evidence changes must use draft save');
+  await click(button('Uložiť koncept obsahu'));
+  assert.deepEqual(calls.slice(beforeQuoteCorrection).map(call => call.path),['/api/ai-content/jobs/job0/review']);
+  assert.equal(reviewed.approve,false);
+  assert.equal(reviewed.expected_revision,9);
+  assert.deepEqual(reviewed.content.evidence,[verifiedEvidence,verifiedEvidence], 'Correcting a quote and its claim preserves source identity and sibling evidence');
+  assert.equal(reviewed.content.long_description,content.long_description, 'Evidence edits never silently rewrite marketing content');
   for (const state of [{status:'completed'}, {status:'blocked',update_state:'uncertain'}]) {
     await act(async () => { root.render(React.createElement(AiJobDetail,{key:`source-readonly-${state.status}`,job:{...sourceFixJob,...state},onChange:() => {}})); await tick(); });
     assert(document.querySelector('input[aria-label="Zdroj 1"]').disabled, 'Completed jobs and uncertain writes cannot change evidence');
+    assert(document.querySelector('textarea[aria-label="Podklad 1"]').disabled);
+    assert(document.querySelector('textarea[aria-label="Tvrdenie 1"]').disabled);
     assert(!button('Znovu overiť obsah bez AI'));
   }
 
