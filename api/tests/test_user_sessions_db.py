@@ -37,7 +37,7 @@ class AccountDatabaseTests(unittest.IsolatedAsyncioTestCase):
             patch.object(settings, 'AI_CONTENT_ACCESS_TOKEN', SecretStr('synthetic-operator-token-for-tests'))]
         for item in self.patches:
             item.start()
-        self.app = FastAPI()
+        self.app = FastAPI(root_path='/api')
         routes.install(self.app)
         @self.app.post('/protected', dependencies=[Depends(operator_access)])
         def protected():
@@ -128,5 +128,7 @@ class AccountDatabaseTests(unittest.IsolatedAsyncioTestCase):
         account = await self.create(role='admin')
         async with self.client() as client:
             await client.post('/auth/login', json={'username': 'test-user', 'password': self.password})
-            self.assertEqual((await client.get('/auth/users')).status_code, 200)
+            response = await client.get('/auth/users')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['cache-control'], 'no-store')
             self.assertEqual((await client.put('/auth/users/' + str(account['id']), json={'active': False})).status_code, 409)

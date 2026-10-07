@@ -34,7 +34,7 @@ def install(app):
             except HTTPException:
                 pass
         response = await call_next(request)
-        if request.url.path.startswith('/auth/'):
+        if '/auth/' in request.url.path:
             response.headers['Cache-Control'] = 'no-store'
         if (request.state.hub_bearer and not valid_cookie and response.status_code < 400
                 and request.headers.get('sec-fetch-site') == 'same-origin'
