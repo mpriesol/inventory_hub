@@ -92,15 +92,22 @@ export function AiJobDetail({ job, onChange }: { job: AiJob; onChange: (job: AiJ
       <details><summary>{t('ai.renderedDescription')}</summary><DescriptionPreview title={t('ai.renderedDescription')} value={content.long_description} /></details>
       <details open={missingParameters.length > 0 || job.checks?.errors?.some(error => error.includes('parameter') || error.includes('evidence')) || undefined}><summary>{t('ai.parametersAndEvidence')}</summary><AiParameterValues values={parameters} registry={job.parameter_registry || []} facts={job.facts || []} disabled={!editable || busy} onChange={values => { setParameters(values); setDirty(true); }} />
         <p>{t('ai.evidenceSourceHelp')}</p>
+        <p>{t('ai.evidenceQuoteHelp')}</p>
         <datalist id={`ai-opened-sources-${job.id}`}>{openedSources.map(source => <option key={source} value={source} />)}</datalist>
         <details><summary>{t('ai.openedSources')}</summary>{openedSources.length ? <ul>{openedSources.map(source => <li key={source}><code>{source}</code></li>)}</ul> : <p>{t('ai.noOpenedSources')}</p>}</details>
         <div className="ai-scroll"><table><thead><tr><th>{t('ai.claim')}</th><th>{t('ai.source')}</th><th>{t('ai.evidence')}</th><th /></tr></thead><tbody>{content.evidence?.map((e, i) => {
           const issue = !dirty && job.checks?.evidence_errors?.find(item => item.index === i && item.source === e.source);
-          return <tr key={i}><td>{e.claim}</td><td>
+          return <tr key={i}><td>
+            <textarea aria-label={`${t('ai.claim')} ${i + 1}`} maxLength={2000} disabled={!editable || busy} value={e.claim}
+              onChange={event => { setContent({ ...content, evidence: content.evidence.map((item, index) => index === i ? { ...item, claim: event.target.value } : item) }); setDirty(true); }} />
+          </td><td>
             <input aria-label={`${t('ai.source')} ${i + 1}`} aria-invalid={!!issue} list={`ai-opened-sources-${job.id}`} disabled={!editable || busy} value={e.source}
               onChange={event => { setContent({ ...content, evidence: content.evidence.map((item, index) => index === i ? { ...item, source: event.target.value } : item) }); setDirty(true); }} />
             {issue && <p className="ai-notice ai-error">{t(`ai.evidenceErrors.${issue.reason}`, {defaultValue:issue.reason})}</p>}
-          </td><td>{e.quote}</td><td><button type="button" disabled={!editable || busy} aria-label={`${t('ai.removeEvidence')} ${e.claim}`} onClick={() => { setContent({ ...content, evidence: content.evidence.filter((_, index) => index !== i) }); setDirty(true); }}>{t('ai.removeEvidence')}</button></td></tr>;
+          </td><td>
+            <textarea aria-label={`${t('ai.evidence')} ${i + 1}`} aria-invalid={issue?.reason === 'feed_quote_not_found'} maxLength={3000} disabled={!editable || busy} value={e.quote}
+              onChange={event => { setContent({ ...content, evidence: content.evidence.map((item, index) => index === i ? { ...item, quote: event.target.value } : item) }); setDirty(true); }} />
+          </td><td><button type="button" disabled={!editable || busy} aria-label={`${t('ai.removeEvidence')} ${e.claim}`} onClick={() => { setContent({ ...content, evidence: content.evidence.filter((_, index) => index !== i) }); setDirty(true); }}>{t('ai.removeEvidence')}</button></td></tr>;
         })}</tbody></table></div><p>{t('ai.removeEvidenceHelp')}</p>
         <label>{t('ai.missingFacts')}<textarea disabled={!editable || busy} value={(content.missing_facts || []).join('\n')} onChange={e => { setContent({ ...content, missing_facts: e.target.value.split('\n').filter(Boolean) }); setDirty(true); }} /></label></details>
       {editable && <div className="ai-actions"><button disabled={busy || !dirty} onClick={() => save(false)}>{t('ai.saveContent')}</button>{job.status === 'blocked' && <button disabled={busy || dirty} onClick={() => save(false)}>{t('ai.recheckContent')}</button>}<button className="ai-primary" disabled={busy} onClick={() => save(true)}>{t(job.update_only ? 'ai.approveUpdateContent' : 'ai.approveContent')}</button>{dirty && <small>{t('ai.unsaved')}</small>}</div>}

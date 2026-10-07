@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from inventory_hub.catalog_types import ShopImportOptions
+
+PRODUCT_TEXT_DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2e3a\u2e3b\ufe58\ufe63\uff0d", "-"))
 
 
 class StrictModel(BaseModel):
@@ -150,7 +153,11 @@ class Evidence(StrictModel):
         "For supplied feed data use feed:<id>. For a web source use the exact complete https:// URL "
         "recorded by open_page or find_in_page. Never add official:, a page title, or a tool reference."
     ))
-    quote: str = Field(min_length=1, max_length=3000)
+    quote: str = Field(min_length=1, max_length=3000, description=(
+        "Copy a short verbatim excerpt from the source, not a paraphrase or your explanation. "
+        "For feed:<id>, quote one contiguous passage from a single field in facts for that exact id. "
+        "Do not combine separate fields, translate, or append sentences absent from that field."
+    ))
 
     @field_validator("source", mode="before")
     @classmethod
@@ -175,6 +182,16 @@ class Content(StrictModel):
     evidence: list[Evidence] = Field(min_length=1, max_length=150)
     warnings: list[str] = Field(max_length=100)
     missing_facts: list[str] = Field(max_length=100)
+
+    @field_validator("title", "short_description", "long_description", "seo_title", "meta_description",
+                     "h1_descriptor", "future_name", "h1_descr_suffix")
+    @classmethod
+    def normalize_product_dashes(cls, value: str) -> str:
+        # Apply the same typography at provider parsing, draft review and overlay.
+        # Do not change source URLs, verbatim evidence or registered parameter values.
+        value = value.translate(PRODUCT_TEXT_DASHES)
+        return re.sub(r"&(?:\#[xX][0-9a-fA-F]+|\#[0-9]+|[a-zA-Z][a-zA-Z0-9]*);",
+                      lambda match: "-" if unescape(match.group()).translate(PRODUCT_TEXT_DASHES) == "-" else match.group(), value)
 
 
 class ContentReview(StrictModel):

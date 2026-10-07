@@ -616,6 +616,7 @@
     "source": "Source",
     "evidence": "Evidence",
     "evidenceSourceHelp": "Use feed:<id> for feed data or the exact opened HTTPS URL for a web source. Only select a page that supports this claim; a recorded opening does not establish factual accuracy. Save corrections without generating AI content again.",
+    "evidenceQuoteHelp": "Both the claim and quote can be edited. For feed evidence, copy a short verbatim passage from one field in this job's original source data. Do not add your own explanation or combine fields. The claim and descriptions must be supported by the source. Save content draft validates the correction without calling AI.",
     "openedSources": "Pages recorded as opened during this preparation",
     "noOpenedSources": "This preparation has no recorded opened web page.",
     "recheckContent": "Recheck content without AI",
