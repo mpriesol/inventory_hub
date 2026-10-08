@@ -617,7 +617,7 @@
     "source": "Zdroj",
     "evidence": "Podklad",
     "evidenceSourceHelp": "Pre feed použi feed:<id>, pre web presnú otvorenú HTTPS adresu. Vyber iba stránku, ktorá dokladá dané tvrdenie; samotný záznam otvorenia nepotvrdzuje správnosť údajov. Opravu možno uložiť bez nového AI generovania.",
-    "evidenceQuoteHelp": "Tvrdenie aj citát možno upraviť. Pri feede skopíruj krátky doslovný úsek z jednej hodnoty pôvodných podkladov tejto úlohy. Nepridávaj vlastné vysvetlenie ani nespájaj rôzne polia. Tvrdenie a popisy musia zodpovedať podkladu. Uložiť koncept obsahu opravu znovu overí bez volania AI.",
+    "evidenceQuoteHelp": "Tvrdenie aj citát možno upraviť. Použi doslovný úsek feedu alebo presné dvojice názov: hodnota z parametrov rovnakého produktu oddelené bodkočiarkou. Uložiť koncept obsahu opravu overí bez volania AI. Výhradu k citátu môžeš prijať ručným schválením.",
     "openedSources": "Stránky zaznamenané ako otvorené pri tejto príprave",
     "noOpenedSources": "Táto príprava nemá zaznamenanú otvorenú webovú stránku.",
     "recheckContent": "Znovu overiť obsah bez AI",
@@ -685,7 +685,7 @@
       "ai_not_configured": "AI nie je zapnutá alebo chýba projektový API kľúč.",
       "ai_outcome_unknown": "Odpoveď sa prerušila. Volanie mohlo byť spoplatnené; Hub ho automaticky nezopakuje.",
       "ai_source_changed": "Produktové podklady sa zmenili. Priprav nový výber.",
-      "ai_missing_facts": "Chýbajú potrebné fakty. Doplň overené údaje pred schválením.",
+      "ai_missing_facts": "AI uvádza chýbajúce alebo rozporné fakty. Skontroluj ich; po ručnom schválení možno pokračovať aj s touto výhradou.",
       "ai_unsafe_html": "Popis obsahuje aktívny kód alebo vložený dokument. Bežné HTML formátovanie je povolené.",
       "ai_manufacturer_contact": "Marketingový text obsahuje kontaktný e-mail.",
       "ai_unregistered_parameter": "Parameter nie je v registri kategórie.",
@@ -817,7 +817,7 @@
       "queued": "Čaká vo fronte; možno zrušiť pred spustením.",
       "generating": "AI spracúva obsah.",
       "review": "Upraviť a schváliť obsah, potom skontrolovať import alebo aktualizáciu.",
-      "blocked": "Opraviť červené chyby a chýbajúce povinné fakty, potom znovu schváliť.",
+      "blocked": "Skontrolovať výhrady k obsahu a zdrojom; možno ich prijať ručným schválením. Technické chyby produktu treba opraviť.",
       "preparing_import": "Pripravuje sa náhľad importu.",
       "ready": "Skontrolovať náhľad a potvrdiť import; existujúci produkt možno aktualizovať samostatne.",
       "import_queued": "Import čaká vo fronte.",
@@ -843,7 +843,7 @@
     "noRegisteredParameters": "Táto príprava nemá preddefinovaný zoznam parametrov kategórie. AI nemôže pridávať nové parametre mimo povoleného zoznamu.",
     "updateNext": {
       "review": "Skontrolovať a schváliť obsah, potom vybrať polia na aktualizáciu.",
-      "blocked": "Opraviť červené chyby a chýbajúce povinné fakty, potom znovu schváliť obsah.",
+      "blocked": "Skontrolovať výhrady k obsahu a zdrojom; možno ich prijať ručným schválením. Technické chyby produktu treba opraviť.",
       "preparing_import": "Overuje sa schválený obsah pre aktualizáciu existujúceho produktu.",
       "ready": "Vybrať polia a pripraviť porovnanie s aktuálnym e-shopom.",
       "exists": "Obsah je schválený. Vybrať polia, skontrolovať porovnanie a potvrdiť aktualizáciu.",
@@ -914,7 +914,9 @@
     "closeUnsaved": "V detaile sú neuložené zmeny. Chceš ich zahodiť a zavrieť okno?",
     "keepEditing": "Pokračovať v úprave",
     "discardClose": "Zahodiť zmeny a zavrieť",
-    "olderRules": "Táto úloha používa pravidlá #{{version}}, aktuálna verzia je #{{current}}. Nové parametre a pravidlá sa použijú až v novej príprave."
+    "olderRules": "Táto úloha používa pravidlá #{{version}}, aktuálna verzia je #{{current}}. Nové parametre a pravidlá sa použijú až v novej príprave.",
+    "manualApprovalHelp": "Schválením prijímaš aj uvedené chýbajúce fakty a výhrady k zdrojom alebo citátom. Pripraví sa import a upozornenia zostanú uložené. Technické chyby produktu treba opraviť.",
+    "manuallyAcceptedWarnings": "Obsah bol ručne schválený aj s týmito výhradami. Zostávajú evidované ako upozornenia a neblokujú prípravu importu."
   },
   "upgatesImport": {
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",

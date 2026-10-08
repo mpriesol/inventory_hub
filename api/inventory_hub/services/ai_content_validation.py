@@ -21,6 +21,8 @@ ACTIVE_TAGS = {"script", "iframe", "frame", "frameset", "object", "embed", "appl
                "svg", "math", "base", "meta", "link", "style"}
 URL_ATTRIBUTES = {"href", "src", "srcset", "xlink:href", "action", "formaction", "data",
                   "poster", "background", "cite", "longdesc", "codebase"}
+HUMAN_REVIEW_ERRORS = frozenset({"ai_missing_facts", "ai_unverified_feed_evidence",
+                                "ai_unverified_official_evidence"})
 
 
 def _css_escape(match: re.Match) -> str:
@@ -85,6 +87,25 @@ def feed_evidence_texts(value) -> list[str]:
     return [] if value is None else [evidence_text(str(value))]
 
 
+def feed_quote_matches(quote: str, fact: dict) -> bool:
+    normalized = evidence_text(quote)
+    if not normalized:
+        return False
+    if any(normalized in text for text in feed_evidence_texts(fact)):
+        return True
+    # Structured feed parameters are separate name/value fields, not prose.
+    # Accept labelled pairs from this exact product without joining arbitrary
+    # source fields or changing numbers, units, or the name/value association.
+    pairs = {evidence_text(f"{p['name']}: {p['value']}")
+             for key in ("parameters", "variant_attributes") for p in fact.get(key, [])
+             if isinstance(p, dict) and p.get("name") and p.get("value") is not None}
+    if normalized in pairs:
+        return True
+    separator = r";+" if ";" in quote else r"[\r\n]+"
+    clauses = [evidence_text(part) for part in re.split(separator, quote) if part.strip()]
+    return bool(clauses) and all(clause in pairs for clause in clauses)
+
+
 def official_source_error(source: str, opened: list[str]) -> str | None:
     try:
         url = urlsplit(source)
@@ -101,7 +122,8 @@ def official_source_error(source: str, opened: list[str]) -> str | None:
     return None
 
 
-def validate_content(content: Content, context: dict, opened: list[str] | None = None) -> dict:
+def validate_content(content: Content, context: dict, opened: list[str] | None = None, *,
+                     human_approved: bool = False) -> dict:
     errors, warnings = [], list(content.warnings)
     evidence_errors = []
     if content.missing_facts:
@@ -156,12 +178,11 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
                 values = parameters.get((attribute["name"], product["id"]))
                 if values is not None and values != [attribute["value"]]:
                     errors.append("ai_variant_identity_change:" + attribute["name"])
-    feed_texts = {"feed:" + str(p["id"]): feed_evidence_texts(p) for p in context["facts"]}
+    feed_facts = {"feed:" + str(p["id"]): p for p in context["facts"]}
     for index, evidence in enumerate(content.evidence):
         reason = None
         if evidence.source.startswith("feed:"):
-            quote = evidence_text(evidence.quote)
-            if not quote or not any(quote in text for text in feed_texts.get(evidence.source, [])):
+            if not feed_quote_matches(evidence.quote, feed_facts.get(evidence.source, {})):
                 errors.append("ai_unverified_feed_evidence")
                 reason = "feed_quote_not_found"
         else:
@@ -176,9 +197,14 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         warnings.append("ai_no_additional_official_evidence")
     if category and not category.get("automatic_import_ready", True):
         warnings.append("ai_category_requires_review")
+    # Only an explicit human review can accept these editorial uncertainties.
+    # Keep the original evidence/missing facts and their diagnostics for audit.
+    overrides = sorted(set(errors) & HUMAN_REVIEW_ERRORS) if human_approved else []
+    errors = [error for error in errors if error not in overrides]
+    warnings.extend(overrides)
     return {"errors": sorted(set(errors)), "warnings": sorted(set(warnings)),
-            "evidence_errors": evidence_errors,
-            "automatic_ready": not errors and category.get("automatic_import_ready", True)}
+            "evidence_errors": evidence_errors, "manual_overrides": overrides,
+            "automatic_ready": not errors and not overrides and category.get("automatic_import_ready", True)}
 
 
 def overlay(item, enrichment: dict, language: str):

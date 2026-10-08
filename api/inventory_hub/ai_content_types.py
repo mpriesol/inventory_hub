@@ -162,8 +162,9 @@ class Evidence(StrictModel):
     ))
     quote: str = Field(min_length=1, max_length=3000, description=(
         "Copy a short verbatim excerpt from the source, not a paraphrase or your explanation. "
-        "For feed:<id>, quote one contiguous passage from a single field in facts for that exact id. "
-        "Do not combine separate fields, translate, or append sentences absent from that field."
+        "For feed:<id>, quote one contiguous passage from a single field in facts for that exact id, "
+        "or exact name: value pairs from its parameters/variant_attributes separated by semicolons. "
+        "Do not combine unrelated fields, translate, or append your own sentences."
     ))
 
     @field_validator("source", mode="before")

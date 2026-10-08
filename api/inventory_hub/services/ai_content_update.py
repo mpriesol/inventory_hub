@@ -142,7 +142,8 @@ async def prepare(db, job, request):
     ctx = job.context
     if ctx['target'] != imports._target(imports.shop_config(ctx['shop'])):
         raise CatalogError('shop_target_changed', 'Shop connection changed; prepare from the current shop again', 409)
-    checks = validate_content(Content.model_validate(job.output), ctx, (job.usage or {}).get('opened_sources', []))
+    checks = validate_content(Content.model_validate(job.output), ctx, (job.usage or {}).get('opened_sources', []),
+                              human_approved=ctx.get('approval') == 'human')
     if checks['errors']:
         raise CatalogError('ai_validation_failed', '; '.join(checks['errors']), 422)
     client = UpgatesClient.from_shop(ctx['shop'])

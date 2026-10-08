@@ -187,7 +187,8 @@ async def approved(db, job):
         raise CatalogError("ai_approval_required", "Approve content before preparing an update", 409)
     from inventory_hub.ai_content_types import Content
     from inventory_hub.services.ai_content_validation import validate_content
-    checks = validate_content(Content.model_validate(job.output), ctx, (job.usage or {}).get("opened_sources", []))
+    checks = validate_content(Content.model_validate(job.output), ctx, (job.usage or {}).get("opened_sources", []),
+                              human_approved=ctx.get("approval") == "human")
     if checks["errors"]:
         raise CatalogError("ai_validation_failed", "; ".join(checks["errors"]), 422)
     job.preview_id = None

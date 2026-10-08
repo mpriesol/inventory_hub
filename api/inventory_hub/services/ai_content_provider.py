@@ -93,7 +93,8 @@ def request_body(context: dict, kind="product") -> dict:
         "V evidence.source zapíš pre feed presne feed:<id>; pre web presnú úplnú HTTPS URL zo skutočne otvorenej stránky, bez prihlasovacích údajov a query parametrov. "
         "Nepridávaj prefix official:, názov stránky, slovný opis ani odkaz nástroja ako turn0search0. URL nehádaj ani neupravuj. "
         "Do evidence.quote doslova skopíruj krátky súvislý úsek zdroja. Pri feed:<id> musí pochádzať z jednej hodnoty facts produktu s týmto id. "
-        "Citát neprekladaj, nepreformuluj, nespájaj oddelené polia ani nepridávaj vlastnú vetu. Rôzne podklady zapíš samostatne. "
+        "Pri štruktúrovaných parameters alebo variant_attributes môže citát obsahovať presné dvojice názov: hodnota oddelené bodkočiarkou z toho istého produktu. "
+        "Citát neprekladaj, nepreformuluj, nespájaj nesúvisiace polia ani nepridávaj vlastnú vetu. Rôzne podklady zapíš samostatne. "
         "Tvoje zhrnutie alebo vysvetlenie patrí do claim a popisu, nie do citátu. "
         "Ak pre dopĺňaný modelový fakt nemáš takýto otvorený zdroj ani podklad vo feede, tvrdenie vynechaj a medzeru pomenuj podľa jej významu. "
         if biketrek else "")
