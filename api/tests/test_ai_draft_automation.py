@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 from test_ai_content import content, context
 from test_product_import import document, row
+from inventory_hub.ai_content_models import AiContentRevision
 from inventory_hub.catalog_types import ShopImportOptions
+from inventory_hub.product_import_types import DraftRevision
 from inventory_hub.services import ai_content, ai_content_worker as worker, catalog_import, product_import as service
 from inventory_hub.services.catalog import CatalogError
 
@@ -167,6 +169,113 @@ class DraftAutomationTests(unittest.IsolatedAsyncioTestCase):
                 catalog_import._assert_payload(payload.payload, expected_active=active)
         draft.document['rows'][0]['ai_policy']['active_after_import'] = False
         self.assertNotEqual(service.content_hash(draft.document), initial_hash)
+
+    async def reapply(self, draft, job, revisions=None):
+        async def scalars(statement):
+            entity = statement.column_descriptions[0]['entity']
+            return SimpleNamespace(all=lambda: revisions or [] if entity is AiContentRevision else [job])
+        db = SimpleNamespace(scalars=AsyncMock(side_effect=scalars), flush=AsyncMock())
+        job.status = 'ready'
+        with patch.object(service, 'publication_result', return_value=None), \
+             patch.object(service, 'public', AsyncMock(return_value={})):
+            await service.apply_ai(db, draft, DraftRevision(expected_revision=draft.revision))
+        return db
+
+    async def test_revised_ai_content_replaces_previous_ai_values_and_keeps_assigned_leaf(self):
+        draft, job = self.fixture(confirm=True)
+        item = draft.document['rows'][0]
+        item['values']['category_code'] = item['ai_baseline']['category_code'] = None
+        item['manual_fields'] = ['category_code']
+        frozen = deepcopy(item['ai_baseline'])
+        job.context.update(classification_mode='category_and_profile', category_selection={'category_code':'LEAF'})
+        job.context['options']['category_code'] = 'LEAF'
+        await self.advance(draft, job)
+        original = deepcopy(job.output)
+        corrected = content(long_description='<h2>Opravený popis</h2><p>Overené technické údaje.</p>')
+        job.output = corrected.model_dump()
+        job.context['approval'] = 'human'
+        await self.reapply(draft, job)
+        item = draft.document['rows'][0]
+        self.assertEqual(item['values']['description_html'], corrected.long_description)
+        self.assertEqual(item['values']['category_code'], 'LEAF')
+        self.assertEqual(item['ai_baseline'], frozen, 'Original source baseline is never advanced to arbitrary current cells')
+        self.assertEqual(item['ai_applied_snapshot']['content_digest'], ai_content.digest(job.output))
+        self.assertNotEqual(item['ai_policy']['content_digest'], ai_content.digest(original))
+
+    async def test_revised_ai_content_preserves_manual_and_unrecognized_later_values(self):
+        draft, job = self.fixture(confirm=True)
+        await self.advance(draft, job)
+        item = draft.document['rows'][0]
+        item['values']['description_html'] = '<p>Ručný popis má prednosť.</p>'
+        item['provenance']['description_html'] = 'manual'
+        item['manual_fields'].append('description_html')
+        # A value changed by an unknown future writer is not claimed as prior
+        # AI output even if that writer forgot to refresh the provenance label.
+        item['values']['seo_title'] = 'Newer title from a different editor'
+        draft.document['automation']['paused'] = True
+        corrected = content(long_description='<p>Revidovaný AI text</p>', short_description='Opravený krátky popis')
+        job.output = corrected.model_dump()
+        await self.reapply(draft, job)
+        item = draft.document['rows'][0]
+        self.assertEqual(item['values']['description_html'], '<p>Ručný popis má prednosť.</p>')
+        self.assertEqual(item['values']['seo_title'], 'Newer title from a different editor')
+        self.assertEqual(item['values']['short_description'], corrected.short_description)
+        self.assertNotIn('description_html', item['ai_applied_snapshot']['values'])
+        self.assertNotIn('seo_title', item['ai_applied_snapshot']['values'])
+
+    async def test_existing_v1_bootstrap_uses_exact_saved_revision_once_and_repairs_empty_category(self):
+        draft, job = self.fixture(confirm=True)
+        item = draft.document['rows'][0]
+        item['values']['category_code'] = item['ai_baseline']['category_code'] = None
+        item['manual_fields'] = ['category_code']
+        job.context.update(classification_mode='category_and_profile', category_selection={'category_code':'LEAF'})
+        job.context['options']['category_code'] = 'LEAF'
+        await self.advance(draft, job)
+        original = deepcopy(job.output)
+        item = draft.document['rows'][0]
+        item.pop('ai_applied_snapshot')
+        item['values']['category_code'] = None  # Pre-fix manual-clear result.
+        item['provenance']['category_code'] = 'manual'
+        job.output = content(long_description='<h2>FAQ</h2><p>Opravený a schválený obsah.</p>').model_dump()
+        db = await self.reapply(draft, job, [
+            SimpleNamespace(content=content(long_description='<p>Unrelated revision</p>').model_dump()),
+            SimpleNamespace(content=original)])
+        revision_queries = [call.args[0] for call in db.scalars.await_args_list
+            if call.args[0].column_descriptions[0]['entity'] is AiContentRevision]
+        self.assertEqual(len(revision_queries), 1)
+        self.assertEqual(revision_queries[0].compile().params['job_id_1'], job.id)
+        item = draft.document['rows'][0]
+        self.assertEqual(item['values']['description_html'], job.output['long_description'])
+        self.assertEqual(item['values']['category_code'], 'LEAF')
+        self.assertEqual(item['ai_applied_snapshot']['job_id'], job.id)
+
+    async def test_missing_exact_revision_cannot_claim_new_output_applied(self):
+        draft, job = self.fixture(confirm=True)
+        await self.advance(draft, job)
+        draft.document['rows'][0].pop('ai_applied_snapshot')
+        saved = deepcopy(draft.document)
+        job.output = content(long_description='<p>New output without proof of the prior revision.</p>').model_dump()
+        with self.assertRaises(CatalogError) as error:
+            await self.reapply(draft, job, [SimpleNamespace(content=job.output)])
+        self.assertEqual(error.exception.code, 'import_ai_identity_changed')
+        self.assertEqual(draft.document, saved)
+        self.assertNotEqual(job.context['staging_applied_digest'], ai_content.digest(job.output))
+
+    async def test_reapply_rejects_manually_moved_category_even_with_old_ai_snapshot(self):
+        draft, job = self.fixture(confirm=True)
+        item = draft.document['rows'][0]
+        item['values']['category_code'] = item['ai_baseline']['category_code'] = None
+        job.context['options']['category_code'] = 'LEAF'
+        await self.advance(draft, job)
+        item = draft.document['rows'][0]
+        item['values']['category_code'] = 'OTHER'
+        item['provenance']['category_code'] = 'manual'
+        item['manual_fields'].append('category_code')
+        job.output = content(long_description='<p>Revised text.</p>').model_dump()
+        with self.assertRaises(CatalogError) as error:
+            await self.reapply(draft, job)
+        self.assertEqual(error.exception.code, 'import_ai_identity_changed')
+        self.assertEqual(draft.document['rows'][0]['values']['category_code'], 'OTHER')
 
 
 if __name__ == '__main__':
