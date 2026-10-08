@@ -275,7 +275,8 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         html = '<div class="specs"><table><tr><th scope="row">Rozmer</th><td colspan="2">50-559</td></tr></table></div>'
         async with self.sessions() as db:
             job = await service.get_job(db, id, True)
-            job.output = content(long_description=html, evidence=[]).model_dump()
+            job.output = content(title="TEST - červená prilba", long_description=html,
+                evidence=[{"claim": "Popis", "source": f"feed:{self.id}", "quote": "Popis"}]).model_dump()
             job.actual_usd = Decimal("0.123")
             job.checks = {"errors": ["ai_unsafe_html"]}
             service.event(job, "blocked", "Synthetic result blocked by the old HTML whitelist")
