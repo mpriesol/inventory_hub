@@ -14,11 +14,40 @@ export interface AiRules { published_id: number; book: AiBook; used_usd: string;
 export interface AiStatus { enabled: boolean; key_configured: boolean; access_configured: boolean; model: string; monthly_limit_usd: string; job_limit_usd: string }
 export interface AiContent { title: string; short_description: string; long_description: string; seo_title: string; meta_description: string; h1_descriptor: string; future_name: string; h1_descr_suffix: string; parameters: { name: string; values: string[]; product_id: number | null }[]; evidence: { claim: string; source: string; quote: string }[]; warnings: string[]; missing_facts: string[] }
 export interface AiUpdatePreview { availability_basis?: string; sending_at?: string; id: string; state: string; fields: string[]; before: Record<string, unknown>; after: Record<string, unknown>; expires_at: string }
-interface AiJobBase { category_selection?: {category_code: string; profile_id: string; path: string; reason: string}; applied_rules?: {id:string; name:string; text:string}[]; resolved_import_policy?: AiRule['import_policy']; parameter_registry?: AiParameter[]; archived?: boolean; update_only?: boolean; source_kind?: 'catalog' | 'shop'; update_state?: string | null; update_preview?: AiUpdatePreview | null; update_result?: { status: string; fields: string[]; error?: string; mismatched_fields?: string[]; observed?: Record<string, unknown> }; id: string; batch_id: string; status: string; revision: number; shop: string; supplier: string; code: string; name: string; image: string | null; product_ids: number[]; use_ai: boolean; rules_version: number; category_profile: string; policy: AiPolicy; origins: Record<string, string>; estimate_usd: string; actual_usd: string | null; reserved_usd: string; checks: { manual_overrides?: string[]; errors?: string[]; warnings?: string[]; evidence_errors?: { index: number; source: string; reason: string }[] }; usage?: { opened_sources?: string[] }; error: string | null; preview_id: string | null; created_at: string; updated_at: string; facts?: { id: number; name: string; description: string; variant_attributes: { name: string; value: string }[] }[]; events?: { at: string; status: string; note: string }[]; preview?: ImportPreview; import_result?: ImportResult; options?: ImportOptions; research?: string }
+export interface AiImportStatus { draft_id: string; revision: number; linked: boolean; ai_applied: boolean; publication_finished: boolean; publication_status: string | null }
+interface AiJobBase { category_selection?: {category_code: string; profile_id: string; path: string; reason: string}; applied_rules?: {id:string; name:string; text:string}[]; resolved_import_policy?: AiRule['import_policy']; parameter_registry?: AiParameter[]; archived?: boolean; update_only?: boolean; source_kind?: 'catalog' | 'shop' | 'import_draft'; staging_id?: string | null; staging?: AiImportStatus | null; update_state?: string | null; update_preview?: AiUpdatePreview | null; update_result?: { status: string; fields: string[]; error?: string; mismatched_fields?: string[]; observed?: Record<string, unknown> }; id: string; batch_id: string; status: string; revision: number; shop: string; supplier: string; code: string; name: string; image: string | null; product_ids: number[]; use_ai: boolean; rules_version: number; category_profile: string; policy: AiPolicy; origins: Record<string, string>; estimate_usd: string; actual_usd: string | null; reserved_usd: string; checks: { manual_overrides?: string[]; errors?: string[]; warnings?: string[]; evidence_errors?: { index: number; source: string; reason: string }[] }; usage?: { opened_sources?: string[] }; error: string | null; preview_id: string | null; created_at: string; updated_at: string; facts?: { id: number; name: string; description: string; variant_attributes: { name: string; value: string }[] }[]; events?: { at: string; status: string; note: string }[]; preview?: ImportPreview; import_result?: ImportResult; options?: ImportOptions; research?: string }
 
 export interface AiProposal { instructions: string; reason: string; questions: string[]; parameters: AiParameter[] | null }
 export type AiJob = AiJobBase & ({ kind: 'product'; output?: AiContent } | { kind: 'rules'; output?: AiProposal });
 
 export async function aiRequest<T>(path: string, body?: unknown): Promise<T> {
   return hubRequest<T>(`/api/ai-content${path}`, body);
+}
+
+// AI readiness and shop delivery are separate states for an import draft.
+export function aiContentStatusKey(job: AiJob, status = job.status): string {
+  return job.staging_id && ['preparing_import', 'ready', 'completed'].includes(status)
+    ? `ai.staging.states.${status}` : `ai.states.${status}`;
+}
+export function aiJobStatusKey(job: AiJob): string {
+  if (job.staging_id) {
+    if (job.staging?.linked === false) return 'ai.staging.replaced';
+    if (job.staging?.publication_status) return `productImport.delivery.${job.staging.publication_status}`;
+    return aiContentStatusKey(job);
+  }
+  const update = job.update_preview?.state || job.update_state;
+  if (['sending', 'uncertain', 'rejected'].includes(update || '')) return `ai.updateStates.${update}`;
+  if (job.update_only && job.status === 'exists') return update === 'completed' ? 'ai.updatedExisting' : 'ai.readyForUpdate';
+  return `ai.states.${job.status}`;
+}
+export function aiJobNextKey(job: AiJob): string {
+  if (job.staging_id) {
+    if (job.staging?.linked === false) return 'ai.staging.replacedHelp';
+    if (job.staging?.publication_status === 'completed') return job.staging.ai_applied ? 'ai.staging.delivered' : 'ai.staging.deliveredWithoutAi';
+    if (job.staging?.publication_status) return 'ai.staging.checkDelivery';
+    if (['preparing_import', 'ready', 'completed', 'review', 'blocked'].includes(job.status)) return `ai.staging.next.${job.status}`;
+  }
+  const update = job.update_preview?.state || job.update_state;
+  if (['sending', 'uncertain', 'rejected'].includes(update || '')) return `ai.updateStates.${update}`;
+  return job.update_only ? `ai.updateNext.${update === 'completed' ? 'completed' : job.status}` : `ai.next.${job.status}`;
 }

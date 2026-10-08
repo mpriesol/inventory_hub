@@ -4,6 +4,8 @@ Funkcia používa OpenAI Responses API z Hubu. Nepotrebuje projekt/GPT v ChatGPT
 
 ## Použitie
 
+Aktuálny výber v dodávateľskom katalógu otvára spoločnú [prípravu importu](product-imports.md). Pri úlohe s `staging_id` znamená **AI obsah pripravený** hotové texty pre tabuľku; prevzatie do tabuľky a odoslanie do e-shopu sú ďalšie kroky. Detail ponúka **Otvoriť prípravu importu**, po odoslaní **Otvoriť výsledok importu**, a ukazuje skutočný výsledok importéra. Ak starší import odišiel bez prevzatia AI, upozorní na to. Schválenie nezmeneného pripraveného obsahu sa už opakovane neponúka. Nižšie opísané samostatné importy a aktualizácie existujúcich produktov zostávajú dostupné pre pôvodné úlohy bez väzby na prípravu.
+
 1. V katalógu dodávateľa vyber produkty a klikni **Pripraviť obsah / AI**. Jedna príprava prijíma najviac 500 vybraných variantov, päť e-shopov a 100 kombinácií rodina/e-shop.
 2. Pre každú rodinu zvoľ **Vylepšiť obsah pomocou AI** alebo pôvodný feed. Pri AI je predvolené **Automaticky vyberie AI**: profil ani kategóriu nemusíš vyberať. Pracuje sa iba s označenými variantmi. Spoločný popis nemožno zapnúť iba pre časť variantov tej istej vybranej rodiny.
 3. Vyber jeden alebo viac e-shopov. AI vyberie koncovú produktovú kategóriu z ich existujúceho stromu; import doplní všetky jej produktové nadradené kategórie. Výslovná ručná kategória obmedzí automatický výber na jej vetvu. Pri ručnom profile má výslovný cieľový kód prednosť pred predvoľbou profilu.

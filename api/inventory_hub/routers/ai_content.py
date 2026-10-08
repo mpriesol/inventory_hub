@@ -136,12 +136,12 @@ async def jobs(db: DB, batch_id: str | None = Query(None, pattern=r"^[a-f0-9]{32
     statement = statement.where(func.coalesce(AiJob.context["archived"].as_boolean(), False) == archived)
     if batch_id:
         statement = statement.where(AiJob.batch_id == batch_id)
-    return [service.summary(j) for j in (await db.scalars(statement)).all()]
+    return await service.summaries(db, (await db.scalars(statement)).all())
 
 
 @protected.get("/jobs/{id}")
 async def job(id: str, db: DB):
-    return service.summary(await service.get_job(db, id), detail=True)
+    return (await service.summaries(db, [await service.get_job(db, id)], detail=True))[0]
 
 
 @protected.get("/jobs/{id}/request")

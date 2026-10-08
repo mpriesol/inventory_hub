@@ -916,7 +916,31 @@
     "discardClose": "Zahodiť zmeny a zavrieť",
     "olderRules": "Táto úloha používa pravidlá #{{version}}, aktuálna verzia je #{{current}}. Nové parametre a pravidlá sa použijú až v novej príprave.",
     "manualApprovalHelp": "Schválením prijímaš aj uvedené chýbajúce fakty a výhrady k zdrojom alebo citátom. Pripraví sa import a upozornenia zostanú uložené. Technické chyby produktu treba opraviť.",
-    "manuallyAcceptedWarnings": "Obsah bol ručne schválený aj s týmito výhradami. Zostávajú evidované ako upozornenia a neblokujú prípravu importu."
+    "manuallyAcceptedWarnings": "Obsah bol ručne schválený aj s týmito výhradami. Zostávajú evidované ako upozornenia a neblokujú prípravu importu.",
+    "staging": {
+      "help": "Táto AI úloha patrí do uloženej prípravy produktov. Schválenie pripraví obsah pre tabuľku; odoslanie do e-shopu sa potvrdzuje v tejto príprave.",
+      "approve": "Schváliť AI obsah pre importnú tabuľku",
+      "approvalHelp": "Schválením prijímaš uvedené výhrady. Potom otvor prípravu importu a prevezmi AI výsledky do tabuľky. Samotné schválenie nevytvára ani neaktualizuje produkt v e-shope.",
+      "openDraft": "Otvoriť prípravu importu",
+      "openResult": "Otvoriť výsledok importu",
+      "replaced": "Nahradená AI príprava",
+      "replacedHelp": "Táto AI úloha už nie je priradená k riadkom. Otvor uloženú prípravu a jej aktuálne výsledky.",
+      "delivered": "Import do e-shopu je dokončený. Otvor uložený výsledok.",
+      "deliveredWithoutAi": "Produkty už sú v e-shope. Tento AI výsledok nebol prevzatý do importnej tabuľky, preto sa týmto importom neodoslal. Otvor výsledok importu.",
+      "checkDelivery": "Otvor uloženú prípravu a skontroluj výsledok odoslania jednotlivých produktov.",
+      "states": {
+        "preparing_import": "Dokončuje schválenie AI obsahu",
+        "ready": "AI obsah pripravený",
+        "completed": "AI prevzaté do tabuľky"
+      },
+      "next": {
+        "preparing_import": "Dokončuje sa schválenie obsahu pre importnú tabuľku.",
+        "ready": "Otvor prípravu importu a prijmi výsledky AI do tabuľky. Potom ulož produkty do Hubu a potvrď odoslanie do e-shopu.",
+        "completed": "AI obsah je prevzatý do tabuľky. V príprave importu skontroluj uloženie a odoslanie do e-shopu.",
+        "review": "Skontroluj a schváľ obsah, potom ho prevezmi do importnej tabuľky.",
+        "blocked": "Skontroluj výhrady a schváľ obsah alebo oprav technické chyby. Potom pokračuj v priradenej príprave importu."
+      }
+    }
   },
   "upgatesImport": {
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",
@@ -2879,7 +2903,24 @@
       "import_code_prefix": "Kód musí obsahovať nakonfigurovaný prefix dodávateľa.",
       "category_must_be_leaf": "Vyberte najnižšiu kategóriu vo vetve.",
       "category_missing": "Chýba cieľová kategória; nastavte mapovanie alebo ju vyberte v bunke.",
-      "local_identity_conflict": "Kód alebo EAN už patrí inému produktu v Hube. Najprv zosúlaďte identitu."
-    }
+      "local_identity_conflict": "Kód alebo EAN už patrí inému produktu v Hube. Najprv zosúlaďte identitu.",
+      "import_ai_not_applied": "Pri produktoch so zapnutým AI najprv prijmite výsledky AI do tabuľky. Ak chcete odoslať pôvodné údaje bez AI, vypnite pri nich AI.",
+      "import_publication_finished": "Výsledok odoslania je uložený nižšie pri jednotlivých produktoch. Táto príprava je uzavretá; ďalšie zmeny existujúcich produktov patria do produktového editora."
+    },
+    "delivery": {
+      "queued": "Odoslanie vo fronte",
+      "running": "Odosiela sa do e-shopu",
+      "completed": "Import do e-shopu dokončený",
+      "partial": "Import dokončený čiastočne",
+      "failed": "Odoslanie zlyhalo",
+      "uncertain": "Výsledok odoslania treba overiť",
+      "unavailable": "Výsledok odoslania sa nepodarilo načítať"
+    },
+    "completedHelp": "Výsledok odoslania je uložený nižšie pri jednotlivých produktoch. Táto príprava je uzavretá; ďalšie zmeny existujúcich produktov patria do produktového editora.",
+    "completedWithoutAi": "AI výsledky zostali neprevzaté. Do e-shopu sa odoslal obsah tabuľky v čase potvrdenia, bez týchto AI úprav.",
+    "showResult": "Zobraziť výsledok odoslania",
+    "openAI": "Otvoriť AI obsah",
+    "aiPendingHelp": "Pri produktoch so zapnutým AI najprv prijmite výsledky AI do tabuľky. Ak chcete odoslať pôvodné údaje bez AI, vypnite pri nich AI.",
+    "publicationResultHelp": "Toto je uložený výsledok odoslania. Stav je uvedený pri každom produkte."
   }
 }

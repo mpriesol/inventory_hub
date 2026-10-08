@@ -512,6 +512,32 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(document.querySelector('button[aria-label="Zavrieť detail"]'));
   await click(button('Zahodiť zmeny a zavrieť'));
   assert(closed);
+
+  const stagedJob = {...modalJob, id:'staged', status:'ready', staging_id:'saved-draft', update_only:false, archived:false,
+    staging:{draft_id:'saved-draft',revision:9,linked:true,ai_applied:false,publication_finished:false,publication_status:null}};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'staged-ready',job:stagedJob,onChange:()=>{}})); await tick(); });
+  assert(document.body.textContent.includes('AI obsah pripravený'));
+  assert(document.querySelector('a[href="/product-import?draft=saved-draft"]'), 'Ready draft AI has a concrete next step even without a legacy preview');
+  assert(!button('Schváliť AI obsah pre importnú tabuľku'), 'Already approved content does not repeat the approval loop');
+  assert(!document.body.textContent.includes('Upraviť existujúci produkt v e-shope'), 'Draft jobs do not offer a route rejected by the server');
+  assert(!document.body.textContent.includes('Pokračovať s vybranými produktmi / variantmi'));
+  await input([...document.querySelectorAll('label')].find(l=>l.textContent.startsWith('Názov')).querySelector('textarea'),'Changed AI title');
+  assert(button('Schváliť AI obsah pre importnú tabuľku'), 'An actual edit requires fresh approval');
+  assert.equal(document.querySelector('a[href="/product-import?draft=saved-draft"]').getAttribute('aria-disabled'),'true','Navigation preserves unsaved AI changes');
+  const delivered = {...stagedJob, staging:{...stagedJob.staging,publication_status:'completed',publication_finished:true}};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'staged-delivered',job:delivered,onChange:()=>{}})); await tick(); });
+  assert(document.body.textContent.includes('Import do e-shopu dokončený'));
+  assert(document.body.textContent.includes('Tento AI výsledok nebol prevzatý'));
+  assert.equal(document.querySelector('.ai-draft-link').textContent,'Otvoriť výsledok importu');
+  assert(!button('Schváliť AI obsah pre importnú tabuľku') && !button('Zrušiť túto úlohu'));
+  assert([...document.querySelectorAll('textarea')].every(field=>field.disabled),'Completed import details remain reviewable without offering ineffective edits');
+  jobs = [stagedJob, {...delivered,id:'delivered'}];
+  await act(async () => { root.render(React.createElement(MemoryRouter,{key:'staged-list',initialEntries:['/ai-content?job=delivered']},React.createElement(AiContentPage))); await tick(); });
+  await act(tick);
+  assert(document.querySelector('[role="dialog"]'),'The import table can open its exact AI job directly');
+  await click(document.querySelector('button[aria-label="Zavrieť detail"]'));
+  for(const check of document.querySelectorAll('input[aria-label^="Označiť úlohu"]')) await click(check);
+  assert(button('Importovať označené pripravené').disabled,'Bulk legacy import excludes draft-linked ready jobs');
   await act(async () => root.unmount());
   assert.equal(document.body.style.overflow, '');
   console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search and scoped rule deletion.');

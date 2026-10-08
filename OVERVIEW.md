@@ -32,6 +32,8 @@ AI registre podporujú zdieľané bloky pre vybrané profily, označené návrhy
 
 AI podklady majú explicitný formát URL, kompatibilitu so starším prefixom `official:https://…`, chyby po jednotlivých riadkoch a opravu zdroja, citátu aj tvrdenia v detaile úlohy. Feedové citáty tolerujú typografické spojovníky a presné dvojice názov: hodnota z parametrov rovnakého produktu. Ručné schválenie prijme výhrady k citátom, otvoreniu zdrojov a chýbajúcim faktom ako evidované upozornenia; automatické schválenie ich neprijíma. Technické chyby produktu zostávajú blokujúce. Uloženie konceptu zruší schválenie a vykoná plnú kontrolu bez generovania.
 
+AI úlohy pre spoločnú importnú tabuľku zobrazujú stav obsahu oddelene od skutočného výsledku odoslania. Dokončené importy otvárajú uložený výsledok; opakovaný náhľad ho nenahrádza. Pri zapnutom AI treba pred publikáciou prevziať jeho výsledok do tabuľky alebo AI výslovne vypnúť. Staršie importy bez prevzatého AI zostávajú pravdivo označené. Podrobnosti sú v [príprave importu](docs/product-imports.md).
+
 AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; normalizácia pomlčiek prebehne pri spracovaní AI odpovede, uložení úprav aj zostavení obsahu pre e-shop.
 
 HTML dlhého AI popisu už neblokujú bežné značky ani formátovacie atribúty. Zostáva kontrola aktívneho kódu a vložených dokumentov; uložený výsledok možno znovu overiť bez plateného generovania. Rozsah a postup obnovy sú v [AI dokumentácii](docs/ai-content.md).

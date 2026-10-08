@@ -157,6 +157,9 @@ async function render(entry) {
   await key(label('Názov'), 'Enter');
   server.rows.filter(row => row.ai_job).forEach(row => row.ai_job.status = 'review');
   await click(button('Uložiť koncept (1)'));
+  await click(button('Uložiť produkty do Hubu'));
+  assert.equal(button('Náhľad odoslania do e-shopu').disabled,true,'Selected but unapplied AI cannot accidentally publish feed-only content');
+  assert(document.querySelector('a[href="/ai-content?job=job-family-1"]'),'Review is reachable for the specific AI family');
   await click(button('Prijať výsledky AI do tabuľky'));
   assert.equal(server.rows[0].values.name, 'Ručný názov počas AI', 'Manual values survive accepted AI output');
   assert.equal(button('Náhľad odoslania do e-shopu').disabled, true, 'AI changes require local Hub save');
@@ -168,6 +171,18 @@ async function render(entry) {
   await click(button('Odoslať 1 produktov do biketrek'));
   assert.equal(calls.filter(call => call.path.endsWith('/publish')).length, 1);
   assert.ok(document.body.textContent.includes('Vytvorené'));
+  assert.ok(document.body.textContent.includes('Import do e-shopu dokončený'));
+  assert.equal(button('Náhľad odoslania do e-shopu'),undefined,'Completed publication no longer offers a fresh preview');
+  assert.equal(button('Uložiť produkty do Hubu'),undefined,'A completed create-only preparation cannot imply it updates shop products');
+  assert.equal(label('Vylepšiť pomocou AI: PL-1').disabled,true);
+  assert(!button('Obnoviť').disabled,'The final result can still be refreshed');
+  assert(!document.body.textContent.includes('Až nasledujúce potvrdenie vytvorí produkty'),'Result copy replaces preview instructions');
+
+  // Older imports may have been published while approved AI still awaited table acceptance.
+  server.rows.filter(row => row.ai_job).forEach(row => row.ai_job.status = 'ready');
+  await click(button('Obnoviť'));
+  assert(document.body.textContent.includes('AI výsledky zostali neprevzaté'));
+  assert.equal(button('Prijať výsledky AI do tabuľky'),undefined,'Applying AI cannot erase an already completed delivery record');
 
   await render('/product-import');
   assert.ok(document.querySelector('a[href="/product-import?draft=test-draft"]'), 'Saved drafts are discoverable without route state');

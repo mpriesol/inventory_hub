@@ -78,31 +78,101 @@ def publication_result(draft):
         raise
 
 
+def publication_state(result):
+    """Read delivery from the durable importer journal, never from AI readiness."""
+    if not result:
+        return None
+    statuses = {item['status'] for item in result['items']}
+    if 'uncertain' in statuses:
+        return 'uncertain'
+    if result['status'] in ('queued', 'running'):
+        return result['status']
+    if result['status'] == 'completed' and statuses and statuses <= {'created', 'exists'}:
+        return 'completed'
+    return 'partial' if statuses & {'created', 'exists'} else 'failed'
+
+
+def ai_job_import_status(job, draft, result):
+    rows = [r for r in draft.document['rows'] if r.get('ai_job_id') == job.id]
+    selected = {r['id'] for r in rows}
+    items = [item for item in (result or {}).get('items', []) if selected.intersection(item['product_ids'])]
+    status = publication_state({**result, 'items': items}) if result and items else None
+    covered = {id for item in items for id in item['product_ids']}
+    if items and selected <= covered and all(item['status'] in ('created', 'exists') for item in items):
+        status = 'completed'
+    return {'draft_id': draft.id, 'revision': draft.revision, 'linked': bool(rows),
+            'ai_applied': bool(rows) and job.status == 'completed',
+            'publication_finished': publication_state(result) == 'completed',
+            'publication_status': status}
+
+
+async def ai_job_statuses(db, jobs):
+    ids = {j.context.get('staging_id') for j in jobs if j.context.get('staging_id')}
+    if not ids:
+        return {}
+    drafts = (await db.scalars(select(ProductImportDraft).where(ProductImportDraft.id.in_(ids)))).all()
+    by_id = {draft.id: draft for draft in drafts}
+    results, unavailable = {}, set()
+    for draft in drafts:
+        try:
+            results[draft.id] = publication_result(draft)
+        except CatalogError:
+            # A damaged/unavailable journal must not hide every unrelated AI job.
+            results[draft.id] = None
+            unavailable.add(draft.id)
+    output = {}
+    for job in jobs:
+        id = job.context.get('staging_id')
+        if id in by_id:
+            output[job.id] = ai_job_import_status(job, by_id[id], results[id])
+            if id in unavailable:
+                output[job.id]['publication_status'] = 'unavailable'
+    return output
+
+
 def assert_editable(draft):
     result = publication_result(draft)
     if result and (result['status'] in ('queued', 'running') or any(i['status'] == 'uncertain' for i in result['items'])):
         raise CatalogError('import_publication_pending', 'Reconcile the existing publication before changing this draft', 409)
+    if publication_state(result) == 'completed':
+        raise CatalogError('import_publication_finished', 'This import is complete; use the product editor for further changes', 409)
+
+
+async def assert_ai_applied(db, draft):
+    rows = [r for r in draft.document['rows'] if r['values']['ai_enabled']]
+    if not rows:
+        return
+    ids = {r.get('ai_job_id') for r in rows if r.get('ai_job_id')}
+    jobs = {j.id: j for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).with_for_update())).all()}
+    if any(not (job := jobs.get(r.get('ai_job_id'))) or job.context.get('staging_id') != draft.id
+           or job.status != 'completed' for r in rows):
+        raise CatalogError('import_ai_not_applied', 'Apply the selected AI results to the table or explicitly turn AI off before publication', 409)
 
 
 async def public(db, draft):
     document = draft.document
     rows = deepcopy(document['rows'])
     ids = {r.get('ai_job_id') for r in rows if r.get('ai_job_id')}
-    jobs = {j.id: ai_content.summary(j) for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)))).all()} if ids else {}
+    result = publication_result(draft)
+    jobs = {j.id: {**ai_content.summary(j), 'staging': ai_job_import_status(j, draft, result)}
+            for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)))).all()} if ids else {}
     for row in rows:
         row.pop('source', None)
         row.pop('ai_baseline', None)
         row['ai_job'] = jobs.get(row.pop('ai_job_id', None))
+        row['publication_status'] = next((item['status'] for item in (result or {}).get('items', [])
+                                          if row['id'] in item['product_ids']), None)
     return {'id': draft.id, 'revision': draft.revision, 'status': draft.status, 'supplier': draft.supplier,
             'shop': draft.shop, 'feed_key': document['feed_key'], 'options': document['options'],
             'categories': document['categories'], 'rows': rows, 'publication': document.get('publication'),
-            'publication_result': publication_result(draft), 'created_at': draft.created_at,
+            'publication_result': result, 'publication_state': publication_state(result), 'created_at': draft.created_at,
             'updated_at': draft.updated_at}
 
 
 async def history(db):
     drafts = (await db.scalars(select(ProductImportDraft).order_by(ProductImportDraft.updated_at.desc()).limit(100))).all()
     return {'items': [{'id': d.id, 'revision': d.revision, 'status': d.status, 'supplier': d.supplier, 'shop': d.shop,
+                       'publication_state': publication_state(publication_result(d)),
                        'updated_at': d.updated_at, 'rows_count': len(d.document.get('rows', []))} for d in drafts]}
 
 
@@ -413,7 +483,10 @@ def overlay_payload(item, rows, language, categories):
 
 async def preview(db, draft, request):
     expect(draft, request.expected_revision)
+    if publication_state(publication_result(draft)) == 'completed':
+        return await public(db, draft)
     assert_editable(draft)
+    await assert_ai_applied(db, draft)
     document = deepcopy(draft.document)
     if draft.status != 'saved' or document.get('saved_hash') != content_hash(document):
         raise CatalogError('import_save_required', 'Save current products in Hub before preparing publication', 409)
@@ -444,6 +517,12 @@ async def publish(db, draft, request):
     preview = draft.document.get('publication')
     if not preview or preview['preview_id'] != request.preview_id:
         raise CatalogError('import_preview_changed', 'Confirm the current publication preview', 409)
+    result = publication_result(draft)
+    if publication_state(result) == 'completed':
+        return await public(db, draft), False
+    # Recovery belongs to the already confirmed snapshot, even if AI was edited later.
+    if not result:
+        await assert_ai_applied(db, draft)
     await assert_snapshot(db, {'draft_id': draft.id, 'hash': draft.document.get('saved_hash')})
     result, run = catalog_import.queue_import(draft.shop, request.preview_id, request.retry_failed, staging_id=draft.id)
     document = deepcopy(draft.document)
