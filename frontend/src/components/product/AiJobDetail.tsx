@@ -107,16 +107,17 @@ export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
         <details><summary>{t('ai.openedSources')}</summary>{openedSources.length ? <ul>{openedSources.map(source => <li key={source}><code>{source}</code></li>)}</ul> : <p>{t('ai.noOpenedSources')}</p>}</details>
         <div className="ai-scroll"><table><thead><tr><th>{t('ai.claim')}</th><th>{t('ai.source')}</th><th>{t('ai.evidence')}</th><th /></tr></thead><tbody>{content.evidence?.map((e, i) => {
           const issue = !dirty && job.checks?.evidence_errors?.find(item => item.index === i && item.source === e.source);
-          const accepted = job.checks?.manual_overrides?.includes(e.source.startsWith('feed:') ? 'ai_unverified_feed_evidence' : 'ai_unverified_official_evidence');
+          const evidenceCode = e.source.startsWith('feed:') ? 'ai_unverified_feed_evidence' : 'ai_unverified_official_evidence';
+          const nonBlocking = job.checks?.warnings?.includes(evidenceCode) || job.checks?.manual_overrides?.includes(evidenceCode);
           return <tr key={i}><td>
             <textarea aria-label={`${t('ai.claim')} ${i + 1}`} maxLength={2000} disabled={!editable || busy} value={e.claim}
               onChange={event => { setContent({ ...content, evidence: content.evidence.map((item, index) => index === i ? { ...item, claim: event.target.value } : item) }); setDirty(true); }} />
           </td><td>
-            <input aria-label={`${t('ai.source')} ${i + 1}`} aria-invalid={!!issue && !accepted} list={`ai-opened-sources-${job.id}`} disabled={!editable || busy} value={e.source}
+            <input aria-label={`${t('ai.source')} ${i + 1}`} aria-invalid={!!issue && !nonBlocking} list={`ai-opened-sources-${job.id}`} disabled={!editable || busy} value={e.source}
               onChange={event => { setContent({ ...content, evidence: content.evidence.map((item, index) => index === i ? { ...item, source: event.target.value } : item) }); setDirty(true); }} />
-            {issue && <p className={`ai-notice${accepted ? '' : ' ai-error'}`}>{t(`ai.evidenceErrors.${issue.reason}`, {defaultValue:issue.reason})}</p>}
+            {issue && <p className={`ai-notice${nonBlocking ? '' : ' ai-error'}`}>{t(`ai.evidenceErrors.${issue.reason}`, {defaultValue:issue.reason})}</p>}
           </td><td>
-            <textarea aria-label={`${t('ai.evidence')} ${i + 1}`} aria-invalid={issue?.reason === 'feed_quote_not_found' && !accepted} maxLength={3000} disabled={!editable || busy} value={e.quote}
+            <textarea aria-label={`${t('ai.evidence')} ${i + 1}`} aria-invalid={issue?.reason === 'feed_quote_not_found' && !nonBlocking} maxLength={3000} disabled={!editable || busy} value={e.quote}
               onChange={event => { setContent({ ...content, evidence: content.evidence.map((item, index) => index === i ? { ...item, quote: event.target.value } : item) }); setDirty(true); }} />
           </td><td><button type="button" disabled={!editable || busy} aria-label={`${t('ai.removeEvidence')} ${e.claim}`} onClick={() => { setContent({ ...content, evidence: content.evidence.filter((_, index) => index !== i) }); setDirty(true); }}>{t('ai.removeEvidence')}</button></td></tr>;
         })}</tbody></table></div><p>{t('ai.removeEvidenceHelp')}</p>

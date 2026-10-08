@@ -618,7 +618,7 @@
     "source": "Zdroj",
     "evidence": "Podklad",
     "evidenceSourceHelp": "Pre feed použi feed:<id>, pre web presnú otvorenú HTTPS adresu. Vyber iba stránku, ktorá dokladá dané tvrdenie; samotný záznam otvorenia nepotvrdzuje správnosť údajov. Opravu možno uložiť bez nového AI generovania.",
-    "evidenceQuoteHelp": "Tvrdenie aj citát možno upraviť. Použi doslovný úsek feedu alebo presné dvojice názov: hodnota z parametrov rovnakého produktu oddelené bodkočiarkou. Uložiť koncept obsahu opravu overí bez volania AI. Výhradu k citátu môžeš prijať ručným schválením.",
+    "evidenceQuoteHelp": "Tvrdenie aj citát možno upraviť. Použi doslovný úsek feedu alebo presné dvojice názov: hodnota z parametrov rovnakého produktu oddelené bodkočiarkou. Uložiť koncept obsahu opravu overí bez volania AI. Nesúlad citátu alebo chýbajúci záznam otvorenia zdroja je upozornenie: neblokuje import a sám nevyžaduje ručné schválenie.",
     "openedSources": "Stránky zaznamenané ako otvorené pri tejto príprave",
     "noOpenedSources": "Táto príprava nemá zaznamenanú otvorenú webovú stránku.",
     "recheckContent": "Znovu overiť obsah bez AI",

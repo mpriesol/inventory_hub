@@ -21,8 +21,7 @@ ACTIVE_TAGS = {"script", "iframe", "frame", "frameset", "object", "embed", "appl
                "svg", "math", "base", "meta", "link", "style"}
 URL_ATTRIBUTES = {"href", "src", "srcset", "xlink:href", "action", "formaction", "data",
                   "poster", "background", "cite", "longdesc", "codebase"}
-HUMAN_REVIEW_ERRORS = frozenset({"ai_missing_facts", "ai_unverified_feed_evidence",
-                                "ai_unverified_official_evidence"})
+HUMAN_REVIEW_ERRORS = frozenset({"ai_missing_facts"})
 
 
 def _css_escape(match: re.Match) -> str:
@@ -183,22 +182,23 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         reason = None
         if evidence.source.startswith("feed:"):
             if not feed_quote_matches(evidence.quote, feed_facts.get(evidence.source, {})):
-                errors.append("ai_unverified_feed_evidence")
+                warnings.append("ai_unverified_feed_evidence")
                 reason = "feed_quote_not_found"
         else:
             # Official sites may be discovered without a preconfigured domain list.
-            # The model assesses publisher identity; the server checks actual opening.
+            # The model assesses publisher identity. Opening/quote diagnostics are
+            # informational: citation bookkeeping must not block a valid import.
             reason = official_source_error(evidence.source, opened or [])
             if reason:
-                errors.append("ai_unverified_official_evidence")
+                warnings.append("ai_unverified_official_evidence")
         if reason:
             evidence_errors.append({"index": index, "source": evidence.source, "reason": reason})
     if context["research"] == "official" and not any(not e.source.startswith("feed:") for e in content.evidence):
         warnings.append("ai_no_additional_official_evidence")
     if category and not category.get("automatic_import_ready", True):
         warnings.append("ai_category_requires_review")
-    # Only an explicit human review can accept these editorial uncertainties.
-    # Keep the original evidence/missing facts and their diagnostics for audit.
+    # Missing decisive facts still require explicit human acceptance. Citation
+    # warnings need no override; keep original evidence and diagnostics for audit.
     overrides = sorted(set(errors) & HUMAN_REVIEW_ERRORS) if human_approved else []
     errors = [error for error in errors if error not in overrides]
     warnings.extend(overrides)

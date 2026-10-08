@@ -1,9 +1,10 @@
 """New draft policy automation retains approval, edit and publication fences."""
+import json
 import unittest
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from test_ai_content import content, context
 from test_product_import import document, row
@@ -60,6 +61,45 @@ class DraftAutomationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(service.approved_visibility(draft.document['rows'], [1]))
         saved.assert_awaited_once()
         prepared.assert_awaited_once()
+
+    async def test_generated_citation_warnings_allow_policy_approval_and_draft_import(self):
+        output = content(evidence=[
+            {'claim': 'Vlastnosť', 'source': 'feed:1', 'quote': 'Citát s odlišným zápisom'},
+            {'claim': 'Tabuľka', 'source': 'https://manufacturer.example/table.pdf', 'quote': 'Rozmer'},
+        ]).model_dump()
+        response = {'status': 'completed', 'output': [
+            {'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(output)}]},
+        ]}
+        for review_required in (False, True):
+            with self.subTest(review_required=review_required):
+                draft, job = self.fixture()
+                job.status, job.kind = 'queued', 'product'
+                job.context['approval'] = None
+                job.context['resolved']['policy']['review_required'] = review_required
+                db = SimpleNamespace(add=Mock())
+                @asynccontextmanager
+                async def session():
+                    yield db
+                with patch.object(worker, 'get_session_context', session), \
+                     patch.object(ai_content, 'get_job', AsyncMock(return_value=job)), \
+                     patch.object(worker.provider, 'generate', AsyncMock(return_value=response)) as generated, \
+                     patch.object(worker.settings, 'AI_CONTENT_ENABLED', True):
+                    await worker.generation(job.id)
+                generated.assert_awaited_once()
+                self.assertEqual(job.output, output)
+                self.assertEqual(job.checks['errors'], [])
+                self.assertEqual(job.checks['manual_overrides'], [])
+                self.assertTrue(job.checks['automatic_ready'])
+                self.assertTrue({'ai_unverified_feed_evidence', 'ai_unverified_official_evidence'} <= set(job.checks['warnings']))
+                self.assertEqual(len(job.checks['evidence_errors']), 2)
+                self.assertEqual(job.context['approval'], None if review_required else 'policy')
+                self.assertEqual(job.status, 'review' if review_required else 'preparing_import')
+                if not review_required:
+                    saved, prepared = await self.advance(draft, job)
+                    self.assertEqual(job.status, 'import_queued')
+                    self.assertTrue(service.approved_visibility(draft.document['rows'], [1]))
+                    saved.assert_awaited_once()
+                    prepared.assert_awaited_once()
 
     async def test_confirmation_override_applies_content_but_waits_for_publication(self):
         draft, job = self.fixture(confirm=True)

@@ -349,7 +349,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             job.checks = {"errors": ["ai_unverified_feed_evidence"]}
             service.event(job, "blocked", "Synthetic hyphen mismatch")
             await db.commit()
-        for next_quote, expected_status in [(quote, "review"), (quote + " Nepodložená veta.", "blocked"), (quote, "review")]:
+        for next_quote, warned in [(quote, False), (quote + " Nepodložená veta.", True), (quote, False)]:
             async with self.sessions() as db:
                 job = await service.get_job(db, id, True)
                 request = ContentReview(expected_revision=job.revision, content={**job.output, "title": "Model — popis"}, approve=False)
@@ -357,10 +357,11 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 await service.review(db, job, request)
                 await db.commit()
             job = await self.job(id)
-            self.assertEqual(job.status, expected_status)
+            self.assertEqual(job.status, "review")
             self.assertEqual(job.output["evidence"][0]["quote"], next_quote)
             self.assertEqual(job.output["title"], "Model - popis")
-            self.assertEqual(job.checks["errors"], ["ai_unverified_feed_evidence"] if expected_status == "blocked" else [])
+            self.assertEqual(job.checks["errors"], [])
+            self.assertEqual("ai_unverified_feed_evidence" in job.checks["warnings"], warned)
             self.assertEqual(job.context["facts"], facts)
             self.assertEqual(job.actual_usd, Decimal("0.123"))
             self.assertIsNone(job.preview_id)
@@ -390,8 +391,8 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 await db.commit()
             job = await self.job(id)
             self.assertEqual(job.status, 'preparing_import' if approve else 'blocked')
-            self.assertEqual(job.checks['errors'], [] if approve else expected)
-            self.assertEqual(job.checks['manual_overrides'], expected if approve else [])
+            self.assertEqual(job.checks['errors'], [] if approve else ['ai_missing_facts'])
+            self.assertEqual(job.checks['manual_overrides'], ['ai_missing_facts'] if approve else [])
             self.assertEqual(job.context['approval'], 'human' if approve else None)
             self.assertEqual(job.output, output)
             self.assertFalse(self.clients['biketrek'].sent)

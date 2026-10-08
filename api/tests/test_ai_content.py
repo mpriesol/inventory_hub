@@ -153,30 +153,30 @@ class ContentTests(unittest.TestCase):
             with self.subTest(description=description):
                 self.assertIn("ai_unsafe_html", validate_content(content(long_description=description), context())["errors"])
 
-    def test_contacts_plain_text_and_unverified_sources_still_block(self):
+    def test_contacts_and_plain_text_block_while_unverified_quotes_warn(self):
         self.assertIn("ai_manufacturer_contact", validate_content(content(long_description='<p>a@example.com</p>'), context())["errors"])
         self.assertIn("ai_plain_text_required:title", validate_content(content(title='<b>Prilba</b>'), context())["errors"])
         bad = content(evidence=[{"claim": "waterproof", "quote": "not in feed", "source": "feed:1"}])
-        self.assertIn("ai_unverified_feed_evidence", validate_content(bad, context())["errors"])
+        self.assertIn("ai_unverified_feed_evidence", validate_content(bad, context())["warnings"])
 
-    def test_official_evidence_requires_exact_opened_page_without_domain_setup(self):
+    def test_official_evidence_warns_without_exact_opening_or_valid_url(self):
         ctx = context()
         ctx["resolved"]["official_domains"] = ["northfinder.com"]
         source = "https://northfinder.com/product"
         value = content(evidence=[{"claim": "fact", "quote": "source quote", "source": source}])
-        self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx)["errors"])
-        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [source])["errors"])
+        self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx)["warnings"])
+        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [source])["warnings"])
         for url in ("https://northfinder.com.evil.test/product", "https://evilnorthfinder.com/product"):
             value.evidence[0].source = url
-            self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx, [source])["errors"])
+            self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx, [source])["warnings"])
         discovered = "https://manufacturer.example/product"
         value.evidence[0].source = discovered
-        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [discovered])["errors"])
+        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [discovered])["warnings"])
         ctx["resolved"]["official_domains"] = []
-        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [discovered])["errors"])
+        self.assertNotIn("ai_unverified_official_evidence", validate_content(value, ctx, [discovered])["warnings"])
         for url in ("http://manufacturer.example/product", "https://user:pass@manufacturer.example/product", "https://manufacturer.example/product?token=private", "https:///product"):
             value.evidence[0].source = url
-            self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx, [url])["errors"])
+            self.assertIn("ai_unverified_official_evidence", validate_content(value, ctx, [url])["warnings"])
 
     def test_feed_evidence_matches_real_multiline_text_and_html(self):
         ctx = context()
@@ -187,7 +187,7 @@ class ContentTests(unittest.TestCase):
         value = content(evidence=[{"claim": "Konštrukcia pumpy", "source": "feed:1", "quote": quote}])
         self.assertEqual(validate_content(value, ctx)["errors"], [])
         value.evidence[0].quote = quote.replace("1000", "2000")
-        self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["errors"])
+        self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["warnings"])
 
     def test_feed_evidence_accepts_typographic_hyphens_without_changing_facts(self):
         ctx = context()
@@ -211,16 +211,16 @@ class ContentTests(unittest.TestCase):
         ):
             with self.subTest(quote=quote):
                 value = content(evidence=[{"claim": "Údaj", "source": "feed:1", "quote": quote}])
-                self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["errors"])
+                self.assertIn("ai_unverified_feed_evidence", validate_content(value, ctx)["warnings"])
 
-    def test_legacy_official_url_is_normalized_but_still_requires_exact_opening(self):
+    def test_legacy_official_url_is_normalized_and_reports_missing_opening(self):
         source = "https://manufacturer.example/product"
         value = content(evidence=[{"claim": "fact", "quote": "source quote", "source": "official:" + source}])
         self.assertEqual(value.evidence[0].source, source)
         self.assertEqual(validate_content(value, context(), [source])["errors"], [])
         for opened in ([], [source + "-other"], ["official:" + source]):
             checks = validate_content(value, context(), opened)
-            self.assertIn("ai_unverified_official_evidence", checks["errors"])
+            self.assertIn("ai_unverified_official_evidence", checks["warnings"])
             self.assertEqual(checks["evidence_errors"], [{"index": 0, "source": source, "reason": "not_opened"}])
 
     def test_source_diagnostics_do_not_guess_urls_or_interrupt_validation(self):
@@ -235,8 +235,10 @@ class ContentTests(unittest.TestCase):
             with self.subTest(source=source):
                 value = content(evidence=[{"claim": "fact", "quote": "source quote", "source": source}])
                 checks = validate_content(value, context(), [value.evidence[0].source])
-                self.assertIn("ai_unverified_official_evidence", checks["errors"])
-                self.assertFalse(checks["automatic_ready"])
+                self.assertIn("ai_unverified_official_evidence", checks["warnings"])
+                self.assertTrue(checks["automatic_ready"])
+                self.assertEqual(checks["errors"], [])
+                self.assertEqual(checks["manual_overrides"], [])
                 self.assertEqual(checks["evidence_errors"][0]["reason"], reason)
 
     def test_feed_diagnostic_identifies_only_the_failed_evidence_row(self):
@@ -264,7 +266,7 @@ class ContentTests(unittest.TestCase):
             with self.subTest(quote=quote, source=source):
                 value = content(evidence=[{"claim": "Rozmer a ventil", "source": source, "quote": quote}])
                 checks = validate_content(value, ctx)
-                self.assertEqual('ai_unverified_feed_evidence' not in checks['errors'], valid)
+                self.assertEqual('ai_unverified_feed_evidence' not in checks['warnings'], valid)
                 self.assertEqual(value.evidence[0].quote, quote)
 
     def test_human_approval_accepts_editorial_concerns_but_keeps_technical_checks(self):
@@ -276,10 +278,11 @@ class ContentTests(unittest.TestCase):
         original = value.model_dump()
         expected = ['ai_missing_facts', 'ai_unverified_feed_evidence', 'ai_unverified_official_evidence']
         strict = validate_content(value, ctx)
-        self.assertEqual(strict['errors'], expected, 'Context alone must not approve a newly edited draft')
+        self.assertEqual(strict['errors'], ['ai_missing_facts'], 'Context alone must not approve a newly edited draft')
+        self.assertTrue(set(expected[1:]) <= set(strict['warnings']))
         accepted = validate_content(value, ctx, human_approved=True)
         self.assertEqual(accepted['errors'], [])
-        self.assertEqual(accepted['manual_overrides'], expected)
+        self.assertEqual(accepted['manual_overrides'], ['ai_missing_facts'])
         self.assertTrue(set(expected) <= set(accepted['warnings']))
         self.assertEqual(accepted['evidence_errors'], strict['evidence_errors'])
         self.assertFalse(accepted['automatic_ready'])
@@ -301,7 +304,7 @@ class ContentTests(unittest.TestCase):
         ]:
             with self.subTest(quote=quote, source=source):
                 value = content(evidence=[{"claim": "Údaj", "source": source, "quote": quote}])
-                self.assertEqual("ai_unverified_feed_evidence" not in validate_content(value, ctx)["errors"], valid)
+                self.assertEqual("ai_unverified_feed_evidence" not in validate_content(value, ctx)["warnings"], valid)
 
     def test_content_overlay_preserves_money_identity_and_source(self):
         p = product()

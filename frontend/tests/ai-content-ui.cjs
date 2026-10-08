@@ -259,6 +259,19 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(document.body.textContent.includes('Obsah bol ručne schválený'));
   assert.equal(document.querySelector('textarea[aria-label="Podklad 1"]').getAttribute('aria-invalid'),'false');
   assert(document.body.textContent.includes('Citát sa nenašiel'), 'The source diagnostic remains visible after manual approval');
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'automatic-evidence-warnings',job:{...sourceFixJob,
+    status:'ready',output:{...content,evidence:[incorrectQuote,unsupportedEvidence]},checks:{errors:[],
+      warnings:['ai_unverified_feed_evidence','ai_unverified_official_evidence'],
+      evidence_errors:[{index:0,source:'feed:1',reason:'feed_quote_not_found'},{index:1,source:unsupportedEvidence.source,reason:'not_opened'}]}},onChange:() => {}})); await tick(); });
+  for (const index of [1,2]) {
+    const source = document.querySelector(`input[aria-label="Zdroj ${index}"]`);
+    assert.equal(source.getAttribute('aria-invalid'),'false', 'Automatic evidence warnings do not mark source inputs invalid');
+    assert.equal(document.querySelector(`textarea[aria-label="Podklad ${index}"]`).getAttribute('aria-invalid'),'false');
+    assert(source.closest('tr').querySelector('.ai-notice'), 'Evidence warnings retain their row-level diagnostic');
+    assert(!source.closest('tr').querySelector('.ai-error'), 'Evidence warnings have no blocking error styling without a manual override');
+  }
+  assert(document.body.textContent.includes('sám nevyžaduje ručné schválenie'));
+  assert(!document.body.textContent.includes('Obsah bol ručne schválený'), 'Automatic warnings must not claim manual acceptance');
   for (const state of [{status:'completed'}, {status:'blocked',update_state:'uncertain'}]) {
     await act(async () => { root.render(React.createElement(AiJobDetail,{key:`source-readonly-${state.status}`,job:{...sourceFixJob,...state},onChange:() => {}})); await tick(); });
     assert(document.querySelector('input[aria-label="Zdroj 1"]').disabled, 'Completed jobs and uncertain writes cannot change evidence');

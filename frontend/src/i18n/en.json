@@ -617,7 +617,7 @@
     "source": "Source",
     "evidence": "Evidence",
     "evidenceSourceHelp": "Use feed:<id> for feed data or the exact opened HTTPS URL for a web source. Only select a page that supports this claim; a recorded opening does not establish factual accuracy. Save corrections without generating AI content again.",
-    "evidenceQuoteHelp": "Edit the claim and quote as needed. Use a verbatim feed passage or exact name: value parameter pairs from the same product, separated by semicolons. Save content draft validates without calling AI. A quotation concern can be accepted by manual approval.",
+    "evidenceQuoteHelp": "Edit the claim and quote as needed. Use a verbatim feed passage or exact name: value parameter pairs from the same product, separated by semicolons. Save content draft validates without calling AI. A quotation mismatch or missing source-opening record is a warning: it does not block import or require manual approval on its own.",
     "openedSources": "Pages recorded as opened during this preparation",
     "noOpenedSources": "This preparation has no recorded opened web page.",
     "recheckContent": "Recheck content without AI",
