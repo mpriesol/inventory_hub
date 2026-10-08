@@ -79,6 +79,12 @@ def validate_definition(definition: MappingDefinition, shop: str = ""):
         if key in ("parameters", "variant_attributes") and not (binding.param_name_path and binding.param_value_path):
             if binding.constant is None:
                 raise ValueError("Repeated parameters need name and value paths")
+        if binding.param_match_name is not None:
+            if (not key.startswith("parameter:") or not binding.source or binding.constant is not None
+                    or not binding.param_name_path or not binding.param_value_path):
+                raise ValueError("A named source parameter needs its collection, name and value paths and a parameter destination")
+            if not binding.param_match_name.strip() or any(ord(c) < 32 for c in binding.param_match_name):
+                raise ValueError("Choose a non-empty printable source parameter name")
         for transform in binding.transforms:
             if transform.op in ("multiply", "round", "truncate"):
                 if transform.value is None:
@@ -139,6 +145,20 @@ def _binding_values(raw: dict, binding):
     literal = values_at(raw, source) if source else []
     values = [binding.constant] if binding.constant is not None else literal or [value for path in source.split("|") if path for value in values_at(raw, path)]
     values = [primitive(value) for value in values if value is not None and value != ""]
+    if binding.param_match_name is not None:
+        # Pair each name with values in that same node. Array order and unrelated
+        # source parameters must never change which fact a binding selects.
+        selected = []
+        for node in values:
+            names = [primitive(value) for value in values_at(node, binding.param_name_path or "")]
+            name = _one(names, binding.target)
+            if name is not None and str(name).strip() == binding.param_match_name.strip():
+                for value in values_at(node, binding.param_value_path or ""):
+                    value = primitive(value)
+                    if isinstance(value, (dict, list)):
+                        raise ValueError("A parameter value must be scalar")
+                    selected.append(value)
+        values = [value for value in selected if value is not None and value != ""]
     if not values and binding.default is not None:
         values = binding.default if isinstance(binding.default, list) else [binding.default]
     if len(values) == 1 and isinstance(values[0], list):
@@ -253,6 +273,10 @@ def apply_definition(product: CatalogProduct | None, raw: dict, definition: Mapp
         fields[target] = {"scope": shop or "feed", "revision": revision, "source": binding.source,
                           "constant": binding.constant is not None,
                           "transforms": [t.model_dump(by_alias=True, exclude_none=True) for t in binding.transforms]}
+        if binding.param_match_name is not None:
+            fields[target].update({"param_match_name": binding.param_match_name,
+                                  "param_name_path": binding.param_name_path,
+                                  "param_value_path": binding.param_value_path})
     code, name = data.get("code", "").strip(), data.get("name", "").strip()
     if not code or len(code) > 100 or not name or len(name) > 500:
         raise ValueError("Product needs a supplier SKU (1–100) and name (1–500 characters)")
@@ -318,10 +342,13 @@ async def get_mapping(db, supplier: str, feed_key: str = "products", shop: str =
     _listing_scope(cfg, feed_key)
     row = await mapping_row(db, supplier, feed_key, shop)
     base = await mapping_row(db, supplier, feed_key) if shop else row
-    parser = (cfg.get("adapter_settings", {}).get("catalog") or {}).get("parser") or (supplier if supplier in catalog.PARSERS else None)
+    source = ((cfg.get("feeds", {}).get("sources") or {}).get(feed_key) or {})
+    parser = source.get("catalog_parser") or (cfg.get("adapter_settings", {}).get("catalog") or {}).get("parser") or (supplier if supplier in catalog.PARSERS else None)
+    native = catalog.PARSERS.get(parser)
     return {"supplier": supplier, "feed_key": feed_key, "shop": shop, "revision": row.revision if row else 0,
             "definition": row.definition if row else MappingDefinition().model_dump(by_alias=True),
-            "fields": field_catalog(), "native_parser": parser, "configured": row is not None,
+            "fields": field_catalog(), "native_parser": parser if native else None,
+            "native_record_paths": native_record_paths(native) if native else None, "configured": row is not None,
             "base_revision": base.revision if base else 0,
             "inherited_definition": base.definition if shop and base else None}
 
@@ -448,14 +475,17 @@ def parse_mapped(path, supplier, cfg, feed_key, definition, revision, native_par
     return output
 
 
-def native_source_path(definition, parser):
-    if not definition.record_path:
-        return True
+def native_record_paths(parser):
     if parser.__module__.endswith("paul_lange_catalog"):
-        return definition.record_path.strip("/") in ("SHOP/SHOPITEM", "SHOPITEM")
+        return ["SHOP/SHOPITEM", "SHOP/SHOPITEMS/SHOPITEM", "SHOPITEMS/SHOPITEM", "SHOPITEM"]
     if parser.__module__.endswith("northfinder_catalog"):
-        return definition.record_path.strip("/") in ("products/product", "root/product", "product")
-    return True
+        return ["products/product", "root/product", "product"]
+    return None
+
+
+def native_source_path(definition, parser):
+    paths = native_record_paths(parser)
+    return not definition.record_path or paths is None or definition.record_path.strip("/") in paths
 
 
 def enrich_raw(raw):

@@ -29,6 +29,7 @@ class FieldBinding(BaseModel):
     transforms: list[MappingTransform] = Field(default_factory=list, max_length=12)
     param_name_path: str | None = Field(default=None, max_length=200)
     param_value_path: str | None = Field(default=None, max_length=200)
+    param_match_name: str | None = Field(default=None, min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def one_source(self):

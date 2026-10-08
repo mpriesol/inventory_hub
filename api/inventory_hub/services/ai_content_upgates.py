@@ -13,10 +13,10 @@ FIELDS = [
 ]
 
 
-def parameter_registry(shop, client):
+def parameter_registry(shop, client, *, refresh=False):
     """Read names for category-rule mapping; reuse the result for one day."""
     with imports._shop_cache(shop, "ai-parameter-registry") as (path, saved, fingerprint):
-        if saved and imports.now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(days=1):
+        if not refresh and saved and imports.now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(days=1):
             return {"checked_at": saved["checked_at"], "parameters": saved["data"]}
         rows = imports._pages(client, "parameters", "parameters", {"without_values_yn": "TRUE"})
         data = [{"id": row["id"], "names": {d["language"]: d.get("name", "") for d in row.get("descriptions", [])}}
