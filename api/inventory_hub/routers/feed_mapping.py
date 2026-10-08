@@ -32,6 +32,12 @@ async def save_mapping(supplier: str, body: MappingSave, db: DB):
     return await feed_mapping.save_mapping(db, supplier, body)
 
 
+@router.get("/parameter-options")
+async def parameter_options(supplier: str, db: DB, feed_key: FeedKey = "products", shop: ShopKey = "", refresh: bool = False):
+    from inventory_hub.services.feed_mapping_parameters import parameter_options as load_options
+    return await load_options(db, supplier, feed_key, shop, refresh=refresh)
+
+
 @router.get("/inspection")
 async def inspect(supplier: str, db: DB, feed_key: FeedKey = "products",
                   sample_id: str | None = Query(None, pattern=r"^[0-9a-f]{32}$"),

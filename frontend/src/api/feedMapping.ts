@@ -7,7 +7,7 @@ export interface FeedTransform {
 }
 export interface FeedBinding {
   target: string; source?: string; constant?: unknown; default?: unknown; transforms: FeedTransform[];
-  param_name_path?: string; param_value_path?: string;
+  param_name_path?: string; param_value_path?: string; param_match_name?: string;
 }
 export interface FeedDefinition {
   format: 'auto' | 'xml' | 'csv' | 'json'; record_path: string; csv_delimiter: string;
@@ -17,17 +17,28 @@ export interface FeedDefinition {
 export interface FeedMappingConfig {
   supplier: string; feed_key: string; shop: string; revision: number; definition: FeedDefinition;
   fields: { key: string; label: string; type: string }[]; native_parser: string | boolean | null; configured: boolean;
-  base_revision?: number; inherited_definition?: FeedDefinition;
+  base_revision?: number; inherited_definition?: FeedDefinition; native_record_paths?: string[] | null;
 }
 export interface FeedField { path: string; type: string; examples: unknown[]; populated: number; total: number }
+export interface FeedCategory { source: string; label: string; code?: string; path?: string; count: number }
+export interface FeedParameter { name: string; source: string; param_name_path: string; param_value_path: string; examples: string[]; populated: number; total: number }
 export interface FeedInspection {
   sample_id?: string; format: string; record_path: string; total_records: number; fields: FeedField[];
   sample_records: Record<string, unknown>[]; source_categories: string[];
+  source_category_options?: FeedCategory[]; source_parameters?: FeedParameter[];
+  category_fields?: {code_path?: string; label_path?: string};
+}
+export interface FeedParameterOptions {
+  rules_version: number | null; checked_at: string | null;
+  parameters: { id: string | number; names: Record<string, string> }[];
+  category_profiles: { id: string; name: string; registry_status: string; category_codes: string[]; parameters: { name: string; required: boolean; scope: string; values: string[]; unit: string }[] }[];
+  warnings: string[];
 }
 export interface FeedPreview { items: CatalogProduct[]; errors: { row: number; message: string }[]; mapping_revision: number }
 export const emptyFeedDefinition = (): FeedDefinition => ({ format: 'auto', record_path: '', csv_delimiter: '', csv_encoding: 'utf-8-sig', bindings: [], category_rules: [], seo_fallback: true });
 const path = (supplier: string) => `/api/suppliers/${encodeURIComponent(supplier)}/feed-mapping`;
 export const getFeedMapping = (supplier: string, feedKey: string, shop: string, signal?: AbortSignal) => hubRequest<FeedMappingConfig>(`${path(supplier)}?${new URLSearchParams({feed_key: feedKey, shop})}`, undefined, signal);
+export const getFeedParameterOptions = (supplier: string, feedKey: string, shop: string, signal?: AbortSignal, refresh = false) => hubRequest<FeedParameterOptions>(`${path(supplier)}/parameter-options?${new URLSearchParams({feed_key: feedKey, shop, ...(refresh ? {refresh: 'true'} : {})})}`, undefined, signal);
 export const saveFeedMapping = (supplier: string, feedKey: string, shop: string, revision: number, definition: FeedDefinition) => hubRequest<FeedMappingConfig>(path(supplier), { feed_key: feedKey, shop, expected_revision: revision, definition }, undefined, 'PUT');
 export const inspectFeed = (supplier: string, feedKey: string, definition: FeedDefinition, sampleId?: string, signal?: AbortSignal) => hubRequest<FeedInspection>(`${path(supplier)}/inspection?${new URLSearchParams({ feed_key: feedKey, format: definition.format, record_path: definition.record_path, csv_delimiter: definition.csv_delimiter, csv_encoding: definition.csv_encoding, ...(sampleId ? { sample_id: sampleId } : {}) })}`, undefined, signal);
 export function uploadFeedSample(supplier: string, feedKey: string, file: File, definition: FeedDefinition) {
