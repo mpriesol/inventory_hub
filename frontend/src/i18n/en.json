@@ -685,7 +685,7 @@
       "ai_outcome_unknown": "The response was interrupted. The call may have been billed; Hub will not automatically repeat it.",
       "ai_source_changed": "Product facts changed. Prepare a new selection.",
       "ai_missing_facts": "Required facts are missing. Add verified data before approval.",
-      "ai_unsafe_html": "The description contains unsupported HTML or attributes.",
+      "ai_unsafe_html": "The description contains active code or an embedded document. Ordinary HTML formatting is allowed.",
       "ai_manufacturer_contact": "Marketing text contains a contact email.",
       "ai_unregistered_parameter": "Parameter is not in the category registry.",
       "ai_required_parameter": "Missing required parameter",

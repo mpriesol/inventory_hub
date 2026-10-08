@@ -104,9 +104,58 @@ class ContentTests(unittest.TestCase):
         self.assertIn("ai_parameter_scope:Farba", errors)
         self.assertIn("ai_parameter_value:Farba", errors)
 
-    def test_script_injection_contacts_and_unverified_sources_block(self):
-        for description in ('<script>alert(1)</script>', '<p onclick="x()">Text</p>', '<img src="https://evil.test">', '<h1>Text</h1>', '<p>a@example.com</p>'):
-            self.assertTrue(validate_content(content(long_description=description), context())["errors"])
+    def test_ordinary_html_formatting_is_accepted_without_rewriting(self):
+        descriptions = (
+            '<div class="specs" id="sizes"><h1>Rozmery</h1><span style="font-weight: bold; color: #333">26 × 2.00</span></div>',
+            '<table style="width:100%"><caption>Rozmery</caption><thead><tr><th scope="col" colspan="2">ETRTO</th></tr></thead>'
+            '<tbody><tr><td rowspan="2">50-559</td><td data-unit="mm">50</td></tr></tbody></table>',
+            '<p><a href="https://manufacturer.example/manual?lang=sk&amp;version=1" target="_blank" rel="noopener">Návod</a></p>'
+            '<img src="https://manufacturer.example/product.jpg" alt="Duša" width="200" loading="lazy">',
+            '<section aria-label="Použitie"><details open><summary>Kompatibilita</summary><p>26 × 2.00, −5 °C &amp; viac.</p></details></section>',
+            '<p style="background-image: url(https://manufacturer.example/background.png); font-family: \'Arial\'; scroll-behavior: smooth">Text</p>',
+            '<!DOCTYPE html><!-- Static product description --><p>Rozmer 26 × 2.00, ventil 40 mm.</p>',
+            '<a href="https://manufacturer.example/manual" href="javascript:ignored()">Návod</a>',
+        )
+        for description in descriptions:
+            with self.subTest(description=description):
+                value = content(long_description=description)
+                self.assertEqual(validate_content(value, context())["errors"], [])
+                self.assertEqual(value.long_description, description)
+                item = overlay(imports.build_item([product()], ShopImportOptions(), {}, True),
+                    {"active_after_import": False, "content": value.model_dump()}, "sk")
+                self.assertEqual(item.payload["descriptions"][0]["long_description"], description)
+
+    def test_active_code_embeds_and_executable_urls_still_block(self):
+        for description in (
+            '<script>alert(1)</script>', '<p ONCLICK="x()">Text</p>', '<img src="x" onerror="x()">',
+            '<iframe src="https://example.test"></iframe>', '<object data="https://example.test"></object>',
+            '<embed src="https://example.test">', '<svg><animate attributeName="href" values="javascript:x()"/></svg>',
+            '<math><annotation-xml encoding="text/html">Text</annotation-xml></math>',
+            '<meta http-equiv="refresh" content="0;url=https://example.test">', '<base href="https://example.test">',
+            '<link rel="stylesheet" href="https://example.test/a.css">', '<style>@import "https://example.test/a.css";</style>',
+            '<div srcdoc="&lt;script&gt;x()&lt;/script&gt;">Text</div>',
+            '<a href="javascript:alert(1)">Text</a>', '<a href="&#106;ava&#x73;cript:alert(1)">Text</a>',
+            '<a href="java&#10;script:alert(1)">Text</a>', '<a href=" \tJaVaScRiPt:alert(1)">Text</a>',
+            '<a href="vbscript:msgbox(1)">Text</a>', '<a href="data:text/html,&lt;script&gt;x()&lt;/script&gt;">Text</a>',
+            '<a href="javascript:x()" href="https://example.test">Text</a>',
+            '<img srcset="https://example.test/a.png 1x, data:image/svg+xml,test 2x">',
+            '<form action="javascript:x()">Text</form>', '<button formaction="javascript:x()">Text</button>',
+            '<p style="width: expression(alert(1))">Text</p>', '<p style="background:url(javascript:x())">Text</p>',
+            '<p style="behavior:url(test.htc)">Text</p>', '<p style="-moz-binding:url(test.xml)">Text</p>',
+            r'<p style="width: e\78pression(alert(1))">Text</p>',
+            '<p style="width: exp/**/ression(alert(1))">Text</p>',
+            r'<p style="background:url(\6a avascript:x())">Text</p>',
+            '<!--><script>alert(1)</script>-->',
+            '<!---><script>alert(1)</script>-->',
+            '<noscript><p title="</noscript><img src=x onerror=alert(1)>">',
+            '<![CDATA[><img src=x onerror=alert(1)>]]>',
+        ):
+            with self.subTest(description=description):
+                self.assertIn("ai_unsafe_html", validate_content(content(long_description=description), context())["errors"])
+
+    def test_contacts_plain_text_and_unverified_sources_still_block(self):
+        self.assertIn("ai_manufacturer_contact", validate_content(content(long_description='<p>a@example.com</p>'), context())["errors"])
+        self.assertIn("ai_plain_text_required:title", validate_content(content(title='<b>Prilba</b>'), context())["errors"])
         bad = content(evidence=[{"claim": "waterproof", "quote": "not in feed", "source": "feed:1"}])
         self.assertIn("ai_unverified_feed_evidence", validate_content(bad, context())["errors"])
 

@@ -36,12 +36,12 @@ class RulePackageTests(unittest.TestCase):
     def test_provider_editorial_policy_is_limited_to_biketrek(self):
         context = {"model": "gpt-5.6-sol", "options": {"language": "sk"}, "facts": [],
                    "research": "official", "resolved": {"instructions": [], "category": None}}
-        # Digest of the complete product instruction before the BIKETREK update,
-        # including source research and evidence requirements for other shops.
-        legacy_product = "5339a5985d7ec493f850dbf35c8afc9f2fb12c3b8731c07973285052412d7ce0"
+        # Shared product instruction, including the static HTML guidance for all
+        # shops; BIKETREK-specific editorial rules must not leak to other shops.
+        shared_product = "bf71a2d0a6bee6310283749aa2ad0bb434fd4c4c8721aba694533014da395d69"
         for shop in ("xtrek", "another-shop"):
             instruction = provider.request_body({**context, "shop": shop})["instructions"]
-            self.assertEqual(hashlib.sha256(instruction.encode()).hexdigest(), legacy_product)
+            self.assertEqual(hashlib.sha256(instruction.encode()).hexdigest(), shared_product)
         biketrek = provider.request_body({**context, "shop": "biketrek"})["instructions"]
         self.assertIn("bez druhého webového potvrdzovania", biketrek)
         self.assertIn("Aktívne vysvetľuj spoľahlivé pozitívne prínosy", biketrek)

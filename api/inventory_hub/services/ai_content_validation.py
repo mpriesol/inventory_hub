@@ -9,6 +9,7 @@ import copy
 import re
 from urllib.parse import urlsplit
 
+import html5lib
 from bs4 import BeautifulSoup
 
 from inventory_hub.ai_content_types import Content
@@ -16,7 +17,51 @@ from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.services.ai_content_rules import parameter_scope
 
-TAGS = {"p", "br", "strong", "b", "em", "i", "ul", "ol", "li", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td"}
+ACTIVE_TAGS = {"script", "iframe", "frame", "frameset", "object", "embed", "applet",
+               "svg", "math", "base", "meta", "link", "style"}
+URL_ATTRIBUTES = {"href", "src", "srcset", "xlink:href", "action", "formaction", "data",
+                  "poster", "background", "cite", "longdesc", "codebase"}
+
+
+def _css_escape(match: re.Match) -> str:
+    if not match[1]:
+        return match[2]
+    codepoint = int(match[1], 16)
+    return chr(codepoint) if 0 < codepoint <= 0x10ffff else "\ufffd"
+
+
+def has_active_html(value: str) -> bool:
+    """Inspect the HTML5 fragment browsers render, without rewriting its source.
+
+    HTMLParser handles malformed comments and noscript differently from browsers.
+    HTML5 parsing also preserves the first duplicate attribute, as browsers do.
+    This is an active-content check, not a sanitizer or formatting allowlist.
+    """
+    fragment = html5lib.parseFragment(value, namespaceHTMLElements=False, scripting=True)
+    for element in fragment.iter():
+        if not isinstance(element.tag, str):  # Comments do not have an element name.
+            continue
+        tag = element.tag.rsplit("}", 1)[-1]
+        if tag in ACTIVE_TAGS:
+            return True
+        for name, value in element.attrib.items():
+            name = name.rsplit("}", 1)[-1]
+            if name.startswith("on") or name == "srcdoc":
+                return True
+            if name not in URL_ATTRIBUTES and name != "style":
+                continue
+            value = value or ""
+            if name == "style":
+                # CSS escapes/comments must not hide expression(), imports or bindings.
+                value = re.sub(r"/\*.*?\*/", "", value, flags=re.S)
+                value = re.sub(r"\\(?:([0-9a-fA-F]{1,6})[ \t\r\n\f]?|([^\r\n\f]))", _css_escape, value)
+                if re.search(r"\bexpression\s*\(|(?:^|;)\s*(?:-moz-binding|behavior)\s*:|@import\b", value, re.I):
+                    return True
+            compact = re.sub(r"[\x00-\x20\x7f]", "", value).casefold()
+            prefix = r"url\([\"']?" if name == "style" else r"(?:^|,)" if name == "srcset" else "^"
+            if re.search(prefix + r"(?:javascript|vbscript|data):", compact):
+                return True
+    return False
 
 
 def text_of(value: str) -> str:
@@ -64,8 +109,7 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
     for field in ("title", "short_description", "seo_title", "meta_description", "h1_descriptor", "future_name", "h1_descr_suffix"):
         if re.search(r"<[^>]+>", getattr(content, field)):
             errors.append("ai_plain_text_required:" + field)
-    soup = BeautifulSoup(content.long_description, "html.parser")
-    if any(tag.name not in TAGS or tag.attrs for tag in soup.find_all(True)):
+    if has_active_html(content.long_description):
         errors.append("ai_unsafe_html")
     marketing = " ".join([content.title, content.short_description, text_of(content.long_description), content.meta_description])
     if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", marketing, re.I):

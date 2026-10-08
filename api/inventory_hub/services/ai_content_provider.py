@@ -129,6 +129,8 @@ def request_body(context: dict, kind="product") -> dict:
                    "Neznáme neznamená Nie; existencia súčasti nepotvrdzuje jej konkrétny typ ani zahrnutie ďalšieho príslušenstva v balení. "
                    + evidence_instruction +
                    "Do missing_facts patria iba chýbajúce rozhodujúce fakty alebo rozpor identity či bezpečnosti. Nepovinné medzery patria do warnings; ich tvrdenia vynechaj. Samotná absencia EAN na webe výrobcu nie je rozpor s EAN vo feede. "
+                   "Dlhý popis môže obsahovať bežné statické HTML vrátane tabuliek a formátovacích atribútov. "
+                   "Nevkladaj skripty, obsluhu udalostí, vložené dokumenty ani spustiteľné URL či CSS. "
                    "Nevkladaj kontakty výrobcu. Bez registra parametrov vráť prázdny zoznam parameters.")
     user = ({"current": context["current"], "request": context["proposal_request"]} if proposal else
             {"shop": context["shop"], "language": context["options"]["language"],
