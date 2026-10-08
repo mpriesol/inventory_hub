@@ -33,12 +33,21 @@ const options = { language: 'sk', currency: 'EUR', pricelist: 'Predvolené', cat
 const families = [{ code: 'NF-G-TEST', name: 'Test bunda', image: 'https://images.example.test/1.jpg', product_ids: [1, 2], products: [1, 2].map(id => ({ id, shop_code: 'NF-' + id, variant_attributes: [{ name: 'Veľkosť', value: id === 1 ? 'S' : 'M' }] })) },
   { code: 'NF-OTHER', name: 'Test nohavice', image: null, product_ids: [3], products: [{ id: 3, shop_code: 'NF-3', variant_attributes: [] }] }];
 const content = { title: 'Test bunda', short_description: 'Short', long_description: '<p>Long</p>', seo_title: 'SEO', meta_description: 'Meta', h1_descriptor: 'Bunda', future_name: 'TEST', h1_descr_suffix: '', parameters: [], evidence: [], warnings: [], missing_facts: [] };
+let modelSettings = { revision: 0, model: 'gpt-5.6-sol', source: 'server', updated_at: null, models: ['gpt-5.6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'].map((id, index) => ({ id, label: ['GPT-5.6 Sol', 'GPT-6.1 Sol', 'GPT-6 Luna', 'GPT-6 Astra'][index], input_usd_per_million: '4', cached_input_usd_per_million: '.4', cache_write_usd_per_million: '5', output_usd_per_million: '20', web_search_usd: '.01', context_tokens: 1050000, long_context_threshold: 272000, long_context_input_usd_per_million: '8', long_context_cached_input_usd_per_million: '.8', long_context_cache_write_usd_per_million: '10', long_context_output_usd_per_million: '30' })) };
 const calls = []; let jobs = []; let reviewed; let historicalBook = book;
 let importedReadBook = book; let rejectImportedBook = false; let failImportedRead = false;
 global.fetch = async (path, init = {}) => {
-  const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body, headers: init.headers });
+  const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body, headers: init.headers, method: init.method });
   let data;
   if (path.endsWith('/status')) data = { enabled: true, key_configured: true, access_configured: true, model: 'fixture', monthly_limit_usd: '20', job_limit_usd: '2' };
+  else if (path.endsWith('/settings')) {
+    if (body) {
+      assert.equal(init.method, 'PUT');
+      if (body.expected_revision !== modelSettings.revision) return { ok: false, status: 409, json: async () => ({detail:{code:'ai_settings_changed',message:'Conflict'}}) };
+      modelSettings = {...modelSettings, model:body.model, revision:modelSettings.revision + 1, source:'hub'};
+    }
+    data = modelSettings;
+  }
   else if (path.endsWith('/rules')) {
     if (body && rejectImportedBook) return { ok: false, json: async () => ({ detail: [{ input: 'PRIVATE_INVALID_BOOK', msg: 'Invalid uploaded rules' }] }) };
     data = body ? { id: 2 } : rules;
@@ -538,7 +547,43 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   await click(document.querySelector('button[aria-label="Zavrieť detail"]'));
   for(const check of document.querySelectorAll('input[aria-label^="Označiť úlohu"]')) await click(check);
   assert(button('Importovať označené pripravené').disabled,'Bulk legacy import excludes draft-linked ready jobs');
+  const settingsStart = calls.length;
+  await act(async () => { root.render(React.createElement(MemoryRouter, {key:'model-settings',initialEntries:['/settings/ai-content']},React.createElement(AiContentPage))); await tick(); });
+  await act(tick);
+  const modelSelect = () => [...document.querySelectorAll('label')].find(label => label.textContent.startsWith('Model pre nové AI úlohy')).querySelector('select');
+  const chooseModel = async value => { await act(async () => { modelSelect().value = value; modelSelect().dispatchEvent(new dom.window.Event('change', {bubbles:true})); await tick(); }); };
+  assert.equal(modelSelect().value,'gpt-5.6-sol','Settings preserve the configured default until explicit save');
+  assert.equal(modelSelect().options.length,4);
+  assert(button('Uložiť AI model').disabled);
+  await chooseModel('gpt-6.1-sol');
+  assert(!calls.slice(settingsStart).some(call => call.method === 'PUT'), 'Selecting a model alone does not write settings');
+  await click(button('Uložiť AI model'));
+  assert.deepEqual(calls.findLast(call => call.path.endsWith('/settings') && call.method === 'PUT').body,{expected_revision:0,model:'gpt-6.1-sol'});
+  assert.equal(modelSettings.model,'gpt-6.1-sol');
+  assert(document.body.textContent.includes('AI model bol uložený'));
+  assert(document.querySelector('.ai-toolbar').textContent.includes('gpt-6.1-sol'),'The displayed default follows a successful save');
+  await chooseModel('gpt-6-luna');
+  modelSettings = {...modelSettings,revision:2,model:'gpt-5.6-sol'};
+  await click(button('Uložiť AI model'));
+  assert(document.querySelector('[role="alert"]').textContent.includes('iný používateľ'));
+  assert.equal(modelSelect().value,'gpt-6-luna','A conflict leaves the unsaved choice visible');
+  assert(button('Uložiť AI model').disabled && modelSelect().disabled, 'A stale revision cannot be submitted repeatedly');
+  await click(button('Načítať aktuálne nastavenie'));
+  assert.equal(modelSelect().value,'gpt-5.6-sol');
+  assert(!modelSelect().disabled && button('Uložiť AI model').disabled);
+  assert(!calls.slice(settingsStart).some(call => /\/(action|batches|review)$/.test(call.path)), 'Changing model settings never runs AI or changes existing products');
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'composition',job:{...stagedJob, model:'gpt-5.6-sol',category_profile:'inner_tubes',category_profile_source:'explicit',composition:{version:'content-v1',category_profile:'inner_tubes',source_characters:2000,selected_characters:1000,omitted_characters:1000,included_rules:1,omitted_rules:1,entries:[{id:'tubes',name:'Duše',status:'included',reasons:['unchanged'],source_characters:1000,selected_characters:1000},{id:'tyres',name:'Plášte',status:'omitted',reasons:['other_category'],source_characters:1000,selected_characters:0}]}},onChange:()=>{}})); await tick(); });
+  assert(document.body.textContent.includes('gpt-5.6-sol'),'Job details show the frozen model independently of default settings');
+  assert(document.body.textContent.includes('ručne vybraný profil'));
+  assert(document.querySelector('.ai-composition').textContent.includes('Pravidlá inej kategórie'));
+  assert(document.querySelector('.ai-composition').textContent.includes('1 použitých, 1 vynechaných'));
+  await act(async()=>{root.render(React.createElement(AiJobDetail,{key:'automatic-policy',job:{...stagedJob,policy:{review_required:false,active_after_import:true,show_cost_estimate:false,confirm_import:false},origins:{review_required:'common',active_after_import:'common',show_cost_estimate:'common',confirm_import:'common'},staging:{...stagedJob.staging,auto_apply:true,auto_publish:true}},onChange:()=>{}}));await tick();});
+  assert.equal(document.querySelectorAll('.ai-policy label').length,4,'Draft jobs show all frozen policy values and inheritance sources');
+  assert(document.querySelector('.ai-policy').textContent.includes('common'));
+  assert(document.body.textContent.includes('automaticky preberá schválený AI obsah'),'Automatic jobs explain the current action rather than requesting manual table acceptance');
+  assert(!document.body.textContent.includes('Samotné schválenie tejto staršej úlohy'));
+
   await act(async () => root.unmount());
   assert.equal(document.body.style.overflow, '');
-  console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search and scoped rule deletion.');
+  console.log('AI UI passed: selection, two shops, cost pause, content edits, archive/restore, actionable import errors, partial recovery, readable updates, category tree/search, scoped rule deletion, persistent model settings/CAS and frozen composition details.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

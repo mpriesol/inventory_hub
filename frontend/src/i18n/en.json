@@ -525,7 +525,8 @@
       "prepare": "Preparation",
       "jobs": "Processing and results",
       "rules": "Rules and categories",
-      "existing": "Existing products"
+      "existing": "Existing products",
+      "settings": "Model and costs"
     },
     "rules": "Rules",
     "legacyCategoryRules": "Supplementary rules from earlier versions",
@@ -732,7 +733,9 @@
       "ai_update_resolved_mismatch": "The original request is confirmed finished; current values differ from the preview. You can prepare a new comparison.",
       "ai_availability_managed_by_stock": "The warehouse system owns availability or a stock transfer remains unresolved. Exclude availability from the AI update; other content can still be updated.",
       "ai_category_uncertain": "AI could not confidently select a category and profile. Check the source or select a category manually.",
-      "ai_category_candidates_missing": "No suitable active leaf categories exist in this shop."
+      "ai_category_candidates_missing": "No suitable active leaf categories exist in this shop.",
+      "ai_settings_changed": "Another user changed the setting. Load the current value and select the model again.",
+      "ai_model_unpriced": "This model has no supported price card. Choose one of the offered models."
     },
     "importSelectedReady": "Import selected ready jobs",
     "selectJob": "Select job",
@@ -917,9 +920,9 @@
     "manualApprovalHelp": "Approval accepts the listed missing facts and source or quotation concerns. The import will be prepared and the warnings retained. Technical product errors still need correction.",
     "manuallyAcceptedWarnings": "The content was manually approved with these concerns. They remain recorded as warnings and do not block import preparation.",
     "staging": {
-      "help": "This AI job belongs to a saved product preparation. Approval prepares content for the table; shop publication is confirmed in that preparation.",
+      "help": "This AI job belongs to a saved product preparation. Applying content and shop publication follow the frozen job rules and preparation state.",
       "approve": "Approve AI content for the import table",
-      "approvalHelp": "Approval accepts the listed concerns. Then open the import preparation and apply the AI results to the table. Approval alone does not create or update a shop product.",
+      "approvalHelp": "Approval accepts the listed concerns. Then open the import preparation and apply the AI results to the table. Approval alone does not create or update a shop product for this older job.",
       "openDraft": "Open import preparation",
       "openResult": "Open import result",
       "replaced": "Replaced AI preparation",
@@ -938,7 +941,77 @@
         "completed": "AI content has been applied to the table. Check Hub save and shop publication in the import preparation.",
         "review": "Review and approve the content, then apply it to the import table.",
         "blocked": "Review the concerns and approve the content or correct technical errors. Then continue in the linked import preparation."
+      },
+      "approvalHelpAutomatic": "Approval accepts the listed concerns. The Hub continues under the frozen rules: it applies the result to the table and may also publish it for an automatic preparation.",
+      "profileChanged": "The rule profile changed. Prepare AI content again in the import preparation.",
+      "automationPaused": "Editing the table paused automatic completion. Review the data and prepare AI content again, or continue manually.",
+      "autoApplying": "The Hub is automatically applying approved AI content to the import table.",
+      "autoPublishing": "The Hub is automatically saving products and completing shop publication under the rules."
+    },
+    "modelSettings": {
+      "title": "AI model and costs",
+      "help": "Choose the model the Hub uses to prepare products and rule proposals.",
+      "model": "Model for new AI jobs",
+      "current": "Currently saved model",
+      "source": {
+        "server": "Server default",
+        "hub": "Saved in the Hub"
+      },
+      "price": "Per 1 million tokens: input {{input}} USD · output {{output}} USD",
+      "priceHelp": "Product cost depends on the prompt, response and research. Shop rules stay the same; output quality may differ between models.",
+      "priceDetails": "Pricing details",
+      "cachePrice": "Per 1 million tokens: cache read {{cached}} USD · cache write {{write}} USD.",
+      "searchPrice": "Web search: {{amount}} USD per call + retrieved content tokens.",
+      "longPrice": "Above {{threshold}} input tokens: input {{input}} USD · output {{output}} USD per 1 million tokens.",
+      "newJobs": "Changes apply only to newly prepared jobs. Existing estimates and jobs keep their original model. Budget limits remain in effect.",
+      "save": "Save AI model",
+      "reload": "Load current setting",
+      "saved": "AI model saved. New jobs will use this model."
+    },
+    "composition": {
+      "title": "What was sent to AI",
+      "summary": "Rules: {{included}} used, {{omitted}} omitted. Original text: {{source}} characters; sent to AI: {{selected}} characters.",
+      "help": "This composition is saved with the job. The full selected rules are shown below; the request is available to download.",
+      "states": {
+        "included": "used",
+        "filtered": "relevant sections used",
+        "omitted": "omitted"
+      },
+      "reasons": {
+        "technical_export": "Export formatting instructions are outside product content generation.",
+        "workflow_only": "File handling and chat workflow instructions are not product content instructions.",
+        "history": "Change history and handoff notes.",
+        "other_category": "Rules for another category.",
+        "unchanged": "Rule used in full.",
+        "content_sections": "Sections affecting product content are preserved.",
+        "unsupported_gallery_workflow": "Gallery instructions; the content API does not edit images.",
+        "unsupported_relation_workflow": "Product relationship instructions outside the content API.",
+        "file_handover": "File delivery in chat.",
+        "rule_maintenance": "Rulebook administration and maintenance.",
+        "rule_navigation": "Rulebook navigation instructions.",
+        "classification_only": "The category tree belongs to category selection.",
+        "empty_heading": "Heading without separate instructions.",
+        "registry_authoring": "Parameter registry authoring instructions.",
+        "content_precedence_preserved": "Content rule precedence is preserved.",
+        "chat_and_file_workflow": "Interactive chat and file workflow.",
+        "editorial_sections_preserved": "Editorial rules are preserved.",
+        "login_workflow": "Interactive login instructions.",
+        "unsupported_seo_url_and_image_titles": "SEO URL and image titles are outside the content API.",
+        "commercial_fields": "The import layer handles prices, stock and activation.",
+        "customer_weight_preserved": "Customer-facing product weight is preserved.",
+        "content_format_preserved": "Text field formatting is preserved.",
+        "validator_execution": "Running an external file validator.",
+        "knowledge_scope_preserved": "Knowledge base scope is preserved.",
+        "parameter_formats_for_profile": "Parameter formats match the selected profile.",
+        "superseded_digest": "A duplicate digest is replaced by the full source rules.",
+        "runtime_contract": "Content API instructions and required product structure."
       }
+    },
+    "profileSources": {
+      "explicit": "The manually selected rule profile is used.",
+      "category_mapping": "The rule profile was resolved from the target category.",
+      "pending_classification": "AI will select the rule profile for this product.",
+      "ai_classification": "AI selected the rule profile based on the product."
     }
   },
   "upgatesImport": {
@@ -2876,11 +2949,11 @@
     "warnings": "Warnings: {{count}}",
     "keyboardHelp": "Click or press F2 to edit. Tab moves between cells. Paste a spreadsheet block into the active cell.",
     "aiTitle": "AI improvement",
-    "aiHelp": "Only checked products use AI. Manual values are protected. Accept results into this same table.",
+    "aiHelp": "AI processes only checked products and preserves manual edits. Inherited rules apply: without a cost pause, paid processing starts immediately; without approval and confirmation, it may also complete shop publication.",
     "research": "Sources",
     "official": "Feed and official sources",
     "feedOnly": "Feed only",
-    "prepareAI": "Prepare estimate ({{count}})",
+    "prepareAI": "Prepare AI content ({{count}})",
     "startAI": "Start AI · estimate {{amount}} USD",
     "applyAI": "Accept AI results into table",
     "aiRunning": "AI is working. Progress refreshes automatically.",
@@ -2929,13 +3002,14 @@
       "vat_percent": "VAT %",
       "currency": "Currency",
       "availability": "Availability",
-      "ai_enabled": "Improve with AI"
+      "ai_enabled": "Improve with AI",
+      "ai_category_profile": "AI rule profile"
     },
     "notices": {
       "draftSaved": "Draft saved. Nothing was sent to the shop.",
       "hubSaved": "Products saved in Hub. You can now preview the shop submission.",
       "refreshed": "Saved version loaded.",
-      "aiPrepared": "AI estimates are ready. Start paid processing with the separate button.",
+      "aiPrepared": "AI preparation follows the inherited rules. Product rows show progress and any required confirmation steps.",
       "aiStarted": "AI processing started.",
       "aiApplied": "AI results are in the table. Manual values were preserved. Save products to Hub.",
       "previewReady": "Preview is ready for review and confirmation.",
@@ -2984,7 +3058,12 @@
     "completedWithoutAi": "The AI results were not applied. The shop received the table contents at confirmation time, without these AI changes.",
     "showResult": "Show delivery result",
     "openAI": "Open AI content",
-    "aiPendingHelp": "Apply the AI results to the table for products with AI enabled. To send the original data without AI, explicitly turn AI off for those products.",
-    "publicationResultHelp": "This is the saved delivery result. Each product has its own status."
+    "aiPendingHelp": "AI content is not yet ready for publication. Check product progress and any approval requests. To send the original data without AI, explicitly turn AI off for those products.",
+    "publicationResultHelp": "This is the saved delivery result. Each product has its own status.",
+    "profileRow": "AI rules for {{code}}",
+    "profileHelp": "The AI rule profile defines content and parameters. Automatic selection uses the category mapping; choose a specific profile per product or in bulk when needed. The shop category remains a separate field.",
+    "profilesLoadError": "AI rule profiles could not be loaded.",
+    "autoProfile": "Automatic for this product",
+    "profileNeedsPreparation": "Rules changed – prepare AI content again"
   }
 }

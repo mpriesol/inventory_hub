@@ -20,7 +20,7 @@ from inventory_hub.db_models import IdentifierType, Product, ProductGroup, Produ
 from inventory_hub.db_models_ext import ProductVariantAttribute, ShopProduct
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.product_import_models import ProductImportDraft
-from inventory_hub.product_import_types import ImportValues
+from inventory_hub.product_import_types import DraftRevision, ImportValues
 from inventory_hub.services import ai_content, catalog_import
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
 from inventory_hub.services.catalog_identity import parent_shop_code
@@ -29,7 +29,7 @@ from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 
 COMMON_FIELDS = {'group_name', 'brand', 'description_html', 'short_description', 'seo_title',
-                 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled'}
+                 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled', 'ai_category_profile'}
 AI_FIELDS = {'name', 'group_name', 'short_description', 'description_html', 'seo_title', 'seo_description', 'parameters', 'metadata', 'category_code'}
 
 
@@ -38,7 +38,15 @@ def money(value):
 
 
 def content_hash(document):
-    return ai_content.digest([{'id': r['id'], 'values': r['values']} for r in document['rows']])
+    return ai_content.digest([{'id': r['id'], 'values': r['values'],
+        **({'ai_policy': r['ai_policy']} if r.get('ai_policy') else {})} for r in document['rows']])
+
+
+def applied_ai(job):
+    if getattr(job, 'context', {}).get('staging_automation_version') == 1:
+        return job.status in ('completed', 'import_queued', 'importing', 'import_failed', 'import_blocked') \
+            and bool(job.output) and job.context.get('staging_applied_digest') == ai_content.digest(job.output)
+    return job.status == 'completed'
 
 
 async def get_draft(db, id, lock=False):
@@ -100,8 +108,17 @@ def ai_job_import_status(job, draft, result):
     covered = {id for item in items for id in item['product_ids']}
     if items and selected <= covered and all(item['status'] in ('created', 'exists') for item in items):
         status = 'completed'
+    profile_matches = all(r['values'].get('ai_category_profile', 'auto')
+        == r.get('ai_baseline', {}).get('ai_category_profile', 'auto') for r in rows)
+    automation = draft.document.get('automation', {})
+    auto_apply = bool(rows) and getattr(job, 'context', {}).get('staging_automation_version') == 1 and automation.get('version') == 1 \
+        and job.id in automation.get('job_ids', []) and not automation.get('paused')
     return {'draft_id': draft.id, 'revision': draft.revision, 'linked': bool(rows),
-            'ai_applied': bool(rows) and job.status == 'completed',
+            'ai_applied': bool(rows) and applied_ai(job) and profile_matches,
+            'profile_matches': profile_matches, 'auto_apply': auto_apply,
+            'auto_publish': auto_apply and automation.get('auto_publish_requested', False)
+                and not job.context.get('resolved', {}).get('policy', {}).get('confirm_import', True),
+            'automation_paused': bool(automation.get('paused')),
             'publication_finished': publication_state(result) == 'completed',
             'publication_status': status}
 
@@ -145,13 +162,16 @@ async def assert_ai_applied(db, draft):
     ids = {r.get('ai_job_id') for r in rows if r.get('ai_job_id')}
     jobs = {j.id: j for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).with_for_update())).all()}
     if any(not (job := jobs.get(r.get('ai_job_id'))) or job.context.get('staging_id') != draft.id
-           or job.status != 'completed' for r in rows):
+           or not applied_ai(job)
+           or r['values'].get('ai_category_profile', 'auto') != r.get('ai_baseline', {}).get('ai_category_profile', 'auto') for r in rows):
         raise CatalogError('import_ai_not_applied', 'Apply the selected AI results to the table or explicitly turn AI off before publication', 409)
 
 
 async def public(db, draft):
     document = draft.document
     rows = deepcopy(document['rows'])
+    for row in rows:
+        row['values'].setdefault('ai_category_profile', 'auto')
     ids = {r.get('ai_job_id') for r in rows if r.get('ai_job_id')}
     result = publication_result(draft)
     jobs = {j.id: {**ai_content.summary(j), 'staging': ai_job_import_status(j, draft, result)}
@@ -235,7 +255,8 @@ def validate_rows(document):
         sources = [to_source(r) for r in family]
         if family[0]['is_variant']:
             for key in COMMON_FIELDS - {'parameters'}:
-                if any(r['values'][key] != family[0]['values'][key] for r in family):
+                if any(r['values'].get(key, 'auto' if key == 'ai_category_profile' else None)
+                       != family[0]['values'].get(key, 'auto' if key == 'ai_category_profile' else None) for r in family):
                     for row in family:
                         row['errors'].append('import_family_field_conflict:' + key)
             item = catalog_import.build_item(sources, options, {}, True,
@@ -331,6 +352,7 @@ async def patch_rows(db, draft, request):
         raise CatalogError('import_row_not_selected', 'Edits must identify distinct selected products', 422)
     # Conflicting edits to a shared family field are rejected rather than choosing the last row.
     shared = {}
+    replaced_ai = set()
     from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
     prefix = get_supplier_prefix(supplier_config(draft.supplier))
     for patch in request.rows:
@@ -361,9 +383,19 @@ async def patch_rows(db, draft, request):
             else:
                 targets = [row]
             for target in targets:
+                if key == 'ai_category_profile' and target['values'].get(key, 'auto') != value and target.get('ai_job_id'):
+                    replaced_ai.add(target['ai_job_id'])
                 target['values'][key] = value
                 target['manual_fields'] = sorted(set(target['manual_fields']) | {key})
                 target['provenance'][key] = 'manual'
+    if replaced_ai:
+        jobs = (await db.scalars(select(AiJob).where(AiJob.id.in_(replaced_ai)).with_for_update())).all()
+        for job in jobs:
+            if job.status in ('estimate', 'queued'):
+                job.reserved_usd = 0
+                ai_content.event(job, 'cancelled', 'Category rule profile changed before provider call; prepare a new estimate')
+    if document.get('automation', {}).get('version') == 1:
+        document['automation'] = {**document['automation'], 'paused': True, 'pause_reason': 'draft_edited'}
     validate_rows(document)
     changed(draft, document, 'Manual import cells edited')
     await db.flush()
@@ -456,6 +488,15 @@ def overlay_payload(item, rows, language, categories):
     first = family[0]['values']
     payload = item.payload
     description = payload['descriptions'][0]
+    if all(bound_ai_policy(row) for row in family):
+        active = approved_visibility(rows, item.product_ids)
+        payload['active_yn'] = active
+        for value in payload['descriptions']:
+            value['active_yn'] = active
+        for obj in [payload, *payload.get('variants', [])]:
+            for meta in obj.get('metas', []):
+                if meta.get('key') == 'validation_required':
+                    meta['value'] = '0'
     description.update(title=first['group_name'] if item.variants_count and first['group_name'] else first['name'],
         long_description=first['description_html'], short_description=first['short_description'],
         seo_title=first['seo_title'], seo_description=first['seo_description'])
@@ -479,6 +520,23 @@ def overlay_payload(item, rows, language, categories):
         payload['availability'] = first['availability']
     item.name = description['title']
     return item
+
+
+def bound_ai_policy(row):
+    policy = row.get('ai_policy') or {}
+    if (row['values']['ai_enabled'] and policy.get('job_id') == row.get('ai_job_id')
+            and policy.get('content_digest')
+            and row['values'].get('ai_category_profile', 'auto') == row.get('ai_baseline', {}).get('ai_category_profile', 'auto')):
+        return policy
+    return None
+
+
+def approved_visibility(rows, product_ids):
+    flags = {bool((bound_ai_policy(r) or {}).get('active_after_import', False))
+             for r in rows if r['id'] in product_ids}
+    if len(flags) > 1:
+        raise CatalogError('import_family_field_conflict', 'A product family must share its approved visibility', 422)
+    return flags == {True}
 
 
 async def preview(db, draft, request):
@@ -510,6 +568,7 @@ async def assert_snapshot(db, staging):
     draft = await get_draft(db, staging['draft_id'])
     if draft.status != 'saved' or content_hash(draft.document) != staging['hash']:
         raise CatalogError('import_draft_changed', 'The saved import draft changed after preview', 409)
+    return draft
 
 
 async def publish(db, draft, request):
@@ -541,6 +600,7 @@ async def prepare_ai(db, draft, request):
             groups[row['group_key']].append(row)
     if not groups:
         raise CatalogError('import_ai_selection_empty', 'Choose products for AI enrichment', 422)
+    prepared_jobs = []
     for family in groups.values():
         active_ids = {r.get('ai_job_id') for r in family if r.get('ai_job_id')}
         if active_ids:
@@ -555,12 +615,20 @@ async def prepare_ai(db, draft, request):
         options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': category})
         batch = BatchRequest(request_id=uuid4(), supplier=draft.supplier, feed_key=document['feed_key'],
             product_ids=[r['id'] for r in family], ai_product_ids=[r['id'] for r in family],
-            category_profiles={r['id']: 'general' if category else 'auto' for r in family}, research=request.research,
-            targets=[Target(shop=draft.shop, options=options, policy=Policy(show_cost_estimate=True, confirm_import=True))])
-        jobs = await ai_content.create_batch(db, batch, frozen_products=[to_source(r) for r in family], staging_id=draft.id)
+            category_profiles={r['id']: r['values'].get('ai_category_profile', 'auto') for r in family}, research=request.research,
+            targets=[Target(shop=draft.shop, options=options, policy=Policy())])
+        jobs = await ai_content.create_batch(db, batch, frozen_products=[to_source(r) for r in family],
+            staging_id=draft.id, staging_automation_version=1)
+        prepared_jobs.extend(jobs)
         for row in family:
             row['ai_job_id'] = jobs[0]['id']
             row['ai_baseline'] = deepcopy(row['values'])
+            row.pop('ai_policy', None)
+    previous_result = publication_result(draft)
+    document['automation'] = {'version': 1, 'job_ids': [j['id'] for j in prepared_jobs],
+        'paused': bool(previous_result), 'pause_reason': 'publication_recovery' if previous_result else None,
+        'auto_publish_requested': all(r['values']['ai_enabled'] for r in document['rows'])
+            and all(not j.get('policy', {}).get('confirm_import', True) for j in prepared_jobs)}
     changed(draft, document, 'AI estimates prepared from current mapped cells', dirty=False)
     await db.flush()
     return await public(db, draft)
@@ -575,6 +643,9 @@ async def start_ai(db, draft, request):
     if not estimates:
         raise CatalogError('import_ai_no_estimate', 'No AI estimate is waiting for confirmation', 409)
     for job in estimates:
+        if any(r['values'].get('ai_category_profile', 'auto') != r.get('ai_baseline', {}).get('ai_category_profile', 'auto')
+               for r in draft.document['rows'] if r.get('ai_job_id') == job.id):
+            raise CatalogError('import_ai_identity_changed', 'The category rule profile changed; prepare a new AI estimate', 409)
         await ai_content.start(db, job)
     changed(draft, deepcopy(draft.document), 'AI cost estimates explicitly confirmed', dirty=False)
     await db.flush()
@@ -583,6 +654,8 @@ async def start_ai(db, draft, request):
 
 def merge_ai_values(row, output, context):
     baseline = row.get('ai_baseline', {})
+    if row['values'].get('ai_category_profile', 'auto') != baseline.get('ai_category_profile', 'auto'):
+        raise CatalogError('import_ai_identity_changed', 'The category rule profile changed; prepare a new AI job', 409)
     if any(row['values'].get(key) != baseline.get(key) for key in ('code', 'supplier_code', 'eans', 'manufacturer_code', 'category_code', 'variant_attributes', 'brand')):
         raise CatalogError('import_ai_identity_changed', 'Product identity or category changed; prepare a new AI job', 409)
     proposed = {'group_name' if row['is_variant'] else 'name': output.title,
@@ -596,24 +669,31 @@ def merge_ai_values(row, output, context):
         generated_names = {p['name'] for p in generated}
         preserved = [p for p in row['values']['parameters'] if p['name'] in allowed and p['name'] not in generated_names]
         proposed['parameters'] = preserved + generated
-    if not baseline.get('category_code'):
+    descend_to_leaf = bool(baseline.get('category_code') and context.get('classification_mode') == 'category_and_profile'
+        and context.get('category_selection'))
+    if not baseline.get('category_code') or descend_to_leaf:
         proposed['category_code'] = context.get('options', {}).get('category_code')
     safety = CatalogProduct.model_validate(row['source']).safety_information
     if safety:
         from inventory_hub.services.catalog_html import clean_description
         proposed['description_html'] += '<h2>Bezpečnostné informácie</h2>' + clean_description(safety)
     for key, value in proposed.items():
-        if key not in row['manual_fields'] and row['values'].get(key) == baseline.get(key):
+        # An explicitly selected parent constrains automatic classification to
+        # its subtree; accepting that result refines it to the validated leaf.
+        # A selected leaf or a category changed after preparation stays pinned.
+        if (key not in row['manual_fields'] or key == 'category_code' and descend_to_leaf) and row['values'].get(key) == baseline.get(key):
             row['values'][key] = value
             row['provenance'][key] = 'ai'
     row['values'] = ImportValues.model_validate(row['values']).model_dump(mode='json')
 
 
-async def apply_ai(db, draft, request):
+async def apply_ai(db, draft, request, *, job_ids=None):
     expect(draft, request.expected_revision)
     assert_editable(draft)
     document = deepcopy(draft.document)
     ids = {r.get('ai_job_id') for r in document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled']}
+    if job_ids is not None:
+        ids &= set(job_ids)
     jobs = {j.id: j for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).with_for_update())).all()}
     used = []
     from inventory_hub.services.ai_content_validation import validate_content
@@ -628,12 +708,63 @@ async def apply_ai(db, draft, request):
         for row in document['rows']:
             if row.get('ai_job_id') == job.id and row['values']['ai_enabled']:
                 merge_ai_values(row, output, job.context)
+                if job.context.get('staging_automation_version') == 1:
+                    row['ai_policy'] = {'job_id': job.id, 'rules_version': job.context['rules_version'],
+                        'active_after_import': bool(job.context['resolved']['policy']['active_after_import']),
+                        'content_digest': ai_content.digest(job.output)}
         used.append(job)
     if not used:
         raise CatalogError('import_ai_not_ready', 'No completed valid AI result is ready', 409)
     for job in used:
+        if job.context.get('staging_automation_version') == 1:
+            job.context = {**job.context, 'staging_applied_digest': ai_content.digest(job.output)}
         ai_content.event(job, 'completed', 'AI enrichment applied to import draft; no shop write')
     validate_rows(document)
     changed(draft, document, 'AI enriched untouched cells; manual cells preserved')
     await db.flush()
     return await public(db, draft)
+
+
+async def advance_ai(db, job):
+    """Complete only a freshly authorized staged workflow using frozen policies.
+
+    The worker acquires draft then job locks before entering here. Old jobs,
+    edited preparations and previously sent publications never gain automation.
+    """
+    draft = await get_draft(db, job.context['staging_id'], lock=True)
+    automation = draft.document.get('automation', {})
+    linked = [r for r in draft.document['rows'] if r.get('ai_job_id') == job.id and r['values']['ai_enabled']]
+    enabled = (job.context.get('staging_automation_version') == 1 and automation.get('version') == 1
+        and job.id in automation.get('job_ids', []) and not automation.get('paused') and linked)
+    if not enabled or job.context.get('approval') not in ('human', 'policy'):
+        ai_content.event(job, 'ready', 'AI content ready; automatic draft completion is not authorized')
+        return
+    if publication_result(draft):
+        ai_content.event(job, 'ready', 'An existing publication requires manual reconciliation')
+        return
+    ai_content.event(job, 'ready', 'Approved AI content ready for its authorized draft')
+    await apply_ai(db, draft, DraftRevision(expected_revision=draft.revision), job_ids={job.id})
+    rows = draft.document['rows']
+    if not all(r['values']['ai_enabled'] and r.get('ai_job_id') in automation.get('job_ids', []) for r in rows):
+        return
+    ids = {r['ai_job_id'] for r in rows}
+    jobs = {j.id: j for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).order_by(AiJob.id).with_for_update())).all()}
+    if any(not (current := jobs.get(id)) or current.context.get('staging_automation_version') != 1
+           or current.context.get('staging_id') != draft.id or not applied_ai(current)
+           or current.context.get('approval') not in ('human', 'policy')
+           or current.context['resolved']['policy']['confirm_import'] for id in ids):
+        return
+    await assert_ai_applied(db, draft)
+    await save(db, draft, DraftRevision(expected_revision=draft.revision))
+    await preview(db, draft, DraftRevision(expected_revision=draft.revision))
+    prepared = draft.document['publication']
+    if prepared['errors'] or any(i['status'] not in ('ready', 'exists') for i in prepared['items']):
+        job.error = 'preview_invalid'
+        ai_content.event(job, 'import_blocked', 'Automatic publication stopped because its complete preview is invalid')
+        return
+    job.preview_id = prepared['preview_id']
+    job.context = {**job.context, 'staging_auto_publication': {'draft_id': draft.id,
+        'preview_id': job.preview_id, 'hash': content_hash(draft.document)}}
+    ai_content.event(job, 'import_queued', 'Complete draft publication authorized by every frozen import policy')
+    changed(draft, deepcopy(draft.document), 'Complete draft queued by inherited import policy', dirty=False)
+    await db.flush()

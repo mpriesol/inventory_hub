@@ -22,6 +22,7 @@ from inventory_hub.services.catalog import CatalogError, selected_products
 from inventory_hub.services.catalog_identity import parent_shop_code
 from inventory_hub.services.catalog_sort import variant_sort_key
 from inventory_hub.settings import settings
+from inventory_hub.services.ai_content_settings import effective_model
 
 
 def now():
@@ -66,6 +67,8 @@ def summary(job, *, detail=False):
         "update_only": bool(context.get("update_only")), "source_kind": context.get("source_kind", "catalog"),
         "update_state": (context.get("update_preview") or {}).get("state"),
         "rules_version": context.get("rules_version"), "category_profile": context.get("category_profile"),
+        "category_profile_name": (context.get("resolved", {}).get("category") or {}).get("name"),
+        "model": context.get("model"), "category_profile_source": context.get("category_profile_source"),
         "policy": context.get("resolved", {}).get("policy", {}),
         "origins": context.get("resolved", {}).get("origins", {}),
         "estimate_usd": context.get("estimate_usd", "0"), "reserved_usd": str(job.reserved_usd or 0),
@@ -74,6 +77,7 @@ def summary(job, *, detail=False):
         "created_at": job.created_at, "updated_at": job.updated_at, "archived": bool(context.get("archived"))}
     if detail:
         data['category_selection'] = context.get('category_selection')
+        data['composition'] = context.get('resolved', {}).get('composition')
         # Availability belongs to supplier configuration, not to historical AI
         # rules. Prefer the exact policy frozen into a displayed preview.
         import_policy = {k: v for k, v in context.get("resolved", {}).get("import_policy", {}).items()
@@ -156,7 +160,7 @@ async def start(db, job):
     await db.flush()
 
 
-async def create_batch(db, request: BatchRequest, *, frozen_products=None, staging_id=None):
+async def create_batch(db, request: BatchRequest, *, frozen_products=None, staging_id=None, staging_automation_version=None):
     batch_id, fingerprint = request.request_id.hex, digest(request.model_dump(mode="json"))
     await db.execute(text("SELECT pg_advisory_xact_lock(691432107)"))
     old = await db.get(AiBatch, batch_id)
@@ -174,6 +178,7 @@ async def create_batch(db, request: BatchRequest, *, frozen_products=None, stagi
         raise CatalogError("ai_batch_too_large", "Start with at most 100 product/shop jobs per batch", 422)
     db.add(AiBatch(id=batch_id, request_hash=fingerprint))
     await db.flush()
+    selected_model = await effective_model(db)
     jobs = []
     for target in request.targets:
         if not await db.scalar(select(Shop.id).where(Shop.code == target.shop, Shop.is_active.is_(True))):
@@ -188,11 +193,24 @@ async def create_batch(db, request: BatchRequest, *, frozen_products=None, stagi
             profiles = {request.category_profiles.get(p.id, "general") for p in group}
             if len(profiles) != 1:
                 raise CatalogError("ai_family_category_conflict", "Selected variants must share a category profile", 422)
-            profile = profiles.pop()
-            automatic_category = bool(ai_ids) and profile == 'auto'
-            if profile == 'auto':
-                profile = 'general'
-            profile = rules.select_category_profile(book, target.shop, target.options.category_code, profile)
+            requested_profile = profiles.pop()
+            explicit_profile = requested_profile != 'auto' and any(p.id in request.category_profiles for p in group)
+            profile = requested_profile if explicit_profile else rules.select_category_profile(
+                book, target.shop, target.options.category_code, 'general')
+            selected_is_parent = False
+            if ai_ids and requested_profile == 'auto':
+                from inventory_hub.services import ai_category
+                if category_rows is None:
+                    category_rows = (await asyncio.to_thread(catalog_import.cached_import_options, target.shop))['categories']
+                profile = ai_category.mapped_profile(book, target.shop, category_rows, target.options.category_code)
+                selected_is_parent = bool(target.options.category_code) and any(
+                    row.get('parent_code') == target.options.category_code for row in category_rows)
+            # A known category mapping already identifies the content rules. A
+            # manually selected placement without a mapping must not silently
+            # suppress semantic classification by falling back to general.
+            automatic_category = bool(ai_ids) and requested_profile == 'auto' and (profile == 'general' or selected_is_parent)
+            profile_source = ('pending_classification' if automatic_category else 'category_mapping'
+                if not explicit_profile and profile != 'general' else 'explicit')
             resolved = rules.resolve(book, Scope(shop=target.shop, supplier=request.supplier, category=profile,
                 brand=group[0].brand or "", product=code), target.policy)
             options = target.options.model_copy()
@@ -207,14 +225,18 @@ async def create_batch(db, request: BatchRequest, *, frozen_products=None, stagi
                 "image": group[0].images[0] if group[0].images else None,
                 "source_digest": source_digest(group), "facts": facts(group), "use_ai": bool(ai_ids),
                 "rules_version": published.id, "resolved": resolved, "category_profile": profile,
+                "requested_category_profile": requested_profile, "category_profile_source": profile_source,
                 "options": options.model_dump(mode="json"), "research": request.research,
                 "sale_price_overrides": {str(k): v for k, v in request.sale_price_overrides.items() if k in ids},
-                "model": settings.AI_CONTENT_MODEL}
+                "model": selected_model}
             if staging_id:
                 ctx["staging_id"] = staging_id
                 ctx["source_kind"] = "import_draft"
-                # Staged AI can prepare content only, regardless of published import policy.
-                ctx["resolved"]["policy"].update(show_cost_estimate=True, confirm_import=True)
+                if staging_automation_version == 1:
+                    ctx['staging_automation_version'] = 1
+                else:
+                    # Historical callers retain their explicit manual staging boundary.
+                    ctx["resolved"]["policy"].update(show_cost_estimate=True, confirm_import=True)
             if automatic_category:
                 from inventory_hub.services import ai_category
                 if category_rows is None:
@@ -223,7 +245,8 @@ async def create_batch(db, request: BatchRequest, *, frozen_products=None, stagi
                 # Auto selection should not inherit general's fallback category.
                 ctx['category_profile'] = 'auto'
                 ctx['options']['category_code'] = target.options.category_code
-                ai_category.prepare(ctx, book, category_rows, target.options.category_code)
+                ai_category.prepare(ctx, book, category_rows, target.options.category_code,
+                    profile_only=bool(target.options.category_code) and not selected_is_parent)
             # Validate prices at the existing API boundary, without making any shop calls.
             ShopImportPreviewRequest(supplier=request.supplier, product_ids=sorted(ids), options=options,
                 sale_price_overrides=ctx["sale_price_overrides"])
@@ -263,6 +286,9 @@ async def review(db, job, request):
 async def prepare_import(db, job):
     ctx = job.context
     if ctx.get("staging_id"):
+        if ctx.get('staging_automation_version') == 1:
+            from inventory_hub.services.product_import import advance_ai
+            return await advance_ai(db, job)
         event(job, "ready", "AI content ready for its import draft; shop publication is separate")
         return None
     if catalog_import._target(catalog_import.shop_config(ctx["shop"])) != ctx["target"]:
@@ -355,7 +381,7 @@ async def propose_rule(db, request):
     if current is None:
         raise CatalogError("ai_rule_not_found", "Select a published rule or category first", 404)
     ctx = {"rules_version": version.id, "current": current, "proposal_request": request.request,
-           "category": request.category, "use_ai": True, "model": settings.AI_CONTENT_MODEL,
+           "category": request.category, "use_ai": True, "model": await effective_model(db),
            "name": current["name"], "resolved": {"policy": rules.DEFAULT_POLICY, "origins": {}}}
     ctx["estimate_usd"] = str(provider.estimate(ctx, "rules"))
     db.add(AiBatch(id=id, request_hash=fingerprint))

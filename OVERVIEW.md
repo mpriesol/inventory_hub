@@ -28,11 +28,11 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 
 Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované súbory a kópie nepovažuj za používané iba preto, že sú v repozitári. Tabuľka alebo tlačidlo samy osebe nedokazujú dokončený pracovný postup.
 
-AI registre podporujú zdieľané bloky pre vybrané profily, označené návrhy parametrov, nepovinné čiastočné údaje a rozsah podľa skutočnej variantovej osi. Presné zadanie možno stiahnuť bez generovania; detaily a hranice sú v [AI obsah](docs/ai-content.md). Nasadenie kódu samo nepublikuje súkromnú knihu pravidiel.
+AI registre podporujú zdieľané bloky pre vybrané profily, označené návrhy parametrov, nepovinné čiastočné údaje a rozsah podľa skutočnej variantovej osi. Presné zadanie možno stiahnuť bez generovania; detaily a hranice sú v [AI obsah](docs/ai-content.md). Nové úlohy zostavujú obsahové zadanie z relevantných overených kapitol, s auditom vynechaných technických a nesúvisiacich blokov; staré uložené úlohy zostávajú zmrazené. Nasadenie kódu samo nepublikuje súkromnú knihu pravidiel.
 
 AI podklady majú explicitný formát URL, kompatibilitu so starším prefixom `official:https://…`, chyby po jednotlivých riadkoch a opravu zdroja, citátu aj tvrdenia v detaile úlohy. Feedové citáty tolerujú typografické spojovníky a presné dvojice názov: hodnota z parametrov rovnakého produktu. Ručné schválenie prijme výhrady k citátom, otvoreniu zdrojov a chýbajúcim faktom ako evidované upozornenia; automatické schválenie ich neprijíma. Technické chyby produktu zostávajú blokujúce. Uloženie konceptu zruší schválenie a vykoná plnú kontrolu bez generovania.
 
-AI úlohy pre spoločnú importnú tabuľku zobrazujú stav obsahu oddelene od skutočného výsledku odoslania. Dokončené importy otvárajú uložený výsledok; opakovaný náhľad ho nenahrádza. Pri zapnutom AI treba pred publikáciou prevziať jeho výsledok do tabuľky alebo AI výslovne vypnúť. Staršie importy bez prevzatého AI zostávajú pravdivo označené. Podrobnosti sú v [príprave importu](docs/product-imports.md).
+AI úlohy pre spoločnú importnú tabuľku zobrazujú stav obsahu oddelene od skutočného výsledku odoslania. Dokončené importy otvárajú uložený výsledok; opakovaný náhľad ho nenahrádza. Pri zapnutom AI treba pred publikáciou prevziať jeho výsledok do tabuľky alebo AI výslovne vypnúť. Nové prípravy rešpektujú zdedený odhad, schválenie, potvrdenie importu a aktivitu produktu; úplná schválená AI dávka môže pokračovať automaticky cez pôvodný importer. Úprava tabuľky po spustení automatické pokračovanie pozastaví, historické úlohy sa spätne neaktivujú. Staršie importy bez prevzatého AI zostávajú pravdivo označené. Podrobnosti sú v [príprave importu](docs/product-imports.md).
 
 AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; normalizácia pomlčiek prebehne pri spracovaní AI odpovede, uložení úprav aj zostavení obsahu pre e-shop.
 
@@ -141,6 +141,8 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 
 Produkt nemá databázový stĺpec `primary_ean`; identifikátory sú v `product_identifiers`. ORM má kompatibilnú odvodenú vlastnosť rovnakého názvu. Podporované typy a unikátnosť over v modeli a službe identifikátorov. EAN je text a nie je jediným párovacím kľúčom.
 
+Trvalý výber AI modelu pridáva prázdnu tabuľku migráciou 023; deployment ju vykoná po 022 a nemení pôvodné úlohy ani výber modelu.
+
 Mapovanie a náhľady importu pridávajú aditívne migrácie 021 a 022. Obe sú zabalené v API obraze a deployment ich vykoná po 020 pred reštartom API. Nemenia staršie produkty ani pohyby a nespúšťajú automatické AI či publikovanie. Návrat kódu ponechá tabuľky a uložené náhľady; po použití nového postupu uprednostni kompatibilnú opravu vpred.
 
 ### Filesystem
@@ -196,9 +198,9 @@ AI workflow používa existujúci katalóg/importer a vlastné DB tabuľky. Work
 
 Oficiálny prieskum môže vyhľadávať weby výrobcov/dodávateľov bez povinného prednastaveného zoznamu domén. Vyhľadávanie nezaručuje dostupnosť správnej hodnoty a chýbajúce povinné parametre naďalej vyžadujú vyriešenie.
 
-AI, audit, skladové spracovanie a ostatné doteraz tokenom chránené funkcie používajú spoločný `access.py`: prihlásený účet s HttpOnly reláciou alebo pôvodný operátorský token. [Účty](docs/user-accounts.md) pridávajú iba rozdiel medzi správcom účtov a obsluhou, nie úplné prevádzkové RBAC. AI konfigurácia zostáva `AI_CONTENT_ENABLED`, `AI_CONTENT_MODEL`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria.
+AI, audit, skladové spracovanie a ostatné doteraz tokenom chránené funkcie používajú spoločný `access.py`: prihlásený účet s HttpOnly reláciou alebo pôvodný operátorský token. [Účty](docs/user-accounts.md) pridávajú iba rozdiel medzi správcom účtov a obsluhou, nie úplné prevádzkové RBAC. AI model sa dá trvalo vybrať v **Nastavenia → AI obsah produktov → Model a náklady**; serverové `AI_CONTENT_MODEL` je predvoľba, kým sa výber neuloží. Nové úlohy si model zmrazia, existujúce sa neprepnú. Ostatná konfigurácia zostáva `AI_CONTENT_ENABLED`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria.
 
-Nové AI prípravy v UI predvolene vyberajú koncovú kategóriu a profil samostatným volaním pred tvorbou obsahu, aby sa použil správny register parametrov. Pôvodný importer doplní produktových predkov. Rozpočet zahŕňa obe fázy a žiadna sa po nejasnom výsledku automaticky neopakuje. Výsledky sa otvárajú v modálnom okne. Kontrakty, ručné výnimky a aktuálne limity sú v [docs/ai-content.md](docs/ai-content.md).
+Nové AI prípravy rozlišujú umiestnenie v kategórii a odborný profil pravidiel. Jednoznačné mapovanie použije profil bez klasifikačného volania; pri zadanej kategórii bez mapovania AI vyberie iba profil. Bez kategórie vyberie koncovú kategóriu aj profil. Ručný odborný profil sa zachová. Pôvodný importer doplní produktových predkov. Rozpočet zahŕňa obe fázy a žiadna sa po nejasnom výsledku automaticky neopakuje. Výsledky sa otvárajú v modálnom okne. Kontrakty, ručné výnimky a aktuálne limity sú v [docs/ai-content.md](docs/ai-content.md).
 
 ## Databázové migrácie
 
@@ -221,11 +223,11 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005` až `022`** explicitnými migračnými modulmi uvedenými v [.github/workflows/build.yml](.github/workflows/build.yml), pod transakčnými DB zámkami a pred reštartom API. Nová `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania; spúšťa ju [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých osemnásť upgrade SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Aktuálny deployment spúšťa `005` až `023`** explicitnými migračnými modulmi uvedenými v [.github/workflows/build.yml](.github/workflows/build.yml), pod transakčnými DB zámkami a pred reštartom API. Nová `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania; spúšťa ju [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých devätnásť upgrade SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`022` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`023` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -260,7 +262,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `022` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `023` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.

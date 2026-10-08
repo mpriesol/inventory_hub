@@ -21,7 +21,7 @@ from inventory_hub.services import ai_content as service, ai_content_rules as ru
 from inventory_hub.services.ai_content_validation import text_of
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.upgates import UpgatesClient
-from inventory_hub.settings import settings
+from inventory_hub.services.ai_content_settings import effective_model
 
 
 class ExistingProductRequest(StrictModel):
@@ -127,7 +127,15 @@ async def create(db, request: ExistingProductRequest):
     published = await rules.published(db)
     book = RuleBook.model_validate(published.book)
     main = next((c.get("code") for c in remote.get("categories") or [] if c.get("main_yn")), None)
-    profile = rules.select_category_profile(book, request.shop, request.category_code or main, 'general' if request.category_profile == 'auto' else request.category_profile)
+    explicit_profile = request.category_profile != 'auto' and 'category_profile' in request.model_fields_set
+    profile = request.category_profile if explicit_profile else rules.select_category_profile(
+        book, request.shop, request.category_code or main, 'general')
+    category_rows = None
+    if request.category_profile == 'auto' and profile == 'general':
+        from inventory_hub.services import ai_category
+        category_rows = (await asyncio.to_thread(imports.cached_import_options, request.shop, client))['categories']
+        profile = ai_category.mapped_profile(book, request.shop, category_rows, request.category_code or main)
+    automatic_profile = request.category_profile == 'auto' and profile == 'general'
     # Existing products use an explicit field comparison and confirmation. The
     # published automatic-create switches never authorize updates to live data.
     resolved = rules.resolve(book, Scope(shop=request.shop, supplier=request.supplier,
@@ -142,8 +150,11 @@ async def create(db, request: ExistingProductRequest):
         "code": snapshot["code"], "name": snapshot["descriptions"]["title"], "image": thumbnail(remote),
         "source_snapshot": snapshot, "source_digest": service.digest(snapshot), "source_parameters_loaded": True, "use_ai": True,
         "rules_version": published.id, "resolved": resolved, "category_profile": profile,
+        "requested_category_profile": request.category_profile,
+        "category_profile_source": ('pending_classification' if automatic_profile else 'category_mapping'
+            if not explicit_profile and profile != 'general' else 'explicit'),
         "options": options.model_dump(mode="json"), "research": request.research,
-        "sale_price_overrides": {}, "model": settings.AI_CONTENT_MODEL}
+        "sale_price_overrides": {}, "model": await effective_model(db)}
     ctx["facts"] = service.facts(products_from_remote(remote, ctx))
     ctx["facts"][0]["source_kind"] = "shop"
     ctx["facts"][0]["existing_seo_title"] = snapshot["descriptions"]["seo_title"]
@@ -157,12 +168,12 @@ async def create(db, request: ExistingProductRequest):
         "Neprenášaj nepodložené tvrdenia; pri oficiálnom výskume over presný model. "
         "Upravuješ spoločný obsah celej existujúcej rodiny, nevymýšľaj rozdiely variantov ani nové varianty. "
         "Z registra vyplň iba parametre s rozsahom parent, pri ktorých product_id=null. Nepovinné parametre variantov vynechaj."})
-    if request.category_profile == 'auto':
+    if automatic_profile:
         from inventory_hub.services import ai_category
         ctx['category_policy'] = dict(review_required=True, show_cost_estimate=True, confirm_import=True)
         ctx['category_profile'] = 'auto'
-        rows = (await asyncio.to_thread(imports.cached_import_options, request.shop, client))['categories']
-        ai_category.prepare(ctx, book, rows, request.category_code or main)
+        ai_category.prepare(ctx, book, category_rows, request.category_code or main,
+            profile_only=bool(request.category_code or main))
     else:
         ctx["estimate_usd"] = str(service.provider.estimate(ctx))
     db.add(AiBatch(id=batch_id, request_hash=fingerprint))

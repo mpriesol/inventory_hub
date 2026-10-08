@@ -857,9 +857,11 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     item.update(status="failed", errors=["preview_expired"])
                     continue
                 async with get_session_context() as db:
+                    expected_active = bool(document.get("content_approval", {}).get("active_after_import", False))
                     if document.get("staging"):
-                        from inventory_hub.services.product_import import assert_snapshot
-                        await assert_snapshot(db, document["staging"])
+                        from inventory_hub.services.product_import import assert_snapshot, approved_visibility
+                        draft = await assert_snapshot(db, document["staging"])
+                        expected_active = approved_visibility(draft.document['rows'], item['product_ids'])
                         fresh = [sources[id] for id in item["product_ids"]]
                     else:
                         fresh = await selected_products(db, preview["supplier"], sources[item["product_ids"][0]].feed_key, item["product_ids"])
@@ -893,7 +895,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     main = next((c['code'] for c in item['payload'].get('categories', []) if c.get('main_yn')), None)
                     if category_chain(remote_options['categories'], main) != item['payload'].get('categories', []):
                         raise CatalogError('shop_options_changed', 'The category hierarchy changed; prepare another preview', 409)
-                _assert_payload(item["payload"], expected_active=bool(document.get("content_approval", {}).get("active_after_import", False)))
+                _assert_payload(item["payload"], expected_active=expected_active)
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 _claim_product_prefix([sources[id] for id in item["product_ids"]])
                 item.update(status="uncertain", errors=["import_outcome_unknown"])

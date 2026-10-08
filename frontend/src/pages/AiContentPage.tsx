@@ -9,6 +9,7 @@ import { AiPolicyFields } from '../components/product/AiPolicyFields';
 import { AiRuleEditor } from '../components/product/AiRuleEditor';
 import { AiExistingProduct } from '../components/product/AiExistingProduct';
 import { AiJobModal } from '../components/product/AiJobModal';
+import { AiModelSettings } from '../components/product/AiModelSettings';
 import { subscribeAccess, accessRevision } from '../api/access';
 import './AiContentPage.css';
 import './SupplierCatalogPage.css';
@@ -28,7 +29,7 @@ export function AiContentPage() {
   const location = useLocation();
   const requestedJob = new URLSearchParams(location.search).get('job');
   const selection = (location.state as { selection?: Selection } | null)?.selection;
-  const [tab, setTab] = useState(selection ? 'prepare' : location.pathname.includes('settings') ? 'rules' : 'jobs');
+  const [tab, setTab] = useState(selection ? 'prepare' : location.pathname.includes('settings') ? 'settings' : 'jobs');
   const [status, setStatus] = useState<AiStatus | null>(null);
   useSyncExternalStore(subscribeAccess, accessRevision);
   const unlocked = aiUnlocked();
@@ -51,6 +52,7 @@ export function AiContentPage() {
   const [reload, setReload] = useState(0);
   const batchRequestId = useRef<string | null>(null);
   const detailRef = useRef(detail); detailRef.current = detail;
+  useEffect(() => { if (location.pathname.includes('settings')) setTab('settings'); }, [location.pathname]);
   useEffect(() => { aiRequest<AiStatus>('/status').then(setStatus).catch(e => setError(e.message)); }, []);
   async function loadRules() { setRules(await aiRequest<AiRules>('/rules')); }
   async function execute(fn: () => Promise<void>) { setBusy(true); setError(''); try { await fn(); } catch (e) { setError(t(`ai.errors.${(e as Error & {code?: string}).code}`, {defaultValue:(e as Error).message})); } finally { setBusy(false); } }
@@ -116,7 +118,8 @@ export function AiContentPage() {
     {status && <div className="ai-toolbar"><span className="ai-badge">{t(status.enabled && status.key_configured ? 'ai.connected' : 'ai.notConfigured')}</span><small>{status.model} · {t('ai.monthlyBudget')}: {rules?.used_usd || '0'} / {status.monthly_limit_usd} USD</small></div>}
     {status && (!status.enabled || !status.key_configured || !status.access_configured) && <div className="ai-notice">{t('ai.setupHelp')}<details><summary>{t('ai.setupDetails')}</summary><p>{t('ai.setupInstructions')}</p><code>OPENAI_API_KEY · AI_CONTENT_ACCESS_TOKEN · AI_CONTENT_ENABLED</code><p>{t('ai.independentAccount')}</p><a href="https://platform.openai.com/" target="_blank" rel="noopener noreferrer">OpenAI Platform ↗</a></details></div>}
     {!unlocked ? <form className="ai-card" onSubmit={e => { e.preventDefault(); execute(async () => { unlockAi(token); await loadRules(); setToken(''); }); }}><h2>{t('ai.unlock')}</h2><Link to="/login">{t('accounts.login')}</Link><p>{t('ai.unlockHelp')}</p><label>{t('ai.hubAccessToken')}<input type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></label><div className="ai-actions"><button className="ai-primary" disabled={busy || !token}>{t('ai.unlock')}</button></div></form> : <>
-      <nav className="ai-tabs">{(selection ? ['prepare', 'existing', 'jobs', 'rules'] : ['existing', 'jobs', 'rules']).map(key => <button key={key} aria-selected={tab === key} onClick={() => setTab(key)}>{t(`ai.tabs.${key}`)}</button>)}<button onClick={() => { unlockAi(''); setRules(null); setDetail(null); }}>{t('ai.lock')}</button></nav>
+      <nav className="ai-tabs">{(selection ? ['prepare', 'existing', 'jobs', 'rules', 'settings'] : ['existing', 'jobs', 'rules', 'settings']).map(key => <button key={key} aria-selected={tab === key} onClick={() => setTab(key)}>{t(`ai.tabs.${key}`)}</button>)}<button onClick={() => { unlockAi(''); setRules(null); setDetail(null); }}>{t('ai.lock')}</button></nav>
+      {tab === 'settings' && <AiModelSettings onChange={value => setStatus(old => old ? { ...old, model: value.model } : old)} />}
       {tab === 'existing' && rules && <AiExistingProduct rules={rules} onJob={showJob} />}
       {tab === 'prepare' && selection && <>
         <div className="ai-notice">{t('ai.prepareHelp')} {t('ai.autoCategoryHelp')}</div>

@@ -28,7 +28,7 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
   { key: 'variant_attributes', type: 'pairs', view: 'parameters', width: 240 },
   { key: 'metadata', type: 'metadata', view: 'parameters', width: 240 },
 ];
-export const FAMILY_IMPORT_FIELDS = new Set<ImportField>(['group_name', 'brand', 'description_html', 'short_description', 'seo_title', 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled']);
+export const FAMILY_IMPORT_FIELDS = new Set<ImportField>(['group_name', 'brand', 'description_html', 'short_description', 'seo_title', 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled', 'ai_category_profile']);
 export type ImportChanges = Record<number, Partial<ImportValues>>;
 export const effectiveImportValues = (row: ProductImportRow, changes: ImportChanges) => ({ ...row.values, ...changes[row.id] });
 export function importValueText(value: ImportValue | undefined): string {

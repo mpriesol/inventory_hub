@@ -526,7 +526,8 @@
       "prepare": "Príprava",
       "jobs": "Spracovanie a výsledky",
       "rules": "Pravidlá a kategórie",
-      "existing": "Existujúce produkty"
+      "existing": "Existujúce produkty",
+      "settings": "Model a náklady"
     },
     "rules": "Pravidlá",
     "legacyCategoryRules": "Doplnkové pravidlá zo starších verzií",
@@ -733,7 +734,9 @@
       "ai_update_resolved_mismatch": "Ukončenie pôvodnej požiadavky je potvrdené; hodnoty sa nezhodujú s náhľadom. Môžete pripraviť nové porovnanie.",
       "ai_availability_managed_by_stock": "Dostupnosť spravuje skladový systém alebo ešte prebieha neuzavretý prenos zásob. Odstráňte dostupnosť z polí AI aktualizácie; ostatný obsah môžete aktualizovať.",
       "ai_category_uncertain": "AI nevie jednoznačne určiť kategóriu a profil. Skontroluj podklady alebo zvoľ kategóriu ručne.",
-      "ai_category_candidates_missing": "V e-shope chýbajú vhodné aktívne koncové kategórie."
+      "ai_category_candidates_missing": "V e-shope chýbajú vhodné aktívne koncové kategórie.",
+      "ai_settings_changed": "Nastavenie medzičasom zmenil iný používateľ. Načítaj aktuálnu hodnotu a vyber model znova.",
+      "ai_model_unpriced": "Tento model nemá podporovaný cenník. Vyber niektorý z ponúkaných modelov."
     },
     "importSelectedReady": "Importovať označené pripravené",
     "selectJob": "Označiť úlohu",
@@ -918,9 +921,9 @@
     "manualApprovalHelp": "Schválením prijímaš aj uvedené chýbajúce fakty a výhrady k zdrojom alebo citátom. Pripraví sa import a upozornenia zostanú uložené. Technické chyby produktu treba opraviť.",
     "manuallyAcceptedWarnings": "Obsah bol ručne schválený aj s týmito výhradami. Zostávajú evidované ako upozornenia a neblokujú prípravu importu.",
     "staging": {
-      "help": "Táto AI úloha patrí do uloženej prípravy produktov. Schválenie pripraví obsah pre tabuľku; odoslanie do e-shopu sa potvrdzuje v tejto príprave.",
+      "help": "Táto AI úloha patrí do uloženej prípravy produktov. Preberanie obsahu a odoslanie do e-shopu sa riadia uloženými pravidlami úlohy a stavom prípravy.",
       "approve": "Schváliť AI obsah pre importnú tabuľku",
-      "approvalHelp": "Schválením prijímaš uvedené výhrady. Potom otvor prípravu importu a prevezmi AI výsledky do tabuľky. Samotné schválenie nevytvára ani neaktualizuje produkt v e-shope.",
+      "approvalHelp": "Schválením prijímaš uvedené výhrady. Potom otvor prípravu importu a prevezmi AI výsledky do tabuľky. Samotné schválenie tejto staršej úlohy nevytvára ani neaktualizuje produkt v e-shope.",
       "openDraft": "Otvoriť prípravu importu",
       "openResult": "Otvoriť výsledok importu",
       "replaced": "Nahradená AI príprava",
@@ -939,7 +942,77 @@
         "completed": "AI obsah je prevzatý do tabuľky. V príprave importu skontroluj uloženie a odoslanie do e-shopu.",
         "review": "Skontroluj a schváľ obsah, potom ho prevezmi do importnej tabuľky.",
         "blocked": "Skontroluj výhrady a schváľ obsah alebo oprav technické chyby. Potom pokračuj v priradenej príprave importu."
+      },
+      "approvalHelpAutomatic": "Schválením prijímaš uvedené výhrady. Hub pokračuje podľa uložených pravidiel: výsledok prevezme do tabuľky a pri automatickej príprave môže pokračovať aj odoslaním do e-shopu.",
+      "profileChanged": "Profil pravidiel sa zmenil. V príprave importu priprav AI obsah znova.",
+      "automationPaused": "Úprava tabuľky pozastavila automatické dokončenie. Skontroluj údaje a znova priprav AI obsah alebo pokračuj ručne.",
+      "autoApplying": "Hub automaticky preberá schválený AI obsah do importnej tabuľky.",
+      "autoPublishing": "Hub automaticky ukladá produkty a dokončuje odoslanie do e-shopu podľa pravidiel."
+    },
+    "modelSettings": {
+      "title": "AI model a náklady",
+      "help": "Vyber model, ktorý Hub používa na prípravu produktov a návrhov pravidiel.",
+      "model": "Model pre nové AI úlohy",
+      "current": "Aktuálne uložený model",
+      "source": {
+        "server": "Predvolené nastavenie servera",
+        "hub": "Uložené v Hube"
+      },
+      "price": "Za 1 milión tokenov: vstup {{input}} USD · výstup {{output}} USD",
+      "priceHelp": "Cena produktu závisí od rozsahu zadania, odpovede a vyhľadávania. Pravidlá obchodu zostávajú rovnaké; kvalita sa môže medzi modelmi líšiť.",
+      "priceDetails": "Podrobnosti ceny",
+      "cachePrice": "Za 1 milión tokenov: čítanie cache {{cached}} USD · zápis cache {{write}} USD.",
+      "searchPrice": "Webové vyhľadanie: {{amount}} USD za volanie + tokeny načítaného obsahu.",
+      "longPrice": "Pri vstupe nad {{threshold}} tokenov: vstup {{input}} USD · výstup {{output}} USD za 1 milión tokenov.",
+      "newJobs": "Zmena platí len pre novo pripravené úlohy. Existujúce odhady a rozpracované úlohy si ponechajú pôvodný model. Rozpočtové limity zostávajú v platnosti.",
+      "save": "Uložiť AI model",
+      "reload": "Načítať aktuálne nastavenie",
+      "saved": "AI model bol uložený. Nové úlohy použijú tento model."
+    },
+    "composition": {
+      "title": "Čo bolo odoslané do AI",
+      "summary": "Pravidlá: {{included}} použitých, {{omitted}} vynechaných. Pôvodný text: {{source}} znakov; do AI: {{selected}} znakov.",
+      "help": "Zloženie je uložené pri tejto úlohe. Úplný text použitých pravidiel nájdeš nižšie; zostavenú požiadavku si môžeš stiahnuť.",
+      "states": {
+        "included": "použité",
+        "filtered": "použitá relevantná časť",
+        "omitted": "vynechané"
+      },
+      "reasons": {
+        "technical_export": "Pokyny k formátu exportu nie sú súčasťou tvorby textu produktu.",
+        "workflow_only": "Pokyny na obsluhu súborov alebo postup v chate nie sú zadaním pre obsah produktu.",
+        "history": "História zmien a odovzdanie práce.",
+        "other_category": "Pravidlá inej kategórie.",
+        "unchanged": "Pravidlo použité v plnom znení.",
+        "content_sections": "Zachované časti ovplyvňujúce obsah produktu.",
+        "unsupported_gallery_workflow": "Pokyny pre galériu; obsahové API neupravuje obrázky.",
+        "unsupported_relation_workflow": "Pokyny pre väzby produktov mimo obsahového API.",
+        "file_handover": "Odovzdanie súborov v chate.",
+        "rule_maintenance": "Správa a údržba knihy pravidiel.",
+        "rule_navigation": "Navigačné pokyny ku knihe pravidiel.",
+        "classification_only": "Strom kategórií patrí do výberu kategórie.",
+        "empty_heading": "Nadpis bez samostatných pokynov.",
+        "registry_authoring": "Pokyny na tvorbu registra parametrov.",
+        "content_precedence_preserved": "Prednosť pravidiel ovplyvňujúcich obsah je zachovaná.",
+        "chat_and_file_workflow": "Postup práce v chate a so súbormi.",
+        "editorial_sections_preserved": "Redakčné pravidlá sú zachované.",
+        "login_workflow": "Pokyny na interaktívne prihlásenie.",
+        "unsupported_seo_url_and_image_titles": "SEO adresa a názvy obrázkov sú mimo obsahového API.",
+        "commercial_fields": "Ceny, sklad a aktiváciu rieši importná vrstva.",
+        "customer_weight_preserved": "Hmotnosť produktu pre zákazníka je zachovaná.",
+        "content_format_preserved": "Formát textových polí je zachovaný.",
+        "validator_execution": "Spúšťanie externého validátora súborov.",
+        "knowledge_scope_preserved": "Rozsah využitia znalostnej bázy je zachovaný.",
+        "parameter_formats_for_profile": "Použité formáty parametrov zodpovedajú profilu.",
+        "superseded_digest": "Duplicitný súhrn nahradený úplnými zdrojovými pravidlami.",
+        "runtime_contract": "Pokyny pre obsahové API a požadovanú štruktúru produktu."
       }
+    },
+    "profileSources": {
+      "explicit": "Použitý je ručne vybraný profil pravidiel.",
+      "category_mapping": "Profil pravidiel bol určený z cieľovej kategórie.",
+      "pending_classification": "AI ešte vyberie profil pravidiel pre tento produkt.",
+      "ai_classification": "Profil pravidiel vybrala AI podľa produktu."
     }
   },
   "upgatesImport": {
@@ -2878,11 +2951,11 @@
     "warnings": "Upozornenia: {{count}}",
     "keyboardHelp": "Kliknutie alebo F2 upraví bunku. Tab presúva medzi bunkami. Z Excelu možno vložiť blok do aktívnej bunky.",
     "aiTitle": "Vylepšenie pomocou AI",
-    "aiHelp": "AI spracuje iba zaškrtnuté produkty. Ručne upravené hodnoty zostanú zachované. Výsledky sa prijmú do tejto tabuľky.",
+    "aiHelp": "AI spracuje iba zaškrtnuté produkty a zachová ručné úpravy. Použije zdedené pravidlá: bez kontroly nákladov spustí platené spracovanie hneď; bez schvaľovania a potvrdenia môže dokončiť aj odoslanie do e-shopu.",
     "research": "Podklady",
     "official": "Feed a oficiálne zdroje",
     "feedOnly": "Iba feed",
-    "prepareAI": "Pripraviť odhad ({{count}})",
+    "prepareAI": "Pripraviť AI obsah ({{count}})",
     "startAI": "Spustiť AI · odhad {{amount}} USD",
     "applyAI": "Prijať výsledky AI do tabuľky",
     "aiRunning": "AI pracuje. Priebeh sa obnovuje automaticky.",
@@ -2931,13 +3004,14 @@
       "vat_percent": "DPH %",
       "currency": "Mena",
       "availability": "Dostupnosť",
-      "ai_enabled": "Vylepšiť AI"
+      "ai_enabled": "Vylepšiť AI",
+      "ai_category_profile": "Profil pravidiel AI"
     },
     "notices": {
       "draftSaved": "Koncept je uložený. Do e-shopu sa nič neposlalo.",
       "hubSaved": "Produkty sú uložené v Hube. Teraz môžete pripraviť náhľad odoslania.",
       "refreshed": "Načítaná uložená verzia.",
-      "aiPrepared": "Odhady AI sú pripravené. Platené spracovanie spustíte samostatným tlačidlom.",
+      "aiPrepared": "AI príprava pokračuje podľa zdedených pravidiel. Stav a prípadné kroky na potvrdenie sú uvedené pri produktoch.",
       "aiStarted": "AI spracovanie bolo spustené.",
       "aiApplied": "Výsledky AI sú v tabuľke. Ručne upravené hodnoty zostali zachované. Uložte produkty do Hubu.",
       "previewReady": "Náhľad je pripravený na kontrolu a potvrdenie.",
@@ -2986,7 +3060,12 @@
     "completedWithoutAi": "AI výsledky zostali neprevzaté. Do e-shopu sa odoslal obsah tabuľky v čase potvrdenia, bez týchto AI úprav.",
     "showResult": "Zobraziť výsledok odoslania",
     "openAI": "Otvoriť AI obsah",
-    "aiPendingHelp": "Pri produktoch so zapnutým AI najprv prijmite výsledky AI do tabuľky. Ak chcete odoslať pôvodné údaje bez AI, vypnite pri nich AI.",
-    "publicationResultHelp": "Toto je uložený výsledok odoslania. Stav je uvedený pri každom produkte."
+    "aiPendingHelp": "AI obsah ešte nie je pripravený na odoslanie. Sledujte stav produktov a prípadné požiadavky na schválenie. Ak chcete odoslať pôvodné údaje bez AI, vypnite pri nich AI.",
+    "publicationResultHelp": "Toto je uložený výsledok odoslania. Stav je uvedený pri každom produkte.",
+    "profileRow": "Pravidlá AI pre {{code}}",
+    "profileHelp": "Profil pravidiel AI určuje obsah a parametre. Automatický výber využije mapovanie kategórie; konkrétny profil môžeš zvoliť pri produkte alebo hromadne. Cieľová kategória e-shopu zostáva samostatným poľom.",
+    "profilesLoadError": "Profily pravidiel AI sa nepodarilo načítať.",
+    "autoProfile": "Automaticky podľa produktu",
+    "profileNeedsPreparation": "Pravidlá zmenené – priprav AI obsah znova"
   }
 }

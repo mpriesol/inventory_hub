@@ -6,6 +6,7 @@ from sqlalchemy import select, text
 from inventory_hub.ai_content_models import AiRuleState, AiRuleVersion
 from inventory_hub.ai_content_types import CategoryProfile, Policy, Rule, RuleBook, Scope
 from inventory_hub.services.catalog import CatalogError
+from inventory_hub.services.ai_rule_content import compile_instructions
 
 DEFAULT_POLICY = dict(review_required=True, active_after_import=False, show_cost_estimate=True, confirm_import=True)
 
@@ -64,7 +65,7 @@ def parameter_scope(definition: dict, facts: list[dict]) -> str:
                             for a in p.get("variant_attributes", [])) else "parent"
 
 
-def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> dict:
+def resolve(book: RuleBook, context: Scope, override: Policy | None = None, *, compile_content: bool = True) -> dict:
     """Common → supplier → brand → category → shop → product → one-run override.
 
     Compound scopes follow their most specific dimension, then the number of
@@ -114,8 +115,12 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None) -> d
     resolved_category = category.model_dump() if category else None
     if resolved_category:
         resolved_category["parameters"] = [p for p in resolved_category["parameters"] if p["approved"]]
-    return {"policy": policy, "origins": origins, "instructions": instructions,
-            "import_policy": import_policy, "official_domains": sorted(set(domains)), "category": resolved_category}
+    result = {"policy": policy, "origins": origins, "instructions": instructions,
+            "import_policy": import_policy, "official_domains": sorted(set(domains)), "category": resolved_category,
+            }
+    if compile_content:
+        result["instructions"], result["composition"] = compile_instructions(instructions, resolved_category, context.shop)
+    return result
 
 
 async def published(db) -> AiRuleVersion:
