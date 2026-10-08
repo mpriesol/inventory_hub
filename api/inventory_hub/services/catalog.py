@@ -61,6 +61,11 @@ def source_config(supplier: str, cfg: dict, feed_key: str, *, require_parser: bo
     return source, parser_name
 
 
+def _source_configured(source: dict) -> bool:
+    location = source.get("local_path") if source.get("mode") == "local" else (source.get("remote") or {}).get("url")
+    return bool(isinstance(location, str) and location.strip())
+
+
 def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds: int | None = None) -> Path:
     directory = config_io.supplier_path(supplier).parent / "feeds" / "xml"
     directory.mkdir(parents=True, exist_ok=True)
@@ -189,6 +194,10 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
                 raise
             source = {"mode": "local", "local_path": str(source_path or await feed_mapping.source_path(db, supplier, feed_key))}
             parser_name = supplier if supplier in PARSERS else None
+        if mapping and source_path is None and not _source_configured(source):
+            # Supplier normalization can add an empty products-source placeholder.
+            # An uploaded mapping source remains usable until a real location is set.
+            source = {"mode": "local", "local_path": str(await feed_mapping.source_path(db, supplier, feed_key))}
         if not mapping and parser_name not in PARSERS:
             raise CatalogError("catalog_parser_unavailable", "Configure a product feed mapping for this supplier", 422)
         run_number = (await db.scalar(select(func.max(SupplierFeedRun.run_number)).where(SupplierFeedRun.feed_id == feed.id)) or 0) + 1
@@ -514,8 +523,12 @@ async def catalog_status(db: AsyncSession, supplier: str, feed_key: str = "produ
             _, parser = source_config(supplier, cfg, key)
         except CatalogError:
             parser = None
+        configured = _source_configured(source)
+        if not configured and key in mapped:
+            saved = await _feed(db, supplier, cfg, key)
+            configured = bool(saved and (saved.mapping_config or {}).get("mapping_source_path"))
         sources.append({"key": key, "name": source.get("name") or key, "supported": parser is not None or key in mapped,
-                        "configured": bool(source.get("local_path") if source.get("mode") == "local" else (source.get("remote") or {}).get("url"))})
+                        "configured": configured})
     for key in sorted(mapped - {source["key"] for source in sources}):
         saved = await _feed(db, supplier, cfg, key)
         sources.append({"key": key, "name": key, "supported": True,

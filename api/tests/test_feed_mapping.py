@@ -152,6 +152,13 @@ class FeedMappingTests(unittest.TestCase):
             with self.assertRaises(CatalogError):
                 mapping._listing_scope({"feeds": {"sources": {"availability": {"type": "stock"}}}}, key)
 
+    def test_empty_source_placeholder_is_not_a_configured_download_location(self):
+        from inventory_hub.services.catalog import _source_configured
+        for source in ({}, {"mode": "remote", "remote": {"url": ""}}, {"mode": "local", "local_path": " "}):
+            self.assertFalse(_source_configured(source))
+        self.assertTrue(_source_configured({"mode": "local", "local_path": "/synthetic/feed.csv"}))
+        self.assertTrue(_source_configured({"remote": {"url": "https://supplier.example.test/feed"}}))
+
     def test_xml_namespaces_are_preserved_and_inspected_paths_are_reusable(self):
         self.write('<products xmlns="https://supplier.example/feed"><product><id>01</id><params><param><name>Valve</name><value>SV</value></param></params></product></products>')
         records, kind, path = read_records(self.path, MappingDefinition())

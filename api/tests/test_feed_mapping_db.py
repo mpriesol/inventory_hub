@@ -90,8 +90,7 @@ class FeedMappingDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_shop_category_and_fields_do_not_change_shared_supplier_rows(self):
         self.write_feed(catalog_db.xml_item(extra="<CATEGORYTEXT>Tubes</CATEGORYTEXT>"))
         async with self.sessions() as db:
-            db.add(Shop(code="biketrek", name="BIKETREK", is_active=True))
-            await db.flush()
+            self.assertIsNotNone(await db.scalar(select(Shop.id).where(Shop.code == "biketrek", Shop.is_active.is_(True))))
             await catalog.refresh_catalog(db, "paul-lange")
             definition = MappingDefinition.model_validate({"category_rules": [{"source": "Tubes", "target_code": "TUBE-LEAF"}],
                 "bindings": [{"target": "short_description", "constant": "Manual mapping constant"}]})
