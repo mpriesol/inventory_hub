@@ -103,6 +103,27 @@ class ProfileRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ai_category.category_chain(TREE, final['options']['category_code']),
             [{'code': 'ROOT', 'main_yn': False}, {'code': 'TUBES', 'main_yn': True}])
 
+    async def test_manually_cleared_category_accepts_ai_leaf_but_later_edit_does_not(self):
+        context, _ = await self.prepare('auto', None)
+        final = ai_category.apply(context, book(), {'category_code': 'TUBES', 'profile_id': 'inner_tubes',
+            'confident': True, 'reason': 'Tube category after clearing the temporary placement.'})
+        item = row(category_code=None)
+        item['manual_fields'] = ['category_code']
+        product_import.merge_ai_values(item, content(), final)
+        self.assertEqual(item['values']['category_code'], 'TUBES')
+        self.assertEqual(item['provenance']['category_code'], 'ai')
+        draft = {**document([item]), 'categories': TREE}
+        product_import.validate_rows(draft)
+        self.assertNotIn('category_missing', item['warnings'])
+        self.assertEqual(item['categories'], [{'code': 'ROOT', 'main_yn': False}, {'code': 'TUBES', 'main_yn': True}])
+        later = row(category_code=None)
+        later['manual_fields'] = ['category_code']
+        later['values']['category_code'] = 'TEMP'
+        with self.assertRaises(CatalogError) as changed:
+            product_import.merge_ai_values(later, content(), final)
+        self.assertEqual(changed.exception.code, 'import_ai_identity_changed')
+        self.assertEqual(later['values']['category_code'], 'TEMP')
+
     async def test_automatic_parent_selection_still_descends_to_leaf(self):
         context, _ = await self.prepare('auto', 'ROOT')
         self.assertEqual(context['classification_mode'], 'category_and_profile')

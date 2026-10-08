@@ -671,7 +671,8 @@ def merge_ai_values(row, output, context):
         proposed['parameters'] = preserved + generated
     descend_to_leaf = bool(baseline.get('category_code') and context.get('classification_mode') == 'category_and_profile'
         and context.get('category_selection'))
-    if not baseline.get('category_code') or descend_to_leaf:
+    accept_category = not baseline.get('category_code') or descend_to_leaf
+    if accept_category:
         proposed['category_code'] = context.get('options', {}).get('category_code')
     safety = CatalogProduct.model_validate(row['source']).safety_information
     if safety:
@@ -680,8 +681,10 @@ def merge_ai_values(row, output, context):
     for key, value in proposed.items():
         # An explicitly selected parent constrains automatic classification to
         # its subtree; accepting that result refines it to the validated leaf.
+        # Clearing a category before preparation also delegates its selection
+        # to AI, even though the clear itself is recorded as a manual edit.
         # A selected leaf or a category changed after preparation stays pinned.
-        if (key not in row['manual_fields'] or key == 'category_code' and descend_to_leaf) and row['values'].get(key) == baseline.get(key):
+        if (key not in row['manual_fields'] or key == 'category_code' and accept_category) and row['values'].get(key) == baseline.get(key):
             row['values'][key] = value
             row['provenance'][key] = 'ai'
     row['values'] = ImportValues.model_validate(row['values']).model_dump(mode='json')
