@@ -4,7 +4,9 @@ import { SessionBootstrap } from './components/SessionBootstrap';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
 import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { ProductImportPage } from './pages/ProductImportPage';
+import { FeedMappingPage } from './pages/FeedMappingPage';
+import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate } from 'react-router-dom';
 
 // Styles
 import './styles/design-system.css';
@@ -34,11 +36,9 @@ import {
   ProductDetailPage,
 } from './pages';
 
-function App() {
-  return (
-    <BrowserRouter>
-      <SessionBootstrap><Routes>
-        <Route element={<Layout />}>
+// A data router lets editable imports use the supported navigation blocker.
+const router = createBrowserRouter(createRoutesFromElements(
+        <Route element={<SessionBootstrap><Layout /></SessionBootstrap>}>
           {/* Dashboard */}
           <Route path="/" element={<DashboardPage />} />
 
@@ -62,10 +62,12 @@ function App() {
           {/* Products */}
           <Route path="/products" element={<Navigate to="/stock" replace />} />
           <Route path="/products/:sku" element={<ProductDetailPage />} />
+          <Route path="/product-import" element={<ProductImportPage />} />
 
           {/* Suppliers */}
           <Route path="/suppliers" element={<SuppliersPage />} />
           <Route path="/suppliers/:supplier/catalog" element={<SupplierCatalogPage />} />
+          <Route path="/suppliers/:supplier/feed-mapping" element={<FeedMappingPage />} />
 
           {/* Shops */}
           <Route path="/shops" element={<ShopsPage />} />
@@ -96,9 +98,10 @@ function App() {
             }
           />
         </Route>
-      </Routes></SessionBootstrap>
-    </BrowserRouter>
-  );
+));
+
+function App() {
+  return <RouterProvider router={router} />;
 }
 
 export default App;

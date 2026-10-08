@@ -448,11 +448,14 @@ def _duplicate(item: dict, sources: dict[int, CatalogProduct], codes: set[str], 
             any(sources[id].shop_code.casefold() in codes or bool(set(sources[id].eans) & eans) for id in item["product_ids"]))
 
 
-async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreviewRequest, *, enrichment: dict | None = None) -> ShopImportPreview:
+async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreviewRequest, *, enrichment: dict | None = None,
+                         frozen_products: list[CatalogProduct] | None = None, staging: dict | None = None) -> ShopImportPreview:
     cfg = shop_config(shop)
     if not await db.scalar(select(Shop.id).where(Shop.code == shop, Shop.is_active.is_(True))):
         raise CatalogError("shop_not_found", "Choose an active Hub shop", 404)
-    products = await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
+    products = frozen_products if frozen_products is not None else await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
+    if (frozen_products is not None) != (staging is not None):
+        raise CatalogError("import_snapshot_invalid", "A frozen source requires a saved import draft", 422)
     if set(request.sale_price_overrides) - {p.id for p in products}:
         raise CatalogError("price_override_not_selected", "Price overrides must refer to selected products", 422)
     supplier_cfg = supplier_config(request.supplier)
@@ -480,11 +483,28 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         if len(items) != 1:
             raise CatalogError("ai_family_mismatch", "A content revision applies to exactly one selected family", 422)
         items = [overlay(item, enrichment, options.language) if item.status == "ready" else item for item in items]
+    meta_common = {}
+    if staging:
+        from inventory_hub.services.ai_content_upgates import FIELDS
+        definitions = await asyncio.to_thread(_pages, client, "metas", "metas", {"category": "products"})
+        meta_common = {m['key']: bool(m.get('common_languages_value_yn')) for m in definitions if m.get('key')}
+        known_ai_fields = {m['key']: m['common_languages_value_yn'] for m in FIELDS}
+        for key, common in known_ai_fields.items():
+            meta_common.setdefault(key, common)
     policy = availability_policy(request.supplier, supplier_cfg)
     for item in items:
         if item.status == "ready":
             item.payload["categories"] = category_chain(remote["categories"], options.category_code)
             apply_availability(item.payload, [p for p in products if p.id in item.product_ids], policy)
+            if staging:
+                from inventory_hub.services.product_import import overlay_payload
+                overlay_payload(item, staging["rows"], options.language, remote["categories"])
+                unknown_meta = [m['key'] for m in item.payload.get('metas', []) if m['key'] != 'validation_required' and m['key'] not in meta_common]
+                if unknown_meta:
+                    item.status, item.errors = 'invalid', ['metadata_field_missing:' + key for key in unknown_meta]
+                for meta in item.payload.get('metas', []):
+                    if meta['key'] != 'validation_required' and meta['key'] in meta_common and not meta_common[meta['key']]:
+                        meta['values'] = [{'language': options.language, 'value': meta.pop('value')}]
     price_lines = []
     for product in products:
         try:
@@ -534,6 +554,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
                 "supplier_availability": policy, "result": None}
+    if staging:
+        document["staging"] = {k: staging[k] for k in ("draft_id", "hash")}
     if enrichment:
         document["content_approval"] = {k: enrichment[k] for k in ("job_id", "revision", "rules_version", "active_after_import")}
     _write(_path(shop, preview.preview_id), document)
@@ -691,8 +713,11 @@ def _assert_payload(payload: dict, *, expected_active: bool = False) -> None:
         raise CatalogError("unsafe_import_payload", "Product visibility differs from the approved import policy", 422)
 
 
-def queue_import(shop: str, preview_id: str, retry_failed: bool = False) -> tuple[dict, bool]:
+def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, staging_id: str | None = None) -> tuple[dict, bool]:
     path = _path(shop, preview_id)
+    linked = _load(path).get("staging")
+    if linked and linked["draft_id"] != staging_id:
+        raise CatalogError("import_staging_confirmation_required", "Confirm this publication from its saved import draft", 409)
     current = _read_result(path)
     if current and current["status"] in ("queued", "running"):
         current = import_result(shop, preview_id)
@@ -804,7 +829,12 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         verified = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
         if verified["create_validation_field"]:
             raise CatalogError("validation_field_create_failed", "The validation field was not created", 502)
-    if policy_current and document.get("content_approval") and any("short_description" in d for item in preview["items"] for d in item["payload"].get("descriptions", [])):
+    staged_h1 = bool(document.get("staging")) and any(
+        meta.get("key") in {"h1_descriptor", "future_name", "h1_descr_suffix"}
+        for item in preview["items"] for meta in item["payload"].get("metas", []))
+    has_content = any("short_description" in description
+        for item in preview["items"] for description in item["payload"].get("descriptions", []))
+    if policy_current and has_content and (document.get("content_approval") or staged_h1):
         from inventory_hub.services.ai_content_upgates import content_fields
         await asyncio.to_thread(content_fields, shop, client, create=True)
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client)
@@ -827,11 +857,16 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     item.update(status="failed", errors=["preview_expired"])
                     continue
                 async with get_session_context() as db:
-                    fresh = await selected_products(db, preview["supplier"], sources[item["product_ids"][0]].feed_key, item["product_ids"])
-                    ignored = {"run_id", "fetched_at", "listed"}
-                    if any(p.model_dump(exclude=ignored) != sources[p.id].model_dump(exclude=ignored) for p in fresh):
-                        item.update(status="failed", errors=["catalog_changed"])
-                        continue
+                    if document.get("staging"):
+                        from inventory_hub.services.product_import import assert_snapshot
+                        await assert_snapshot(db, document["staging"])
+                        fresh = [sources[id] for id in item["product_ids"]]
+                    else:
+                        fresh = await selected_products(db, preview["supplier"], sources[item["product_ids"][0]].feed_key, item["product_ids"])
+                        ignored = {"run_id", "fetched_at", "listed"}
+                        if any(p.model_dump(exclude=ignored) != sources[p.id].model_dump(exclude=ignored) for p in fresh):
+                            item.update(status="failed", errors=["catalog_changed"])
+                            continue
                     _, conflicts = await local_identities(db, fresh)
                     if conflicts:
                         item.update(status="failed", errors=["local_identity_conflict"])
@@ -854,6 +889,10 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                         break
                 if item["status"] == "exists":
                     continue
+                if document.get("staging"):
+                    main = next((c['code'] for c in item['payload'].get('categories', []) if c.get('main_yn')), None)
+                    if category_chain(remote_options['categories'], main) != item['payload'].get('categories', []):
+                        raise CatalogError('shop_options_changed', 'The category hierarchy changed; prepare another preview', 409)
                 _assert_payload(item["payload"], expected_active=bool(document.get("content_approval", {}).get("active_after_import", False)))
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 _claim_product_prefix([sources[id] for id in item["product_ids"]])

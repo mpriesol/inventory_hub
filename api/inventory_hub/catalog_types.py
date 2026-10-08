@@ -45,6 +45,15 @@ class CatalogProduct(BaseModel):
     name: str
     brand: str | None = None
     description: str = ""
+    short_description: str = ""
+    seo_title: str = ""
+    seo_description: str = ""
+    seo_url: str = ""
+    metadata: dict[str, str] = Field(default_factory=dict)
+    target_category_code: str | None = None
+    mapping_revision: int = 0
+    mapping_provenance: dict[str, Any] = Field(default_factory=dict)
+    raw_fields: dict[str, Any] = Field(default_factory=dict)
     manufacturer_description: str = ""
     safety_information: str = ""
     category: str | None = None

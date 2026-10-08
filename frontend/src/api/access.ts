@@ -51,3 +51,17 @@ export async function hubRequest<T>(path: string, body?: unknown, signal?: Abort
   if (!response.ok) throw new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
   return data;
 }
+
+/** Multipart requests share the same in-memory credential and session protection. */
+export async function hubUpload<T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'X-Hub-Request': '1', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+    body, signal, cache: 'no-store',
+  });
+  let data: any;
+  try { data = await response.json(); } catch { throw new CatalogApiError('request_failed', String(response.status)); }
+  if (response.status === 401 && currentUser) setHubUser(null);
+  if (!response.ok) throw new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
+  return data;
+}

@@ -56,9 +56,10 @@ interface SupplierCardProps {
   supplier: SupplierSummary;
   onEdit: (code: string) => void;
   onCatalog: (code: string) => void;
+  onMapping: (code: string) => void;
 }
 
-function SupplierCard({ supplier, onEdit, onCatalog }: SupplierCardProps) {
+function SupplierCard({ supplier, onEdit, onCatalog, onMapping }: SupplierCardProps) {
   const { t } = useTranslation();
   const strategyLabels: Record<string, string> = {
     'paul-lange-web': 'Auto-download',
@@ -142,6 +143,10 @@ function SupplierCard({ supplier, onEdit, onCatalog }: SupplierCardProps) {
       <Button variant="secondary" size="sm" className="mt-4" icon={<Package size={14} />}
         onClick={(event) => { event.stopPropagation(); onCatalog(supplier.code); }}>
         {t('catalog.openCatalog')}
+      </Button>
+      <Button variant="ghost" size="sm" className="mt-4 ml-2" icon={<Settings size={14} />}
+        onClick={(event) => { event.stopPropagation(); onMapping(supplier.code); }}>
+        {t('feedMapping.open')}
       </Button>
     </div>
   );
@@ -290,6 +295,7 @@ interface SupplierEditorProps {
 type EditorTab = 'general' | 'feeds' | 'invoices' | 'mapping' | 'json' | 'history';
 
 function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<EditorTab>('general');
   const [config, setConfig] = useState<SupplierConfig | null>(null);
   const [originalConfig, setOriginalConfig] = useState<SupplierConfig | null>(null);
@@ -446,7 +452,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
     { id: 'general', label: 'Obecné', icon: <Settings size={16} /> },
     { id: 'feeds', label: 'Feedy', icon: <Globe size={16} /> },
     { id: 'invoices', label: 'Faktúry', icon: <FileText size={16} /> },
-    { id: 'mapping', label: 'Mapovanie', icon: <Truck size={16} /> },
+    { id: 'mapping', label: t('feedMapping.invoiceMapping'), icon: <Truck size={16} /> },
     { id: 'json', label: 'JSON', icon: <Code size={16} /> },
     { id: 'history', label: 'História', icon: <History size={16} /> },
   ];
@@ -1686,7 +1692,7 @@ export function SuppliersPage() {
       {!loading && suppliers.length > 0 && (
         <div className="grid gap-4">
           {suppliers.map((supplier) => (
-            <SupplierCard key={supplier.code} supplier={supplier} onEdit={handleEdit} onCatalog={(code) => navigate(`/suppliers/${encodeURIComponent(code)}/catalog`)} />
+            <SupplierCard key={supplier.code} supplier={supplier} onEdit={handleEdit} onCatalog={(code) => navigate(`/suppliers/${encodeURIComponent(code)}/catalog`)} onMapping={(code) => navigate(`/suppliers/${encodeURIComponent(code)}/feed-mapping`)} />
           ))}
         </div>
       )}

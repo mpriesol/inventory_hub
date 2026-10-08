@@ -15,6 +15,8 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 | [AGENTS.md](AGENTS.md) | Rozsah práce, platnosť udelených oprávnení a pravidlá zmien. |
 | Tento dokument | Mapa projektu, hranice implementácie a prevádzkové súvislosti. |
 | [Dodávateľský katalóg](docs/supplier-catalog.md) | Kontrakty feedov, identity, náhľadov, importu a obnovy. |
+| [Mapovanie produktových feedov](docs/product-feed-mapping.md) | Zdrojové polia, transformácie, parametre a kategórie podľa dodávateľa a e-shopu. |
+| [Príprava importu](docs/product-imports.md) | Uložený editovateľný náhľad, voliteľné AI, uloženie do Hubu a samostatné odoslanie do e-shopu. |
 | [Dodávateľská identita](docs/supplier-identity.md) | Uzamknuté prefixy, spoločné SKU a doplnenie väzieb dostupností z už načítaných údajov. |
 | [Centrálny sklad](docs/central-stock.md) | Schválené obchodné pravidlá, prvý bezpečnostný balík a hranice ďalšej implementácie. |
 | [Objednávky — návod pre obsluhu](docs/order-workflows.md) | Prvé spustenie, nastavenia, ručná kontrola a riešenie výnimiek. |
@@ -57,6 +59,8 @@ HTML dlhého AI popisu už neblokujú bežné značky ani formátovacie atribút
 | Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie vytvorí `INITIAL` pohyby iba bez potvrdeného začiatku evidencie daného tovaru v sklade; neoverený historický zostatok sa auditne uzavrie. Výpadok sa overuje čítaním uloženého výsledku. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
 | Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Parsery pre Paul Lange a Northfinder. |
+| Mapovanie `/suppliers/:supplier/feed-mapping` | Konfigurátor produktového feedu | Analýza XML/CSV/JSON, príklady hodnôt, mapovanie polí a kategórií, uložené verzie podľa dodávateľa a e-shopu. Odlišné od mapovania faktúr. |
+| Import `/product-import` | Jednotný uložený náhľad pre feed a AI | Editácia buniek a hromadné zmeny, ochrana ručných úprav, voliteľné AI pre produktovú rodinu. Uloženie do Hubu je oddelené od potvrdeného založenia v e-shope; bez fyzických skladových pohybov. |
 | Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |
 | Nastavenia `/settings` | AI a prevádzkové nastavenia skladu | `/settings/stock`: predvolené hodnoty skladu, odchýlky e-shopu, intervaly a výslovné režimy automatického spracovania. `/settings/ai-content` zachováva AI nastavenia. |
 | Publikovanie `/stock/publication` | Kontrolované zosúladenie vybraných SKU počas údržby | Trvalá blokácia lokálneho skladu, porovnanie presných variantov, jedno odoslanie a obnova nejasného výsledku. Serverový zápis je predvolene vypnutý; pozri [návod](docs/stock-publication.md). |
@@ -102,6 +106,8 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `routers/stock_publication.py`, `services/stock_publication*.py` | Chránené dávky, blokácia skladu a samostatné odoslanie absolútneho stavu počas potvrdenej údržby. |
 | `routers/upgates_sync.py`, `services/upgates.py` | Načítanie produktov a vybrané operácie ich prenosu. |
 | `routers/catalog.py`, `services/catalog.py`, `services/catalog_import.py` | Katalóg, identita, náhľad a založenie produktov. |
+| `routers/feed_mapping.py`, `services/feed_mapping*.py` | Uložené mapovanie feedov a zdrojová analýza. |
+| `routers/product_import.py`, `services/product_import.py` | Trvalé náhľady, ručné hodnoty, AI príprava a riadené uloženie/import. |
 | `services/identifiers.py`, `adapters/` | Identifikátory a dodávateľské spracovanie. |
 | `routers/ai_content.py`, `services/ai_content*.py` | AI príprava, review, aktualizácie obsahu a worker. |
 | `routers/invoices.py`, `routers/invoices_unified.py`, `routers/imports.py` | Faktúry a existujúce súborové/CSV postupy. |
@@ -115,6 +121,8 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | Tabuľky | Význam |
 | --- | --- |
 | `suppliers`, `supplier_feeds`, `supplier_feed_runs`, `supplier_products` | Dodávatelia a normalizované feedové dáta. |
+| `product_feed_mappings`, `product_feed_mapping_revisions` | Konfigurácia a nemenné verzie mapovania podľa dodávateľa, feedu a e-shopu. |
+| `product_import_drafts` | Uložená zdrojová snímka, editované hodnoty, väzby na AI a výsledok uloženia/importu. |
 | `product_groups`, `products`, `product_identifiers`, `product_variant_attributes` | Rodiny, predajné položky, identifikátory a variantné atribúty. |
 | `product_supply_sources` | Väzby skladovej položky na dodávateľské ponuky; používané dostupnosťami, importmi a lokálnou opravou párovania. |
 | `uploaded_invoices`, `uploaded_invoice_lines` | Nahrané faktúry a položky. |
@@ -130,6 +138,8 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `ai_rule_versions`, `ai_rule_state`, `ai_content_batches`, `ai_content_jobs`, `ai_content_revisions` | AI pravidlá, úlohy, náklady a história kontroly. |
 
 Produkt nemá databázový stĺpec `primary_ean`; identifikátory sú v `product_identifiers`. ORM má kompatibilnú odvodenú vlastnosť rovnakého názvu. Podporované typy a unikátnosť over v modeli a službe identifikátorov. EAN je text a nie je jediným párovacím kľúčom.
+
+Mapovanie a náhľady importu pridávajú aditívne migrácie 021 a 022. Obe sú zabalené v API obraze a deployment ich vykoná po 020 pred reštartom API. Nemenia staršie produkty ani pohyby a nespúšťajú automatické AI či publikovanie. Návrat kódu ponechá tabuľky a uložené náhľady; po použití nového postupu uprednostni kompatibilnú opravu vpred.
 
 ### Filesystem
 
@@ -209,11 +219,11 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005` až `020`** explicitnými migračnými modulmi uvedenými v [.github/workflows/build.yml](.github/workflows/build.yml), pod transakčnými DB zámkami a pred reštartom API. Nová `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania; spúšťa ju [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých šestnásť upgrade SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Aktuálny deployment spúšťa `005` až `022`** explicitnými migračnými modulmi uvedenými v [.github/workflows/build.yml](.github/workflows/build.yml), pod transakčnými DB zámkami a pred reštartom API. Nová `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania; spúšťa ju [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých osemnásť upgrade SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`020` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`022` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -239,7 +249,7 @@ npm --prefix frontend run dev
 
 API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.ts). Konfigurácie ani dáta nevymýšľaj, aby sa aplikácia tvárila funkčne.
 
-Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a osemnásť jsdom sád vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
+Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a jsdom sady vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
 
 ## Produkčné nasadzovanie a diagnostika
 
@@ -248,7 +258,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `020` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `022` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
