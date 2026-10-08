@@ -20,7 +20,10 @@ require('../src/i18n/index.ts');
 const React = require('react');
 const { act } = React;
 const { createRoot } = require('react-dom/client');
-const { MemoryRouter, Routes, Route } = require('react-router-dom');
+const { MemoryRouter, Routes, Route, useLocation } = require('react-router-dom');
+const { CatalogImport } = require('../src/components/product/CatalogImport.tsx');
+let routeSelection;
+function CaptureImport() { routeSelection = useLocation().state.selection; return React.createElement('p', null, 'Unified preparation'); }
 const { SupplierCatalogPage } = require('../src/pages/SupplierCatalogPage.tsx');
 
 const products = [1, 2, 3].map((id) => ({
@@ -68,6 +71,28 @@ global.fetch = async (path, init = {}) => {
   if (url.pathname.endsWith('/import/preview')) data.shop_check = { checked_at: '2026-01-01T12:01:00Z', full_checked_at: '2026-01-01T12:00:00Z', mode: body.refresh_shop ? 'full' : 'changes' };
   return { ok: true, status: 200, json: async () => data };
 };
+// The legacy preview component remains supported by existing AI jobs and saved imports.
+// Exercise it separately now that new selections navigate to the unified preparation page.
+function LegacyPreviewHarness() {
+  const [ids, setIds] = React.useState([1, 2]);
+  const [preview, setPreview] = React.useState(null);
+  const [error, setError] = React.useState('');
+  const [full, setFull] = React.useState(false);
+  async function prepare(overrides, selection = ids) {
+    const response = await fetch('/api/shops/biketrek/import/preview', { method: 'POST', body: JSON.stringify({ supplier: 'paul-lange', feed_key: 'products', product_ids: selection, run_id: snapshot, options: { currency: 'EUR', pricelist: 'Default' }, refresh_shop: overrides ? false : full, sale_price_overrides: overrides || {} }) });
+    const value = await response.json();
+    if (!response.ok) { setError(value.detail.code); return; }
+    setPreview(value); setIds(selection); setError('');
+  }
+  return React.createElement(React.Fragment, null,
+    React.createElement('p', null, `Vybrané položky: ${ids.length}`),
+    React.createElement('button', { onClick: () => prepare() }, 'Pripraviť import'),
+    React.createElement('button', null, 'Možnosti'),
+    React.createElement('label', null, 'Úplná kontrola e-shopu pri ďalšom náhľade', React.createElement('input', { type: 'checkbox', checked: full, onChange: event => setFull(event.target.checked) })),
+    preview && React.createElement(CatalogImport, { key: preview.preview_id, preview, result: null, shopName: 'BIKETREK', sending: false, error,
+      onClose: () => setPreview(null), onConfirm: () => assert.fail('No live publication expected'), onRetry: () => {}, onReprice: prepare,
+      onExclude: (excluded, overrides) => prepare(overrides, ids.filter(id => !excluded.includes(id))) }));
+}
 const root = createRoot(document.getElementById('root'));
 const button = text => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === text);
 const checkbox = label => [...document.querySelectorAll('input[type="checkbox"]')].find(b => b.getAttribute('aria-label') === label);
@@ -77,7 +102,7 @@ async function change(element, value) { await act(async () => { Object.getOwnPro
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); }); }
 
 (async () => {
-  await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) })))));
+  await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) }), React.createElement(Route, { path: '/product-import', element: React.createElement(CaptureImport) })))));
   await settle();
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
   assert.ok(document.body.textContent.includes('V e-shope 1 / 2 variantov'), 'The group status counts every variant');
@@ -125,6 +150,18 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await click(button('Obnoviť nastavenia e-shopu')); await settle();
   assert.equal(calls.filter(c => c.path.endsWith('/import/options')).at(-1).query.get('refresh'), 'true');
   assert.ok(document.body.textContent.includes('načítané z Upgates'));
+  snapshot = 2;
+  await click(button('Ďalej')); await settle();
+  assert.ok(document.body.textContent.includes('Vybrané položky: 0'), 'Changed feed invalidates the selection');
+  snapshot = 1;
+  await click(button('Späť')); await settle();
+  await click(checkbox('Vybrať varianty: Prilba'));
+  await click(button('Pripraviť import'));
+  assert.deepEqual(routeSelection.product_ids, [1, 2], 'Unified preparation receives only the explicit selection');
+  assert.equal(routeSelection.run_id, 1);
+  assert.equal(routeSelection.shop, 'biketrek');
+  assert.equal(calls.some(call => call.path.endsWith('/import/preview') || call.path.endsWith('/import')), false, 'Catalog navigation itself does not prepare or publish shop payloads');
+  await act(async () => root.render(React.createElement(LegacyPreviewHarness)));
   await click(button('Pripraviť import'));
   const request = calls.find(c => c.path.endsWith('/import/preview'));
   assert.deepEqual(request.body.product_ids, [1, 2], 'Preview receives only the explicit selection');
@@ -209,9 +246,6 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.ok(document.body.textContent.includes('Vybrané položky: 1'));
   assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Excluding existing variants only rebuilds the preview');
   await click(button('Zavrieť')); await settle();
-  snapshot = 2;
-  await click(button('Ďalej')); await settle();
-  assert.ok(document.body.textContent.includes('Vybrané položky: 0'), 'Changed feed invalidates the selection');
   await act(async () => root.unmount());
-  console.log('Catalog UI passed: variants/images, selection, shop freshness, price warnings, bulk and individual prices, partial EAN matches, exclusion with preserved drafts, failed recheck protection, snapshot invalidation.');
+  console.log('Catalog UI passed: variants/images, selection, unified draft navigation, shop freshness, legacy preview price warnings, bulk and individual prices, partial EAN matches, exclusion with preserved drafts, failed recheck protection, snapshot invalidation.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

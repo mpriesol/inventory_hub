@@ -65,6 +65,12 @@ jobs:
       - name: Check supplier catalog interactions
         run: node frontend/tests/catalog-ui.cjs
 
+      - name: Check configurable supplier feed mapping
+        run: node frontend/tests/feed-mapping-ui.cjs
+
+      - name: Check unified product import interactions
+        run: node frontend/tests/product-import-ui.cjs
+
       - name: Check AI content preparation and review
         run: node frontend/tests/ai-content-ui.cjs
 

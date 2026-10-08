@@ -91,6 +91,8 @@ jobs:
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.fifo_cost_migrate
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_tracking_migrate
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.user_sessions_migrate
+              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.product_feed_mapping_migrate
+              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.product_import_migrate
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
               # Both routes are public; allow startup without logging response bodies.
               readiness_deadline=$(( $(date +%s) + 60 ))

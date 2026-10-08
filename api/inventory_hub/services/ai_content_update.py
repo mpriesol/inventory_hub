@@ -131,6 +131,8 @@ def patch_from_content(remote, enriched, fields, language):
 
 
 async def prepare(db, job, request):
+    if job.context.get("staging_id"):
+        raise CatalogError("import_staging_confirmation_required", "Use the import draft workflow", 409)
     service.expect(job, request.expected_revision)
     if job.kind != 'product' or job.status not in ('review','blocked','ready','exists','completed','import_blocked') or not job.output:
         raise CatalogError('ai_update_state', 'Review content before preparing an update', 409)
@@ -292,6 +294,8 @@ def check_before(remote, preview):
 
 
 async def confirm(db, job, request):
+    if job.context.get("staging_id"):
+        raise CatalogError("import_staging_confirmation_required", "Use the import draft workflow", 409)
     service.expect(job, request.expected_revision)
     preview = copy.deepcopy(job.context.get('update_preview') or {})
     if preview.get('id') != request.preview_id or preview.get('state') not in ('ready','sending','uncertain','completed'):

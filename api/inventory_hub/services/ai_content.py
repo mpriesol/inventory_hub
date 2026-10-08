@@ -62,6 +62,7 @@ def summary(job, *, detail=False):
         "revision": job.revision, "shop": context.get("shop"), "supplier": context.get("supplier"),
         "code": context.get("code"), "name": context.get("name"), "image": context.get("image"),
         "product_ids": context.get("product_ids", []), "use_ai": context.get("use_ai", True),
+        "staging_id": context.get("staging_id"),
         "update_only": bool(context.get("update_only")), "source_kind": context.get("source_kind", "catalog"),
         "update_state": (context.get("update_preview") or {}).get("state"),
         "rules_version": context.get("rules_version"), "category_profile": context.get("category_profile"),
@@ -149,7 +150,7 @@ async def start(db, job):
     await db.flush()
 
 
-async def create_batch(db, request: BatchRequest):
+async def create_batch(db, request: BatchRequest, *, frozen_products=None, staging_id=None):
     batch_id, fingerprint = request.request_id.hex, digest(request.model_dump(mode="json"))
     await db.execute(text("SELECT pg_advisory_xact_lock(691432107)"))
     old = await db.get(AiBatch, batch_id)
@@ -159,7 +160,7 @@ async def create_batch(db, request: BatchRequest):
         return [summary(j) for j in (await db.scalars(select(AiJob).where(AiJob.batch_id == batch_id).order_by(AiJob.created_at, AiJob.id))).all()]
     published = await rules.published(db)
     book = RuleBook.model_validate(published.book)
-    products = await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
+    products = frozen_products if frozen_products is not None else await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
     groups = OrderedDict()
     for product in products:
         groups.setdefault(parent_shop_code(product), []).append(product)
@@ -203,6 +204,11 @@ async def create_batch(db, request: BatchRequest):
                 "options": options.model_dump(mode="json"), "research": request.research,
                 "sale_price_overrides": {str(k): v for k, v in request.sale_price_overrides.items() if k in ids},
                 "model": settings.AI_CONTENT_MODEL}
+            if staging_id:
+                ctx["staging_id"] = staging_id
+                ctx["source_kind"] = "import_draft"
+                # Staged AI can prepare content only, regardless of published import policy.
+                ctx["resolved"]["policy"].update(show_cost_estimate=True, confirm_import=True)
             if automatic_category:
                 from inventory_hub.services import ai_category
                 if category_rows is None:
@@ -247,6 +253,9 @@ async def review(db, job, request):
 
 async def prepare_import(db, job):
     ctx = job.context
+    if ctx.get("staging_id"):
+        event(job, "ready", "AI content ready for its import draft; shop publication is separate")
+        return None
     if catalog_import._target(catalog_import.shop_config(ctx["shop"])) != ctx["target"]:
         raise CatalogError("shop_target_changed", "The shop connection changed; prepare a new batch", 409)
     if ctx.get("update_only"):
@@ -308,6 +317,8 @@ async def action(db, job, request):
     elif request.action == "start":
         await start(db, job)
     elif request.action in ("import", "retry_import"):
+        if job.context.get("staging_id"):
+            raise CatalogError("import_staging_confirmation_required", "Apply AI content in its import draft; publication is separate", 409)
         if job.context.get("update_only"):
             raise CatalogError("ai_update_only", "This preparation can update an existing product only", 409)
         allowed = ("ready",) if request.action == "import" else ("import_failed", "import_blocked")
@@ -368,6 +379,8 @@ async def accept_proposal(db, job, expected_revision):
 
 async def fork_job(db, job, request):
     expect(job, request.expected_revision)
+    if job.context.get("staging_id"):
+        raise CatalogError("import_staging_confirmation_required", "Prepare another AI run from its import draft", 409)
     if job.context.get("update_only"):
         raise CatalogError("ai_update_only", "Start another preparation from the existing product", 409)
     if (job.context.get("update_preview") or {}).get("state") in ("sending", "uncertain"):

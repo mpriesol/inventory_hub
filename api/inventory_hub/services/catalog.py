@@ -166,21 +166,41 @@ def _lock_key(supplier: str) -> int:
     return int.from_bytes(hashlib.sha256(("supplier-catalog:" + supplier).encode()).digest()[:8], "big", signed=True)
 
 
-async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "products") -> dict:
+async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "products", *,
+                          source_path: Path | None = None, expected_mapping_revision: int | None = None) -> dict:
+    from inventory_hub.services import feed_mapping
+    from inventory_hub.feed_mapping_types import MappingDefinition
     cfg = supplier_config(supplier)
-    source, parser_name = source_config(supplier, cfg, feed_key)
     locked = await db.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": _lock_key(supplier)})
     if not locked:
         raise CatalogError("catalog_refresh_running", "This supplier is already being refreshed", 409)
     started = datetime.now(timezone.utc)
     try:
         feed = await _feed(db, supplier, cfg, feed_key, create=True)
+        mapping = await feed_mapping.mapping_row(db, supplier, feed_key)
+        if expected_mapping_revision is not None and (mapping.revision if mapping else 0) != expected_mapping_revision:
+            raise CatalogError("feed_mapping_conflict", "The mapping changed; reload it before applying", 409)
+        try:
+            source, parser_name = source_config(supplier, cfg, feed_key, require_parser=False)
+        except CatalogError as error:
+            configured_source = (cfg.get("feeds", {}).get("sources") or {}).get(feed_key) or {}
+            if (not mapping or error.code != "listing_feed_not_configured" or feed_key == "stock"
+                    or configured_source.get("type") == "stock"):
+                raise
+            source = {"mode": "local", "local_path": str(source_path or await feed_mapping.source_path(db, supplier, feed_key))}
+            parser_name = supplier if supplier in PARSERS else None
+        if not mapping and parser_name not in PARSERS:
+            raise CatalogError("catalog_parser_unavailable", "Configure a product feed mapping for this supplier", 422)
         run_number = (await db.scalar(select(func.max(SupplierFeedRun.run_number)).where(SupplierFeedRun.feed_id == feed.id)) or 0) + 1
         run = SupplierFeedRun(feed_id=feed.id, run_number=run_number, started_at=started, status=FeedRunStatus.running)
         db.add(run)
         await db.flush()
-        path = await asyncio.to_thread(_download, supplier, source, feed_key)
-        records = await asyncio.to_thread(PARSERS[parser_name], path, supplier, cfg, feed_key)
+        path = source_path or await asyncio.to_thread(_download, supplier, source, feed_key)
+        if mapping:
+            records = await asyncio.to_thread(feed_mapping.parse_mapped, path, supplier, cfg, feed_key,
+                MappingDefinition.model_validate(mapping.definition), mapping.revision, PARSERS.get(parser_name))
+        else:
+            records = await asyncio.to_thread(PARSERS[parser_name], path, supplier, cfg, feed_key)
         # Order identity/source locks consistently with receiving and local
         # repair. Acquire only after the supplier download/parse has finished.
         from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
@@ -244,6 +264,13 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
         feed.mapping_config = {**(feed.mapping_config or {}), "catalog_parser": parser_name,
                                "last_successful_run_id": run.id,
                                "xml_path": path.relative_to(config_io.DATA_ROOT).as_posix()}
+        if source_path is not None:
+            feed.mapping_config = {**feed.mapping_config, "mapping_source_path": path.relative_to(config_io.DATA_ROOT).as_posix()}
+        elif mapping:
+            # A subsequent configured download becomes the latest remapping source.
+            feed.mapping_config = {**feed.mapping_config, "mapping_source_path": path.relative_to(config_io.DATA_ROOT).as_posix()}
+        if mapping:
+            feed.source_format = mapping.definition.get("format", "auto")
         await db.flush()
         from inventory_hub.services.supplier_links import reconcile_source_codes
         link_reports = await reconcile_source_codes(db, supplier, [product.code for product, _raw in records], cfg)
@@ -275,7 +302,8 @@ def public_product(row: SupplierProduct, *, detail: bool = False, listed: bool =
     data = dict((row.attributes or {}).get("catalog") or {})
     data.update(id=row.id, listed=listed)
     if not detail:
-        for key in ("description", "manufacturer_description", "safety_information", "parameters", "static_parameters"):
+        for key in ("description", "manufacturer_description", "safety_information", "parameters", "static_parameters",
+                    "short_description", "seo_title", "seo_description", "seo_url", "raw_fields", "mapping_provenance", "metadata"):
             data.pop(key, None)
     return CatalogProduct.model_validate(data)
 
@@ -345,8 +373,9 @@ async def _matches(db: AsyncSession, supplier: str, feed_key: str, *, q: str = "
                    ean: str = "", manufacturer: str = "", sort: str = "name", shop: str | None = None,
                    listing: str = "all"):
     cfg = supplier_config(supplier)
-    source_config(supplier, cfg, feed_key)
     feed = await _feed(db, supplier, cfg, feed_key)
+    if feed is None:
+        source_config(supplier, cfg, feed_key)
     known = await listed_codes(db, shop)
     index = await asyncio.to_thread(cached_identities, shop)
     if feed is None:
@@ -432,7 +461,6 @@ async def catalog_selection(db: AsyncSession, supplier: str, feed_key: str = "pr
 
 async def selected_products(db: AsyncSession, supplier: str, feed_key: str, ids: list[int], run_id: int | None = None) -> list[CatalogProduct]:
     cfg = supplier_config(supplier)
-    source_config(supplier, cfg, feed_key)
     feed = await _feed(db, supplier, cfg, feed_key)
     if feed is None or (run_id is not None and feed.last_run_id != run_id):
         raise CatalogError("catalog_changed", "The catalog changed; reload your selection", 409)
@@ -474,7 +502,10 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
 
 
 async def catalog_status(db: AsyncSession, supplier: str, feed_key: str = "products") -> dict:
+    from inventory_hub.feed_mapping_models import ProductFeedMapping
     cfg = supplier_config(supplier)
+    mapped = set((await db.scalars(select(ProductFeedMapping.feed_key).join(Supplier)
+                    .where(Supplier.code == supplier, ProductFeedMapping.shop_code == ""))).all())
     sources = []
     for key, source in (cfg.get("feeds", {}).get("sources", {}) or {}).items():
         if key == "stock" or not isinstance(source, dict) or source.get("type") == "stock":
@@ -483,8 +514,12 @@ async def catalog_status(db: AsyncSession, supplier: str, feed_key: str = "produ
             _, parser = source_config(supplier, cfg, key)
         except CatalogError:
             parser = None
-        sources.append({"key": key, "name": source.get("name") or key, "supported": parser is not None,
+        sources.append({"key": key, "name": source.get("name") or key, "supported": parser is not None or key in mapped,
                         "configured": bool(source.get("local_path") if source.get("mode") == "local" else (source.get("remote") or {}).get("url"))})
+    for key in sorted(mapped - {source["key"] for source in sources}):
+        saved = await _feed(db, supplier, cfg, key)
+        sources.append({"key": key, "name": key, "supported": True,
+                        "configured": bool(saved and (saved.mapping_config or {}).get("mapping_source_path"))})
     feed = await _feed(db, supplier, cfg, feed_key)
     shops = []
     for shop in (await db.scalars(select(Shop).where(Shop.is_active.is_(True)).order_by(Shop.name))).all():
