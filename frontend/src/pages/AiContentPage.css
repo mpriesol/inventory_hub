@@ -59,3 +59,5 @@
 .ai-job-modal-header h2 { margin: 0; }
 .ai-job-modal-body { min-height: 0; overflow: auto; padding: 20px; overscroll-behavior: contain; }
 @media (max-width: 640px) { .ai-job-backdrop { padding: 6px; } .ai-job-modal { max-height: calc(100dvh - 12px); } .ai-job-modal-body { padding: 10px; } }
+
+.ai-content .ai-draft-link{display:inline-block;padding:10px 16px;border-radius:7px;background:#087f73;color:#fff;font-weight:600;text-decoration:none}.ai-content .ai-draft-link[aria-disabled=true]{opacity:.5;cursor:not-allowed}

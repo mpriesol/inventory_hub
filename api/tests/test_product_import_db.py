@@ -177,6 +177,10 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(worker.provider, 'generate', AsyncMock(return_value=response)) as generate:
             await worker.generation(job_id)
             self.assertEqual(generate.call_count, 1)
+        result = await self.mutate(result, service.save)
+        with self.assertRaises(catalog.CatalogError) as pending:
+            await self.mutate(result, service.preview)
+        self.assertEqual(pending.exception.code, 'import_ai_not_applied')
         applied = await self.mutate(result, service.apply_ai)
         value = applied['rows'][0]['values']
         self.assertEqual(value['name'], 'Edited during AI')
@@ -188,3 +192,19 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             job = await db.get(AiJob, job_id)
             self.assertEqual(job.status, 'completed')
             self.assertIsNone(job.preview_id)
+        saved = await self.mutate(applied, service.save)
+        prepared = await self.mutate(saved, service.preview)
+        published, run = await self.mutate(prepared, service.publish, DraftPublish, preview_id=prepared['publication']['preview_id'])
+        self.assertTrue(run)
+        await catalog_import.execute_import('biketrek', prepared['publication']['preview_id'])
+        async with self.sessions() as db:
+            from inventory_hub.services import ai_content
+            job = await db.get(AiJob, job_id)
+            summary = (await ai_content.summaries(db, [job], detail=True))[0]
+            self.assertEqual(summary['staging']['publication_status'], 'completed')
+            self.assertTrue(summary['staging']['ai_applied'])
+            draft = await service.get_draft(db, saved['id'])
+            final = await service.public(db, draft)
+            self.assertEqual(final['publication_state'], 'completed')
+            self.assertEqual(final['rows'][0]['publication_status'], 'created')
+            self.assertEqual((await service.history(db))['items'][0]['publication_state'], 'completed')

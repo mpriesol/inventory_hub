@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react';
-import { AiJob, AiPolicy, AiRules, AiStatus, aiRequest, aiUnlocked, unlockAi } from '../api/aiContent';
+import { AiJob, AiPolicy, AiRules, AiStatus, aiRequest, aiUnlocked, unlockAi, aiJobStatusKey, aiJobNextKey } from '../api/aiContent';
 import { CatalogProduct, CatalogStatus, ImportOptions, TargetOptions, catalogImageUrl, catalogRequest } from '../api/catalog';
 import { AiPolicyFields } from '../components/product/AiPolicyFields';
 import { AiRuleEditor } from '../components/product/AiRuleEditor';
@@ -20,12 +20,13 @@ const fallbackOptions: ImportOptions = { language: 'sk', currency: 'EUR', pricel
 const awaitingUpdate = (job: AiJob) => job.update_only && job.status === 'exists' && job.update_state !== 'completed';
 const pendingUpdate = (job: AiJob) => ['sending','uncertain'].includes(job.update_state || '');
 const updateNeedsAttention = (job: AiJob) => ['sending','uncertain','rejected'].includes(job.update_state || '');
-const finished = (job: AiJob) => ['completed','exists','cancelled'].includes(job.status) && !awaitingUpdate(job) && !updateNeedsAttention(job);
+const finished = (job: AiJob) => job.staging_id ? job.staging?.publication_status === 'completed' || job.staging?.linked === false || job.status === 'cancelled' : ['completed','exists','cancelled'].includes(job.status) && !awaitingUpdate(job) && !updateNeedsAttention(job);
 const processing = new Set(['queued', 'generating', 'preparing_import', 'import_queued', 'importing']);
 
 export function AiContentPage() {
   const { t } = useTranslation();
   const location = useLocation();
+  const requestedJob = new URLSearchParams(location.search).get('job');
   const selection = (location.state as { selection?: Selection } | null)?.selection;
   const [tab, setTab] = useState(selection ? 'prepare' : location.pathname.includes('settings') ? 'rules' : 'jobs');
   const [status, setStatus] = useState<AiStatus | null>(null);
@@ -53,6 +54,12 @@ export function AiContentPage() {
   useEffect(() => { aiRequest<AiStatus>('/status').then(setStatus).catch(e => setError(e.message)); }, []);
   async function loadRules() { setRules(await aiRequest<AiRules>('/rules')); }
   async function execute(fn: () => Promise<void>) { setBusy(true); setError(''); try { await fn(); } catch (e) { setError(t(`ai.errors.${(e as Error & {code?: string}).code}`, {defaultValue:(e as Error).message})); } finally { setBusy(false); } }
+  useEffect(() => {
+    if (!unlocked || !requestedJob) return;
+    let stopped = false;
+    aiRequest<AiJob>(`/jobs/${encodeURIComponent(requestedJob)}`).then(job => { if (!stopped) { setTab('jobs'); setDetail(job); } }).catch(e => { if (!stopped) setError(e.message); });
+    return () => { stopped = true; };
+  }, [unlocked, requestedJob]);
   useEffect(() => { if (!unlocked) return; loadRules().catch(e => setError(e.message)); }, [unlocked, reload]);
   useEffect(() => {
     if (!unlocked) return;
@@ -63,6 +70,9 @@ export function AiContentPage() {
         const current = detailRef.current;
         if (current && (processing.has(current.status) || current.update_preview?.state === 'sending' || current.update_state === 'sending')) {
           const next = await aiRequest<AiJob>(`/jobs/${current.id}`); if (!stopped && detailRef.current?.id === current.id) setDetail(next);
+        } else if (current?.staging_id) {
+          const fresh = data.find(job => job.id === current.id);
+          if (fresh) setDetail(old => old?.id === current.id ? { ...old, staging: fresh.staging } : old);
         }
       } catch (e) { if (!stopped) setError(t(`ai.errors.${(e as Error & {code?: string}).code}`, {defaultValue:(e as Error).message})); }
     };
@@ -121,9 +131,9 @@ export function AiContentPage() {
           <p>{t('ai.automaticNotice')}</p><button className="ai-primary" disabled={busy || !families.length || !targets.length} onClick={() => execute(prepare)}>{busy ? t('common.loading') : t('ai.prepareBatch')}</button>
         </div>
       </>}
-      {tab === 'jobs' && <><div className="ai-toolbar"><label>{t('ai.jobFilter')}<select value={jobFilter} onChange={e => setJobFilter(e.target.value)}>{['all','attention','working','done'].map(f => <option key={f} value={f}>{t(`ai.jobFilters.${f}`)}</option>)}</select></label><label className="ai-check"><input type="checkbox" checked={archived} onChange={e => { setArchived(e.target.checked); setDetail(null); setSelectedJobs(new Set()); }} />{t('ai.showArchived')}</label><button disabled={busy || !jobs.some(j => selectedJobs.has(j.id) && !processing.has(j.status) && !pendingUpdate(j))} onClick={() => execute(async () => { for (const job of jobs.filter(j => selectedJobs.has(j.id) && !processing.has(j.status) && !pendingUpdate(j))) await aiRequest(`/jobs/${job.id}/action`, { action: archived ? 'restore' : 'archive', expected_revision: job.revision }); setDetail(null); setSelectedJobs(new Set()); setReload(v => v + 1); })}>{t(archived ? 'ai.restoreSelected' : 'ai.archiveSelected')}</button></div><div className="ai-toolbar"><h2>{t('ai.recentJobs')}</h2><button disabled={busy || !jobs.some(j => j.status === 'estimate' && selectedJobs.has(j.id))} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'estimate' && selectedJobs.has(j.id))) await aiRequest(`/jobs/${job.id}/action`, { action: 'start', expected_revision: job.revision }); setReload(v => v + 1); if (detail) setDetail(await aiRequest<AiJob>(`/jobs/${detail.id}`)); })}>{t('ai.startWaiting')}</button><button disabled={busy || !jobs.some(j => j.status === 'ready' && !j.update_only && selectedJobs.has(j.id))} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'ready' && !j.update_only && selectedJobs.has(j.id))) await aiRequest(`/jobs/${job.id}/action`, { action: 'import', expected_revision: job.revision }); setReload(v => v + 1); })}>{t('ai.importSelectedReady')}</button><button onClick={() => setReload(v => v + 1)}>{t('ai.refresh')}</button></div>
+      {tab === 'jobs' && <><div className="ai-toolbar"><label>{t('ai.jobFilter')}<select value={jobFilter} onChange={e => setJobFilter(e.target.value)}>{['all','attention','working','done'].map(f => <option key={f} value={f}>{t(`ai.jobFilters.${f}`)}</option>)}</select></label><label className="ai-check"><input type="checkbox" checked={archived} onChange={e => { setArchived(e.target.checked); setDetail(null); setSelectedJobs(new Set()); }} />{t('ai.showArchived')}</label><button disabled={busy || !jobs.some(j => selectedJobs.has(j.id) && !processing.has(j.status) && !pendingUpdate(j))} onClick={() => execute(async () => { for (const job of jobs.filter(j => selectedJobs.has(j.id) && !processing.has(j.status) && !pendingUpdate(j))) await aiRequest(`/jobs/${job.id}/action`, { action: archived ? 'restore' : 'archive', expected_revision: job.revision }); setDetail(null); setSelectedJobs(new Set()); setReload(v => v + 1); })}>{t(archived ? 'ai.restoreSelected' : 'ai.archiveSelected')}</button></div><div className="ai-toolbar"><h2>{t('ai.recentJobs')}</h2><button disabled={busy || !jobs.some(j => j.status === 'estimate' && selectedJobs.has(j.id))} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'estimate' && selectedJobs.has(j.id))) await aiRequest(`/jobs/${job.id}/action`, { action: 'start', expected_revision: job.revision }); setReload(v => v + 1); if (detail) setDetail(await aiRequest<AiJob>(`/jobs/${detail.id}`)); })}>{t('ai.startWaiting')}</button><button disabled={busy || !jobs.some(j => j.status === 'ready' && !j.update_only && !j.staging_id && selectedJobs.has(j.id))} onClick={() => execute(async () => { for (const job of jobs.filter(j => j.status === 'ready' && !j.update_only && !j.staging_id && selectedJobs.has(j.id))) await aiRequest(`/jobs/${job.id}/action`, { action: 'import', expected_revision: job.revision }); setReload(v => v + 1); })}>{t('ai.importSelectedReady')}</button><button onClick={() => setReload(v => v + 1)}>{t('ai.refresh')}</button></div>
         <p>{t('ai.jobPersistence')}</p>{!jobs.length && <div className="ai-card">{t('ai.noJobs')}</div>}
-        {jobs.filter(j => jobFilter === 'all' || (jobFilter === 'working' ? processing.has(j.status) || j.update_state === 'sending' : jobFilter === 'done' ? finished(j) : !processing.has(j.status) && j.update_state !== 'sending' && !finished(j))).map(j => <div className="ai-card ai-row" key={j.id}><input type="checkbox" aria-label={`${t('ai.selectJob')} ${j.name} ${j.shop}`} checked={selectedJobs.has(j.id)} onChange={e => setSelectedJobs(old => { const next = new Set(old); e.target.checked ? next.add(j.id) : next.delete(j.id); return next; })} />{j.image && <img src={catalogImageUrl(j.image)} alt="" />}<div className="ai-grow"><strong>{j.name}</strong><div><small>{j.shop} · {j.code} · {j.use_ai ? 'AI' : t('ai.originalFeed')}</small></div></div><span className="ai-badge">{t(updateNeedsAttention(j) ? `ai.updateStates.${j.update_state}` : j.update_only && j.status === 'exists' ? j.update_state === 'completed' ? 'ai.updatedExisting' : 'ai.readyForUpdate' : `ai.states.${j.status}`, { defaultValue: j.status })}</span><small>{t(updateNeedsAttention(j) ? `ai.updateStates.${j.update_state}` : j.update_only && j.status === 'exists' ? j.update_state === 'completed' ? 'ai.updateNext.completed' : 'ai.updateNext.exists' : `ai.next.${j.status}`, { defaultValue: '' })}</small>{j.policy.show_cost_estimate !== false && <small>{Number(j.actual_usd ?? j.estimate_usd).toFixed(3)} USD {j.actual_usd === null ? t('ai.estimated') : ''}</small>}<button disabled={busy} onClick={() => execute(async () => setDetail(await aiRequest<AiJob>(`/jobs/${j.id}`)))}>{t('ai.openJob')}</button></div>)}
+        {jobs.filter(j => jobFilter === 'all' || (jobFilter === 'working' ? processing.has(j.status) || j.update_state === 'sending' : jobFilter === 'done' ? finished(j) : !processing.has(j.status) && j.update_state !== 'sending' && !finished(j))).map(j => <div className="ai-card ai-row" key={j.id}><input type="checkbox" aria-label={`${t('ai.selectJob')} ${j.name} ${j.shop}`} checked={selectedJobs.has(j.id)} onChange={e => setSelectedJobs(old => { const next = new Set(old); e.target.checked ? next.add(j.id) : next.delete(j.id); return next; })} />{j.image && <img src={catalogImageUrl(j.image)} alt="" />}<div className="ai-grow"><strong>{j.name}</strong><div><small>{j.shop} · {j.code} · {j.use_ai ? 'AI' : t('ai.originalFeed')}</small></div></div><span className="ai-badge">{t(aiJobStatusKey(j), { defaultValue: j.status })}</span><small>{t(aiJobNextKey(j), { defaultValue: '' })}</small>{j.policy.show_cost_estimate !== false && <small>{Number(j.actual_usd ?? j.estimate_usd).toFixed(3)} USD {j.actual_usd === null ? t('ai.estimated') : ''}</small>}<button disabled={busy} onClick={() => execute(async () => setDetail(await aiRequest<AiJob>(`/jobs/${j.id}`)))}>{t('ai.openJob')}</button></div>)}
         {detail && <AiJobModal job={detail} publishedVersion={rules?.published_id} onClose={() => setDetail(null)} onChange={job => { setDetail(job); setReload(v => v + 1); }} />}
       </>}
       {tab === 'rules' && rules && <AiRuleEditor key={rules.published_id} rules={rules} onReload={() => setReload(v => v + 1)} onJob={showJob} />}

@@ -33,6 +33,31 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_delivery_status_is_separate_from_ai_readiness_and_scoped_to_products(self):
+        first, second = row(), row(2)
+        first['ai_job_id'], second['ai_job_id'] = 'ai-1', 'ai-2'
+        draft = SimpleNamespace(id='draft', revision=9, document=document([first, second]))
+        job = SimpleNamespace(id='ai-1', status='ready')
+        result = {'status': 'completed', 'items': [
+            {'product_ids': [1], 'status': 'created'}, {'product_ids': [2], 'status': 'exists'}]}
+        state = service.ai_job_import_status(job, draft, result)
+        self.assertEqual(state['publication_status'], 'completed')
+        self.assertTrue(state['publication_finished'])
+        self.assertFalse(state['ai_applied'], 'Successful feed publication must not claim AI was used')
+        self.assertEqual(job.status, 'ready', 'Reading delivery does not rewrite AI history')
+        result['status'], result['items'][1]['status'] = 'failed', 'failed'
+        self.assertEqual(service.publication_state(result), 'partial')
+        self.assertEqual(service.ai_job_import_status(job, draft, result)['publication_status'], 'completed')
+        job.id = 'ai-2'
+        self.assertEqual(service.ai_job_import_status(job, draft, result)['publication_status'], 'failed')
+        result['items'][1]['status'] = 'uncertain'
+        self.assertEqual(service.publication_state(result), 'uncertain')
+        job.id = 'replaced'
+        state = service.ai_job_import_status(job, draft, result)
+        self.assertFalse(state['linked'])
+        self.assertIsNone(state['publication_status'])
+        self.assertIsNone(service.publication_state(None))
+
     def test_prices_use_net_purchase_and_gross_sale_without_stock(self):
         item = row(purchase_net='12.99', vat_percent='23.00', sale_gross='30.00')
         source = service.to_source(item)
@@ -133,6 +158,46 @@ class ProductImportUnitTests(unittest.TestCase):
 
 
 class ProductImportAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ai_must_be_applied_or_explicitly_disabled_before_publication(self):
+        item = row(ai_enabled=True)
+        item['ai_job_id'] = 'ai'
+        draft = SimpleNamespace(id='draft', document=document([item]))
+        job = SimpleNamespace(id='ai', status='ready', context={'staging_id':'draft'})
+        db = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [job])))
+        for state in ('ready', 'review', 'blocked', 'generating'):
+            job.status = state
+            with self.subTest(state=state), self.assertRaises(CatalogError) as raised:
+                await service.assert_ai_applied(db, draft)
+            self.assertEqual(raised.exception.code, 'import_ai_not_applied')
+        job.status = 'completed'
+        await service.assert_ai_applied(db, draft)
+        job.context['staging_id'] = 'different-draft'
+        with self.assertRaises(CatalogError):
+            await service.assert_ai_applied(db, draft)
+        item['values']['ai_enabled'] = False
+        db.scalars.reset_mock()
+        await service.assert_ai_applied(db, draft)
+        db.scalars.assert_not_called()
+
+    async def test_completed_publication_is_read_only_and_repeated_preview_preserves_result(self):
+        draft = SimpleNamespace(id='draft', revision=9, document={**document(), 'publication':{'preview_id':'preview'}})
+        result = {'status':'completed', 'items':[{'product_ids':[1], 'status':'created'}]}
+        request = SimpleNamespace(expected_revision=9, preview_id='preview')
+        with patch.object(service, 'publication_result', return_value=result), \
+             patch.object(service, 'public', AsyncMock(return_value={'publication_result':result})), \
+             patch.object(catalog_import, 'create_preview', AsyncMock()) as prepare, \
+             patch.object(catalog_import, 'queue_import') as queue:
+            with self.assertRaises(CatalogError) as raised:
+                service.assert_editable(draft)
+            self.assertEqual(raised.exception.code, 'import_publication_finished')
+            self.assertEqual((await service.preview(None, draft, request))['publication_result'], result)
+            returned, run = await service.publish(None, draft, request)
+            self.assertEqual(returned['publication_result'], result)
+            self.assertFalse(run)
+            self.assertEqual(draft.revision, 9)
+            prepare.assert_not_called()
+            queue.assert_not_called()
+
     async def test_staged_ai_cannot_import_fork_or_update_via_old_routes(self):
         job = SimpleNamespace(context={'staging_id': 'draft'}, revision=2)
         request = SimpleNamespace(expected_revision=2, action='import')

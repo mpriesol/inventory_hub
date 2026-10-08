@@ -113,6 +113,12 @@ async def get_job(db, id, lock=False):
     return job
 
 
+async def summaries(db, jobs, *, detail=False):
+    from inventory_hub.services.product_import import ai_job_statuses
+    staging = await ai_job_statuses(db, jobs)
+    return [{**summary(job, detail=detail), 'staging': staging.get(job.id)} for job in jobs]
+
+
 def expect(job, revision):
     if job.revision != revision:
         raise CatalogError("ai_job_changed", "This job changed; reload it before saving", 409)

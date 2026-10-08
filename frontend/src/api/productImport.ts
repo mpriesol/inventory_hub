@@ -18,15 +18,15 @@ export interface ProductImportRow {
   id: number; group_key: string; group_name?: string; is_variant: boolean; source_category: string | null;
   mapping_revision: number | null; mapping_provenance?: Record<string, unknown>; values: ImportValues;
   manual_fields: string[]; provenance: Partial<Record<ImportField, ImportProvenance>>;
-  warnings: string[]; errors: string[]; hub_product_id: number | null; ai_job: AiJob | null;
+  publication_status?: string | null; warnings: string[]; errors: string[]; hub_product_id: number | null; ai_job: AiJob | null;
   categories?: { code: string; main_yn: boolean }[];
 }
 export interface ProductImportDraft {
   id: string; revision: number; status: string; supplier: string; shop: string; feed_key: string;
   created_at?: string; updated_at?: string; options: ImportOptions; categories: TargetOptions['categories'];
-  rows: ProductImportRow[]; publication: ImportPreview | null; publication_result: ImportResult | null;
+  publication_state?: string | null; rows: ProductImportRow[]; publication: ImportPreview | null; publication_result: ImportResult | null;
 }
-export interface ProductImportSummary { id: string; revision: number; status: string; supplier: string; shop: string; updated_at: string; rows_count: number }
+export interface ProductImportSummary { id: string; revision: number; status: string; publication_state?: string | null; supplier: string; shop: string; updated_at: string; rows_count: number }
 export interface ImportRowPatch { id: number; values: Partial<ImportValues> }
 const base = '/api/product-imports';
 export const listProductImports = (signal?: AbortSignal) => hubRequest<{ items: ProductImportSummary[] }>(base, undefined, signal);

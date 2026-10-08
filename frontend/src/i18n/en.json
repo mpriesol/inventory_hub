@@ -915,7 +915,31 @@
     "discardClose": "Discard changes and close",
     "olderRules": "This job uses rules #{{version}}; the current version is #{{current}}. New parameters and rules apply to a new preparation.",
     "manualApprovalHelp": "Approval accepts the listed missing facts and source or quotation concerns. The import will be prepared and the warnings retained. Technical product errors still need correction.",
-    "manuallyAcceptedWarnings": "The content was manually approved with these concerns. They remain recorded as warnings and do not block import preparation."
+    "manuallyAcceptedWarnings": "The content was manually approved with these concerns. They remain recorded as warnings and do not block import preparation.",
+    "staging": {
+      "help": "This AI job belongs to a saved product preparation. Approval prepares content for the table; shop publication is confirmed in that preparation.",
+      "approve": "Approve AI content for the import table",
+      "approvalHelp": "Approval accepts the listed concerns. Then open the import preparation and apply the AI results to the table. Approval alone does not create or update a shop product.",
+      "openDraft": "Open import preparation",
+      "openResult": "Open import result",
+      "replaced": "Replaced AI preparation",
+      "replacedHelp": "This AI job is no longer assigned to the rows. Open the saved preparation and its current results.",
+      "delivered": "Shop import is complete. Open the saved result.",
+      "deliveredWithoutAi": "The products are already in the shop. This AI result was not applied to the import table, so it was not sent by this import. Open the import result.",
+      "checkDelivery": "Open the saved preparation to check delivery for each product.",
+      "states": {
+        "preparing_import": "Finalizing AI content approval",
+        "ready": "AI content ready",
+        "completed": "AI applied to table"
+      },
+      "next": {
+        "preparing_import": "Content approval for the import table is being finalized.",
+        "ready": "Open the import preparation and apply the AI results to the table. Then save the products in Hub and confirm shop publication.",
+        "completed": "AI content has been applied to the table. Check Hub save and shop publication in the import preparation.",
+        "review": "Review and approve the content, then apply it to the import table.",
+        "blocked": "Review the concerns and approve the content or correct technical errors. Then continue in the linked import preparation."
+      }
+    }
   },
   "upgatesImport": {
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",
@@ -2877,7 +2901,24 @@
       "import_code_prefix": "Product code must use the configured supplier prefix.",
       "category_must_be_leaf": "Choose the leaf category in the branch.",
       "category_missing": "Target category is missing; configure mapping or select it in the cell.",
-      "local_identity_conflict": "A code or EAN already belongs to another Hub product. Reconcile its identity first."
-    }
+      "local_identity_conflict": "A code or EAN already belongs to another Hub product. Reconcile its identity first.",
+      "import_ai_not_applied": "Apply the AI results to the table for products with AI enabled. To send the original data without AI, explicitly turn AI off for those products.",
+      "import_publication_finished": "The saved delivery result is shown below for each product. This preparation is closed; use the product editor for further changes to existing products."
+    },
+    "delivery": {
+      "queued": "Shop delivery queued",
+      "running": "Sending to shop",
+      "completed": "Shop import completed",
+      "partial": "Shop import partially completed",
+      "failed": "Shop delivery failed",
+      "uncertain": "Shop delivery needs reconciliation",
+      "unavailable": "Delivery result could not be loaded"
+    },
+    "completedHelp": "The saved delivery result is shown below for each product. This preparation is closed; use the product editor for further changes to existing products.",
+    "completedWithoutAi": "The AI results were not applied. The shop received the table contents at confirmation time, without these AI changes.",
+    "showResult": "Show delivery result",
+    "openAI": "Open AI content",
+    "aiPendingHelp": "Apply the AI results to the table for products with AI enabled. To send the original data without AI, explicitly turn AI off for those products.",
+    "publicationResultHelp": "This is the saved delivery result. Each product has its own status."
   }
 }
