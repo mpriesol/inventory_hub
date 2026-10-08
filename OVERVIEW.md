@@ -32,6 +32,8 @@ AI podklady majú explicitný formát URL, kompatibilitu so starším prefixom `
 
 AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; normalizácia pomlčiek prebehne pri spracovaní AI odpovede, uložení úprav aj zostavení obsahu pre e-shop.
 
+HTML dlhého AI popisu už neblokujú bežné značky ani formátovacie atribúty. Zostáva kontrola aktívneho kódu a vložených dokumentov; uložený výsledok možno znovu overiť bez plateného generovania. Rozsah a postup obnovy sú v [AI dokumentácii](docs/ai-content.md).
+
 ## Prevádzkový kontext
 
 - Repozitár: [mpriesol/inventory_hub](https://github.com/mpriesol/inventory_hub). Starý `OLD_inventory_hub` sa pri bežnej práci nepoužíva.

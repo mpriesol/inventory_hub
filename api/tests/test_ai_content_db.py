@@ -1,4 +1,5 @@
 """New AI state machine against an isolated PostgreSQL schema and fake providers."""
+import copy
 import json
 import unittest
 from contextlib import asynccontextmanager
@@ -266,6 +267,31 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.checks["errors"], [])
         self.assertEqual(job.actual_usd, Decimal("0.123"))
         self.assertIsNone(job.preview_id)
+        self.generate.assert_not_called()
+        self.assertFalse(self.clients["biketrek"].sent)
+
+    async def test_legacy_html_failure_recovers_without_paid_generation_or_import(self):
+        id = (await self.create())[0]["id"]
+        html = '<div class="specs"><table><tr><th scope="row">Rozmer</th><td colspan="2">50-559</td></tr></table></div>'
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            job.output = content(long_description=html, evidence=[]).model_dump()
+            job.actual_usd = Decimal("0.123")
+            job.checks = {"errors": ["ai_unsafe_html"]}
+            service.event(job, "blocked", "Synthetic result blocked by the old HTML whitelist")
+            original = copy.deepcopy(job.output)
+            await db.commit()
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            await service.review(db, job, ContentReview(expected_revision=job.revision, content=job.output, approve=False))
+            await db.commit()
+        job = await self.job(id)
+        self.assertEqual(job.status, "review")
+        self.assertEqual(job.checks["errors"], [])
+        self.assertEqual(job.output, original)
+        self.assertEqual(job.actual_usd, Decimal("0.123"))
+        self.assertIsNone(job.preview_id)
+        self.assertIsNone(job.context.get("approval"))
         self.generate.assert_not_called()
         self.assertFalse(self.clients["biketrek"].sent)
 

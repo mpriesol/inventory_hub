@@ -16,6 +16,7 @@ psycopg2-binary>=2.9,<3
 greenlet>=3.0,<4
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
+html5lib>=1.1,<2
 
 # Playwright for B2B portal automation (Northfinder, etc.)
 playwright>=1.40,<2

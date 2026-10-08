@@ -686,7 +686,7 @@
       "ai_outcome_unknown": "Odpoveď sa prerušila. Volanie mohlo byť spoplatnené; Hub ho automaticky nezopakuje.",
       "ai_source_changed": "Produktové podklady sa zmenili. Priprav nový výber.",
       "ai_missing_facts": "Chýbajú potrebné fakty. Doplň overené údaje pred schválením.",
-      "ai_unsafe_html": "Popis obsahuje nepovolené HTML alebo atribúty.",
+      "ai_unsafe_html": "Popis obsahuje aktívny kód alebo vložený dokument. Bežné HTML formátovanie je povolené.",
       "ai_manufacturer_contact": "Marketingový text obsahuje kontaktný e-mail.",
       "ai_unregistered_parameter": "Parameter nie je v registri kategórie.",
       "ai_required_parameter": "Chýba povinný parameter",
