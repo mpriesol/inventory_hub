@@ -7,6 +7,19 @@ from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_merchandising import category_chain
 
 
+def mapped_profile(book, shop, rows, selected):
+    """Nearest explicit shop mapping wins; ambiguous mappings require AI."""
+    if not selected:
+        return 'general'
+    for item in reversed(category_chain(rows, selected)):
+        code = item['code']
+        exact = [p.id for p in book.categories if p.shop_categories.get(shop) == code]
+        matches = exact or [p.id for p in book.categories if code in p.shop_category_matches.get(shop, [])]
+        if matches:
+            return matches[0] if len(matches) == 1 else 'general'
+    return 'general'
+
+
 def catalog(rows, book, shop, language, selected=None):
     index = {r['code']: r for r in rows}
     parents = {r.get('parent_code') for r in rows}
@@ -38,14 +51,29 @@ def catalog(rows, book, shop, language, selected=None):
 def resolve_context(context, book, profile):
     result = rules.resolve(book, Scope(shop=context['shop'], supplier=context['supplier'],
         brand=context['facts'][0].get('brand') or '', category=profile, product=context['code']),
-        Policy.model_validate(context.get('category_policy', {})))
+        Policy.model_validate(context.get('category_policy', {})),
+        compile_content='composition' in context['resolved'])
     # Existing-shop source limitations remain in force after classification.
     result['instructions'].extend(i for i in context['resolved']['instructions'] if i['id'] == 'shop-source')
     return result
 
 
-def prepare(context, book, rows, selected=None):
-    context['classification_catalog'] = catalog(rows, book, context['shop'], context['options']['language'], selected)
+def prepare(context, book, rows, selected=None, *, profile_only=False):
+    if profile_only and selected:
+        index = {row['code']: row for row in rows}
+        codes = [item['code'] for item in category_chain(rows, selected)]
+        language = context['options']['language']
+        # Category placement and the content-rule profile are separate choices.
+        # Even a temporary/unmapped category still needs the correct product
+        # instructions. Keep that placement pinned while classifying its facts.
+        context['classification_catalog'] = {'choices': [{'code': selected,
+            'path': ' / '.join(index[code].get('names', {}).get(language)
+                or next(iter(index[code].get('names', {}).values()), code) for code in codes),
+            'profile_ids': []}], 'profiles': [{'id': p.id, 'name': p.name} for p in book.categories]}
+        context['classification_mode'] = 'profile'
+    else:
+        context['classification_catalog'] = catalog(rows, book, context['shop'], context['options']['language'], selected)
+        context['classification_mode'] = 'category_and_profile'
     # Reserve enough for classification plus the largest possible content prompt.
     estimates, cost_gates = [], []
     for profile in book.categories:
@@ -70,4 +98,5 @@ def apply(context, book, output):
         raise CatalogError('ai_existing_variant_registry', 'Existing-product preparation requires a parent-only parameter registry', 422)
     options = {**context['options'], 'category_code': output['category_code']}
     return {**context, 'category_profile': profile, 'resolved': resolved, 'options': options,
+            'category_profile_source': 'ai_classification',
             'category_selection': {**output, 'path': choice['path']}}

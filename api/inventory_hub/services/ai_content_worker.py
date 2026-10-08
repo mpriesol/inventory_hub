@@ -80,6 +80,12 @@ async def generation(id):
 
 async def importing(id):
     async with get_session_context() as db:
+        observed = await service.get_job(db, id)
+        staged = observed.context.get('staging_id')
+        draft = None
+        if staged:
+            from inventory_hub.services import product_import
+            draft = await product_import.get_draft(db, staged, lock=True)
         job = await service.get_job(db, id, lock=True)
         if job.status != "import_queued":
             return
@@ -88,10 +94,29 @@ async def importing(id):
         if not preview_id:
             service.event(job, "preparing_import", "Preparing missing import preview")
             return
+        if staged:
+            authorization = job.context.get('staging_auto_publication', {})
+            try:
+                if (job.context.get('staging_automation_version') != 1
+                        or authorization.get('draft_id') != staged or authorization.get('preview_id') != preview_id
+                        or draft.document.get('automation', {}).get('paused')
+                        or (draft.document.get('publication') or {}).get('preview_id') != preview_id):
+                    raise CatalogError('import_staging_confirmation_required', 'This automatic draft publication is no longer authorized', 409)
+                await product_import.assert_snapshot(db, authorization)
+                if product_import.publication_result(draft) is None:
+                    await product_import.assert_ai_applied(db, draft)
+                # Queue under the draft lock: its durable importer journal then
+                # blocks edits before any remote execution starts.
+                _, run = catalog_import.queue_import(shop, preview_id, False, staging_id=staged)
+            except CatalogError as error:
+                job.error = error.code
+                service.event(job, 'import_failed', error.code)
+                return
         # Persist intent before invoking the existing idempotent import mechanism.
         service.event(job, "importing", "Upgates import started")
     try:
-        _, run = catalog_import.queue_import(shop, preview_id, retry)
+        if not staged:
+            _, run = catalog_import.queue_import(shop, preview_id, retry)
         if run:
             await catalog_import.execute_import(shop, preview_id)
         result = catalog_import.import_result(shop, preview_id)
@@ -139,6 +164,10 @@ async def cycle():
                 await importing(id)
             else:
                 async with get_session_context() as db:
+                    observed = await service.get_job(db, id)
+                    if observed.context.get('staging_id') and observed.context.get('staging_automation_version') == 1:
+                        from inventory_hub.services.product_import import get_draft
+                        await get_draft(db, observed.context['staging_id'], lock=True)
                     job = await service.get_job(db, id, lock=True)
                     if job.status != "preparing_import":
                         return True

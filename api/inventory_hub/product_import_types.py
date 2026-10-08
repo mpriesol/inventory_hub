@@ -37,6 +37,7 @@ class ImportValues(StrictModel):
     currency: str = Field(default="EUR", pattern=r"^[A-Z]{3}$")
     availability: str = Field(default="", max_length=100)
     ai_enabled: StrictBool = False
+    ai_category_profile: str = Field(default="auto", pattern=r"^[a-zA-Z0-9_-]{1,80}$")
 
     @field_validator("purchase_net", "retail_gross", "sale_gross")
     @classmethod

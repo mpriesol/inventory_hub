@@ -12,6 +12,8 @@ from inventory_hub.database import get_session
 from inventory_hub.routers.catalog import CatalogRoute
 from inventory_hub.services import ai_content as service, ai_content_rules as rules
 from inventory_hub.services import ai_content_existing as existing
+from inventory_hub.services import ai_content_settings as model_settings
+from inventory_hub.services.ai_content_settings import ModelSettingsSave
 from inventory_hub.services.ai_content_existing import ExistingProductRequest
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
@@ -24,11 +26,21 @@ DB = Annotated[AsyncSession, Depends(get_session)]
 
 
 @router.get("/status")
-def status():
+async def status(db: DB):
     return {"enabled": settings.AI_CONTENT_ENABLED, "key_configured": bool(settings.OPENAI_API_KEY.get_secret_value()),
             "access_configured": len(settings.AI_CONTENT_ACCESS_TOKEN.get_secret_value()) >= 24,
-            "model": settings.AI_CONTENT_MODEL, "monthly_limit_usd": str(settings.AI_CONTENT_MONTHLY_USD),
+            "model": await model_settings.effective_model(db), "monthly_limit_usd": str(settings.AI_CONTENT_MONTHLY_USD),
             "job_limit_usd": str(settings.AI_CONTENT_JOB_USD)}
+
+
+@protected.get("/settings")
+async def get_settings(db: DB):
+    return await model_settings.read(db)
+
+
+@protected.put("/settings")
+async def save_settings(request: ModelSettingsSave, db: DB):
+    return await model_settings.save(db, request)
 
 
 @protected.get("/rules")
@@ -151,7 +163,9 @@ async def job_request(id: str, db: DB):
     value = await service.get_job(db, id)
     stage = 'classification' if value.context.get('classification_catalog') and not value.context.get('category_selection') else value.kind
     return {"rules_version": value.context.get("rules_version"),
-            "generated": False, "stage": stage, "request": request_body(value.context, stage)}
+            "generated": False, "stage": stage,
+            "composition": (value.context.get("resolved") or {}).get("composition"),
+            "request": request_body(value.context, stage)}
 
 
 @protected.post("/jobs/{id}/review")

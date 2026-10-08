@@ -18,6 +18,7 @@ from inventory_hub import config_io, database
 from inventory_hub.ai_content_models import AiContentRevision, AiJob, AiRuleVersion
 from inventory_hub.ai_content_types import BatchRequest, ContentReview, JobAction, JobFork, Policy, RuleBook, Target
 from inventory_hub.services import ai_content as service, ai_content_rules as rules, ai_content_worker as worker, catalog, catalog_import
+from inventory_hub.services import ai_content_settings as model_settings
 from inventory_hub.services.ai_content_upgates import FIELDS
 from inventory_hub.settings import settings
 
@@ -39,7 +40,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await catalog_db.CatalogDatabaseTests.asyncSetUp(self)
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
-            for filename in ("005_ai_content.sql", "015_stock_sync.sql", "016_product_publication.sql", "018_fifo_cost_sync.sql"):
+            for filename in ("005_ai_content.sql", "015_stock_sync.sql", "016_product_publication.sql", "018_fifo_cost_sync.sql", "023_ai_content_settings.sql"):
                 await raw.driver_connection.execute((Path(__file__).resolve().parents[2] / "infra/db-init" / filename).read_text())
         await self.refresh()
         async with self.sessions() as db:
@@ -82,6 +83,46 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             jobs = await service.create_batch(db, request or self.request())
             await db.commit()
             return jobs
+
+    async def test_model_setting_changes_only_new_jobs_and_request_replay_keeps_original(self):
+        request = self.request()
+        original = (await self.create(request))[0]
+        async with self.sessions() as db:
+            result = await model_settings.read(db)
+            self.assertEqual(result['source'], 'server')
+            await model_settings.save(db, model_settings.ModelSettingsSave(expected_revision=0, model='gpt-6.1-sol'))
+            await db.commit()
+        fresh = (await self.create())[0]
+        replay = (await self.create(request))[0]
+        self.assertEqual(fresh['model'], 'gpt-6.1-sol')
+        self.assertEqual(replay['id'], original['id'])
+        self.assertEqual(replay['model'], original['model'])
+        self.assertEqual((await self.job(original['id'])).context['model'], original['model'])
+        async with self.sessions() as db:
+            with self.assertRaises(catalog.CatalogError) as error:
+                await model_settings.save(db, model_settings.ModelSettingsSave(expected_revision=0, model='gpt-6-luna'))
+            self.assertEqual(error.exception.code, 'ai_settings_changed')
+
+    async def test_model_settings_migration_is_repeatable_and_parallel_initial_saves_use_cas(self):
+        import asyncio
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            sql = (Path(__file__).resolve().parents[2] / 'infra/db-init/023_ai_content_settings.sql').read_text()
+            await raw.driver_connection.execute(sql)
+        async def save(model):
+            async with self.sessions() as db:
+                try:
+                    result = await model_settings.save(db, model_settings.ModelSettingsSave(expected_revision=0, model=model))
+                    await db.commit()
+                    return result['model']
+                except catalog.CatalogError as error:
+                    return error.code
+        results = await asyncio.gather(save('gpt-6.1-sol'), save('gpt-6-luna'))
+        self.assertEqual(results.count('ai_settings_changed'), 1)
+        async with self.sessions() as db:
+            result = await model_settings.read(db)
+        self.assertEqual(result['revision'], 1)
+        self.assertIn(result['model'], results)
 
     async def job(self, id):
         async with self.sessions() as db:

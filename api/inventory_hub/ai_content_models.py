@@ -23,6 +23,14 @@ class AiRuleState(Base):
     published_id: Mapped[int] = mapped_column(ForeignKey("ai_rule_versions.id"))
 
 
+class AiContentSettings(Base):
+    __tablename__ = "ai_content_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model: Mapped[str] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AiBatch(Base):
     __tablename__ = "ai_content_batches"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)

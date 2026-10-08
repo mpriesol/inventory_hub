@@ -464,7 +464,7 @@ class ProviderTests(unittest.TestCase):
         # The quote covers every allowed search, not the former three-call cap.
         rate = provider.RATES[ctx["model"]]
         prompt_bytes = len(json.dumps(body, ensure_ascii=False).encode()) + 60000
-        expected = (Decimal(prompt_bytes) * Decimal(rate["input"]) / 1000000
+        expected = (Decimal(prompt_bytes) * Decimal(rate["cache_write"]) / 1000000
                     + Decimal(provider.MAX_OUTPUT) * Decimal(rate["output"]) / 1000000
                     + Decimal("0.06")).quantize(Decimal("0.000001"))
         self.assertEqual(provider.estimate(ctx), expected)

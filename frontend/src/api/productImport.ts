@@ -9,7 +9,7 @@ export interface ImportValues {
   seo_title: string; seo_description: string; seo_url: string; category_code: string | null;
   parameters: { name: string; value: string }[]; variant_attributes: { name: string; value: string }[];
   metadata: Record<string, string>; purchase_net: string | null; retail_gross: string | null;
-  sale_gross: string | null; vat_percent: string | null; currency: string; availability: string; ai_enabled: boolean;
+  sale_gross: string | null; vat_percent: string | null; currency: string; availability: string; ai_enabled: boolean; ai_category_profile: string;
 }
 export type ImportField = keyof ImportValues;
 export type ImportValue = ImportValues[ImportField];

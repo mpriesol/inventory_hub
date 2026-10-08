@@ -23,12 +23,13 @@ const { IMPORT_COLUMNS, pasteImportValues, stageImportValue } = require('../src/
 const clone = value => JSON.parse(JSON.stringify(value));
 const options = { language: 'sk', currency: 'EUR', pricelist: 'Default', category_code: null, pricing: 'configured', include_images: true, include_description: true, include_parameters: true };
 const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, { code: 'PARTS', parent_code: 'MENU', names: { sk: 'Komponenty' } }, { code: 'TUBES', parent_code: 'PARTS', names: { sk: 'Duše' } }];
-const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false });
+const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto' });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
 const calls = []; let failEdit = false, deferRead = false, releaseRead;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, method: init.method || 'GET', body });
+  if (path === '/api/ai-content/rules') return { ok: true, status: 200, json: async () => ({book:{categories:[{id:'general',name:'Všeobecné'},{id:'inner_tubes',name:'Duše'}]}}) };
   if (path === '/api/product-imports/test-draft' && init.method === 'GET' && deferRead) {
     deferRead = false;
     return new Promise(resolve => { releaseRead = value => resolve({ ok: true, status: 200, json: async () => value }); });
@@ -80,6 +81,17 @@ async function render(entry) {
   assert.equal(calls.filter(call => call.path === '/api/product-imports' && call.method === 'POST').length, 1, 'StrictMode reuses the idempotent create request');
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3);
   assert.ok(document.body.textContent.includes('Rodina duší'));
+  await change(label('Pravidlá AI pre PL-1'),'inner_tubes');
+  assert.equal(label('Pravidlá AI pre PL-2').value,'inner_tubes','Explicit AI rule profile is shared by sibling variants');
+  assert.equal(label('Pravidlá AI pre PL-3').value,'auto');
+  await change(label('Pravidlá AI pre PL-1'),'auto');
+  await change(label('Pole hromadnej úpravy'),'ai_category_profile');
+  await change(label('Spoločná hodnota'),'inner_tubes');
+  await click(button('Použiť na označené'));
+  assert.equal(label('Pravidlá AI pre PL-3').value,'inner_tubes','Bulk profile selection reaches all selected families');
+  await change(label('Spoločná hodnota'),'auto');
+  await click(button('Použiť na označené'));
+  assert.equal(button('Uložiť koncept (0)').disabled,true,'Returning profiles to automatic selection clears pending edits');
   assert.equal(button('Náhľad odoslania do e-shopu').disabled, true);
   assert.equal(calls.some(call => call.path.endsWith('/save') || call.path.endsWith('/publish')), false, 'Opening a draft performs no Hub registration or shop publication');
   await click(field(1, 'brand').querySelector('button'));
@@ -114,6 +126,10 @@ async function render(entry) {
   failEdit = false;
   await click(button('Uložiť koncept (2)'));
   assert.equal(server.rows[0].values.name, 'Ručný názov 1');
+  await change(label('Pravidlá AI pre PL-1'),'inner_tubes');
+  await click(button('Uložiť koncept (2)'));
+  assert.deepEqual(server.rows.map(row=>row.values.ai_category_profile),['inner_tubes','inner_tubes','auto'],'A saved explicit profile persists per family without changing unrelated products');
+  assert(server.rows.every(row=>row.values.category_code === 'TUBES'),'Choosing a rule profile leaves shop category placement intact');
   assert.equal(server.status, 'draft');
   assert.equal(calls.some(call => call.path.endsWith('/publish')), false);
 
@@ -137,8 +153,11 @@ async function render(entry) {
   assert.equal(label('Vylepšiť pomocou AI: PL-1').checked, true);
   assert.equal(label('Vylepšiť pomocou AI: PL-2').checked, true);
   assert.equal(label('Vylepšiť pomocou AI: PL-3').checked, false);
-  await click(button('Pripraviť odhad (2)'));
+  await click(button('Pripraviť AI obsah (2)'));
   assert.equal(calls.some(call => call.path.endsWith('/ai-start')), false, 'Estimate is separate from paid AI');
+  await change(label('Pravidlá AI pre PL-1'),'general');
+  assert.equal(button('Spustiť AI · odhad 0.040 USD'),undefined,'An edited profile cannot start a stale cost estimate');
+  await change(label('Pravidlá AI pre PL-1'),'inner_tubes');
   await click(button('Vypnúť AI'));
   assert.equal(button('Spustiť AI · odhad 0.040 USD'), undefined, 'Disabled families are excluded from actionable costs');
   await click(button('Zapnúť AI'));
@@ -166,6 +185,17 @@ async function render(entry) {
   await click(button('Uložiť produkty do Hubu'));
   assert.equal(server.status, 'saved');
   assert.equal(calls.some(call => call.path.endsWith('/publish')), false, 'Saving to Hub never writes the shop');
+  await change(label('Pravidlá AI pre PL-1'),'general');
+  assert(button('Náhľad odoslania do e-shopu').disabled);
+  assert(document.body.textContent.includes('Pravidlá zmenené – priprav AI obsah znova'),'A locally changed profile explains why the completed output is stale');
+  await change(label('Pravidlá AI pre PL-1'),'inner_tubes');
+  assert(!button('Náhľad odoslania do e-shopu').disabled);
+  server.rows.filter(row=>row.ai_job).forEach(row=>row.ai_job.staging={ai_applied:false});
+  await click(button('Obnoviť'));
+  assert(button('Náhľad odoslania do e-shopu').disabled,'A persisted profile mismatch blocks preview despite a historical completed job');
+  assert(document.body.textContent.includes('Pravidlá zmenené – priprav AI obsah znova'));
+  server.rows.filter(row=>row.ai_job).forEach(row=>row.ai_job.staging={ai_applied:true});
+  await click(button('Obnoviť'));
   await click(button('Náhľad odoslania do e-shopu'));
   assert.equal(calls.some(call => call.path.endsWith('/publish')), false, 'Remote preview is read-only');
   await click(button('Odoslať 1 produktov do biketrek'));
@@ -184,11 +214,25 @@ async function render(entry) {
   assert(document.body.textContent.includes('AI výsledky zostali neprevzaté'));
   assert.equal(button('Prijať výsledky AI do tabuľky'),undefined,'Applying AI cannot erase an already completed delivery record');
 
+  const deliveredResult = clone(server.publication_result);
+  server.publication_result = null;
+  server.rows.filter(row=>row.ai_job).forEach(row=>{ row.ai_job.status='import_queued'; row.ai_job.staging={ai_applied:true,profile_matches:true,auto_apply:true,auto_publish:true}; });
+  await click(button('Obnoviť'));
+  assert(label('Vylepšiť pomocou AI: PL-1').disabled,'Automatic publication keeps editing locked while the queued import is tracked');
+  assert(field(1,'name').querySelector('button').disabled,'Automatic publication locks table edits until delivery settles');
+  const automaticPoll = [...pollers.values()].at(-1);
+  assert(automaticPoll,'An automatically queued import continues polling even after content generation finished');
+  server.publication_result = deliveredResult;
+  server.rows.filter(row=>row.ai_job).forEach(row=>row.ai_job.status='completed');
+  await act(async()=>automaticPoll());
+  assert(document.body.textContent.includes('Import do e-shopu dokončený'));
+  assert(!button('Náhľad odoslania do e-shopu'),'Completed automatic publication does not offer another preview');
+
   await render('/product-import');
   assert.ok(document.querySelector('a[href="/product-import?draft=test-draft"]'), 'Saved drafts are discoverable without route state');
   await click(document.querySelector('a[href="/product-import?draft=test-draft"]'));
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3, 'Draft resumes from server via durable URL');
   assert.equal(calls.filter(call => call.path === '/api/product-imports' && call.method === 'POST').length, 1);
   await act(async () => root.unmount());
-  console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
+  console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

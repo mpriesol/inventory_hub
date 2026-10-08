@@ -34,7 +34,10 @@
 .ai-content th, .ai-content td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--color-border-default, #41454b); }
 .ai-scroll { overflow: auto; }
 .ai-content iframe { width: 100%; height: 400px; background: white; border: 1px solid #bbb; border-radius: 8px; }
-.ai-content .ai-tabs { margin-bottom: 20px; }
+.ai-content .ai-tabs { margin-bottom: 20px; flex-wrap: wrap; }
+.ai-model-settings { max-width: 880px; }
+.ai-model-current { display: grid; gap: 5px; align-content: center; }
+.ai-model-pricing { margin-top: 18px; }
 .ai-content .ai-original { white-space: pre-wrap; line-height: 1.6; font-size: 13px; }
 .ai-content .ai-actions { margin: 15px 0; }
 @media (max-width: 1000px) { .ai-policy { grid-template-columns: repeat(2, minmax(0,1fr)); } .ai-columns { grid-template-columns: 1fr; } }

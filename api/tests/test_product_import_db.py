@@ -33,7 +33,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await catalog_db.CatalogDatabaseTests.asyncSetUp(self)
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
-            for name in ('005_ai_content.sql', '012_product_editor.sql', '021_product_feed_mapping.sql', '022_product_import_drafts.sql'):
+            for name in ('005_ai_content.sql', '012_product_editor.sql', '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql'):
                 sql = (Path(__file__).resolve().parents[2] / 'infra/db-init' / name).read_text()
                 await raw.driver_connection.execute(sql)
                 if name == '022_product_import_drafts.sql':
@@ -161,7 +161,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_ai_reads_mapped_edited_facts_and_preserves_later_manual_work(self):
         result = await self.create()
         result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{'id':self.ids[0], 'values':{
-            'description_html':'<p>Mapped technical fact</p>', 'ai_enabled':True}}])
+            'description_html':'<p>Mapped technical fact</p>', 'ai_enabled':True, 'ai_category_profile':'general'}}])
         result = await self.mutate(result, service.prepare_ai, DraftAiRequest, research='feed_only')
         job_id = result['rows'][0]['ai_job']['id']
         async with self.sessions() as db:
@@ -208,3 +208,53 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(final['publication_state'], 'completed')
             self.assertEqual(final['rows'][0]['publication_status'], 'created')
             self.assertEqual((await service.history(db))['items'][0]['publication_state'], 'completed')
+
+    async def test_inherited_automatic_policy_creates_one_active_product_without_manual_steps(self):
+        from inventory_hub.ai_content_models import AiRuleVersion
+        from inventory_hub.ai_content_types import Policy, RuleBook
+        from inventory_hub.services import ai_content_rules
+        async with self.sessions() as db:
+            current = await ai_content_rules.published(db)
+            rules = RuleBook.model_validate(current.book)
+            rules.rules[0].policy = Policy(review_required=False, active_after_import=True,
+                show_cost_estimate=False, confirm_import=False)
+            version = AiRuleVersion(book=rules.model_dump(), origin='test', note='Automatic policy inheritance')
+            db.add(version)
+            await db.flush()
+            await ai_content_rules.publish(db, version.id, current.id)
+            await db.commit()
+        result = await self.create()
+        result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{'id': self.ids[0], 'values': {
+            'ai_enabled': True, 'ai_category_profile': 'general'}}])
+        result = await self.mutate(result, service.prepare_ai, DraftAiRequest, research='feed_only')
+        job_id = result['rows'][0]['ai_job']['id']
+        self.assertEqual(result['rows'][0]['ai_job']['status'], 'queued')
+        self.assertEqual(result['rows'][0]['ai_job']['policy'], dict(review_required=False, active_after_import=True,
+            show_cost_estimate=False, confirm_import=False))
+        self.assertNotIn('run', result['rows'][0]['ai_job']['origins'].values())
+        output = content(evidence=[{'claim': 'Popis', 'source': f'feed:{self.ids[0]}', 'quote': 'Popis'}])
+        response = {'id': 'automatic-fixture', 'status': 'completed', 'usage': {'input_tokens': 100, 'output_tokens': 100},
+            'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': output.model_dump_json()}]}]}
+        with patch.object(worker.provider, 'generate', AsyncMock(return_value=response)) as generate:
+            await worker.cycle()  # One paid generation, fake provider.
+            await worker.cycle()  # Apply, save, preview and authorize once.
+            async with self.sessions() as db:
+                pending = await db.get(AiJob, job_id)
+                self.assertEqual(pending.status, 'import_queued', pending.error)
+                self.assertTrue(service.applied_ai(pending))
+            await worker.cycle()  # Existing create-only importer.
+            await worker.cycle()  # No duplicate generation or publication.
+            self.assertEqual(generate.await_count, 1)
+        sent = [payload for path, payload in self.client.sent if path == 'products']
+        self.assertEqual(len(sent), 1)
+        payload = sent[0]['products'][0]
+        self.assertTrue(payload['active_yn'])
+        self.assertTrue(payload['descriptions'][0]['active_yn'])
+        self.assertEqual(next(m['value'] for m in payload['metas'] if m['key'] == 'validation_required'), '0')
+        async with self.sessions() as db:
+            job = await db.get(AiJob, job_id)
+            self.assertEqual(job.status, 'completed', job.error)
+            final = await service.public(db, await service.get_draft(db, result['id']))
+            self.assertEqual(final['publication_state'], 'completed')
+            self.assertTrue(final['rows'][0]['ai_job']['staging']['ai_applied'])
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
