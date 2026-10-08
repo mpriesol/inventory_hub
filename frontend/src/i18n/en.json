@@ -616,7 +616,7 @@
     "source": "Source",
     "evidence": "Evidence",
     "evidenceSourceHelp": "Use feed:<id> for feed data or the exact opened HTTPS URL for a web source. Only select a page that supports this claim; a recorded opening does not establish factual accuracy. Save corrections without generating AI content again.",
-    "evidenceQuoteHelp": "Both the claim and quote can be edited. For feed evidence, copy a short verbatim passage from one field in this job's original source data. Do not add your own explanation or combine fields. The claim and descriptions must be supported by the source. Save content draft validates the correction without calling AI.",
+    "evidenceQuoteHelp": "Edit the claim and quote as needed. Use a verbatim feed passage or exact name: value parameter pairs from the same product, separated by semicolons. Save content draft validates without calling AI. A quotation concern can be accepted by manual approval.",
     "openedSources": "Pages recorded as opened during this preparation",
     "noOpenedSources": "This preparation has no recorded opened web page.",
     "recheckContent": "Recheck content without AI",
@@ -684,7 +684,7 @@
       "ai_not_configured": "AI is disabled or the project API key is missing.",
       "ai_outcome_unknown": "The response was interrupted. The call may have been billed; Hub will not automatically repeat it.",
       "ai_source_changed": "Product facts changed. Prepare a new selection.",
-      "ai_missing_facts": "Required facts are missing. Add verified data before approval.",
+      "ai_missing_facts": "AI reports missing or conflicting facts. Review them; manual approval allows continuing with this concern.",
       "ai_unsafe_html": "The description contains active code or an embedded document. Ordinary HTML formatting is allowed.",
       "ai_manufacturer_contact": "Marketing text contains a contact email.",
       "ai_unregistered_parameter": "Parameter is not in the category registry.",
@@ -816,7 +816,7 @@
       "queued": "Queued; can be cancelled before starting.",
       "generating": "AI is generating content.",
       "review": "Edit and approve content, then review import or update.",
-      "blocked": "Fix red errors and required missing facts before approval.",
+      "blocked": "Review content and source concerns; manual approval can accept them. Technical product errors still need correction.",
       "preparing_import": "Preparing import preview.",
       "ready": "Review and confirm import, or prepare an existing-product update.",
       "import_queued": "Import queued.",
@@ -842,7 +842,7 @@
     "noRegisteredParameters": "This preparation has no predefined category parameter registry. AI cannot add new parameters outside the allowed registry.",
     "updateNext": {
       "review": "Review and approve the content, then choose fields to update.",
-      "blocked": "Fix the errors and missing required facts, then approve the content again.",
+      "blocked": "Review content and source concerns; manual approval can accept them. Technical product errors still need correction.",
       "preparing_import": "The approved content is being checked for updating the existing product.",
       "ready": "Choose fields and prepare a comparison with the current shop content.",
       "exists": "Content is approved. Choose fields, review the comparison and confirm the update.",
@@ -913,7 +913,9 @@
     "closeUnsaved": "There are unsaved changes. Discard them and close the dialog?",
     "keepEditing": "Keep editing",
     "discardClose": "Discard changes and close",
-    "olderRules": "This job uses rules #{{version}}; the current version is #{{current}}. New parameters and rules apply to a new preparation."
+    "olderRules": "This job uses rules #{{version}}; the current version is #{{current}}. New parameters and rules apply to a new preparation.",
+    "manualApprovalHelp": "Approval accepts the listed missing facts and source or quotation concerns. The import will be prepared and the warnings retained. Technical product errors still need correction.",
+    "manuallyAcceptedWarnings": "The content was manually approved with these concerns. They remain recorded as warnings and do not block import preparation."
   },
   "upgatesImport": {
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",

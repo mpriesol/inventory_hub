@@ -326,6 +326,53 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.generate.assert_not_called()
             self.assertFalse(self.clients["biketrek"].sent)
 
+    async def test_manual_approval_prepares_and_imports_with_retained_source_warnings(self):
+        id = (await self.create())[0]['id']
+        output = content(missing_facts=['Rozpor v dĺžke ventilu'], evidence=[
+            {'claim': 'Údaj z feedu', 'source': f'feed:{self.id}', 'quote': 'Nenájdený citát'},
+            {'claim': 'Technická tabuľka', 'source': 'https://manufacturer.example/table.pdf', 'quote': 'AV 33 mm'},
+        ]).model_dump()
+        expected = ['ai_missing_facts', 'ai_unverified_feed_evidence', 'ai_unverified_official_evidence']
+        async with self.sessions() as db:
+            job = await service.get_job(db, id, True)
+            job.output = output
+            job.actual_usd = Decimal('0.123')
+            service.event(job, 'blocked', 'Stored generation with editorial concerns')
+            await db.commit()
+        # Saving a draft is not approval, including after an earlier approval.
+        for approve in (False, True, False, True):
+            async with self.sessions() as db:
+                job = await service.get_job(db, id, True)
+                if job.status == 'preparing_import':
+                    await service.prepare_import(db, job)
+                await service.review(db, job, ContentReview(expected_revision=job.revision, content=output, approve=approve))
+                await db.commit()
+            job = await self.job(id)
+            self.assertEqual(job.status, 'preparing_import' if approve else 'blocked')
+            self.assertEqual(job.checks['errors'], [] if approve else expected)
+            self.assertEqual(job.checks['manual_overrides'], expected if approve else [])
+            self.assertEqual(job.context['approval'], 'human' if approve else None)
+            self.assertEqual(job.output, output)
+            self.assertFalse(self.clients['biketrek'].sent)
+        self.assertIn('accepted warnings: ai_missing_facts', job.events[-1]['note'])
+        await worker.cycle()
+        job = await self.job(id)
+        self.assertEqual(job.status, 'ready')
+        self.assertTrue(job.preview_id)
+        self.assertTrue(set(expected) <= set(job.checks['warnings']))
+        await self.act(id, 'import')
+        await worker.cycle()
+        self.assertEqual((await self.job(id)).status, 'completed')
+        sent = [body for path, body in self.clients['biketrek'].sent if path == 'products']
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(sent[0]['products'][0]['active_yn'])
+        self.generate.assert_not_called()
+        self.assertEqual((await self.job(id)).actual_usd, Decimal('0.123'))
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+            revisions = list(await db.scalars(select(AiContentRevision).where(AiContentRevision.job_id == id)))
+            self.assertEqual(sum(r.decision == 'human_approved' for r in revisions), 2)
+
     async def test_restart_never_repeats_unknown_paid_request(self):
         id = (await self.create())[0]["id"]
         await self.act(id, "start")

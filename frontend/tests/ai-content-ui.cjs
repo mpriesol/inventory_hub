@@ -234,6 +234,22 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert.equal(reviewed.expected_revision,9);
   assert.deepEqual(reviewed.content.evidence,[verifiedEvidence,verifiedEvidence], 'Correcting a quote and its claim preserves source identity and sibling evidence');
   assert.equal(reviewed.content.long_description,content.long_description, 'Evidence edits never silently rewrite marketing content');
+  const reviewConcerns = ['ai_missing_facts','ai_unverified_feed_evidence','ai_unverified_official_evidence'];
+  const concernContent = {...content,missing_facts:['Rozpor v dĺžke ventilu'],evidence:[incorrectQuote,unsupportedEvidence]};
+  const concernChecks = {errors:reviewConcerns,evidence_errors:[{index:0,source:'feed:1',reason:'feed_quote_not_found'}]};
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'manual-approval',job:{...sourceFixJob,
+    output:concernContent,checks:concernChecks},onChange:() => {}})); await tick(); });
+  assert(document.body.textContent.includes('Schválením prijímaš'), 'Approval explains that the listed concerns are accepted');
+  const beforeApproval = calls.length;
+  await click(button('Schváliť obsah a pripraviť import'));
+  assert.deepEqual(calls.slice(beforeApproval).map(call => call.path),['/api/ai-content/jobs/job0/review']);
+  assert.equal(reviewed.approve,true);
+  assert.deepEqual(reviewed.content,concernContent, 'Manual approval retains disputed facts and evidence without forcing their deletion');
+  await act(async () => { root.render(React.createElement(AiJobDetail,{key:'accepted-concerns',job:{...sourceFixJob,
+    status:'ready',output:concernContent,checks:{...concernChecks,errors:[],warnings:reviewConcerns,manual_overrides:reviewConcerns}},onChange:() => {}})); await tick(); });
+  assert(document.body.textContent.includes('Obsah bol ručne schválený'));
+  assert.equal(document.querySelector('textarea[aria-label="Podklad 1"]').getAttribute('aria-invalid'),'false');
+  assert(document.body.textContent.includes('Citát sa nenašiel'), 'The source diagnostic remains visible after manual approval');
   for (const state of [{status:'completed'}, {status:'blocked',update_state:'uncertain'}]) {
     await act(async () => { root.render(React.createElement(AiJobDetail,{key:`source-readonly-${state.status}`,job:{...sourceFixJob,...state},onChange:() => {}})); await tick(); });
     assert(document.querySelector('input[aria-label="Zdroj 1"]').disabled, 'Completed jobs and uncertain writes cannot change evidence');

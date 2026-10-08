@@ -635,6 +635,19 @@ class UpdatePreparationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(preview['payload']),{'code','descriptions'})
         self.assertEqual(preview['identity'],identity(self.remote))
 
+    async def test_update_preview_honors_only_explicit_human_source_approval(self):
+        self.job.output['missing_facts'] = ['Rozpor v zdrojoch']
+        self.job.output['evidence'][0]['quote'] = 'Nenájdený citát'
+        for approval in (None, 'policy'):
+            self.job.context['approval'] = approval
+            with self.assertRaises(CatalogError) as error:
+                await self.prepare(['title'])
+            self.assertEqual(error.exception.code, 'ai_validation_failed')
+        self.job.context['approval'] = 'human'
+        preview = await self.prepare(['title'])
+        self.assertEqual(preview['payload']['descriptions'][0]['title'], self.job.output['title'])
+        self.client.put.assert_not_called()
+
     async def test_existing_local_stock_keeps_current_availability_and_visibility(self):
         self.remote.update(stock=3,availability='SKLADOM',active_yn=False)
         preview=await self.prepare(['availability'])

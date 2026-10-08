@@ -245,6 +245,50 @@ class ContentTests(unittest.TestCase):
         checks = validate_content(value, context())
         self.assertEqual(checks["evidence_errors"], [{"index": 1, "source": "feed:999", "reason": "feed_quote_not_found"}])
 
+    def test_labelled_feed_parameters_can_share_a_quote_without_changing_facts(self):
+        ctx = context()
+        ctx["facts"][0]["parameters"] = [
+            {"name": "Veľkosť plášťa", "value": '19"'},
+            {"name": "Ventil duše", "value": "AV - autoventil"},
+        ]
+        for quote, source, valid in [
+            ('Veľkosť plášťa: 19"; Ventil duše: AV - autoventil', 'feed:1', True),
+            ('Veľkosť plášťa: 19"\nVentil duše: AV - autoventil', 'feed:1', True),
+            ('Veľkosť plášťa: 19"; Ventil duše: AV\n- autoventil', 'feed:1', True),
+            ('Ventil duše: AV - autoventil', 'feed:1', True),
+            ('Veľkosť plášťa: 29"; Ventil duše: AV - autoventil', 'feed:1', False),
+            ('Veľkosť plášťa: AV - autoventil; Ventil duše: 19"', 'feed:1', False),
+            ('Veľkosť plášťa: 19"; Ventil duše: AV - autoventil', 'feed:999', False),
+            ('Veľkosť plášťa: 19"; Ventil duše: AV - autoventil; Nepriestrelná duša', 'feed:1', False),
+        ]:
+            with self.subTest(quote=quote, source=source):
+                value = content(evidence=[{"claim": "Rozmer a ventil", "source": source, "quote": quote}])
+                checks = validate_content(value, ctx)
+                self.assertEqual('ai_unverified_feed_evidence' not in checks['errors'], valid)
+                self.assertEqual(value.evidence[0].quote, quote)
+
+    def test_human_approval_accepts_editorial_concerns_but_keeps_technical_checks(self):
+        ctx = context(approval='human')
+        value = content(missing_facts=['Rozpor v dĺžke ventilu'], evidence=[
+            {'claim': 'Ventil', 'source': 'feed:1', 'quote': 'Nedoložený citát'},
+            {'claim': 'Tabuľka', 'source': 'https://manufacturer.example/table.pdf', 'quote': 'AV 33 mm'},
+        ])
+        original = value.model_dump()
+        expected = ['ai_missing_facts', 'ai_unverified_feed_evidence', 'ai_unverified_official_evidence']
+        strict = validate_content(value, ctx)
+        self.assertEqual(strict['errors'], expected, 'Context alone must not approve a newly edited draft')
+        accepted = validate_content(value, ctx, human_approved=True)
+        self.assertEqual(accepted['errors'], [])
+        self.assertEqual(accepted['manual_overrides'], expected)
+        self.assertTrue(set(expected) <= set(accepted['warnings']))
+        self.assertEqual(accepted['evidence_errors'], strict['evidence_errors'])
+        self.assertFalse(accepted['automatic_ready'])
+        self.assertEqual(value.model_dump(), original)
+        value.long_description = '<p onclick="run()">Popis</p>'
+        value.parameters = content(parameters=[{'name': 'Neznámy', 'values': ['x'], 'product_id': None}]).parameters
+        blocked = validate_content(value, ctx, human_approved=True)
+        self.assertEqual(blocked['errors'], ['ai_unregistered_parameter:Neznámy', 'ai_unsafe_html'])
+
     def test_feed_evidence_checks_source_fields_without_serialization_artifacts(self):
         ctx = context()
         ctx["facts"][0].update(description="Oceľová základňa", brand="Značka", parameters=[{"name": "Tlak", "value": "4 bar"}])

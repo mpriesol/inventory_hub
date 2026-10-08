@@ -542,7 +542,8 @@ async def apply_ai(db, draft, request):
         if job.status not in ('review', 'ready') or not job.output:
             continue
         output = Content.model_validate(job.output)
-        checks = validate_content(output, job.context, (job.usage or {}).get('opened_sources', []))
+        checks = validate_content(output, job.context, (job.usage or {}).get('opened_sources', []),
+                                  human_approved=job.context.get('approval') == 'human')
         if checks['errors']:
             raise CatalogError('ai_validation_failed', '; '.join(checks['errors']), 422)
         for row in document['rows']:

@@ -239,12 +239,15 @@ async def review(db, job, request):
         raise CatalogError("ai_update_uncertain", "Reconcile the previous update first", 409)
     if job.status not in ("review", "blocked", "ready") or not job.context.get("use_ai"):
         raise CatalogError("ai_review_state", "Content cannot be edited in this state", 409)
-    checks = validate_content(request.content, job.context, (job.usage or {}).get("opened_sources", []))
+    checks = validate_content(request.content, job.context, (job.usage or {}).get("opened_sources", []),
+                              human_approved=request.approve)
     if request.approve and checks["errors"]:
         raise CatalogError("ai_validation_failed", "; ".join(checks["errors"]), 422)
     job.output, job.checks, job.error, job.preview_id = request.content.model_dump(), checks, None, None
-    event(job, "preparing_import" if request.approve else "blocked" if checks["errors"] else "review",
-          "Human content approval" if request.approve else "Content draft edited")
+    note = "Human content approval" if request.approve else "Content draft edited"
+    if checks["manual_overrides"]:
+        note += "; accepted warnings: " + ", ".join(checks["manual_overrides"])
+    event(job, "preparing_import" if request.approve else "blocked" if checks["errors"] else "review", note)
     job.context = {**job.context, "approval": "human" if request.approve else None, "update_preview":None}
     db.add(AiContentRevision(job_id=job.id, revision=job.revision, content=job.output,
                             decision="human_approved" if request.approve else "draft"))
@@ -267,7 +270,8 @@ async def prepare_import(db, job):
     if ctx["use_ai"]:
         if ctx.get("approval") not in ("human", "policy") or not job.output:
             raise CatalogError("ai_approval_required", "Content has not been approved", 409)
-        checks = validate_content(Content.model_validate(job.output), ctx, (job.usage or {}).get("opened_sources", []))
+        checks = validate_content(Content.model_validate(job.output), ctx, (job.usage or {}).get("opened_sources", []),
+                                  human_approved=ctx.get("approval") == "human")
         if checks["errors"]:
             raise CatalogError("ai_validation_failed", "; ".join(checks["errors"]), 422)
     enrichment = {"job_id": job.id, "revision": job.revision, "rules_version": ctx["rules_version"],
