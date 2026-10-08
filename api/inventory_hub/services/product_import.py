@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
-from inventory_hub.ai_content_models import AiJob
+from inventory_hub.ai_content_models import AiContentRevision, AiJob
 from inventory_hub.ai_content_types import BatchRequest, Content, Policy, Target
 from inventory_hub.catalog_types import CatalogProduct, ShopImportOptions, ShopImportPreviewRequest
 from inventory_hub.db_models import IdentifierType, Product, ProductGroup, ProductIdentifier, Shop, Supplier
@@ -179,6 +179,7 @@ async def public(db, draft):
     for row in rows:
         row.pop('source', None)
         row.pop('ai_baseline', None)
+        row.pop('ai_applied_snapshot', None)
         row['ai_job'] = jobs.get(row.pop('ai_job_id', None))
         row['publication_status'] = next((item['status'] for item in (result or {}).get('items', [])
                                           if row['id'] in item['product_ids']), None)
@@ -624,6 +625,7 @@ async def prepare_ai(db, draft, request):
             row['ai_job_id'] = jobs[0]['id']
             row['ai_baseline'] = deepcopy(row['values'])
             row.pop('ai_policy', None)
+            row.pop('ai_applied_snapshot', None)
     previous_result = publication_result(draft)
     document['automation'] = {'version': 1, 'job_ids': [j['id'] for j in prepared_jobs],
         'paused': bool(previous_result), 'pause_reason': 'publication_recovery' if previous_result else None,
@@ -652,12 +654,8 @@ async def start_ai(db, draft, request):
     return await public(db, draft)
 
 
-def merge_ai_values(row, output, context):
+def ai_proposed_values(row, output, context):
     baseline = row.get('ai_baseline', {})
-    if row['values'].get('ai_category_profile', 'auto') != baseline.get('ai_category_profile', 'auto'):
-        raise CatalogError('import_ai_identity_changed', 'The category rule profile changed; prepare a new AI job', 409)
-    if any(row['values'].get(key) != baseline.get(key) for key in ('code', 'supplier_code', 'eans', 'manufacturer_code', 'category_code', 'variant_attributes', 'brand')):
-        raise CatalogError('import_ai_identity_changed', 'Product identity or category changed; prepare a new AI job', 409)
     proposed = {'group_name' if row['is_variant'] else 'name': output.title,
         'short_description': output.short_description, 'description_html': output.long_description,
         'seo_title': output.seo_title, 'seo_description': output.meta_description,
@@ -671,20 +669,70 @@ def merge_ai_values(row, output, context):
         proposed['parameters'] = preserved + generated
     descend_to_leaf = bool(baseline.get('category_code') and context.get('classification_mode') == 'category_and_profile'
         and context.get('category_selection'))
-    if not baseline.get('category_code') or descend_to_leaf:
+    accept_category = not baseline.get('category_code') or descend_to_leaf
+    if accept_category:
         proposed['category_code'] = context.get('options', {}).get('category_code')
     safety = CatalogProduct.model_validate(row['source']).safety_information
     if safety:
         from inventory_hub.services.catalog_html import clean_description
         proposed['description_html'] += '<h2>Bezpečnostné informácie</h2>' + clean_description(safety)
+    return proposed, accept_category
+
+
+def previous_ai_values(row, context, previous_output=None):
+    """Prove ownership by the same job and its exact last applied revision."""
+    policy = row.get('ai_policy') or {}
+    if (context.get('staging_automation_version') != 1 or not row.get('ai_job_id')
+            or policy.get('job_id') != row['ai_job_id']):
+        return {}
+    previous_digest = policy.get('content_digest')
+    if not previous_digest or previous_digest != context.get('staging_applied_digest'):
+        raise CatalogError('import_ai_identity_changed', 'The previously applied AI revision no longer matches this draft', 409)
+    snapshot = row.get('ai_applied_snapshot') or {}
+    if snapshot.get('job_id') == row['ai_job_id'] and snapshot.get('content_digest') == previous_digest:
+        return snapshot.get('values', {})
+    if previous_output is None or ai_content.digest(previous_output.model_dump()) != previous_digest:
+        raise CatalogError('import_ai_identity_changed', 'The previously applied AI revision is unavailable; keep the saved cells and prepare a new revision', 409)
+    # Upgrade an existing v1 draft only from its exact saved content revision.
+    # Reconstruct from the immutable pre-AI cells, never claim arbitrary current
+    # cells as model output merely because an old provenance label says AI.
+    original = {**row, 'values': deepcopy(row['ai_baseline'])}
+    expected, _ = ai_proposed_values(original, previous_output, context)
+    return {key: value for key, value in expected.items()
+            if row.get('provenance', {}).get(key) == 'ai' and row['values'].get(key) == value}
+
+
+def merge_ai_values(row, output, context, *, previous_output=None):
+    baseline = row.get('ai_baseline', {})
+    previous = previous_ai_values(row, context, previous_output)
+    if row['values'].get('ai_category_profile', 'auto') != baseline.get('ai_category_profile', 'auto'):
+        raise CatalogError('import_ai_identity_changed', 'The category rule profile changed; prepare a new AI job', 409)
+    if any(row['values'].get(key) != baseline.get(key) for key in ('code', 'supplier_code', 'eans', 'manufacturer_code', 'variant_attributes', 'brand')):
+        raise CatalogError('import_ai_identity_changed', 'Product identity or category changed; prepare a new AI job', 409)
+    current_category = row['values'].get('category_code')
+    unchanged_ai_category = (current_category and current_category == previous.get('category_code')
+        and row.get('provenance', {}).get('category_code') == 'ai'
+        and current_category == context.get('options', {}).get('category_code'))
+    if current_category != baseline.get('category_code') and not unchanged_ai_category:
+        raise CatalogError('import_ai_identity_changed', 'Product identity or category changed; prepare a new AI job', 409)
+    proposed, accept_category = ai_proposed_values(row, output, context)
+    applied = {}
     for key, value in proposed.items():
         # An explicitly selected parent constrains automatic classification to
         # its subtree; accepting that result refines it to the validated leaf.
+        # Clearing a category before preparation also delegates its selection
+        # to AI, even though the clear itself is recorded as a manual edit.
         # A selected leaf or a category changed after preparation stays pinned.
-        if (key not in row['manual_fields'] or key == 'category_code' and descend_to_leaf) and row['values'].get(key) == baseline.get(key):
+        unchanged = row['values'].get(key) == baseline.get(key) or (key in previous
+            and row.get('provenance', {}).get(key) == 'ai' and row['values'].get(key) == previous[key])
+        if (key not in row['manual_fields'] or key == 'category_code' and accept_category) and unchanged:
             row['values'][key] = value
             row['provenance'][key] = 'ai'
+            applied[key] = deepcopy(value)
     row['values'] = ImportValues.model_validate(row['values']).model_dump(mode='json')
+    if context.get('staging_automation_version') == 1 and row.get('ai_job_id'):
+        row['ai_applied_snapshot'] = {'job_id': row['ai_job_id'], 'content_digest': ai_content.digest(output.model_dump()),
+            'values': applied}
 
 
 async def apply_ai(db, draft, request, *, job_ids=None):
@@ -705,9 +753,20 @@ async def apply_ai(db, draft, request, *, job_ids=None):
                                   human_approved=job.context.get('approval') == 'human')
         if checks['errors']:
             raise CatalogError('ai_validation_failed', '; '.join(checks['errors']), 422)
+        previous_output = None
+        applied_digest = job.context.get('staging_applied_digest')
+        bound_rows = [row for row in document['rows'] if row.get('ai_job_id') == job.id and row['values']['ai_enabled']]
+        if applied_digest and any((row.get('ai_policy') or {}).get('job_id') == job.id
+                and ((row.get('ai_applied_snapshot') or {}).get('job_id') != job.id
+                     or (row.get('ai_applied_snapshot') or {}).get('content_digest') != applied_digest) for row in bound_rows):
+            revisions = (await db.scalars(select(AiContentRevision).where(AiContentRevision.job_id == job.id)
+                .order_by(AiContentRevision.revision.desc()))).all()
+            previous = next((revision.content for revision in revisions if ai_content.digest(revision.content) == applied_digest), None)
+            if previous is not None:
+                previous_output = Content.model_validate(previous)
         for row in document['rows']:
             if row.get('ai_job_id') == job.id and row['values']['ai_enabled']:
-                merge_ai_values(row, output, job.context)
+                merge_ai_values(row, output, job.context, previous_output=previous_output)
                 if job.context.get('staging_automation_version') == 1:
                     row['ai_policy'] = {'job_id': job.id, 'rules_version': job.context['rules_version'],
                         'active_after_import': bool(job.context['resolved']['policy']['active_after_import']),
