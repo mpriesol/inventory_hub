@@ -271,6 +271,8 @@
     "language": "Language and currency",
     "pricelist": "Pricelist",
     "category": "Target category",
+    "mappedCategory": "Use supplier category mapping automatically",
+    "mappedCategoryHelp": "Each product uses its mapped category. A manual selection overrides it for all selected products. Without a mapping, choose a category in preparation or let AI select it.",
     "noCategory": "No category",
     "pricing": "Selling price",
     "openShop": "Open in shop",

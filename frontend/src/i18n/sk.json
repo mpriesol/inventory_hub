@@ -272,6 +272,8 @@
     "language": "Jazyk a mena",
     "pricelist": "Cenník",
     "category": "Cieľová kategória",
+    "mappedCategory": "Automaticky podľa mapovania dodávateľa",
+    "mappedCategoryHelp": "Každý produkt použije svoju namapovanú kategóriu. Ručný výber ju prepíše pre všetky vybrané produkty. Bez mapovania doplň kategóriu v príprave alebo ju nechaj vybrať AI.",
     "noCategory": "Bez kategórie",
     "pricing": "Predajná cena",
     "openShop": "Otvoriť v e-shope",
