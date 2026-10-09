@@ -155,6 +155,7 @@ async def create(db, request: ExistingProductRequest):
             if not explicit_profile and profile != 'general' else 'explicit'),
         "options": options.model_dump(mode="json"), "research": request.research,
         "sale_price_overrides": {}, "model": await effective_model(db)}
+    ctx.update(service.provider.generation_settings(ctx["model"]))
     ctx["facts"] = service.facts(products_from_remote(remote, ctx))
     ctx["facts"][0]["source_kind"] = "shop"
     ctx["facts"][0]["existing_seo_title"] = snapshot["descriptions"]["seo_title"]

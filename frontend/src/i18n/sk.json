@@ -967,7 +967,9 @@
       "newJobs": "Zmena platí len pre novo pripravené úlohy. Existujúce odhady a rozpracované úlohy si ponechajú pôvodný model. Rozpočtové limity zostávajú v platnosti.",
       "save": "Uložiť AI model",
       "reload": "Načítať aktuálne nastavenie",
-      "saved": "AI model bol uložený. Nové úlohy použijú tento model."
+      "saved": "AI model bol uložený. Nové úlohy použijú tento model.",
+      "reasoning": "Úroveň uvažovania: {{effort}}. Zahrnutá v limite aj cene výstupných tokenov.",
+      "usage": "Vstup: {{input}} tokenov · výstup: {{output}} (z toho uvažovanie {{reasoning}}) · vyhľadávania: {{searches}}"
     },
     "composition": {
       "title": "Čo bolo odoslané do AI",
@@ -1013,6 +1015,23 @@
       "category_mapping": "Profil pravidiel bol určený z cieľovej kategórie.",
       "pending_classification": "AI ešte vyberie profil pravidiel pre tento produkt.",
       "ai_classification": "Profil pravidiel vybrala AI podľa produktu."
+    },
+    "references": {
+      "title": "Vzorové produkty",
+      "help": "Najviac dva schválené príklady štýlu, štruktúry a podrobnosti pre túto kategóriu. Nový produkt preberá fakty zo svojich podkladov; pravidlá majú prednosť pred vzorom.",
+      "guidance": "Čo má AI zo vzoru napodobniť",
+      "guidancePlaceholder": "Napríklad: stručný úvod, vysvetlenie výberu, poradie FAQ a tabuľka v poslednej odpovedi.",
+      "refresh": "Aktualizovať z e-shopu",
+      "remove": "Odobrať vzor",
+      "savedPreview": "Uložený náhľad",
+      "shop": "E-shop",
+      "code": "Presný kód produktu",
+      "load": "Načítať náhľad z Upgates",
+      "preview": "Náhľad vzorového produktu",
+      "publishHelp": "Použitím náhľadu zmeníte rozpracované pravidlá. Vzor začne platiť po uložení a publikovaní ich verzie. Neskoršie zmeny produktu v e-shope sa nepreberú automaticky.",
+      "accept": "Použiť tento vzor",
+      "cancel": "Zavrieť náhľad",
+      "limit": "Najskôr odoberte jeden z dvoch uložených vzorov."
     }
   },
   "upgatesImport": {

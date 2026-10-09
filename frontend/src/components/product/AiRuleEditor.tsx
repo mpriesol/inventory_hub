@@ -3,6 +3,7 @@ import { TargetOptions, catalogRequest } from '../../api/catalog';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AiBook, AiCategory, AiJob, AiRule, AiRules, aiRequest } from '../../api/aiContent';
+import { AiReferenceProducts } from './AiReferenceProducts';
 import { AiPolicyFields } from './AiPolicyFields';
 
 export function AiRuleEditor({ rules, onReload, onJob }: { rules: AiRules; onReload: () => void; onJob: (job: AiJob) => void }) {
@@ -112,7 +113,7 @@ export function AiRuleEditor({ rules, onReload, onJob }: { rules: AiRules; onRel
       {rule && <details><summary>{t('ai.importPolicy')}</summary><p>{t('ai.importPolicyHelp')}</p><p>{t('ai.supplierAvailabilityConfigHelp')}</p><label>{t('ai.importPolicyFields.supplier_name')}<input value={rule.import_policy?.supplier_name || ''} onChange={e => change({import_policy:{...rule.import_policy,supplier_name:e.target.value || null}})} /></label></details>}
       <AiPolicyFields value={selected.policy} onChange={policy => change({ policy })} />
       <label>{t('ai.instructions')}<textarea className="ai-long-text" value={selected.instructions} onChange={e => change({ instructions: e.target.value })} /></label>
-      {category && <><p>{t('ai.registryStatus')}: {t(`ai.registryStatuses.${category.registry_status || 'approved'}`)} · {category.parameters.filter(p => p.approved !== false).length} {t('ai.approvedParameters')}</p>
+      {category && <><AiReferenceProducts key={category.id} value={category.reference_products || []} onChange={reference_products => change({ reference_products })} /><p>{t('ai.registryStatus')}: {t(`ai.registryStatuses.${category.registry_status || 'approved'}`)} · {category.parameters.filter(p => p.approved !== false).length} {t('ai.approvedParameters')}</p>
         <details><summary>{t('ai.linkedCategoryInstructions')}</summary>{book.rules.filter(r => r.enabled && (r.scope.category === category.id || r.category_profiles?.includes(category.id))).map(r => <details key={r.id}><summary>{r.name}</summary><pre className="ai-original">{r.instructions}</pre></details>)}</details>
         <h3>{t('ai.shopMapping')}</h3><div className="ai-grid">{['biketrek', 'xtrek', ...Object.keys(category.shop_categories).filter(k => !['biketrek', 'xtrek'].includes(k))].map(shop => <label key={shop}>{shop}<CategoryTree categories={shopOptions[shop]?.categories || []} value={category.shop_categories[shop] || ''} onChange={code => change({ shop_categories: { ...category.shop_categories, [shop]: code } })} /></label>)}</div>
         <label className="ai-check"><input type="checkbox" checked={category.automatic_import_ready} onChange={e => change({ automatic_import_ready: e.target.checked })} />{t('ai.categoryAutomationReady')}</label>

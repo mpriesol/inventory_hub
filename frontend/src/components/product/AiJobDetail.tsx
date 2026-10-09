@@ -5,7 +5,7 @@ import { AiParameterValues, missingRequiredParameterValues } from './AiParameter
 import { AiPolicyFields } from './AiPolicyFields';
 import { CatalogImport } from './CatalogImport';
 
-function DescriptionPreview({ value, title }: { value: string; title: string }) {
+export function DescriptionPreview({ value, title }: { value: string; title: string }) {
   return <iframe title={title} sandbox="" srcDoc={`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>body{font:15px/1.6 system-ui;padding:20px;color:#222}table{border-collapse:collapse}td,th{padding:8px;border:1px solid #ccc}</style></head><body>${value}</body></html>`} />;
 }
 
@@ -75,7 +75,8 @@ export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
   const save = (approve: boolean) => perform(() => aiRequest<AiJob>(`/jobs/${job.id}/review`, { expected_revision: job.revision, approve, content: { ...content, parameters: parameters.filter(parameter => parameter.values.some(value => value.trim())) } }));
   return <section className="ai-card">
     <div className="ai-row"><h2 className="ai-grow">{job.name} · {job.shop}</h2><span className="ai-badge">{t(aiJobStatusKey(job), { defaultValue: job.status })}</span></div>
-    <p>{job.code} · {t('ai.publishedVersion', { version: job.rules_version })} · {t('ai.categoryProfile')}: {job.category_profile_name || job.category_profile}{job.model ? ` · ${job.model}` : ''}</p>
+    <p>{job.code} · {t('ai.publishedVersion', { version: job.rules_version })} · {t('ai.categoryProfile')}: {job.category_profile_name || job.category_profile}{job.model ? ` · ${job.model}` : ''}{job.reasoning_effort ? ` · ${job.reasoning_effort}` : ''}</p>
+    {job.usage?.reasoning_tokens !== undefined && <p>{t('ai.modelSettings.usage', {input: job.usage.input_tokens, output: job.usage.output_tokens, reasoning: job.usage.reasoning_tokens, searches: job.usage.billable_search_calls || 0})}</p>}
     {job.category_profile_source && <p>{t(`ai.profileSources.${job.category_profile_source}`, { defaultValue: job.category_profile_source })}</p>}
     {job.composition && <details className="ai-composition"><summary>{t('ai.composition.title')}</summary><p>{t('ai.composition.summary', { included: job.composition.included_rules, omitted: job.composition.omitted_rules, selected: job.composition.selected_characters.toLocaleString(), source: job.composition.source_characters.toLocaleString() })}</p><p>{t('ai.composition.help')}</p>{job.composition.entries.filter(entry => entry.status !== 'included' || entry.reasons.some(reason => reason !== 'unchanged')).map(entry => <details key={entry.id}><summary>{entry.name} · {t(`ai.composition.states.${entry.status}`)}</summary><ul>{entry.reasons.map(reason => <li key={reason}>{t(`ai.composition.reasons.${reason}`, { defaultValue: reason })}</li>)}</ul></details>)}</details>}
     {job.category_selection && <div className="ai-notice"><strong>{t('ai.selectedCategory')}: {job.category_selection.path}</strong><p>{job.category_selection.reason}</p></div>}

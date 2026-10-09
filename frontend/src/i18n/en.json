@@ -966,7 +966,9 @@
       "newJobs": "Changes apply only to newly prepared jobs. Existing estimates and jobs keep their original model. Budget limits remain in effect.",
       "save": "Save AI model",
       "reload": "Load current setting",
-      "saved": "AI model saved. New jobs will use this model."
+      "saved": "AI model saved. New jobs will use this model.",
+      "reasoning": "Reasoning effort: {{effort}}. Included in output token limits and pricing.",
+      "usage": "Input: {{input}} tokens · output: {{output}} (including {{reasoning}} reasoning) · searches: {{searches}}"
     },
     "composition": {
       "title": "What was sent to AI",
@@ -1012,6 +1014,23 @@
       "category_mapping": "The rule profile was resolved from the target category.",
       "pending_classification": "AI will select the rule profile for this product.",
       "ai_classification": "AI selected the rule profile based on the product."
+    },
+    "references": {
+      "title": "Reference products",
+      "help": "Up to two approved examples of style, structure and depth for this category. New product facts come from its own sources; explicit rules take precedence.",
+      "guidance": "What AI should learn from this example",
+      "guidancePlaceholder": "For example: concise introduction, useful selection advice, FAQ order and the table in the final answer.",
+      "refresh": "Refresh from shop",
+      "remove": "Remove example",
+      "savedPreview": "Saved preview",
+      "shop": "Shop",
+      "code": "Exact product code",
+      "load": "Load preview from Upgates",
+      "preview": "Reference product preview",
+      "publishHelp": "Accepting changes the working rule book. The example takes effect after saving and publishing that version. Later shop edits are not pulled automatically.",
+      "accept": "Use this example",
+      "cancel": "Close preview",
+      "limit": "Remove one of the two saved examples first."
     }
   },
   "upgatesImport": {

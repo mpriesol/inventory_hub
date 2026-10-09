@@ -33,11 +33,11 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def source_digest(products):
-    return digest({"facts": facts(products), "relationships": sorted((p.id, p.group_code, p.variant_relationship) for p in products)})
+def source_digest(products, *, technical=False):
+    return digest({"facts": facts(products, technical=technical), "relationships": sorted((p.id, p.group_code, p.variant_relationship) for p in products)})
 
 
-def facts(products):
+def facts(products, *, technical=False):
     # Explicit allowlist: no credentials, stock, prices, manufacturer contact blocks,
     # raw XML, arbitrary source fields, or full supplier URLs are sent to OpenAI.
     output = []
@@ -47,6 +47,9 @@ def facts(products):
             "description": text_of(p.description), "safety_information": text_of(p.safety_information),
             "parameters": [v.model_dump() for v in p.parameters],
             "variant_attributes": [v.model_dump() for v in p.variant_attributes]})
+        if technical:
+            from inventory_hub.services.ai_content_sources import technical_sources
+            output[-1].update(technical_sources(p))
     return output
 
 
@@ -68,7 +71,7 @@ def summary(job, *, detail=False):
         "update_state": (context.get("update_preview") or {}).get("state"),
         "rules_version": context.get("rules_version"), "category_profile": context.get("category_profile"),
         "category_profile_name": (context.get("resolved", {}).get("category") or {}).get("name"),
-        "model": context.get("model"), "category_profile_source": context.get("category_profile_source"),
+        "model": context.get("model"), "reasoning_effort": context.get("reasoning_effort", "low"), "category_profile_source": context.get("category_profile_source"),
         "policy": context.get("resolved", {}).get("policy", {}),
         "origins": context.get("resolved", {}).get("origins", {}),
         "estimate_usd": context.get("estimate_usd", "0"), "reserved_usd": str(job.reserved_usd or 0),
@@ -223,12 +226,12 @@ async def create_batch(db, request: BatchRequest, *, frozen_products=None, stagi
                 "run_id": request.run_id, "shop": target.shop, "target": catalog_import._target(cfg),
                 "code": code, "name": group[0].group_name or group[0].name,
                 "image": group[0].images[0] if group[0].images else None,
-                "source_digest": source_digest(group), "facts": facts(group), "use_ai": bool(ai_ids),
+                "source_digest": source_digest(group, technical=True), "facts": facts(group, technical=True), "technical_sources_version": 1, "use_ai": bool(ai_ids),
                 "rules_version": published.id, "resolved": resolved, "category_profile": profile,
                 "requested_category_profile": requested_profile, "category_profile_source": profile_source,
                 "options": options.model_dump(mode="json"), "research": request.research,
                 "sale_price_overrides": {str(k): v for k, v in request.sale_price_overrides.items() if k in ids},
-                "model": selected_model}
+                "model": selected_model, **provider.generation_settings(selected_model)}
             if staging_id:
                 ctx["staging_id"] = staging_id
                 ctx["source_kind"] = "import_draft"
@@ -297,7 +300,7 @@ async def prepare_import(db, job):
         from inventory_hub.services import ai_content_existing
         return await ai_content_existing.approved(db, job)
     products = await selected_products(db, ctx["supplier"], ctx["feed_key"], ctx["product_ids"], None)
-    if source_digest(products) != ctx["source_digest"]:
+    if source_digest(products, technical=ctx.get("technical_sources_version") == 1) != ctx["source_digest"]:
         raise CatalogError("ai_source_changed", "Supplier data changed after AI preparation; prepare a new batch", 409)
     if ctx["use_ai"]:
         if ctx.get("approval") not in ("human", "policy") or not job.output:
@@ -383,6 +386,7 @@ async def propose_rule(db, request):
     ctx = {"rules_version": version.id, "current": current, "proposal_request": request.request,
            "category": request.category, "use_ai": True, "model": await effective_model(db),
            "name": current["name"], "resolved": {"policy": rules.DEFAULT_POLICY, "origins": {}}}
+    ctx.update(provider.generation_settings(ctx["model"]))
     ctx["estimate_usd"] = str(provider.estimate(ctx, "rules"))
     db.add(AiBatch(id=id, request_hash=fingerprint))
     await db.flush()

@@ -15,6 +15,7 @@ from inventory_hub.services import ai_content_existing as existing
 from inventory_hub.services import ai_content_settings as model_settings
 from inventory_hub.services.ai_content_settings import ModelSettingsSave
 from inventory_hub.services.ai_content_existing import ExistingProductRequest
+from inventory_hub.services.ai_content_references import ReferenceRequest, load as load_reference
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
 from inventory_hub.access import ai_access as access
@@ -107,6 +108,11 @@ async def parameter_registry(shop: str):
 @protected.post("/existing-products")
 async def existing_product(request: ExistingProductRequest, db: DB):
     return {"job": await existing.create(db, request)}
+
+
+@protected.post("/reference-products/preview")
+async def reference_product(request: ReferenceRequest):
+    return {"reference": await load_reference(request)}
 
 
 @protected.post("/selection")

@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from inventory_hub.ai_content_models import AiContentSettings
 from inventory_hub.ai_content_types import StrictModel
-from inventory_hub.services.ai_content_provider import RATES, LONG_CONTEXT_THRESHOLD
+from inventory_hub.services.ai_content_provider import RATES, LONG_CONTEXT_THRESHOLD, generation_settings
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
 
@@ -20,6 +20,7 @@ def available_models() -> list[dict]:
     labels = {"gpt-6.1-sol": "GPT-6.1 Sol", "gpt-6-luna": "GPT-6 Luna",
               "gpt-6-astra": "GPT-6 Astra", "gpt-5.6-sol": "GPT-5.6 Sol"}
     return [{"id": model, "label": label,
+             **generation_settings(model),
              "input_usd_per_million": RATES[model]["input"],
              "cached_input_usd_per_million": RATES[model]["cached"],
              "cache_write_usd_per_million": RATES[model]["cache_write"],
@@ -42,6 +43,7 @@ async def effective_model(db) -> str:
 def summary(saved: AiContentSettings | None) -> dict:
     return {"revision": saved.revision if saved else 0,
             "model": saved.model if saved else settings.AI_CONTENT_MODEL,
+            **generation_settings(saved.model if saved else settings.AI_CONTENT_MODEL),
             "source": "hub" if saved else "server", "models": available_models(),
             "updated_at": saved.updated_at.isoformat() if saved else None}
 

@@ -112,12 +112,17 @@ def resolve(book: RuleBook, context: Scope, override: Policy | None = None, *, c
     if override:
         for key, value in override.model_dump(exclude_none=True).items():
             policy[key], origins[key] = value, "run"
-    resolved_category = category.model_dump() if category else None
+    resolved_category = category.model_dump(mode="json") if category else None
     if resolved_category:
         resolved_category["parameters"] = [p for p in resolved_category["parameters"] if p["approved"]]
     result = {"policy": policy, "origins": origins, "instructions": instructions,
             "import_policy": import_policy, "official_domains": sorted(set(domains)), "category": resolved_category,
             }
+    if resolved_category:
+        # The full book is versioned, while each job sees only relevant examples.
+        references = resolved_category.pop("reference_products", [])
+        result["reference_products"] = [r for r in references
+            if r["shop"] == context.shop and r["code"] != context.product]
     if compile_content:
         result["instructions"], result["composition"] = compile_instructions(instructions, resolved_category, context.shop)
     return result
