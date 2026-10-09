@@ -18,6 +18,7 @@ const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
 const { MemoryRouter } = require('react-router-dom');
 const { AiContentPage } = require('../src/pages/AiContentPage.tsx');
+const { AiReferenceProducts } = require('../src/components/product/AiReferenceProducts.tsx');
 const { AiRuleEditor } = require('../src/components/product/AiRuleEditor.tsx');
 const { CategoryTree } = require('../src/components/product/CategoryTree.tsx');
 const { AiJobDetail } = require('../src/components/product/AiJobDetail.tsx');
@@ -57,6 +58,7 @@ global.fetch = async (path, init = {}) => {
     if (failImportedRead) return { ok: false, json: async () => ({ detail: { code: 'request_failed', message: 'Read failed' } }) };
     data = { id: 2, book: importedReadBook };
   }
+  else if (path.endsWith('/reference-products/preview')) data = { reference: {shop:body.shop,code:body.code,product_id:15,language:'sk',captured_at:'2026-10-09T10:00:00Z',guidance:'',content:{...content,title:'Approved reference',parameters:[{name:'Materiál',value:'Butyl'}]}} };
   else if (path.endsWith('/existing-products/options')) data = { shops: [{code:'biketrek',name:'BikeTrek'}] };
   else if (path.endsWith('/existing-products')) { const job = { ...jobs[0], id:'existing-job', status:'estimate', update_only:true, source_kind:'shop', product_ids:[], code:body.code }; jobs.push(job); data = {job}; }
   else if (path.endsWith('/selection')) data = families;
@@ -595,6 +597,28 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(document.querySelector('.ai-policy').textContent.includes('common'));
   assert(document.body.textContent.includes('automaticky preberá schválený AI obsah'),'Automatic jobs explain the current action rather than requesting manual table acceptance');
   assert(!document.body.textContent.includes('Samotné schválenie tejto staršej úlohy'));
+
+  const referenceStart = calls.length;
+  let acceptedReferences = [];
+  function ReferenceHarness() {
+    const [value, setValue] = React.useState([]);
+    return React.createElement(AiReferenceProducts, {value,onChange: next => {acceptedReferences = next; setValue(next);}});
+  }
+  await act(async () => { root.render(React.createElement(ReferenceHarness)); await tick(); });
+  await input(document.querySelector('input'), 'EXACT-CODE');
+  await click(button('Načítať náhľad z Upgates'));
+  assert.equal(acceptedReferences.length, 0, 'Read-only preview never changes the rule book');
+  assert(document.body.textContent.includes('Approved reference'));
+  assert.equal(document.querySelector('iframe').getAttribute('sandbox'), '');
+  assert(document.querySelector('iframe').srcdoc.includes("default-src 'none'"));
+  await input(document.querySelector('textarea'), 'FAQ structure only');
+  await click(button('Použiť tento vzor'));
+  assert.equal(acceptedReferences[0].code, 'EXACT-CODE');
+  assert.equal(acceptedReferences[0].guidance, 'FAQ structure only');
+  await click(button('Aktualizovať z e-shopu'));
+  await click(button('Zavrieť náhľad'));
+  assert.equal(acceptedReferences[0].guidance, 'FAQ structure only', 'Cancelling refresh preserves approved snapshot');
+  assert(calls.slice(referenceStart).every(call => call.path.endsWith('/reference-products/preview')), 'Examples never run AI, publish rules or write to the shop');
 
   await act(async () => root.unmount());
   assert.equal(document.body.style.overflow, '');

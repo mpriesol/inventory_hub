@@ -11,8 +11,8 @@ import hashlib
 import re
 
 
-VERSION = "content-v1"
-_REVISIONS = {"01": "1.1 rev14", "03": "1.1 rev13", "04": "1.0 rev17",
+VERSION = "content-v2"
+_REVISIONS = {"01": "1.1 rev14", "02": "1.1 rev23", "03": "1.1 rev13", "04": "1.0 rev17",
               "user-request": "Pokyn používateľa 2026-10-07; bez číselnej revízie"}
 _HEADER = re.compile(r"^Podklad: ([^|\n]+) \| ([^|\n]+) \| ([^|\n]+) \| ([^|\n]+) \| typ:([^|\n]+) \| stav:([^\n]+)\n")
 _HEADINGS = re.compile(r"^#{2,6} ([0-9]+(?:\.[0-9]+)*[a-z]?)\.? [^\n]+\n", re.M)
@@ -20,6 +20,16 @@ _HEADINGS = re.compile(r"^#{2,6} ([0-9]+(?:\.[0-9]+)*[a-z]?)\.? [^\n]+\n", re.M)
 # Digests identify the reviewed source modules, not mutable rule IDs. An edit
 # keeps its complete text until its new version is explicitly reviewed.
 _REVIEWED = {
+    "03-13-4-identity": "72d8cd3b9012c25fc6c3a5460a93302e78ecb4451d020b524d90413562cfa309",
+    "03-13-4-mounting": "a127bcdb7e6f8a9f2732269dba94f1be31653dbc87c263fddeaffe7f3d1aceff",
+    "03-13-4-electric": "a4aac85b268f6886e056091ea5759592ebc885129aa893a6dfb8b570fb3721c6",
+    "03-13-4-equipment": "5adcd6e0aec95cfd1ac57e5b26795396afee6c24f74c8b9fdffcb80a00fec199",
+    "02-common": "6a142775030c73b0df288c3b403c5d39e72d6dacf75c54ae98ff01212fb542a5",
+    "03-13": "c9028ff8b2c7a4bf5c5cbc44d08d17e2e3616717a024c898f3ae37b4e364a3da",
+    "03-13-1": "dd2cc06e59534c51a4ccd9c60ea5e489c840377e8fd4124edcca5712186cbef6",
+    "03-13-6": "df638133e40b3e3489259f40d0dbb5b95faa42fbd34777ce45121fa1c8cd0dec",
+    "03-13-7": "05b564369c362ab1fb355137b5b7cadbce4db38b5a8ded2226a3e17f8041dc2b",
+    "03-13-8": "bb250026e676b7dc9bbc4552f71f3b70d316cee61e2ea3c933da2c5a8b5da460",
     "01-intro": "835e803c740d06a7d6e2fb69496a4c04875b76db00be28c0512bf5ff3f2074ae",
     "01-1": "e2f233a4d6d02284df2df12e9ab94f3269069ab94ec72169d48f31fc968a2c2d",
     "01-2": "9db20fa1c3b4e8fc6d5ee7a9d3b7187328771e5241b2002482a29b7ed5c9ae88",
@@ -70,7 +80,7 @@ _API_CONTRACT = """Toto je obsahové API Hubu. Vytvor úplný zákaznícky obsah
 Rozsah produktu a variantov určuje výhradne dodané facts. Nepridávaj ani nevynechávaj SKU a nerozširuj produktovú rodinu podľa všeobecného postupu v zdrojovom dokumente. Parametre parent majú product_id=null aj pri samostatnom produkte. Číslo facts.id patrí do product_id iba pri skutočnom variante a existujúcej výberovej osi; scope=choice bez takej osi znamená parent.
 Chýbajúci všeobecný bezpečnostný návod alebo ďalšie príslušenstvo samy nie sú missing_facts, pokiaľ nechýba rozhodujúci údaj pre bezpečné použitie alebo kompatibilitu. Nevymýšľaj chýbajúce údaje.
 Ak podklady obsahujú presnú oficiálnu URL tohto modelu, najprv ju otvor. Použi aktuálny limit nástroja; ponechaj krok na otvorenie konkrétneho zdroja, nemíňaj všetky kroky opakovaným hľadaním. Jednoznačné dodané fakty netreba znova potvrdzovať."""
-_TUBE_CONTRACT = """Pri dušiach zostav z doložených dvojíc a rozsahov jednu kompatibilitnú maticu a priamo z nej úplnú HTML tabuľku v long_description a zhodné hodnoty parametrov. Žiadny kartézsky súčin, domyslený rozmer ani prepočet palcov na ETRTO. Šírka plášťa min/max vyplň iba pre jeden doložený súvislý rozsah alebo rovnaký rozsah pri všetkých priemeroch. Ak majú priemery odlišné rozsahy, oba parametre vynechaj; globálne minimum a maximum by bolo zavádzajúce. V zákazníckom texte zapisuj rozsah jednoznačne, napr. 40-406 až 62-406, nie 40-62-406. API nemá samostatný generátor tejto tabuľky: požiadavka zdrojového návodu na skript nie je dôvod tabuľku vynechať alebo odovzdať značku na jej neskoršie doplnenie. Zachovaj kategóriové FAQ, užitočné vysvetlenia a schválený interný odkaz."""
+_TUBE_CONTRACT = """Pri dušiach zostav z doložených dvojíc a rozsahov jednu kompatibilitnú maticu a priamo z nej úplnú HTML tabuľku v long_description a zhodné hodnoty parametrov. Žiadny kartézsky súčin, domyslený rozmer ani prepočet palcov na ETRTO. Šírka plášťa min/max vyplň iba pre jeden doložený súvislý rozsah alebo rovnaký rozsah pri všetkých priemeroch. Ak majú priemery odlišné rozsahy, oba parametre vynechaj; globálne minimum a maximum by bolo zavádzajúce. V zákazníckom texte zapisuj rozsah jednoznačne, napr. 40-406 až 62-406, nie 40-62-406. API nemá samostatný generátor tejto tabuľky: požiadavka zdrojového návodu na skript nie je dôvod tabuľku vynechať alebo odovzdať značku na jej neskoršie doplnenie. Kompletnú tabuľku vlož raz, do odpovede na poslednú FAQ „Bude táto duša pasovať na môj bicykel?“. Zachovaj stĺpce ETRTO, palcové a francúzske označenie; chýbajúci doložený alias ponechaj prázdny a vysvetli, že prázdna bunka neznamená nekompatibilitu. Aliasy najprv vyber z dodanej technickej tabuľky a určeného technického dokumentu; nehádaj ich. Názov má zachovať presné označenie výrobcu, typ a dĺžku ventilu. Zachovaj kategóriové FAQ, užitočné vysvetlenia a schválený interný odkaz."""
 
 
 def _hash(value: str) -> str:
@@ -147,6 +157,37 @@ def _parameter_table(body: str, parameters: set[str]) -> str:
     return "".join(result)
 
 
+def _deduplicate_register(body: str, category: dict | None) -> str:
+    """Remove a table row only when its complete meaning is already sent verbatim.
+
+    Markdown emphasis and code ticks are presentational; every column, including
+    applicability and exceptional scope, must match the structured instructions.
+    Changed/missing definitions retain their original rows for operator review.
+    """
+    def normalized(value):
+        return " ".join(value.replace("`", "").replace("**", "").split())
+    definitions = {normalized(p["name"]): normalized(p.get("instructions", ""))
+                   for p in (category or {}).get("parameters", []) if p.get("approved", True)}
+    lines, pending, retained = [], [], []
+    for line in body.splitlines(keepends=True):
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if cells[0] in ("Parameter", "Presný názov") or all(re.fullmatch(r"[-: ]+", c) for c in cells):
+                pending.append(line)
+            elif definitions.get(normalized(cells[0])) == normalized(" | ".join(cells[1:])):
+                continue
+            else:
+                retained.append(line)
+        else:
+            if retained:
+                lines.extend(pending + retained)
+            pending, retained = [], []
+            lines.append(line)
+    if retained:
+        lines.extend(pending + retained)
+    return "".join(lines)
+
+
 def _project_sections(body: str) -> str:
     # This imported ChatGPT project instruction repeats the editorial rules but
     # also asks an API call to log in, wait, run Python and hand over an XML file.
@@ -176,6 +217,8 @@ def _select(text: str, category: dict | None) -> tuple[str, list[str]]:
         "03-5": "empty_heading", "03-5-4": "unsupported_gallery_workflow",
         "03-9": "registry_authoring", "knowledge-usage": "rule_maintenance",
         "03-7-9": "unsupported_gallery_workflow",
+        "03-13": "deployment_history", "03-13-1": "category_placement_owned_by_hub",
+        "03-13-8": "one_time_shop_setup",
     }
     if module in omit:
         return "", [omit[module]]
@@ -188,6 +231,13 @@ def _select(text: str, category: dict | None) -> tuple[str, list[str]]:
             return "", ["other_category"]
         if module == "03-5-3" and not profile.startswith("clothing"):
             return "", ["other_category"]
+    if module in {"03-7-1", "03-13-4-identity", "03-13-4-mounting", "03-13-4-electric", "03-13-4-equipment"}:
+        selected = _deduplicate_register(body, category)
+        return header + selected, ["verbatim_parameter_rows_in_structured_registry"]
+    if module == "03-7-7":
+        body = body.replace("4. Dlhú tabuľku neskracuj; generuj ju skriptom z matice. Čitateľné HTML, nie obrázok.",
+                            "4. Dlhú tabuľku neskracuj; vytvor ju priamo z matice ako čitateľné HTML, nie obrázok.")
+        return header + body, ["table_generation_in_content_response"]
     if module == "01-1":
         marker = "Pri rozpore rozhoduje predmet:\n"
         if marker not in body:
@@ -209,7 +259,28 @@ def _select(text: str, category: dict | None) -> tuple[str, list[str]]:
         record = record.split("\n\nStav uvádzaj pravdivo:", 1)[0]
         return header + editorial + review.group() + "\n" + record, ["chat_and_file_workflow", "editorial_sections_preserved"]
     if module == "01-4":
-        return header + _without_sections(body, {"4.7"}), ["login_workflow"]
+        body = _without_sections(body, {"4.5", "4.7"})
+        # Exact administrative paragraphs only; all fact/evidence semantics stay.
+        prefixes = ("- **Dávka nezávislých produktov:**", "**Profil a efektívne načítanie:**",
+                    "**Varianty:**", "**Feed je voliteľný a nie je prepínač:**")
+        body = "\n\n".join(p for p in body.split("\n\n") if not p.startswith(prefixes))
+        body = "".join(line for line in body.splitlines(keepends=True)
+                       if not line.startswith(("| Ceny, mena, DPH,", "| Obrázky |")))
+        return header + body, ["login_and_feed_workflow", "fact_semantics_preserved"]
+    if module == "01-5":
+        body = _without_sections(body, {"5.3"})
+        body = "\n\n".join(p for p in body.split("\n\n") if not p.startswith((
+            "**Predvolený rozsah je celá relevantná produktová rodina**", "`CODE` je povinná")))
+        body = "".join(line for line in body.splitlines(keepends=True)
+                       if not line.startswith("- `<MAIN_YN>"))
+        return header + body, ["identity_and_family_owned_by_hub", "variant_semantics_preserved"]
+    if module == "02-common":
+        return header + _without_sections(body, {"1.3", "1.4", "1.5", "1.6", "1.7"}), ["supplier_administration"]
+    if module == "03-13-6":
+        sentence = re.search(r"Všetky relevantné parametre vypĺňaj[^.]+\.", body)
+        return (header + sentence.group() + "\n", ["filter_setup", "parameter_completeness_preserved"]) if sentence else (text, ["unchanged"])
+    if module == "03-13-7":
+        return header + body.split("\n\nProduktové fotografie", 1)[0] + "\n", ["category_images_and_gallery_workflow"]
     if module == "01-7":
         return header + _without_sections(body, {"7.6"}), ["unsupported_seo_url_and_image_titles"]
     if module == "01-8":
@@ -226,7 +297,13 @@ def _select(text: str, category: dict | None) -> tuple[str, list[str]]:
             return text, ["unchanged"]
         return header + sentence.group() + "\n", ["technical_export", "content_format_preserved"]
     if module == "01-12":
-        return header + _without_sections(body, {"12.1"}), ["validator_execution"]
+        signal = next((p for p in body.splitlines() if p.startswith("- **Signál problému")), None)
+        if signal is None:
+            return text, ["unchanged"]
+        return header + signal + "\n", ["validator_and_handover_workflow", "content_conflicts_preserved"]
+    if module == "knowledge-common":
+        body = "\n\n".join(p for p in body.split("\n\n") if not p.startswith("Načítaj túto spoločnú časť"))
+        return header + body, ["rule_navigation"]
     if module == "03-2-1":
         marker = "Znalostný blok je inšpirácia"
         if marker in body:

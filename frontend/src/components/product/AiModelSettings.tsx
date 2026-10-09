@@ -43,6 +43,7 @@ export function AiModelSettings({ onChange }: { onChange: (settings: AiSettings)
       {selected && <div className="ai-model-pricing">
         <p>{t('ai.modelSettings.price', { input: amount(selected.input_usd_per_million), output: amount(selected.output_usd_per_million) })}</p>
         <small>{t('ai.modelSettings.priceHelp')}</small>
+        {selected.reasoning_effort && <p>{t('ai.modelSettings.reasoning', { effort: selected.reasoning_effort })}</p>}
         <details><summary>{t('ai.modelSettings.priceDetails')}</summary>
           <p>{t('ai.modelSettings.cachePrice', { cached: amount(selected.cached_input_usd_per_million), write: amount(selected.cache_write_usd_per_million) })}</p>
           <p>{t('ai.modelSettings.searchPrice', { amount: amount(selected.web_search_usd) })}</p>

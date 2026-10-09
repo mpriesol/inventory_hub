@@ -68,6 +68,33 @@ class ParameterDefinition(StrictModel):
     instructions: str = Field(default="", max_length=2000)
 
 
+class ReferenceParameter(StrictModel):
+    name: str = Field(min_length=1, max_length=100)
+    value: str = Field(max_length=2000)
+
+
+class ReferenceContent(StrictModel):
+    title: str = Field(min_length=1, max_length=500)
+    short_description: str = Field(default="", max_length=4000)
+    long_description: str = Field(default="", max_length=40000)
+    seo_title: str = Field(default="", max_length=500)
+    meta_description: str = Field(default="", max_length=2000)
+    h1_descriptor: str = Field(default="", max_length=500)
+    future_name: str = Field(default="", max_length=500)
+    h1_descr_suffix: str = Field(default="", max_length=500)
+    parameters: list[ReferenceParameter] = Field(default_factory=list, max_length=500)
+
+
+class ReferenceProduct(StrictModel):
+    shop: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,50}$")
+    code: str = Field(min_length=1, max_length=100)
+    product_id: int = Field(gt=0)
+    language: Literal["sk"] = "sk"
+    captured_at: str = Field(min_length=20, max_length=40)
+    guidance: str = Field(default="", max_length=2000)
+    content: ReferenceContent
+
+
 class CategoryProfile(StrictModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     name: str = Field(min_length=1, max_length=200)
@@ -78,12 +105,15 @@ class CategoryProfile(StrictModel):
     registry_status: Literal["approved", "draft", "mixed", "missing"] = "approved"
     policy: Policy = Field(default_factory=Policy)
     automatic_import_ready: bool = True
+    reference_products: list[ReferenceProduct] = Field(default_factory=list, max_length=2)
 
     @model_validator(mode="after")
     def unique_parameters(self):
         names = [p.name.casefold() for p in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError("Parameter names must be unique within a category")
+        if len({(r.shop, r.code, r.language) for r in self.reference_products}) != len(self.reference_products):
+            raise ValueError("Reference products must be unique within a category")
         return self
 
 

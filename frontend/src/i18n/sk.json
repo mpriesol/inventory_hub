@@ -967,7 +967,9 @@
       "newJobs": "Zmena platí len pre novo pripravené úlohy. Existujúce odhady a rozpracované úlohy si ponechajú pôvodný model. Rozpočtové limity zostávajú v platnosti.",
       "save": "Uložiť AI model",
       "reload": "Načítať aktuálne nastavenie",
-      "saved": "AI model bol uložený. Nové úlohy použijú tento model."
+      "saved": "AI model bol uložený. Nové úlohy použijú tento model.",
+      "reasoning": "Úroveň uvažovania: {{effort}}. Zahrnutá v limite aj cene výstupných tokenov.",
+      "usage": "Vstup: {{input}} tokenov · výstup: {{output}} (z toho uvažovanie {{reasoning}}) · vyhľadávania: {{searches}}"
     },
     "composition": {
       "title": "Čo bolo odoslané do AI",
@@ -1005,7 +1007,22 @@
         "knowledge_scope_preserved": "Rozsah využitia znalostnej bázy je zachovaný.",
         "parameter_formats_for_profile": "Použité formáty parametrov zodpovedajú profilu.",
         "superseded_digest": "Duplicitný súhrn nahradený úplnými zdrojovými pravidlami.",
-        "runtime_contract": "Pokyny pre obsahové API a požadovanú štruktúru produktu."
+        "runtime_contract": "Pokyny pre obsahové API a požadovanú štruktúru produktu.",
+        "deployment_history": "História zavádzania patrí do administrácie.",
+        "category_placement_owned_by_hub": "Zaradenie kategórií vykonáva Hub mimo tvorby textu.",
+        "one_time_shop_setup": "Jednorazové nastavenie e-shopu sa pri produkte neopakuje.",
+        "verbatim_parameter_rows_in_structured_registry": "Rovnaké definície parametrov sa posielajú iba raz, v registri.",
+        "login_and_feed_workflow": "Prihlasovanie a obsluha feedu sú úlohou Hubu.",
+        "fact_semantics_preserved": "Význam údajov a práca so zdrojmi zostávajú zachované.",
+        "identity_and_family_owned_by_hub": "Kódy a vybrané varianty určuje pripravený import.",
+        "variant_semantics_preserved": "Rozdiely a platnosť údajov variantov zostávajú zachované.",
+        "supplier_administration": "Vynechané obchodné a administračné nastavenia dodávateľa.",
+        "filter_setup": "Nastavovanie filtrov nepatrí do tvorby popisu.",
+        "parameter_completeness_preserved": "Požiadavka vyplniť relevantné parametre zostáva.",
+        "category_images_and_gallery_workflow": "Vynechané nastavovanie obrázkov a textov kategórií.",
+        "validator_and_handover_workflow": "Vynechaná obsluha XML validátora a odovzdávanie súborov.",
+        "content_conflicts_preserved": "Požiadavka riešiť zistený rozpor zostáva.",
+        "table_generation_in_content_response": "Tabuľka sa tvorí priamo v HTML odpovedi."
       }
     },
     "profileSources": {
@@ -1013,6 +1030,23 @@
       "category_mapping": "Profil pravidiel bol určený z cieľovej kategórie.",
       "pending_classification": "AI ešte vyberie profil pravidiel pre tento produkt.",
       "ai_classification": "Profil pravidiel vybrala AI podľa produktu."
+    },
+    "references": {
+      "title": "Vzorové produkty",
+      "help": "Najviac dva schválené príklady štýlu, štruktúry a podrobnosti pre túto kategóriu. Nový produkt preberá fakty zo svojich podkladov; pravidlá majú prednosť pred vzorom.",
+      "guidance": "Čo má AI zo vzoru napodobniť",
+      "guidancePlaceholder": "Napríklad: stručný úvod, vysvetlenie výberu, poradie FAQ a tabuľka v poslednej odpovedi.",
+      "refresh": "Aktualizovať z e-shopu",
+      "remove": "Odobrať vzor",
+      "savedPreview": "Uložený náhľad",
+      "shop": "E-shop",
+      "code": "Presný kód produktu",
+      "load": "Načítať náhľad z Upgates",
+      "preview": "Náhľad vzorového produktu",
+      "publishHelp": "Použitím náhľadu zmeníte rozpracované pravidlá. Vzor začne platiť po uložení a publikovaní ich verzie. Neskoršie zmeny produktu v e-shope sa nepreberú automaticky.",
+      "accept": "Použiť tento vzor",
+      "cancel": "Zavrieť náhľad",
+      "limit": "Najskôr odoberte jeden z dvoch uložených vzorov."
     }
   },
   "upgatesImport": {

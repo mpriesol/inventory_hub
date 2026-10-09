@@ -157,7 +157,7 @@ async def prepare(db, job, request):
             raise CatalogError('ai_update_source_availability', 'Supplier availability is not available for this shop-only preparation', 422)
     else:
         products = await selected_products(db, ctx['supplier'], ctx['feed_key'], ctx['product_ids'])
-        if service.source_digest(products) != ctx['source_digest']:
+        if service.source_digest(products, technical=ctx.get('technical_sources_version') == 1) != ctx['source_digest']:
             raise CatalogError('ai_source_changed', 'Supplier facts changed; prepare fresh content', 409)
         if not remote.get('variants') and products[0].eans and remote.get('ean') not in products[0].eans:
             raise CatalogError('ai_update_identity', 'The shop EAN differs from the selected product', 409)
