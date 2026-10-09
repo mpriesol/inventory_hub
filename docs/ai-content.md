@@ -340,3 +340,6 @@ Nové katalógové úlohy pridávajú obmedzené technické riadky `STA_PARAMS/S
 `usage.reasoning_tokens` zobrazuje časť výstupných tokenov spotrebovanú uvažovaním, nikdy druhú položku navyše vo výpočte ceny. Náklad je výpočet Hubu z metadát poskytovateľa a uloženého cenníka, nie faktúra ani suma vygenerovaná modelom. Referenčné príklady, uvažovanie aj webové výsledky môžu zvýšiť spotrebu napriek kratším pravidlám.
 
 Obmedzenie bicyklov: dnešný klasifikátor vyberá jednu aktívnu koncovú kategóriu a Hub pridá jej predkov. Viaceré paralelné vetvy a pripravované neaktívne kategórie z pravidiel §13.1 zatiaľ automaticky nepriraďuje. AI generátor obsahu ani vyššie uvažovanie túto funkciu nenahrádzajú.
+## Zoskupenie parametrov vzoru
+
+Nová verzia zadania 3 zoskupuje riadky parametrov vzoru z Upgates do rovnakého formátu `name`, `values`, `product_id`, aký očakáva výstup AI. Staršie verzie zachovávajú pôvodný odoslaný tvar. Iba v nových úlohách pre duše sa opakované skupiny schválených parent parametrov `Priemer kolesa`, `Šírka plášťa`, `Rozmer ETRTO` a `Šírka plášťa v palcoch` spoja bez pridávania či prepočtu hodnôt, s informačným upozornením. Ostatné duplicity, neregistrované názvy, zmeny variantovej identity a nesprávny rozsah naďalej kontroluje pôvodný validátor. Zlúčenie nerieši rozporné dĺžky ventilu, materiály ani identitu výrobku.

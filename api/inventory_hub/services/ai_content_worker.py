@@ -54,6 +54,8 @@ async def generation(id):
             if classification_usage:
                 job.usage = {**usage, 'classification': classification_usage}
         output, opened = provider.parse_response(response, kind)
+        if kind != "rules":
+            output = provider.normalize_dimension_parameters(output, context)
         async with get_session_context() as db:
             job = await service.get_job(db, id, lock=True)
             job.output, job.usage = output, {**(job.usage or {}), "opened_sources": opened}
