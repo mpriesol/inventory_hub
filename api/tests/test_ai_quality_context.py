@@ -15,6 +15,45 @@ from inventory_hub.services import ai_rule_content as compiler
 
 
 class QualityContextTests(unittest.TestCase):
+    def test_reference_parameter_rows_match_the_output_schema_without_mutating_snapshot(self):
+        content = {"title": "Example", "parameters": [
+            {"name": "Priemer kolesa", "value": "27,5″"},
+            {"name": "Priemer kolesa", "value": "584 mm"},
+            {"name": "Priemer kolesa", "value": "584 mm"}]}
+        frozen = copy.deepcopy(content)
+        result = provider.reference_content(content)
+        self.assertEqual(result["parameters"], [{"name": "Priemer kolesa", "values": ["27,5″", "584 mm"], "product_id": None}])
+        self.assertEqual(content, frozen)
+
+    def test_tube_dimension_normalization_preserves_conflicts_scope_and_frozen_jobs(self):
+        rows = [{"name": name, "values": [value], "product_id": id} for name, value, id in (
+            ("Priemer kolesa", "27,5″", None), ("Priemer kolesa", "584 mm", None),
+            ("Dĺžka ventilu", "40 mm", None), ("Dĺžka ventilu", "60 mm", None),
+            ("Priemer kolesa", "20″", 1), ("Unknown", "A", None), ("Unknown", "B", None))]
+        content = {"parameters": rows, "warnings": []}
+        frozen = copy.deepcopy(content)
+        context = {"prompt_version": 3, "resolved": {"category": {"id": "inner_tubes", "parameters": [
+            {"name": name, "approved": True, "scope": "parent"} for name in ("Priemer kolesa", "Dĺžka ventilu")]}}}
+        result = provider.normalize_dimension_parameters(content, context)
+        self.assertEqual(result["parameters"][0]["values"], ["27,5″", "584 mm"])
+        self.assertEqual(result["parameters"][1:], rows[2:])
+        self.assertEqual(content, frozen)
+        self.assertTrue(result["warnings"])
+        self.assertIs(provider.normalize_dimension_parameters(content, {**context, "prompt_version": 2}), content)
+        self.assertIs(provider.normalize_dimension_parameters(content, {"prompt_version": 3, "resolved": {"category": {"id": "bikes"}}}), content)
+        full_warnings = {**content, "warnings": ["Existing warning"] * 100}
+        self.assertIs(provider.normalize_dimension_parameters(full_warnings, context), full_warnings)
+
+        from test_ai_content import content as sample_content, context as sample_context
+        from inventory_hub.services.ai_content_validation import validate_content
+        checked_context = sample_context(resolved={"category": {"parameters": [
+            {"name": name, "approved": True, "scope": "parent", "required": False, "values": []}
+            for name in ("Priemer kolesa", "Dĺžka ventilu")]}})
+        checks = validate_content(sample_content(parameters=result["parameters"]), checked_context, [])
+        self.assertIn("ai_duplicate_parameter:Dĺžka ventilu", checks["errors"])
+        self.assertIn("ai_parameter_scope:Priemer kolesa", checks["errors"])
+        self.assertIn("ai_unregistered_parameter:Unknown", checks["errors"])
+
     def test_new_luna_high_and_old_frozen_low_have_separate_token_budgets(self):
         context = {"model": "gpt-6-luna", "shop": "biketrek", "options": {"language": "sk"},
                    "facts": [], "resolved": {"instructions": [], "category": None}, "research": "feed_only",
@@ -78,6 +117,8 @@ class QualityContextTests(unittest.TestCase):
         self.assertEqual(data["facts"], [{"name": "NEW"}])
         self.assertEqual(data["reference_examples"][0]["content"]["future_name"], "MODEL")
         self.assertNotIn("code", data["reference_examples"][0])
+        legacy = json.loads(provider.request_body({**context, "prompt_version": 2})["input"])
+        self.assertEqual(legacy["reference_examples"][0]["content"], reference["content"])
 
     def test_deduplication_removes_only_wholly_repeated_registered_meaning(self):
         row = source("03-7-1", "### 7.1 Register\nIMPORTANT OUTSIDE TABLE\n\n| Parameter | Format | Scope |\n|---|---|---|\n| Ventil | `AV` | Exact SKU |\n| Material | Butyl | Do not assume |\n\nTAIL\n")
