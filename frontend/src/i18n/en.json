@@ -1006,7 +1006,22 @@
         "knowledge_scope_preserved": "Knowledge base scope is preserved.",
         "parameter_formats_for_profile": "Parameter formats match the selected profile.",
         "superseded_digest": "A duplicate digest is replaced by the full source rules.",
-        "runtime_contract": "Content API instructions and required product structure."
+        "runtime_contract": "Content API instructions and required product structure.",
+        "deployment_history": "Deployment history belongs to administration.",
+        "category_placement_owned_by_hub": "Hub handles category placement separately from content generation.",
+        "one_time_shop_setup": "One-time shop setup is not repeated for every product.",
+        "verbatim_parameter_rows_in_structured_registry": "Identical parameter definitions are sent once in the structured registry.",
+        "login_and_feed_workflow": "Hub handles authentication and feed processing.",
+        "fact_semantics_preserved": "Fact meaning and source handling are preserved.",
+        "identity_and_family_owned_by_hub": "The prepared import defines identities and selected variants.",
+        "variant_semantics_preserved": "Variant differences and fact scope are preserved.",
+        "supplier_administration": "Supplier commercial and administrative setup omitted.",
+        "filter_setup": "Filter configuration is separate from product content.",
+        "parameter_completeness_preserved": "The requirement to fill relevant parameters is preserved.",
+        "category_images_and_gallery_workflow": "Category images and category copy setup omitted.",
+        "validator_and_handover_workflow": "XML validator execution and file handover omitted.",
+        "content_conflicts_preserved": "The requirement to resolve observed conflicts is preserved.",
+        "table_generation_in_content_response": "The table is generated directly in the HTML response."
       }
     },
     "profileSources": {

@@ -1007,7 +1007,22 @@
         "knowledge_scope_preserved": "Rozsah využitia znalostnej bázy je zachovaný.",
         "parameter_formats_for_profile": "Použité formáty parametrov zodpovedajú profilu.",
         "superseded_digest": "Duplicitný súhrn nahradený úplnými zdrojovými pravidlami.",
-        "runtime_contract": "Pokyny pre obsahové API a požadovanú štruktúru produktu."
+        "runtime_contract": "Pokyny pre obsahové API a požadovanú štruktúru produktu.",
+        "deployment_history": "História zavádzania patrí do administrácie.",
+        "category_placement_owned_by_hub": "Zaradenie kategórií vykonáva Hub mimo tvorby textu.",
+        "one_time_shop_setup": "Jednorazové nastavenie e-shopu sa pri produkte neopakuje.",
+        "verbatim_parameter_rows_in_structured_registry": "Rovnaké definície parametrov sa posielajú iba raz, v registri.",
+        "login_and_feed_workflow": "Prihlasovanie a obsluha feedu sú úlohou Hubu.",
+        "fact_semantics_preserved": "Význam údajov a práca so zdrojmi zostávajú zachované.",
+        "identity_and_family_owned_by_hub": "Kódy a vybrané varianty určuje pripravený import.",
+        "variant_semantics_preserved": "Rozdiely a platnosť údajov variantov zostávajú zachované.",
+        "supplier_administration": "Vynechané obchodné a administračné nastavenia dodávateľa.",
+        "filter_setup": "Nastavovanie filtrov nepatrí do tvorby popisu.",
+        "parameter_completeness_preserved": "Požiadavka vyplniť relevantné parametre zostáva.",
+        "category_images_and_gallery_workflow": "Vynechané nastavovanie obrázkov a textov kategórií.",
+        "validator_and_handover_workflow": "Vynechaná obsluha XML validátora a odovzdávanie súborov.",
+        "content_conflicts_preserved": "Požiadavka riešiť zistený rozpor zostáva.",
+        "table_generation_in_content_response": "Tabuľka sa tvorí priamo v HTML odpovedi."
       }
     },
     "profileSources": {

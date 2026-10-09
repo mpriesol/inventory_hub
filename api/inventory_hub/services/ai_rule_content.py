@@ -234,6 +234,10 @@ def _select(text: str, category: dict | None) -> tuple[str, list[str]]:
     if module in {"03-7-1", "03-13-4-identity", "03-13-4-mounting", "03-13-4-electric", "03-13-4-equipment"}:
         selected = _deduplicate_register(body, category)
         return header + selected, ["verbatim_parameter_rows_in_structured_registry"]
+    if module == "03-7-7":
+        body = body.replace("4. Dlhú tabuľku neskracuj; generuj ju skriptom z matice. Čitateľné HTML, nie obrázok.",
+                            "4. Dlhú tabuľku neskracuj; vytvor ju priamo z matice ako čitateľné HTML, nie obrázok.")
+        return header + body, ["table_generation_in_content_response"]
     if module == "01-1":
         marker = "Pri rozpore rozhoduje predmet:\n"
         if marker not in body:
