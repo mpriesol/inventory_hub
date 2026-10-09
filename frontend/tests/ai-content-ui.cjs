@@ -592,11 +592,13 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   assert(document.body.textContent.includes('ručne vybraný profil'));
   assert(document.querySelector('.ai-composition').textContent.includes('Pravidlá inej kategórie'));
   assert(document.querySelector('.ai-composition').textContent.includes('1 použitých, 1 vynechaných'));
-  await act(async()=>{root.render(React.createElement(AiJobDetail,{key:'automatic-policy',job:{...stagedJob,policy:{review_required:false,active_after_import:true,show_cost_estimate:false,confirm_import:false},origins:{review_required:'common',active_after_import:'common',show_cost_estimate:'common',confirm_import:'common'},staging:{...stagedJob.staging,auto_apply:true,auto_publish:true}},onChange:()=>{}}));await tick();});
+  await act(async()=>{root.render(React.createElement(AiJobDetail,{key:'automatic-policy',job:{...stagedJob,estimate_usd:'0.1000',actual_usd:'0.0321',policy:{review_required:false,active_after_import:true,show_cost_estimate:false,confirm_import:false},origins:{review_required:'common',active_after_import:'common',show_cost_estimate:'common',confirm_import:'common'},staging:{...stagedJob.staging,auto_apply:true,auto_publish:true}},onChange:()=>{}}));await tick();});
   assert.equal(document.querySelectorAll('.ai-policy label').length,4,'Draft jobs show all frozen policy values and inheritance sources');
   assert(document.querySelector('.ai-policy').textContent.includes('common'));
   assert(document.body.textContent.includes('automaticky preberá schválený AI obsah'),'Automatic jobs explain the current action rather than requesting manual table acceptance');
   assert(!document.body.textContent.includes('Samotné schválenie tejto staršej úlohy'));
+  assert(document.body.textContent.includes('Vypočítané zo spotreby: 0.0321 USD'), 'Actual usage cost remains visible when the estimate is disabled');
+  assert(!document.body.textContent.includes('Odhad s rezervou: 0.100 USD'), 'Disabling the estimate still hides the preliminary reservation');
 
   const referenceStart = calls.length;
   let acceptedReferences = [];

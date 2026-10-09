@@ -145,6 +145,8 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await change(document.getElementById('catalog-shop'), 'biketrek'); await settle();
   assert.equal(localStorage.getItem('catalog.targetShop'), 'biketrek');
   assert.equal(document.querySelector('#catalog-shop option[value="pending"]').disabled, true);
+  await click(button('Možnosti'));
+  assert.equal(document.querySelector('.category-tree summary').textContent, 'Automaticky podľa mapovania dodávateľa', 'The supplier fallback must not become a manual category override');
   assert.ok(document.body.textContent.includes('použité uložené údaje'));
   assert.ok(document.body.textContent.includes('najviac 15 minút'));
   await click(button('Obnoviť nastavenia e-shopu')); await settle();
@@ -160,7 +162,17 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.deepEqual(routeSelection.product_ids, [1, 2], 'Unified preparation receives only the explicit selection');
   assert.equal(routeSelection.run_id, 1);
   assert.equal(routeSelection.shop, 'biketrek');
+  assert.equal(routeSelection.options.category_code, null, 'Automatic preparation lets each product use its mapped category');
   assert.equal(calls.some(call => call.path.endsWith('/import/preview') || call.path.endsWith('/import')), false, 'Catalog navigation itself does not prepare or publish shop payloads');
+  await act(async () => root.render(React.createElement(MemoryRouter, { key: 'manual-category', initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) }), React.createElement(Route, { path: '/product-import', element: React.createElement(CaptureImport) })))));
+  await settle();
+  await click(button('Možnosti'));
+  await click(button('Test K-TEST'));
+  await click(button('Obnoviť nastavenia e-shopu')); await settle();
+  assert.equal(document.querySelector('.category-tree summary').textContent, 'Test', 'Refreshing shop options preserves an intentional category choice');
+  await click(checkbox('Vybrať varianty: Prilba'));
+  await click(button('Pripraviť import'));
+  assert.equal(routeSelection.options.category_code, 'K-TEST', 'An explicit manual category still overrides mapping');
   await act(async () => root.render(React.createElement(LegacyPreviewHarness)));
   await click(button('Pripraviť import'));
   const request = calls.find(c => c.path.endsWith('/import/preview'));
