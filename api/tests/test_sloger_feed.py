@@ -1,6 +1,7 @@
 """All-or-nothing Sloger brand downloads through the ordinary catalog downloader."""
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,7 @@ import requests
 
 from inventory_hub import config_io
 from inventory_hub.adapters.sloger_catalog import parse_catalog
-from inventory_hub.adapters.sloger_feed import SlogerFeedError, aggregate_catalog_sources
+from inventory_hub.adapters.sloger_feed import SlogerFeedError, aggregate_catalog_sources, retry_after_seconds
 from inventory_hub.services import catalog
 
 
@@ -29,6 +30,9 @@ class SlogerFeedTests(unittest.TestCase):
             "urls": ["https://supplier.test/first.xml?token=synthetic-secret", "https://supplier.test/second.xml"],
             "verify_ssl": True,
         }}
+        sleeping = patch("inventory_hub.adapters.sloger_feed.time.sleep")
+        self.sleep = sleeping.start()
+        self.addCleanup(sleeping.stop)
 
     def downloader(self, contents):
         def download(source, index, size_budget, time_budget):
@@ -55,15 +59,17 @@ class SlogerFeedTests(unittest.TestCase):
         self.assertEqual(len(self.source["remote"]["urls"]), 2)
         self.assertNotIn("synthetic-secret", result.read_text())
         self.assertEqual(list(self.root.glob("*.part")), [])
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [1])
 
     def test_failed_second_download_preserves_prior_catalog_and_first_snapshot(self):
         self.destination.write_bytes(b"previous successful catalog")
         first = self.root / "source-1.xml"
         first.write_bytes(fixture())
         failure = catalog.CatalogError("feed_not_found", "Feed download returned HTTP 404", 502)
-        with self.assertRaises(catalog.CatalogError) as caught:
+        with self.assertRaises(SlogerFeedError) as caught:
             aggregate_catalog_sources(self.source, self.destination, MagicMock(side_effect=[first, failure]))
-        self.assertIs(caught.exception, failure)
+        self.assertEqual(caught.exception.code, "feed_not_found")
+        self.assertEqual(str(caught.exception), "Sloger source 2: Feed download returned HTTP 404")
         self.assertEqual(self.destination.read_bytes(), b"previous successful catalog")
         self.assertTrue(first.is_file())
         self.assertEqual(list(self.root.glob("*.part")), [])
@@ -133,3 +139,84 @@ class SlogerFeedTests(unittest.TestCase):
                 catalog._download("northfinder", source, "products")
         self.assertEqual(caught.exception.code, "feed_urls_unsupported")
         factory.assert_not_called()
+
+    def test_retry_after_parses_seconds_http_date_and_missing_or_invalid_headers(self):
+        now = datetime(2030, 1, 1, 12, 0, 0, 100000, tzinfo=timezone.utc)
+        self.assertEqual(retry_after_seconds("12"), 12)
+        self.assertEqual(retry_after_seconds("0"), 0)
+        self.assertEqual(retry_after_seconds("61"), 61)
+        self.assertGreater(retry_after_seconds("9" * 5000), 60)
+        self.assertEqual(retry_after_seconds("0" * 5000 + "12"), 12)
+        self.assertEqual(retry_after_seconds("Tue, 01 Jan 2030 12:00:10 GMT", now=now), 10)
+        self.assertEqual(retry_after_seconds("Tue, 01 Jan 2030 12:02:00 GMT", now=now), 120)
+        self.assertEqual(retry_after_seconds("Tue, 01 Jan 2030 11:59:00 GMT", now=now), 0)
+        for value in (None, "", "garbage", "-1", "https://supplier.test/?token=synthetic-secret"):
+            self.assertIsNone(retry_after_seconds(value))
+
+    def http_response(self, status, raw=b"", headers=None):
+        response = MagicMock()
+        response.__enter__.return_value.status_code = status
+        response.__enter__.return_value.headers = headers or {}
+        response.__enter__.return_value.iter_content.return_value = [raw]
+        return response
+
+    def test_rate_limit_honors_retry_after_then_backoff_and_preserves_successful_snapshots(self):
+        session = MagicMock()
+        session.request.side_effect = [self.http_response(429, headers={"Retry-After": "2"}),
+            self.http_response(429), self.http_response(200, fixture("FIRST")), self.http_response(200, fixture("SECOND"))]
+        with patch.object(config_io, "DATA_ROOT", self.root), patch.object(requests, "Session") as factory:
+            factory.return_value.__enter__.return_value = session
+            result = catalog._download("sloger", self.source, "products")
+        self.assertEqual(session.request.call_count, 4)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2, 10, 1])
+        self.assertEqual(len(etree.parse(str(result)).findall("product")), 2)
+        self.assertEqual(len(list(self.root.rglob("*.xml"))), 3)
+        self.assertEqual(list(self.root.rglob("*.part")), [])
+
+    def test_exhausted_rate_limit_is_bounded_and_reports_source_without_url(self):
+        session = MagicMock()
+        session.request.side_effect = [self.http_response(200, fixture("FIRST")),
+                                      self.http_response(429), self.http_response(429), self.http_response(429)]
+        with patch.object(config_io, "DATA_ROOT", self.root), patch.object(requests, "Session") as factory:
+            factory.return_value.__enter__.return_value = session
+            with self.assertRaises(catalog.CatalogError) as caught:
+                catalog._download("sloger", self.source, "products")
+        self.assertEqual(session.request.call_count, 4)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [1, 5, 10])
+        self.assertEqual(caught.exception.code, "feed_rate_limited")
+        self.assertIn("Sloger source 2", str(caught.exception))
+        self.assertNotIn("supplier.test", str(caught.exception))
+        self.assertNotIn("synthetic-secret", str(caught.exception))
+        self.assertEqual(len(list(self.root.rglob("*.xml"))), 1)
+        self.assertEqual(list(self.root.rglob("*.part")), [])
+
+    def test_long_retry_after_and_non_get_do_not_retry(self):
+        for method, retry_after in (("GET", "61"), ("POST", "1")):
+            with self.subTest(method=method, retry_after=retry_after):
+                self.sleep.reset_mock()
+                source = {**self.source, "remote": {**self.source["remote"], "method": method}}
+                session = MagicMock()
+                session.request.return_value = self.http_response(429, headers={"Retry-After": retry_after})
+                with patch.object(config_io, "DATA_ROOT", self.root), patch.object(requests, "Session") as factory:
+                    factory.return_value.__enter__.return_value = session
+                    with self.assertRaises(catalog.CatalogError) as caught:
+                        catalog._download("sloger", source, "products")
+                self.assertEqual(session.request.call_count, 1)
+                self.assertEqual(caught.exception.code, "feed_rate_limited")
+                self.sleep.assert_not_called()
+                self.assertEqual(list(self.root.rglob("*.part")), [])
+
+    def test_pacing_and_retry_delays_consume_whole_refresh_deadline(self):
+        download = self.downloader([fixture(), fixture()])
+        with self.assertRaises(SlogerFeedError) as pacing:
+            aggregate_catalog_sources(self.source, self.destination, download, max_elapsed_seconds=0.5)
+        self.assertEqual(pacing.exception.code, "feed_timeout")
+        self.assertEqual(download.call_count, 1)
+        failure = catalog.CatalogError("feed_rate_limited", "Feed download returned HTTP 429", 502)
+        download = MagicMock(side_effect=failure)
+        with self.assertRaises(SlogerFeedError) as retry:
+            aggregate_catalog_sources(self.source, self.destination, download, max_elapsed_seconds=3)
+        self.assertEqual(retry.exception.code, "feed_timeout")
+        self.assertEqual(download.call_count, 1)
+        self.sleep.assert_not_called()
+        self.assertFalse(self.destination.exists())
