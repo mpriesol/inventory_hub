@@ -114,6 +114,7 @@
     "addFirstSupplier": "Pridajte prvého dodávateľa pre začatie práce s faktúrami",
     "tabs": {
       "general": "Obecné",
+      "prices": "Ceny",
       "feeds": "Feedy",
       "invoices": "Faktúry",
       "mapping": "Mapovanie",
@@ -122,6 +123,8 @@
     },
     "feeds": {
       "title": "Feedy",
+      "brandUrls": "Zalistovacie feedy značiek",
+      "brandUrlsHelp": "Jeden odkaz na riadok. Všetky značky tvoria spoločný katalóg.",
       "products": "Feed: Produkty",
       "productsDesc": "XML/CSV feed pre import nových produktov a aktualizáciu informácií",
       "stock": "Feed: Sklad",
@@ -183,6 +186,20 @@
       "feedUrlNotReachable": "Feed URL nedostupná",
       "loginUrlReachable": "Login URL dostupná",
       "loginUrlNotReachable": "Login URL nedostupná"
+    },
+    "prices": {
+      "title": "Cenové koeficienty podľa značky",
+      "help": "Predajná cena = MOC/DMOC z feedu × koeficient. Hodnota 1 ponechá cenu nezmenenú; 0,9 ju zníži o 10 % a 1,1 zvýši o 10 %. Nákupné ceny sa nemenia.",
+      "importHelp": "Koeficient sa použije v novom náhľade importu pri voľbe „MOC × nastavený koeficient výrobcu“. Uloženie nastavení nepreceňuje existujúce produkty.",
+      "brand": "Značka",
+      "coefficient": "Koeficient",
+      "brandCoefficient": "Koeficient pre {{brand}}",
+      "empty": "Zatiaľ nie sú uložené vlastné koeficienty značiek.",
+      "newBrand": "Pridať značku",
+      "addBrand": "Pridať s koeficientom 1",
+      "brandHelp": "Použite názov výrobcu z feedu. Veľkosť písmen sa nerozlišuje.",
+      "duplicate": "Táto značka už má vlastný riadok v tabuľke.",
+      "invalid": "Skontrolujte cenové koeficienty: každá značka musí mať jedinečný neprázdny názov a kladný číselný koeficient."
     },
     "availability": {
       "title": "Dodávateľská dostupnosť",

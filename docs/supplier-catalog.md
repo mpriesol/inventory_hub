@@ -1,6 +1,6 @@
 # Supplier products and shop import
 
-The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Parsers support Paul Lange and Northfinder. Other suppliers require their own parser registered in `services/catalog.py`; the API and UI remain the same.
+The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder and Sloger. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
 
 Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, browse or search, select individual items or groups, choose the target shop, and prepare an import preview. Empty search lists all items with pagination. The page remembers the target shop. Listing badges use mappings known to Hub; the preview verifies codes and EANs against the target shop.
 
@@ -93,6 +93,20 @@ Preview/result files are persisted under `shops/{shop}/catalog-imports/`. Each s
 `{"preview_id":"...","retry_failed":true}` verifies uncertain items and retries items that were not sent. Uncertain items still absent from the shop remain uncertain, because a delayed request may finish later; review them before starting a new preview. A process restart is reported as an interrupted job after the lock is released. Images are downloaded asynchronously by Upgates, so a successful product creation does not prove image processing has finished.
 
 ## Configuration and deployment
+
+### Sloger listing feeds
+
+Implemented in code: Sloger's `products/product` XML and nested `options/option` variants. Configure one `products` source with `catalog_parser: "sloger"`, `mode: "remote"` and `remote.urls` containing the brand listing URLs. The Sloger Product feed tab accepts one URL per line. All brand snapshots form one atomic catalog; an unavailable, empty or malformed source fails the refresh and retains the previous successful catalog. Use the catalog's manufacturer filter to browse a brand. A single remote URL remains supported.
+
+The combined catalog is intentional: supplier codes can collide across brands. Parent `<id>` defines an explicit family, while actual option `<code>` remains the supplier SKU. Repeated SKUs become blocked rows with all competing source evidence; neither an arbitrary EAN nor a replacement SKU is invented. Similar names do not create groups. Explicit option labels such as `Veľkosť M` define that axis when the family agrees; other labels remain the `Variant` value. Missing or ambiguous variant labels block the affected import. Empty/all-zero EANs remain unknown.
+
+`price_msrp` is EUR DMOC including VAT; `price_msrp_czk` is not used for the EUR catalog. The configured VAT rate derives net retail. A missing variant price may inherit a positive parent DMOC with a warning; an explicit zero or malformed value remains invalid. The listing feeds contain no purchase prices or availability. Purchase fields remain null locally and `prices[].price_purchase` is omitted from Upgates create payloads. Neither a zero acquisition cost nor supplier/physical stock is generated.
+
+**Dodávatelia → Sloger → Ceny** edits `adapter_settings.price_coefficients` by manufacturer. Initialize the actual manufacturer names to `1` for unchanged DMOC. A later coefficient affects newly prepared configured-price imports, not existing products or already frozen previews. Missing brand coefficients default to `1`; Paul Lange's converter defaults apply only to Paul Lange. Manual sale overrides and the explicit retail-only option retain their existing behavior.
+
+For the requested Sloger operation, set `adapter_settings.availability.orderable` to `do 2-4 dní` and leave unknown at `overíme`. Listing alone cannot establish that a product is orderable from supplier stock. Any future authenticated B2B observations must include their verification time and remain distinct from actual receipt/FIFO acquisition costs. No B2B login or crawler is enabled by this change.
+
+No migration or new dependency is required. These are implementation/configuration contracts, not proof of live activation or a successful remote product creation. Local verification on 12 October 2026 parsed all 38 supplied brand snapshots into 14,702 unique supplier-code rows. The snapshots contained 26 conflicting codes; full-family payload checks also detected ambiguous variants and a zero-price family. Live configuration, import preview, remote creation and readback must be checked separately through the existing workflow. Rollback retains catalog records and imported shop products; remove the multi-source configuration before reverting to code that does not understand it.
 
 No database migration or new runtime dependency is required. Existing catalog tables and the existing `004_shop_product_content.sql` table are used. The configured supplier download URL and auth stay in the existing supplier configuration. The catalog explicitly chooses `products` (or another listing source); it never implicitly chooses the supplier's current stock feed. Downloaded XML snapshots remain in the existing supplier feed directory, with successful/failed indexing recorded in PostgreSQL.
 

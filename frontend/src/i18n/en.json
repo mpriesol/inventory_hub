@@ -113,6 +113,7 @@
     "addFirstSupplier": "Add your first supplier to start working with invoices",
     "tabs": {
       "general": "General",
+      "prices": "Prices",
       "feeds": "Feeds",
       "invoices": "Invoices",
       "mapping": "Mapping",
@@ -121,6 +122,8 @@
     },
     "feeds": {
       "title": "Feeds",
+      "brandUrls": "Brand listing feeds",
+      "brandUrlsHelp": "One URL per line. All brands form a shared catalog.",
       "products": "Feed: Products",
       "productsDesc": "XML/CSV feed for importing new products and updating information",
       "stock": "Feed: Stock",
@@ -182,6 +185,20 @@
       "feedUrlNotReachable": "Feed URL not reachable",
       "loginUrlReachable": "Login URL reachable",
       "loginUrlNotReachable": "Login URL not reachable"
+    },
+    "prices": {
+      "title": "Price coefficients by brand",
+      "help": "Selling price = feed RRP × coefficient. A value of 1 keeps the price unchanged; 0.9 reduces it by 10% and 1.1 increases it by 10%. Purchase prices are unchanged.",
+      "importHelp": "The coefficient applies to new import previews using configured manufacturer pricing. Saving these settings does not reprice existing products.",
+      "brand": "Brand",
+      "coefficient": "Coefficient",
+      "brandCoefficient": "Coefficient for {{brand}}",
+      "empty": "No custom brand coefficients have been saved yet.",
+      "newBrand": "Add brand",
+      "addBrand": "Add with coefficient 1",
+      "brandHelp": "Use the manufacturer name from the feed. Matching is case-insensitive.",
+      "duplicate": "This brand already has a row in the table.",
+      "invalid": "Check the price coefficients: each brand needs a unique nonempty name and a positive numeric coefficient."
     },
     "availability": {
       "title": "Supplier availability",

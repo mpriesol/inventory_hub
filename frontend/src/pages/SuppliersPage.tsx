@@ -292,7 +292,21 @@ interface SupplierEditorProps {
   onSaved: () => void;
 }
 
-type EditorTab = 'general' | 'feeds' | 'invoices' | 'mapping' | 'json' | 'history';
+type EditorTab = 'general' | 'prices' | 'feeds' | 'invoices' | 'mapping' | 'json' | 'history';
+
+function validPriceCoefficient(value: unknown): boolean {
+  return (typeof value === 'number' || (typeof value === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim())))
+    && Number.isFinite(Number(value)) && Number(value) > 0;
+}
+
+function validPriceCoefficients(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const brands = Object.keys(value);
+  return brands.every(brand => brand.trim() !== '')
+    && new Set(brands.map(brand => brand.trim().toUpperCase())).size === brands.length
+    && Object.values(value).every(validPriceCoefficient);
+}
 
 function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
   const { t } = useTranslation();
@@ -305,6 +319,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
   const [hasChanges, setHasChanges] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
   const [jsonInvalid, setJsonInvalid] = useState(false);
+  const pricesInvalid = !validPriceCoefficients(config?.adapter_settings?.price_coefficients);
 
   // History state
   const [history, setHistory] = useState<SupplierHistoryEntry[]>([]);
@@ -371,7 +386,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
 
   // Save config
   const handleSave = async () => {
-    if (!config || (activeTab === 'json' && jsonInvalid)) return;
+    if (!config || pricesInvalid || (activeTab === 'json' && jsonInvalid)) return;
     setSaving(true);
     setError(null);
     try {
@@ -450,6 +465,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
   // Tab definitions
   const tabs: { id: EditorTab; label: string; icon: React.ReactNode }[] = [
     { id: 'general', label: 'Obecné', icon: <Settings size={16} /> },
+    { id: 'prices', label: t('suppliers.tabs.prices'), icon: <FileText size={16} /> },
     { id: 'feeds', label: 'Feedy', icon: <Globe size={16} /> },
     { id: 'invoices', label: 'Faktúry', icon: <FileText size={16} /> },
     { id: 'mapping', label: t('feedMapping.invoiceMapping'), icon: <Truck size={16} /> },
@@ -545,7 +561,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
             <Button
               onClick={handleSave}
               loading={saving}
-              disabled={!hasChanges || (activeTab === 'json' && jsonInvalid)}
+              disabled={!hasChanges || pricesInvalid || (activeTab === 'json' && jsonInvalid)}
               icon={<Save size={16} />}
             >
               Uložiť
@@ -554,8 +570,9 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
         </div>
 
         {/* Error/Validation display */}
-        {(error || validation) && (
+        {(error || validation || pricesInvalid) && (
           <div className="px-6 py-3 space-y-2">
+            {pricesInvalid && <p role="alert" className="text-sm text-red-400">{t('suppliers.prices.invalid')}</p>}
             {error && (
               <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm flex items-center gap-2">
                 <XCircle size={16} />
@@ -655,8 +672,12 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
               setShowPasswords={setShowPasswords}
             />
           )}
+          {activeTab === 'prices' && (
+            <PricesTab config={config} updateConfig={updateConfig} />
+          )}
           {activeTab === 'feeds' && (
             <FeedsTab
+              supplier={code}
               config={config}
               updateConfig={updateConfig}
               showPasswords={showPasswords}
@@ -876,8 +897,82 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords, ide
   );
 }
 
-function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
+function PricesTab({ config, updateConfig }: TabProps) {
+  const { t } = useTranslation();
+  const [newBrand, setNewBrand] = useState('');
+  const rawCoefficients = config.adapter_settings?.price_coefficients;
+  const coefficients = rawCoefficients && typeof rawCoefficients === 'object' && !Array.isArray(rawCoefficients) ? rawCoefficients : {};
+  const brands = Object.keys(coefficients).sort((a, b) => a.localeCompare(b));
+  const brandKey = newBrand.trim().toUpperCase();
+  const duplicate = brands.some(brand => brand.trim().toUpperCase() === brandKey);
+
+  const updateCoefficient = (brand: string, value: number | string) => {
+    updateConfig(cfg => ({
+      ...cfg,
+      adapter_settings: {
+        ...cfg.adapter_settings,
+        price_coefficients: { ...cfg.adapter_settings?.price_coefficients, [brand]: value },
+      },
+    }));
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <h3 className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('suppliers.prices.title')}</h3>
+      <p id="supplier-prices-help" className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('suppliers.prices.help')}</p>
+      <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.prices.importHelp')}</p>
+      {brands.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left" style={{ color: 'var(--color-text-secondary)' }}>
+              <th scope="col" className="py-2 pr-4">{t('suppliers.prices.brand')}</th>
+              <th scope="col" className="py-2">{t('suppliers.prices.coefficient')}</th>
+            </tr></thead>
+            <tbody>{brands.map(brand => (
+              <tr key={brand} className="border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
+                <th scope="row" className="py-2 pr-4 font-normal text-left">
+                  <label htmlFor={`supplier-price-coefficient-${encodeURIComponent(brand)}`}>{brand}</label>
+                </th>
+                <td className="py-2">
+                  <input
+                    id={`supplier-price-coefficient-${encodeURIComponent(brand)}`}
+                    data-price-brand={brand}
+                    type="number"
+                    step="any"
+                    min="0"
+                    className="w-32"
+                    aria-label={t('suppliers.prices.brandCoefficient', { brand })}
+                    aria-describedby="supplier-prices-help"
+                    aria-invalid={!validPriceCoefficient(coefficients[brand])}
+                    value={typeof coefficients[brand] === 'number' || typeof coefficients[brand] === 'string' ? coefficients[brand] : ''}
+                    onChange={e => updateCoefficient(brand, e.target.value)}
+                  />
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ) : <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.prices.empty')}</p>}
+      <div>
+        <label htmlFor="supplier-price-new-brand" className="block text-sm mb-1.5">{t('suppliers.prices.newBrand')}</label>
+        <div className="flex flex-wrap gap-2">
+          <input id="supplier-price-new-brand" value={newBrand} onChange={e => setNewBrand(e.target.value)} className="flex-1 min-w-0" aria-describedby="supplier-prices-brand-help" />
+          <Button type="button" variant="secondary" disabled={!brandKey || duplicate} onClick={() => { updateCoefficient(brandKey, 1); setNewBrand(''); }}>
+            {t('suppliers.prices.addBrand')}
+          </Button>
+        </div>
+        <p id="supplier-prices-brand-help" className="text-xs mt-1" style={{ color: duplicate ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
+          {t(duplicate ? 'suppliers.prices.duplicate' : 'suppliers.prices.brandHelp')}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & { supplier: string }) {
+  const { t } = useTranslation();
   const sources = config.feeds?.sources || {};
+  const [urlsText, setUrlsText] = useState(() => (sources.products?.remote?.urls ?? (sources.products?.remote?.url ? [sources.products.remote.url] : [])).join('\n'));
   
   // Ensure both products and stock exist
   const feedKeys = ['products', 'stock'];
@@ -901,6 +996,8 @@ function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
 
   const FeedCard = ({ feedKey, label, description }: { feedKey: string; label: string; description: string }) => {
     const source = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
+    const multiSource = supplier === 'sloger' && feedKey === 'products';
+    const configured = !!source.remote?.url || !!source.remote?.urls?.length;
     
     return (
       <div
@@ -918,10 +1015,10 @@ function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
           </div>
           <span
             className={`px-2 py-0.5 rounded-full text-xs ${
-              source.remote?.url ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'
+              configured ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'
             }`}
           >
-            {source.remote?.url ? 'Nakonfigurovaný' : 'Nenakonfigurovaný'}
+            {configured ? 'Nakonfigurovaný' : 'Nenakonfigurovaný'}
           </span>
         </div>
 
@@ -942,10 +1039,23 @@ function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
         {source.mode === 'remote' && (
           <>
             <div>
-              <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                URL feedu
+              <label htmlFor={multiSource ? 'supplier-sloger-feed-urls' : undefined} className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+                {multiSource ? t('suppliers.feeds.brandUrls') : 'URL feedu'}
               </label>
-              <input
+              {multiSource ? <>
+                <textarea
+                  id="supplier-sloger-feed-urls"
+                  rows={10}
+                  value={urlsText}
+                  aria-describedby="supplier-sloger-feed-urls-help"
+                  onChange={e => {
+                    setUrlsText(e.target.value);
+                    updateSource(feedKey, { remote: { ...source.remote, url: '', urls: e.target.value.split(/\r?\n/).map(url => url.trim()).filter(Boolean) } });
+                  }}
+                  className="w-full font-mono text-sm"
+                />
+                <p id="supplier-sloger-feed-urls-help" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.feeds.brandUrlsHelp')}</p>
+              </> : <input
                 type="text"
                 value={source.remote?.url || ''}
                 onChange={(e) =>
@@ -953,7 +1063,7 @@ function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
                 }
                 placeholder="https://..."
                 className="w-full font-mono text-sm"
-              />
+              />}
             </div>
 
             <div>
@@ -1068,17 +1178,8 @@ function FeedsTab({ config, updateConfig, showPasswords }: TabProps) {
         feed skladu na synchronizáciu stavov zásob.
       </p>
 
-      <FeedCard
-        feedKey="products"
-        label="Feed: Produkty"
-        description="XML/CSV feed pre import nových produktov a aktualizáciu informácií"
-      />
-
-      <FeedCard
-        feedKey="stock"
-        label="Feed: Sklad"
-        description="XML/CSV feed pre synchronizáciu stavov zásob"
-      />
+      {FeedCard({ feedKey: 'products', label: 'Feed: Produkty', description: 'XML/CSV feed pre import nových produktov a aktualizáciu informácií' })}
+      {FeedCard({ feedKey: 'stock', label: 'Feed: Sklad', description: 'XML/CSV feed pre synchronizáciu stavov zásob' })}
     </div>
   );
 }

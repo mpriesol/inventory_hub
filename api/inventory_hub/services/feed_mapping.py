@@ -480,6 +480,8 @@ def native_record_paths(parser):
         return ["SHOP/SHOPITEM", "SHOP/SHOPITEMS/SHOPITEM", "SHOPITEMS/SHOPITEM", "SHOPITEM"]
     if parser.__module__.endswith("northfinder_catalog"):
         return ["products/product", "root/product", "product"]
+    if parser.__module__.endswith("sloger_catalog"):
+        return ["products/product", "product"]
     return None
 
 
