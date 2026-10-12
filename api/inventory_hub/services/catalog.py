@@ -566,6 +566,7 @@ async def catalog_status(db: AsyncSession, supplier: str, feed_key: str = "produ
     vat = (adapter.get("vat_rate", adapter.get("vat", cfg.get("vat_rate", 23)))
            if supplier == "sloger" else adapter.get("vat", 23))
     return {"supplier": supplier, "name": cfg.get("name") or supplier, "sources": sources,
+            "default_shop": cfg.get("default_shop") or ("biketrek" if supplier == "sloger" else None),
             "feed_key": feed_key, "run_id": feed.last_run_id if feed else None,
             "last_successful_at": feed.last_run_at if feed else None,
             "status": feed.last_run_status.value if feed and feed.last_run_status else "not_downloaded",

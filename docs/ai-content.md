@@ -2,6 +2,47 @@
 
 Funkcia používa OpenAI Responses API z Hubu. Nepotrebuje projekt/GPT v ChatGPT ani prístup k tomuto chatovému účtu. Projekt na OpenAI Platform môže patriť inému firemnému účtu a má vlastnú API fakturáciu.
 
+## Samostatný test Sloger B2B cez Luna
+
+Implementácia v kóde poskytuje chránený formulár `/suppliers/sloger/b2b-test` a
+`POST /api/suppliers/sloger/lookup/preview` s `request_id` (UUID), `username`,
+`password` a presným dodávateľským `sku`. Vyžaduje existujúci prístup operátora,
+`AI_CONTENT_ENABLED`, serverový `OPENAI_API_KEY` a bežné rozpočtové limity AI.
+Heslo patrí iba do tohto formulára. Prihlasovacie údaje sa neukladajú do
+konfigurácie, auditu ani podkladov modelu; server ich použije iba počas jednej
+požiadavky. Odpovede vrátane validačných chýb majú `Cache-Control: no-store` a
+chyby nevracajú hodnoty vstupu.
+
+Hub vykoná najviac dve volania Responses API s `gpt-6-luna`, úsilím `high`,
+`store: false` a limitom 4 096 výstupných tokenov na volanie. Prvé smie vyžiadať
+iba jednu funkciu `lookup_sloger_product` s pôvodným SKU. Jej serverový adaptér
+sa prihlási do Sloger B2B a prečíta zodpovedajúci produkt; model dostane iba
+ohraničené produktové fakty. Druhé volanie ich musí vrátiť v striktnej schéme
+a po normalizácii sa musí celý výsledok presne zhodovať s dôkazmi adaptéra.
+Zachováva sa EAN, kód výrobcu, nákupná ponuka, MOC, mena, základ DPH, zdroj a
+čas pozorovania. Vlastný sklad Slogera je oddelený od ďalších dostupností;
+napríklad `>99` pri „Do 5 dní“ zostáva ostrou dolnou hranicou, nie presným
+počtom ani údajom o našom fyzickom sklade. Neznáme hodnoty sa nedopočítavajú.
+
+Test zapisuje iba `AiBatch`/`AiJob` druhu `supplier_lookup`. Nevytvára produkt,
+príjem, FIFO náklad, katalógový riadok ani zápis do Upgates. Tento druh je
+oddelený od zoznamu, workera a mutácií obsahových úloh. Stavy sú
+`lookup_running`, `lookup_completed`, `lookup_failed` a `lookup_uncertain`.
+Počas behu alebo neznámeho výsledku zostáva účtovaná celá rezervácia, aj keď
+je známa len cena prvého volania. Dokončenie či definitívna chyba ponechá
+skutočne vykázané náklady a uvoľní nevyužitú rezerváciu.
+
+Opakovanie rovnakého UUID nikdy neopakuje platené volanie ani prihlásenie.
+Výsledok sa načíta cez `GET /api/suppliers/sloger/lookup/{id}`, kde `id` je
+UUID bez pomlčiek. Pri výpadku alebo stave `lookup_uncertain` treba zachovať
+pôvodné ID a kontrolovať tento záznam; automatický nový pokus neexistuje.
+Neznámy výsledok sa pri čítaní nesmie označiť za úspešný ani uvoľniť jeho
+rozpočet. Po tvrdom ukončení procesu môže zostať `lookup_running`; tento stav
+sám nepotvrdzuje, že požiadavka ešte beží, a neoprávňuje nový platený pokus.
+Kód nepotrebuje novú databázovú migráciu. Lokálne testy používajú
+syntetické odpovede a prihlasovacie údaje; samy nepotvrdzujú úspešné živé
+prihlásenie alebo platené spracovanie.
+
 ## Použitie
 
 Aktuálny výber v dodávateľskom katalógu otvára spoločnú [prípravu importu](product-imports.md). Pri úlohe s `staging_id` znamená **AI obsah pripravený** hotové texty pre tabuľku. Nové prípravy rešpektujú štyri zdedené prepínače: pri vypnutom odhade sa AI spustí hneď, pri vypnutom schválení prejde úspešne overený obsah automaticky do tabuľky a pri vypnutom potvrdení sa úplná AI príprava automaticky odošle. `active_after_import` určuje skutočnú aktivitu vytvoreného produktu. Staršie úlohy, zmiešané AI/feed dávky alebo prípravy upravené po spustení zostávajú manuálne; podrobnosti a ochrana obnovy sú v dokumentácii prípravy importu. Detail ponúka **Otvoriť prípravu importu**, po odoslaní **Otvoriť výsledok importu**, a ukazuje skutočný výsledok importéra. Ak starší import odišiel bez prevzatia AI, upozorní na to. Schválenie nezmeneného pripraveného obsahu sa už opakovane neponúka. Nižšie opísané samostatné importy a aktualizácie existujúcich produktov zostávajú dostupné pre pôvodné úlohy bez väzby na prípravu.

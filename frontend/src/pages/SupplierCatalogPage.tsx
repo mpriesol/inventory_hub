@@ -27,6 +27,7 @@ export function SupplierCatalogPage() {
   const [listing, setListing] = useState('all');
   const [sort, setSort] = useState('name');
   const [shop, setShop] = useState(stored('catalog.targetShop'));
+  const defaultShopApplied = useRef<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [grouped, setGrouped] = useState(true);
@@ -77,6 +78,10 @@ export function SupplierCatalogPage() {
         const info = await catalogRequest<CatalogStatus>(`${base}?feed_key=${encodeURIComponent(feed)}`, undefined, controller.signal);
         if (controller.signal.aborted) return;
         setStatus(info);
+        if (defaultShopApplied.current !== supplier) {
+          defaultShopApplied.current = supplier;
+          if (info.default_shop && info.shops.some(item => item.code === info.default_shop && item.ready)) setShop(info.default_shop);
+        }
         const current = info.sources.find(s => s.key === feed);
         if (!current?.supported) { setData(null); return; }
         const response = await catalogRequest<CatalogPage>(`${base}/products?${query}`, undefined, controller.signal);
@@ -192,7 +197,7 @@ export function SupplierCatalogPage() {
   return <div className="supplier-catalog">
     <button className="catalog-back" onClick={() => navigate('/suppliers')}><ArrowLeft size={16} />{t('catalog.backSuppliers')}</button>
     <header className="catalog-header"><div><div className="catalog-eyebrow">{status?.name || supplier}</div><h1>{t('catalog.title')}</h1><p className="catalog-muted">{t('catalog.subtitle')}</p></div>
-      <div className="catalog-target"><label htmlFor="catalog-shop"><ShoppingBag size={15} />{t('catalog.targetShop')}</label><select id="catalog-shop" value={shop} onChange={e => setShop(e.target.value)} disabled={preparing || sending}>
+      <div className="catalog-target"><label htmlFor="catalog-shop"><ShoppingBag size={15} />{t('catalog.targetShop')}</label><select id="catalog-shop" value={shop} onChange={e => { defaultShopApplied.current = supplier; setShop(e.target.value); }} disabled={preparing || sending}>
         <option value="">{t('catalog.chooseShop')}</option>{status?.shops.map(s => <option key={s.code} value={s.code} disabled={!s.ready}>{s.name}{s.ready ? '' : ` · ${t('catalog.notConfigured')}`}</option>)}
       </select><small>{t('catalog.targetHelp')}</small></div></header>
     {source?.supported && shopInfo?.ready && <div className="catalog-notice" role="status">

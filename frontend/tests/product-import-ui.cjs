@@ -23,8 +23,8 @@ const { IMPORT_COLUMNS, pasteImportValues, stageImportValue } = require('../src/
 const clone = value => JSON.parse(JSON.stringify(value));
 const options = { language: 'sk', currency: 'EUR', pricelist: 'Default', category_code: null, pricing: 'configured', include_images: true, include_description: true, include_parameters: true };
 const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, { code: 'PARTS', parent_code: 'MENU', names: { sk: 'Komponenty' } }, { code: 'TUBES', parent_code: 'PARTS', names: { sk: 'Duše' } }];
-const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto' });
-let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
+const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
+let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
 const calls = []; let failEdit = false, deferRead = false, releaseRead;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
@@ -43,11 +43,11 @@ global.fetch = async (path, init = {}) => {
     for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
   } else if (path.endsWith('/save')) { assert.equal(body.expected_revision, server.revision); server.revision++; server.status = 'saved'; server.rows.forEach(row => row.hub_product_id = row.id + 100); }
-  else if (path.endsWith('/ai')) { server.revision++; server.rows.filter(row => row.values.ai_enabled).forEach(row => row.ai_job = { id: `job-${row.group_key}`, status: 'estimate', estimate_usd: '0.04', actual_usd: null, checks: {} }); }
+  else if (path.endsWith('/ai')) { assert.equal(body.research, 'official'); server.revision++; server.rows.filter(row => row.values.ai_enabled).forEach(row => row.ai_job = { id: `job-${row.group_key}`, status: 'estimate', estimate_usd: '0.04', actual_usd: null, checks: {} }); }
   else if (path.endsWith('/ai-start')) { server.revision++; server.rows.filter(row => row.ai_job).forEach(row => { row.ai_job.status = 'generating'; row.ai_job.actual_usd = '0.03'; }); }
   else if (path.endsWith('/ai-apply')) { server.revision++; server.status = 'draft'; server.rows.filter(row => row.ai_job).forEach(row => { if (!row.manual_fields.includes('name')) row.values.name = 'AI názov'; if (!row.manual_fields.includes('description_html')) { row.values.description_html = '<p>Vylepšené AI</p>'; row.provenance.description_html = 'ai'; } row.ai_job.status = 'completed'; }); }
-  else if (path.endsWith('/publish-preview')) { assert.equal(server.status, 'saved'); server.revision++; server.publication = { preview_id: 'preview-1', options, errors: [], warnings: [], expires_at: new Date(Date.now() + 60000).toISOString(), items: [{ code: 'PL-G', name: 'Rodina duší', product_ids: [1, 2], variants_count: 2, status: 'ready', warnings: [], errors: [], payload: { code: 'PL-G', active_yn: false } }] }; }
-  else if (path.endsWith('/publish')) { assert.equal(body.preview_id, server.publication.preview_id); server.revision++; server.publication_result = { ...server.publication, status: 'completed', items: server.publication.items.map(item => ({ ...item, status: 'created' })) }; }
+  else if (path.endsWith('/publish-preview')) { assert.equal(server.status, 'saved'); server.revision++; server.publication = { preview_id: 'preview-1', options, errors: [], warnings: [], expires_at: new Date(Date.now() + 60000).toISOString(), items: ['biketrek','xtrek'].map(shop => ({ shop, code: 'PL-G', name: 'Rodina duší', product_ids: [1, 2], variants_count: 2, status: 'ready', warnings: [], errors: [], payload: { code: 'PL-G', active_yn: false } })) }; }
+  else if (path.endsWith('/publish')) { assert.equal(body.preview_id, server.publication.preview_id); server.revision++; server.publication_result = { ...server.publication, status: 'completed', items: server.publication.items.map(item => ({ ...item, status: item.status === 'exists' ? 'exists' : 'created' })) }; server.rows.forEach(row => row.publication_links = row.values.target_shops.map(shop => ({shop,status:'created',shop_admin_url:`https://${shop}.example.test/admin/${row.id}`,shop_url:`https://${shop}.example.test/product/${row.id}`}))); }
   else if (path !== '/api/product-imports/test-draft') throw new Error(`Unexpected API ${path}`);
   return { ok: true, status: 200, json: async () => clone(server) };
 };
@@ -81,6 +81,22 @@ async function render(entry) {
   assert.equal(calls.filter(call => call.path === '/api/product-imports' && call.method === 'POST').length, 1, 'StrictMode reuses the idempotent create request');
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3);
   assert.ok(document.body.textContent.includes('Rodina duší'));
+  assert.equal(label('Import do BIKETREK: PL-1').checked, true);
+  assert.equal(label('Import do xTrek: PL-1').checked, false);
+  const beforeTargets = calls.length;
+  await click(label('Import do xTrek: PL-1'));
+  assert.equal(label('Import do xTrek: PL-2').checked, true, 'Target shop choices propagate through the product family');
+  await change(label('Kategória xTrek: PL-1'), 'XTOOLS');
+  assert.equal(label('Kategória xTrek: PL-2').value, 'XTOOLS', 'Each alternate shop has its own family category');
+  await click(label('Import do BIKETREK: PL-3'));
+  assert.equal(label('Import do xTrek: PL-3').checked, false, 'Both destinations may stay unselected for a Hub-only row');
+  assert.equal(calls.length, beforeTargets, 'Destination selection performs no writes or paid AI requests');
+  assert.equal(document.querySelector('.import-ai-panel'), null);
+  assert.equal(button('Pripraviť AI obsah (2)'), undefined);
+  assert.equal(document.body.textContent.includes('Iba feed'), false);
+  await click(button('Uložiť koncept (3)'));
+  assert.deepEqual(server.rows[0].values.target_shops, ['biketrek', 'xtrek']);
+  assert.deepEqual(server.rows[2].values.target_shops, []);
   await change(label('Pravidlá AI pre PL-1'),'inner_tubes');
   assert.equal(label('Pravidlá AI pre PL-2').value,'inner_tubes','Explicit AI rule profile is shared by sibling variants');
   assert.equal(label('Pravidlá AI pre PL-3').value,'auto');
@@ -92,7 +108,7 @@ async function render(entry) {
   await change(label('Spoločná hodnota'),'auto');
   await click(button('Použiť na označené'));
   assert.equal(button('Uložiť koncept (0)').disabled,true,'Returning profiles to automatic selection clears pending edits');
-  assert.equal(button('Náhľad odoslania do e-shopu').disabled, true);
+  assert.equal(button('Pripraviť import').disabled, false);
   assert.equal(calls.some(call => call.path.endsWith('/save') || call.path.endsWith('/publish')), false, 'Opening a draft performs no Hub registration or shop publication');
   await click(field(1, 'brand').querySelector('button'));
   await change(label('Značka'), 'Edited'); await key(label('Značka'), 'Enter');
@@ -114,7 +130,7 @@ async function render(entry) {
   await paste(field(1, 'name'), 'Ručný názov 1\nRučný názov 2');
   assert.ok(field(1, 'name').textContent.includes('Ručný názov 1'));
   assert.ok(field(2, 'name').textContent.includes('Ručný názov 2'));
-  assert.equal(calls.some(call => call.method === 'PUT'), false, 'Typing/paste remain local until explicit save');
+  assert.equal(server.rows[0].values.name, 'Duša 1', 'Typing/paste remain local until explicit save');
   let leavePrompts = 0; window.confirm = () => { leavePrompts++; return false; };
   await click(button('Späť do katalógu'));
   assert.equal(leavePrompts, 1); assert.ok(field(1, 'name'), 'Cancelled SPA navigation preserves the draft');
@@ -153,7 +169,8 @@ async function render(entry) {
   assert.equal(label('Vylepšiť pomocou AI: PL-1').checked, true);
   assert.equal(label('Vylepšiť pomocou AI: PL-2').checked, true);
   assert.equal(label('Vylepšiť pomocou AI: PL-3').checked, false);
-  await click(button('Pripraviť AI obsah (2)'));
+  assert.equal(calls.some(call => call.path.endsWith('/ai') || call.path.endsWith('/ai-start')), false, 'AI checkbox and bulk selection do not charge or prepare until the primary action');
+  await click(button('Pripraviť import'));
   assert.equal(calls.some(call => call.path.endsWith('/ai-start')), false, 'Estimate is separate from paid AI');
   await change(label('Pravidlá AI pre PL-1'),'general');
   assert.equal(button('Spustiť AI · odhad 0.040 USD'),undefined,'An edited profile cannot start a stale cost estimate');
@@ -177,42 +194,52 @@ async function render(entry) {
   server.rows.filter(row => row.ai_job).forEach(row => row.ai_job.status = 'review');
   await click(button('Uložiť koncept (1)'));
   await click(button('Uložiť produkty do Hubu'));
-  assert.equal(button('Náhľad odoslania do e-shopu').disabled,true,'Selected but unapplied AI cannot accidentally publish feed-only content');
-  assert(document.querySelector('a[href="/ai-content?job=job-family-1"]'),'Review is reachable for the specific AI family');
-  await click(button('Prijať výsledky AI do tabuľky'));
+  assert.equal(calls.some(call => call.path.endsWith('/publish-preview')), false, 'Hub save cannot accidentally preview feed-only content while AI awaits acceptance');
+  assert(document.querySelector('a[href="/ai-content?job=job-family-1"]'), 'Review is reachable for the specific AI family');
+  await click(button('Prijať výsledky AI a pokračovať'));
   assert.equal(server.rows[0].values.name, 'Ručný názov počas AI', 'Manual values survive accepted AI output');
-  assert.equal(button('Náhľad odoslania do e-shopu').disabled, true, 'AI changes require local Hub save');
-  await click(button('Uložiť produkty do Hubu'));
-  assert.equal(server.status, 'saved');
-  assert.equal(calls.some(call => call.path.endsWith('/publish')), false, 'Saving to Hub never writes the shop');
+  assert.equal(server.status, 'saved', 'The primary action saves accepted results into Hub before preview');
+  assert(server.publication, 'The primary action continues into a read-only shop preview');
+  assert.equal(calls.some(call => call.path.endsWith('/publish')), false, 'Preparation never writes the shop before confirmation');
   await change(label('Pravidlá AI pre PL-1'),'general');
-  assert(button('Náhľad odoslania do e-shopu').disabled);
-  assert(document.body.textContent.includes('Pravidlá zmenené – priprav AI obsah znova'),'A locally changed profile explains why the completed output is stale');
+  assert(button('Odoslať 2 produktov do BIKETREK + xTrek').disabled, 'A changed AI profile blocks publication of an old preview');
+  assert(document.body.textContent.includes('Pravidlá zmenené – priprav AI obsah znova'));
   await change(label('Pravidlá AI pre PL-1'),'inner_tubes');
-  assert(!button('Náhľad odoslania do e-shopu').disabled);
+  assert(!button('Odoslať 2 produktov do BIKETREK + xTrek').disabled);
   server.rows.filter(row=>row.ai_job).forEach(row=>row.ai_job.staging={ai_applied:false});
   await click(button('Obnoviť'));
-  assert(button('Náhľad odoslania do e-shopu').disabled,'A persisted profile mismatch blocks preview despite a historical completed job');
+  assert(button('Odoslať 2 produktov do BIKETREK + xTrek').disabled, 'A persisted profile mismatch blocks publication despite a historical completed job');
   assert(document.body.textContent.includes('Pravidlá zmenené – priprav AI obsah znova'));
   server.rows.filter(row=>row.ai_job).forEach(row=>row.ai_job.staging={ai_applied:true});
   await click(button('Obnoviť'));
-  await click(button('Náhľad odoslania do e-shopu'));
-  assert.equal(calls.some(call => call.path.endsWith('/publish')), false, 'Remote preview is read-only');
-  await click(button('Odoslať 1 produktov do biketrek'));
+  await click(button('Odoslať 2 produktov do BIKETREK + xTrek'));
   assert.equal(calls.filter(call => call.path.endsWith('/publish')).length, 1);
   assert.ok(document.body.textContent.includes('Vytvorené'));
   assert.ok(document.body.textContent.includes('Import do e-shopu dokončený'));
-  assert.equal(button('Náhľad odoslania do e-shopu'),undefined,'Completed publication no longer offers a fresh preview');
-  assert.equal(button('Uložiť produkty do Hubu'),undefined,'A completed create-only preparation cannot imply it updates shop products');
+  assert.equal(button('Pripraviť import'), undefined, 'Completed publication no longer offers a fresh preview');
+  assert.equal(button('Uložiť produkty do Hubu'), undefined, 'A completed create-only preparation cannot imply it updates shop products');
   assert.equal(label('Vylepšiť pomocou AI: PL-1').disabled,true);
-  assert(!button('Obnoviť').disabled,'The final result can still be refreshed');
-  assert(!document.body.textContent.includes('Až nasledujúce potvrdenie vytvorí produkty'),'Result copy replaces preview instructions');
+  for (const shop of ['biketrek', 'xtrek']) {
+    assert(document.querySelector(`a[href="https://${shop}.example.test/admin/1"]`), 'Completed rows expose each shop administration URL');
+    assert(document.querySelector(`a[href="https://${shop}.example.test/product/1"]`), 'Completed rows expose each storefront URL');
+  }
+  assert(!button('Obnoviť').disabled, 'The final result can still be refreshed');
+  assert(!document.body.textContent.includes('Až nasledujúce potvrdenie vytvorí produkty'), 'Result copy replaces preview instructions');
+
+  const previewCallsBeforeRecovery = calls.filter(call => call.path.endsWith('/publish-preview')).length;
+  server.publication_result.status = 'failed'; server.publication_result.items[1].status = 'failed';
+  await click(button('Obnoviť'));
+  assert(label('Import do xTrek: PL-1').disabled, 'A partial delivery locks both destination choices');
+  assert.equal(button('Pripraviť import'), undefined, 'A partially delivered batch cannot start a fresh preview');
+  await click(button('Overiť výsledok / zopakovať neodoslané'));
+  assert.equal(calls.filter(call => call.path.endsWith('/publish-preview')).length, previewCallsBeforeRecovery);
+  assert.equal(calls.filter(call => call.path.endsWith('/publish')).at(-1).body.retry_failed, true, 'Partial recovery uses the original idempotent publication request');
 
   // Older imports may have been published while approved AI still awaited table acceptance.
   server.rows.filter(row => row.ai_job).forEach(row => row.ai_job.status = 'ready');
   await click(button('Obnoviť'));
   assert(document.body.textContent.includes('AI výsledky zostali neprevzaté'));
-  assert.equal(button('Prijať výsledky AI do tabuľky'),undefined,'Applying AI cannot erase an already completed delivery record');
+  assert.equal(button('Prijať výsledky AI a pokračovať'),undefined,'Applying AI cannot erase an already completed delivery record');
 
   const deliveredResult = clone(server.publication_result);
   server.publication_result = null;
@@ -226,13 +253,39 @@ async function render(entry) {
   server.rows.filter(row=>row.ai_job).forEach(row=>row.ai_job.status='completed');
   await act(async()=>automaticPoll());
   assert(document.body.textContent.includes('Import do e-shopu dokončený'));
-  assert(!button('Náhľad odoslania do e-shopu'),'Completed automatic publication does not offer another preview');
+  assert(!button('Pripraviť import'),'Completed automatic publication does not offer another preview');
 
   await render('/product-import');
   assert.ok(document.querySelector('a[href="/product-import?draft=test-draft"]'), 'Saved drafts are discoverable without route state');
   await click(document.querySelector('a[href="/product-import?draft=test-draft"]'));
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3, 'Draft resumes from server via durable URL');
   assert.equal(calls.filter(call => call.path === '/api/product-imports' && call.method === 'POST').length, 1);
+  server = {...server, revision: server.revision + 1, status: 'draft', publication: null, publication_result: null, rows: [{...clone(initial[2]), values: {...values(3), target_shops: []}, ai_job: null}]};
+  await render('/product-import?draft=test-draft&case=hub-only');
+  const writesBeforeHubOnly = calls.filter(call => call.path.endsWith('/publish-preview') || call.path.endsWith('/publish')).length;
+  await click(button('Pripraviť a uložiť do Hubu'));
+  assert.equal(server.status, 'saved');
+  assert.equal(calls.filter(call => call.path.endsWith('/publish-preview') || call.path.endsWith('/publish')).length, writesBeforeHubOnly, 'A Hub-only selection saves locally without preparing or sending any shop write');
+  server.shops[1].error = 'shop_not_configured';
+  await render('/product-import?draft=test-draft&case=unavailable');
+  assert(label('Import do xTrek: PL-3').disabled, 'An unavailable shop cannot be newly selected');
+  assert(document.body.textContent.includes('E-shop nie je pripravený'));
+  server.rows[0].values.target_shops = ['xtrek'];
+  await click(button('Obnoviť'));
+  assert(!label('Import do xTrek: PL-3').disabled, 'An already selected unavailable destination may still be cleared for Hub-only saving');
+  await click(label('Import do xTrek: PL-3'));
+  await click(button('Uložiť koncept (1)'));
+  assert.deepEqual(server.rows[0].values.target_shops, []);
+  delete server.shops[1].error;
+  server.rows = [{...clone(initial[0]), values: {...values(1), target_shops: ['biketrek']}}];
+  server.status = 'saved';
+  server.publication = {preview_id:'already-existing',options,errors:[],warnings:[],expires_at:new Date(Date.now()+60000).toISOString(),items:[{shop:'biketrek',code:'PL-1',name:'Existing product',product_ids:[1],variants_count:0,status:'exists',warnings:[],errors:[],payload:{}}]};
+  await render('/product-import?draft=test-draft&case=all-existing');
+  assert(!button('Dokončiť prípravu - produkty už existujú').disabled, 'An all-existing preview has a terminal confirmation instead of a permanently disabled zero-create button');
+  await click(button('Dokončiť prípravu - produkty už existujú'));
+  assert(document.body.textContent.includes('Import do e-shopu dokončený'));
+  assert.equal(server.publication_result.items[0].status, 'exists', 'No-op completion retains the already-existing outcome');
+  assert(document.querySelector('a[href="https://biketrek.example.test/admin/1"]'));
   await act(async () => root.unmount());
   console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

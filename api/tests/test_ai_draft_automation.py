@@ -158,7 +158,7 @@ class DraftAutomationTests(unittest.IsolatedAsyncioTestCase):
              patch.object(ai_content, 'get_job', AsyncMock(return_value=job)), \
              patch.object(service, 'get_draft', AsyncMock(return_value=draft)), \
              patch.object(service, 'assert_ai_applied', AsyncMock()) as applied, \
-             patch.object(service, 'publication_result', return_value=None), \
+             patch.object(service, 'publication_result', side_effect=[None, {'status':'completed','items':[{'status':'created'}]}]), \
              patch.object(catalog_import, 'queue_import', return_value=({}, True)) as queue, \
              patch.object(catalog_import, 'execute_import', AsyncMock()) as execute, \
              patch.object(catalog_import, 'import_result', return_value={'status':'completed','items':[{'status':'created'}]}):

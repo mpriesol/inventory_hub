@@ -2,7 +2,7 @@
 // Complete suppliers management page with editor, history, and validation
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Package,
@@ -148,6 +148,8 @@ function SupplierCard({ supplier, onEdit, onCatalog, onMapping }: SupplierCardPr
         onClick={(event) => { event.stopPropagation(); onMapping(supplier.code); }}>
         {t('feedMapping.open')}
       </Button>
+      {supplier.code === 'sloger' && <Link className="inline-block mt-4 ml-4 text-sm" to="/suppliers/sloger/b2b-test"
+        onClick={event => event.stopPropagation()}>{t('slogerProbe.title')}</Link>}
     </div>
   );
 }
@@ -807,6 +809,18 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords, ide
             className="w-full"
           />
         </div>
+      </div>
+
+      <div>
+        <label htmlFor="supplier-default-shop" className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+          {t('suppliers.defaultShop')}
+        </label>
+        <select id="supplier-default-shop" value={config.default_shop || ''} className="w-full"
+          onChange={event => updateConfig(cfg => ({ ...cfg, default_shop: event.target.value as SupplierConfig['default_shop'] }))}>
+          <option value="">{t('suppliers.defaultShopUnset')}</option>
+          <option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option>
+        </select>
+        <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.defaultShopHelp')}</p>
       </div>
 
       <div>

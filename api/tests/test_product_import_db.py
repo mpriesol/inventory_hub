@@ -16,7 +16,7 @@ from test_ai_content import content
 from test_ai_content_db import FakeContentShop
 from inventory_hub import config_io, database
 from inventory_hub.ai_content_models import AiJob
-from inventory_hub.db_models import Product
+from inventory_hub.db_models import Product, ProductIdentifier, Supplier, IdentifierType
 from inventory_hub.db_models_ext import ShopProduct, ProductSupplySource
 from inventory_hub.product_import_models import ProductImportDraft
 from inventory_hub.product_import_types import DraftCreate, DraftPatch, DraftRevision, DraftAiRequest, DraftPublish
@@ -157,6 +157,82 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             override = await db.get(ProductEditorOverride, first['rows'][0]['hub_product_id'])
             self.assertNotEqual(override.data['common']['name'], 'Should not replace existing')
+
+    async def test_per_row_two_shop_publication_and_hub_only_save_are_replay_safe(self):
+        clients = {'biketrek': self.client, 'xtrek': FakeContentShop()}
+        path = config_io.shop_path('xtrek')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'upgates_api_base_url': 'https://xtrek.example.test/api/v2',
+                                   'upgates_login': 'fixture', 'upgates_api_key': 'fixture'}))
+        with patch.object(catalog_import.UpgatesClient, 'from_shop', side_effect=lambda shop: clients[shop]):
+            request = DraftCreate(request_id=uuid4(), supplier='paul-lange', shop='biketrek', product_ids=self.ids[:2],
+                                  options={'category_code': 'K-TEST'})
+            result = await self.create(request)
+            self.assertTrue(all(row['values']['target_shops'] == ['biketrek'] for row in result['rows']))
+            selected, local_only = result['rows']
+            result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[
+                {'id': selected['id'], 'values': {'target_shops': ['biketrek', 'xtrek'], 'target_category_codes': {'xtrek': 'K-TEST'}}},
+                {'id': local_only['id'], 'values': {'target_shops': []}}])
+            result = await self.mutate(result, service.save)
+            result = await self.mutate(result, service.preview)
+            self.assertEqual(set(result['publications']), {'biketrek', 'xtrek'})
+            original_previews = {shop: value['preview']['preview_id'] for shop, value in result['publications'].items()}
+            for value in result['publications'].values():
+                self.assertEqual(value['preview']['items'][0]['product_ids'], [selected['id']])
+            result, tasks = await self.mutate(result, service.publish, DraftPublish, preview_id=result['publication']['preview_id'])
+            self.assertEqual(set(tasks), set(original_previews.items()))
+            await service.execute_publications(tasks)
+            async with self.sessions() as db:
+                result = await service.public(db, await service.get_draft(db, result['id']))
+                self.assertEqual(result['publication_state'], 'completed', result)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 2)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 2)
+                self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+            result, repeated = await self.mutate(result, service.publish, DraftPublish, preview_id=result['publication']['preview_id'])
+            self.assertFalse(repeated)
+            for client in clients.values():
+                self.assertEqual(len([sent for sent in client.sent if sent[0] == 'products']), 1)
+            self.assertEqual({shop: value['preview']['preview_id'] for shop, value in result['publications'].items()}, original_previews)
+
+    async def test_hub_only_existing_canonical_product_gains_proved_supplier_alias(self):
+        from inventory_hub.services.identifiers import ProductIdentifierService
+        # The default catalog fixture deliberately has an unverified barcode.
+        # Cross-supplier reuse requires a checksum-validated EAN, exactly as
+        # receiving and the shared identity resolver do in production.
+        self.write_feed(xml_item(ean='0000000000017'))
+        await self.refresh()
+        async with self.sessions() as db:
+            source = (await catalog.selected_products(db, 'paul-lange', 'products', [self.ids[0]]))[0]
+            self.assertEqual(ProductIdentifierService.classify_barcode(source.eans[0]), IdentifierType.ean)
+            other = Supplier(code='other-fixture', name='Other supplier')
+            db.add(other)
+            await db.flush()
+            original = Product(sku='EXISTING-001', name='Existing name', supplier_id=other.id)
+            db.add(original)
+            await db.flush()
+            product_id = original.id
+            await ProductIdentifierService(db).add_identifier(product_id, source.eans[0], is_primary=True)
+            await db.commit()
+        result = await self.create()
+        self.assertEqual(result['rows'][0]['values']['code'], 'EXISTING-001')
+        result = await self.mutate(result, service.patch_rows, DraftPatch,
+            rows=[{'id': self.ids[0], 'values': {'target_shops': []}}])
+        result = await self.mutate(result, service.save)
+        async with self.sessions() as db:
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == 'paul-lange'))
+            alias = await db.scalar(select(ProductIdentifier).where(ProductIdentifier.supplier_id == supplier_id,
+                ProductIdentifier.identifier_type == IdentifierType.supplier_sku, ProductIdentifier.value == source.code))
+            self.assertEqual(alias.product_id, product_id)
+            self.assertEqual((await db.get(Product, product_id)).sku, 'EXISTING-001')
+            self.assertEqual((await db.get(Product, product_id)).name, 'Existing name')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
+        result = await self.mutate(result, service.patch_rows, DraftPatch,
+            rows=[{'id': self.ids[0], 'values': {'target_shops': ['biketrek']}}])
+        result = await self.mutate(result, service.save)
+        result = await self.mutate(result, service.preview)
+        self.assertEqual(result['publication']['items'][0]['payload']['code'], 'EXISTING-001')
+        self.assertFalse([sent for sent in self.client.sent if sent[0] == 'products'])
 
     async def test_ai_reads_mapped_edited_facts_and_preserves_later_manual_work(self):
         result = await self.create()

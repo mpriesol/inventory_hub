@@ -26,12 +26,17 @@ def parameter_registry(shop, client, *, refresh=False):
         return {"checked_at": checked_at, "parameters": data}
 
 
-def content_fields(shop, client, *, create=False):
+def content_fields(shop, client, *, create=False, keys=None):
+    fields = FIELDS if keys is None else [field for field in FIELDS if field["key"] in keys]
+    if keys is not None and set(keys) - {field["key"] for field in FIELDS}:
+        raise ValueError("Unknown content metadata key")
     with imports._shop_cache(shop, "ai-content-fields") as (path, saved, fingerprint):
-        fresh = bool(saved and imports.now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(minutes=15))
+        # Publication must recheck the current definitions, including language
+        # handling. A preview may use the short-lived read-only cache.
+        fresh = bool(not create and saved and imports.now() - datetime.fromisoformat(saved["checked_at"]) < timedelta(minutes=15))
         rows = saved["data"] if fresh else imports._pages(client, "metas", "metas", {"category": "products"})
         missing = []
-        for expected in FIELDS:
+        for expected in fields:
             actual = next((m for m in rows if m.get("key") == expected["key"] and m.get("category") == "products"), None)
             # Existing stores can use textarea for h1_descriptor. Both text types
             # are compatible; do not alter the shop's existing field definitions.
@@ -51,7 +56,7 @@ def content_fields(shop, client, *, create=False):
         imports._write(path, {"version": 1, "fingerprint": fingerprint, "checked_at": imports.now().isoformat(), "data": rows})
         return {f["key"]: next((bool(m.get("common_languages_value_yn")) for m in rows
                 if m.get("key") == f["key"] and m.get("category") == "products"), f["common_languages_value_yn"])
-                for f in FIELDS}
+                for f in fields}
 
 
 def verify_content(remote: dict, expected: dict):

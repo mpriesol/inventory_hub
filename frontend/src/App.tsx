@@ -6,6 +6,7 @@ import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
 import { ProductImportPage } from './pages/ProductImportPage';
 import { FeedMappingPage } from './pages/FeedMappingPage';
+import { SlogerProbePage } from './pages/SlogerProbePage';
 import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate } from 'react-router-dom';
 
 // Styles
@@ -66,6 +67,7 @@ const router = createBrowserRouter(createRoutesFromElements(
 
           {/* Suppliers */}
           <Route path="/suppliers" element={<SuppliersPage />} />
+          <Route path="/suppliers/sloger/b2b-test" element={<SlogerProbePage />} />
           <Route path="/suppliers/:supplier/catalog" element={<SupplierCatalogPage />} />
           <Route path="/suppliers/:supplier/feed-mapping" element={<FeedMappingPage />} />
 

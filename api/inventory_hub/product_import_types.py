@@ -38,6 +38,21 @@ class ImportValues(StrictModel):
     availability: str = Field(default="", max_length=100)
     ai_enabled: StrictBool = False
     ai_category_profile: str = Field(default="auto", pattern=r"^[a-zA-Z0-9_-]{1,80}$")
+    # None is reserved for old drafts, whose only target is draft.shop.
+    target_shops: list[Literal["biketrek", "xtrek"]] | None = Field(default=None, max_length=2)
+    target_category_codes: dict[Literal["biketrek", "xtrek"], str | None] = Field(default_factory=dict)
+
+    @field_validator("target_shops")
+    @classmethod
+    def distinct_targets(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("Duplicate target shop")
+        return value
+
+    @field_validator("target_category_codes")
+    @classmethod
+    def target_categories(cls, value):
+        return {key: safe_text(code, maximum=100, blank=False) if code is not None else None for key, code in value.items()}
 
     @field_validator("purchase_net", "retail_gross", "sale_gross")
     @classmethod

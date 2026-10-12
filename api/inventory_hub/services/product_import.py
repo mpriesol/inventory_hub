@@ -29,7 +29,8 @@ from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 
 COMMON_FIELDS = {'group_name', 'brand', 'description_html', 'short_description', 'seo_title',
-                 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled', 'ai_category_profile'}
+                 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled', 'ai_category_profile',
+                 'target_shops', 'target_category_codes'}
 AI_FIELDS = {'name', 'group_name', 'short_description', 'description_html', 'seo_title', 'seo_description', 'parameters', 'metadata', 'category_code'}
 
 
@@ -72,18 +73,50 @@ def changed(draft, document, note, *, dirty=True):
     if dirty:
         draft.status = 'draft'
         document['publication'] = None
+        document.pop('publications', None)
 
 
-def publication_result(draft):
+def row_targets(row, primary):
+    selected = row['values'].get('target_shops')
+    return [primary] if selected is None else selected
+
+
+def publication_previews(draft):
+    previews = draft.document.get('publications')
+    if previews is not None:
+        return previews
     preview = draft.document.get('publication')
-    if not preview:
-        return None
+    return {draft.shop: preview} if preview else {}
+
+
+def target_result(shop, preview):
     try:
-        return catalog_import.import_result(draft.shop, preview['preview_id'])
+        return catalog_import.import_result(shop, preview['preview_id'])
     except CatalogError as error:
         if error.code == 'import_not_started':
             return None
         raise
+
+
+def publication_result(draft):
+    previews = publication_previews(draft)
+    if not previews:
+        return None
+    results = {shop: target_result(shop, preview) for shop, preview in previews.items()}
+    if not any(results.values()):
+        return None
+    if len(previews) == 1:
+        shop = next(iter(previews))
+        result = results[shop]
+        return {**result, 'items': [{**item, 'shop': shop} for item in result['items']]}
+    items = [{**item, 'shop': shop} for shop, result in results.items()
+             for item in (result or {'items': [{**item, 'status': 'pending'} for item in previews[shop]['items']]})['items']]
+    states = {result['status'] if result else 'pending' for result in results.values()}
+    status = 'running' if 'running' in states else 'queued' if 'queued' in states else 'completed' if states == {'completed'} else 'failed'
+    return {'preview_id': draft.document['publication']['preview_id'], 'shop': draft.shop,
+            'status': status, 'items': items,
+            'errors': [shop + ':' + error for shop, result in results.items() if result for error in result.get('errors', [])],
+            'updated_at': max(result.get('updated_at', '') for result in results.values() if result)}
 
 
 def publication_state(result):
@@ -149,10 +182,10 @@ async def ai_job_statuses(db, jobs):
 
 def assert_editable(draft):
     result = publication_result(draft)
-    if result and (result['status'] in ('queued', 'running') or any(i['status'] == 'uncertain' for i in result['items'])):
-        raise CatalogError('import_publication_pending', 'Reconcile the existing publication before changing this draft', 409)
     if publication_state(result) == 'completed':
         raise CatalogError('import_publication_finished', 'This import is complete; use the product editor for further changes', 409)
+    if result:
+        raise CatalogError('import_publication_pending', 'Reconcile the existing publication before changing this draft', 409)
 
 
 async def assert_ai_applied(db, draft):
@@ -172,8 +205,28 @@ async def public(db, draft):
     rows = deepcopy(document['rows'])
     for row in rows:
         row['values'].setdefault('ai_category_profile', 'auto')
+        row['values']['target_shops'] = row_targets(row, draft.shop)
+        row['values'].setdefault('target_category_codes', {})
     ids = {r.get('ai_job_id') for r in rows if r.get('ai_job_id')}
     result = publication_result(draft)
+    if result:
+        # Historical journals did not retain URLs. Their already verified local
+        # shop content can fill links without new network requests or writes.
+        from inventory_hub.services.catalog import attach_shop_links
+        result = deepcopy(result)
+        for shop in {item.get('shop', draft.shop) for item in result['items']}:
+            pending = [item for item in result['items'] if item.get('shop', draft.shop) == shop
+                and item['status'] in ('created', 'exists') and not (item.get('shop_url') and item.get('shop_admin_url'))]
+            link_ids = {id for item in pending for id in item['product_ids']}
+            sources = [to_source(row).model_copy(update={'listed': True}) for row in document['rows'] if row['id'] in link_ids]
+            if sources:
+                await attach_shop_links(db, shop, sources)
+                by_id = {source.id: source for source in sources}
+                for item in pending:
+                    source = next((by_id[id] for id in item['product_ids'] if id in by_id), None)
+                    if source:
+                        item['shop_url'] = item.get('shop_url') or source.shop_url
+                        item['shop_admin_url'] = item.get('shop_admin_url') or source.shop_admin_url
     jobs = {j.id: {**ai_content.summary(j), 'staging': ai_job_import_status(j, draft, result)}
             for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)))).all()} if ids else {}
     for row in rows:
@@ -181,10 +234,19 @@ async def public(db, draft):
         row.pop('ai_baseline', None)
         row.pop('ai_applied_snapshot', None)
         row['ai_job'] = jobs.get(row.pop('ai_job_id', None))
-        row['publication_status'] = next((item['status'] for item in (result or {}).get('items', [])
-                                          if row['id'] in item['product_ids']), None)
+        outcomes = [item['status'] for item in (result or {}).get('items', []) if row['id'] in item['product_ids']]
+        row['publication_status'] = next((status for status in ('uncertain', 'failed', 'invalid', 'pending', 'ready', 'created', 'exists')
+                                           if status in outcomes), None)
+        row['publication_links'] = [{'shop': item.get('shop', draft.shop), 'status': item['status'],
+            'shop_url': item.get('shop_url'), 'shop_admin_url': item.get('shop_admin_url')}
+            for item in (result or document.get('publication') or {}).get('items', [])
+            if row['id'] in item['product_ids'] and item['status'] in ('created', 'exists', 'failed', 'uncertain', 'pending')]
+    publications = {shop: {'preview': preview, 'result': outcome, 'state': publication_state(outcome)}
+        for shop, preview in publication_previews(draft).items() for outcome in [target_result(shop, preview)]}
     return {'id': draft.id, 'revision': draft.revision, 'status': draft.status, 'supplier': draft.supplier,
             'shop': draft.shop, 'feed_key': document['feed_key'], 'options': document['options'],
+            'shops': document.get('shops', [{'code': draft.shop, 'name': draft.shop, 'categories': document['categories']}]),
+            'default_shop': document.get('default_shop', draft.shop), 'publications': publications,
             'categories': document['categories'], 'rows': rows, 'publication': document.get('publication'),
             'publication_result': result, 'publication_state': publication_state(result), 'created_at': draft.created_at,
             'updated_at': draft.updated_at}
@@ -284,8 +346,24 @@ async def create(db, request):
     source = await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
     from inventory_hub.services.feed_mapping import apply_shop_mapping
     products = [await apply_shop_mapping(db, p, request.shop) for p in source]
+    products = await catalog_import.canonical_products(db, products)
     remote = await asyncio.to_thread(catalog_import.cached_import_options, request.shop)
     cfg = supplier_config(request.supplier)
+    default_shop = cfg.get('default_shop') or ('biketrek' if request.supplier == 'sloger' else request.shop)
+    shops = [{'code': request.shop, 'name': 'BIKETREK' if request.shop == 'biketrek' else 'xTrek', 'categories': remote['categories']}]
+    targets = {request.shop: catalog_import._target(catalog_import.shop_config(request.shop))}
+    mapped_targets = {}
+    active_shops = (await db.scalars(select(Shop).where(Shop.is_active.is_(True), Shop.code.in_(['biketrek', 'xtrek'])))).all()
+    for shop in active_shops:
+        if shop.code == request.shop:
+            continue
+        try:
+            settings = await asyncio.to_thread(catalog_import.cached_import_options, shop.code)
+            targets[shop.code] = catalog_import._target(catalog_import.shop_config(shop.code))
+            shops.append({'code': shop.code, 'name': 'BIKETREK' if shop.code == 'biketrek' else 'xTrek', 'categories': settings['categories']})
+            mapped_targets[shop.code] = {p.id: await apply_shop_mapping(db, p, shop.code) for p in source}
+        except CatalogError as error:
+            shops.append({'code': shop.code, 'name': shop.name, 'categories': [], 'error': error.code})
     policy = availability_policy(request.supplier, cfg)
     rows = []
     for p in products:
@@ -305,7 +383,8 @@ async def create(db, request):
             parameters=p.parameters, variant_attributes=p.variant_attributes,
             purchase_net=money(p.prices.purchase_net), retail_gross=money(p.prices.retail_gross), sale_gross=sale,
             vat_percent=money(p.prices.vat_percent), currency=p.prices.currency,
-            availability=availability['availability'])
+            availability=availability['availability'], target_shops=[request.shop],
+            target_category_codes={shop: getattr(mapped[p.id], 'target_category_code', None) for shop, mapped in mapped_targets.items()})
         provenance = {key: 'feed' for key in values.model_fields}
         for key in ('sale_gross', 'availability', 'seo_title', 'seo_description'):
             provenance[key] = 'derived'
@@ -316,7 +395,8 @@ async def create(db, request):
             'source_category': p.category, 'mapping_revision': getattr(p, 'mapping_revision', 0),
             'mapping_provenance': getattr(p, 'mapping_provenance', {}), 'source': p.model_dump(mode='json'),
             'values': values.model_dump(mode='json'), 'manual_fields': ['category_code'] if request.options.category_code else [],
-            'provenance': provenance, 'hub_product_id': None})
+            'provenance': provenance, 'hub_product_id': None,
+            'canonical_code': p.shop_code})
     families = defaultdict(list)
     for row in rows:
         if row['is_variant']:
@@ -335,6 +415,7 @@ async def create(db, request):
                     row['provenance'][key] = 'derived'
     document = {'feed_key': request.feed_key, 'run_id': request.run_id, 'options': request.options.model_dump(mode='json'),
                 'categories': remote['categories'], 'rows': rows, 'publication': None, 'events': [],
+                'shops': shops, 'targets': targets, 'default_shop': default_shop,
                 'target': catalog_import._target(catalog_import.shop_config(request.shop))}
     validate_rows(document)
     draft = ProductImportDraft(id=request.request_id.hex, request_hash=fingerprint, revision=1,
@@ -367,10 +448,15 @@ async def patch_rows(db, draft, request):
             parsed = ImportValues.model_validate({**row['values'], **values})
         except (ValidationError, ValueError):
             raise CatalogError('import_invalid_cells', 'Check the edited field values', 422) from None
-        if parsed.code != canonical_supplier_sku(prefix, parsed.supplier_code):
+        unchanged_identity = parsed.code == row['values']['code'] and parsed.supplier_code == row['values']['supplier_code']
+        if parsed.code != canonical_supplier_sku(prefix, parsed.supplier_code) and not unchanged_identity:
             raise CatalogError('import_code_prefix', 'The product code must use the configured supplier prefix', 422)
         if row.get('hub_product_id') and any(k in values for k in ('code', 'supplier_code', 'eans')):
             raise CatalogError('import_identity_saved', 'Edit saved product identifiers in the product editor', 409)
+        if 'target_shops' in values:
+            available = {shop['code'] for shop in document.get('shops', [{'code': draft.shop}]) if not shop.get('error')}
+            if set(parsed.target_shops or []) - available:
+                raise CatalogError('shop_not_found', 'Choose a configured active target shop', 422)
         for key in values:
             if key not in ImportValues.model_fields:
                 raise CatalogError('import_invalid_cells', 'Unknown import field', 422)
@@ -411,17 +497,28 @@ async def save(db, draft, request):
     if any(r['errors'] for r in document['rows']):
         raise CatalogError('import_invalid_rows', 'Resolve invalid rows before saving products', 422)
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-    products = [to_source(r) for r in document['rows']]
+    products = await catalog_import.canonical_products(db, [to_source(r) for r in document['rows']])
+    for row, source in zip(document['rows'], products):
+        row['values']['code'] = source.shop_code
+        row['source'] = {**row['source'], 'canonical_parent_code': source.canonical_parent_code}
+        row['group_key'] = parent_shop_code(source)
     existing, conflicts = await catalog_import.local_identities(db, products)
     if conflicts:
         raise CatalogError('local_identity_conflict', 'Local identifiers require reconciliation', 409)
-    catalog_import._claim_product_prefix(products)
+    await catalog_import.claim_product_prefix(db, products)
     supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == draft.supplier))
     for row, source in zip(document['rows'], products):
         v = row['values']
         product_id = existing.get(row['id'])
         owned = bool(row.get('hub_product_id') and product_id == row['hub_product_id'] and row.get('created_in_draft'))
         if product_id and not owned:
+            # Identity resolution has proved this additional supplier's alias.
+            # Persist it even for Hub-only imports and existing shop listings;
+            # supplier-link reconciliation must not depend on a later POST.
+            await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
+                .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
+                    index_where=text("identifier_type = 'supplier_sku'")))
             row['hub_product_id'] = product_id
             row['warnings'] = sorted(set(row['warnings']) | {'already_in_hub_unchanged'})
             continue
@@ -532,7 +629,9 @@ def bound_ai_policy(row):
     return None
 
 
-def approved_visibility(rows, product_ids):
+def approved_visibility(rows, product_ids, *, shop=None, primary_shop=None):
+    if shop is not None and primary_shop is not None and shop != primary_shop:
+        return False
     flags = {bool((bound_ai_policy(r) or {}).get('active_after_import', False))
              for r in rows if r['id'] in product_ids}
     if len(flags) > 1:
@@ -542,24 +641,46 @@ def approved_visibility(rows, product_ids):
 
 async def preview(db, draft, request):
     expect(draft, request.expected_revision)
-    if publication_state(publication_result(draft)) == 'completed':
+    # Any attempted target retains its original journal, including partial and
+    # uncertain multi-shop delivery. A fresh preview must never repeat a POST.
+    if publication_result(draft):
         return await public(db, draft)
     assert_editable(draft)
     await assert_ai_applied(db, draft)
     document = deepcopy(draft.document)
     if draft.status != 'saved' or document.get('saved_hash') != content_hash(document):
         raise CatalogError('import_save_required', 'Save current products in Hub before preparing publication', 409)
-    if any(r['errors'] or not r['values']['category_code'] for r in document['rows']):
-        raise CatalogError('import_invalid_rows', 'Every product needs a valid leaf category before publication', 422)
-    if catalog_import._target(catalog_import.shop_config(draft.shop)) != document['target']:
-        raise CatalogError('shop_target_changed', 'The target connection changed', 409)
-    snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': document['rows']}
-    options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': None})
-    prepared = await catalog_import.create_preview(db, draft.shop, ShopImportPreviewRequest(supplier=draft.supplier,
-        feed_key=document['feed_key'], product_ids=[r['id'] for r in document['rows']], options=options,
-        sale_price_overrides={r['id']: r['values']['sale_gross'] for r in document['rows']}),
-        frozen_products=[to_source(r) for r in document['rows']], staging=snapshot)
-    document['publication'] = prepared.model_dump(mode='json')
+    selected = sorted({shop for row in document['rows'] for shop in row_targets(row, draft.shop)})
+    if not selected:
+        return await public(db, draft)
+    previews = {}
+    for shop in selected:
+        if catalog_import._target(catalog_import.shop_config(shop)) != document.get('targets', {draft.shop: document['target']}).get(shop):
+            raise CatalogError('shop_target_changed', 'The target connection changed', 409)
+        rows = deepcopy([row for row in document['rows'] if shop in row_targets(row, draft.shop)])
+        categories = next((entry['categories'] for entry in document.get('shops', []) if entry['code'] == shop), document['categories'])
+        if shop != draft.shop:
+            for row in rows:
+                row['values']['category_code'] = row['values'].get('target_category_codes', {}).get(shop)
+                # AI publication policies are resolved for the original shop.
+                # Reusing its content does not authorize visibility elsewhere.
+                row.pop('ai_policy', None)
+        validation = {**document, 'rows': rows, 'categories': categories}
+        validate_rows(validation)
+        if any(row['errors'] or not row['values']['category_code'] for row in rows):
+            raise CatalogError('import_invalid_rows', f'Every selected product needs a valid leaf category for {shop}', 422)
+        snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': rows}
+        options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': None})
+        prepared = await catalog_import.create_preview(db, shop, ShopImportPreviewRequest(supplier=draft.supplier,
+            feed_key=document['feed_key'], product_ids=[r['id'] for r in rows], options=options,
+            sale_price_overrides={r['id']: r['values']['sale_gross'] for r in rows}),
+            frozen_products=[to_source(r) for r in rows], staging=snapshot)
+        previews[shop] = prepared.model_dump(mode='json')
+    document['publications'] = previews
+    first = next(iter(previews.values()))
+    document['publication'] = {**first, 'preview_id': first['preview_id'] if len(previews) == 1 else uuid4().hex,
+        'items': [{**item, 'shop': shop} for shop, value in previews.items() for item in value['items']],
+        'errors': [shop + ':' + error for shop, value in previews.items() for error in value['errors']]}
     changed(draft, document, 'Explicit shop publication preview prepared', dirty=False)
     await db.flush()
     return await public(db, draft)
@@ -584,11 +705,37 @@ async def publish(db, draft, request):
     if not result:
         await assert_ai_applied(db, draft)
     await assert_snapshot(db, {'draft_id': draft.id, 'hash': draft.document.get('saved_hash')})
-    result, run = catalog_import.queue_import(draft.shop, request.preview_id, request.retry_failed, staging_id=draft.id)
+    tasks = queue_publications(draft, request.retry_failed)
     document = deepcopy(draft.document)
     changed(draft, document, 'Shop publication explicitly confirmed', dirty=False)
     await db.flush()
-    return await public(db, draft), run
+    return await public(db, draft), tasks
+
+
+def queue_publications(draft, retry_failed=False):
+    tasks = []
+    previews = publication_previews(draft)
+    # Validate every payload before queuing any target. Queue failures after this
+    # point remain durable and are reconciled against the same preview IDs.
+    if any(preview.get('errors') or any(item['status'] not in ('ready', 'exists') for item in preview['items'])
+           for preview in previews.values()):
+        raise CatalogError('preview_invalid', 'Resolve every selected shop preview before sending', 422)
+    for shop, preview in previews.items():
+        _, run = catalog_import.queue_import(shop, preview['preview_id'], retry_failed, staging_id=draft.id)
+        if run:
+            tasks.append((shop, preview['preview_id']))
+    return tasks
+
+
+async def execute_publications(tasks):
+    # Start each confirmed shop immediately. Waiting behind another shop's
+    # large batch would make its untouched queue look like an interrupted run
+    # to the importer's existing 30-second recovery check.
+    outcomes = await asyncio.gather(*(catalog_import.execute_import(shop, preview_id)
+                                      for shop, preview_id in tasks), return_exceptions=True)
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
 
 
 async def prepare_ai(db, draft, request):
@@ -616,7 +763,7 @@ async def prepare_ai(db, draft, request):
         options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': category})
         batch = BatchRequest(request_id=uuid4(), supplier=draft.supplier, feed_key=document['feed_key'],
             product_ids=[r['id'] for r in family], ai_product_ids=[r['id'] for r in family],
-            category_profiles={r['id']: r['values'].get('ai_category_profile', 'auto') for r in family}, research=request.research,
+            category_profiles={r['id']: r['values'].get('ai_category_profile', 'auto') for r in family}, research='official',
             targets=[Target(shop=draft.shop, options=options, policy=Policy())])
         jobs = await ai_content.create_batch(db, batch, frozen_products=[to_source(r) for r in family],
             staging_id=draft.id, staging_automation_version=1)
@@ -630,6 +777,7 @@ async def prepare_ai(db, draft, request):
     document['automation'] = {'version': 1, 'job_ids': [j['id'] for j in prepared_jobs],
         'paused': bool(previous_result), 'pause_reason': 'publication_recovery' if previous_result else None,
         'auto_publish_requested': all(r['values']['ai_enabled'] for r in document['rows'])
+            and all(row_targets(r, draft.shop) == [draft.shop] for r in document['rows'])
             and all(not j.get('policy', {}).get('confirm_import', True) for j in prepared_jobs)}
     changed(draft, document, 'AI estimates prepared from current mapped cells', dirty=False)
     await db.flush()
@@ -806,6 +954,12 @@ async def advance_ai(db, job):
     rows = draft.document['rows']
     if not all(r['values']['ai_enabled'] and r.get('ai_job_id') in automation.get('job_ids', []) for r in rows):
         return
+    # The frozen AI policy belongs to its original shop. Additional targets
+    # need explicit review of their own categories and publication previews.
+    if any(row_targets(row, draft.shop) not in ([], [draft.shop]) for row in rows):
+        return
+    if not automation.get('auto_publish_requested') and any(row_targets(row, draft.shop) for row in rows):
+        return
     ids = {r['ai_job_id'] for r in rows}
     jobs = {j.id: j for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).order_by(AiJob.id).with_for_update())).all()}
     if any(not (current := jobs.get(id)) or current.context.get('staging_automation_version') != 1
@@ -815,6 +969,8 @@ async def advance_ai(db, job):
         return
     await assert_ai_applied(db, draft)
     await save(db, draft, DraftRevision(expected_revision=draft.revision))
+    if not any(row_targets(row, draft.shop) for row in draft.document['rows']):
+        return
     await preview(db, draft, DraftRevision(expected_revision=draft.revision))
     prepared = draft.document['publication']
     if prepared['errors'] or any(i['status'] not in ('ready', 'exists') for i in prepared['items']):

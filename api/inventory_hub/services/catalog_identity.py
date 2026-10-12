@@ -31,6 +31,11 @@ def read_cache(path: Path, fingerprint: str, at: datetime) -> dict | None:
 def parent_shop_code(product: CatalogProduct) -> str:
     if not product.group_code or product.variant_relationship != "explicit":
         return product.shop_code
+    # Catalog listing queries also pass lightweight database rows, which do not
+    # carry this import-only override.
+    canonical_parent = getattr(product, "canonical_parent_code", None)
+    if canonical_parent:
+        return canonical_parent
     prefix = product.shop_code[:-len(product.code)] if product.shop_code.endswith(product.code) else ""
     return prefix + "G-" + product.group_code
 

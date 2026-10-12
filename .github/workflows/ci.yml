@@ -83,6 +83,9 @@ jobs:
       - name: Check supplier availability configuration
         run: node frontend/tests/supplier-config-ui.cjs
 
+      - name: Check read-only Sloger lookup and recovery
+        run: node frontend/tests/sloger-probe-ui.cjs
+
       - name: Check protected order audit interactions
         run: node frontend/tests/order-audit-ui.cjs
 

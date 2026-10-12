@@ -6,6 +6,10 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 
 ## Kde začať
 
+Príprava importu podporuje samostatné ciele **BIKETREK** a **xTrek** pri každom produkte, predvolený e-shop dodávateľa a uloženie iba do Hubu. Každý cieľ má vlastný náhľad a trvalý výsledok; úspešné alebo neisté odoslanie sa nenahrádza novou dávkou. AI v tejto príprave vždy pracuje s feedom a oficiálnymi zdrojmi. Existujúca overená identita si zachová SKU aj pri pridaní ďalšieho dodávateľa. Odkazy na produkt a administráciu pochádzajú z odpovede Upgates. Podrobnosti: [príprava importu](docs/product-imports.md), [dodávateľské vlastné pole](docs/upgates-supplier-metadata.md).
+
+Sloger má samostatný chránený [B2B test cez Lunu](docs/ai-content.md) na `/suppliers/sloger/b2b-test`: prihlasovacie údaje existujú iba počas požiadavky, funkčný nástroj číta presné SKU a modelový výsledok sa porovná s údajmi dodávateľa. Tento test nezapisuje nákupné ceny ani zásoby. Automatické opakované načítanie a trvalé serverové prihlasovanie zostávajú mimo tohto testu. Zmena prefixu pre nové identity používa chránenú [rotáciu prefixu](docs/supplier-identity.md); existujúce SKU sa nemenia. Tieto rozšírenia nevyžadujú SQL migráciu. Integračné overenie produkcie sa zaznamenáva samostatne od lokálnych testov.
+
 Aktuálna oprava evidencie pridáva [potvrdený začiatok skladu](docs/stock-tracking.md) (migrácia 019). Historické importy a testy zostávajú neoverené; aktívne množstvá, rezervácie a synchronizácia vyžadujú nový potvrdený príjem alebo fyzický počet pre konkrétne SKU/sklad. V nasledujúcich starších popisoch má tento kontrakt prednosť pred odvodzovaním potvrdenia zo samotnej existencie pohybov.
 
 Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach používajú pri prvom načítaní serverový aktívny `is_default` sklad. Uložený kontext e-shopu alebo dávky a ručný výber majú prednosť; **Všetky sklady** zostávajú súhrnným pohľadom. Predvolenie výberu nemení zásoby, potvrdenie evidencie ani povolenia automatických zápisov.

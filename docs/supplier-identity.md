@@ -12,6 +12,7 @@ Dodávateľský kód sa uchováva samostatne. Ak sa ten istý preukázateľne zh
 - Nový dodávateľ môže upraviť prefix pred jeho prvým použitím na trvalú identitu. Pri prvom použití sa prefix uzamkne.
 - Existujúce konfigurácie s neprázdnym prefixom sa pri zavedení ochrany uzamknú. Nevieme spoľahlivo dokázať, že ich kódy ešte neboli použité, preto sa neprečíslujú.
 - Uzamknutý prefix nemení bežné uloženie ani obnova starej konfigurácie. Ostatné nastavenia, napríklad feed či dodacia lehota, zostávajú upraviteľné.
+- Výslovná rotácia prefixu je samostatná operátorská akcia pre budúce identity. Existujúce kanonické SKU a produkty nemení; pôvodný prefix zostáva trvalo rezervovaný tomuto dodávateľovi.
 - Dva rozdielne prefixy uložené v starých a nových poliach konfigurácie sú konflikt. Systém nevyberie jednu hodnotu potichu.
 
 Existujúce SKU, e-shopové prepojenia, zásoby, pohyby a nákupné ceny sa zavedením tejto ochrany nemenia.
@@ -54,6 +55,38 @@ Register nie je súčasťou editovateľného JSON ani jeho histórie. Klientské
 Odstránenie konfigurácie dodávateľa neuvoľní jeho rezervovaný prefix. Register sa musí zachovať spolu s trvalými dodávateľskými dátami; jeho vymazanie nie je spôsob prečíslovania produktov.
 
 `claim_supplier_prefix(supplier, expected_prefix)` sa volá pred trvalým použitím prefixu. Overí aktuálny config, jedinečnosť a zhodu s pripraveným prefixom. Zlyhanie nesmie pokračovať so záložným alebo prázdnym prefixom. Chybný register sa nesmie automaticky nahradiť prázdnym; zápis identity musí zostať blokovaný.
+
+### Výslovná rotácia prefixu pre nové produkty
+
+Chránený `POST /api/suppliers/{supplier}/prefix-rotation` prijíma
+`{"expected_prefix":"SL-","new_prefix":"SLG-"}`. Vyžaduje bežný operátorský
+prístup a zhodu očakávaného prefixu s konfiguráciou aj registrom. Názvy zostávajú
+neprázdnym textom s najviac 20 písmenami, číslicami, spojovníkmi alebo podčiarkovníkmi.
+Konflikt súčasného aj historicky rezervovaného priestoru iného dodávateľa sa
+odmietne vrátane prekrytia prefixov a rozdielu iba vo veľkosti písmen.
+Nový priestor sa nesmie prekrývať ani so súčasným či vyradeným prefixom toho
+istého dodávateľa, aby odlišné dodávateľské kódy nevytvorili totožné SKU.
+
+Rotácia mení iba konfiguračný prefix a jeho register. Nemení databázu, existujúce
+produkty, dodávateľské aliasy, fyzický sklad ani produkty BIKETREK či xTrek.
+Po obnove katalógu nové prípravy odvodia návrhy nových kódov z nového prefixu;
+už preukázaná identita si zachová pôvodné kanonické SKU. Existujúci importovaný
+produkt sa tým neprečísluje. Staré pripravené operácie naďalej podliehajú
+kontrole aktuálneho prefixu.
+
+Pôvodná hodnota zostáva v `retired_prefixes` registra aj po ďalšom bežnom
+uložení, použití prefixu alebo odstránení konfigurácie. Iný dodávateľ si ju
+nemôže privlastniť a rotácia ju nedokáže opätovne aktivovať. Opakovaný rovnaký
+požiadavok je úspešný bez ďalšieho zápisu len vtedy, keď je aktuálny nový prefix
+a očakávaný starý prefix už patrí medzi vyradené hodnoty; odpoveď má
+`replayed: true`. Iný zastaraný predpoklad skončí konfliktom.
+
+Oba atómové zápisy serializuje existujúci filesystemový zámok. Najprv sa
+uloží uzamknutý nový prefix spolu s rezerváciou starého, potom konfigurácia.
+Výpadok medzi zápismi ponechá obidva priestory rezervované a nezhoda registra
+s konfiguráciou blokuje načítanie, uloženie, použitie aj ďalšiu rotáciu.
+API tento stav neopravuje automaticky; pred ďalšou prácou treba prevádzkovo
+overiť oba súbory a dokončiť pôvodnú zmenu. Vymazanie registra nie je oprava.
 
 ### Dodávateľské väzby
 

@@ -26,6 +26,7 @@ export interface CatalogPage {
   manufacturers: string[]; items: CatalogRow[];
 }
 export interface CatalogStatus {
+  default_shop?: string | null;
   supplier: string; name: string; feed_key: string; run_id: number | null; last_successful_at: string | null; status: string; items: number;
   sources: { key: string; name: string; supported: boolean; configured: boolean }[];
   shops: { code: string; name: string; ready: boolean }[];
