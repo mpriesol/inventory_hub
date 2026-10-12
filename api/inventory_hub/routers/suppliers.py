@@ -19,7 +19,11 @@ from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
 from inventory_hub.settings import settings
-from inventory_hub.config_normalize import normalize_supplier_availability
+from inventory_hub.config_normalize import (
+    SupplierPriceCoefficientError,
+    normalize_supplier_availability,
+    normalize_supplier_price_coefficients,
+)
 from inventory_hub.config_io import (
     load_supplier as _load_supplier,
     save_supplier as _save_supplier,
@@ -100,9 +104,21 @@ def io_load_supplier(supplier: str, write_back_on_load: bool = True) -> Dict[str
 
 def io_save_supplier(supplier: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     try:
+        _validate_price_coefficients(cfg)
         return _save_supplier(supplier, cfg)
     except SupplierPrefixError as error:
         raise _prefix_http_error(error) from None
+
+
+def _validate_price_coefficients(cfg: Dict[str, Any]) -> None:
+    try:
+        adapter = cfg.get("adapter_settings") or {}
+        if isinstance(adapter, dict):
+            normalize_supplier_price_coefficients(adapter.get("price_coefficients"))
+        if "price_coefficients" in cfg:
+            normalize_supplier_price_coefficients(cfg["price_coefficients"])
+    except SupplierPriceCoefficientError as error:
+        raise HTTPException(status_code=422, detail={"code": "invalid_price_coefficient", "message": str(error)}) from None
 
 
 def _config_response(supplier: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -348,6 +364,11 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
     adapter = cfg.get('adapter_settings', {})
     if not isinstance(adapter, dict):
         errors.append("'adapter_settings' must be an object")
+    else:
+        try:
+            _validate_price_coefficients(cfg)
+        except HTTPException as error:
+            errors.append(error.detail['message'])
 
     return ValidationResult(
         valid=len(errors) == 0,
@@ -531,6 +552,7 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
         normalize_supplier_availability(adapter.get("availability"))
     except ValueError as error:
         raise HTTPException(status_code=422, detail={"code": "supplier_availability_invalid", "message": str(error)}) from None
+    _validate_price_coefficients(payload)
 
     try:
         current_cfg = io_load_supplier(supplier, write_back_on_load=False)

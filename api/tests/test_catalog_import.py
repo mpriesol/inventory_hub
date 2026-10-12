@@ -13,6 +13,24 @@ from inventory_hub.services import catalog_import as imports
 
 
 class ImportMappingTests(unittest.TestCase):
+    def test_supplier_coefficients_do_not_inherit_another_supplier_defaults(self):
+        p = product()
+        p.brand = "SHIMANO"
+        self.assertEqual(imports._prices(p, ShopImportOptions(), {}, True)[0]["pricelists"][0]["price_original"], 108.24)
+        p.supplier = "sloger"
+        p.prices.purchase_net = p.prices.purchase_gross = None
+        cfg = {"adapter_settings": {"price_coefficients": {" shimano ": "0.95"}}}
+        for with_vat, retail, discounted in [(True, 123, 116.85), (False, 100, 95)]:
+            unchanged = imports._prices(p, ShopImportOptions(), {}, with_vat)[0]
+            self.assertEqual(unchanged["pricelists"][0]["price_original"], retail)
+            self.assertNotIn("price_purchase", unchanged)
+            configured = imports._prices(p, ShopImportOptions(), cfg, with_vat)[0]
+            self.assertEqual(configured["pricelists"][0]["price_original"], discounted)
+            self.assertEqual(configured["price_common"], retail)
+            self.assertNotIn("price_purchase", configured)
+            bypass = imports._prices(p, ShopImportOptions(pricing="retail"), cfg, with_vat)[0]
+            self.assertEqual(bypass["pricelists"][0]["price_original"], retail)
+
     def test_manual_gross_sale_price_bypasses_coefficient_and_converts_for_net_shop(self):
         p = product()
         original = p.model_dump()

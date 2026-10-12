@@ -330,8 +330,11 @@ def _prices(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with
     retail = source.retail_gross if with_vat else source.retail_net
     if sale_gross is None and (retail is None or retail <= 0):
         raise ValueError("missing_price")
-    coefficients = {**DEFAULT_COEFFS, **{str(k).upper(): v for k, v in (cfg.get("adapter_settings", {}).get("price_coefficients") or {}).items()}}
-    coefficient = Decimal(str(coefficients.get((product.brand or "").upper(), 1))) if options.pricing == "configured" else Decimal(1)
+    # Converter defaults belong to Paul Lange, not to other suppliers selling
+    # the same brand. New suppliers use unchanged retail until configured.
+    defaults = DEFAULT_COEFFS if product.supplier == "paul-lange" else {}
+    coefficients = {**defaults, **{str(k).strip().upper(): v for k, v in (cfg.get("adapter_settings", {}).get("price_coefficients") or {}).items()}}
+    coefficient = Decimal(str(coefficients.get((product.brand or "").strip().upper(), 1))) if options.pricing == "configured" else Decimal(1)
     if not coefficient.is_finite() or coefficient <= 0:
         raise ValueError("invalid_price_coefficient")
     if sale_gross is not None:

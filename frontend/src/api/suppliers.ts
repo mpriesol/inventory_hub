@@ -50,6 +50,7 @@ export interface SupplierConfig {
       local_path: string | null;
       remote: {
         url: string;
+        urls?: string[];
         method: string;
         headers: Record<string, string>;
         params: Record<string, string>;
@@ -98,6 +99,7 @@ export interface SupplierConfig {
   adapter_settings: {
     currency?: string;
     vat_rate?: number;
+    price_coefficients?: Record<string, number | string>;
     availability?: {
       orderable?: string | null;
       unknown?: string | null;

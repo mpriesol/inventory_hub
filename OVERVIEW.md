@@ -60,7 +60,7 @@ HTML dlhého AI popisu už neblokujú bežné značky ani formátovacie atribút
 | História `/stock/movements` | Chránené čítanie nemennej evidencie | Filtre celého skladu alebo presného SKU, doklad, dôvod, pôvodný náklad a množstvo pred/po. Bez zápisov a Upgates volaní. [Návod a API](docs/stock-history.md). |
 | Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie vytvorí `INITIAL` pohyby iba bez potvrdeného začiatku evidencie daného tovaru v sklade; neoverený historický zostatok sa auditne uzavrie. Výpadok sa overuje čítaním uloženého výsledku. |
 | Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
-| Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Parsery pre Paul Lange a Northfinder. |
+| Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Natívne parsery pre Paul Lange, Northfinder a Sloger; ostatní dodávatelia používajú konfigurovateľné mapovanie. |
 | Mapovanie `/suppliers/:supplier/feed-mapping` | Konfigurátor produktového feedu | Automatická analýza XML/CSV/JSON, vizuálne prepojenie polí a kategórií, pomenované parametre feedu → Upgates/publikované registre kategórií, uložené verzie podľa dodávateľa a e-shopu. Odlišné od mapovania faktúr. |
 | Import `/product-import` | Jednotný uložený náhľad pre feed a AI | Editácia buniek a hromadné zmeny, ochrana ručných úprav, voliteľné AI pre produktovú rodinu. Uloženie do Hubu je oddelené od potvrdeného založenia v e-shope; bez fyzických skladových pohybov. |
 | Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |
@@ -189,6 +189,8 @@ Označenie „synchronizácia“ nie je zárukou rovnakého správania všetkýc
 Podmienky náhľadov, potvrdenia, kontrol identity, stavu `uncertain` a obnovy sú v [katalógovej](docs/supplier-catalog.md) a [AI dokumentácii](docs/ai-content.md). Existuje aj osobitná obmedzená AI cesta aktualizácie dodávateľskej dostupnosti; jej podmienky neplatia automaticky pre všetky produkty a varianty.
 
 Dodávateľská zásoba je oddelená od našej. `6+` je dolná hranica, nie presný počet. Obnova katalógu a zalistovanie z feedu nevytvárajú fyzický príjem. Texty dostupnosti vlastní `adapter_settings.availability` dodávateľa, s predvolenými `do 5 dní` a `overíme`. AI pravidlá ich neprepisujú; `overíme` je objednateľné. Zachovaj čerstvosť údajov, neznáme hodnoty a pravidlá konkrétneho integračného kontraktu.
+
+Sloger podporuje jeden katalóg z viacerých značkových XML zdrojov (`feeds.sources.products.remote.urls`), s atómovou obnovou a filtrovaním výrobcu. Natívny parser zachováva explicitné varianty a blokuje kolidujúce kódy aj medzi značkami. DMOC je predajná cena s DPH; chýbajúca nákupná cena sa do Upgates neposiela. Karta **Ceny** v nastavení dodávateľa upravuje koeficienty značiek; `1` cenu nemení. Bez nastavenia sa predvolené koeficienty Paul Lange nepoužijú na iného dodávateľa. Zmena nepotrebuje migráciu a sama nezapína dodávateľa ani B2B zber. Konfigurácia a overovanie sú v [dodávateľskom katalógu](docs/supplier-catalog.md#sloger-listing-feeds).
 
 ## AI obsah
 

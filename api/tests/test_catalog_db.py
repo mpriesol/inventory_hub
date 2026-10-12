@@ -153,6 +153,75 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
+    async def test_sloger_combined_catalog_keeps_ids_unknown_costs_and_duplicate_evidence(self):
+        path = config_io.supplier_path("sloger")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"name": "Sloger test", "feeds": {"sources": {"products": {
+            "mode": "local", "local_path": str(self.feed), "catalog_parser": "sloger"}}},
+            "adapter_settings": {"vat_rate": 20, "vat": 23, "product_code_prefix": "SL-"}}))
+
+        def combined_feed(first_price="24.60"):
+            return f"""<products>
+              <product><id>100</id><code>SHIRT</code><name>Test shirt</name><manufacturer>Brand A</manufacturer>
+                <description>Parent context</description><price_msrp>24.60</price_msrp>
+                <images><url>https://supplier.example/image.jpg</url></images><options>
+                  <option><id>1001</id><code>SHIRT-M</code><name>Veľkosť M</name><ean>00000001</ean><price_msrp>{first_price}</price_msrp></option>
+                  <option><id>1002</id><code>SHIRT-L</code><name>Veľkosť L</name><ean>00000002</ean><price_msrp>24.60</price_msrp></option>
+                </options></product>
+              <product><id>200</id><code>DUP</code><name>Different brand accessory</name><manufacturer>Brand A</manufacturer>
+                <ean>00000003</ean><price_msrp>12.30</price_msrp><options/></product>
+              <product><id>300</id><code>DUP</code><name>Unrelated accessory</name><manufacturer>Brand B</manufacturer>
+                <ean>00000004</ean><price_msrp>36.90</price_msrp><options/></product>
+            </products>"""
+
+        self.feed.write_text(combined_feed(), encoding="utf-8")
+        async with self.sessions() as db:
+            first = await catalog.refresh_catalog(db, "sloger")
+            await db.commit()
+            self.assertEqual(first["items"], 3)
+            self.assertEqual((await catalog.catalog_status(db, "sloger"))["defaults"]["vat_percent"], "20")
+            initial = await catalog.catalog_selection(db, "sloger")
+            page = await catalog.catalog_page(db, "sloger", grouped=False)
+            original_ids = {row.product.code: row.product.id for row in page.items}
+            for ean in ("00000003", "00000004"):
+                duplicate = (await catalog.catalog_page(db, "sloger", ean=ean)).items[0].product
+                self.assertEqual(duplicate.id, original_ids["DUP"])
+                self.assertEqual(duplicate.import_blockers, ["duplicate_supplier_code"])
+                self.assertIsNone((await db.get(SupplierProduct, duplicate.id)).ean)
+                self.assertIsNone(duplicate.prices.retail_gross)
+            detail = await catalog.catalog_detail(db, "sloger", original_ids["DUP"])
+            self.assertIn("<conflicting_items>", detail["source_xml"])
+            self.assertIn("Unrelated accessory", detail["source_xml"])
+            self.assertIn("Different brand accessory", detail["source_xml"])
+            for row in (await db.scalars(select(SupplierProduct))).all():
+                self.assertIsNone(row.purchase_price, "Unknown acquisition cost must remain NULL, not zero or DMOC")
+            self.feed.write_text(combined_feed("36.90"), encoding="utf-8")
+            second = await catalog.refresh_catalog(db, "sloger")
+            await db.commit()
+            current = await catalog.catalog_selection(db, "sloger")
+            self.assertEqual(set(current.ids), set(initial.ids))
+            self.assertNotEqual(first["run_id"], second["run_id"])
+            changed = (await catalog.selected_products(db, "sloger", "products", [original_ids["SHIRT-M"]]))[0]
+            self.assertEqual(str(changed.prices.retail_gross), "36.90")
+            self.assertEqual(changed.prices.vat_percent, 20)
+            self.assertIsNone(changed.prices.purchase_net)
+            self.assertIsNone(changed.supplier_stock)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_balances")), 0)
+
+        self.feed.write_text("<products><broken>", encoding="utf-8")
+        async with self.sessions() as db:
+            with self.assertRaises(catalog.CatalogError):
+                await catalog.refresh_catalog(db, "sloger")
+        async with self.sessions() as db:
+            selection = await catalog.catalog_selection(db, "sloger")
+            self.assertEqual(selection.run_id, second["run_id"])
+            self.assertEqual(set(selection.ids), set(initial.ids))
+            self.assertEqual((await catalog.catalog_status(db, "sloger"))["status"], "failed")
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
     async def test_cached_ean_status_filters_detail_and_variant_order_agree(self):
         cfg = config_io.supplier_path("northfinder")
         cfg.parent.mkdir(parents=True)

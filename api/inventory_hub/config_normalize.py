@@ -1,10 +1,37 @@
 # inventory_hub/config_normalize.py
 from __future__ import annotations
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
 from inventory_hub.supplier_prefix import normalize_prefix_config
 
 SUPPLIER_AVAILABILITY_DEFAULTS = {"orderable": "do 5 dní", "unknown": "overíme"}
+
+
+class SupplierPriceCoefficientError(ValueError):
+    pass
+
+
+def normalize_supplier_price_coefficients(value: Any = None) -> Dict[str, Any]:
+    """Validate brand multipliers without rounding or coercing saved numbers/strings."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SupplierPriceCoefficientError("adapter_settings.price_coefficients must be an object")
+    seen = set()
+    for brand, coefficient in value.items():
+        if not isinstance(brand, str) or not brand.strip() or brand.strip().upper() in seen:
+            raise SupplierPriceCoefficientError("Price coefficient brands must have unique nonempty names (case-insensitive)")
+        seen.add(brand.strip().upper())
+        if isinstance(coefficient, bool) or not isinstance(coefficient, (str, int, float)):
+            raise SupplierPriceCoefficientError("Every price coefficient must be a finite positive number")
+        try:
+            number = Decimal(str(coefficient))
+        except (InvalidOperation, ValueError):
+            raise SupplierPriceCoefficientError("Every price coefficient must be a finite positive number") from None
+        if not number.is_finite() or number <= 0:
+            raise SupplierPriceCoefficientError("Every price coefficient must be a finite positive number")
+    return dict(value)
 
 
 def normalize_supplier_availability(value: Any = None) -> Dict[str, Any]:
@@ -169,6 +196,7 @@ def normalize_supplier_config(raw_in: Optional[Dict[str, Any]]) -> Dict[str, Any
         _deep_set(out, ["adapter_settings", "product_code_prefix"], raw["product_code_prefix"])
     if "price_coefficients" in raw and isinstance(raw["price_coefficients"], dict):
         _deep_set(out, ["adapter_settings", "price_coefficients"], raw["price_coefficients"])
+    out["adapter_settings"]["price_coefficients"] = normalize_supplier_price_coefficients(out["adapter_settings"].get("price_coefficients"))
     out["adapter_settings"]["availability"] = normalize_supplier_availability(adapt.get("availability"))
 
     return normalize_prefix_config(out)

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub import config_io
 from inventory_hub.adapters.paul_lange_catalog import parse_catalog
 from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_northfinder
+from inventory_hub.adapters.sloger_catalog import parse_catalog as parse_sloger
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -34,7 +35,7 @@ class CatalogError(Exception):
         self.code, self.status = code, status
 
 
-PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder}
+PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger}
 
 
 def folded(value: str) -> str:
@@ -62,18 +63,36 @@ def source_config(supplier: str, cfg: dict, feed_key: str, *, require_parser: bo
 
 
 def _source_configured(source: dict) -> bool:
-    location = source.get("local_path") if source.get("mode") == "local" else (source.get("remote") or {}).get("url")
+    remote = source.get("remote") or {}
+    if source.get("mode") != "local" and isinstance(remote.get("urls"), list) and remote["urls"]:
+        return True
+    location = source.get("local_path") if source.get("mode") == "local" else remote.get("url")
     return bool(isinstance(location, str) and location.strip())
 
 
-def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds: int | None = None) -> Path:
+def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds: float | None = None,
+              max_size_bytes: int = 100 * 1024 * 1024) -> Path:
     directory = config_io.supplier_path(supplier).parent / "feeds" / "xml"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"catalog_{feed_key}_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{uuid4().hex[:8]}.xml"
     temporary = destination.with_suffix(".part")
-    limit = 100 * 1024 * 1024
+    limit = min(max_size_bytes, 100 * 1024 * 1024)
     started_monotonic = time.monotonic()
     try:
+        if source.get("mode", "remote") != "local" and "urls" in (source.get("remote") or {}):
+            if (source.get("catalog_parser") or supplier) != "sloger":
+                raise CatalogError("feed_urls_unsupported", "Multiple listing URLs are supported only by the Sloger parser")
+            from inventory_hub.adapters.sloger_feed import aggregate_catalog_sources, SlogerFeedError
+            try:
+                return aggregate_catalog_sources(
+                    source, destination,
+                    lambda child, index, size_budget, time_budget: _download(
+                        supplier, child, f"{feed_key}_source_{index:02d}",
+                        max_elapsed_seconds=time_budget, max_size_bytes=size_budget),
+                    max_elapsed_seconds=max_elapsed_seconds, max_size_bytes=limit,
+                )
+            except SlogerFeedError as error:
+                raise CatalogError(error.code, str(error), error.status) from None
         if source.get("mode", "remote") == "local":
             local = Path(source.get("local_path") or "")
             if not local.is_absolute():
@@ -81,7 +100,7 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
             if not local.is_file():
                 raise CatalogError("feed_file_missing", "Configured local feed file does not exist", 404)
             if local.stat().st_size > limit:
-                raise CatalogError("feed_too_large", "Feed exceeds the 100 MB download limit", 413)
+                raise CatalogError("feed_too_large", "Feed exceeds the download size limit", 413)
             temporary.write_bytes(local.read_bytes())
         else:
             remote = source.get("remote") or {}
@@ -120,7 +139,7 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
                                 raise CatalogError("feed_timeout", "The supplier exceeded the feed download deadline", 504)
                             size += len(chunk)
                             if size > limit:
-                                raise CatalogError("feed_too_large", "Feed exceeds the 100 MB download limit", 413)
+                                raise CatalogError("feed_too_large", "Feed exceeds the download size limit", 413)
                             output.write(chunk)
         if not temporary.stat().st_size:
             raise CatalogError("feed_empty", "The supplier returned an empty feed", 502)
@@ -540,6 +559,8 @@ async def catalog_status(db: AsyncSession, supplier: str, feed_key: str = "produ
         ready = all(shop_cfg.get(key) for key in ("upgates_api_base_url", "upgates_login", "upgates_api_key"))
         shops.append({"code": shop.code, "name": shop.name, "ready": bool(ready)})
     adapter = cfg.get("adapter_settings") or {}
+    vat = (adapter.get("vat_rate", adapter.get("vat", cfg.get("vat_rate", 23)))
+           if supplier == "sloger" else adapter.get("vat", 23))
     return {"supplier": supplier, "name": cfg.get("name") or supplier, "sources": sources,
             "feed_key": feed_key, "run_id": feed.last_run_id if feed else None,
             "last_successful_at": feed.last_run_at if feed else None,
@@ -547,4 +568,4 @@ async def catalog_status(db: AsyncSession, supplier: str, feed_key: str = "produ
             "items": feed.last_run_items_count if feed else 0, "shops": shops,
             "defaults": {"category_code": adapter.get("default_category", "K00090"),
                          "currency": (adapter.get("catalog") or {}).get("currency", "EUR"),
-                         "vat_percent": str(adapter.get("vat", 23))}}
+                         "vat_percent": str(vat)}}
