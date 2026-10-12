@@ -1,4 +1,5 @@
 """Import snapshots preserve money, manual work and the existing write boundaries."""
+import asyncio
 import unittest
 from copy import deepcopy
 from decimal import Decimal
@@ -33,6 +34,46 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_multiple_shop_outcomes_keep_unstarted_and_uncertain_targets_visible(self):
+        previews = {shop: {'preview_id': shop, 'items': [{'product_ids': [1], 'status': 'ready'}]}
+                    for shop in ('biketrek', 'xtrek')}
+        draft = SimpleNamespace(shop='biketrek', document={'publication': {'preview_id': 'aggregate'}, 'publications': previews})
+        delivered = {'status': 'completed', 'items': [{'product_ids': [1], 'status': 'created',
+            'shop_url': 'https://shop.example/item'}]}
+        with patch.object(service, 'target_result', side_effect=lambda shop, _: delivered if shop == 'biketrek' else None):
+            result = service.publication_result(draft)
+            self.assertEqual(service.publication_state(result), 'partial')
+            self.assertEqual([(item['shop'], item['status']) for item in result['items']],
+                             [('biketrek', 'created'), ('xtrek', 'pending')])
+            with self.assertRaises(CatalogError) as error:
+                service.assert_editable(draft)
+            self.assertEqual(error.exception.code, 'import_publication_pending')
+        uncertain = {'status': 'completed', 'items': [{'product_ids': [1], 'status': 'uncertain'}]}
+        with patch.object(service, 'target_result', side_effect=lambda shop, _: delivered if shop == 'biketrek' else uncertain):
+            self.assertEqual(service.publication_state(service.publication_result(draft)), 'uncertain')
+
+    def test_all_shop_previews_are_checked_before_any_target_is_queued(self):
+        previews = {shop: {'preview_id': shop, 'items': [{'product_ids': [1], 'status': 'ready'}]}
+                    for shop in ('biketrek', 'xtrek')}
+        draft = SimpleNamespace(id='draft', document={'publications': previews})
+        previews['xtrek']['items'][0]['status'] = 'invalid'
+        with patch.object(catalog_import, 'queue_import') as queue, self.assertRaises(CatalogError):
+            service.queue_publications(draft)
+        queue.assert_not_called()
+        previews['xtrek']['items'][0]['status'] = 'ready'
+        with patch.object(catalog_import, 'queue_import', side_effect=[({}, False), ({}, True)]) as queue:
+            self.assertEqual(service.queue_publications(draft, True), [('xtrek', 'xtrek')])
+        self.assertEqual([call.args[:2] for call in queue.call_args_list], [('biketrek', 'biketrek'), ('xtrek', 'xtrek')])
+        self.assertTrue(all(call.kwargs['staging_id'] == 'draft' for call in queue.call_args_list))
+
+    def test_target_selection_distinguishes_hub_only_from_legacy_single_shop(self):
+        self.assertEqual(service.row_targets(row(), 'biketrek'), ['biketrek'])
+        self.assertEqual(service.row_targets(row(target_shops=[]), 'biketrek'), [])
+        self.assertEqual(service.row_targets(row(target_shops=['xtrek', 'biketrek']), 'biketrek'), ['xtrek', 'biketrek'])
+        for value in (['other'], ['biketrek', 'biketrek']):
+            with self.assertRaises(ValidationError):
+                row(target_shops=value)
+
     def test_delivery_status_is_separate_from_ai_readiness_and_scoped_to_products(self):
         first, second = row(), row(2)
         first['ai_job_id'], second['ai_job_id'] = 'ai-1', 'ai-2'
@@ -158,6 +199,84 @@ class ProductImportUnitTests(unittest.TestCase):
 
 
 class ProductImportAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_old_completed_draft_exposes_verified_cached_links_and_keeps_ai_job_lookup(self):
+        from inventory_hub.services import catalog
+        item = row()
+        item['ai_job_id'] = 'job-identifier'
+        doc = {**document([item]), 'feed_key': 'products', 'publication': {'preview_id': 'original'}}
+        draft = SimpleNamespace(id='draft', shop='biketrek', supplier='paul-lange', revision=3,
+            status='saved', document=doc, created_at=None, updated_at=None)
+        result = {'status': 'completed', 'items': [{'product_ids': [1], 'status': 'created'}]}
+        job = SimpleNamespace(id='job-identifier', status='completed', context={})
+        db = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [job])))
+        async def links(db, shop, sources):
+            sources[0].shop_url = 'https://shop.example/product'
+            sources[0].shop_admin_url = 'https://admin.example/product/7'
+        with patch.object(service, 'publication_result', return_value=result), \
+             patch.object(service, 'target_result', return_value=result), \
+             patch.object(ai_content, 'summary', return_value={'id': job.id}), \
+             patch.object(catalog, 'attach_shop_links', side_effect=links):
+            response = await service.public(db, draft)
+        self.assertEqual(response['rows'][0]['publication_links'][0]['shop_admin_url'], 'https://admin.example/product/7')
+        self.assertEqual(response['rows'][0]['publication_links'][0]['shop_url'], 'https://shop.example/product')
+        self.assertEqual(response['rows'][0]['ai_job']['id'], job.id)
+        self.assertEqual(list(db.scalars.call_args.args[0].compile().params.values()), [[job.id]])
+        self.assertNotIn('shop_url', result['items'][0], 'Readback enrichment does not rewrite the durable journal')
+
+    async def test_preview_splits_rows_and_categories_without_publishing_hub_only_rows(self):
+        rows = [row(target_shops=['biketrek', 'xtrek'], target_category_codes={'xtrek': 'OUTDOOR'}),
+                row(2, target_shops=[]), row(3, target_shops=['xtrek'], target_category_codes={'xtrek': 'OUTDOOR'})]
+        doc = document(rows)
+        rows[0]['ai_policy'] = {'job_id': 'ai', 'content_digest': 'approved', 'active_after_import': True}
+        doc.update(target='biketrek', targets={'biketrek': 'biketrek', 'xtrek': 'xtrek'}, feed_key='products',
+                   shops=[{'code': 'biketrek', 'categories': doc['categories']},
+                          {'code': 'xtrek', 'categories': [{'code': 'OUTDOOR'}]}])
+        doc['saved_hash'] = service.content_hash(doc)
+        draft = SimpleNamespace(id='draft', shop='biketrek', supplier='paul-lange', revision=1, status='saved', document=doc)
+        calls = []
+        async def build(db, shop, request, *, frozen_products, staging):
+            calls.append((shop, request, staging))
+            result = {'preview_id': shop * 4, 'items': [{'product_ids': request.product_ids, 'status': 'ready'}], 'errors': []}
+            return SimpleNamespace(model_dump=lambda **_: result)
+        db = SimpleNamespace(flush=AsyncMock())
+        with patch.object(service, 'publication_result', return_value=None), \
+             patch.object(service, 'assert_ai_applied', AsyncMock()), \
+             patch.object(service, 'public', AsyncMock(side_effect=lambda db, draft: draft.document)), \
+             patch.object(catalog_import, 'shop_config', side_effect=lambda shop: shop), \
+             patch.object(catalog_import, '_target', side_effect=lambda shop: shop), \
+             patch.object(catalog_import, 'create_preview', side_effect=build):
+            await service.preview(db, draft, SimpleNamespace(expected_revision=1))
+        self.assertEqual([(shop, request.product_ids) for shop, request, _ in calls], [('biketrek', [1]), ('xtrek', [1, 3])])
+        self.assertEqual(calls[0][2]['rows'][0]['values']['category_code'], 'LEAF')
+        self.assertIn('ai_policy', calls[0][2]['rows'][0])
+        self.assertNotIn('ai_policy', calls[1][2]['rows'][0])
+        self.assertFalse(service.approved_visibility(rows, [1], shop='xtrek', primary_shop='biketrek'))
+        self.assertTrue(all(row['values']['category_code'] == 'OUTDOOR' for row in calls[1][2]['rows']))
+        self.assertEqual(draft.document['rows'][0]['values']['category_code'], 'LEAF')
+        self.assertEqual(set(draft.document['publications']), {'biketrek', 'xtrek'})
+        self.assertEqual([item['shop'] for item in draft.document['publication']['items']], ['biketrek', 'xtrek'])
+
+    async def test_shop_executors_start_together_before_either_long_batch_finishes(self):
+        both_started = asyncio.Event()
+        started = []
+        async def execute(shop, preview):
+            started.append(shop)
+            if len(started) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+        with patch.object(catalog_import, 'execute_import', side_effect=execute):
+            await service.execute_publications([('biketrek', 'first'), ('xtrek', 'second')])
+        self.assertEqual(set(started), {'biketrek', 'xtrek'})
+
+    async def test_partial_publication_preview_replays_original_journals(self):
+        result = {'status': 'completed', 'items': [{'status': 'created'}, {'status': 'failed'}]}
+        draft = SimpleNamespace(revision=5)
+        with patch.object(service, 'publication_result', return_value=result), \
+             patch.object(service, 'public', AsyncMock(return_value='original')), \
+             patch.object(catalog_import, 'create_preview', AsyncMock()) as create:
+            self.assertEqual(await service.preview(None, draft, SimpleNamespace(expected_revision=5)), 'original')
+        create.assert_not_called()
+
     async def test_ai_must_be_applied_or_explicitly_disabled_before_publication(self):
         item = row(ai_enabled=True)
         item['ai_job_id'] = 'ai'

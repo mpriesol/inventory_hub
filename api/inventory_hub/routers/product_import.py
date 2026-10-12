@@ -62,11 +62,11 @@ async def preview(id: DraftId, request: DraftRevision, db: DB):
 
 @router.post('/{id}/publish')
 async def publish(id: DraftId, request: DraftPublish, background: BackgroundTasks, db: DB):
-    result, run = await mutate(db, id, request, service.publish)
+    result, tasks = await mutate(db, id, request, service.publish)
     # Commit confirmed draft state before background importer rechecks its snapshot.
     await db.commit()
-    if run:
-        background.add_task(catalog_import.execute_import, result['shop'], request.preview_id)
+    if tasks:
+        background.add_task(service.execute_publications, tasks)
     return result
 
 

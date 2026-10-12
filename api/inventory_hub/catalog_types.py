@@ -40,6 +40,7 @@ class CatalogProduct(BaseModel):
     run_id: int | None = None
     code: str
     shop_code: str
+    canonical_parent_code: str | None = None
     manufacturer_code: str | None = None
     eans: list[str] = Field(default_factory=list)
     name: str
@@ -171,6 +172,8 @@ class ImportItem(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
+    shop_url: str | None = None
+    shop_admin_url: str | None = None
 
 
 class ShopCheck(BaseModel):

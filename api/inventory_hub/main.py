@@ -221,6 +221,10 @@ if settings.USE_POSTGRES:
     app.include_router(product_import_router)
     from inventory_hub.routers.ai_content import router as ai_content_router
     app.include_router(ai_content_router)
+    from inventory_hub.routers.sloger_probe import router as sloger_probe_router
+    app.include_router(sloger_probe_router)
+    from inventory_hub.routers.supplier_prefixes import router as supplier_prefixes_router
+    app.include_router(supplier_prefixes_router)
 else:
     app.include_router(receiving_router_legacy)
 

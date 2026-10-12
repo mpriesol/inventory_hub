@@ -31,6 +31,8 @@ def read_cache(path: Path, fingerprint: str, at: datetime) -> dict | None:
 def parent_shop_code(product: CatalogProduct) -> str:
     if not product.group_code or product.variant_relationship != "explicit":
         return product.shop_code
+    if product.canonical_parent_code:
+        return product.canonical_parent_code
     prefix = product.shop_code[:-len(product.code)] if product.shop_code.endswith(product.code) else ""
     return prefix + "G-" + product.group_code
 

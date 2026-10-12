@@ -49,7 +49,7 @@ global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path: url.pathname, query: url.searchParams, body });
   let data;
-  if (url.pathname.endsWith('/catalog')) data = { name: 'Paul Lange', sources: [{ key: 'products', name: 'Produkty', supported: true, configured: true }], shops: [{ code: 'biketrek', name: 'BikeTrek', ready: true }, { code: 'xtrek', name: 'xTrek', ready: true }, { code: 'pending', name: 'Pending', ready: false }], defaults: { category_code: 'K-TEST' }, status: 'completed' };
+  if (url.pathname.endsWith('/catalog')) data = { name: 'Paul Lange', default_shop: 'biketrek', sources: [{ key: 'products', name: 'Produkty', supported: true, configured: true }], shops: [{ code: 'biketrek', name: 'BikeTrek', ready: true }, { code: 'xtrek', name: 'xTrek', ready: true }, { code: 'pending', name: 'Pending', ready: false }], defaults: { category_code: 'K-TEST' }, status: 'completed' };
   else if (url.pathname.endsWith('/catalog/products')) {
     const rows = url.searchParams.get('page') === '2' ? [{ key: 'item:3', product: products[2], is_group: false, variants_count: 0, matching_ids: [3], variants: [] }] : [{ key: 'group:G1', product: products[0], is_group: true, variants_count: 2, matching_ids: [1, 2], variants: products.slice(0, 2) }];
     data = { run_id: snapshot, fetched_at: '2026-01-01T12:00:00Z', total: 2, total_items: 3, pages: 2, manufacturers: ['TEST'], items: rows };
@@ -102,8 +102,10 @@ async function change(element, value) { await act(async () => { Object.getOwnPro
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); }); }
 
 (async () => {
+  localStorage.setItem('catalog.targetShop', 'xtrek');
   await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) }), React.createElement(Route, { path: '/product-import', element: React.createElement(CaptureImport) })))));
-  await settle();
+  await settle(); await settle();
+  assert.equal(document.getElementById('catalog-shop').value, 'biketrek', 'The supplier default takes precedence over a previously visited supplier’s shop');
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
   assert.ok(document.body.textContent.includes('V e-shope 1 / 2 variantov'), 'The group status counts every variant');
   assert.ok(document.body.textContent.includes('Cena z hlavného produktu'), 'Collapsed groups show warnings from their variants');
@@ -142,6 +144,7 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await click(checkbox('Vybrať varianty: Prilba'));
   assert.ok(document.body.textContent.includes('Vybrané položky: 2'));
   await change(document.getElementById('catalog-shop'), 'xtrek'); await settle();
+  assert.equal(document.getElementById('catalog-shop').value, 'xtrek', 'An explicit operator choice is not reset on catalog refresh');
   await change(document.getElementById('catalog-shop'), 'biketrek'); await settle();
   assert.equal(localStorage.getItem('catalog.targetShop'), 'biketrek');
   assert.equal(document.querySelector('#catalog-shop option[value="pending"]').disabled, true);

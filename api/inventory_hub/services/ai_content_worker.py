@@ -109,7 +109,7 @@ async def importing(id):
                     await product_import.assert_ai_applied(db, draft)
                 # Queue under the draft lock: its durable importer journal then
                 # blocks edits before any remote execution starts.
-                _, run = catalog_import.queue_import(shop, preview_id, False, staging_id=staged)
+                tasks = product_import.queue_publications(draft)
             except CatalogError as error:
                 job.error = error.code
                 service.event(job, 'import_failed', error.code)
@@ -119,9 +119,13 @@ async def importing(id):
     try:
         if not staged:
             _, run = catalog_import.queue_import(shop, preview_id, retry)
-        if run:
-            await catalog_import.execute_import(shop, preview_id)
-        result = catalog_import.import_result(shop, preview_id)
+            if run:
+                await catalog_import.execute_import(shop, preview_id)
+            result = catalog_import.import_result(shop, preview_id)
+        else:
+            await product_import.execute_publications(tasks)
+            async with get_session_context() as db:
+                result = product_import.publication_result(await product_import.get_draft(db, staged))
         async with get_session_context() as db:
             job = await service.get_job(db, id, lock=True)
             if result["status"] in ("queued", "running"):

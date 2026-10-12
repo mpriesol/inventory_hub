@@ -107,7 +107,7 @@ def supplier_path(supplier: str) -> Path:
 
 
 @contextmanager
-def _prefix_registry():
+def _prefix_registry(*, early_commit: bool = False):
     """Serialize prefix reservations with config writes across API/worker processes.
 
     The registry is on the same persistent volume as supplier configuration, but
@@ -130,6 +130,11 @@ def _prefix_registry():
                                 or not isinstance(entry.get("locked"), bool)):
                             raise ValueError()
                         get_supplier_prefix({"product_code_prefix": entry["prefix"]})
+                        retired = entry.get("retired_prefixes", [])
+                        if not isinstance(retired, list) or any(not isinstance(value, str) or not value for value in retired):
+                            raise ValueError()
+                        for value in retired:
+                            get_supplier_prefix({"product_code_prefix": value})
                 except (ValueError, AttributeError, OSError):
                     raise SupplierPrefixError("supplier_prefix_registry_invalid", "Supplier prefix registry could not be read; identity changes are blocked", 409) from None
             else:
@@ -153,7 +158,9 @@ def _prefix_registry():
             if registry != before:
                 _atomic_write(registry_path, registry)
                 before = deepcopy(registry)
-            yield entries
+            # Rotation must reserve both namespaces before changing config. If
+            # its second file write fails, the mismatch remains fail-closed.
+            yield (entries, lambda: _atomic_write(registry_path, registry)) if early_commit else entries
             if registry != before:
                 _atomic_write(registry_path, registry)
         finally:
@@ -172,7 +179,7 @@ def _validate_prefix(supplier: str, prefix: str, entries: dict, *, require_compl
         left, right = prefix.casefold(), other.casefold()
         return bool(right) and (left.startswith(right) or right.startswith(left))
     for code, reserved in entries.items():
-        if code != supplier and overlaps(reserved["prefix"]):
+        if code != supplier and any(overlaps(value) for value in [reserved["prefix"], *reserved.get("retired_prefixes", [])]):
             raise SupplierPrefixError("supplier_prefix_duplicate", f"Supplier prefix overlaps the namespace reserved by '{code}'", 409)
     for path in (DATA_ROOT / "suppliers").glob("*/config.json"):
         code = path.parent.name
@@ -216,9 +223,56 @@ def claim_supplier_prefix(supplier: str, expected_prefix: str) -> str:
         if prefix != expected_prefix:
             raise SupplierPrefixError("supplier_prefix_changed", "Supplier prefix changed since these products were prepared; reload the supplier data", 409)
         entry = entries.get(supplier, {})
-        entries[supplier] = {"prefix": prefix, "locked": True,
+        entries[supplier] = {**entry, "prefix": prefix, "locked": True,
                              "lock_reason": entry.get("lock_reason") or "used_for_product_identity"}
         return prefix
+
+
+def rotate_supplier_prefix(supplier: str, expected_prefix: str, new_prefix: str) -> Dict[str, Any]:
+    """Reserve a new namespace for future identities; never rename any product.
+
+    The durable registry changes first. A crash before the config replacement
+    leaves the old and new namespaces reserved, while the locked mismatch blocks
+    all further identity operations until an explicit operational repair.
+    """
+    path = supplier_path(supplier)
+    for value in (expected_prefix, new_prefix):
+        if not get_supplier_prefix({"product_code_prefix": value}):
+            raise SupplierPrefixError("supplier_prefix_required", "Prefix rotation requires nonempty old and new prefixes")
+    if expected_prefix == new_prefix:
+        raise SupplierPrefixError("supplier_prefix_rotation_unchanged", "Choose a different prefix for future product identities")
+    with _prefix_registry(early_commit=True) as (entries, persist):
+        if not path.is_file():
+            raise SupplierPrefixError("supplier_not_found", "Supplier configuration was not found", 404)
+        current = _read_supplier_json(path)
+        prefix = get_supplier_prefix(current)
+        _validate_prefix(supplier, prefix, entries, require_complete=True)
+        entry = entries.get(supplier, {})
+        # Even an unused prefix must agree with its registry before rotation.
+        if entry.get("prefix") != prefix:
+            raise SupplierPrefixError("supplier_prefix_changed", "Supplier prefix registry differs from configuration; repair is required", 409)
+        retired = list(entry.get("retired_prefixes", []))
+        replayed = prefix == new_prefix and expected_prefix in retired
+        if not replayed:
+            if prefix != expected_prefix:
+                raise SupplierPrefixError("supplier_prefix_changed", "Supplier prefix changed; reload it before rotating", 409)
+            if new_prefix.casefold() in {value.casefold() for value in retired}:
+                raise SupplierPrefixError("supplier_prefix_retired", "A retired namespace cannot be reactivated", 409)
+            candidate = new_prefix.casefold()
+            if any(candidate.startswith(value.casefold()) or value.casefold().startswith(candidate)
+                   for value in [prefix, *retired]):
+                raise SupplierPrefixError("supplier_prefix_rotation_overlap", "The new prefix overlaps this supplier's current or retired product namespace", 409)
+            checked = {**entries, supplier: {**entry, "prefix": new_prefix}}
+            _validate_prefix(supplier, new_prefix, checked, require_complete=True)
+            retired = list(dict.fromkeys([*retired, prefix]))
+            entries[supplier] = {**entry, "prefix": new_prefix, "locked": True,
+                                 "lock_reason": "explicit_forward_rotation", "retired_prefixes": retired}
+            persist()
+            updated = normalize_prefix_config(current)
+            updated.setdefault("adapter_settings", {}).setdefault("mapping", {}).setdefault("postprocess", {})["product_code_prefix"] = new_prefix
+            _atomic_write(path, updated)
+        return {"supplier": supplier, "product_prefix": new_prefix, "previous_prefix": expected_prefix,
+                "retired_prefixes": retired, "replayed": replayed}
 
 def load_console() -> Dict[str, Any]:
     return _norm_console(_read_json(console_path()))
@@ -301,6 +355,6 @@ def save_supplier(supplier: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         _validate_prefix(supplier, prefix, entries, require_complete=prefix != current_prefix or supplier not in entries)
         previous = entries.get(supplier, {})
         _atomic_write(path, merged)
-        entries[supplier] = {"prefix": prefix, "locked": bool(previous.get("locked")),
+        entries[supplier] = {**previous, "prefix": prefix, "locked": bool(previous.get("locked")),
                              "lock_reason": previous.get("lock_reason")}
         return merged

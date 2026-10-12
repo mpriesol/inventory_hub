@@ -79,8 +79,8 @@ async function click(element) {
 }
 async function input(element, value) {
   await act(async () => {
-    Object.getOwnPropertyDescriptor(element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value);
-    element.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    Object.getOwnPropertyDescriptor(element.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value);
+    element.dispatchEvent(new dom.window.Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
     await tick();
   });
 }
@@ -230,6 +230,13 @@ async function input(element, value) {
   await mount('other-supplier-feeds');
   await click(button('Feedy'));
   assert.equal(document.getElementById('supplier-sloger-feed-urls'), null, 'Other suppliers keep the existing single-URL editor');
+  await click(button('Obecné'));
+  const beforeDefault = structuredClone(stored);
+  await input(document.getElementById('supplier-default-shop'), 'xtrek');
+  await click(button('Uložiť'));
+  assert.deepEqual(writes.at(-1), {...beforeDefault, default_shop:'xtrek'}, 'The supplier default shop is saved independently of pricing and feed settings');
+  await mount('default-shop-saved');
+  assert.equal(document.getElementById('supplier-default-shop').value, 'xtrek', 'The saved supplier default survives reopening');
   await act(async () => root.unmount());
   console.log('Supplier configuration UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

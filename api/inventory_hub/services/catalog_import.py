@@ -123,7 +123,8 @@ def _item_checkpoint(path: Path, result: dict, item: dict) -> None:
     # Append only the changed state. Rewriting a full 6,000-item preview per item
     # would turn a normal batch into hundreds of GB of filesystem writes.
     event = {"updated_at": now().isoformat(), "code": item["code"],
-             "status": item["status"], "errors": item["errors"], "warnings": item["warnings"]}
+             "status": item["status"], "errors": item["errors"], "warnings": item["warnings"],
+             "shop_url": item.get("shop_url"), "shop_admin_url": item.get("shop_admin_url")}
     with path.with_suffix(".events.jsonl").open("a", encoding="utf-8") as output:
         output.write(json.dumps(event, ensure_ascii=False) + "\n")
         output.flush()
@@ -148,7 +149,7 @@ def _read_result(path: Path) -> dict | None:
                     break
                 event = json.loads(line)
                 if event["updated_at"] > checkpoint and event["code"] in items:
-                    items[event["code"]].update({k: event[k] for k in ("status", "errors", "warnings")})
+                    items[event["code"]].update({k: event[k] for k in ("status", "errors", "warnings", "shop_url", "shop_admin_url") if k in event})
                     result["updated_at"] = event["updated_at"]
     return result
 
@@ -459,6 +460,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     products = frozen_products if frozen_products is not None else await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
     if (frozen_products is not None) != (staging is not None):
         raise CatalogError("import_snapshot_invalid", "A frozen source requires a saved import draft", 422)
+    products = await canonical_products(db, products)
     if set(request.sale_price_overrides) - {p.id for p in products}:
         raise CatalogError("price_override_not_selected", "Price overrides must refer to selected products", 422)
     supplier_cfg = supplier_config(request.supplier)
@@ -495,6 +497,10 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         for key, common in known_ai_fields.items():
             meta_common.setdefault(key, common)
     policy = availability_policy(request.supplier, supplier_cfg)
+    supplier_meta = None
+    if supplier_cfg.get("name"):
+        from inventory_hub.services.catalog_supplier_meta import prepare_meta, attach_meta
+        supplier_meta = await asyncio.to_thread(prepare_meta, shop, client, supplier_cfg["name"], options.language)
     for item in items:
         if item.status == "ready":
             item.payload["categories"] = category_chain(remote["categories"], options.category_code)
@@ -508,6 +514,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
                 for meta in item.payload.get('metas', []):
                     if meta['key'] != 'validation_required' and meta['key'] in meta_common and not meta_common[meta['key']]:
                         meta['values'] = [{'language': options.language, 'value': meta.pop('value')}]
+            if supplier_meta:
+                attach_meta(item.payload, supplier_meta)
     price_lines = []
     for product in products:
         try:
@@ -548,6 +556,17 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     for item in items:
         if any(id in conflicts for id in item.product_ids):
             item.status, item.errors = "invalid", ["local_identity_conflict"]
+    from inventory_hub.services.catalog import attach_shop_links
+    listed = [p.model_copy(update={"listed": True, "shop_matches": index.matches(p)})
+              for p in products if lines[p.id].existing]
+    await attach_shop_links(db, shop, listed)
+    links = {p.id: p for p in listed}
+    for item in items:
+        for source_id in item.existing_product_ids:
+            source = links.get(source_id)
+            if source:
+                item.shop_url = item.shop_url or source.shop_url
+                item.shop_admin_url = item.shop_admin_url or source.shop_admin_url
     created = now()
     preview = ShopImportPreview(preview_id=uuid4().hex, shop=shop, supplier=request.supplier,
                                 created_at=created, expires_at=created + timedelta(hours=1),
@@ -557,6 +576,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
                 "supplier_availability": policy, "result": None}
+    if supplier_meta:
+        document["supplier_meta"] = supplier_meta
     if staging:
         document["staging"] = {k: staging[k] for k in ("draft_id", "hash")}
     if enrichment:
@@ -586,13 +607,56 @@ async def local_identities(db: AsyncSession, products: list[CatalogProduct]) -> 
     return matches, conflicts
 
 
-def _claim_product_prefix(products: list[CatalogProduct]) -> None:
+async def canonical_products(db: AsyncSession, products: list[CatalogProduct]) -> list[CatalogProduct]:
+    """Reuse proved local SKU identities; supplier aliases never rename products."""
+    identities, conflicts = await local_identities(db, products)
+    if conflicts:
+        raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)
+    if not identities:
+        return products
+    records = (await db.execute(select(Product.id, Product.sku, Product.group_id, ProductGroup.code)
+        .outerjoin(ProductGroup, ProductGroup.id == Product.group_id)
+        .where(Product.id.in_(set(identities.values()))))).all()
+    by_id = {row.id: row for row in records}
+    parents = {}
+    for source in products:
+        local = by_id.get(identities.get(source.id))
+        if local and source.group_code and source.variant_relationship == "explicit":
+            key = (source.supplier, source.group_code)
+            parents.setdefault(key, set()).add(local.code)
+    if any(len(values) != 1 or None in values for values in parents.values()):
+        raise CatalogError("local_group_conflict", "Existing products do not share a confirmed variant parent", 409)
+    output = []
+    for source in products:
+        local = by_id.get(identities.get(source.id))
+        parent = next(iter(parents.get((source.supplier, source.group_code), [])), None)
+        output.append(source.model_copy(update={"shop_code": local.sku if local else source.shop_code,
+                                                 "canonical_parent_code": parent}))
+    return output
+
+
+async def canonical_codes(db: AsyncSession, products: list[CatalogProduct]) -> dict[int, str]:
+    identities, conflicts = await local_identities(db, products)
+    if conflicts:
+        raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)
+    if not identities:
+        return {}
+    rows = (await db.execute(select(Product.id, Product.sku).where(Product.id.in_(set(identities.values()))))).all()
+    codes = {row.id: row.sku for row in rows}
+    return {source_id: codes[product_id] for source_id, product_id in identities.items() if product_id in codes}
+
+
+async def claim_product_prefix(db: AsyncSession, products: list[CatalogProduct]) -> None:
+    _claim_product_prefix(products, await canonical_codes(db, products))
+
+
+def _claim_product_prefix(products: list[CatalogProduct], existing_codes: dict[int, str] | None = None) -> None:
     """Freeze the exact prepared identity before any product POST or local write."""
     from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
     try:
         for supplier in {product.supplier for product in products}:
             prefix = get_supplier_prefix(config_io.load_supplier(supplier, write_back_on_load=False))
-            if any(product.supplier == supplier and product.shop_code != canonical_supplier_sku(prefix, product.code)
+            if any(product.supplier == supplier and product.shop_code != (existing_codes or {}).get(product.id, canonical_supplier_sku(prefix, product.code))
                    for product in products):
                 raise CatalogError("supplier_prefix_changed", "Supplier SKU changed since the import was prepared", 409)
             config_io.claim_supplier_prefix(supplier, prefix)
@@ -603,8 +667,8 @@ def _claim_product_prefix(products: list[CatalogProduct]) -> None:
 async def register_created(db: AsyncSession, shop: str, item: dict, sources: dict[int, CatalogProduct], remote: dict) -> None:
     # Only catalog identity/content is registered. No stock balance or movement is created.
     products = [sources[id] for id in item["product_ids"]]
-    _claim_product_prefix(products)
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    await claim_product_prefix(db, products)
     existing, conflicts = await local_identities(db, products)
     if conflicts:
         raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)
@@ -687,7 +751,20 @@ def _verify_created(client: UpgatesClient, item: dict) -> dict | None:
     if any("short_description" in d for d in item["payload"].get("descriptions", [])):
         from inventory_hub.services.ai_content_upgates import verify_content
         verify_content(remote, item["payload"])
+    from inventory_hub.services.catalog_supplier_meta import verify_payload
+    language = next((d.get("language") for d in item["payload"].get("descriptions", []) if d.get("language")), "sk")
+    verify_payload(remote, item["payload"], language)
     return remote
+
+
+def remote_links(remote: dict, language: str = "sk") -> dict:
+    """Only links returned by Upgates; never guess a storefront slug or admin ID."""
+    from inventory_hub.services.catalog import _http_url
+    descriptions = remote.get("descriptions") or []
+    description = next((row for row in descriptions if row.get("language") == language),
+                       descriptions[0] if descriptions else {})
+    return {"shop_url": _http_url(description.get("url")),
+            "shop_admin_url": _http_url(remote.get("admin_url"))}
 
 
 def _confirmed_response(response: dict, item: dict) -> bool:
@@ -751,6 +828,10 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, stag
         else:
             result.update(status="queued", errors=[], updated_at=now().isoformat())
         document["result"] = result
+        if result["items"] and all(item["status"] == "exists" for item in result["items"]):
+            result["status"] = "completed"
+            _save_job(path, document)
+            return result, False
         _save_job(path, document)
         return result, True
 
@@ -840,6 +921,12 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
     if policy_current and has_content and (document.get("content_approval") or staged_h1):
         from inventory_hub.services.ai_content_upgates import content_fields
         await asyncio.to_thread(content_fields, shop, client, create=True)
+    if policy_current and document.get("supplier_meta"):
+        from inventory_hub.services.catalog_supplier_meta import prepare_meta
+        supplier_name = supplier_config(preview["supplier"]).get("name")
+        current_meta = await asyncio.to_thread(prepare_meta, shop, client, supplier_name, options["language"], create=True)
+        if current_meta != document["supplier_meta"]:
+            raise CatalogError("shop_options_changed", "Supplier name or field definition changed; prepare another preview", 409)
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client)
     result["shop_check"] = shop_check
     _save_job(path, document)
@@ -864,10 +951,11 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     if document.get("staging"):
                         from inventory_hub.services.product_import import assert_snapshot, approved_visibility
                         draft = await assert_snapshot(db, document["staging"])
-                        expected_active = approved_visibility(draft.document['rows'], item['product_ids'])
+                        expected_active = approved_visibility(draft.document['rows'], item['product_ids'], shop=shop, primary_shop=draft.shop)
                         fresh = [sources[id] for id in item["product_ids"]]
                     else:
                         fresh = await selected_products(db, preview["supplier"], sources[item["product_ids"][0]].feed_key, item["product_ids"])
+                        fresh = await canonical_products(db, fresh)
                         ignored = {"run_id", "fetched_at", "listed"}
                         if any(p.model_dump(exclude=ignored) != sources[p.id].model_dump(exclude=ignored) for p in fresh):
                             item.update(status="failed", errors=["catalog_changed"])
@@ -900,7 +988,8 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                         raise CatalogError('shop_options_changed', 'The category hierarchy changed; prepare another preview', 409)
                 _assert_payload(item["payload"], expected_active=expected_active)
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
-                _claim_product_prefix([sources[id] for id in item["product_ids"]])
+                async with get_session_context() as db:
+                    await claim_product_prefix(db, [sources[id] for id in item["product_ids"]])
                 item.update(status="uncertain", errors=["import_outcome_unknown"])
                 result["updated_at"] = now().isoformat()
                 _item_checkpoint(path, result, item)
@@ -924,6 +1013,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     item["warnings"] = list(dict.fromkeys([*item["warnings"], "import_verified_by_readback"]))
             async with get_session_context() as db:
                 await register_created(db, shop, item, sources, remote)
+            item.update(remote_links(remote, options["language"]))
             item.update(status="created", errors=[])
             codes.update([item["code"].casefold(), *(sources[id].shop_code.casefold() for id in item["product_ids"])])
             eans.update(ean for id in item["product_ids"] for ean in sources[id].eans)

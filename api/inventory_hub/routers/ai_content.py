@@ -150,7 +150,7 @@ async def prices(id: str, request: PriceReview, db: DB):
 @protected.get("/jobs")
 async def jobs(db: DB, batch_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"),
                limit: int = Query(100, ge=1, le=500), archived: bool = False):
-    statement = select(AiJob).order_by(AiJob.created_at.desc(), AiJob.id).limit(limit)
+    statement = select(AiJob).where(AiJob.kind != "supplier_lookup").order_by(AiJob.created_at.desc(), AiJob.id).limit(limit)
     statement = statement.where(func.coalesce(AiJob.context["archived"].as_boolean(), False) == archived)
     if batch_id:
         statement = statement.where(AiJob.batch_id == batch_id)

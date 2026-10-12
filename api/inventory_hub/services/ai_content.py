@@ -117,6 +117,8 @@ async def get_job(db, id, lock=False):
     job = await db.scalar(statement)
     if job is None:
         raise CatalogError("ai_job_not_found", "AI job not found", 404)
+    if getattr(job, "kind", "product") == "supplier_lookup":
+        raise CatalogError("ai_job_kind_unsupported", "Supplier lookups use their separate read-only workflow", 409)
     return job
 
 
@@ -127,6 +129,8 @@ async def summaries(db, jobs, *, detail=False):
 
 
 def expect(job, revision):
+    if getattr(job, "kind", "product") == "supplier_lookup":
+        raise CatalogError("ai_job_kind_unsupported", "Supplier lookups cannot enter the content workflow", 409)
     if job.revision != revision:
         raise CatalogError("ai_job_changed", "This job changed; reload it before saving", 409)
 
@@ -134,7 +138,7 @@ def expect(job, revision):
 async def budget(db):
     beginning = now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     # Uncertain requests retain their reservation; all known usage remains charged.
-    charge = case((AiJob.status.in_(['queued', 'generating', 'uncertain']),
+    charge = case((AiJob.status.in_(['queued', 'generating', 'uncertain', 'lookup_running', 'lookup_uncertain']),
                    func.greatest(func.coalesce(AiJob.actual_usd, 0), func.coalesce(AiJob.reserved_usd, 0))),
                   else_=func.coalesce(AiJob.actual_usd, AiJob.reserved_usd))
     used = await db.scalar(select(func.coalesce(func.sum(charge), 0))
@@ -143,6 +147,8 @@ async def budget(db):
 
 
 async def start(db, job):
+    if getattr(job, "kind", "product") == "supplier_lookup":
+        raise CatalogError("ai_job_kind_unsupported", "Supplier lookups cannot enter the content workflow", 409)
     if job.status != "estimate":
         return
     if job.context.get("source_kind") == "shop" and not job.context.get("source_parameters_loaded"):
@@ -287,6 +293,8 @@ async def review(db, job, request):
 
 
 async def prepare_import(db, job):
+    if getattr(job, "kind", "product") == "supplier_lookup":
+        raise CatalogError("ai_job_kind_unsupported", "Supplier lookups cannot publish products", 409)
     ctx = job.context
     if ctx.get("staging_id"):
         if ctx.get('staging_automation_version') == 1:

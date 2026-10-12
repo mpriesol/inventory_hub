@@ -41,6 +41,7 @@ export interface SupplierConfig {
   product_prefix?: string;
   product_prefix_locked?: boolean;
   product_prefix_lock_reason?: string | null;
+  default_shop?: 'biketrek' | 'xtrek' | '';
   name?: string;
   is_active?: boolean;
   feeds: {

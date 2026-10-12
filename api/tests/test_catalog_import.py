@@ -114,6 +114,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         patch.object(imports, "selected_products", AsyncMock(return_value=[product()])).start()
         self.supplier_config = patch.object(imports, "supplier_config", return_value={}).start()
         patch.object(imports, "local_identities", AsyncMock(return_value=({}, set()))).start()
+        patch("inventory_hub.services.catalog.attach_shop_links", AsyncMock()).start()
         self.register = patch.object(imports, "register_created", AsyncMock()).start()
         self.id = "a" * 32
         self.path = imports._path("test-shop", self.id)
@@ -165,6 +166,43 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
             await self.run_import()
         self.assertEqual(attempted, ["supplier_prefix_locked"])
         self.assertEqual(self.client.sent[0][1]["products"][0]["code"], "PL-A-001")
+
+    async def test_readback_links_survive_result_journal_and_replay(self):
+        original = self.client.post
+        def post(endpoint, payload):
+            result = original(endpoint, payload)
+            if endpoint == "products":
+                remote = self.client.products[payload["products"][0]["code"]]
+                remote["admin_url"] = "https://admin.example.test/products/700"
+                remote["descriptions"][0]["url"] = "https://shop.example.test/p/actual-slug"
+            return result
+        with patch.object(self.client, "post", side_effect=post):
+            result = await self.run_import()
+        self.assertEqual(result["items"][0]["shop_admin_url"], "https://admin.example.test/products/700")
+        self.assertEqual(result["items"][0]["shop_url"], "https://shop.example.test/p/actual-slug")
+        replay, queued = imports.queue_import("test-shop", self.id)
+        self.assertFalse(queued)
+        self.assertEqual(replay["items"][0]["shop_url"], result["items"][0]["shop_url"])
+        self.assertEqual(len(self.client.sent), 1)
+
+    async def test_all_existing_preview_completes_without_any_remote_write(self):
+        self.document["preview"]["items"][0]["status"] = "exists"
+        imports._write(self.path, self.document)
+        result, queued = imports.queue_import("test-shop", self.id)
+        self.assertFalse(queued)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(self.client.sent, [])
+
+    async def test_non_ai_preview_carries_configured_supplier_metadata(self):
+        self.supplier_config.return_value = {"name": "Synthetic supplier"}
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        meta = {"key": "supplier_name", "values": [{"language": "sk", "value": "Synthetic supplier"}]}
+        with patch("inventory_hub.services.catalog_supplier_meta.prepare_meta", return_value=meta):
+            preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1]))
+        self.assertIn(meta, preview.items[0].payload["metas"])
+        self.assertFalse(preview.items[0].payload["active_yn"])
+        self.assertEqual(self.client.sent, [])
 
     async def test_changed_unused_prefix_rejects_prepared_codes_before_post(self):
         config_io.save_supplier("paul-lange", {"product_code_prefix": "OTHER-"})

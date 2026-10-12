@@ -111,6 +111,8 @@ def io_save_supplier(supplier: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _validate_price_coefficients(cfg: Dict[str, Any]) -> None:
+    if cfg.get("default_shop") not in (None, "", "biketrek", "xtrek"):
+        raise HTTPException(status_code=422, detail={"code": "invalid_default_shop", "message": "Choose BIKETREK or xTrek"})
     try:
         adapter = cfg.get("adapter_settings") or {}
         if isinstance(adapter, dict):
