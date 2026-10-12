@@ -196,8 +196,14 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hub_only_existing_canonical_product_gains_proved_supplier_alias(self):
         from inventory_hub.services.identifiers import ProductIdentifierService
+        # The default catalog fixture deliberately has an unverified barcode.
+        # Cross-supplier reuse requires a checksum-validated EAN, exactly as
+        # receiving and the shared identity resolver do in production.
+        self.write_feed(xml_item(ean='0000000000017'))
+        await self.refresh()
         async with self.sessions() as db:
             source = (await catalog.selected_products(db, 'paul-lange', 'products', [self.ids[0]]))[0]
+            self.assertEqual(ProductIdentifierService.classify_barcode(source.eans[0]), IdentifierType.ean)
             other = Supplier(code='other-fixture', name='Other supplier')
             db.add(other)
             await db.flush()
