@@ -192,6 +192,8 @@ Dodávateľská zásoba je oddelená od našej. `6+` je dolná hranica, nie pres
 
 Sloger podporuje jeden katalóg z viacerých značkových XML zdrojov (`feeds.sources.products.remote.urls`), s atómovou obnovou a filtrovaním výrobcu. Natívny parser zachováva explicitné varianty a blokuje kolidujúce kódy aj medzi značkami. DMOC je predajná cena s DPH; chýbajúca nákupná cena sa do Upgates neposiela. Karta **Ceny** v nastavení dodávateľa upravuje koeficienty značiek; `1` cenu nemení. Bez nastavenia sa predvolené koeficienty Paul Lange nepoužijú na iného dodávateľa. Zmena nepotrebuje migráciu a sama nezapína dodávateľa ani B2B zber. Konfigurácia a overovanie sú v [dodávateľskom katalógu](docs/supplier-catalog.md#sloger-listing-feeds).
 
+Značkové GET zdroje Sloger sa sťahujú postupne s odstupom jednej sekundy. Pri HTTP 429 sa zdroj skúsi najviac trikrát so zohľadnením `Retry-After`; čakanie dlhšie než 60 sekúnd ukončí obnovu. Časové a veľkostné limity aj zachovanie posledného úspešného katalógu ostávajú v platnosti.
+
 ## AI obsah
 
 Úplné súkromné pravidlá možno pripraviť offline nástrojom `ai_rule_package`; nejde o publikovanie do databázy. Rozsahy, obmedzenia a postup sú v [AI dokumentácii](docs/ai-content.md). Overený návrh prepojenia príjmu s existujúcim importom a prenosom vybraných SKU je v [príjem → Upgates](docs/receiving-upgates-plan.md); samotné prepojenie zostáva plánované.

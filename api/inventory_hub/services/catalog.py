@@ -131,7 +131,11 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
                                      verify=remote.get("verify_ssl", True)) as response:
                     if response.status_code >= 400:
                         code = {401: "feed_auth_failed", 403: "feed_auth_failed", 404: "feed_not_found", 429: "feed_rate_limited"}.get(response.status_code, "feed_http_error")
-                        raise CatalogError(code, f"Feed download returned HTTP {response.status_code}", 502)
+                        error = CatalogError(code, f"Feed download returned HTTP {response.status_code}", 502)
+                        if response.status_code == 429 and method == "GET" and (source.get("catalog_parser") or supplier) == "sloger":
+                            from inventory_hub.adapters.sloger_feed import retry_after_seconds
+                            error.retry_after_seconds = retry_after_seconds(response.headers.get("Retry-After"))
+                        raise error
                     size = 0
                     with temporary.open("wb") as output:
                         for chunk in response.iter_content(65536):

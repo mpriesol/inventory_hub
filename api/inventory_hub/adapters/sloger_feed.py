@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import time
+import math
+import re
 from collections.abc import Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -10,6 +14,24 @@ from lxml import etree
 
 
 MAX_CATALOG_BYTES = 100 * 1024 * 1024
+
+
+def retry_after_seconds(value: str | None, *, now: datetime | None = None) -> int | None:
+    """Parse Retry-After without retaining the header in any error or artifact."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if re.fullmatch(r"[0-9]+", value):
+        # Only the <=60s retry window matters; avoid unbounded integer parsing.
+        seconds = value.lstrip("0") or "0"
+        return 61 if len(seconds) > 6 else int(seconds)
+    try:
+        retry_at = parsedate_to_datetime(value)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0, math.ceil((retry_at - (now or datetime.now(timezone.utc))).total_seconds()))
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 class SlogerFeedError(ValueError):
@@ -53,6 +75,7 @@ def aggregate_catalog_sources(
     downloaded_bytes = 0
     started = time.monotonic()
     temporary = destination.with_suffix(".part")
+    retry_get = str(remote.get("method") or "GET").upper() == "GET"
 
     def remaining_time() -> float | None:
         if max_elapsed_seconds is None:
@@ -62,16 +85,41 @@ def aggregate_catalog_sources(
             raise SlogerFeedError("feed_timeout", "The supplier exceeded the feed download deadline", 504)
         return remaining
 
+    def wait(seconds: int) -> None:
+        remaining = remaining_time()
+        if remaining is not None and seconds >= remaining:
+            raise SlogerFeedError("feed_timeout", "The supplier exceeded the feed download deadline", 504)
+        if seconds:
+            time.sleep(seconds)
+        remaining_time()
+
     try:
         with temporary.open("wb") as output:
             output.write(b'<?xml version="1.0" encoding="UTF-8"?>\n<products>\n')
             for index, url in enumerate(urls, 1):
+                if index > 1 and retry_get:
+                    wait(1)
                 if downloaded_bytes >= limit:
                     raise SlogerFeedError("feed_too_large", "Combined Sloger feeds exceed the download size limit", 413)
                 child_remote = {key: value for key, value in remote.items() if key != "urls"}
                 child_remote["url"] = url
                 child = {**source, "remote": child_remote}
-                snapshot = download(child, index, limit - downloaded_bytes, remaining_time())
+                for attempt in range(3):
+                    try:
+                        snapshot = download(child, index, limit - downloaded_bytes, remaining_time())
+                        break
+                    except Exception as error:
+                        code = getattr(error, "code", None)
+                        delay = getattr(error, "retry_after_seconds", None)
+                        delay = delay if delay is not None else 5 * (attempt + 1)
+                        if retry_get and code == "feed_rate_limited" and attempt < 2 and delay <= 60:
+                            wait(delay)
+                            continue
+                        if code:
+                            # The regular downloader has already sanitized this
+                            # error; add only the source position, never its URL.
+                            raise SlogerFeedError(code, f"Sloger source {index}: {error}", getattr(error, "status", 502)) from None
+                        raise
                 downloaded_bytes += snapshot.stat().st_size
                 remaining_time()
                 if downloaded_bytes > limit:
