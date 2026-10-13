@@ -27,6 +27,7 @@ import {
 } from '../api/receiving';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 import { API_BASE } from '../api/client';
+import { CatalogApiError } from '../api/catalog';
 
 function getRawScm(line: ReceivingLine): string {
   return (line.scm || (line.product_code || '').replace(/^PL-/i, '')).trim();
@@ -410,7 +411,7 @@ export function ReceivingSessionPage() {
       }
       if (receiptContext.current === context) navigate(`/product-import?draft=${encodeURIComponent(result.draft_id)}`);
     } catch (error) {
-      if (receiptContext.current === context) setError(t(error instanceof Error && error.message.includes('receiving_drafts_mixed') ? 'receiving.products.mixedDrafts' : 'receiving.products.prepareError'));
+      if (receiptContext.current === context) setError(t(error instanceof CatalogApiError && error.code === 'receiving_drafts_mixed' ? 'receiving.products.mixedDrafts' : 'receiving.products.prepareError'));
     } finally {
       if (receiptContext.current === context) { mutation.current = false; setPreparingProducts(false); }
     }

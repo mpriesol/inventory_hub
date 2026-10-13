@@ -36,7 +36,7 @@ function RouteControl() { navigation = useNavigate(); currentLocation = useLocat
 let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
 let holdQuantity = false, resolveQuantity, loseQuantity = false, invalidQuantityResponse = null;
 let sessionStatus = 'in_progress', pauseMode = 'ok', extraLines = [], failProducts = false, failPrepare = false, failNote = false;
-const preparations = [];
+const preparations = [], productRequests = [];
 let matches = [{ line_id: 41, status: 'feed_only', product_id: null, product_code: null, product_name: null, catalog_product_id: 77, display_ean: '0123456789012', own_stock_qty: null, stock_confirmed: false, can_prepare: true, draft_id: null, warnings: [] }];
 const productResult = () => ({ session_id: 'session-A', invoice_no: 'test-invoice', warehouse_id: 1, feed_verified: true, items: matches, counts: Object.fromEntries(['matched','basic_card','feed_only','not_found','ambiguous','feed_unverified'].map(status => [status, matches.filter(item => item.status === status).length])) });
 const line = () => ({ id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '', display_ean: '0123456789012', ean_source: 'supplier_catalog', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
@@ -44,12 +44,21 @@ const summary = () => ({ matched: received >= 20 ? 1 : 0, partial: received > 0 
 global.fetch = async (path, options = {}) => {
   calls.push({ path, method: options.method || 'GET' });
   assert(path.startsWith('/api/suppliers/fixture/'), 'Only local receiving APIs are used');
+  if (/\/products(?:\/(?:reconcile|prepare))?$/.test(path)) {
+    productRequests.push({ path, method: options.method, headers: options.headers, credentials: options.credentials });
+    // Mirror the cookie-authenticated API boundary: a missing CSRF header
+    // produces a real rejected response, not an assertion swallowed by the UI.
+    if (!path.endsWith('/products') && options.headers?.['X-Hub-Request'] !== '1') {
+      return response({ detail: { code: 'csrf_failed', message: 'Missing same-origin request marker' } }, 403);
+    }
+    if (options.credentials !== 'same-origin') return response({ detail: { code: 'hub_access_required' } }, 401);
+  }
   if (path.endsWith('/products') || path.endsWith('/products/reconcile')) {
     if (failProducts) throw new Error('Synthetic feed matching unavailable');
     return response(productResult());
   }
   if (path.endsWith('/products/prepare')) {
-    if (failPrepare) return response({ detail: { code: 'receiving_drafts_mixed' } }, 409);
+    if (failPrepare) return response({ detail: { code: 'receiving_drafts_mixed', message: 'Časť výberu už má rozpracovanú prípravu.' } }, 409);
     preparations.push(JSON.parse(options.body));
     return response({ draft_id: 'invoice-draft', created: preparations.length === 1 });
   }
@@ -523,6 +532,12 @@ async function mountReceipt(status = 'in_progress') {
   await act(async () => { find('receiving-exit').click(); await tick(); });
   assert(find('receiving-list'), 'A failed initial read does not trap navigation');
   assert.equal(calls.length, beforeExit, 'Leaving an unloaded receipt never attempts a mutation');
+  assert(productRequests.every(request => request.headers?.['X-Hub-Request'] === '1' && request.credentials === 'same-origin'), 'All new receiving product APIs use the shared session-aware client');
+  for (const operation of ['reconcile', 'prepare']) {
+    const requests = productRequests.filter(request => request.path.endsWith(`/products/${operation}`));
+    assert(requests.length > 0, `Actual page interactions exercise protected ${operation} requests`);
+    assert(requests.every(request => request.method === 'POST' && request.headers['X-Hub-Request'] === '1' && request.credentials === 'same-origin'));
+  }
   await act(async () => { root.unmount(); });
   console.log('Receiving UI: scan UUID/retry/context protections, visible invoice items, manual quantity serialization/recovery, explicit historical closure, readonly receipts and pause reconciliation passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

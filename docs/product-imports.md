@@ -64,7 +64,7 @@ AI jobs use the existing model, published rules, provider, budget reservation an
 
 ## API
 
-All endpoints require operator access; cookie writes use existing same-origin protection. Responses are `no-store`.
+All endpoints require operator access; cookie writes use existing same-origin protection. Responses are `no-store`. Receiving product inspection, reconciliation and preparation use the shared frontend `hubRequest` client, including the `X-Hub-Request` header required for account-session writes and the existing operator-token fallback.
 
 | Method | Path | Purpose |
 |---|---|---|
