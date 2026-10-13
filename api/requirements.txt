@@ -8,6 +8,7 @@ pyarrow>=17,<19
 httpx>=0.27,<0.28
 lxml>=4.9
 openpyxl>=3.1,<4
+pypdf>=6,<7
 
 # PostgreSQL v12 FINAL
 sqlalchemy[asyncio]>=2.0,<3

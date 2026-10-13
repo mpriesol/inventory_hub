@@ -103,6 +103,21 @@ def parse(path, supplier, cfg, feed_key, parser):
         for item in read_feed_items(path):
             records.append(observation(_get_text(item, "ITEM_ID"), _get_text(item, "STOCK"),
                                        _get_text(item, "STOCK_EXTERNAL"), _get_text(item, "DELIVERY")))
+    elif is_stock and parser == "sk-profi-bike":
+        from inventory_hub.adapters.sk_profi_bike_catalog import read_stock
+        for sku, raw in read_stock(path):
+            try:
+                number = Decimal(raw.replace(",", ".")) if raw is not None else None
+                negative = number is not None and number.is_finite() and number < 0
+            except InvalidOperation:
+                negative = False
+            row = observation(sku, None if negative else raw)
+            if negative:
+                # Negative supplier balances do not prove an orderable quantity,
+                # and must never become a fabricated zero or an absolute value.
+                row = Observation(row.sku, row.available, row.quantity, row.quantity_kind,
+                                  {**row.raw, "stock": raw, "warning": "negative_supplier_stock"})
+            records.append(row)
     else:
         for product, _raw in catalog.PARSERS[parser](path, supplier, cfg, feed_key):
             if "duplicate_supplier_code" in product.import_blockers:

@@ -482,6 +482,8 @@ def native_record_paths(parser):
         return ["products/product", "root/product", "product"]
     if parser.__module__.endswith("sloger_catalog"):
         return ["products/product", "product"]
+    if parser.__module__.endswith("sk_profi_bike_catalog"):
+        return ["products/product", "product"]
     return None
 
 

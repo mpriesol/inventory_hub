@@ -6,6 +6,7 @@ Full CRUD, version history, URL validation, invoice upload
 from __future__ import annotations
 
 import os
+import asyncio
 import re
 import json
 import shutil
@@ -687,6 +688,20 @@ async def upload_invoice(
             status_code=400,
             detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
         )
+
+    if supplier == "sk-profi-bike" and ext == ".pdf":
+        from inventory_hub.adapters.sk_profi_bike_invoice import (
+            InvoiceConflictError, InvoiceParseError, save_receiving_invoice,
+        )
+        try:
+            content = await file.read(20 * 1024 * 1024 + 1)
+            return await asyncio.to_thread(
+                save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number,
+            )
+        except InvoiceParseError as error:
+            raise HTTPException(422, detail=str(error)) from None
+        except InvoiceConflictError as error:
+            raise HTTPException(409, detail=str(error)) from None
 
     # Determine target directory based on file type
     if ext == '.pdf':
