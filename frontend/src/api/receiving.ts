@@ -9,6 +9,8 @@ export interface ReceivingSession {
 export interface ReceivingLine {
   id?: number;
   ean: string;
+  display_ean?: string;
+  ean_source?: 'invoice' | 'product' | 'supplier_catalog' | null;
   scm: string;
   product_code: string | null;
   title: string;
@@ -217,11 +219,15 @@ export async function setLineQuantity(
   received_qty: number,
   note?: string
 ): Promise<SetQtyResult> {
-  return fetchJSON<SetQtyResult>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/set-qty`, {
+  const result = await fetchJSON<unknown>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/set-qty`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ line_index, received_qty, note })
   });
+  if (!object(result) || result.success !== true || !validLine(result.line) || result.line.received_qty !== received_qty || !validSummary(result.summary)) {
+    throw new Error('receiving_quantity_response_invalid');
+  }
+  return result as unknown as SetQtyResult;
 }
 
 // Bulk accept all

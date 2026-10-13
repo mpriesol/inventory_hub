@@ -4,6 +4,9 @@ Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity
 
 ## Pre obsluhu
 
+- Zoznam položiek sa otvorí automaticky. Šípky pri prijatom množstve pridajú alebo odoberú jednu fakturovanú jednotku; ceruzka umožní zadať presné množstvo. Počas ukladania alebo čakajúcich skenov sú ručné zmeny blokované. Pri stratenej odpovedi sa najskôr načíta uložený stav, aby ďalší klik nevychádzal zo starého množstva.
+- Stĺpec EAN uprednostní kód z faktúry, potom overené kódy jednoznačne priradeného produktu a napokon kód z katalógu rovnakého dodávateľa podľa presného dodávateľského SKU. Katalógový zdroj je označený; samotné zobrazenie kódu ešte nezakladá skladovú kartu ani identitu pre skener. Pri konflikte sa náhradný kód nedoplní.
+- **Dokončiť aj bez všetkých položiek** umožní po výslovnom potvrdení uzavrieť historickú faktúru aj s neprijatými riadkami alebo nulovým príjmom. Do skladu vstúpi iba zadané prijaté množstvo. Už predané alebo neprítomné kusy nechaj neprijaté; tlačidlo nedoplní chýbajúce množstvá. Doklad sa presunie do dokončených a opakovanie nevytvorí ďalšie pohyby.
 - Každý nový sken pripočíta zadané množstvo. Desať samostatných skenov toho istého EAN pridá desať kusov. Rýchle opakované skenovanie nie je blokované časovým oknom.
 - Ak sa odpoveď stratí, opakuj pôvodnú operáciu. Rovnaká operácia nepripočíta množstvo druhýkrát. Nový fyzický sken musí zostať samostatnou operáciou.
 - Ak rovnaký kód zodpovedá viacerým faktúrovým riadkom, systém svojvoľne nevyberie prvý. Riadky môžu mať rozdielne nákupné ceny. Použi výslovný výber riadka, ak ho klient podporuje, alebo existujúcu ručnú úpravu jeho prijatého množstva.
@@ -49,6 +52,8 @@ Príjem dopĺňa aj jednoznačnú väzbu na dodávateľskú ponuku, aby ďalší
 
 Odpoveď naďalej obsahuje `status`, `line`, `summary`; dopĺňa `request_id` a `replayed`. `line.id` umožňuje výslovný výber pri nejednoznačnosti. `line.product_code` pri známom produkte zobrazuje jeho kanonický SKU; pri ešte nepriradenom riadku zostáva odvodený návrh dodávateľského kódu s prefixom.
 
+Odpovede s položkami obsahujú aj `display_ean` a `ean_source` (`invoice`, `product`, `supplier_catalog` alebo `null`). Služba `receiving_barcodes.py` číta zdroje dávkovo bez zmeny pôvodného `line.ean`, fingerprintu, produktových väzieb či skladu. Historické odpovede opakovaných skenov môžu tieto doplnkové polia postrádať; klient po opakovaní používa aktuálny súhrn.
+
 - Nové UUID: nová operácia a jeden `ScanEvent`.
 - Rovnaké UUID a rovnaká relácia, orezaný kód, množstvo, pracovník a výber riadka: pôvodná uložená odpoveď s `replayed: true`, bez ďalšieho pripočítania a udalosti.
 - Rovnaké UUID s iným obsahom alebo v inej relácii: HTTP 409, `detail.code = scan_request_conflict`.
@@ -65,13 +70,15 @@ Zámok relácie chráni súčet množstiev. Transakčný zámok UUID chráni aj 
 
 ## SK Profi Bike PDF invoices
 
-Príjem podporuje pôvodné textové PDF SK Profi Bike cez `POST /suppliers/sk-profi-bike/upload-invoice`, teda nahratie v dodávateľskom postupe príjmu. Samostatné všeobecné nahratie do archívu `/invoices/upload` nie je tento parser. Adaptér `sk_profi_bike_invoice.py` používa `pypdf`, overí dodávateľa, číslo, dátumy, poradie riadkov, množstvá, jednotkové ceny bez DPH a súhrn DPH. Súčty rešpektujú zaokrúhlenie DPH za sadzbu na úrovni faktúry. Nepodporované, šifrované alebo naskenované PDF sa odmietne; limit je 20 MB a 50 strán.
+Príjem podporuje pôvodné textové PDF SK Profi Bike cez `POST /suppliers/sk-profi-bike/upload-invoice`, teda nahratie v dodávateľskom postupe príjmu. Samostatné všeobecné nahratie do archívu `/invoices/upload` nie je tento parser. Adaptér `sk_profi_bike_invoice.py` používa `pypdf`, overí dodávateľa, číslo, dátumy, poradie riadkov, množstvá, jednotkové ceny bez DPH a súhrn DPH. Podporuje viacstranové doklady s opakovanou jedno- alebo dvojriadkovou hlavičkou, zalomené názvy v stĺpci názvu a jednotky `Ks`, `Pár`, `Sada`, `Bal`. Množstvá zostávajú vo fakturovanej jednotke; balenia a páry sa nerozpočítavajú na jednotlivé kusy. Číslovanie strán, ak je prítomné, musí zodpovedať všetkým fyzickým stranám PDF v správnom poradí. Nečitateľná alebo chýbajúca strana sa nesmie potichu vynechať. Nepodporované, šifrované alebo naskenované PDF sa odmietne; limit je 20 MB a 50 strán.
+
+Voliteľný stĺpec `Zľava %` sa overí proti pôvodnej jednotkovej cene a čistému súčtu riadka. Do príjmu ide cena po zľave: fakturovaný čistý súčet delený množstvom, na štyri desatinné miesta. Rozpočítaná cena musí po vynásobení množstvom zachovať centový súčet riadka aj dokladu; nepodporovaná presnosť sa odmietne namiesto zmeny hodnoty príjmu. Výslovná 100 % zľava je známy nulový náklad, nie chýbajúca cena. Opakované SKU zostávajú samostatnými riadkami, pretože platená položka a bonus môžu mať rozdielnu cenu. DPH musí presne sedieť buď ako súčet zaokrúhlených daní riadkov, alebo ako zaokrúhlená daň zo základu za každú sadzbu; ľubovoľná centová tolerancia sa nepoužíva. Riadkové súčty, DPH aj celková fakturovaná suma sa vždy kontrolujú.
 
 Ukladá pôvodné PDF, kanonické CSV `SCM;TITLE;QTY;PRICE;EAN` a index pre existujúci príjem. `PRICE` je nákupná cena bez DPH; konfigurácia používa `unit_price_source: "ex"`. Faktúra bez EAN má prázdny EAN, nie vymyslený kód. Existujúci produkt sa páruje dodávateľským aliasom alebo overeným EAN; nový používa prefix `SKP-`. Skenovanie EAN vyžaduje už známu jednoznačnú identitu v Hube. Samotná prítomnosť produktu v katalógu ju nenahrádza.
 
 Opakované nahratie rovnakého dokladu zachová existujúci stav a nevytvorí duplikát. Zmenený obsah pod rovnakým číslom skončí konfliktom. Nahratie nevytvára skladový pohyb ani nepotvrdzuje fyzické prevzatie. Historický doklad použitý na overenie musí zostať neprijatý, kým obsluha nepotvrdí skutočný príjem.
 
-Syntetické testy overujú parser, ceny, súčty a opakovanie nahratia. `test_skp_stock_workflow_db.py` používa izolovanú PostgreSQL databázu pre spoločné SKU, SKP alias, opakovanie skenera/finalizácie a inventúrnu korekciu cez nemenné pohyby a FIFO. Nezapisuje do produkčného skladu.
+Syntetické testy overujú parser, viacstranové doklady vrátane poslednej strany iba so súhrnom, zľavy a bonusy, dve konvencie DPH, zachovanie zalomených názvov, odmietnutie poškodeného číslovania strán, ceny, súčty a opakovanie nahratia. Otlačok pôvodného formátu bez zliav sa nemení. Dňa 13. 10. 2026 bol lokálne overený pôvodný jednostranový aj nový štvorstranový dodávateľský doklad; ich obsah nie je súčasťou repozitára. `test_skp_stock_workflow_db.py` používa izolovanú PostgreSQL databázu pre spoločné SKU, SKP alias, opakovanie skenera/finalizácie a inventúrnu korekciu cez nemenné pohyby a FIFO. Nezapisuje do produkčného skladu.
 
 ## Migrácia a overenie
 
@@ -84,6 +91,8 @@ Nezmenia sa vstupné hodnoty riadkov, pohyby ani ceny. Žiadny `CASCADE` sa nepo
 Regresie v `test_receiving_db.py` pokrývajú desať samostatných skenov, retry vrátane stavu po dokončení a resete, súbeh rovnakého UUID, konflikt payloadu, neočakávaný sken, zložené EAN, dve ceny rovnakého produktu a opätovnú kontrolu už priradených produktov. `test_product_identity.py` a `test_catalog_db.py` pokrývajú spoločný SKU, overené EAN, dodávateľský rozsah a konflikty importu. Databázové testy vyžadujú izolovanú lokálnu PostgreSQL databázu podľa `AGENTS.md`.
 
 `frontend/tests/receiving-scan-ui.cjs` overuje reálnu stránku nad syntetickým API: frontu a opakovanie UUID, oba odchody z dokončeného/zrušeného/pozastaveného príjmu bez zápisu, zlyhanie pozastavenia aktívneho príjmu, súbežné dokončenie, stratenú odpoveď pozastavenia, neznámy stav a obnovu čakajúceho skenu po dokončení. Test nepoužíva produkčné doklady ani e-shopy a neoveruje rozloženie v reálnom prehliadači.
+
+Rozšírenie z 13. 10. 2026 dopĺňa testy predvoleného zoznamu, zobrazeného EAN, šípok množstva a potvrdeného čiastočného/nulového dokončenia. `test_receiving_barcodes_db.py` overuje izoláciu dodávateľských kódov, konflikty, nezmenený zdroj faktúry a dokončenie iba skutočne prijatých množstiev vrátane opakovania. Rozšírenie nevyžaduje databázovú migráciu.
 
 
 `test_receiving_migration_db.py` začína na skutočnej schéme 001 + 002 pred prvým spustením 013. Overuje zachovanie existujúceho riadka a fingerprintu, funkčný pohľad vrátane dlhého EAN, jeho vlastníka a oprávnení, bezpečné opakovanie migrácie a rollback pri oboch druhoch neznámej závislosti. Nevyhodnocuje prázdnu databázu ako dôkaz zachovania historických dát.

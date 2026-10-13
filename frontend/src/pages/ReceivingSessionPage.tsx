@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Camera, Check, X, List, AlertTriangle,
-  Edit2, CheckCircle, RotateCcw, MessageSquare, Loader2
+  Edit2, CheckCircle, RotateCcw, MessageSquare, Loader2, ChevronUp, ChevronDown
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
@@ -58,7 +58,7 @@ export function ReceivingSessionPage() {
   const [showConfirm,    setShowConfirm]    = useState(false);
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null);
   const [showCsvModal,   setShowCsvModal]   = useState(false);
-  const [showLines,      setShowLines]      = useState(false);
+  const [showLines,      setShowLines]      = useState(true);
   const [bulkLoading,    setBulkLoading]    = useState(false);
   const [doneItems,      setDoneItems]      = useState<Record<string, boolean>>({});
   const [invoiceNote,    setInvoiceNote]    = useState('');
@@ -67,6 +67,7 @@ export function ReceivingSessionPage() {
   const [editQty,        setEditQty]        = useState('');
   const [editNote,       setEditNote]       = useState('');
   const [savingEdit,     setSavingEdit]     = useState(false);
+  const [quantityNeedsRefresh, setQuantityNeedsRefresh] = useState(false);
   const [pausing,        setPausing]        = useState(false);
 
   const total    = stats.matched + stats.partial + stats.pending;
@@ -85,7 +86,8 @@ export function ReceivingSessionPage() {
     setLines(state?.lines || []);
     setStats({ matched: 0, partial: 0, pending: state?.lines?.length || 0, overage: 0, unexpected: 0 });
     setSummaryReady(false); setSessionState(null); setLastScan(null); setError(null); setEditingLine(null);
-    setShowConfirm(false); setFinalizeResult(null); setDoneItems({});
+    setShowConfirm(false); setFinalizeResult(null); setShowCsvModal(false); setDoneItems({}); setShowLines(true);
+    mutation.current = false; setSavingEdit(false); setQuantityNeedsRefresh(false);
     scanInput.current = ''; setScannedCode(''); setQuantity(1);
     if (sessionId) getReceivingSummary(supplier, sessionId).then(data => {
       if (active && receiptContext.current === context && context.revision === revision) {
@@ -180,7 +182,7 @@ export function ReceivingSessionPage() {
     scanner.enqueue(code, quantity); inputRef.current?.focus();
   };
 
-  const doFinalize = async () => {
+  const doFinalize = async (force = false) => {
     if (!sessionId || !canEdit || mutation.current || scanner.hasPending()) return;
     const context = receiptContext.current;
     mutation.current = true; context.revision += 1;
@@ -188,11 +190,13 @@ export function ReceivingSessionPage() {
     try {
       if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
       await saveReceivedItems();
-      const result = await finalizeReceiving(supplier, sessionId);
+      const result = await finalizeReceiving(supplier, sessionId, force);
       if (receiptContext.current !== context) return;
       setSessionState({ key: receiptKey, status: 'completed' });
       setFinalizeResult(result);
-      resultsTimer.current = setTimeout(() => { if (receiptContext.current === context) setShowCsvModal(true); }, 2000);
+      if (supplier === 'paul-lange') {
+        resultsTimer.current = setTimeout(() => { if (receiptContext.current === context) setShowCsvModal(true); }, 2000);
+      }
     } catch (error) {
       setError(error instanceof Error && error.message.includes('stock_publication_warehouse_held')
         ? t('stockPublication.errors.stock_publication_warehouse_held')
@@ -241,15 +245,65 @@ export function ReceivingSessionPage() {
 
   const openEditModal = (index: number, line: ReceivingLine) => { if (!canEdit || scanner.hasPending() || mutation.current) return; setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
 
-  const handleSaveEdit = async () => {
-    if (!editingLine || !sessionId || !canEdit || mutation.current || scanner.hasPending()) return;
-    mutation.current = true; receiptContext.current.revision += 1;
+  const refreshQuantities = async () => {
+    if (!sessionId || mutation.current || scanner.hasPending()) return;
+    const context = receiptContext.current;
+    mutation.current = true; setSavingEdit(true);
+    try {
+      const current = await getReceivingSummary(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status });
+      setSummaryReady(true); setQuantityNeedsRefresh(false); setError(null);
+    } catch {
+      if (receiptContext.current === context) setError(t('receiving.quantityRefreshRequired'));
+    } finally {
+      if (receiptContext.current === context) { mutation.current = false; setSavingEdit(false); }
+    }
+  };
+
+  const saveLineQuantity = async (index: number, nextQty: number, note?: string) => {
+    if (!sessionId || !canEdit || mutation.current || scanner.hasPending()) return;
+    if (!Number.isFinite(nextQty) || nextQty < 0 || nextQty > 999999999.999 || Math.abs(nextQty * 1000 - Math.round(nextQty * 1000)) > 0.000001) {
+      setError(t('receiving.invalidManualQuantity')); return;
+    }
+    const context = receiptContext.current;
+    mutation.current = true; context.revision += 1;
     setSavingEdit(true); setError(null);
     try {
-      const result = await setLineQuantity(supplier, sessionId, editingLine.index, parseFloat(editQty) || 0, editNote || undefined);
-      setLines(prev => prev.map((l, i) => i === editingLine.index ? result.line : l));
+      const result = await setLineQuantity(supplier, sessionId, index, nextQty, note);
+      if (receiptContext.current !== context) return;
+      if (lines[index]?.id !== undefined && result.line.id !== lines[index].id) throw new Error('receiving_quantity_line_mismatch');
+      setLines(prev => prev.map((line, i) => i === index ? { ...line, ...result.line } : line));
       setStats(result.summary); setEditingLine(null);
-    } catch { setError('Nepodarilo sa uložiť zmenu'); } finally { mutation.current = false; setSavingEdit(false); }
+    } catch {
+      if (receiptContext.current !== context) return;
+      // An absolute quantity may already have been committed when its response
+      // is lost. Read the saved draft before another click computes its target.
+      setSummaryReady(false);
+      try {
+        const current = await getReceivingSummary(supplier, sessionId);
+        if (receiptContext.current !== context) return;
+        setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status });
+        setSummaryReady(true); setEditingLine(null); setError(t('receiving.quantityReconciled'));
+      } catch {
+        if (receiptContext.current === context) {
+          setQuantityNeedsRefresh(true); setError(t('receiving.quantityRefreshRequired'));
+        }
+      }
+    } finally {
+      if (receiptContext.current === context) { mutation.current = false; setSavingEdit(false); }
+    }
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingLine) return;
+    void saveLineQuantity(editingLine.index, editQty.trim() === '' ? NaN : Number(editQty), editNote || undefined);
+  };
+
+  const adjustLineQuantity = (index: number, delta: number) => {
+    const line = lines[index];
+    if (!line) return;
+    void saveLineQuantity(index, Math.max(0, Math.round((line.received_qty + delta) * 1000) / 1000));
   };
 
   const handleAcceptAll = async () => {
@@ -299,6 +353,7 @@ export function ReceivingSessionPage() {
       </div>
 
       {error && <div className="p-4 rounded-lg border" style={{ backgroundColor: 'var(--color-error-subtle)', borderColor: 'var(--color-error)', color: 'var(--color-error)' }}>{error}</div>}
+      {quantityNeedsRefresh && <Button data-testid="receiving-quantity-refresh" disabled={savingEdit} onClick={refreshQuantities}>{t('receiving.refreshQuantities')}</Button>}
 
       {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
       {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t(inactive ? 'receiving.closedPendingScans' : 'actions.receiving.pending', { count: scanner.pending })}</p>}
@@ -369,7 +424,7 @@ export function ReceivingSessionPage() {
 
       {/* Lines */}
       {showLines && (
-        <div className="rounded-xl border overflow-hidden" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
+        <div data-testid="receiving-lines" className="rounded-xl border overflow-hidden" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
           <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: 'var(--color-border-subtle)' }}>
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>{lines.length} položiek</span>
             {canEdit && <div className="flex gap-2">
@@ -385,11 +440,12 @@ export function ReceivingSessionPage() {
               </button><ActionScope effects={['hub-write']} /></span>
             </div>}
           </div>
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-96 overflow-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b sticky top-0" style={{ backgroundColor: 'var(--color-bg-primary)', borderColor: 'var(--color-border-subtle)' }}>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>SKU</th>
+                  <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{t('receiving.ean')}</th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Názov</th>
                   <th className="text-right px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Obj.</th>
                   <th className="text-right px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Prij.</th>
@@ -406,12 +462,26 @@ export function ReceivingSessionPage() {
                       onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)'; }}
                       onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}>
                       <td className="px-4 py-2 text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{line.product_code || line.scm}</td>
+                      <td data-testid={`receiving-line-ean-${idx}`} title={line.ean_source ? t(`receiving.eanSources.${line.ean_source}`) : undefined} className="px-4 py-2 text-xs whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                        <div style={{ fontFamily: 'var(--font-mono)' }}>{(line.display_ean ?? line.ean) || '–'}</div>
+                        {line.ean_source === 'supplier_catalog' && <div className="mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('receiving.catalogEanLabel')}</div>}
+                      </td>
                       <td className="px-4 py-2 text-sm" style={{ color: 'var(--color-text-primary)' }}>
                         <div className="truncate max-w-xs" title={line.title}>{line.title}</div>
                       </td>
                       <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>{line.ordered_qty}</td>
                       <td className="px-4 py-2 text-sm text-right font-medium" style={{ color: line.received_qty >= line.ordered_qty ? 'var(--color-success)' : line.received_qty > 0 ? 'var(--color-info)' : 'var(--color-text-primary)' }}>
-                        {line.received_qty}
+                        <div className="flex items-center justify-end gap-2">
+                          <span>{line.received_qty}</span>
+                          {canEdit && <span className="flex flex-col">
+                            <button data-testid={`receiving-increase-line-${idx}`} type="button" aria-label={t('receiving.increaseQuantity', { code: line.product_code || line.scm })} title={t('receiving.increaseQuantity', { code: line.product_code || line.scm })}
+                              disabled={loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty > 999999998.999}
+                              onClick={() => adjustLineQuantity(idx, 1)} className="px-1 rounded border disabled:opacity-40" style={{ borderColor: 'var(--color-border-subtle)' }}><ChevronUp size={16} /></button>
+                            <button data-testid={`receiving-decrease-line-${idx}`} type="button" aria-label={t('receiving.decreaseQuantity', { code: line.product_code || line.scm })} title={t('receiving.decreaseQuantity', { code: line.product_code || line.scm })}
+                              disabled={loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty <= 0}
+                              onClick={() => adjustLineQuantity(idx, -1)} className="px-1 rounded border disabled:opacity-40" style={{ borderColor: 'var(--color-border-subtle)' }}><ChevronDown size={16} /></button>
+                          </span>}
+                        </div>
                       </td>
                       <td className="px-4 py-2 text-center">
                         {partial ? (
@@ -427,7 +497,7 @@ export function ReceivingSessionPage() {
                         )}
                       </td>
                       <td className="px-4 py-2 text-center">
-                        {canEdit && <button data-testid={`receiving-edit-line-${idx}`} aria-label={t('receiving.editQuantity')} onClick={() => openEditModal(idx, line)}><Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} /></button>}
+                        {canEdit && <button data-testid={`receiving-edit-line-${idx}`} disabled={loading || savingEdit || bulkLoading || pausing || finalizing} aria-label={t('receiving.editQuantity')} onClick={() => openEditModal(idx, line)}><Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} /></button>}
                       </td>
                     </tr>
                   );
@@ -451,7 +521,7 @@ export function ReceivingSessionPage() {
             <div className="mt-4">
               <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>Prijaté množstvo</label>
               <div className="flex gap-2 mt-2">
-                <input type="number" value={editQty} onChange={e => setEditQty(e.target.value)} className="flex-1 py-2 text-center text-lg" style={{ fontFamily: 'var(--font-mono)' }} min={0} step={1} autoFocus />
+                <input type="number" value={editQty} onChange={e => setEditQty(e.target.value)} className="flex-1 py-2 text-center text-lg" style={{ fontFamily: 'var(--font-mono)' }} min={0} step={0.001} autoFocus />
                 <button onClick={() => setEditQty(editingLine.line.ordered_qty.toString())} className="px-3 py-2 rounded-lg text-sm font-medium" style={{ backgroundColor: 'var(--color-accent-subtle)', color: 'var(--color-accent)' }}>= {editingLine.line.ordered_qty}</button>
               </div>
             </div>
@@ -459,7 +529,7 @@ export function ReceivingSessionPage() {
               <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>Poznámka (voliteľné)</label>
               <input type="text" value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Napr. poškodené, chýba v dodávke..." className="w-full mt-2 py-2" />
             </div>
-            <div className="flex justify-end gap-3 mt-6">
+            <div className="flex flex-wrap justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setEditingLine(null)}>Zrušiť</Button>
               <span className="action-control"><Button variant="primary" onClick={handleSaveEdit} loading={savingEdit} disabled={pausing || loading || bulkLoading}>Uložiť</Button><ActionScope effects={['hub-write']} /></span>
             </div>
@@ -479,12 +549,12 @@ export function ReceivingSessionPage() {
       </div>
 
       {/* Actions */}
-      <div className="flex justify-between">
+      <div className="flex flex-wrap justify-between gap-3">
         <Button variant="secondary" onClick={() => setShowLines(!showLines)}>
           <List size={16} /> {showLines ? 'Skryť položky' : 'Zobraziť položky'}
         </Button>
         {canEdit && <Button data-testid="receiving-finalize" variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || loading || savingEdit || bulkLoading || finalizing || pausing}>
-          <Check size={16} /> Dokončiť príjem
+          <Check size={16} /> {t(stats.pending > 0 || stats.partial > 0 ? 'receiving.finishIncomplete' : 'receiving.finish')}
         </Button>}
       </div>
 
@@ -503,7 +573,7 @@ export function ReceivingSessionPage() {
                   {stats.partial > 0 && <li style={{ color: 'var(--color-text-tertiary)' }}>• <strong style={{ color: 'var(--color-info)' }}>{stats.partial}</strong> položiek čiastočne prijatých</li>}
                 </ul>
                 <p className="text-xs mt-2" style={{ color: 'var(--color-text-tertiary)' }}>
-                  Čiastočne prijaté bez „Hotovo" → záložka <strong>Nespracované</strong>.
+                  {t('receiving.finishIncompleteExplanation')}
                 </p>
                 <div className="mt-4">
                   <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>Poznámka</label>
@@ -512,9 +582,9 @@ export function ReceivingSessionPage() {
                 </div>
               </div>
             </div>
-            <div className="flex justify-end gap-3 mt-6">
+            <div className="flex flex-wrap justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setShowConfirm(false)}>Pokračovať v skenovaní</Button>
-              <span className="action-control"><Button variant="primary" disabled={loading || finalizing} onClick={doFinalize}>Áno, dokončiť</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
+              <span className="action-control"><Button data-testid="receiving-finalize-incomplete" variant="primary" disabled={loading || finalizing || savingEdit || bulkLoading || pausing} onClick={() => doFinalize(true)}>{t('receiving.confirmFinishIncomplete')}</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
             </div>
           </div>
         </div>
@@ -533,12 +603,13 @@ export function ReceivingSessionPage() {
               <div><div className="text-2xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-success)' }}>{finalizeResult.stats.received_complete}</div><div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Kompletných</div></div>
               <div><div className="text-2xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: finalizeResult.stats.not_received > 0 ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}>{finalizeResult.stats.not_received}</div><div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Neprijatých</div></div>
             </div>
-            <p className="text-xs mt-4" style={{ color: 'var(--color-text-tertiary)' }}>Načítavam výsledky...</p>
+            {supplier === 'paul-lange' ? <p className="text-xs mt-4" style={{ color: 'var(--color-text-tertiary)' }}>Načítavam výsledky...</p> :
+              <Button data-testid="receiving-completion-back" className="mt-4" onClick={() => navigate('/receiving')}>{t('receiving.backToList')}</Button>}
           </div>
         </div>
       )}
 
-      {showCsvModal && (
+      {supplier === 'paul-lange' && showCsvModal && (
         <ReceivingResultsModal supplier={supplier} invoiceId={`${supplier}:${invoiceId}`} onClose={() => { setShowCsvModal(false); navigate('/receiving'); }} />
       )}
     </div>

@@ -32,6 +32,7 @@ from inventory_hub.db_models_ext import (
     StockMovement, StockBalance
 )
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.receiving_barcodes import line_barcode_display
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes
 from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
@@ -243,6 +244,11 @@ def _line_dict(line: ReceivingLine, prefix: str) -> Dict[str, Any]:
 
 def _lines_sorted(session: ReceivingSession) -> List[ReceivingLine]:
     return sorted(session.lines, key=lambda x: x.line_number)
+
+
+async def _line_dicts(db: AsyncSession, supplier_id: int, lines: List[ReceivingLine], prefix: str) -> List[Dict[str, Any]]:
+    display = await line_barcode_display(db, supplier_id, lines, prefix)
+    return [{**_line_dict(line, prefix), **display[line.id]} for line in lines]
 
 
 def _summary_counts(session: ReceivingSession, unexpected: int = 0) -> Dict[str, int]:
@@ -636,7 +642,7 @@ async def create_session(
 
     prefix = _product_code_prefix(supplier_code)
 
-    lines_out: List[Dict[str, Any]] = []
+    created_lines: List[ReceivingLine] = []
     for line_number, row in enumerate(rows, start=1):
         line = ReceivingLine(
             session_id=session.id, line_number=line_number,
@@ -650,7 +656,7 @@ async def create_session(
         line.match_method = match_method
         db.add(line)
         await db.flush()
-        lines_out.append(_line_dict(line, prefix))
+        created_lines.append(line)
 
     await db.flush()
 
@@ -659,7 +665,7 @@ async def create_session(
         "invoice_number": invoice_no,   # canonical
         "invoice_no": invoice_no,       # alias (frontend)
         "total_lines": len(rows),
-        "lines": lines_out,
+        "lines": await _line_dicts(db, supplier.id, created_lines, prefix),
     }
 
 
@@ -759,7 +765,7 @@ async def scan_code(
     unexpected = await _count_unexpected(db, session.id)
     result = {
         "status": matched_line.status if matched_line else "unexpected",
-        "line": _line_dict(matched_line, prefix) if matched_line else None,
+        "line": (await _line_dicts(db, session.supplier_id, [matched_line], prefix))[0] if matched_line else None,
         "summary": _summary_counts(session, unexpected),
         "request_id": str(request.request_id) if request.request_id is not None else None,
         "replayed": False,
@@ -787,7 +793,7 @@ async def get_session_summary(
         "invoice_number": session.invoice_number,  # canonical
         "invoice_no": session.invoice_number,      # alias (frontend)
         "status": session.status.value,
-        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "summary": _summary_counts(session, unexpected),
     }
 
@@ -840,7 +846,7 @@ async def set_line_quantity(
     prefix = _product_code_prefix(supplier_code)
     return {
         "success": True,
-        "line": _line_dict(line, prefix),
+        "line": (await _line_dicts(db, session.supplier_id, [line], prefix))[0],
         "summary": _summary_counts(session, unexpected),
     }
 
@@ -875,7 +881,7 @@ async def accept_all_items(
     return {
         "success": True,
         "updated_count": updated,
-        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "summary": _summary_counts(session, unexpected),
         "message": f"Accepted {updated} items",
     }
@@ -904,7 +910,7 @@ async def reset_all_items(
     return {
         "success": True,
         "updated_count": updated,
-        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "summary": _summary_counts(session, unexpected),
         "message": f"Reset {updated} items",
     }
@@ -1094,7 +1100,7 @@ async def resume_session(
         "session_id": session.id,
         "invoice_number": session.invoice_number,
         "invoice_no": session.invoice_number,
-        "lines": [_line_dict(ln, prefix) for ln in _lines_sorted(session)],
+        "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "scans": scans,
         "created_at": session.created_at.isoformat() if session.created_at else None,
         "resumed_at": resumed_at.isoformat(),
