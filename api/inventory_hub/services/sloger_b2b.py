@@ -21,20 +21,37 @@ from inventory_hub.services.catalog import CatalogError
 
 ORIGIN = "https://www.sloger.sk"
 LOGIN_URL = ORIGIN + "/sk/b2b"
+SEARCH_URL = ORIGIN + "/sk/shop/hladaj.html"
 MAX_HTML_BYTES = 2_000_000
 MAX_SECONDS = 100
 MAX_CANDIDATES = 5
-_PRODUCT_PATH = re.compile(r"^/shop/(?:[^/.]+/)+[^/]+\.html$")
+_PRODUCT_PATH = re.compile(r"^/(?:sk/)?shop/(?:[^/.]+/)+[^/]+\.html$")
+_HEADERS = {"User-Agent": "InventoryHub-Sloger-ReadOnly/1.0", "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "sk-SK,sk;q=0.9"}
 
 
-def _error(code="sloger_b2b_unavailable"):
+class SlogerB2BError(CatalogError):
+    """Only these fixed labels may be recorded outside the ephemeral session."""
+    stage = "login_page"
+
+    def diagnostic(self) -> dict:
+        return {"stage": self.stage if self.stage in {"login_page", "login_submit", "search", "product"} else "login_page",
+                "reason": self.reason if self.reason in {
+                    "http_status", "network", "redirect", "content_type", "challenge", "size", "deadline", "url", "structure", "authentication"
+                } else "structure",
+                "http_status": self.http_status if type(self.http_status) is int and 100 <= self.http_status <= 599 else None}
+
+
+def _error(code="sloger_b2b_unavailable", *, reason="structure", http_status=None):
     messages = {
         "sloger_b2b_unavailable": "Sloger B2B could not be read safely; no lookup was retried",
         "sloger_auth_failed": "Sloger did not confirm the B2B login",
         "sloger_product_not_found": "Sloger did not return the exact requested supplier SKU",
         "sloger_product_ambiguous": "Sloger returned ambiguous product evidence",
     }
-    return CatalogError(code, messages[code], 422 if code != "sloger_b2b_unavailable" else 502)
+    error = SlogerB2BError(code, messages[code], 422 if code != "sloger_b2b_unavailable" else 502)
+    error.reason, error.http_status = reason, http_status
+    return error
 
 
 def _text(element) -> str:
@@ -55,18 +72,18 @@ def _safe_url(url: str) -> str:
     except ValueError:
         valid = False
     if not valid:
-        raise _error()
+        raise _error(reason="url")
     return url
 
 
 def _product_url(url: str) -> str:
     parsed = urlsplit(_safe_url(url))
     if not _PRODUCT_PATH.fullmatch(parsed.path) or any(part in (".", "..") for part in parsed.path.split("/")):
-        raise _error()
+        raise _error(reason="url")
     # The observed VOC view is the only permitted product query. In particular,
     # no page-controlled query action or token is ever forwarded or returned.
     if parsed.query not in ("", "voc"):
-        raise _error()
+        raise _error(reason="url")
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "voc", ""))
 
 
@@ -78,7 +95,7 @@ def _document(raw: bytes):
     title = _fold(" ".join(document.xpath("//title/text()")))
     if (any(marker in title for marker in ("just a moment", "access denied", "attention required", "captcha"))
             or document.xpath("//*[@id='challenge-form' or @id='cf-challenge-running']")):
-        raise _error()
+        raise _error(reason="challenge")
     return document
 
 
@@ -87,6 +104,7 @@ class _Session:
         self.client = client
         self.started = time.monotonic()
         self.last_request = None
+        self.stage = "login_page"
 
     def read(self, url: str, *, data=None):
         """One bounded attempt; redirects are explicit and never replay a POST."""
@@ -95,7 +113,7 @@ class _Session:
             _safe_url(url)
             remaining = MAX_SECONDS - (time.monotonic() - self.started)
             if remaining <= 0:
-                raise _error()
+                raise _error(reason="deadline")
             if self.last_request is not None:
                 time.sleep(max(0, 1 - (time.monotonic() - self.last_request)))
             self.last_request = time.monotonic()
@@ -106,41 +124,61 @@ class _Session:
                                                headers={"Origin": ORIGIN, "Referer": url} if method == "POST" else None)
                 if response.status_code in (301, 302, 303, 307, 308):
                     if redirect == 3 or (method == "POST" and response.status_code in (307, 308)):
-                        raise _error()
+                        raise _error(reason="redirect")
                     target = urljoin(url, response.headers.get("Location", ""))
                     if target == url:
-                        raise _error()
+                        raise _error(reason="redirect")
                     _safe_url(target)
                     # Login redirects can return the B2B landing page or home;
                     # product/search redirects may only stay on their same path.
-                    source_path, target_path = urlsplit(url).path, urlsplit(target).path
-                    if target_path not in (source_path, "/", "/b2b", "/b2b/", "/sk/b2b", "/sk/b2b/"):
-                        raise _error()
+                    source, destination = urlsplit(url), urlsplit(target)
+                    source_path, target_path = source.path, destination.path
+                    # Only the observed Slovak prefix may be added/removed from
+                    # the same page. Other locales would change parser meaning.
+                    same_slovak_page = (method == "GET" and source.query == destination.query
+                        and (source_path.startswith("/shop/") and target_path == "/sk" + source_path
+                             or target_path.startswith("/shop/") and source_path == "/sk" + target_path))
+                    if target_path not in (source_path, "/", "/b2b", "/b2b/", "/sk/b2b", "/sk/b2b/") and not same_slovak_page:
+                        raise _error(reason="redirect")
                     url, method, data = target, "GET", None
                     continue
                 if response.status_code != 200:
-                    raise _error("sloger_auth_failed" if response.status_code == 401 else "sloger_b2b_unavailable")
+                    raise _error("sloger_auth_failed" if response.status_code == 401 else "sloger_b2b_unavailable",
+                                 reason="http_status", http_status=response.status_code)
                 if response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() not in ("text/html", "application/xhtml+xml"):
-                    raise _error()
+                    raise _error(reason="content_type")
                 chunks, size = [], 0
                 for chunk in response.iter_content(65536):
                     size += len(chunk)
-                    if size > MAX_HTML_BYTES or time.monotonic() - self.started > MAX_SECONDS:
-                        raise _error()
+                    if size > MAX_HTML_BYTES:
+                        raise _error(reason="size")
+                    if time.monotonic() - self.started > MAX_SECONDS:
+                        raise _error(reason="deadline")
                     chunks.append(chunk)
                 return _document(b"".join(chunks)), url
             except requests.RequestException:
                 # requests exceptions may contain URLs, request bodies or server
                 # fragments. Never propagate or log those values.
-                raise _error() from None
+                raise _error(reason="network") from None
             finally:
                 if response is not None:
                     response.close()
-        raise _error()
+        raise _error(reason="redirect")
 
 
 def _authenticated(document) -> bool:
-    return any(_fold(_text(link)) == "odhlasit" for link in document.xpath("//a"))
+    for link in document.xpath("//a"):
+        if _fold(_text(link)) == "odhlasit":
+            return True
+        # The observed Slovak B2B navigation uses an icon-only logout link.
+        # Its exact same-origin destination is evidence; it is never followed.
+        try:
+            target = urlsplit(_safe_url(urljoin(ORIGIN, link.get("href") or "")))
+        except SlogerB2BError:
+            continue
+        if target.path == "/prihlasenie" and target.query == "logout":
+            return True
+    return False
 
 
 def _decimal(value: str) -> str | None:
@@ -154,6 +192,7 @@ def _decimal(value: str) -> str | None:
 
 
 def _login(session: _Session, username: str, password: str):
+    session.stage = "login_page"
     document, landing = session.read(LOGIN_URL)
     forms = document.xpath("//form[.//input[@name='username'] and .//input[@name='password']]"
                            "[not(ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')])]")
@@ -175,11 +214,12 @@ def _login(session: _Session, username: str, password: str):
         _safe_url(urljoin(landing, payload["redirect"]))
     payload.update(username=username, password=password)
     try:
+        session.stage = "login_submit"
         authenticated, _ = session.read(action, data=payload)
     finally:
         payload.clear()
     if not _authenticated(authenticated):
-        raise _error("sloger_auth_failed")
+        raise _error("sloger_auth_failed", reason="authentication")
 
 
 def _candidate_urls(document, base: str) -> list[str]:
@@ -283,28 +323,55 @@ def _parse_product(document, sku: str, url: str) -> dict | None:
 
 def _lookup(username: str, password: str, sku: str) -> dict:
     with requests.Session() as client:
-        client.headers.update({"User-Agent": "InventoryHub-Sloger-ReadOnly/1.0", "Accept": "text/html,application/xhtml+xml",
-                               "Accept-Language": "sk-SK,sk;q=0.9"})
+        client.headers.update(_HEADERS)
         session = _Session(client)
-        _login(session, username, password)
-        search_url = ORIGIN + "/shop/hladaj.html?" + urlencode({"s": sku})
-        document, final_url = session.read(search_url)
-        if not _authenticated(document):
-            raise _error("sloger_auth_failed")
-        found = []
-        for product_url in _candidate_urls(document, final_url):
-            product, final_product_url = session.read(product_url)
-            if not _authenticated(product):
-                raise _error("sloger_auth_failed")
-            observation = _parse_product(product, sku, final_product_url)
-            if observation is not None:
-                found.append(observation)
-        if not found:
-            raise _error("sloger_product_not_found")
-        if len(found) != 1:
-            raise _error("sloger_product_ambiguous")
-        return found[0]
+        try:
+            _login(session, username, password)
+            session.stage = "search"
+            search_url = SEARCH_URL + "?" + urlencode({"s": sku})
+            document, final_url = session.read(search_url)
+            if not _authenticated(document):
+                raise _error("sloger_auth_failed", reason="authentication")
+            found = []
+            for product_url in _candidate_urls(document, final_url):
+                session.stage = "product"
+                product, final_product_url = session.read(product_url)
+                if not _authenticated(product):
+                    raise _error("sloger_auth_failed", reason="authentication")
+                observation = _parse_product(product, sku, final_product_url)
+                if observation is not None:
+                    found.append(observation)
+            if not found:
+                raise _error("sloger_product_not_found")
+            if len(found) != 1:
+                raise _error("sloger_product_ambiguous")
+            return found[0]
+        except SlogerB2BError as error:
+            error.stage = session.stage
+            raise
 
 
 async def lookup_product(username: str, password: str, sku: str) -> dict:
     return await asyncio.to_thread(_lookup, username, password, sku)
+
+
+def _connection() -> dict:
+    """Check the fixed login page without credentials, a POST or a model call."""
+    with requests.Session() as client:
+        client.headers.update(_HEADERS)
+        session = _Session(client)
+        try:
+            document, landing = session.read(LOGIN_URL)
+            forms = document.xpath("//form[.//input[@name='username'] and .//input[@name='password']]"
+                                   "[not(ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')])]")
+            found = (len(forms) == 1 and (forms[0].get("method") or "get").lower() == "post"
+                     and urljoin(landing, forms[0].get("action") or landing) == landing)
+            return {"reachable": True, "login_form_found": found,
+                    "diagnostic": None if found else _error().diagnostic()}
+        except SlogerB2BError as error:
+            error.stage = session.stage
+            return {"reachable": False, "login_form_found": False, "diagnostic": error.diagnostic()}
+
+
+async def connection() -> dict:
+    return await asyncio.to_thread(_connection)

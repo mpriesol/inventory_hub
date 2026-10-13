@@ -105,14 +105,39 @@ class SlogerTransportTests(unittest.TestCase):
     def test_product_urls_allow_only_observed_read_view(self):
         safe = b2b.ORIGIN + "/shop/tools/brush.html"
         self.assertEqual(b2b._product_url(safe), safe + "?voc")
+        self.assertEqual(b2b._product_url(b2b.ORIGIN + "/sk/shop/tools/brush.html"), b2b.ORIGIN + "/sk/shop/tools/brush.html?voc")
         for url in ("https://example.test/shop/tools/brush.html", safe + "?add_to_cart=1",
                     b2b.ORIGIN + "/shop/kosik.html", "http://www.sloger.sk/shop/tools/brush.html",
-                    "https://user:secret@www.sloger.sk/shop/tools/brush.html", safe + "#private"):
+                    "https://user:secret@www.sloger.sk/shop/tools/brush.html", safe + "#private",
+                    b2b.ORIGIN + "/en/shop/tools/brush.html", b2b.ORIGIN + "/sk/sk/shop/tools/brush.html"):
             with self.subTest(url=url), self.assertRaises(CatalogError):
                 b2b._product_url(url)
 
+    def test_only_slovak_same_page_get_redirects_preserve_search_and_read_view(self):
+        for path in ("/shop/hladaj.html?s=TEST-42", "/shop/tools/test-brush.html?voc"):
+            for source, target in ((path, "/sk" + path), ("/sk" + path, path)):
+                self.client.request.side_effect = [response(status=302, Location=target), response(page("Ready"))]
+                _, final = b2b._Session(self.client).read(b2b.ORIGIN + source)
+                self.assertEqual(final, b2b.ORIGIN + target)
+        source = b2b.SEARCH_URL + "?s=TEST-42"
+        for target in ("/en/shop/hladaj.html?s=TEST-42", "/hu/shop/hladaj.html?s=TEST-42",
+                       "/shop/hladaj.html?s=OTHER", "/sk/shop/kosik.html?s=TEST-42", "/sk/sk/shop/hladaj.html?s=TEST-42"):
+            self.client.reset_mock()
+            self.client.request.side_effect = [response(status=302, Location=target)]
+            with self.subTest(target=target), self.assertRaises(b2b.SlogerB2BError) as caught:
+                b2b._Session(self.client).read(source)
+            self.assertEqual(caught.exception.diagnostic()["reason"], "redirect")
+            self.client.request.assert_called_once()
+
 
 class SlogerProductTests(unittest.TestCase):
+    def test_icon_only_logout_is_authenticated_only_for_exact_observed_origin_and_action(self):
+        for target in ("/prihlasenie?logout", b2b.ORIGIN + "/prihlasenie?logout"):
+            self.assertTrue(b2b._authenticated(b2b._document(page(f'<a href="{target}"><i class="fa fa-sign-out"></i></a>'))))
+        for target in ("https://example.test/prihlasenie?logout", "/prihlasenie?logout=1", "/prihlasenie?login",
+                       "http://www.sloger.sk/prihlasenie?logout", "/en/prihlasenie?logout"):
+            self.assertFalse(b2b._authenticated(b2b._document(page(f'<a href="{target}"><i class="fa fa-sign-out"></i></a>'))))
+
     def test_voc_price_vat_ean_and_separate_stock_tiers_come_from_scoped_product(self):
         result = b2b._parse_product(b2b._document(product()), "TEST-42", PRODUCT_URL + "?voc")
         self.assertEqual(result["purchase_price"], "12.5")
@@ -172,6 +197,7 @@ class SlogerProductTests(unittest.TestCase):
             result = b2b._lookup("synthetic-user", "synthetic-secret", "TEST-42")
         self.assertEqual(result["sku"], "TEST-42")
         self.assertEqual(client.request.call_count, 5)
+        self.assertEqual(client.request.call_args_list[2].args[1], b2b.ORIGIN + "/sk/shop/hladaj.html?s=TEST-42")
         methods = [call.args[0] for call in client.request.call_args_list]
         self.assertEqual(methods, ["GET", "POST", "GET", "GET", "GET"])
         # The only submitted dict was cleared once authentication completed.
@@ -196,6 +222,46 @@ class SlogerProductTests(unittest.TestCase):
             with self.assertRaises(CatalogError) as caught:
                 b2b._lookup("synthetic-user", "synthetic-secret", "TEST-42")
         self.assertEqual(caught.exception.code, "sloger_product_ambiguous")
+
+
+class SlogerConnectionTests(unittest.TestCase):
+    def test_prelogin_check_reads_only_fixed_login_page_without_credentials(self):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.request.return_value = response(LOGIN)
+        with patch.object(b2b.requests, "Session", return_value=client):
+            result = b2b._connection()
+        self.assertEqual(result, {"reachable": True, "login_form_found": True, "diagnostic": None})
+        client.request.assert_called_once()
+        self.assertEqual(client.request.call_args.args, ("GET", b2b.LOGIN_URL))
+        self.assertIsNone(client.request.call_args.kwargs["data"])
+
+    def test_connection_failure_reports_only_stage_reason_and_http_status(self):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.request.return_value = response(b"private response synthetic-secret", status=403)
+        with patch.object(b2b.requests, "Session", return_value=client):
+            result = b2b._connection()
+        self.assertEqual(result, {"reachable": False, "login_form_found": False,
+                                 "diagnostic": {"stage": "login_page", "reason": "http_status", "http_status": 403}})
+        self.assertNotIn("synthetic-secret", str(result))
+        client.request.assert_called_once()
+
+    def test_authenticated_failure_reports_stage_and_never_echoes_bad_url(self):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.request.side_effect = [response(LOGIN), response(page(AUTH)),
+                                      response(search("https://synthetic-secret.example.test/shop/tools/item.html"))]
+        with patch.object(b2b.requests, "Session", return_value=client), patch.object(b2b.time, "sleep"):
+            with self.assertRaises(b2b.SlogerB2BError) as caught:
+                b2b._lookup("synthetic-user", "synthetic-password", "TEST-42")
+        self.assertEqual(caught.exception.diagnostic(), {"stage": "search", "reason": "url", "http_status": None})
+        self.assertNotIn("synthetic-secret", str(caught.exception.diagnostic()))
+
+    def test_diagnostic_values_are_allowlisted_even_if_error_attributes_are_changed(self):
+        error = b2b._error(reason="synthetic-secret", http_status="synthetic-secret")
+        error.stage = "synthetic-secret"
+        self.assertEqual(error.diagnostic(), {"stage": "login_page", "reason": "structure", "http_status": None})
 
 
 if __name__ == "__main__":

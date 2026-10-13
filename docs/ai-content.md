@@ -13,6 +13,21 @@ konfigurácie, auditu ani podkladov modelu; server ich použije iba počas jedne
 požiadavky. Odpovede vrátane validačných chýb majú `Cache-Control: no-store` a
 chyby nevracajú hodnoty vstupu.
 
+Pred ďalším zadaním hesla možno cez operátorom chránený
+`GET /api/suppliers/sloger/lookup/connection` overiť dostupnosť pevnej prihlasovacej
+stránky. Kontrola používa iba ohraničené GET požiadavky na Sloger, neposiela
+prihlasovacie údaje, nevolá model a nezapisuje audit úlohy. Vracia iba
+`reachable`, `login_form_found` a bezpečnú `diagnostic`; dostupný formulár ešte
+nepotvrdzuje úspešné prihlásenie ani čítanie produktu.
+
+Chyby adaptéra v novej úlohe ukladajú do `diagnostic` iba povolenú fázu
+(`login_page`, `login_submit`, `search`, `product`), dôvod a prípadný číselný
+HTTP stav. Diagnostika neobsahuje odpoveď dodávateľa, URL presmerovania,
+hlavičky, cookies ani hodnoty formulára. Vyhľadávanie používa overenú slovenskú
+cestu `/sk/shop/hladaj.html`; produktové odkazy podporujú pôvodné `/shop/`
+a slovenské `/sk/shop/`. Iné jazykové presmerovania sa odmietajú. Prihlásenie
+rozpoznáva aj overený odkaz na odhlásenie zobrazený iba ikonou; odkaz neotvára.
+
 Hub vykoná najviac dve volania Responses API s `gpt-6-luna`, úsilím `high`,
 `store: false` a limitom 4 096 výstupných tokenov na volanie. Prvé smie vyžiadať
 iba jednu funkciu `lookup_sloger_product` s pôvodným SKU. Jej serverový adaptér
@@ -42,6 +57,12 @@ sám nepotvrdzuje, že požiadavka ešte beží, a neoprávňuje nový platený 
 Kód nepotrebuje novú databázovú migráciu. Lokálne testy používajú
 syntetické odpovede a prihlasovacie údaje; samy nepotvrdzujú úspešné živé
 prihlásenie alebo platené spracovanie.
+
+Živý test 13. 10. 2026 potvrdil prvé volanie Luna API a vyžiadanie povolenej
+funkcie. Následné načítanie B2B adaptérom zlyhalo; úspešné čítanie produktových
+údajov cez celý API tok zatiaľ nie je potvrdené. Oprava slovenskej navigácie,
+rozpoznania prihlásenia a diagnostika vychádzajú z pozorovaného webu;
+úspešný výsledok vyžaduje ďalšie samostatné overenie po nasadení.
 
 ## Použitie
 

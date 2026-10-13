@@ -31,6 +31,11 @@ export interface SlogerProbe {
   usage: { input_tokens?: number; output_tokens?: number };
   actual_usd: string | null;
   error: string | null;
+  diagnostic?: {
+    stage: 'login_page' | 'login_submit' | 'search' | 'product';
+    reason: 'http_status' | 'network' | 'redirect' | 'content_type' | 'challenge' | 'size' | 'deadline' | 'url' | 'structure' | 'authentication';
+    http_status: number | null;
+  } | null;
 }
 export const startSlogerProbe = (body: { request_id: string; username: string; password: string; sku: string }) =>
   hubRequest<SlogerProbe>(`${API_BASE}/suppliers/sloger/lookup/preview`, body);
