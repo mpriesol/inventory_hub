@@ -13,7 +13,7 @@ for (const ext of ['.ts', '.tsx']) require.extensions[ext] = (module, filename) 
   { compilerOptions: { jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 require.extensions['.css'] = () => {};
 const React = require('react'); const { act } = React; const { createRoot } = require('react-dom/client');
-const { MemoryRouter, Routes, Route, useNavigate } = require('react-router-dom');
+const { MemoryRouter, Routes, Route, useNavigate, useLocation } = require('react-router-dom');
 const i18n = require('../src/i18n/index.ts').default;
 const { ReceivingSessionPage } = require('../src/pages/ReceivingSessionPage.tsx');
 const root = createRoot(document.getElementById('root'));
@@ -31,23 +31,36 @@ async function scan(code) { await input(code); await act(async () => {
 const response = (value, status = 200) => ({ ok: status < 400, status, statusText: status === 200 ? 'OK' : 'Conflict',
   headers: { get: () => 'application/json' }, text: async () => JSON.stringify(value), json: async () => value });
 const calls = [], scans = [], scanSessions = [], quantityEdits = [], finalizations = [], applied = new Map();
-let navigation;
-function RouteControl() { navigation = useNavigate(); return null; }
+let navigation, currentLocation;
+function RouteControl() { navigation = useNavigate(); currentLocation = useLocation(); return null; }
 let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
 let holdQuantity = false, resolveQuantity, loseQuantity = false, invalidQuantityResponse = null;
-let sessionStatus = 'in_progress', pauseMode = 'ok';
+let sessionStatus = 'in_progress', pauseMode = 'ok', extraLines = [], failProducts = false, failPrepare = false, failNote = false;
+const preparations = [];
+let matches = [{ line_id: 41, status: 'feed_only', product_id: null, product_code: null, product_name: null, catalog_product_id: 77, display_ean: '0123456789012', own_stock_qty: null, stock_confirmed: false, can_prepare: true, draft_id: null, warnings: [] }];
+const productResult = () => ({ session_id: 'session-A', invoice_no: 'test-invoice', warehouse_id: 1, feed_verified: true, items: matches, counts: Object.fromEntries(['matched','basic_card','feed_only','not_found','ambiguous','feed_unverified'].map(status => [status, matches.filter(item => item.status === status).length])) });
 const line = () => ({ id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '', display_ean: '0123456789012', ean_source: 'supplier_catalog', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
 const summary = () => ({ matched: received >= 20 ? 1 : 0, partial: received > 0 && received < 20 ? 1 : 0, pending: received ? 0 : 1, overage: 0, unexpected: 0 });
 global.fetch = async (path, options = {}) => {
   calls.push({ path, method: options.method || 'GET' });
   assert(path.startsWith('/api/suppliers/fixture/'), 'Only local receiving APIs are used');
+  if (path.endsWith('/products') || path.endsWith('/products/reconcile')) {
+    if (failProducts) throw new Error('Synthetic feed matching unavailable');
+    return response(productResult());
+  }
+  if (path.endsWith('/products/prepare')) {
+    if (failPrepare) return response({ detail: { code: 'receiving_drafts_mixed' } }, 409);
+    preparations.push(JSON.parse(options.body));
+    return response({ draft_id: 'invoice-draft', created: preparations.length === 1 });
+  }
+  if (path.endsWith('/resume')) { sessionStatus = 'in_progress'; return response({ session_id: 'session-A' }); }
   if (path.endsWith('/summary')) {
     if (failSummary) { failSummary = false; throw new TypeError('Synthetic local refresh lost'); }
-    const snapshot = { invoice_no: 'test-invoice', status: sessionStatus, lines: [line()], summary: summary() };
+    const snapshot = { invoice_no: 'test-invoice', status: sessionStatus, lines: [line(), ...extraLines], summary: summary() };
     if (holdSummary) { holdSummary = false; return new Promise(resolve => { resolveSummary = () => resolve(response(snapshot)); }); }
     return response(snapshot);
   }
-  if (path.endsWith('/note')) return response({ note: '' });
+  if (path.endsWith('/note')) return failNote && options.method === 'POST' ? response({ detail: 'Synthetic note save failure' }, 500) : response({ note: '' });
   if (path.endsWith('/received-items')) return response({ success: true });
   if (path.endsWith('/set-qty')) {
     const body = JSON.parse(options.body); quantityEdits.push(body);
@@ -99,6 +112,7 @@ global.fetch = async (path, options = {}) => {
 };
 function page() { return React.createElement(MemoryRouter, { initialEntries: [{ pathname: '/receiving/test-invoice', state: { sessionId: 'session-A', supplier: 'fixture', lines: [line()] } }] },
   React.createElement(React.Fragment, null, React.createElement(RouteControl), React.createElement(Routes, null,
+    React.createElement(Route, { path: '/product-import', element: React.createElement('div', { 'data-testid': 'product-import-draft' }, 'Existing preparation editor') }),
     React.createElement(Route, { path: '/receiving', element: React.createElement('div', { 'data-testid': 'receiving-list' }, 'Receiving list') }),
     React.createElement(Route, { path: '/receiving/:invoiceId', element: React.createElement(ReceivingSessionPage) })))); }
 async function mountReceipt(status = 'in_progress') {
@@ -122,6 +136,7 @@ async function mountReceipt(status = 'in_progress') {
   assert.equal(scans.length, 1, 'Fast scans queue while the first request is pending');
   assert(find('receiving-scan-pending').textContent.includes('10'));
   assert(button('Ukončiť').disabled, 'Finishing is blocked until queued scans are confirmed');
+  assert(find('receiving-product-prepare-0').disabled, 'Card preparation cannot overlap pending scans');
   assert(find('receiving-increase-line-0').disabled, 'Manual quantity cannot overlap pending scans');
   assert(find('receiving-decrease-line-0').disabled, 'Manual decrement cannot overlap pending scans');
   await act(async () => { find('receiving-increase-line-0').click(); await tick(); });
@@ -418,6 +433,88 @@ async function mountReceipt(status = 'in_progress') {
     assert.equal(calls.length, afterClose, 'Returning from completion makes no additional API writes');
   }
   assert(!calls.some(call => call.path.endsWith('/accept-all')), 'Historical closure never calls accept-all');
+
+
+  // Card preparation reuses the editor and receipt, never manufacturing stock.
+  received = 3;
+  extraLines = ['basic_card', 'matched', 'not_found', 'ambiguous', 'feed_unverified'].map((status, index) => ({ ...line(), id: 42 + index, scm: `PART-${index}`, product_code: `PART-${index}`, title: `Synthetic ${status}`, received_qty: 0 }));
+  matches = [matches[0], ...extraLines.map((item, index) => ({ ...matches[0], line_id: item.id, status: ['basic_card', 'matched', 'not_found', 'ambiguous', 'feed_unverified'][index],
+    can_prepare: index !== 1 && index !== 3, product_id: index < 2 ? 100 + index : null, product_code: index < 2 ? `EXISTING-${index}` : null,
+    own_stock_qty: index === 1 ? 5 : null, stock_confirmed: index === 1, display_ean: item.ean }))];
+  matches[4] = { ...matches[4], candidate_products: [{ id: 900, code: 'EXISTING CONFLICT', name: 'Known card' }], candidate_sources: [{ id: 88, code: 'FEED-CONFLICT', name: 'Feed item', eans: ['0123456789012'] }], warnings: ['EAN on the invoice conflicts with the feed'] };
+  await mountReceipt();
+  assert(find('receiving-product-stock-0').textContent.includes(i18n.t('receiving.products.stockUnverified')), 'Unknown stock is never displayed as zero');
+  assert(find('receiving-product-stock-2').textContent.includes('5'), 'Own confirmed warehouse stock is separate from received quantity');
+  assert(find('receiving-product-match-1').textContent.includes(i18n.t('receiving.products.completeCard')), 'Basic cards offer enrichment');
+  assert.equal(find('receiving-product-open-2').getAttribute('href'), '/products/EXISTING-1', 'Existing cards preserve and open their canonical code');
+  assert(find('receiving-product-select-4').disabled, 'Ambiguous identity is never eligible for automatic creation');
+  const conflict = find('receiving-product-conflicts-4');
+  assert(conflict.textContent.includes('FEED-CONFLICT') && conflict.textContent.includes('0123456789012'), 'Ambiguity details show exact source evidence');
+  assert(conflict.querySelector('a[href="/products/EXISTING%20CONFLICT"]'), 'Ambiguous candidate can be reviewed in its existing card');
+  assert(!find('receiving-product-select-5').disabled, 'A missing feed still permits preparation from invoice evidence');
+  await act(async () => { find('receiving-products-filter-review').click(); await tick(); });
+  assert.equal(find('receiving-product-match-0'), null);
+  assert(find('receiving-product-match-4') && find('receiving-product-match-5'), 'Review filter distinguishes ambiguity and feed verification failure');
+  await act(async () => { find('receiving-products-filter-all').click(); find('receiving-products-select-missing').click(); await tick(); });
+  assert.equal(document.querySelectorAll('[data-testid^="receiving-product-select-"]:checked').length, 4, 'Only eligible missing/basic cards are bulk selected');
+  // Separate paid/bonus invoice rows can represent one stock card.
+  const previousMatches = structuredClone(matches);
+  matches = matches.map(item => ({ ...item, can_prepare: item.line_id === 41 || item.line_id === 44, product_id: null, catalog_product_id: 77 }));
+  await act(async () => { find('receiving-products-refresh').click(); await tick(); });
+  await act(async () => { find('receiving-products-select-missing').click(); await tick(); });
+  assert.equal(find('receiving-products-prepare').textContent, i18n.t('receiving.products.createCards', { count: 1 }), 'Repeated invoice rows from one catalog item count as one card');
+  assert.equal(document.querySelectorAll('[data-testid^="receiving-product-select-"]:checked').length, 2, 'The original invoice lines remain separately selected');
+  matches = previousMatches;
+  await act(async () => { find('receiving-products-refresh').click(); await tick(); });
+  await act(async () => { find('receiving-products-select-missing').click(); await tick(); });
+  const beforeCards = finalizations.length;
+  const beforePrepareCalls = calls.length;
+  await act(async () => { const create = find('receiving-products-prepare'); create.click(); create.click(); await tick(); });
+  assert.equal(preparations.length, 1, 'Double click opens a single durable preparation');
+  assert.deepEqual(preparations[0].line_ids, [41, 42, 44, 46]);
+  assert(find('product-import-draft'));
+  assert.equal(currentLocation.search, '?draft=invoice-draft');
+  assert.equal(sessionStatus, 'paused');
+  assert.equal(received, 3, 'Preparing cards does not alter received quantities');
+  assert.equal(finalizations.length, beforeCards, 'Preparing cards creates no stock movement');
+  const prepareCalls = calls.slice(beforePrepareCalls);
+  assert(prepareCalls.findIndex(call => call.path.endsWith('/received-items')) < prepareCalls.findIndex(call => call.path.endsWith('/products/prepare')), 'Receipt context is saved before opening preparation');
+  assert(prepareCalls.some(call => call.path.endsWith('/note') && call.method === 'POST'), 'Invoice notes are persisted even when empty');
+  matches[0] = { ...matches[0], status: 'matched', product_id: 999, product_code: 'EXISTING-A', can_prepare: false, draft_id: 'invoice-draft', stock_confirmed: false };
+  await act(async () => { navigation('/receiving/test-invoice?session=session-A&supplier=fixture'); await tick(); });
+  assert(find('receiving-resume'), 'Direct durable return loads the same paused receipt without router state');
+  assert(find('receiving-product-prepare-0').textContent.includes(i18n.t('receiving.products.continuePreparation')), 'Saved card remains linked to its unfinished editor');
+  assert.equal(find('receiving-increase-line-0'), null, 'Returned paused receipt does not accept accidental quantity edits');
+  await act(async () => { find('receiving-resume').click(); await tick(); });
+  assert.equal(sessionStatus, 'in_progress'); assert.equal(received, 3);
+  assert(find('receiving-increase-line-0'), 'Inline resume restores receiving without returning to the invoice list');
+  await act(async () => { find('receiving-product-prepare-0').click(); await tick(); });
+  assert.equal(preparations.length, 2); assert.deepEqual(preparations[1].line_ids, [41]);
+  assert.equal(currentLocation.search, '?draft=invoice-draft', 'A saved card reopens its original preparation');
+
+  // Strict note persistence and mixed-draft feedback keep this transition recoverable.
+  await mountReceipt(); failNote = true;
+  const beforeFailedPrepare = preparations.length;
+  await act(async () => { find('receiving-product-prepare-0').click(); await tick(); });
+  assert.equal(preparations.length, beforeFailedPrepare, 'Failed receipt note save prevents leaving with lost local context');
+  assert(find('receiving-lines'));
+  failNote = false; failPrepare = true;
+  await act(async () => { find('receiving-product-prepare-0').click(); await tick(); });
+  assert(document.body.textContent.includes(i18n.t('receiving.products.mixedDrafts')), 'Mixed existing drafts have actionable feedback');
+  assert.equal(sessionStatus, 'in_progress');
+  failPrepare = false; pauseMode = 'lost';
+  await act(async () => { find('receiving-product-prepare-0').click(); await tick(); });
+  assert(find('product-import-draft'), 'Lost pause acknowledgement is reconciled before navigating');
+  assert.equal(sessionStatus, 'paused'); assert.equal(received, 3);
+  pauseMode = 'ok';
+
+  // Failure to read the feed does not disable ordinary receiving or imply not-found.
+  extraLines = []; failProducts = true;
+  await mountReceipt();
+  assert(document.body.textContent.includes(i18n.t('receiving.products.loadError')));
+  assert.equal(find('receiving-product-match-0'), null);
+  assert(!find('receiving-scan-code').disabled);
+  failProducts = false;
 
   await mountReceipt('future-status');
   assert(find('receiving-scan-code').disabled, 'An unknown server status never enables edits');

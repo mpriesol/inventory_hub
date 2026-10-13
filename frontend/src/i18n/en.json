@@ -77,6 +77,49 @@
     "openStock": "Open active inventory"
   },
   "receiving": {
+    "products": {
+      "mixedDrafts": "Selected items belong to different unfinished preparations. Open them with Continue preparation and create new items separately.",
+      "reviewMatch": "Review match",
+      "candidateCards": "Possible stock cards",
+      "candidateFeed": "Possible feed items",
+      "openCatalog": "Open supplier catalog",
+      "title": "Stock cards",
+      "help": "Check products and complete them from the feed or with AI when needed. Creating a card does not change stock; units are added only when receiving is completed.",
+      "refresh": "Refresh matching",
+      "loading": "Checking stock cards and supplier feed…",
+      "loadError": "Product matching could not be loaded. Refresh it to retry; you can continue receiving quantities.",
+      "feedWarning": "The feed could not be checked. Items without a card cannot yet be marked as not found; you can prepare them from the invoice.",
+      "filter": "Filter stock cards",
+      "filters": {
+        "all": "All ({{count}})",
+        "missing": "To create or complete ({{count}})",
+        "review": "To review ({{count}})"
+      },
+      "matchedCount": "Matched: {{count}}",
+      "selectMissing": "Select missing products",
+      "clearSelection": "Clear selection",
+      "createCards": "Create stock cards ({{count}})",
+      "createCard": "Create stock card",
+      "completeCard": "Complete card details",
+      "continuePreparation": "Continue preparation",
+      "openCard": "Open card",
+      "select": "Select for preparation",
+      "selectLine": "Select product: {{name}}",
+      "statuses": {
+        "matched": "Matched",
+        "basic_card": "Basic card",
+        "feed_only": "Feed only",
+        "not_found": "Not found",
+        "ambiguous": "Ambiguous match",
+        "feed_unverified": "Feed could not be checked"
+      },
+      "ownStock": "Our stock: {{quantity}} units",
+      "stockUnverified": "Our stock: unverified",
+      "ambiguousHelp": "Identifiers point to several cards or conflict. Check the EAN and supplier code; resolve the match before creating a card.",
+      "prepareError": "Card preparation could not be opened. Received quantities remain saved; refresh matching and try again.",
+      "resume": "Continue receiving",
+      "resumeError": "Receiving could not be resumed. Please try again."
+    },
     "title": "Goods Receiving",
     "subtitle": "Process supplier invoices",
     "selectSupplier": "Select supplier",
@@ -113,7 +156,7 @@
     "sessionStatus": {
       "completed": "This receipt is completed and read-only. Use the back arrow or Exit to return to the list.",
       "cancelled": "This receipt is cancelled and read-only. You can return to the list.",
-      "paused": "This receipt is paused. Choose Resume in the receiving list to edit it again."
+      "paused": "This receipt is paused. Saved quantities are preserved. Choose Continue receiving to edit it again."
     },
     "closedPendingScans": "Unconfirmed scans: {{count}}. You can check the original operations or return to the list; saved scans will be preserved."
   },
@@ -2977,6 +3020,8 @@
   "productImport": {
     "title": "Prepare products",
     "subtitle": "Choose AI and target shops per product. Edit data and see results in one table.",
+    "backToReceiving": "Back to receiving invoice {{invoice}}",
+    "receivingHelp": "After saving the cards, return to the invoice to continue receiving. Received quantities and invoice purchase costs stay unchanged. You can save a card to the Hub without a sale price or VAT rate; complete them before importing to a shop.",
     "back": "Back to catalog",
     "batch": "Batch {{id}}",
     "revision": "revision {{count}}",
@@ -3027,6 +3072,7 @@
     "withAncestors": "including parent categories",
     "ancestorsHelp": "Select a leaf category. All product parent categories are added automatically.",
     "origin": {
+      "invoice": "Invoice",
       "feed": "Feed",
       "mapping": "Mapping",
       "manual": "Manual",
@@ -3105,6 +3151,8 @@
       "previewRenewed": "A fresh preview is ready. Check availability before sending."
     },
     "errors": {
+      "import_receiving_product_changed": "The card changed or is already listed. Open the existing card in Stock and review its details.",
+      "invoice_only_source": "Data comes from the invoice. Complete missing fields manually or with AI; supplier availability is unverified.",
       "invalidMoney": "Enter a non-negative number with at most two decimal places.",
       "invalidVat": "VAT must be between 0 and 100%.",
       "invalidBoolean": "Use true/false or 1/0.",

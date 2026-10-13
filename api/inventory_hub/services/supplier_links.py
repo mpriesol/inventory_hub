@@ -92,13 +92,15 @@ async def _inspect(db, supplier, products, prefix):
             candidate["reason"] = resolution.reasons[0]
         elif candidate["owners"] - {candidate["product"].id}:
             candidate["reason"] = "supplier_source_multiple_products"
+        elif not candidate["source"] and not candidate["observation"]:
+            # Invoice aliases can differ from the verified feed SKU. An alias
+            # without an offer is identity evidence, not a competing source.
+            candidate["reason"] = "supplier_item_missing"
         elif candidate["other_links"]:
             candidate["reason"] = "supplier_link_already_configured"
         elif not supplier.is_active or (candidate["source"] is not None and
                 (not candidate["source"].is_active or candidate["source"].is_discontinued)):
             candidate["reason"] = "supplier_source_inactive"
-        elif not candidate["source"] and not candidate["observation"]:
-            candidate["reason"] = "supplier_item_missing"
     return candidates
 
 

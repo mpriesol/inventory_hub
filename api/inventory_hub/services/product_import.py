@@ -273,7 +273,8 @@ async def public(db, draft):
             'publication_result': result, 'publication_state': publication_state(result), 'created_at': draft.created_at,
             'updated_at': draft.updated_at,
             'publication_preview_retryable': bool(result) and source_preview_retryable(draft),
-            'source_lookup': source_lookup_public(draft)}
+            'source_lookup': source_lookup_public(draft),
+            'receiving_origin': document.get('receiving_origin')}
 
 
 def source_lookup_public(draft):
@@ -358,8 +359,86 @@ def validate_rows(document):
                 row['errors'] = sorted(set(row['errors']))
 
 
-async def create(db, request):
-    fingerprint = ai_content.digest(request.model_dump(mode='json'))
+async def _receiving_sources(db, sources, receiving_rows):
+    """Reuse canonical SKUs and allow only pristine invoice cards a new parent.
+
+    The selected feed's explicit family is frozen here and attached on Hub save.
+    Existing grouped cards retain the shared resolver's confirmed parent checks.
+    No products or quantities are changed while preparing the snapshot.
+    """
+    matches, conflicts = await catalog_import.local_identities(db, sources)
+    if conflicts:
+        raise CatalogError('local_identity_conflict', 'Local identifiers require reconciliation', 409)
+    products = {p.id: p for p in (await db.scalars(select(Product).where(Product.id.in_(set(matches.values()))))).all()} if matches else {}
+    family_parents = {p.group_code: parent_shop_code(p) for p in sources if p.group_code and p.variant_relationship == 'explicit'}
+    pristine = {}
+    prepared = []
+    for source in sources:
+        expected = receiving_rows[source.id].get('existing_product_id')
+        if expected is not None and matches.get(source.id) != expected:
+            raise CatalogError('local_identity_conflict', 'The invoice product identity changed; reload the receipt', 409)
+        product = products.get(matches.get(source.id))
+        if product and product.group_id is None and source.group_code and source.variant_relationship == 'explicit':
+            override = await db.get(ProductEditorOverride, product.id)
+            if (not _minimal_receiving_card(product, override) or override
+                    or await db.scalar(select(ShopProduct.id).where(ShopProduct.product_id == product.id))):
+                raise CatalogError('local_group_conflict', 'Confirm the existing card variant parent in the product editor', 409)
+            pristine[source.id] = source
+            source = source.model_copy(update={'group_code': None, 'group_name': None,
+                'variant_relationship': 'not_provided', 'canonical_parent_code': None})
+        prepared.append(source)
+    canonical = await catalog_import.canonical_products(db, prepared)
+    parents = {p.group_code: p.canonical_parent_code for p in canonical if p.group_code and p.canonical_parent_code}
+    family_parents.update(parents)
+    result = []
+    for source in canonical:
+        original = pristine.get(source.id)
+        if original:
+            source = original.model_copy(update={'shop_code': source.shop_code,
+                'canonical_parent_code': family_parents[original.group_code]})
+        elif source.group_code and source.variant_relationship == 'explicit':
+            source = source.model_copy(update={'canonical_parent_code': family_parents[source.group_code]})
+        result.append(source)
+    return result
+
+
+def _minimal_receiving_card(product, override):
+    return bool(product and (product.created_from_source or '').startswith('invoice:')
+        and product.validation_required and not (override and override.data.get('import_fields')))
+
+
+def _overlay_receiving_manual_values(row, override):
+    """Retain existing editor values as manual facts before optional AI runs."""
+    if not override:
+        return
+    values = {}
+    common, variant = override.data.get('common', {}), override.data.get('variant', {})
+    for field in ('name', 'brand'):
+        if field in common:
+            values[field] = common[field] or ''
+    if 'image_url' in common:
+        values['images'] = [common['image_url']] if common['image_url'] else []
+    for old, field in (('sale_price_gross', 'sale_gross'), ('vat_rate', 'vat_percent'), ('attributes', 'variant_attributes')):
+        if old in variant:
+            values[field] = variant[old]
+    row['values'] = ImportValues.model_validate({**row['values'], **values}).model_dump(mode='json')
+    row['manual_fields'] = sorted(set(row['manual_fields']) | set(values))
+    row['provenance'].update({key: 'manual' for key in values})
+    row['editor_revision'] = override.revision
+
+
+async def create(db, request, *, sources=None, receiving_origin=None, receiving_rows=None):
+    # Trusted normalized receipt sources are internal only. The public draft
+    # request cannot submit arbitrary product snapshots or existing product IDs.
+    if (sources is not None) != (receiving_origin is not None) or (sources is not None) != (receiving_rows is not None):
+        raise ValueError('Receiving sources, origin and row lineage must be supplied together')
+    if sources is not None and (set(request.product_ids) != {p.id for p in sources}
+            or len(sources) != len(set(request.product_ids)) or any(p.id <= 0 or p.supplier != request.supplier for p in sources)
+            or set(receiving_rows) != set(request.product_ids)):
+        raise CatalogError('import_invalid_receiving_sources', 'Invalid receiving selection', 422)
+    # Keep creation replay tied to the selected receipt, not later feed refreshes.
+    fingerprint = ai_content.digest({**request.model_dump(mode='json'),
+        **({'receiving_origin': receiving_origin} if receiving_origin else {})})
     await db.execute(text('SELECT pg_advisory_xact_lock(691432122)'))
     old = await db.get(ProductImportDraft, request.request_id.hex)
     if old:
@@ -372,10 +451,21 @@ async def create(db, request):
     # complete selected snapshot on one base/shop mapping revision.
     from inventory_hub.services.catalog import _lock_key
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': _lock_key(request.supplier)})
-    source = await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
+    source = deepcopy(sources) if sources is not None else await selected_products(db, request.supplier, request.feed_key, request.product_ids, request.run_id)
     from inventory_hub.services.feed_mapping import apply_shop_mapping
-    products = [await apply_shop_mapping(db, p, request.shop) for p in source]
-    products = await catalog_import.canonical_products(db, products)
+    async def mapped(p, shop):
+        if receiving_rows is None:
+            return await apply_shop_mapping(db, p, shop)
+        catalog_id = receiving_rows[p.id].get('catalog_product_id')
+        if catalog_id is None:
+            return p.model_copy(deep=True)
+        product = await apply_shop_mapping(db, p.model_copy(update={'id': catalog_id}), shop)
+        return product.model_copy(update={'id': p.id})
+    products = [await mapped(p, request.shop) for p in source]
+    if receiving_rows is not None:
+        products = await _receiving_sources(db, products, receiving_rows)
+    else:
+        products = await catalog_import.canonical_products(db, products)
     remote = await asyncio.to_thread(catalog_import.cached_import_options, request.shop)
     cfg = supplier_config(request.supplier)
     default_shop = cfg.get('default_shop') or ('biketrek' if request.supplier == 'sloger' else request.shop)
@@ -390,7 +480,7 @@ async def create(db, request):
             settings = await asyncio.to_thread(catalog_import.cached_import_options, shop.code)
             targets[shop.code] = catalog_import._target(catalog_import.shop_config(shop.code))
             shops.append({'code': shop.code, 'name': 'BIKETREK' if shop.code == 'biketrek' else 'xTrek', 'categories': settings['categories']})
-            mapped_targets[shop.code] = {p.id: await apply_shop_mapping(db, p, shop.code) for p in source}
+            mapped_targets[shop.code] = {p.id: await mapped(p, shop.code) for p in source}
         except CatalogError as error:
             shops.append({'code': shop.code, 'name': shop.name, 'categories': [], 'error': error.code})
     policy = availability_policy(request.supplier, cfg)
@@ -414,7 +504,8 @@ async def create(db, request):
             vat_percent=money(p.prices.vat_percent), currency=p.prices.currency,
             availability=availability['availability'], target_shops=[request.shop],
             target_category_codes={shop: getattr(mapped[p.id], 'target_category_code', None) for shop, mapped in mapped_targets.items()})
-        provenance = {key: 'feed' for key in values.model_fields}
+        source_kind = 'invoice' if receiving_rows is not None and receiving_rows[p.id].get('catalog_product_id') is None else 'feed'
+        provenance = {key: source_kind for key in values.model_fields}
         for key in ('sale_gross', 'availability', 'seo_title', 'seo_description'):
             provenance[key] = 'derived'
         if values.category_code:
@@ -426,6 +517,18 @@ async def create(db, request):
             'values': values.model_dump(mode='json'), 'manual_fields': ['category_code'] if request.options.category_code else [],
             'provenance': provenance, 'hub_product_id': None,
             'canonical_code': p.shop_code})
+        if receiving_rows is not None:
+            lineage = receiving_rows[p.id]
+            rows[-1].update(source_kind=source_kind, receiving_line_ids=list(lineage['line_ids']),
+                catalog_product_id=lineage.get('catalog_product_id'), expected_hub_product_id=lineage.get('existing_product_id'))
+            if lineage.get('existing_product_id'):
+                product = await db.get(Product, lineage['existing_product_id'])
+                if product is None:
+                    raise CatalogError('local_identity_conflict', 'The invoice product identity changed; reload the receipt', 409)
+                override = await db.get(ProductEditorOverride, product.id)
+                if not _minimal_receiving_card(product, override) or await db.scalar(select(ShopProduct.id).where(ShopProduct.product_id == product.id)):
+                    raise CatalogError('import_receiving_product_changed', 'This card is already complete; use the product editor', 409)
+                _overlay_receiving_manual_values(rows[-1], override)
     families = defaultdict(list)
     for row in rows:
         if row['is_variant']:
@@ -446,6 +549,9 @@ async def create(db, request):
                 'categories': remote['categories'], 'rows': rows, 'publication': None, 'events': [],
                 'shops': shops, 'targets': targets, 'default_shop': default_shop,
                 'target': catalog_import._target(catalog_import.shop_config(request.shop))}
+    if receiving_origin is not None:
+        document['receiving_origin'] = deepcopy(receiving_origin)
+        document['receiving_rows'] = {str(key): deepcopy(value) for key, value in receiving_rows.items()}
     if request.supplier == 'sloger':
         from inventory_hub.services.product_import_source import initialize
         initialize(document)
@@ -484,7 +590,7 @@ async def patch_rows(db, draft, request):
         unchanged_identity = parsed.code == row['values']['code'] and parsed.supplier_code == row['values']['supplier_code']
         if parsed.code != canonical_supplier_sku(prefix, parsed.supplier_code) and not unchanged_identity:
             raise CatalogError('import_code_prefix', 'The product code must use the configured supplier prefix', 422)
-        if row.get('hub_product_id') and any(k in values for k in ('code', 'supplier_code', 'eans')):
+        if (row.get('hub_product_id') or row.get('expected_hub_product_id')) and any(k in values for k in ('code', 'supplier_code', 'eans')):
             raise CatalogError('import_identity_saved', 'Edit saved product identifiers in the product editor', 409)
         if 'target_shops' in values:
             available = {shop['code'] for shop in document.get('shops', [{'code': draft.shop}]) if not shop.get('error')}
@@ -527,10 +633,15 @@ async def save(db, draft, request):
     assert_editable(draft)
     document = deepcopy(draft.document)
     validate_rows(document)
-    if any(r['errors'] for r in document['rows']):
+    # Basic receipt cards may precede merchandising. Unknown amounts stay NULL;
+    # shop preview still applies every ordinary price/VAT/category validation.
+    allowed_missing = {'missing_price', 'missing_vat'} if document.get('receiving_origin') else set()
+    if any(set(r['errors']) - allowed_missing for r in document['rows']):
         raise CatalogError('import_invalid_rows', 'Resolve invalid rows before saving products', 422)
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-    products = await catalog_import.canonical_products(db, [to_source(r) for r in document['rows']])
+    sources = [to_source(r) for r in document['rows']]
+    products = await _receiving_sources(db, sources, {int(key): value for key, value in document['receiving_rows'].items()}) \
+        if document.get('receiving_origin') else await catalog_import.canonical_products(db, sources)
     for row, source in zip(document['rows'], products):
         row['values']['code'] = source.shop_code
         row['source'] = {**row['source'], 'canonical_parent_code': source.canonical_parent_code}
@@ -543,8 +654,19 @@ async def save(db, draft, request):
     for row, source in zip(document['rows'], products):
         v = row['values']
         product_id = existing.get(row['id'])
+        expected_id = row.get('hub_product_id') or row.get('expected_hub_product_id')
+        if expected_id and product_id != expected_id:
+            raise CatalogError('local_identity_conflict', 'The saved card identity changed; reload the receipt', 409)
         owned = bool(row.get('hub_product_id') and product_id == row['hub_product_id'] and row.get('created_in_draft'))
-        if product_id and not owned:
+        product = await db.get(Product, product_id) if product_id else None
+        override = await db.get(ProductEditorOverride, product_id, with_for_update=True) if product_id else None
+        receiving = document.get('receiving_origin')
+        enrich = bool(receiving and product_id and (row.get('enriched_in_draft') or (
+            _minimal_receiving_card(product, override) and (row.get('expected_hub_product_id') == product_id
+                or product.created_from_source == 'invoice:' + receiving['invoice_no']))))
+        if receiving and expected_id and not owned and not enrich:
+            raise CatalogError('import_receiving_product_changed', 'This card changed; use the product editor', 409)
+        if product_id and not owned and not enrich:
             # Identity resolution has proved this additional supplier's alias.
             # Persist it even for Hub-only imports and existing shop listings;
             # supplier-link reconciliation must not depend on a later POST.
@@ -555,7 +677,9 @@ async def save(db, draft, request):
             row['hub_product_id'] = product_id
             row['warnings'] = sorted(set(row['warnings']) | {'already_in_hub_unchanged'})
             continue
-        if owned and await db.scalar(select(ShopProduct.id).where(ShopProduct.product_id == product_id)):
+        if (owned or enrich) and await db.scalar(select(ShopProduct.id).where(ShopProduct.product_id == product_id)):
+            if enrich:
+                raise CatalogError('import_receiving_product_changed', 'This card is now listed; use the product editor', 409)
             row['warnings'] = sorted(set(row['warnings']) | {'already_in_shop_hub_unchanged'})
             continue
         group_id = None
@@ -567,32 +691,49 @@ async def save(db, draft, request):
                 db.add(group)
                 await db.flush()
             group_id = group.id
+        catalog_id = row.get('catalog_product_id') if receiving else source.id
         if product_id is None:
             product = Product(sku=source.shop_code, supplier_id=supplier_id, name=source.name, brand=source.brand,
                 group_id=group_id, validation_required=True, validation_reason='Hub import draft; shop publication separate',
-                created_from_source='product_import_draft', source_supplier_product_id=source.id,
+                created_from_source='product_import_draft', source_supplier_product_id=catalog_id,
                 supplier_feed_data=row['source'], supplier_feed_synced_at=source.fetched_at)
             db.add(product)
             await db.flush()
             product_id = product.id
             row['created_in_draft'] = True
+        if product_id and (row.get('created_in_draft') or enrich):
             identifiers = ProductIdentifierService(db)
-            for i, ean in enumerate(source.eans):
-                await identifiers.add_identifier(product_id, ean, is_primary=i == 0)
+            registered = (await db.scalars(select(ProductIdentifier).where(ProductIdentifier.product_id == product_id,
+                ProductIdentifier.identifier_type.in_(identifiers.BARCODE_TYPES)))).all()
+            known_barcodes = {identifier.value for identifier in registered}
+            has_primary = any(identifier.is_primary for identifier in registered)
+            for ean in source.eans:
+                if ean not in known_barcodes:
+                    await identifiers.add_identifier(product_id, ean, is_primary=not has_primary)
+                    known_barcodes.add(ean)
+                    has_primary = True
             await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
                 identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
                 .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
                     index_where=text("identifier_type = 'supplier_sku'")))
-            for order, attribute in enumerate(source.variant_attributes):
-                db.add(ProductVariantAttribute(product_id=product_id, attribute_name=attribute.name,
-                    attribute_value=attribute.value, display_order=order))
-        override = await db.get(ProductEditorOverride, product_id, with_for_update=True)
+            if not await db.scalar(select(ProductVariantAttribute.id).where(ProductVariantAttribute.product_id == product_id)):
+                for order, attribute in enumerate(source.variant_attributes):
+                    db.add(ProductVariantAttribute(product_id=product_id, attribute_name=attribute.name,
+                        attribute_value=attribute.value, display_order=order))
+        if enrich:
+            if group_id and product.group_id is None:
+                # _receiving_sources permitted this only for a pristine card.
+                product.group_id = group_id
+            product.source_supplier_product_id = catalog_id
+            product.supplier_feed_data = deepcopy(row['source'])
+            product.supplier_feed_synced_at = source.fetched_at
+            row['enriched_in_draft'] = True
         # Do not overwrite changes made in the ordinary product editor after a draft save.
         if override and row.get('editor_revision') != override.revision:
             raise CatalogError('import_hub_product_changed', 'Product was edited elsewhere; use the product editor', 409)
         data = deepcopy(override.data) if override else {}
-        data.update(common={'name': v['name'], 'brand': v['brand'], 'image_url': v['images'][0] if v['images'] else None},
-            variant={'sale_price_gross': v['sale_gross'], 'vat_rate': v['vat_percent'], 'attributes': v['variant_attributes']},
+        data.update(common={**data.get('common', {}), 'name': v['name'], 'brand': v['brand'], 'image_url': v['images'][0] if v['images'] else None},
+            variant={**data.get('variant', {}), 'sale_price_gross': v['sale_gross'], 'vat_rate': v['vat_percent'], 'attributes': v['variant_attributes']},
             import_fields=deepcopy(v), import_manual_fields=row['manual_fields'])
         if override:
             override.data, override.revision, override.updated_at = data, override.revision + 1, ai_content.now()
@@ -602,6 +743,9 @@ async def save(db, draft, request):
         row['editor_revision'] = override.revision
         row['hub_product_id'] = product_id
     await db.flush()
+    if document.get('receiving_origin'):
+        from inventory_hub.services.receiving_products import bind_imported_products
+        await bind_imported_products(db, draft, document)
     from inventory_hub.services.supplier_links import reconcile_supplier_links
     links = await reconcile_supplier_links(db, draft.supplier, product_ids=[r['hub_product_id'] for r in document['rows']])
     if links['conflicts']:
@@ -737,6 +881,11 @@ async def assert_snapshot(db, staging):
     draft = await get_draft(db, staging['draft_id'])
     if draft.status != 'saved' or content_hash(draft.document) != staging['hash']:
         raise CatalogError('import_draft_changed', 'The saved import draft changed after preview', 409)
+    if draft.document.get('receiving_origin'):
+        rows = draft.document['rows']
+        matches, conflicts = await catalog_import.local_identities(db, [to_source(row) for row in rows])
+        if conflicts or any(not row.get('hub_product_id') or matches.get(row['id']) != row['hub_product_id'] for row in rows):
+            raise CatalogError('local_identity_conflict', 'The saved Hub card changed after publication preparation', 409)
     return draft
 
 

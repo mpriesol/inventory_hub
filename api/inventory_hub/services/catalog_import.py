@@ -581,6 +581,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         document["supplier_meta"] = supplier_meta
     if staging:
         document["staging"] = {k: staging[k] for k in ("draft_id", "hash")}
+        document['staging']['saved_product_ids'] = {str(row['id']): row.get('hub_product_id') for row in staging.get('rows', [])}
         for key in ('supplier_availability_expires_at', 'supplier_availability_observed_at'):
             if staging.get(key):
                 document['staging'][key] = staging[key]
@@ -668,7 +669,7 @@ def _claim_product_prefix(products: list[CatalogProduct], existing_codes: dict[i
         raise CatalogError(error.code, str(error), error.status) from None
 
 
-async def register_created(db: AsyncSession, shop: str, item: dict, sources: dict[int, CatalogProduct], remote: dict) -> None:
+async def register_created(db: AsyncSession, shop: str, item: dict, sources: dict[int, CatalogProduct], remote: dict, *, staging=None) -> None:
     # Only catalog identity/content is registered. No stock balance or movement is created.
     products = [sources[id] for id in item["product_ids"]]
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
@@ -676,6 +677,17 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
     existing, conflicts = await local_identities(db, products)
     if conflicts:
         raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)
+    if staging:
+        saved_ids = {int(key): value for key, value in staging.get('saved_product_ids', {}).items()}
+        if not saved_ids:
+            from inventory_hub.services.product_import import get_draft
+            draft = await get_draft(db, staging['draft_id'])
+            saved_ids = {row['id']: row.get('hub_product_id') for row in draft.document['rows']}
+        if any(not saved_ids.get(source.id) or existing.get(source.id) != saved_ids[source.id] for source in products):
+            # A staged source ID may identify a receipt row, not SupplierProduct.
+            # The required Hub save already created the card. Losing it after a
+            # remote write requires reconciliation, never a replacement card.
+            raise CatalogError('local_identity_conflict', 'The saved Hub card changed after publication preparation', 409)
     supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == products[0].supplier))
     shop_id = await db.scalar(select(Shop.id).where(Shop.code == shop))
     group_id = None
@@ -1025,7 +1037,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 if not _confirmed_response(response, item):
                     item["warnings"] = list(dict.fromkeys([*item["warnings"], "import_verified_by_readback"]))
             async with get_session_context() as db:
-                await register_created(db, shop, item, sources, remote)
+                await register_created(db, shop, item, sources, remote, staging=document.get('staging'))
             item.update(remote_links(remote, options["language"]))
             item.update(status="created", errors=[])
             codes.update([item["code"].casefold(), *(sources[id].shop_code.casefold() for id in item["product_ids"])])

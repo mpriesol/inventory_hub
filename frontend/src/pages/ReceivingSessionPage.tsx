@@ -12,6 +12,11 @@ import {
   getReceivingSummary,
   finalizeReceiving,
   pauseReceiving,
+  resumeReceiving,
+  getReceivingProducts,
+  reconcileReceivingProducts,
+  prepareReceivingProducts,
+  type ReceivingProducts,
   setLineQuantity,
   acceptAllItems,
   resetAllItems,
@@ -36,8 +41,9 @@ export function ReceivingSessionPage() {
   const resultsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[] } | null;
-  const sessionId = state?.sessionId || '';
-  const supplier  = state?.supplier  || 'paul-lange';
+  const query = new URLSearchParams(location.search);
+  const sessionId = state?.sessionId || query.get('session') || '';
+  const supplier = state?.supplier || query.get('supplier') || 'paul-lange';
 
   const receiptKey = `${supplier}:${sessionId}`;
   const receiptContext = useRef({ key: receiptKey, revision: 0 });
@@ -69,6 +75,24 @@ export function ReceivingSessionPage() {
   const [savingEdit,     setSavingEdit]     = useState(false);
   const [quantityNeedsRefresh, setQuantityNeedsRefresh] = useState(false);
   const [pausing,        setPausing]        = useState(false);
+  const [products, setProducts] = useState<ReceivingProducts | null>(null);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [productsError, setProductsError] = useState(false);
+  const [preparingProducts, setPreparingProducts] = useState(false);
+  const [selectedProducts, setSelectedProducts] = useState<Set<number>>(new Set());
+  const [productFilter, setProductFilter] = useState<'all' | 'missing' | 'review'>('all');
+  const productMatches = new Map(products?.items.map(item => [item.line_id, item]) || []);
+  const selectedProductIds = [...selectedProducts].filter(id => productMatches.get(id)?.can_prepare);
+  const selectedCardCount = new Set(selectedProductIds.map(id => {
+    const product = productMatches.get(id)!;
+    if (product.product_id) return `product:${product.product_id}`;
+    if (product.catalog_product_id) return `catalog:${product.catalog_product_id}`;
+    return `supplier:${lines.find(line => line.id === id)?.scm?.trim() || id}`;
+  })).size;
+  const productCounts = products?.counts;
+  const missingProducts = products?.items.filter(item => item.can_prepare) || [];
+  const reviewProducts = products?.items.filter(item => ['ambiguous', 'feed_unverified'].includes(item.status)) || [];
+
 
   const total    = stats.matched + stats.partial + stats.pending;
   const progress = total > 0 ? Math.round((stats.matched / total) * 100) : 0;
@@ -88,14 +112,28 @@ export function ReceivingSessionPage() {
     setSummaryReady(false); setSessionState(null); setLastScan(null); setError(null); setEditingLine(null);
     setShowConfirm(false); setFinalizeResult(null); setShowCsvModal(false); setDoneItems({}); setShowLines(true);
     mutation.current = false; setSavingEdit(false); setQuantityNeedsRefresh(false);
+    setProducts(null); setProductsError(false); setSelectedProducts(new Set()); setProductFilter('all'); setPreparingProducts(false);
     scanInput.current = ''; setScannedCode(''); setQuantity(1);
-    if (sessionId) getReceivingSummary(supplier, sessionId).then(data => {
-      if (active && receiptContext.current === context && context.revision === revision) {
-        setLines(data.lines); setStats(data.summary); setSessionState({ key: receiptKey, status: data.status }); setSummaryReady(true);
-      }
-    }).catch(() => {
-      if (active && receiptContext.current === context && context.revision === revision) setError(t('actions.receiving.summaryFailed'));
-    });
+    if (sessionId) {
+      setProductsLoading(true);
+      getReceivingSummary(supplier, sessionId).then(async initial => {
+        try {
+          const data = await (['new', 'in_progress', 'paused'].includes(initial.status)
+            ? reconcileReceivingProducts(supplier, sessionId) : getReceivingProducts(supplier, sessionId));
+          if (active && receiptContext.current === context) setProducts(data);
+        } catch { if (active && receiptContext.current === context) setProductsError(true); }
+        finally { if (active && receiptContext.current === context) setProductsLoading(false); }
+        return ['new', 'in_progress', 'paused'].includes(initial.status) ? getReceivingSummary(supplier, sessionId) : initial;
+      }).then(data => {
+        if (active && receiptContext.current === context && context.revision === revision) {
+          setLines(data.lines); setStats(data.summary); setSessionState({ key: receiptKey, status: data.status }); setSummaryReady(true);
+        }
+      }).catch(() => {
+        if (active && receiptContext.current === context && context.revision === revision) {
+          setProductsLoading(false); setError(t('actions.receiving.summaryFailed'));
+        }
+      });
+    }
     return () => { active = false; if (resultsTimer.current) clearTimeout(resultsTimer.current); };
   }, [sessionId, supplier]);
 
@@ -115,22 +153,23 @@ export function ReceivingSessionPage() {
   };
 
   const toggleDone = (line: ReceivingLine) => {
-    if (!canEdit) return;
+    if (!canEdit || mutation.current) return;
     const scm = getRawScm(line);
     setDoneItems(prev => ({ ...prev, [scm]: !prev[scm] }));
   };
 
-  const saveNote = async (note: string) => {
+  const saveNote = async (note: string, strict = false) => {
     if (!invoiceId || !canEdit) return;
     setSavingNote(true);
     try {
-      await fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`, {
+      const response = await fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/note`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
       });
-    } catch (e) { console.error('Failed to save note:', e); } finally { setSavingNote(false); }
+      if (strict && !response.ok) throw new Error('invoice_note_save_failed');
+    } catch (e) { if (strict) throw e; console.error('Failed to save note:', e); } finally { setSavingNote(false); }
   };
 
-  const saveReceivedItems = async () => {
+  const saveReceivedItems = async (strict = false) => {
     if (!invoiceId) return;
     const items: Record<string, { qty: number; done: boolean }> = {};
     lines.forEach(line => {
@@ -138,10 +177,11 @@ export function ReceivingSessionPage() {
       if (scm) items[scm] = { qty: line.received_qty, done: isLineDone(line) };
     });
     try {
-      await fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/received-items`, {
+      const response = await fetch(`${API_BASE}/suppliers/${supplier}/invoices/${invoiceId}/received-items`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
       });
-    } catch (e) { console.error('Failed to save received items:', e); }
+      if (strict && !response.ok) throw new Error('invoice_items_save_failed');
+    } catch (e) { if (strict) throw e; console.error('Failed to save received items:', e); }
   };
 
   const scanInput = useRef('');
@@ -194,6 +234,7 @@ export function ReceivingSessionPage() {
       if (receiptContext.current !== context) return;
       setSessionState({ key: receiptKey, status: 'completed' });
       setFinalizeResult(result);
+      getReceivingProducts(supplier, sessionId).then(data => { if (receiptContext.current === context) setProducts(data); }).catch(() => { if (receiptContext.current === context) setProductsError(true); });
       if (supplier === 'paul-lange') {
         resultsTimer.current = setTimeout(() => { if (receiptContext.current === context) setShowCsvModal(true); }, 2000);
       }
@@ -328,7 +369,69 @@ export function ReceivingSessionPage() {
     pending:    { bg: 'var(--color-bg-tertiary)',    border: 'var(--color-border-subtle)', icon: '○', label: 'Čaká' },
   };
 
-  const exitDisabled = pausing || scanner.busy || (canEdit && scanner.pending > 0) || bulkLoading || savingEdit || (finalizing && !finalizeResult);
+  const refreshProducts = async () => {
+    if (!sessionId || productsLoading || mutation.current || scanner.hasPending()) return;
+    const context = receiptContext.current;
+    mutation.current = true; context.revision += 1;
+    setProductsLoading(true); setProductsError(false); setSavingEdit(true);
+    try {
+      const current = await getReceivingSummary(supplier, sessionId);
+      const active = ['new', 'in_progress', 'paused'].includes(current.status);
+      const result = await (active ? reconcileReceivingProducts(supplier, sessionId) : getReceivingProducts(supplier, sessionId));
+      const refreshed = active ? await getReceivingSummary(supplier, sessionId) : current;
+      if (receiptContext.current === context) {
+        setProducts(result); setLines(refreshed.lines); setStats(refreshed.summary);
+        setSessionState({ key: receiptKey, status: refreshed.status });
+      }
+    } catch { if (receiptContext.current === context) setProductsError(true); }
+    finally { if (receiptContext.current === context) { mutation.current = false; setProductsLoading(false); setSavingEdit(false); } }
+  };
+
+  const prepareProducts = async (lineIds: number[]) => {
+    if (!sessionId || !summaryReady || !lineIds.length || mutation.current || scanner.hasPending() || quantityNeedsRefresh) return;
+    const context = receiptContext.current;
+    mutation.current = true; setPreparingProducts(true); setError(null); context.revision += 1;
+    try {
+      const current = await getReceivingSummary(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setSessionState({ key: receiptKey, status: current.status });
+      if (current.status === 'new' || current.status === 'in_progress') {
+        await saveNote(invoiceNote.trim(), true);
+        await saveReceivedItems(true);
+      }
+      const result = await prepareReceivingProducts(supplier, sessionId, lineIds);
+      if (!result.draft_id) throw new Error('receiving_draft_missing');
+      if (current.status === 'new' || current.status === 'in_progress') {
+        try { await pauseReceiving(supplier, sessionId); }
+        catch {
+          const afterPause = await getReceivingSummary(supplier, sessionId);
+          if (afterPause.status === 'new' || afterPause.status === 'in_progress') throw new Error('receiving_pause_failed');
+        }
+      }
+      if (receiptContext.current === context) navigate(`/product-import?draft=${encodeURIComponent(result.draft_id)}`);
+    } catch (error) {
+      if (receiptContext.current === context) setError(t(error instanceof Error && error.message.includes('receiving_drafts_mixed') ? 'receiving.products.mixedDrafts' : 'receiving.products.prepareError'));
+    } finally {
+      if (receiptContext.current === context) { mutation.current = false; setPreparingProducts(false); }
+    }
+  };
+
+  const resumeSession = async () => {
+    if (!sessionId || mutation.current || scanner.hasPending()) return;
+    const context = receiptContext.current;
+    mutation.current = true; setPausing(true); setError(null); context.revision += 1;
+    try {
+      try { await resumeReceiving(supplier, sessionId); } catch { /* Read the authoritative status after a possible lost acknowledgement. */ }
+      const current = await getReceivingSummary(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status }); setSummaryReady(true);
+      if (current.status === 'paused') setError(t('receiving.products.resumeError'));
+    } catch { if (receiptContext.current === context) setError(t('receiving.products.resumeError')); }
+    finally { if (receiptContext.current === context) { mutation.current = false; setPausing(false); } }
+  };
+
+  const productActionsDisabled = !summaryReady || loading || savingEdit || bulkLoading || pausing || preparingProducts || (finalizing && !finalizeResult) || quantityNeedsRefresh;
+  const exitDisabled = preparingProducts || pausing || scanner.busy || (canEdit && scanner.pending > 0) || bulkLoading || savingEdit || (finalizing && !finalizeResult);
 
   return (
     <div className="space-y-6">
@@ -356,6 +459,7 @@ export function ReceivingSessionPage() {
       {quantityNeedsRefresh && <Button data-testid="receiving-quantity-refresh" disabled={savingEdit} onClick={refreshQuantities}>{t('receiving.refreshQuantities')}</Button>}
 
       {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
+      {sessionStatus === 'paused' && <Button data-testid="receiving-resume" disabled={pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
       {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t(inactive ? 'receiving.closedPendingScans' : 'actions.receiving.pending', { count: scanner.pending })}</p>}
       {scanner.uncertain && <Button data-testid="receiving-scan-retry" disabled={!summaryReady || scanner.busy} onClick={() => { setError(null); scanner.retry(); }}>{t('actions.receiving.retry')}</Button>}
 
@@ -370,15 +474,15 @@ export function ReceivingSessionPage() {
           <p className="text-sm mt-1" style={{ color: 'var(--color-text-tertiary)' }}>Použi skener alebo zadaj kód manuálne</p>
           <div className="mt-6 flex gap-2">
             <input ref={inputRef} type="text" value={scannedCode} onChange={e => { scanInput.current = e.target.value; setScannedCode(e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleScan(); } }}
-              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} data-testid="receiving-scan-code" autoFocus disabled={!canEdit || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult} />
-            <Button data-testid="receiving-scan" variant="primary" onClick={handleScan} disabled={!scannedCode.trim() || !sessionId || !canEdit || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult}>{t('actions.receiving.scan')}</Button>
+              placeholder="Zadaj EAN, SKU alebo kód produktu..." className="flex-1 py-3" style={{ fontFamily: 'var(--font-mono)' }} data-testid="receiving-scan-code" autoFocus disabled={!canEdit || preparingProducts || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult} />
+            <Button data-testid="receiving-scan" variant="primary" onClick={handleScan} disabled={!scannedCode.trim() || !sessionId || !canEdit || preparingProducts || pausing || bulkLoading || savingEdit || finalizing || !!finalizeResult}>{t('actions.receiving.scan')}</Button>
           </div>
           <p className="text-sm mt-3">{t('actions.receiving.help')}</p>
           <ActionScope effects={['hub-write']}>{t('actions.receiving.local')}</ActionScope>
           <div className="flex items-center justify-center gap-4 mt-4">
             <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               Množstvo:
-              <input data-testid="receiving-scan-quantity" disabled={!canEdit || pausing || finalizing} type="number" value={Number.isNaN(quantity) ? '' : quantity} onChange={e => setQuantity(e.target.value === '' ? NaN : Number(e.target.value))} min={0.001} max={999999999.999} step={1} className="w-20 text-center py-1" />
+              <input data-testid="receiving-scan-quantity" disabled={!canEdit || preparingProducts || pausing || finalizing} type="number" value={Number.isNaN(quantity) ? '' : quantity} onChange={e => setQuantity(e.target.value === '' ? NaN : Number(e.target.value))} min={0.001} max={999999999.999} step={1} className="w-20 text-center py-1" />
             </label>
           </div>
         </div>
@@ -422,18 +526,45 @@ export function ReceivingSessionPage() {
         </div>
       </div>
 
+      {/* Product cards are prepared separately from received quantities. */}
+      <section data-testid="receiving-products" className="rounded-xl border p-4 space-y-3" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">{t('receiving.products.title')}</h2>
+          <Button variant="ghost" size="sm" data-testid="receiving-products-refresh" disabled={productActionsDisabled || productsLoading} onClick={refreshProducts}>{t('receiving.products.refresh')}</Button>
+        </div>
+        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('receiving.products.help')}</p>
+        {productsLoading && <p role="status">{t('receiving.products.loading')}</p>}
+        {productsError && <p role="alert" style={{ color: 'var(--color-error)' }}>{t('receiving.products.loadError')}</p>}
+        {products && <>
+          {!products.feed_verified && <p className="text-sm" role="status" style={{ color: 'var(--color-warning)' }}>{t('receiving.products.feedWarning')}</p>}
+          <div className="flex flex-wrap items-center gap-2 text-sm" role="group" aria-label={t('receiving.products.filter')}>
+            {(['all', 'missing', 'review'] as const).map(filter => <button key={filter} type="button" data-testid={`receiving-products-filter-${filter}`} aria-pressed={productFilter === filter}
+              onClick={() => { setProductFilter(filter); setShowLines(true); }} className="px-3 py-2 rounded-lg border" style={{ borderColor: productFilter === filter ? 'var(--color-accent)' : 'var(--color-border-subtle)', color: productFilter === filter ? 'var(--color-accent)' : 'var(--color-text-secondary)' }}>
+              {t(`receiving.products.filters.${filter}`, { count: filter === 'all' ? lines.length : filter === 'missing' ? missingProducts.length : reviewProducts.length })}
+            </button>)}
+            <span style={{ color: 'var(--color-text-tertiary)' }}>{t('receiving.products.matchedCount', { count: productCounts?.matched || 0 })}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button data-testid="receiving-products-select-missing" variant="secondary" size="sm" disabled={productActionsDisabled || !missingProducts.length}
+              onClick={() => { setSelectedProducts(new Set(missingProducts.map(item => item.line_id))); setShowLines(true); }}>{t('receiving.products.selectMissing')}</Button>
+            {selectedProductIds.length > 0 && <Button variant="ghost" size="sm" disabled={productActionsDisabled} onClick={() => setSelectedProducts(new Set())}>{t('receiving.products.clearSelection')}</Button>}
+            <Button data-testid="receiving-products-prepare" disabled={productActionsDisabled || !selectedProductIds.length} loading={preparingProducts} onClick={() => prepareProducts(selectedProductIds)}>{t('receiving.products.createCards', { count: selectedCardCount })}</Button>
+          </div>
+        </>}
+      </section>
+
       {/* Lines */}
       {showLines && (
         <div data-testid="receiving-lines" className="rounded-xl border overflow-hidden" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
           <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: 'var(--color-border-subtle)' }}>
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>{lines.length} položiek</span>
             {canEdit && <div className="flex gap-2">
-              <span className="action-control"><button onClick={handleAcceptAll} disabled={loading || savingEdit || bulkLoading || pausing || stats.pending === 0}
+              <span className="action-control"><button onClick={handleAcceptAll} disabled={preparingProducts || loading || savingEdit || bulkLoading || pausing || stats.pending === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}>
                 <CheckCircle size={14} /> Prijať všetko ({stats.pending})
               </button><ActionScope effects={['hub-write']} /></span>
-              <span className="action-control"><button onClick={handleResetAll} disabled={loading || savingEdit || bulkLoading || pausing || (stats.matched === 0 && stats.partial === 0)}
+              <span className="action-control"><button onClick={handleResetAll} disabled={preparingProducts || loading || savingEdit || bulkLoading || pausing || (stats.matched === 0 && stats.partial === 0)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
                 style={{ backgroundColor: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>
                 <RotateCcw size={14} /> Resetovať
@@ -444,6 +575,7 @@ export function ReceivingSessionPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b sticky top-0" style={{ backgroundColor: 'var(--color-bg-primary)', borderColor: 'var(--color-border-subtle)' }}>
+                  <th className="px-2 py-2"><span className="sr-only">{t('receiving.products.select')}</span></th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>SKU</th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{t('receiving.ean')}</th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Názov</th>
@@ -455,19 +587,45 @@ export function ReceivingSessionPage() {
               </thead>
               <tbody className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
                 {lines.map((line, idx) => {
+                  const product = line.id === undefined ? undefined : productMatches.get(line.id);
+                  if (productFilter === 'missing' && !product?.can_prepare || productFilter === 'review' && !['ambiguous', 'feed_unverified'].includes(product?.status || '')) return null;
                   const done    = isLineDone(line);
                   const partial = line.received_qty > 0 && line.received_qty < line.ordered_qty;
                   return (
                     <tr key={idx} className="transition-colors" style={{ backgroundColor: 'transparent' }}
                       onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)'; }}
                       onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}>
-                      <td className="px-4 py-2 text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{line.product_code || line.scm}</td>
+                      <td className="px-2 py-2 text-center"><input type="checkbox" data-testid={`receiving-product-select-${idx}`} aria-label={t('receiving.products.selectLine', { name: line.title })}
+                        checked={!!line.id && selectedProducts.has(line.id)} disabled={productActionsDisabled || !product?.can_prepare}
+                        onChange={event => { if (line.id === undefined) return; const checked = event.target.checked; setSelectedProducts(previous => { const next = new Set(previous); if (checked) next.add(line.id!); else next.delete(line.id!); return next; }); }} /></td>
+                      <td className="px-4 py-2 text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{product?.product_code || line.product_code || line.scm}</td>
                       <td data-testid={`receiving-line-ean-${idx}`} title={line.ean_source ? t(`receiving.eanSources.${line.ean_source}`) : undefined} className="px-4 py-2 text-xs whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                        <div style={{ fontFamily: 'var(--font-mono)' }}>{(line.display_ean ?? line.ean) || '–'}</div>
+                        <div style={{ fontFamily: 'var(--font-mono)' }}>{(product?.display_ean || line.display_ean || line.ean) || '–'}</div>
                         {line.ean_source === 'supplier_catalog' && <div className="mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('receiving.catalogEanLabel')}</div>}
                       </td>
                       <td className="px-4 py-2 text-sm" style={{ color: 'var(--color-text-primary)' }}>
-                        <div className="truncate max-w-xs" title={line.title}>{line.title}</div>
+                        <div className="max-w-xs" title={line.title}>{line.title}</div>
+                        {product && <div className="mt-2 space-y-1 text-xs" data-testid={`receiving-product-match-${idx}`}>
+                          <div className="font-medium" style={{ color: product.status === 'matched' ? 'var(--color-success)' : product.status === 'ambiguous' ? 'var(--color-error)' : 'var(--color-text-secondary)' }}>{t(`receiving.products.statuses.${product.status}`)}</div>
+                          <div data-testid={`receiving-product-stock-${idx}`} style={{ color: 'var(--color-text-tertiary)' }}>{product.stock_confirmed && product.own_stock_qty !== null ? t('receiving.products.ownStock', { quantity: product.own_stock_qty }) : t('receiving.products.stockUnverified')}</div>
+                          {product.status === 'ambiguous' && <details className="max-w-sm" data-testid={`receiving-product-conflicts-${idx}`}>
+                            <summary className="cursor-pointer underline">{t('receiving.products.reviewMatch')}</summary>
+                            <p className="mt-1" style={{ color: 'var(--color-error)' }}>{t('receiving.products.ambiguousHelp')}</p>
+                            {!!product.candidate_products?.length && <div className="mt-2"><strong>{t('receiving.products.candidateCards')}</strong><ul className="list-disc pl-4">
+                              {product.candidate_products.map(candidate => <li key={candidate.id}><a className="underline" href={`/products/${encodeURIComponent(candidate.code)}`} target="_blank" rel="noopener noreferrer">{candidate.code} · {candidate.name}</a></li>)}
+                            </ul></div>}
+                            {!!product.candidate_sources?.length && <div className="mt-2"><strong>{t('receiving.products.candidateFeed')}</strong><ul className="list-disc pl-4">
+                              {product.candidate_sources.map(candidate => <li key={candidate.id}>{candidate.code} · {candidate.name}{candidate.eans.length > 0 && <div>EAN: {candidate.eans.join(', ')}</div>}</li>)}
+                            </ul></div>}
+                            {!!product.warnings.length && <ul className="list-disc pl-4 mt-2">{product.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
+                            <a className="inline-block underline mt-2" href={`/suppliers/${encodeURIComponent(supplier)}/catalog`} target="_blank" rel="noopener noreferrer">{t('receiving.products.openCatalog')}</a>
+                          </details>}
+                          {product.status !== 'ambiguous' && product.warnings.map((warning, index) => <p key={index} className="max-w-xs" style={{ color: 'var(--color-text-tertiary)' }}>{warning}</p>)}
+                          {product.product_id && product.product_code && <a data-testid={`receiving-product-open-${idx}`} className="inline-block underline mr-3" href={`/products/${encodeURIComponent(product.product_code)}`} target="_blank" rel="noopener noreferrer">{t('receiving.products.openCard')}</a>}
+                          {(product.can_prepare || product.draft_id) && <button data-testid={`receiving-product-prepare-${idx}`} className="underline disabled:opacity-50 text-left" disabled={productActionsDisabled} onClick={() => line.id !== undefined && prepareProducts([line.id])}>
+                            {t(product.draft_id ? 'receiving.products.continuePreparation' : product.status === 'basic_card' ? 'receiving.products.completeCard' : 'receiving.products.createCard')}
+                          </button>}
+                        </div>}
                       </td>
                       <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>{line.ordered_qty}</td>
                       <td className="px-4 py-2 text-sm text-right font-medium" style={{ color: line.received_qty >= line.ordered_qty ? 'var(--color-success)' : line.received_qty > 0 ? 'var(--color-info)' : 'var(--color-text-primary)' }}>
@@ -475,17 +633,17 @@ export function ReceivingSessionPage() {
                           <span>{line.received_qty}</span>
                           {canEdit && <span className="flex flex-col">
                             <button data-testid={`receiving-increase-line-${idx}`} type="button" aria-label={t('receiving.increaseQuantity', { code: line.product_code || line.scm })} title={t('receiving.increaseQuantity', { code: line.product_code || line.scm })}
-                              disabled={loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty > 999999998.999}
+                              disabled={preparingProducts || loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty > 999999998.999}
                               onClick={() => adjustLineQuantity(idx, 1)} className="px-1 rounded border disabled:opacity-40" style={{ borderColor: 'var(--color-border-subtle)' }}><ChevronUp size={16} /></button>
                             <button data-testid={`receiving-decrease-line-${idx}`} type="button" aria-label={t('receiving.decreaseQuantity', { code: line.product_code || line.scm })} title={t('receiving.decreaseQuantity', { code: line.product_code || line.scm })}
-                              disabled={loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty <= 0}
+                              disabled={preparingProducts || loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty <= 0}
                               onClick={() => adjustLineQuantity(idx, -1)} className="px-1 rounded border disabled:opacity-40" style={{ borderColor: 'var(--color-border-subtle)' }}><ChevronDown size={16} /></button>
                           </span>}
                         </div>
                       </td>
                       <td className="px-4 py-2 text-center">
                         {partial ? (
-                          <button disabled={!canEdit} onClick={() => toggleDone(line)} title={done ? 'Hotovo (odznač)' : 'Označiť ako hotovo'}
+                          <button disabled={!canEdit || preparingProducts || pausing} onClick={() => toggleDone(line)} title={done ? 'Hotovo (odznač)' : 'Označiť ako hotovo'}
                             className="w-6 h-6 rounded border-2 flex items-center justify-center mx-auto transition-colors"
                             style={{ borderColor: done ? 'var(--color-success)' : 'var(--color-border-subtle)', backgroundColor: done ? 'var(--color-success-subtle)' : 'transparent', color: done ? 'var(--color-success)' : 'transparent' }}>
                             <Check size={12} />
@@ -497,7 +655,7 @@ export function ReceivingSessionPage() {
                         )}
                       </td>
                       <td className="px-4 py-2 text-center">
-                        {canEdit && <button data-testid={`receiving-edit-line-${idx}`} disabled={loading || savingEdit || bulkLoading || pausing || finalizing} aria-label={t('receiving.editQuantity')} onClick={() => openEditModal(idx, line)}><Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} /></button>}
+                        {canEdit && <button data-testid={`receiving-edit-line-${idx}`} disabled={preparingProducts || loading || savingEdit || bulkLoading || pausing || finalizing} aria-label={t('receiving.editQuantity')} onClick={() => openEditModal(idx, line)}><Edit2 size={14} style={{ color: 'var(--color-text-tertiary)' }} /></button>}
                       </td>
                     </tr>
                   );
@@ -543,7 +701,7 @@ export function ReceivingSessionPage() {
           <MessageSquare size={14} /> Poznámka k faktúre
           {savingNote && <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}><Loader2 size={10} className="inline animate-spin mr-1" />ukladám...</span>}
         </label>
-        <textarea readOnly={!canEdit} data-testid="receiving-note" value={invoiceNote} onChange={e => setInvoiceNote(e.target.value)} onBlur={e => saveNote(e.target.value.trim())}
+        <textarea readOnly={!canEdit || preparingProducts || pausing} data-testid="receiving-note" value={invoiceNote} onChange={e => setInvoiceNote(e.target.value)} onBlur={e => saveNote(e.target.value.trim())}
           placeholder="Napr. 3 položky nedodané, reklamácia na ..." className="w-full py-2 px-3 rounded-lg text-sm resize-none" rows={2}
           style={{ backgroundColor: 'var(--color-bg-primary)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-primary)' }} />
       </div>
@@ -553,7 +711,7 @@ export function ReceivingSessionPage() {
         <Button variant="secondary" onClick={() => setShowLines(!showLines)}>
           <List size={16} /> {showLines ? 'Skryť položky' : 'Zobraziť položky'}
         </Button>
-        {canEdit && <Button data-testid="receiving-finalize" variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || loading || savingEdit || bulkLoading || finalizing || pausing}>
+        {canEdit && <Button data-testid="receiving-finalize" variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || preparingProducts || loading || savingEdit || bulkLoading || finalizing || pausing}>
           <Check size={16} /> {t(stats.pending > 0 || stats.partial > 0 ? 'receiving.finishIncomplete' : 'receiving.finish')}
         </Button>}
       </div>
@@ -584,7 +742,7 @@ export function ReceivingSessionPage() {
             </div>
             <div className="flex flex-wrap justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setShowConfirm(false)}>Pokračovať v skenovaní</Button>
-              <span className="action-control"><Button data-testid="receiving-finalize-incomplete" variant="primary" disabled={loading || finalizing || savingEdit || bulkLoading || pausing} onClick={() => doFinalize(true)}>{t('receiving.confirmFinishIncomplete')}</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
+              <span className="action-control"><Button data-testid="receiving-finalize-incomplete" variant="primary" disabled={preparingProducts || loading || finalizing || savingEdit || bulkLoading || pausing} onClick={() => doFinalize(true)}>{t('receiving.confirmFinishIncomplete')}</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
             </div>
           </div>
         </div>

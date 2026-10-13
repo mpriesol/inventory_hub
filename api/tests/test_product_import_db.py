@@ -301,6 +301,140 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             override = await db.get(ProductEditorOverride, first['rows'][0]['hub_product_id'])
             self.assertNotEqual(override.data['common']['name'], 'Should not replace existing')
+        # Reopening the same preparation saves merchandising, not duplicate EANs.
+        repeated = await self.mutate(first, service.save)
+        async with self.sessions() as db:
+            barcodes = (await db.scalars(select(ProductIdentifier).where(
+                ProductIdentifier.product_id == repeated['rows'][0]['hub_product_id'],
+                ProductIdentifier.identifier_type.in_([IdentifierType.ean, IdentifierType.upc, IdentifierType.unverified_barcode])))).all()
+            self.assertEqual(len(barcodes), len(first['rows'][0]['values']['eans']))
+            self.assertEqual(sum(identifier.is_primary for identifier in barcodes), 1)
+
+    async def receiving_draft(self, sources, lineage, *, request=None):
+        request = request or DraftCreate(request_id=uuid4(), supplier='paul-lange', shop='biketrek',
+            feed_key='receiving', product_ids=[p.id for p in sources], options={'category_code': 'K-TEST'})
+        async with self.sessions() as db:
+            result = await service.create(db, request, sources=sources,
+                receiving_origin={'kind': 'receiving', 'supplier': 'paul-lange', 'session_id': 123, 'invoice_no': 'TEST-INVOICE'},
+                receiving_rows=lineage)
+            await db.commit()
+        return result
+
+    async def test_invoice_only_draft_uses_frozen_facts_without_catalog_fk_and_can_prepare_ai(self):
+        from inventory_hub.catalog_types import CatalogProduct, CatalogPrices
+        from inventory_hub.db_models import SupplierProduct
+        from inventory_hub.services import receiving_products
+        # This ID deliberately collides with an unrelated real supplier product.
+        source = CatalogProduct(id=self.ids[0], supplier='paul-lange', feed_key='invoice',
+            code='INVOICE-ONLY', shop_code='PL-INVOICE-ONLY', name='Invoice-only card',
+            prices=CatalogPrices(currency='EUR', purchase_net='7.13'))
+        lineage = {source.id: {'line_ids': [source.id, 999], 'catalog_product_id': None, 'existing_product_id': None}}
+        with patch.object(service, 'selected_products', AsyncMock(side_effect=AssertionError('Do not look up receipt IDs as feed IDs'))):
+            draft = await self.receiving_draft([source], lineage)
+            self.assertEqual(draft['receiving_origin']['session_id'], 123)
+            self.assertEqual(draft['rows'][0]['source_kind'], 'invoice')
+            self.assertEqual(draft['rows'][0]['values']['name'], 'Invoice-only card')
+            with patch.object(receiving_products, 'bind_imported_products', AsyncMock()):
+                saved = await self.mutate(draft, service.save)
+            with self.assertRaises(catalog.CatalogError) as invalid:
+                await self.mutate(saved, service.preview)
+            self.assertEqual(invalid.exception.code, 'import_invalid_rows')
+            async with self.sessions() as db:
+                card = await db.get(Product, saved['rows'][0]['hub_product_id'])
+                self.assertIsNone(card.source_supplier_product_id)
+                self.assertEqual(card.sku, 'PL-INVOICE-ONLY')
+                self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)), 3)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)), 0)
+                self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+            edited = await self.mutate(saved, service.patch_rows, DraftPatch, rows=[{'id': source.id,
+                'values': {'sale_gross': '20.00', 'vat_percent': '23', 'ai_enabled': True, 'ai_category_profile': 'general'}}])
+            prepared = await self.mutate(edited, service.prepare_ai, DraftAiRequest)
+            async with self.sessions() as db:
+                job = await db.get(AiJob, prepared['rows'][0]['ai_job']['id'])
+                self.assertEqual(job.context['staging_id'], draft['id'])
+                self.assertEqual(job.context['facts'][0]['name'], 'Invoice-only card')
+                self.assertEqual(job.context['research'], 'official')
+
+    async def test_receiving_enrichment_preserves_manual_card_and_blocks_concurrent_editor_change(self):
+        from inventory_hub.product_editor_models import ProductEditorOverride
+        from inventory_hub.services import receiving_products
+        async with self.sessions() as db:
+            source = (await catalog.selected_products(db, 'paul-lange', 'products', [self.ids[0]]))[0]
+            card = Product(sku='ORIGINAL-CARD', supplier_id=await db.scalar(select(Supplier.id).where(Supplier.code == 'paul-lange')),
+                name='Invoice item', created_from_source='invoice:TEST-INVOICE', validation_required=True)
+            db.add(card)
+            await db.flush()
+            db.add(ProductIdentifier(product_id=card.id, supplier_id=card.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False))
+            from inventory_hub.services.identifiers import ProductIdentifierService
+            identifiers = ProductIdentifierService(db)
+            await identifiers.add_identifier(card.id, '0763477003706', is_primary=True)
+            for ean in source.eans:
+                await identifiers.add_identifier(card.id, ean, is_primary=False)
+            db.add(ProductEditorOverride(product_id=card.id, revision=1,
+                data={'common': {'name': 'Manual card name'}, 'variant': {'sale_price_gross': '77.00'}}))
+            card_id = card.id
+            await db.commit()
+        lineage = {source.id: {'line_ids': [source.id], 'catalog_product_id': source.id, 'existing_product_id': card_id}}
+        draft = await self.receiving_draft([source], lineage)
+        self.assertEqual(draft['rows'][0]['values']['code'], 'ORIGINAL-CARD')
+        self.assertEqual(draft['rows'][0]['values']['name'], 'Manual card name')
+        self.assertEqual(draft['rows'][0]['values']['sale_gross'], '77.00')
+        self.assertIn('name', draft['rows'][0]['manual_fields'])
+        with patch.object(receiving_products, 'bind_imported_products', AsyncMock()):
+            saved = await self.mutate(draft, service.save)
+            saved = await self.mutate(saved, service.save)
+            self.assertEqual(saved['rows'][0]['hub_product_id'], card_id)
+            async with self.sessions() as db:
+                self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+                self.assertEqual((await db.get(Product, card_id)).sku, 'ORIGINAL-CARD')
+                primary = await db.scalar(select(ProductIdentifier.value).where(
+                    ProductIdentifier.product_id == card_id, ProductIdentifier.is_primary.is_(True)))
+                self.assertEqual(primary, '0763477003706', 'Enrichment must retain the invoice card primary barcode')
+                override = await db.get(ProductEditorOverride, card_id)
+                override.revision += 1
+                override.data = {**override.data, 'common': {'name': 'New manual edit'}}
+                await db.commit()
+            with self.assertRaises(catalog.CatalogError) as changed:
+                await self.mutate(saved, service.save)
+            self.assertEqual(changed.exception.code, 'import_hub_product_changed')
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(ProductEditorOverride, card_id)).data['common']['name'], 'New manual edit')
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+
+    async def test_pristine_receiving_card_joins_only_selected_explicit_feed_family(self):
+        from inventory_hub.catalog_types import CatalogParameter
+        from inventory_hub.db_models import ProductGroup
+        from inventory_hub.db_models_ext import ProductVariantAttribute
+        from inventory_hub.services import receiving_products
+        async with self.sessions() as db:
+            sources = await catalog.selected_products(db, 'paul-lange', 'products', self.ids[:2])
+            sources = [p.model_copy(update={'id': 100 + index, 'group_code': 'RECEIPT-FAMILY', 'group_name': 'Receipt family',
+                'variant_relationship': 'explicit', 'variant_attributes': [CatalogParameter(name='Size', value=str(index))]})
+                for index, p in enumerate(sources)]
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == 'paul-lange'))
+            existing = Product(sku='OTHER-SUPPLIER-CARD', name='Invoice item', supplier_id=supplier_id,
+                created_from_source='invoice:TEST-INVOICE', validation_required=True)
+            db.add(existing)
+            await db.flush()
+            db.add(ProductIdentifier(product_id=existing.id, supplier_id=supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value=sources[0].code, is_primary=False))
+            existing_id = existing.id
+            await db.commit()
+        lineage = {p.id: {'line_ids': [p.id], 'catalog_product_id': self.ids[index],
+            'existing_product_id': existing_id if index == 0 else None} for index, p in enumerate(sources)}
+        draft = await self.receiving_draft(sources, lineage)
+        self.assertEqual({row['group_key'] for row in draft['rows']}, {'PL-G-RECEIPT-FAMILY'})
+        with patch.object(receiving_products, 'bind_imported_products', AsyncMock()):
+            saved = await self.mutate(draft, service.save)
+        async with self.sessions() as db:
+            cards = (await db.scalars(select(Product))).all()
+            self.assertEqual(len(cards), 2)
+            self.assertEqual(len({card.group_id for card in cards}), 1)
+            self.assertEqual((await db.get(Product, existing_id)).sku, 'OTHER-SUPPLIER-CARD')
+            self.assertEqual((await db.get(ProductGroup, cards[0].group_id)).code, 'PL-G-RECEIPT-FAMILY')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductVariantAttribute)), 2)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
 
     async def test_per_row_two_shop_publication_and_hub_only_save_are_replay_safe(self):
         clients = {'biketrek': self.client, 'xtrek': FakeContentShop()}

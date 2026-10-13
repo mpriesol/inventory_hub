@@ -34,6 +34,21 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_receiving_publication_rechecks_saved_identity_before_remote_write(self):
+        staged = document()
+        staged['receiving_origin'] = {'kind': 'receiving', 'session_id': 17}
+        staged['rows'][0]['hub_product_id'] = 41
+        draft = SimpleNamespace(status='saved', document=staged)
+        snapshot = {'draft_id': 'fixture', 'hash': service.content_hash(staged)}
+        with patch.object(service, 'get_draft', AsyncMock(return_value=draft)):
+            for identities in ({}, {1: 42}):
+                with patch.object(catalog_import, 'local_identities', AsyncMock(return_value=(identities, set()))):
+                    with self.assertRaises(CatalogError) as changed:
+                        asyncio.run(service.assert_snapshot(AsyncMock(), snapshot))
+                    self.assertEqual(changed.exception.code, 'local_identity_conflict')
+            with patch.object(catalog_import, 'local_identities', AsyncMock(return_value=({1: 41}, set()))):
+                self.assertIs(asyncio.run(service.assert_snapshot(AsyncMock(), snapshot)), draft)
+
     def test_new_preview_requires_proved_zero_product_attempts_across_all_targets(self):
         draft = SimpleNamespace(shop='biketrek', document={'publications': {
             'biketrek': {'preview_id': 'first'}, 'xtrek': {'preview_id': 'second'}}})

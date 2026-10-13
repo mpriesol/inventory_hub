@@ -1,5 +1,7 @@
 # Príjem tovaru a priame odoslanie do Upgates
 
+**Aktualizácia 13. 10. 2026:** založenie a doplnenie kariet priamo z príjemky vrátane položiek bez feedu už používa spoločný importný editor. Aktuálny kontrakt je v [príjme](receiving-identity.md) a [príprave importu](product-imports.md). Nasledujúci text zachováva pôvodný návrh zo 7. 10.; jeho tvrdenia o chýbajúcom prepojení na prípravu sú nahradené týmto rozšírením. Automatické odoslanie zásob po príjme a faktúrové metapole v Upgates zostávajú plánované.
+
 Stav overený čítaním kódu 7. 10. 2026 na obsahu `main` s tree
 `758b3d80f6f4e74a0d06615ef36bdc3c279c6c6a`. Nasledujúce prepojenie je návrh,
 nie implementovaná funkcia príjmu. Produkčné oprávnenia synchronizácie neboli

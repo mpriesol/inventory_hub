@@ -78,6 +78,49 @@
     "openStock": "Otvoriť aktívny sklad"
   },
   "receiving": {
+    "products": {
+      "mixedDrafts": "Vybrané položky patria do rôznych rozpracovaných príprav. Otvorte ich cez Pokračovať v príprave a nové položky založte samostatne.",
+      "reviewMatch": "Skontrolovať zhodu",
+      "candidateCards": "Možné skladové karty",
+      "candidateFeed": "Možné položky feedu",
+      "openCatalog": "Otvoriť katalóg dodávateľa",
+      "title": "Skladové karty",
+      "help": "Overte produkty a podľa potreby ich doplňte z feedu alebo pomocou AI. Založenie karty nemení sklad; kusy pribudnú až pri dokončení príjmu.",
+      "refresh": "Obnoviť párovanie",
+      "loading": "Overujem skladové karty a feed…",
+      "loadError": "Párovanie produktov sa nepodarilo načítať. Skúste ho obnoviť; príjem množstiev môže pokračovať.",
+      "feedWarning": "Feed sa nepodarilo overiť. Položky bez karty zatiaľ nemožno označiť za nenájdené; môžete ich pripraviť z faktúry.",
+      "filter": "Filtrovať skladové karty",
+      "filters": {
+        "all": "Všetky ({{count}})",
+        "missing": "Na založenie alebo doplnenie ({{count}})",
+        "review": "Na kontrolu ({{count}})"
+      },
+      "matchedCount": "Spárované: {{count}}",
+      "selectMissing": "Vybrať chýbajúce produkty",
+      "clearSelection": "Zrušiť výber",
+      "createCards": "Založiť skladové karty ({{count}})",
+      "createCard": "Založiť skladovú kartu",
+      "completeCard": "Doplniť údaje karty",
+      "continuePreparation": "Pokračovať v príprave",
+      "openCard": "Otvoriť kartu",
+      "select": "Vybrať na prípravu",
+      "selectLine": "Vybrať produkt: {{name}}",
+      "statuses": {
+        "matched": "Spárovaný",
+        "basic_card": "Základná karta",
+        "feed_only": "Len vo feede",
+        "not_found": "Nenájdený",
+        "ambiguous": "Nejasná zhoda",
+        "feed_unverified": "Feed sa nepodarilo overiť"
+      },
+      "ownStock": "Náš sklad: {{quantity}} ks",
+      "stockUnverified": "Náš sklad: neoverený",
+      "ambiguousHelp": "Identifikátory ukazujú na viac kariet alebo si odporujú. Skontrolujte EAN a kód dodávateľa; bez vyriešenia zhody kartu nezakladáme.",
+      "prepareError": "Prípravu kariet sa nepodarilo otvoriť. Množstvá zostávajú uložené; obnovte párovanie a skúste to znova.",
+      "resume": "Pokračovať v príjme",
+      "resumeError": "Príjem sa nepodarilo obnoviť. Skúste pokračovať znova."
+    },
     "title": "Príjem tovaru",
     "subtitle": "Spracovanie dodávateľských faktúr",
     "selectSupplier": "Vyberte dodávateľa",
@@ -114,7 +157,7 @@
     "sessionStatus": {
       "completed": "Príjem je dokončený. Údaje sú iba na čítanie; šípkou späť alebo tlačidlom Ukončiť sa vrátite na zoznam.",
       "cancelled": "Príjem je zrušený. Údaje sú iba na čítanie; môžete sa vrátiť na zoznam.",
-      "paused": "Príjem je pozastavený. Na zozname príjmov zvoľte Pokračovať, ak ho chcete znovu upravovať."
+      "paused": "Príjem je pozastavený. Uložené množstvá sú zachované. Zvoľte Pokračovať v príjme, ak ho chcete znovu upravovať."
     },
     "closedPendingScans": "Nepotvrdené skeny: {{count}}. Môžete overiť pôvodné operácie alebo sa vrátiť na zoznam; uložené skeny zostanú zachované."
   },
@@ -2978,6 +3021,8 @@
   "productImport": {
     "title": "Príprava produktov",
     "subtitle": "Vyberte AI a cieľové e-shopy pri produktoch. Údaje aj výsledky zostávajú v jednej tabuľke.",
+    "backToReceiving": "Späť na príjem faktúry {{invoice}}",
+    "receivingHelp": "Po uložení kariet sa vráťte k faktúre a pokračujte v príjme. Prijaté množstvá aj nákupné ceny na faktúre zostanú zachované. Kartu môžete uložiť do Hubu aj bez predajnej ceny a DPH; pred importom do e-shopu ich doplňte.",
     "back": "Späť do katalógu",
     "batch": "Dávka {{id}}",
     "revision": "verzia {{count}}",
@@ -3029,6 +3074,7 @@
     "withAncestors": "vrátane nadradených kategórií",
     "ancestorsHelp": "Vyberá sa koncová kategória. Všetky produktové nadradené kategórie sa doplnia automaticky.",
     "origin": {
+      "invoice": "Faktúra",
       "feed": "Feed",
       "mapping": "Mapovanie",
       "manual": "Ručne",
@@ -3107,6 +3153,8 @@
       "previewRenewed": "Nový náhľad je pripravený. Pred odoslaním skontroluj dostupnosť."
     },
     "errors": {
+      "import_receiving_product_changed": "Karta sa medzitým zmenila alebo je už zalistovaná. Otvorte existujúcu kartu v Sklade a skontrolujte jej údaje.",
+      "invoice_only_source": "Údaje pochádzajú z faktúry. Doplňte chýbajúce polia ručne alebo pomocou AI; dostupnosť u dodávateľa nie je overená.",
       "invalidMoney": "Zadajte nezáporné číslo, najviac dve desatinné miesta.",
       "invalidVat": "DPH musí byť od 0 do 100 %.",
       "invalidBoolean": "Použite true/false alebo 1/0.",

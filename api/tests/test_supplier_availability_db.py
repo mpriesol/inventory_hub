@@ -317,6 +317,27 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(report["skipped_details"][0]["reason"], "supplier_item_missing")
             self.assertIsNone(await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku == "NONE")))
 
+    async def test_invoice_alias_without_offer_preserves_existing_feed_link(self):
+        self.set_prefix()
+        async with self.transaction() as db:
+            db.add(ProductIdentifier(product_id=self.products[0], supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value="INVOICE-CODE"))
+            await db.flush()
+            report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=[self.products[0]])
+            self.assertEqual(report["conflicts"], [])
+            self.assertEqual((report["existing"], report["skipped"], report["linked"]), (1, 1, 0))
+            self.assertEqual(report["skipped_details"][0]["reason"], "supplier_item_missing")
+            self.assertIsNone(await db.scalar(select(SupplierProduct.id).where(SupplierProduct.supplier_sku == "INVOICE-CODE")))
+            # A real second offer remains an explicit conflict; the alias
+            # exception must not replace an operator's configured feed link.
+            db.add(SupplierProduct(supplier_id=self.supplier_id, supplier_sku="INVOICE-CODE", name="Another offer"))
+            await db.flush()
+            report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=[self.products[0]])
+            self.assertEqual(report["conflicts"][0]["reason"], "supplier_link_already_configured")
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)
+                .where(ProductSupplySource.product_id == self.products[0])), 1)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
     async def test_repair_cursor_is_bounded_and_preserves_catalog_content_and_freshness(self):
         self.set_prefix()
         async with self.transaction() as db:
