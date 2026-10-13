@@ -23,7 +23,10 @@ nepotvrdzuje úspešné prihlásenie ani čítanie produktu.
 
 Chyby adaptéra v novej úlohe ukladajú do `diagnostic` iba povolenú fázu
 (`login_page`, `login_submit`, `search`, `product`), dôvod a prípadný číselný
-HTTP stav. Diagnostika neobsahuje odpoveď dodávateľa, URL presmerovania,
+HTTP stav. Pri zlyhaní HTTP požiadavky dopĺňa aj povolenú metódu `GET`/`POST`
+a pevnú triedu cesty (`login`, `shop_return`, `b2b`, `search`, `product`, `other`),
+aby sa odlíšilo odoslanie formulára od načítania návratovej stránky.
+Diagnostika neobsahuje odpoveď dodávateľa, URL presmerovania,
 hlavičky, cookies ani hodnoty formulára. Vyhľadávanie používa overenú slovenskú
 cestu `/sk/shop/hladaj.html`; produktové odkazy podporujú pôvodné `/shop/`
 a slovenské `/sk/shop/`. Iné jazykové presmerovania sa odmietajú. Prihlásenie
@@ -31,6 +34,12 @@ rozpoznáva aj overený odkaz na odhlásenie zobrazený iba ikonou; odkaz neotv�
 Po prihlasovacom POST povoľuje aj presný návrat na `https://www.sloger.sk/shop/`
 bez query, uvedený vo formulári. Pokračuje iba GET bez prihlasovacích údajov;
 HTTP 307/308 po POST aj tento návrat mimo prihlasovania odmieta.
+Ak práve tento GET vráti HTTP 404 s platnou ohraničenou HTML odpoveďou bez
+výzvy na overenie, v rovnakej relácii smie raz otvoriť pevnú overenú B2B
+cestu `https://www.sloger.sk/sk/b2b`. Obnova spotrebuje existujúci limit
+presmerovaní a času; POST sa neopakuje. Neplatí pre chybu samotného POST,
+inú cestu alebo HTTP stav, blokovanie, výzvu na overenie či sieťovú chybu.
+Pred vyhľadávaním zostáva povinný dôkaz úspešného prihlásenia.
 
 Hub vykoná najviac dve volania Responses API s `gpt-6-luna`, úsilím `high`,
 `store: false` a limitom 4 096 výstupných tokenov na volanie. Prvé smie vyžiadať
@@ -70,6 +79,12 @@ odmietol. Priama slovenská `/sk/prihlasenie-b2b` bola bez hesla overená ako
 HTTP 200 s prihlasovacím formulárom. Oprava prihlasovacej URL, slovenskej
 navigácie, rozpoznania prihlásenia a diagnostika vychádzajú z pozorovaného webu;
 úspešný výsledok vyžaduje ďalšie samostatné overenie po nasadení.
+Po nasadení opravy prihlasovacej URL ďalší živý test v ten istý deň skončil
+vo fáze `login_submit` s HTTP 404. Vtedajšia diagnostika ešte nerozlišovala
+POST od následného GET. Neprihlásená relácia reprodukovala HTTP 404 na
+návratovej `/shop/`; táto skutočnosť sama nepotvrdzuje príčinu živého zlyhania.
+Úzka obnova návratovej stránky a presnejšia diagnostika sú implementované
+a overované syntetickými testami; úspešný živý produktový tok zostáva nepotvrdený.
 
 ## Použitie
 

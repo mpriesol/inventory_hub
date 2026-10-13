@@ -21,6 +21,7 @@ from inventory_hub.services.catalog import CatalogError
 
 ORIGIN = "https://www.sloger.sk"
 LOGIN_URL = ORIGIN + "/sk/prihlasenie-b2b"
+B2B_URL = ORIGIN + "/sk/b2b"
 SEARCH_URL = ORIGIN + "/sk/shop/hladaj.html"
 MAX_HTML_BYTES = 2_000_000
 MAX_SECONDS = 100
@@ -35,11 +36,16 @@ class SlogerB2BError(CatalogError):
     stage = "login_page"
 
     def diagnostic(self) -> dict:
-        return {"stage": self.stage if self.stage in {"login_page", "login_submit", "search", "product"} else "login_page",
+        result = {"stage": self.stage if self.stage in {"login_page", "login_submit", "search", "product"} else "login_page",
                 "reason": self.reason if self.reason in {
                     "http_status", "network", "redirect", "content_type", "challenge", "size", "deadline", "url", "structure", "authentication"
                 } else "structure",
                 "http_status": self.http_status if type(self.http_status) is int and 100 <= self.http_status <= 599 else None}
+        if getattr(self, "method", None) in {"GET", "POST"}:
+            result["method"] = self.method
+        if getattr(self, "path_class", None) in {"login", "shop_return", "b2b", "search", "product", "other"}:
+            result["path_class"] = self.path_class
+        return result
 
 
 def _error(code="sloger_b2b_unavailable", *, reason="structure", http_status=None):
@@ -87,6 +93,20 @@ def _product_url(url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "voc", ""))
 
 
+def _path_class(url: str) -> str:
+    """Fixed diagnostic labels only; never return a path or query value."""
+    if url == LOGIN_URL:
+        return "login"
+    if url == ORIGIN + "/shop/":
+        return "shop_return"
+    if url == B2B_URL:
+        return "b2b"
+    parsed = urlsplit(url)
+    if parsed.path in ("/shop/hladaj.html", "/sk/shop/hladaj.html"):
+        return "search"
+    return "product" if _PRODUCT_PATH.fullmatch(parsed.path) else "other"
+
+
 def _document(raw: bytes):
     try:
         document = html.fromstring(raw, parser=html.HTMLParser(no_network=True))
@@ -109,6 +129,7 @@ class _Session:
     def read(self, url: str, *, data=None):
         """One bounded attempt; redirects are explicit and never replay a POST."""
         method = "POST" if data is not None else "GET"
+        login_shop_return = False
         for redirect in range(4):
             _safe_url(url)
             remaining = MAX_SECONDS - (time.monotonic() - self.started)
@@ -146,9 +167,16 @@ class _Session:
                     if (target_path not in (source_path, "/", "/b2b", "/b2b/", "/sk/b2b", "/sk/b2b/")
                             and not same_slovak_page and not login_return):
                         raise _error(reason="redirect")
+                    login_shop_return = login_return
                     url, method, data = target, "GET", None
                     continue
-                if response.status_code != 200:
+                # The observed form returns a missing language-neutral shop
+                # root. Only that exact post-login GET 404 may continue once
+                # to the independently verified B2B landing page, never replay
+                # credentials or bypass a blocked/challenged response.
+                recover_login_return = (response.status_code == 404 and login_shop_return
+                                        and method == "GET" and url == ORIGIN + "/shop/" and redirect < 3)
+                if response.status_code != 200 and not recover_login_return:
                     raise _error("sloger_auth_failed" if response.status_code == 401 else "sloger_b2b_unavailable",
                                  reason="http_status", http_status=response.status_code)
                 if response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() not in ("text/html", "application/xhtml+xml"):
@@ -161,11 +189,21 @@ class _Session:
                     if time.monotonic() - self.started > MAX_SECONDS:
                         raise _error(reason="deadline")
                     chunks.append(chunk)
-                return _document(b"".join(chunks)), url
+                document = _document(b"".join(chunks))
+                if recover_login_return:
+                    login_shop_return = False
+                    url = B2B_URL
+                    continue
+                return document, url
             except requests.RequestException:
                 # requests exceptions may contain URLs, request bodies or server
                 # fragments. Never propagate or log those values.
-                raise _error(reason="network") from None
+                error = _error(reason="network")
+                error.method, error.path_class = method, _path_class(url)
+                raise error from None
+            except SlogerB2BError as error:
+                error.method, error.path_class = method, _path_class(url)
+                raise
             finally:
                 if response is not None:
                     response.close()
