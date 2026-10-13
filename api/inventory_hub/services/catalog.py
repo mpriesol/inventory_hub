@@ -22,6 +22,7 @@ from inventory_hub import config_io
 from inventory_hub.adapters.paul_lange_catalog import parse_catalog
 from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_northfinder
 from inventory_hub.adapters.sloger_catalog import parse_catalog as parse_sloger
+from inventory_hub.adapters.sk_profi_bike_catalog import parse_catalog as parse_sk_profi_bike
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -35,7 +36,8 @@ class CatalogError(Exception):
         self.code, self.status = code, status
 
 
-PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger}
+PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger,
+           "sk-profi-bike": parse_sk_profi_bike}
 
 
 def folded(value: str) -> str:

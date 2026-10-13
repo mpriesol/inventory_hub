@@ -63,6 +63,16 @@ Klient vyžaduje platný `status` z `GET .../summary` (`new`, `in_progress`, `pa
 
 Zámok relácie chráni súčet množstiev. Transakčný zámok UUID chráni aj súbežné použitie rovnakého ID v rôznych reláciách. `receiving_scan_requests` ukladá otlačok požiadavky, odpoveď a väzbu na `scan_events` v rovnakej transakcii ako množstvo. Klient pri neistej odpovedi zachová UUID aj payload a nesmie vygenerovať nové UUID iba kvôli retry. Načítanie stránky či reštart API nemaže uložené potvrdenia.
 
+## SK Profi Bike PDF invoices
+
+Príjem podporuje pôvodné textové PDF SK Profi Bike cez `POST /suppliers/sk-profi-bike/upload-invoice`, teda nahratie v dodávateľskom postupe príjmu. Samostatné všeobecné nahratie do archívu `/invoices/upload` nie je tento parser. Adaptér `sk_profi_bike_invoice.py` používa `pypdf`, overí dodávateľa, číslo, dátumy, poradie riadkov, množstvá, jednotkové ceny bez DPH a súhrn DPH. Súčty rešpektujú zaokrúhlenie DPH za sadzbu na úrovni faktúry. Nepodporované, šifrované alebo naskenované PDF sa odmietne; limit je 20 MB a 50 strán.
+
+Ukladá pôvodné PDF, kanonické CSV `SCM;TITLE;QTY;PRICE;EAN` a index pre existujúci príjem. `PRICE` je nákupná cena bez DPH; konfigurácia používa `unit_price_source: "ex"`. Faktúra bez EAN má prázdny EAN, nie vymyslený kód. Existujúci produkt sa páruje dodávateľským aliasom alebo overeným EAN; nový používa prefix `SKP-`. Skenovanie EAN vyžaduje už známu jednoznačnú identitu v Hube. Samotná prítomnosť produktu v katalógu ju nenahrádza.
+
+Opakované nahratie rovnakého dokladu zachová existujúci stav a nevytvorí duplikát. Zmenený obsah pod rovnakým číslom skončí konfliktom. Nahratie nevytvára skladový pohyb ani nepotvrdzuje fyzické prevzatie. Historický doklad použitý na overenie musí zostať neprijatý, kým obsluha nepotvrdí skutočný príjem.
+
+Syntetické testy overujú parser, ceny, súčty a opakovanie nahratia. `test_skp_stock_workflow_db.py` používa izolovanú PostgreSQL databázu pre spoločné SKU, SKP alias, opakovanie skenera/finalizácie a inventúrnu korekciu cez nemenné pohyby a FIFO. Nezapisuje do produkčného skladu.
+
 ## Migrácia a overenie
 
 Pred spustením nového API treba zabaliť a vykonať `013_receiving_scan_requests.sql` cez `python -m inventory_hub.receiving_scan_migrate`.
