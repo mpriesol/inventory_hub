@@ -3122,6 +3122,7 @@
       "sloger_b2b_unavailable": "Sloger B2B facts could not be loaded.",
       "sloger_product_not_found": "Sloger did not return the exact requested product code.",
       "sloger_product_ambiguous": "The product or its facts could not be verified unambiguously.",
+      "sloger_batch_aborted": "This product has not been fetched yet because an earlier item stopped the batch. After resolving that error, resume fetching B2B facts.",
       "import_source_pending": "Wait for supplier facts to finish loading first.",
       "import_source_interrupted": "Fetching was interrupted. You can resume with the missing products.",
       "import_source_failed": "Supplier facts are incomplete. Check the errors and resume fetching.",

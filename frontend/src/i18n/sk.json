@@ -3124,6 +3124,7 @@
       "sloger_b2b_unavailable": "Údaje zo Sloger B2B sa nepodarilo načítať.",
       "sloger_product_not_found": "Sloger nevrátil produkt s presne zadaným kódom.",
       "sloger_product_ambiguous": "Produkt alebo jeho údaje sa nepodarilo jednoznačne overiť.",
+      "sloger_batch_aborted": "Tento produkt sa zatiaľ nenačítal, pretože predchádzajúca položka zastavila dávku. Po vyriešení chyby obnov načítanie B2B údajov.",
       "import_source_pending": "Najprv počkaj na dokončenie načítania údajov dodávateľa.",
       "import_source_interrupted": "Načítanie údajov bolo prerušené. Môžeš pokračovať od chýbajúcich produktov.",
       "import_source_failed": "Údaje dodávateľa nie sú kompletné. Skontroluj chyby a pokračuj v načítaní.",

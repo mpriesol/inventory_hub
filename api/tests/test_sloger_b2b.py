@@ -47,6 +47,102 @@ def search(*urls):
                                 for i, url in enumerate(urls)))
 
 
+def variant_product():
+    # Synthetic commercial values in the observed radio/label DOM structure.
+    rows = []
+    for index, sku, ean, stock in ((1, "HELMET-S", "0012345678912", "Skladom 2 ks"),
+                                   (2, "HELMET-M", "0012345678929", "Skladom 7 ks")):
+        checked = ' checked="checked"' if index == 1 else ''
+        rows.append(f'''<div class="form-check boxOptionWithRadioAndLabel">
+          <input type="radio" id="option-{index}" name="option[1]" value="{index}" price="86.10€"{checked}>
+          <label for="option-{index}">Fixture size {index}<span class="dispatch"><span class="label label-success">{stock}</span></span>
+            <span class="muted">({sku} / <i class="fa fa-barcode"></i> {ean})</span></label></div>''')
+    return b2b._document(page(AUTH + '''<h1>Fixture helmet</h1>
+        <p id="price-detail"><span>61.25€ <small>bez DPH</small></span>
+          <small class="priceBckp"><i>72.00€ bez DPH</i><b class="label label-warning">Zľava 15%</b></small>
+          <small>MOC 145.90€ s DPH</small></p>
+        <div class="product-info" itemprop="offers"><span class="label">Skladom 999 ks</span>'''
+        + "".join(rows) + '</div>'))
+
+
+class SlogerVariantTests(unittest.TestCase):
+    def test_exact_radio_label_sku_gets_own_ean_quantity_and_shared_current_price(self):
+        document = variant_product()
+        for sku, ean, quantity in (("HELMET-S", "0012345678912", "2"), ("HELMET-M", "0012345678929", "7")):
+            with self.subTest(sku=sku):
+                result = b2b._parse_product(document, sku, PRODUCT_URL)
+                self.assertEqual(result["eans"], [ean])
+                self.assertEqual(result["quantity"], quantity)
+                self.assertEqual(result["availability_tiers"], [{"label": f"Skladom {quantity} ks", "quantity": quantity,
+                    "quantity_kind": "exact", "quantity_relation": "equal", "lead_days": None}])
+                self.assertEqual(result["purchase_price"], "61.25")
+                self.assertEqual(result["price_basis"], "net")
+                self.assertEqual(result["retail_price"], "145.9")
+                self.assertIsNone(result["manufacturer_code"])
+                SlogerObservation.model_validate(result)
+
+    def test_mixed_missing_untyped_prices_or_nonunique_selection_leave_prices_unknown(self):
+        for change in (lambda radios: radios[1].set("price", "96.10€"),
+                       lambda radios: radios[1].attrib.pop("price"),
+                       lambda radios: radios[1].set("price", "unreadable"),
+                       lambda radios: radios[0].attrib.pop("checked"),
+                       lambda radios: radios[1].set("checked", "checked")):
+            document = variant_product()
+            change(document.xpath("//input[@type='radio']"))
+            result = b2b._parse_product(document, "HELMET-M", PRODUCT_URL)
+            self.assertIsNone(result["purchase_price"])
+            self.assertIsNone(result["retail_price"])
+            self.assertEqual(result["price_basis"], "unknown")
+            self.assertEqual(result["quantity"], "7")
+            self.assertEqual(result["eans"], ["0012345678929"])
+
+    def test_unknown_and_zero_stock_are_scoped_to_requested_variant(self):
+        for text, available, quantity in (("Dostupnosť overíme", None, None), ("Skladom 0 ks", False, "0")):
+            document = variant_product()
+            label = document.xpath("//label[@for='option-2']//span[contains(@class,'label-success')]")[0]
+            label.text = text
+            result = b2b._parse_product(document, "HELMET-M", PRODUCT_URL)
+            self.assertEqual(result["available"], available)
+            self.assertEqual(result["quantity"], quantity)
+            self.assertEqual(b2b._parse_product(document, "HELMET-S", PRODUCT_URL)["quantity"], "2")
+
+    def test_missing_sku_never_uses_selected_or_first_variant(self):
+        self.assertIsNone(b2b._parse_product(variant_product(), "HELMET-OTHER", PRODUCT_URL))
+
+    def test_unboxed_choice_cannot_be_ignored_when_claiming_a_common_quote(self):
+        document = variant_product()
+        extra = b2b.html.fromstring('<input type="radio" name="option[1]" id="option-3" value="3" price="99.10€" checked="checked">')
+        document.xpath("//div[@itemprop='offers']")[0].append(extra)
+        result = b2b._parse_product(document, "HELMET-M", PRODUCT_URL)
+        self.assertIsNone(result["purchase_price"])
+        self.assertIsNone(result["retail_price"])
+        self.assertEqual(result["quantity"], "7")
+
+    def test_malformed_label_identity_and_duplicate_variants_are_rejected(self):
+        for change in (lambda doc: doc.xpath("//label")[1].set("for", "option-1"),
+                       lambda doc: doc.xpath("//label//span[@class='muted']")[1].__setattr__("text", "(HELMET-S / "),
+                       lambda doc: doc.xpath("//input")[1].set("id", "option-1"),
+                       lambda doc: doc.xpath("//input")[1].set("name", "option[2]"),
+                       lambda doc: doc.xpath("//label//i")[1].__setattr__("tail", " no-barcode)")):
+            document = variant_product()
+            change(document)
+            with self.assertRaises(b2b.SlogerB2BError):
+                b2b._parse_product(document, "HELMET-S", PRODUCT_URL)
+
+    def test_variant_boxes_outside_offer_are_not_product_evidence(self):
+        document = b2b._document(product())
+        for box in variant_product().xpath("//div[contains(@class,'boxOptionWithRadioAndLabel')]"):
+            document.append(box)
+        result = b2b._parse_product(document, "TEST-42", PRODUCT_URL)
+        self.assertEqual(result["quantity"], "7")
+        self.assertEqual(result["purchase_price"], "12.5")
+        self.assertIsNone(b2b._parse_product(document, "HELMET-S", PRODUCT_URL))
+
+    def test_nonmatching_standalone_candidate_does_not_require_price_or_offer_structure(self):
+        document = b2b._document(page('<p class="muted">Kód: OTHER / OTHER-CODE</p>'))
+        self.assertIsNone(b2b._parse_product(document, "TEST-42", PRODUCT_URL))
+
+
 class SlogerTransportTests(unittest.TestCase):
     def setUp(self):
         sleeping = patch.object(b2b.time, "sleep")
