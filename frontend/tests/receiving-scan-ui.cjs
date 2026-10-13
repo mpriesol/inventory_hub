@@ -30,12 +30,13 @@ async function scan(code) { await input(code); await act(async () => {
 }); }
 const response = (value, status = 200) => ({ ok: status < 400, status, statusText: status === 200 ? 'OK' : 'Conflict',
   headers: { get: () => 'application/json' }, text: async () => JSON.stringify(value), json: async () => value });
-const calls = [], scans = [], scanSessions = [], applied = new Map();
+const calls = [], scans = [], scanSessions = [], quantityEdits = [], finalizations = [], applied = new Map();
 let navigation;
 function RouteControl() { navigation = useNavigate(); return null; }
 let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
+let holdQuantity = false, resolveQuantity, loseQuantity = false, invalidQuantityResponse = null;
 let sessionStatus = 'in_progress', pauseMode = 'ok';
-const line = () => ({ id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '0123456789012', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
+const line = () => ({ id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '', display_ean: '0123456789012', ean_source: 'supplier_catalog', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
 const summary = () => ({ matched: received >= 20 ? 1 : 0, partial: received > 0 && received < 20 ? 1 : 0, pending: received ? 0 : 1, overage: 0, unexpected: 0 });
 global.fetch = async (path, options = {}) => {
   calls.push({ path, method: options.method || 'GET' });
@@ -48,6 +49,22 @@ global.fetch = async (path, options = {}) => {
   }
   if (path.endsWith('/note')) return response({ note: '' });
   if (path.endsWith('/received-items')) return response({ success: true });
+  if (path.endsWith('/set-qty')) {
+    const body = JSON.parse(options.body); quantityEdits.push(body);
+    assert.equal(body.line_index, 0, 'Manual quantity targets the chosen invoice row');
+    assert(Number.isFinite(body.received_qty) && body.received_qty >= 0, 'Manual quantity cannot become negative');
+    received = body.received_qty;
+    const result = { success: true, line: line(), summary: summary() };
+    if (loseQuantity) { loseQuantity = false; throw new TypeError('Synthetic quantity acknowledgement lost after commit'); }
+    if (invalidQuantityResponse) {
+      const mode = invalidQuantityResponse; invalidQuantityResponse = null;
+      if (mode === 'empty') return response({});
+      if (mode === 'wrong-quantity') return response({ ...result, line: { ...result.line, received_qty: received + 10 } });
+      if (mode === 'wrong-line') return response({ ...result, line: { ...result.line, id: 999 } });
+    }
+    if (holdQuantity) { holdQuantity = false; return new Promise(resolve => { resolveQuantity = () => resolve(response(result)); }); }
+    return response(result);
+  }
   if (path.endsWith('/pause')) {
     if (pauseMode === 'failed') return response({ detail: 'Synthetic pause failure' }, 500);
     sessionStatus = pauseMode === 'completed' ? 'completed' : 'paused';
@@ -55,10 +72,12 @@ global.fetch = async (path, options = {}) => {
     return response({ success: true });
   }
   if (path.endsWith('/finalize')) {
+    const body = JSON.parse(options.body); finalizations.push({ ...body, received });
+    if (received < 20) assert.equal(body.force, true, 'Incomplete receipt requires explicit forced closure');
     sessionStatus = 'completed';
     return response({ success: true, invoice_no: 'test-invoice', session_id: 'session-A', completed_at: '2026-09-24T10:00:00Z',
-      stats: { total_lines: 1, received_complete: 1, received_partial: 0, received_overage: 0, not_received: 0, total_scans: received, unexpected_scans: 0 },
-      total_ordered: 20, total_received: received, received_items_count: 1, message: 'Completed' });
+      stats: { total_lines: 1, received_complete: received >= 20 ? 1 : 0, received_partial: received > 0 && received < 20 ? 1 : 0, received_overage: 0, not_received: received === 0 ? 1 : 0, total_scans: received, unexpected_scans: 0 },
+      total_ordered: 20, total_received: received, received_items_count: received > 0 ? 1 : 0, message: 'Completed' });
   }
   assert(path.endsWith('/scan'), 'No stock mutation or finalization is triggered by scanning');
   const body = JSON.parse(options.body); scans.push(body); scanSessions.push(path.match(/sessions\/([^/]+)\/scan/)[1]);
@@ -91,12 +110,22 @@ async function mountReceipt(status = 'in_progress') {
   await act(async () => { root.render(page()); await tick(); });
   assert(document.querySelector('[data-action-effects="hub-write"]'), 'Scan is visibly a local change');
   assert(!document.querySelector('[data-action-effects*="upgates"]'), 'No remote operation is implied for scans');
+  assert(find('receiving-lines'), 'Invoice items are visible on opening the receipt');
+  assert.equal(find('receiving-line-ean-0').firstElementChild.textContent, '0123456789012', 'Matched supplier EAN is visible even when the invoice has none, preserving its leading zero');
+  assert.equal(find('receiving-line-ean-0').lastElementChild.textContent, i18n.t('receiving.catalogEanLabel'), 'Catalog-only EAN is visibly distinguished from the invoice value');
+  assert.equal(find('receiving-line-ean-0').title, i18n.t('receiving.eanSources.supplier_catalog'), 'The EAN source remains visible');
+  assert(find('receiving-edit-line-0'), 'Quantity editing is available without expanding the list');
+  assert(find('receiving-decrease-line-0').disabled, 'Zero received quantity cannot be decreased');
   await scan('0123456789012');
   assert.equal(scans.length, 1);
   for (let n = 0; n < 9; n++) await scan('0123456789012');
   assert.equal(scans.length, 1, 'Fast scans queue while the first request is pending');
   assert(find('receiving-scan-pending').textContent.includes('10'));
   assert(button('Ukončiť').disabled, 'Finishing is blocked until queued scans are confirmed');
+  assert(find('receiving-increase-line-0').disabled, 'Manual quantity cannot overlap pending scans');
+  assert(find('receiving-decrease-line-0').disabled, 'Manual decrement cannot overlap pending scans');
+  await act(async () => { find('receiving-increase-line-0').click(); await tick(); });
+  assert.equal(quantityEdits.length, 0);
   await act(async () => { resolveHeld(); await tick(); });
   assert.equal(scans.length, 10, 'Every physical scan is delivered');
   assert.equal(new Set(scans.map(row => row.request_id)).size, 10);
@@ -217,8 +246,10 @@ async function mountReceipt(status = 'in_progress') {
       assert.equal(find('receiving-scan-code'), null, `${status}: no new scan entry`);
       assert.equal(find('receiving-finalize'), null, `${status}: cannot finalize again`);
       assert(find('receiving-note').readOnly, `${status}: notes are read-only`);
-      await act(async () => { button('Zobraziť položky').click(); await tick(); });
+      assert(find('receiving-lines'), `${status}: invoice items remain visible by default`);
       assert.equal(find('receiving-edit-line-0'), null, `${status}: no quantity editor`);
+      assert.equal(find('receiving-increase-line-0'), null, `${status}: no manual increment`);
+      assert.equal(find('receiving-decrease-line-0'), null, `${status}: no manual decrement`);
       assert.equal(button('Prijať všetko'), undefined);
       assert.equal(button('Resetovať'), undefined);
       const beforeExit = calls.length;
@@ -274,14 +305,119 @@ async function mountReceipt(status = 'in_progress') {
   assert.equal(find('receiving-scan-code'), null, 'The replay snapshot cannot reopen a completed receipt');
   assert.equal(sessionStorage.getItem('receiving-scans:fixture:session-A'), null);
 
+  // Arrow changes use the existing absolute-quantity endpoint and serialize
+  // with the scanner. A fast second click cannot overwrite an in-flight edit.
+  received = 0;
+  await mountReceipt();
+  holdQuantity = true;
+  const beforeQuantity = quantityEdits.length, beforeManualScan = scans.length;
+  await act(async () => { const increase = find('receiving-increase-line-0'); increase.click(); increase.click(); await tick(); });
+  assert.equal(quantityEdits.length, beforeQuantity + 1, 'Double click sends one pending quantity update');
+  assert.equal(quantityEdits.at(-1).received_qty, 1, 'Up arrow adds one received piece');
+  assert(find('receiving-increase-line-0').disabled);
+  assert(find('receiving-decrease-line-0').disabled);
+  assert(find('receiving-scan-code').disabled, 'Scanner waits until manual quantity is acknowledged');
+  assert(find('receiving-finalize').disabled, 'Finalization cannot overlap a quantity update');
+  await act(async () => {
+    find('receiving-scan-code').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick();
+  });
+  assert.equal(scans.length, beforeManualScan);
+  await act(async () => { resolveQuantity(); await tick(); });
+  assert(!find('receiving-increase-line-0').disabled);
+  await act(async () => { find('receiving-decrease-line-0').click(); await tick(); });
+  assert.equal(quantityEdits.at(-1).received_qty, 0, 'Down arrow removes one received piece');
+  const atZero = quantityEdits.length;
+  await act(async () => { find('receiving-decrease-line-0').click(); await tick(); });
+  assert.equal(quantityEdits.length, atZero, 'Down arrow at zero sends no update');
+  received = 0.5;
+  await mountReceipt();
+  await act(async () => { find('receiving-decrease-line-0').click(); await tick(); });
+  assert.equal(quantityEdits.at(-1).received_qty, 0, 'Decreasing a fractional quantity clamps at zero');
+
+  loseQuantity = true;
+  const beforeLostEdit = quantityEdits.length;
+  await act(async () => { find('receiving-increase-line-0').click(); await tick(); });
+  assert.equal(received, 1);
+  assert.equal(quantityEdits.length, beforeLostEdit + 1, 'Lost manual acknowledgement is reconciled without resending a write');
+  assert(!find('receiving-increase-line-0').disabled, 'Successful reconciliation restores editing');
+  await act(async () => { find('receiving-increase-line-0').click(); await tick(); });
+  assert.equal(quantityEdits.at(-1).received_qty, 2, 'Next arrow uses the reconciled server quantity');
+
+  loseQuantity = true; failSummary = true;
+  await act(async () => { find('receiving-increase-line-0').click(); await tick(); });
+  assert.equal(received, 3);
+  assert(find('receiving-quantity-refresh'), 'Failed reconciliation offers a read-only refresh');
+  assert(!find('receiving-increase-line-0') || find('receiving-increase-line-0').disabled,
+    'Uncertain manual quantity prevents another increment');
+  assert(!find('receiving-scan-code') || find('receiving-scan-code').disabled,
+    'Uncertain manual quantity prevents a scan');
+  const beforeRecovery = calls.length;
+  await act(async () => { find('receiving-quantity-refresh').click(); await tick(); });
+  assert(calls.slice(beforeRecovery).every(call => call.method === 'GET'), 'Recovery reads state without repeating the quantity write');
+  assert.equal(find('receiving-quantity-refresh'), null);
+  await act(async () => { find('receiving-decrease-line-0').click(); await tick(); });
+  assert.equal(quantityEdits.at(-1).received_qty, 2, 'Recovery uses the committed quantity before the next edit');
+
+  for (const mode of ['empty', 'wrong-quantity', 'wrong-line']) {
+    invalidQuantityResponse = mode; holdSummary = true;
+    const beforeMalformed = calls.length, beforeMalformedEdits = quantityEdits.length, previous = received;
+    await act(async () => { find('receiving-increase-line-0').click(); await tick(); });
+    assert.equal(received, previous + 1, 'The server may commit before sending a malformed acknowledgement');
+    assert.equal(quantityEdits.length, beforeMalformedEdits + 1, `${mode}: the uncertain write is not resubmitted`);
+    assert.equal(calls.slice(beforeMalformed).filter(call => call.path.endsWith('/summary')).length, 1,
+      `${mode}: malformed HTTP 200 requires a fresh server summary`);
+    assert(!find('receiving-increase-line-0') || find('receiving-increase-line-0').disabled, `${mode}: edits wait for the current quantity`);
+    assert(find('receiving-scan-code').disabled, `${mode}: scanning cannot race reconciliation`);
+    assert(!find('receiving-finalize') || find('receiving-finalize').disabled, `${mode}: closure cannot race reconciliation`);
+    await act(async () => { resolveSummary(); await tick(); });
+    assert(!find('receiving-increase-line-0').disabled);
+    assert.equal(quantityEdits.length, beforeMalformedEdits + 1, `${mode}: successful recovery only reads`);
+    await act(async () => { find('receiving-decrease-line-0').click(); await tick(); });
+    assert.equal(quantityEdits.at(-1).received_qty, previous, `${mode}: next edit uses the real row and reconciled quantity`);
+  }
+
+  received = 20;
   await mountReceipt();
   await act(async () => { find('receiving-finalize').click(); await tick(); });
+  assert.deepEqual(finalizations.at(-1), { force: false, received: 20 }, 'Fully received invoice uses normal finalization');
   assert.equal(find('receiving-finalize'), null, 'A successful finalization immediately switches the receipt to read-only');
   assert(find('receiving-session-status')); assert.equal(find('receiving-scan-code'), null);
   await mountReceipt('completed');
   beforeExit = calls.length;
   await act(async () => { find('receiving-back').click(); await tick(); });
   assert(find('receiving-list')); assert.equal(calls.length, beforeExit, 'Reopening after finalization does not require another finalize or pause call');
+
+  // Historical invoices can close with fewer or zero received pieces. Merely
+  // opening/cancelling confirmation must not accept the missing quantities.
+  for (const historicalQuantity of [3, 0]) {
+    received = historicalQuantity;
+    await mountReceipt();
+    const beforeConfirmation = calls.length, beforeFinalizations = finalizations.length;
+    await act(async () => { find('receiving-finalize').click(); await tick(); });
+    assert(find('receiving-finalize-incomplete'), 'Incomplete receipt requires a separate confirmation');
+    assert.equal(calls.length, beforeConfirmation, 'Opening confirmation makes no API writes');
+    await act(async () => { button('Pokračovať v skenovaní').click(); await tick(); });
+    assert.equal(finalizations.length, beforeFinalizations, 'Cancelling leaves the receipt unfinished');
+    assert.equal(calls.length, beforeConfirmation, 'Cancelling confirmation changes no quantities');
+    await act(async () => { find('receiving-finalize').click(); await tick(); });
+    await act(async () => { const finish = find('receiving-finalize-incomplete'); finish.click(); finish.click(); await tick(); });
+    assert.equal(finalizations.length, beforeFinalizations + 1, 'Double confirmation sends one finalization');
+    assert.deepEqual(finalizations.at(-1), { force: true, received: historicalQuantity }, 'Historical closure submits only the confirmed received quantity');
+    assert.equal(received, historicalQuantity, 'Closure does not pretend unreceived goods were delivered');
+    assert.equal(find('receiving-finalize'), null);
+    assert(find('receiving-session-status'));
+    const afterClose = calls.length;
+    if (historicalQuantity === 0) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 2100)); });
+      assert.equal(calls.length, afterClose, 'Non-Paul-Lange receipt never starts a legacy export after completion');
+    }
+    assert(find('receiving-completion-back'), 'Completed receipt offers a direct return to the list');
+    await act(async () => { find('receiving-completion-back').click(); await tick(); });
+    assert(find('receiving-list'));
+    assert.equal(calls.length, afterClose, 'Returning from completion makes no additional API writes');
+  }
+  assert(!calls.some(call => call.path.endsWith('/accept-all')), 'Historical closure never calls accept-all');
 
   await mountReceipt('future-status');
   assert(find('receiving-scan-code').disabled, 'An unknown server status never enables edits');
@@ -291,5 +427,5 @@ async function mountReceipt(status = 'in_progress') {
   assert(find('receiving-list'), 'A failed initial read does not trap navigation');
   assert.equal(calls.length, beforeExit, 'Leaving an unloaded receipt never attempts a mutation');
   await act(async () => { root.unmount(); });
-  console.log('Receiving UI: scan UUID/retry/context protections, readonly completed receipts, both exit controls, stale-status reconciliation and active pause errors passed');
+  console.log('Receiving UI: scan UUID/retry/context protections, visible invoice items, manual quantity serialization/recovery, explicit historical closure, readonly receipts and pause reconciliation passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

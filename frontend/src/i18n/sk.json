@@ -94,6 +94,23 @@
     "progress": "Progres",
     "backToList": "Späť na zoznam príjmov",
     "editQuantity": "Upraviť prijaté množstvo",
+    "ean": "EAN",
+    "catalogEanLabel": "Katalóg dodávateľa",
+    "eanSources": {
+      "invoice": "EAN z faktúry",
+      "product": "Overený EAN priradeného produktu",
+      "supplier_catalog": "EAN z katalógu tohto dodávateľa"
+    },
+    "increaseQuantity": "Pridať 1 kus: {{code}}",
+    "decreaseQuantity": "Odobrať 1 kus: {{code}}",
+    "invalidManualQuantity": "Zadajte platné prijaté množstvo od 0, najviac s tromi desatinnými miestami.",
+    "quantityReconciled": "Potvrdenie zmeny množstva sa nepodarilo načítať. Zobrazené množstvá sú znovu overené podľa uloženého príjmu; skontrolujte ich pred ďalšou úpravou.",
+    "quantityRefreshRequired": "Zmenu množstva zatiaľ nevieme potvrdiť. Pred ďalšou úpravou obnovte uložené množstvá.",
+    "refreshQuantities": "Obnoviť uložené množstvá",
+    "finish": "Dokončiť príjem",
+    "finishIncomplete": "Dokončiť aj bez všetkých položiek",
+    "finishIncompleteExplanation": "Faktúra sa označí ako dokončená. Do skladu sa pridajú iba množstvá v stĺpci Prij. Neprijaté položky zostanú bez skladového pohybu. Pri starších faktúrach tak môžete vynechať už predané kusy; nepripočítavajte ich znovu.",
+    "confirmFinishIncomplete": "Dokončiť s prijatými množstvami",
     "sessionStatus": {
       "completed": "Príjem je dokončený. Údaje sú iba na čítanie; šípkou späť alebo tlačidlom Ukončiť sa vrátite na zoznam.",
       "cancelled": "Príjem je zrušený. Údaje sú iba na čítanie; môžete sa vrátiť na zoznam.",

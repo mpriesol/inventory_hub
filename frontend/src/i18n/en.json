@@ -93,6 +93,23 @@
     "progress": "Progress",
     "backToList": "Back to receiving list",
     "editQuantity": "Edit received quantity",
+    "ean": "EAN",
+    "catalogEanLabel": "Supplier catalog",
+    "eanSources": {
+      "invoice": "EAN from the invoice",
+      "product": "Verified EAN of the linked product",
+      "supplier_catalog": "EAN from this supplier's catalog"
+    },
+    "increaseQuantity": "Add 1 unit: {{code}}",
+    "decreaseQuantity": "Remove 1 unit: {{code}}",
+    "invalidManualQuantity": "Enter a valid received quantity from 0, with at most three decimal places.",
+    "quantityReconciled": "The quantity change acknowledgement could not be read. Displayed quantities have been checked against the saved receipt; review them before another edit.",
+    "quantityRefreshRequired": "The quantity change cannot be confirmed yet. Refresh the saved quantities before another edit.",
+    "refreshQuantities": "Refresh saved quantities",
+    "finish": "Complete receiving",
+    "finishIncomplete": "Complete with missing items",
+    "finishIncompleteExplanation": "The invoice will be marked completed. Only quantities in the Received column will be added to stock. Unreceived items create no stock movement. For historical invoices, you can leave already sold units unreceived; do not add them again.",
+    "confirmFinishIncomplete": "Complete with received quantities",
     "sessionStatus": {
       "completed": "This receipt is completed and read-only. Use the back arrow or Exit to return to the list.",
       "cancelled": "This receipt is cancelled and read-only. You can return to the list.",
