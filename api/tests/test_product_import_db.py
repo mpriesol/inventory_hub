@@ -210,7 +210,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             'mode': 'local', 'local_path': str(self.feed)}}}, 'adapter_settings': {
             'vat_rate': 23, 'product_code_prefix': 'SLG-',
             'availability': {'orderable': 'do 2-4 dní', 'unknown': 'overíme'}}}))
-        self.feed.write_text('<products>' + sloger_xml(code='FEED-ONLY', price='24.60') + '</products>')
+        self.feed.write_text('<products>' + sloger_xml(code='FEED-ONLY', price='24.60', ean='0763477003706') + '</products>')
         async with self.sessions() as db:
             await catalog.refresh_catalog(db, 'sloger')
             selected = await catalog.catalog_selection(db, 'sloger')
