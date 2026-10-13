@@ -13,7 +13,7 @@ from pydantic import SecretStr
 
 from inventory_hub.ai_content_types import JobAction
 from inventory_hub.routers.sloger_probe import router
-from inventory_hub.services import ai_content, catalog_import, sloger_probe as service
+from inventory_hub.services import ai_content, catalog_import, sloger_b2b, sloger_probe as service
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
 from inventory_hub.sloger_probe_types import ProbeRequest, SlogerObservation
@@ -173,6 +173,20 @@ class ProbeExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls.await_count, 1)
         self.assertNotIn(self.request.password.get_secret_value(), str(self.audit.call_args_list))
 
+    async def test_supplier_failure_records_safe_diagnostic_without_another_paid_call(self):
+        error = sloger_b2b._error(reason="http_status", http_status=403)
+        error.stage = "login_page"
+        self.adapter.side_effect = error
+        result = await service.probe(self.request)
+        self.assertEqual(result["error"], "sloger_b2b_unavailable")
+        diagnostic = self.audit.call_args.kwargs["diagnostic"]
+        self.assertEqual(diagnostic, {"stage": "login_page", "reason": "http_status", "http_status": 403})
+        self.assertEqual(self.calls.await_count, 1)
+        job = SimpleNamespace(id="a" * 32, status="lookup_failed", output=None, usage={}, actual_usd=None,
+                              error="sloger_b2b_unavailable", context={"supplier_diagnostic": diagnostic})
+        self.assertEqual(service.public(job)["diagnostic"], diagnostic)
+        self.assertNotIn(self.request.password.get_secret_value(), str(self.audit.call_args_list))
+
     async def test_lookup_kind_cannot_start_review_publish_or_be_cancelled_into_another_state(self):
         job = SimpleNamespace(kind="supplier_lookup", revision=1, status="lookup_running")
         for operation in (lambda: ai_content.start(None, job), lambda: ai_content.prepare_import(None, job),
@@ -184,6 +198,25 @@ class ProbeExecutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProbeRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_connection_check_is_protected_uncached_and_does_not_invoke_ai(self):
+        app = FastAPI()
+        app.include_router(router)
+        connection = {"reachable": True, "login_form_found": True, "diagnostic": None}
+        with patch.object(settings, "AI_CONTENT_ACCESS_TOKEN", SecretStr("test-token-only-12345678901234567890")), \
+                patch.object(sloger_b2b, "connection", AsyncMock(return_value=connection)) as check, \
+                patch.object(service, "probe", AsyncMock()) as probe:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://hub.example.test") as client:
+                denied = await client.get("/suppliers/sloger/lookup/connection")
+                self.assertEqual(denied.status_code, 401)
+                check.assert_not_awaited()
+                accepted = await client.get("/suppliers/sloger/lookup/connection",
+                    headers={"Authorization": "Bearer test-token-only-12345678901234567890"})
+                self.assertEqual(accepted.status_code, 200)
+                self.assertEqual(accepted.headers["Cache-Control"], "no-store")
+                self.assertEqual(accepted.json(), connection)
+                check.assert_awaited_once_with()
+                probe.assert_not_awaited()
+
     async def test_authentication_and_validation_errors_do_not_echo_request_secrets(self):
         app = FastAPI()
         app.include_router(router)

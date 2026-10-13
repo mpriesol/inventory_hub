@@ -38,7 +38,7 @@ def estimate() -> Decimal:
 def public(job: AiJob) -> dict:
     return {"id": job.id, "status": job.status, "model": MODEL, "result": job.output,
             "usage": job.usage or {}, "actual_usd": str(job.actual_usd) if job.actual_usd is not None else None,
-            "error": job.error}
+            "error": job.error, "diagnostic": (job.context or {}).get("supplier_diagnostic")}
 
 
 async def read(id: str) -> dict:
@@ -160,7 +160,7 @@ def usage_cost(response: dict) -> tuple[dict, Decimal]:
         raise CatalogError("ai_outcome_unknown", "The provider returned unreadable billable usage", 502) from None
 
 
-async def record(id: str, *, usages: list[dict], cost: Decimal, status="lookup_running", result=None, error=None) -> dict:
+async def record(id: str, *, usages: list[dict], cost: Decimal, status="lookup_running", result=None, error=None, diagnostic=None) -> dict:
     async with get_session_context() as db:
         job = await db.scalar(select(AiJob).where(AiJob.id == id, AiJob.kind == KIND).with_for_update())
         if job is None:
@@ -169,6 +169,8 @@ async def record(id: str, *, usages: list[dict], cost: Decimal, status="lookup_r
                      "output_tokens": sum(u["output_tokens"] for u in usages)}
         job.actual_usd = cost if usages or status == "lookup_failed" else None
         job.output, job.error = result, error
+        if diagnostic is not None:
+            job.context = {**job.context, "supplier_diagnostic": diagnostic}
         if status in ("lookup_completed", "lookup_failed"):
             job.reserved_usd = 0
         ai_content.event(job, status, error or "Read-only supplier lookup")
@@ -218,13 +220,15 @@ async def probe(request: ProbeRequest) -> dict:
         await record(id, usages=usages, cost=cost, status="lookup_uncertain", error="ai_outcome_unknown")
         raise
     except CatalogError as error:
+        from inventory_hub.services.sloger_b2b import SlogerB2BError
         code = error.code if error.code in {
             "ai_outcome_unknown", "ai_provider_rejected", "sloger_probe_invalid_call", "sloger_probe_input_limit",
             "sloger_probe_invalid_result", "sloger_probe_fact_mismatch", "sloger_probe_invalid_evidence",
             "sloger_auth_failed", "sloger_product_not_found", "sloger_product_ambiguous", "sloger_b2b_unavailable",
         } else "sloger_probe_failed"
         return await record(id, usages=usages, cost=cost,
-                            status="lookup_uncertain" if code == "ai_outcome_unknown" else "lookup_failed", error=code)
+                            status="lookup_uncertain" if code == "ai_outcome_unknown" else "lookup_failed", error=code,
+                            diagnostic=error.diagnostic() if isinstance(error, SlogerB2BError) else None)
     except Exception:
         # Validation/provider/adapter exceptions can contain secret inputs; never
         # log or serialize their text, repr, response body or traceback.

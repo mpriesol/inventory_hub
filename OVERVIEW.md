@@ -10,6 +10,8 @@ Príprava importu podporuje samostatné ciele **BIKETREK** a **xTrek** pri každ
 
 Sloger má samostatný chránený [B2B test cez Lunu](docs/ai-content.md) na `/suppliers/sloger/b2b-test`: prihlasovacie údaje existujú iba počas požiadavky, funkčný nástroj číta presné SKU a modelový výsledok sa porovná s údajmi dodávateľa. Tento test nezapisuje nákupné ceny ani zásoby. Automatické opakované načítanie a trvalé serverové prihlasovanie zostávajú mimo tohto testu. Zmena prefixu pre nové identity používa chránenú [rotáciu prefixu](docs/supplier-identity.md); existujúce SKU sa nemenia. Tieto rozšírenia nevyžadujú SQL migráciu. Integračné overenie produkcie sa zaznamenáva samostatne od lokálnych testov.
 
+Chránený `GET /api/suppliers/sloger/lookup/connection` kontroluje pevnú prihlasovaciu stránku bez hesla a bez volania AI. Diagnostika B2B testu rozlišuje fázu a druh chyby bez ukladania obsahu odpovede alebo tajomstiev; samotná dostupnosť stránky nepotvrdzuje prihlásený produktový tok.
+
 Aktuálna oprava evidencie pridáva [potvrdený začiatok skladu](docs/stock-tracking.md) (migrácia 019). Historické importy a testy zostávajú neoverené; aktívne množstvá, rezervácie a synchronizácia vyžadujú nový potvrdený príjem alebo fyzický počet pre konkrétne SKU/sklad. V nasledujúcich starších popisoch má tento kontrakt prednosť pred odvodzovaním potvrdenia zo samotnej existencie pohybov.
 
 Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach používajú pri prvom načítaní serverový aktívny `is_default` sklad. Uložený kontext e-shopu alebo dávky a ručný výber majú prednosť; **Všetky sklady** zostávajú súhrnným pohľadom. Predvolenie výberu nemení zásoby, potvrdenie evidencie ani povolenia automatických zápisov.
