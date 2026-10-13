@@ -67,7 +67,7 @@ def availability_policy(supplier, config=None):
 def apply_availability(payload, products, policy):
     def apply(obj, product):
         positive = (product.supplier_stock is not None and product.supplier_stock > 0) or bool(product.supplier_stock_min and product.supplier_stock_min > 0)
-        orderable = positive or product.supplier_external_available is True
+        orderable = positive or product.supplier_available is True or product.supplier_external_available is True
         obj['availability'] = policy['orderable'] if orderable else policy['unknown']
         # Unknown/zero supplier stock is orderable; visibility remains governed
         # by the separate import review/approval contract.

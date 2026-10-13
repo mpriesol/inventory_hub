@@ -6,7 +6,7 @@ from fastapi.routing import APIRoute
 from inventory_hub.access import operator_access
 from inventory_hub.services import sloger_b2b, sloger_credentials, sloger_probe
 from inventory_hub.services.catalog import CatalogError
-from inventory_hub.sloger_probe_types import ProbeRequest, SlogerCredentials
+from inventory_hub.sloger_probe_types import SlogerCredentials
 
 
 class ProbeRoute(APIRoute):
@@ -40,8 +40,9 @@ router = APIRouter(prefix="/suppliers/sloger/lookup", tags=["Sloger lookup"], ro
 
 
 @router.post("/preview")
-async def preview(body: ProbeRequest):
-    return await sloger_probe.probe(body)
+async def preview():
+    raise HTTPException(410, detail={"code": "sloger_probe_retired",
+        "message": "Sloger data is read directly during product import and manual availability refresh"})
 
 
 @router.get("/connection")

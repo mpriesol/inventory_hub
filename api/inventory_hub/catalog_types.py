@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from inventory_hub.sloger_probe_types import SlogerObservation
 
 
 class CatalogParameter(BaseModel):
@@ -65,6 +66,9 @@ class CatalogProduct(BaseModel):
     static_parameters: dict[str, Any] = Field(default_factory=dict)
     prices: CatalogPrices
     availability: str | None = None
+    supplier_available: bool | None = None
+    sloger_observation: SlogerObservation | None = None
+    supplier_observation_expires_at: datetime | None = None
     supplier_stock: Decimal | None = None
     supplier_stock_min: Decimal | None = None
     supplier_stock_raw: str | None = None

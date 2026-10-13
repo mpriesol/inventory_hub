@@ -98,6 +98,26 @@ def target_result(shop, preview):
         raise
 
 
+def source_preview_retryable(draft):
+    """Only a proved zero-product-attempt expiry can replace publication IDs."""
+    if not getattr(draft, 'document', None) or not getattr(draft, 'shop', None):
+        return False
+    found_expiry = False
+    for shop, preview in publication_previews(draft).items():
+        result = target_result(shop, preview)
+        if result is None:
+            continue
+        if result['status'] in ('queued', 'running') or any(
+                item.get('product_write_attempted') is not False or item['status'] not in ('ready', 'failed', 'exists')
+                for item in result['items']):
+            return False
+        errors = result.get('errors', []) + [error for item in result['items'] for error in item.get('errors', [])]
+        if any(error != 'import_source_availability_expired' for error in errors):
+            return False
+        found_expiry = found_expiry or bool(errors)
+    return found_expiry
+
+
 def publication_result(draft):
     previews = publication_previews(draft)
     if not previews:
@@ -181,6 +201,8 @@ async def ai_job_statuses(db, jobs):
 
 
 def assert_editable(draft):
+    from inventory_hub.services.product_import_source import assert_ready
+    assert_ready(draft)
     result = publication_result(draft)
     if publication_state(result) == 'completed':
         raise CatalogError('import_publication_finished', 'This import is complete; use the product editor for further changes', 409)
@@ -249,7 +271,14 @@ async def public(db, draft):
             'default_shop': document.get('default_shop', draft.shop), 'publications': publications,
             'categories': document['categories'], 'rows': rows, 'publication': document.get('publication'),
             'publication_result': result, 'publication_state': publication_state(result), 'created_at': draft.created_at,
-            'updated_at': draft.updated_at}
+            'updated_at': draft.updated_at,
+            'publication_preview_retryable': bool(result) and source_preview_retryable(draft),
+            'source_lookup': source_lookup_public(draft)}
+
+
+def source_lookup_public(draft):
+    from inventory_hub.services.product_import_source import public_status
+    return public_status(draft)
 
 
 async def history(db):
@@ -417,9 +446,13 @@ async def create(db, request):
                 'categories': remote['categories'], 'rows': rows, 'publication': None, 'events': [],
                 'shops': shops, 'targets': targets, 'default_shop': default_shop,
                 'target': catalog_import._target(catalog_import.shop_config(request.shop))}
+    if request.supplier == 'sloger':
+        from inventory_hub.services.product_import_source import initialize
+        initialize(document)
     validate_rows(document)
     draft = ProductImportDraft(id=request.request_id.hex, request_hash=fingerprint, revision=1,
-                              supplier=request.supplier, shop=request.shop, status='draft', document=document)
+                              supplier=request.supplier, shop=request.shop,
+                              status='source_pending' if request.supplier == 'sloger' else 'draft', document=document)
     db.add(draft)
     await db.flush()
     return await public(db, draft)
@@ -644,7 +677,15 @@ async def preview(db, draft, request):
     # Any attempted target retains its original journal, including partial and
     # uncertain multi-shop delivery. A fresh preview must never repeat a POST.
     if publication_result(draft):
-        return await public(db, draft)
+        if not source_preview_retryable(draft):
+            return await public(db, draft)
+        document = deepcopy(draft.document)
+        document['previous_publications'] = [*document.get('previous_publications', []), {
+            'reason': 'import_source_availability_expired',
+            'previews': {shop: value['preview_id'] for shop, value in publication_previews(draft).items()}}]
+        document['publication'] = None
+        document.pop('publications', None)
+        draft.document = document
     assert_editable(draft)
     await assert_ai_applied(db, draft)
     document = deepcopy(draft.document)
@@ -658,6 +699,9 @@ async def preview(db, draft, request):
         if catalog_import._target(catalog_import.shop_config(shop)) != document.get('targets', {draft.shop: document['target']}).get(shop):
             raise CatalogError('shop_target_changed', 'The target connection changed', 409)
         rows = deepcopy([row for row in document['rows'] if shop in row_targets(row, draft.shop)])
+        from inventory_hub.services.product_import_source import availability_snapshot
+        source_deadline = await availability_snapshot(db, rows, availability_policy(draft.supplier, supplier_config(draft.supplier))) \
+            if draft.supplier == 'sloger' else {}
         categories = next((entry['categories'] for entry in document.get('shops', []) if entry['code'] == shop), document['categories'])
         if shop != draft.shop:
             for row in rows:
@@ -669,13 +713,14 @@ async def preview(db, draft, request):
         validate_rows(validation)
         if any(row['errors'] or not row['values']['category_code'] for row in rows):
             raise CatalogError('import_invalid_rows', f'Every selected product needs a valid leaf category for {shop}', 422)
-        snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': rows}
+        snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': rows, **source_deadline}
         options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': None})
         prepared = await catalog_import.create_preview(db, shop, ShopImportPreviewRequest(supplier=draft.supplier,
             feed_key=document['feed_key'], product_ids=[r['id'] for r in rows], options=options,
             sale_price_overrides={r['id']: r['values']['sale_gross'] for r in rows}),
             frozen_products=[to_source(r) for r in rows], staging=snapshot)
         previews[shop] = prepared.model_dump(mode='json')
+        previews[shop].update(source_deadline)
     document['publications'] = previews
     first = next(iter(previews.values()))
     document['publication'] = {**first, 'preview_id': first['preview_id'] if len(previews) == 1 else uuid4().hex,
@@ -687,6 +732,8 @@ async def preview(db, draft, request):
 
 
 async def assert_snapshot(db, staging):
+    from inventory_hub.services.product_import_source import assert_current_availability
+    await assert_current_availability(db, staging)
     draft = await get_draft(db, staging['draft_id'])
     if draft.status != 'saved' or content_hash(draft.document) != staging['hash']:
         raise CatalogError('import_draft_changed', 'The saved import draft changed after preview', 409)
@@ -695,6 +742,8 @@ async def assert_snapshot(db, staging):
 
 async def publish(db, draft, request):
     expect(draft, request.expected_revision)
+    from inventory_hub.services.product_import_source import assert_ready
+    assert_ready(draft)
     preview = draft.document.get('publication')
     if not preview or preview['preview_id'] != request.preview_id:
         raise CatalogError('import_preview_changed', 'Confirm the current publication preview', 409)
@@ -704,6 +753,9 @@ async def publish(db, draft, request):
     # Recovery belongs to the already confirmed snapshot, even if AI was edited later.
     if not result:
         await assert_ai_applied(db, draft)
+        from inventory_hub.services.product_import_source import assert_current_availability
+        for target in publication_previews(draft).values():
+            await assert_current_availability(db, target)
     await assert_snapshot(db, {'draft_id': draft.id, 'hash': draft.document.get('saved_hash')})
     tasks = queue_publications(draft, request.retry_failed)
     document = deepcopy(draft.document)

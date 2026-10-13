@@ -16,6 +16,8 @@ const React = require('react'); const { act } = React; const { createRoot } = re
 const { MemoryRouter, useLocation } = require('react-router-dom');
 const i18n = require('../src/i18n/index.ts').default;
 const { SlogerProbePage } = require('../src/pages/SlogerProbePage.tsx');
+const { SlogerCredentials } = require('../src/features/suppliers/SlogerCredentials.tsx');
+const { SuppliersPage } = require('../src/pages/SuppliersPage.tsx');
 const { unlockHub } = require('../src/api/access.ts');
 const root = createRoot(document.getElementById('root'));
 const tick = () => new Promise(resolve => setTimeout(resolve, 8));
@@ -42,15 +44,16 @@ const facts = {
   ],
   source_url: 'https://www.sloger.sk/synthetic-product/', observed_at: '2026-10-12T12:00:00Z',
 };
-let savedId = '', route = '', resolvePost, holdPost = true, failPost = false, readStatus = 'lookup_running';
+let savedId = '12345678901234567890123456789012', route = '', readStatus = 'lookup_running';
 let credentials = { configured: false, username: null }, failCredentialsGet = true;
 let holdSave = true, resolveSave, saveMode = 'success';
-let requestedSku = facts.sku;
 const calls = [];
 const result = status => ({ id: savedId, status, model: 'gpt-6-luna', result: status === 'lookup_completed' ? facts : null,
   usage: { input_tokens: 2000, output_tokens: 200 }, actual_usd: '0.000300', error: status === 'lookup_uncertain' ? 'ai_outcome_unknown' : null });
 global.fetch = async (path, options = {}) => {
   const url = new URL(path, dom.window.location.origin); calls.push({ url, options });
+  if (url.pathname === '/api/suppliers') return reply([]);
+  if (url.pathname === '/api/suppliers/sloger/config') return reply({ name: 'Sloger', product_prefix_locked: true, feeds: { sources: {} }, invoices: {}, adapter_settings: {} });
   assert.equal(options.credentials, 'same-origin'); assert.equal(options.cache, 'no-store');
   assert.equal(options.headers['X-Hub-Request'], '1');
   assert.equal(options.headers.Authorization, 'Bearer synthetic-hub-token');
@@ -70,17 +73,6 @@ global.fetch = async (path, options = {}) => {
     if (holdSave) return new Promise(resolve => { resolveSave = () => resolve(reply(credentials)); });
     return reply(credentials);
   }
-  if (options.method === 'POST') {
-    assert.equal(url.pathname, '/api/suppliers/sloger/lookup/preview', 'Only the read-only preview can receive a POST');
-    const body = JSON.parse(options.body);
-    savedId = body.request_id.replace(/-/g, '');
-    assert.match(savedId, /^[0-9a-f]{32}$/);
-    assert.deepEqual(Object.keys(body).sort(), ['request_id', 'sku'], 'A lookup reuses saved credentials without sending login fields');
-    assert.equal(body.sku, requestedSku);
-    if (failPost) throw new TypeError(secret);
-    if (holdPost) return new Promise(resolve => { resolvePost = status => resolve(reply(result(status))); });
-    return reply({ detail: { code: 'ai_monthly_budget', message: secret } }, 422);
-  }
   assert.equal(options.method, 'GET');
   assert.equal(url.pathname, `/api/suppliers/sloger/lookup/${savedId}`, 'Recovery reads the original request');
   assert.equal(options.body, undefined, 'Recovery never resends B2B credentials');
@@ -88,11 +80,11 @@ global.fetch = async (path, options = {}) => {
   return reply(result(readStatus));
 };
 function Location() { const value = useLocation(); route = value.pathname + value.search; return null; }
-async function mount(path = '/suppliers/sloger/b2b-test') {
+async function mount(path = '/suppliers?edit=sloger', Component = SlogerCredentials) {
   await act(async () => { root.render(null); await tick(); });
   await act(async () => {
     root.render(React.createElement(MemoryRouter, { initialEntries: [path] },
-      React.createElement(React.Fragment, null, React.createElement(SlogerProbePage), React.createElement(Location))));
+      React.createElement(React.Fragment, null, React.createElement(Component), React.createElement(Location))));
     await tick();
   });
 }
@@ -107,43 +99,56 @@ const assertPrivate = () => {
 
 (async () => {
   unlockHub(''); await mount();
-  assert.equal(calls.length, 0); assert(!find('sloger-start'), 'Locked page has no supplier credential form');
+  assert.equal(calls.length, 0); assert(!find('sloger-password'), 'Locked settings have no credential form');
   await act(async () => { unlockHub('synthetic-hub-token'); await tick(); });
   assert(find('sloger-credentials-error'), 'Unknown stored state has an explicit error');
-  assert(!find('sloger-password'), 'A status error is not treated as an unconfigured login');
-  assert(required('sloger-start').disabled); assertPrivate();
+  assert(!find('sloger-password'), 'A status error is not treated as an unconfigured login'); assertPrivate();
   failCredentialsGet = false; await click('sloger-credentials-reload');
   assert.equal(required('sloger-username').value, 'info@xtrek.sk');
-  assert.equal(required('sloger-sku').value, '7700860');
-  assert(required('sloger-start').disabled);
   assert(required('sloger-credentials-save').disabled);
   await input('sloger-password', secret);
   await act(async () => { const save = required('sloger-credentials-save'); save.click(); save.click(); await tick(); });
   assert.equal(saves().length, 1, 'Rapid duplicate clicks save once');
-  assert(!find('sloger-password'), 'Password clears immediately while saving');
-  assert(required('sloger-start').disabled); assertPrivate();
+  assert(!find('sloger-password'), 'Password clears immediately while saving'); assertPrivate();
   await act(async () => { resolveSave(); await tick(); });
   assert.equal(posts().length, 0, 'Saving credentials never starts a paid lookup');
   assert(required('sloger-credentials-status').textContent.includes('info@xtrek.sk'));
-  assert(!find('sloger-password')); assert(!required('sloger-start').disabled);
-  await act(async () => { const start = required('sloger-start'); start.click(); start.click(); await tick(); });
-  assert.equal(posts().length, 1, 'Rapid duplicate clicks start one paid request');
-  assert(!find('sloger-password'), 'Credentials disappear immediately while the request is pending');
-  assert(required('sloger-refresh').disabled); assert(!find('sloger-new'));
-  assert.equal(required('sloger-request-id').textContent, savedId);
-  assert.equal(route, `/suppliers/sloger/b2b-test?request=${savedId}`);
-  assertPrivate();
-  await act(async () => { resolvePost('lookup_uncertain'); await tick(); });
-  assert(!find('sloger-new'), 'Unknown paid outcome does not expose a fresh request');
-  assert.equal(posts().length, 1, 'No polling or implicit retry follows an uncertain result');
-  assertPrivate();
+  assert(!find('sloger-password')); assert(!find('sloger-start'), 'Supplier settings have no separate paid B2B workflow');
+  await click('sloger-credentials-change');
+  assert.equal(required('sloger-password').value, '', 'Changing a login never retrieves the saved password');
+  await input('sloger-password', secret); await click('sloger-credentials-cancel');
+  assert(!find('sloger-password'));
+  await mount();
+  assert(!find('sloger-password'), 'Reloading settings uses the server status');
 
-  await mount(route);
-  assert.equal(posts().length, 1, 'Reloading recovery link never repeats POST');
-  assert.equal(reads().length, 1, 'Recovery link performs one protected result GET');
+  await click('sloger-credentials-change'); await input('sloger-password', secret);
+  holdSave = false; saveMode = 'uncertain'; await click('sloger-credentials-save');
+  assert(find('sloger-credentials-error')); assert(!find('sloger-password'));
+  assert.equal(saves().length, 2, 'An uncertain save is never repeated automatically'); assertPrivate();
+  await click('sloger-credentials-reload');
+  assert(!find('sloger-password'));
+  assert.equal(saves().length, 2, 'Reloading status does not repeat a save');
+  await click('sloger-credentials-change'); await input('sloger-password', secret);
+  saveMode = 'reject'; await click('sloger-credentials-save');
+  assert(find('sloger-credentials-error')); assert(!find('sloger-password')); assertPrivate();
+  failCredentialsGet = true; await click('sloger-credentials-reload');
+  assert(!find('sloger-password'), 'Failed recovery of saved status does not offer a blank setup form'); assertPrivate();
+  failCredentialsGet = false; await click('sloger-credentials-reload');
+
+  await mount('/suppliers?edit=sloger', SuppliersPage);
+  assert(required('sloger-credentials-settings'), 'Saved login belongs in the existing supplier editor');
+  assert(required('sloger-credentials-status').textContent.includes('info@xtrek.sk'));
+  assert(!document.querySelector('a[href="/suppliers/sloger/b2b-test"]'), 'Supplier navigation no longer promotes the paid test');
+  const beforeArchive = calls.length;
+  await mount('/suppliers/sloger/b2b-test', SlogerProbePage);
+  assert.equal(calls.length, beforeArchive, 'Legacy page without request does not load login or call a supplier');
+  assert(!find('sloger-password') && !find('sloger-start') && !find('sloger-new'));
+  assert(document.querySelector('a[href="/suppliers?edit=sloger"]'), 'Legacy page links to the normal supplier settings');
+  await mount(`/suppliers/sloger/b2b-test?request=${savedId}`, SlogerProbePage);
+  assert.equal(reads().length, 1, 'Legacy result performs one protected GET');
+  assert.equal(required('sloger-request-id').textContent, savedId);
   assert(!find('sloger-new')); assert(!find('sloger-password'));
   readStatus = 'lookup_completed'; await click('sloger-refresh');
-  assert.equal(posts().length, 1);
   assert.equal(required('sloger-own-quantity').textContent, '0', 'External availability never replaces own warehouse quantity');
   const tiers = required('sloger-tiers').textContent;
   assert(tiers.includes('> 99') && tiers.includes('≥ 10'), 'Strict and inclusive lower bounds remain distinct');
@@ -152,53 +157,11 @@ const assertPrivate = () => {
   assert(required('sloger-result').textContent.includes(i18n.t('slogerProbe.basis.net')));
   assert(required('sloger-result').textContent.includes(i18n.t('slogerProbe.basis.gross')));
   assert.equal(required('sloger-result').querySelector('a').href, facts.source_url);
-  assertPrivate();
-
-  await click('sloger-new');
-  assert(!find('sloger-password'), 'The next product reuses the saved login without asking for a password');
-  assert(!required('sloger-start').disabled);
-  await click('sloger-credentials-change');
-  assert.equal(required('sloger-password').value, '', 'Changing a login never retrieves the saved password');
-  assert(required('sloger-start').disabled, 'Finish or cancel a credential edit before starting a lookup');
-  await input('sloger-password', secret); await click('sloger-credentials-cancel');
-  assert(!find('sloger-password')); assert(!required('sloger-start').disabled);
-  await mount();
-  assert(!find('sloger-password'), 'Reloading the page uses the server status');
-  assert(!required('sloger-start').disabled);
-  requestedSku = '7700861'; await input('sloger-sku', requestedSku);
-  const completedId = savedId;
-  holdPost = false; await click('sloger-start');
-  assert.notEqual(savedId, completedId, 'A new UUID is created only after an explicit new lookup');
-  assert(find('sloger-new'), 'A definite pre-request budget rejection allows a fresh form');
-  assertPrivate();
-
-  await click('sloger-new');
-  await click('sloger-credentials-change'); await input('sloger-password', secret);
-  holdSave = false; saveMode = 'uncertain'; await click('sloger-credentials-save');
-  assert(find('sloger-credentials-error')); assert(!find('sloger-password')); assert(required('sloger-start').disabled);
-  assert.equal(saves().length, 2, 'An uncertain save is never repeated automatically');
-  assert.equal(posts().length, 2, 'An uncertain save starts no paid lookup'); assertPrivate();
-  await click('sloger-credentials-reload');
-  assert(!find('sloger-password')); assert(!required('sloger-start').disabled);
-  assert.equal(saves().length, 2, 'Reloading status does not repeat a save');
-
-  await click('sloger-credentials-change'); await input('sloger-password', secret);
-  saveMode = 'reject'; await click('sloger-credentials-save');
-  assert(find('sloger-credentials-error')); assert(!find('sloger-password')); assert(required('sloger-start').disabled);
-  assertPrivate();
-  failCredentialsGet = true; await click('sloger-credentials-reload');
-  assert(!find('sloger-password'), 'Failed recovery of saved status does not offer a blank setup form');
-  assert(required('sloger-start').disabled); assertPrivate();
-  failCredentialsGet = false; await click('sloger-credentials-reload');
-  assert(!required('sloger-start').disabled);
-
-  failPost = true; await click('sloger-start');
-  assert(!find('sloger-new'), 'Network failure keeps the existing request ID');
-  readStatus = 'not_found'; await click('sloger-refresh');
-  assert(!find('sloger-new'), 'A missing audit read does not implicitly restart a possibly pending request');
-  assert.equal(posts().length, 3); assertPrivate();
+  assert(!find('sloger-new') && !find('sloger-start'), 'Historical results cannot start another paid probe'); assertPrivate();
+  readStatus = 'not_found'; await click('sloger-refresh'); assertPrivate();
+  assert.equal(posts().length, 0, 'Neither settings nor the legacy result issues a POST');
   await act(async () => { unlockHub(''); await tick(); });
   assert(!find('sloger-result')); assert(!find('sloger-password'));
   await act(async () => { root.unmount(); await tick(); });
-  console.log('Sloger probe UI: saved login, secret-free product requests, uncertain save recovery, duplicate submit, protected GET recovery and stock tiers passed');
+  console.log('Sloger UI: supplier login settings, uncertain save recovery, no paid lookup and read-only historical results passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

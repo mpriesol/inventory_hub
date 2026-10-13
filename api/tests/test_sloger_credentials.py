@@ -5,10 +5,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI
@@ -16,10 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import SecretStr
 
 from inventory_hub.routers.sloger_probe import router
-from inventory_hub.services import sloger_credentials as service, sloger_probe
+from inventory_hub.services import sloger_credentials as service, ai_content_provider
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
-from inventory_hub.sloger_probe_types import ProbeRequest, SlogerCredentials
+from inventory_hub.sloger_probe_types import SlogerCredentials
 
 
 class CredentialsStorageTests(unittest.TestCase):
@@ -98,15 +95,10 @@ class CredentialsStorageTests(unittest.TestCase):
         with self.assertRaises(CatalogError):
             service.load()
 
-    def test_missing_login_and_partial_transient_pair_are_rejected(self):
+    def test_missing_login_is_rejected(self):
         with self.assertRaises(CatalogError) as caught:
             service.load()
         self.assertEqual(caught.exception.code, "sloger_credentials_not_configured")
-        request = {"request_id": uuid4(), "sku": "TEST-1"}
-        self.assertIsNone(ProbeRequest(**request).password)
-        for extra in ({"username": "test"}, {"password": "secret"}):
-            with self.assertRaises(ValueError):
-                ProbeRequest(**request, **extra)
 
 
 class CredentialsRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -124,7 +116,7 @@ class CredentialsRouteTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(settings, "SUPPLIER_CREDENTIALS_ROOT", private), \
                     patch.object(settings, "INVENTORY_DATA_ROOT", public), \
                     patch.object(settings, "AI_CONTENT_ACCESS_TOKEN", SecretStr(token)), \
-                    patch.object(sloger_probe, "probe", AsyncMock()) as probe:
+                    patch.object(ai_content_provider, "generate", AsyncMock()) as probe:
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://hub.example.test") as client:
                     path = "/suppliers/sloger/lookup/credentials"
                     for method in ("GET", "PUT"):
@@ -150,63 +142,3 @@ class CredentialsRouteTests(unittest.IsolatedAsyncioTestCase):
                     for url in ("/data/sloger.json", "/data/supplier-secrets/sloger.json", "/data/%2e%2e/private/sloger.json"):
                         self.assertEqual((await client.get(url)).status_code, 404)
                     probe.assert_not_awaited()
-
-
-class CredentialsReservationTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.credentials = SlogerCredentials(username="saved-login@example.test", password="saved-private-password")
-        self.db = SimpleNamespace(execute=AsyncMock(), get=AsyncMock(return_value=None),
-                                  add=Mock(), flush=AsyncMock())
-
-        @asynccontextmanager
-        async def sessions():
-            yield self.db
-
-        item = patch.object(sloger_probe, "get_session_context", sessions)
-        item.start()
-        self.addCleanup(item.stop)
-
-    async def test_saved_secret_sku_is_rejected_before_any_audit_or_paid_call(self):
-        with patch.object(service, "load", return_value=self.credentials) as load, \
-                patch.object(sloger_probe, "call_provider", AsyncMock()) as provider:
-            for identity in (self.credentials.username, self.credentials.password.get_secret_value()):
-                with self.subTest(identity="redacted"):
-                    request = ProbeRequest(request_id=uuid4(), sku="prefix-" + identity)
-                    with self.assertRaises(CatalogError) as caught:
-                        await sloger_probe.probe(request)
-                    self.assertEqual(caught.exception.code, "sloger_probe_request_invalid")
-                    self.assertNotIn(identity, str(caught.exception))
-            self.assertEqual(load.call_count, 2)
-            self.db.add.assert_not_called()
-            self.db.flush.assert_not_awaited()
-            provider.assert_not_awaited()
-
-    async def test_missing_saved_credentials_create_no_audit_or_paid_call(self):
-        with patch.object(service, "load", side_effect=CatalogError("sloger_credentials_not_configured", "missing", 409)), \
-                patch.object(sloger_probe, "call_provider", AsyncMock()) as provider:
-            with self.assertRaises(CatalogError) as caught:
-                await sloger_probe.probe(ProbeRequest(request_id=uuid4(), sku="TEST-1"))
-            self.assertEqual(caught.exception.code, "sloger_credentials_not_configured")
-            self.db.add.assert_not_called()
-            provider.assert_not_awaited()
-
-    async def test_saved_credentials_read_once_before_safe_audit_and_replay_ignores_removed_store(self):
-        request = ProbeRequest(request_id=uuid4(), sku="TEST-1")
-        with patch.object(service, "load", return_value=self.credentials) as load, \
-                patch.object(settings, "AI_CONTENT_ENABLED", True), \
-                patch.object(settings, "OPENAI_API_KEY", SecretStr("fixture-key")), \
-                patch.object(sloger_probe.ai_content, "budget", AsyncMock(return_value=0)):
-            outcome, credentials = await sloger_probe.reserve(request)
-            self.assertEqual(credentials, self.credentials)
-            load.assert_called_once_with()
-            batch, job = [call.args[0] for call in self.db.add.call_args_list]
-            for secret in (credentials.username, credentials.password.get_secret_value()):
-                self.assertNotIn(secret, json.dumps(job.context))
-                self.assertNotIn(secret, json.dumps(outcome))
-            self.db.get.side_effect = [batch, job]
-            load.reset_mock()
-            load.side_effect = AssertionError("Replay must not read credentials")
-            replay, credentials = await sloger_probe.reserve(request)
-            self.assertEqual(replay, outcome)
-            self.assertIsNone(credentials)
-            load.assert_not_called()

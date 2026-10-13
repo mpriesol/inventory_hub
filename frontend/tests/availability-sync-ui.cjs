@@ -37,6 +37,9 @@ let supplier = { supplier: 'fixture', name: 'Fixture supplier', feed_keys: ['sto
   interval_seconds: 3600, freshness_seconds: 21600, min_coverage_percent: 100, last_started_at: null, last_success_at: null,
   next_run_at: null, last_error: null, manual_requested_at: null, last_item_count: null, running: false,
   availability: { orderable: 'do 7 dní', unknown: 'overíme' } };
+let showSloger = false;
+let sloger = { ...clone(supplier), supplier: 'sloger', name: 'Sloger', revision: 1, feed_keys: ['b2b'], feed_key: 'b2b',
+  manual_only: true, source_kind: 'b2b', refresh_scope: 'hub_products', refresh_progress: null };
 let defaults = { revision: 2, warehouse_code: 'main', interval_seconds: 300, batch_size: 20, max_order_age_seconds: 900 };
 const emptySettings = () => ({ revision: 0, enabled: false, authorized: false, interval_seconds: null, batch_size: null, max_order_age_seconds: null,
   authority_confirmed_at: null, next_run_at: null, last_started_at: null, last_completed_at: null, last_error: null });
@@ -55,7 +58,18 @@ global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, ...init, body });
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-')); assert(!path.includes('synthetic-'));
   const url = new URL(path, dom.window.location.origin);
-  if (url.pathname === '/api/supplier-availability') { assert.equal(init.method, 'GET'); return reply({ suppliers: [supplier] }); }
+  if (url.pathname === '/api/supplier-availability') { assert.equal(init.method, 'GET'); return reply({ suppliers: showSloger ? [supplier, sloger] : [supplier] }); }
+  if (url.pathname === '/api/supplier-availability/sloger') {
+    assert.equal(init.method, 'PUT'); assert.equal(body.expected_revision, sloger.revision);
+    assert.equal(body.enabled, false); assert.equal(body.feed_key, 'b2b');
+    assert.equal(body.interval_seconds, Math.min(sloger.interval_seconds, body.freshness_seconds)); assert.equal(body.min_coverage_percent, sloger.min_coverage_percent);
+    assert(body.freshness_seconds >= body.interval_seconds, 'Manual TTL satisfies the shared persistence constraint without enabling a schedule');
+    sloger = { ...sloger, ...body, revision: sloger.revision + 1 }; return reply(sloger);
+  }
+  if (url.pathname === '/api/supplier-availability/sloger/run') {
+    assert.equal(body.expected_revision, sloger.revision); assert.equal(init.method, 'POST');
+    sloger.manual_requested_at = '2026-10-13T12:00:00Z'; return reply({ supplier: 'sloger', queued: true });
+  }
   if (url.pathname === '/api/supplier-availability/fixture') {
     assert.equal(init.method, 'PUT'); assert.equal(body.expected_revision, supplier.revision);
     supplier = { ...supplier, ...body, revision: supplier.revision + 1 };
@@ -179,6 +193,23 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   await click('sync-items-previous'); assert(calls.at(-1).path.includes('offset=0&limit=100'));
   authorityChanged = true; await click('load-stock-sync'); assert(element('sync-authority'), 'Changed shop topology offers explicit reauthorization');
   await click('sync-authority'); await click('sync-writers-disabled'); await click('sync-orders-reconciled'); assert(!required('save-stock-sync').disabled); await click('save-stock-sync'); assert.equal(authorityChanged, false);
+
+  showSloger = true; const beforeSloger = writes().length; await click('load-suppliers');
+  assert(!element('supplier-sloger-enabled') && !element('supplier-sloger-interval') && !element('supplier-sloger-coverage') && !element('supplier-sloger-feed'), 'Sloger offers no feed or periodic scheduler controls');
+  assert(required('supplier-sloger-manual-help').textContent.includes('iba ručne'));
+  assert.equal(writes().length, beforeSloger, 'Loading manual availability performs no background refresh');
+  await input('supplier-sloger-freshness', '300');
+  assert(!required('supplier-sloger-save').disabled, 'Manual freshness need not exceed an unused scheduling interval');
+  await click('supplier-sloger-save'); assert.equal(writes().length, beforeSloger + 1);
+  assert.equal(writes().at(-1).body.interval_seconds, 300); assert.equal(writes().at(-1).body.freshness_seconds, 300); assert.equal(writes().at(-1).body.enabled, false);
+  await act(async () => { required('supplier-sloger-run').click(); required('supplier-sloger-run').click(); await tick(); });
+  assert.equal(writes().length, beforeSloger + 2, 'Manual refresh queues once on an explicit click');
+  assert(required('supplier-sloger-run').disabled);
+  sloger.manual_requested_at = null; sloger.refresh_progress = { total: 2, processed: 2, succeeded: 1, failed: 1, failures: [{ sku: 'SLG-2', code: 'sloger_product_not_found' }], status: 'completed' };
+  await click('load-suppliers');
+  assert(required('supplier-sloger-refresh-progress').textContent.includes('SLG-2'));
+  assert(required('supplier-sloger-refresh-progress').textContent.includes('chyby: 1'));
+  assert(!required('supplier-sloger-run').disabled); assert.equal(writes().length, beforeSloger + 2);
 
   optionsMode = 'pending'; await click('load-stock-sync'); const late = resolveOptions, pendingRequest = calls.at(-1);
   await act(async () => { unlockHub('synthetic-new-token'); await tick(); }); assert(pendingRequest.signal.aborted);

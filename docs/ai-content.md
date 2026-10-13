@@ -2,95 +2,31 @@
 
 Funkcia používa OpenAI Responses API z Hubu. Nepotrebuje projekt/GPT v ChatGPT ani prístup k tomuto chatovému účtu. Projekt na OpenAI Platform môže patriť inému firemnému účtu a má vlastnú API fakturáciu.
 
-## Samostatný test Sloger B2B cez Luna
+## Údaje Sloger B2B a voliteľné AI
 
-Chránený formulár `/suppliers/sloger/b2b-test` umožňuje uložiť prihlasovacie
-údaje Sloger raz a používať ich pri ďalších produktoch. Uloženie prihlásenia
-nevolá AI ani samo nepotvrdzuje správnosť hesla. Po uložení sa pri produkte
-zadáva iba presný dodávateľský kód. Zmena prihlásenia vyžaduje nové zadanie
-hesla; existujúce heslo sa nikdy nevracia do prehliadača.
+Sloger B2B je bežný dodávateľský zdroj, nezávislý od AI. Pri vytvorení
+prípravy importu Hub najprv načíta vybrané produkty pomocou uloženého prihlásenia.
+Priame čítanie nevolá model, nevyžaduje OpenAI API kľúč a nerezervuje AI rozpočet.
+Až pripravené údaje možno voliteľne spracovať cez existujúce AI checkboxy;
+model a úroveň uvažovania pochádzajú zo spoločných nastavení Hubu.
 
-Operátorom chránený `PUT /api/suppliers/sloger/lookup/credentials` prijíma
-`username` a `password`. `GET` tej istej cesty vracia iba `configured` a
-prihlasovacie meno. Údaje sú v samostatnom serverovom súbore s oprávnením
-`0600`, v adresári `0700`, mimo verejne poskytovaného dátového adresára.
-Produkčné nasadenie pripája trvalý Docker volume `supplier_secrets` iba do API na
-`/var/lib/inventory-hub-secrets`; musí sa zachovať pri obnove servera aj rollbacku. Ide
-o ochranu prístupovými právami systému, nie o šifrovanie súboru.
+Prihlásenie sa ukladá v nastavení dodávateľa Sloger. Chránené GET/PUT
+`/api/suppliers/sloger/lookup/credentials` vracajú iba stav a meno, nikdy heslo.
+Heslo ostáva v API-only Docker volume `supplier_secrets`, mimo verejného `/data`,
+v adresári `0700` a súbore `0600`. Úložisko treba zachovať pri rollbacku aj obnove
+servera. Je chránené oprávneniami systému; súbor nie je šifrovaný.
+Uloženie hesla samo neoveruje prihlásenie ani nespúšťa čítanie produktov.
+Heslo sa neposiela modelu, auditu, logom ani späť do formulára.
 
-`POST /api/suppliers/sloger/lookup/preview` bežne potrebuje len `request_id`
-(UUID) a `sku`; prihlasovanie zabezpečí Hub z uložených údajov. Doterajšia
-explicitná dvojica `username`/`password` zostáva podporovaná pre jednorazový
-test a sama uložené prihlásenie nemení. Vyžaduje sa existujúci prístup operátora,
-`AI_CONTENT_ENABLED`, serverový `OPENAI_API_KEY` a bežné rozpočtové limity AI.
-Heslo sa neposiela modelu ani nezapisuje do bežnej konfigurácie dodávateľa,
-auditu či logov. Odpovede vrátane validačných chýb majú `Cache-Control: no-store`
-a chyby nevracajú hodnoty vstupu.
+Podrobnosti o priebehu a obnove sú v [príprave importu](product-imports.md)
+a [ručných dostupnostiach](supplier-availability.md). Dodávateľská nákupná cena
+je aktuálna ponuka, nie nový príjem ani oprava historickej FIFO ceny.
 
-Pred ďalším zadaním hesla možno cez operátorom chránený
-`GET /api/suppliers/sloger/lookup/connection` overiť dostupnosť pevnej prihlasovacej
-stránky `https://www.sloger.sk/sk/prihlasenie-b2b`. Kontrola používa iba
-ohraničené GET požiadavky na Sloger, neposiela
-prihlasovacie údaje, nevolá model a nezapisuje audit úlohy. Vracia iba
-`reachable`, `login_form_found` a bezpečnú `diagnostic`; dostupný formulár ešte
-nepotvrdzuje úspešné prihlásenie ani čítanie produktu.
-
-Chyby adaptéra v novej úlohe ukladajú do `diagnostic` iba povolenú fázu
-(`login_page`, `login_submit`, `search`, `product`), dôvod a prípadný číselný
-HTTP stav. Pri zlyhaní HTTP požiadavky dopĺňa aj povolenú metódu `GET`/`POST`
-a pevnú triedu cesty (`login`, `shop_return`, `b2b`, `search`, `product`, `other`),
-aby sa odlíšilo odoslanie formulára od načítania návratovej stránky.
-Diagnostika neobsahuje odpoveď dodávateľa, URL presmerovania,
-hlavičky, cookies ani hodnoty formulára. Vyhľadávanie používa overenú slovenskú
-cestu `/sk/shop/hladaj.html`; produktové odkazy podporujú pôvodné `/shop/`
-a slovenské `/sk/shop/`. Iné jazykové presmerovania sa odmietajú. Prihlásenie
-rozpoznáva aj overený odkaz na odhlásenie zobrazený iba ikonou; odkaz neotvára.
-Po prihlasovacom POST povoľuje aj presný návrat na `https://www.sloger.sk/shop/`
-bez query, uvedený vo formulári. Pokračuje iba GET bez prihlasovacích údajov;
-HTTP 307/308 po POST aj tento návrat mimo prihlasovania odmieta.
-Ak práve tento GET vráti HTTP 404 s platnou ohraničenou HTML odpoveďou bez
-výzvy na overenie, v rovnakej relácii smie raz otvoriť pevnú overenú B2B
-cestu `https://www.sloger.sk/sk/b2b`. Obnova spotrebuje existujúci limit
-presmerovaní a času; POST sa neopakuje. Neplatí pre chybu samotného POST,
-inú cestu alebo HTTP stav, blokovanie, výzvu na overenie či sieťovú chybu.
-Pred vyhľadávaním zostáva povinný dôkaz úspešného prihlásenia.
-
-Hub vykoná najviac dve volania Responses API s `gpt-6-luna`, úsilím `high`,
-`store: false` a limitom 4 096 výstupných tokenov na volanie. Prvé smie vyžiadať
-iba jednu funkciu `lookup_sloger_product` s pôvodným SKU. Jej serverový adaptér
-sa prihlási do Sloger B2B a prečíta zodpovedajúci produkt; model dostane iba
-ohraničené produktové fakty. Druhé volanie ich musí vrátiť v striktnej schéme
-a po normalizácii sa musí celý výsledok presne zhodovať s dôkazmi adaptéra.
-Zachováva sa EAN, kód výrobcu, nákupná ponuka, MOC, mena, základ DPH, zdroj a
-čas pozorovania. Vlastný sklad Slogera je oddelený od ďalších dostupností;
-napríklad `>99` pri „Do 5 dní“ zostáva ostrou dolnou hranicou, nie presným
-počtom ani údajom o našom fyzickom sklade. Neznáme hodnoty sa nedopočítavajú.
-
-Test zapisuje iba `AiBatch`/`AiJob` druhu `supplier_lookup`. Nevytvára produkt,
-príjem, FIFO náklad, katalógový riadok ani zápis do Upgates. Tento druh je
-oddelený od zoznamu, workera a mutácií obsahových úloh. Stavy sú
-`lookup_running`, `lookup_completed`, `lookup_failed` a `lookup_uncertain`.
-Počas behu alebo neznámeho výsledku zostáva účtovaná celá rezervácia, aj keď
-je známa len cena prvého volania. Dokončenie či definitívna chyba ponechá
-skutočne vykázané náklady a uvoľní nevyužitú rezerváciu.
-
-Opakovanie rovnakého UUID nikdy neopakuje platené volanie ani prihlásenie.
-Výsledok sa načíta cez `GET /api/suppliers/sloger/lookup/{id}`, kde `id` je
-UUID bez pomlčiek. Pri výpadku alebo stave `lookup_uncertain` treba zachovať
-pôvodné ID a kontrolovať tento záznam; automatický nový pokus neexistuje.
-Neznámy výsledok sa pri čítaní nesmie označiť za úspešný ani uvoľniť jeho
-rozpočet. Po tvrdom ukončení procesu môže zostať `lookup_running`; tento stav
-sám nepotvrdzuje, že požiadavka ešte beží, a neoprávňuje nový platený pokus.
-Kód nepotrebuje novú databázovú migráciu. Lokálne testy používajú
-syntetické odpovede a prihlasovacie údaje; samy nepotvrdzujú úspešné živé
-prihlásenie alebo platené spracovanie.
-
-Živý produkčný test 13. 10. 2026 po nasadení PR62 úspešne dokončil celý tok
-cez dve volania Luna API: prihlásenie, presné SKU, nákupnú ponuku, EAN a
-oddelené dostupnosti. Výsledok bol porovnaný s aktuálnym B2B detailom.
-Tento test použil jednorazové prihlasovacie údaje; opakované použitie trvalo
-uloženého prihlásenia má vlastné overenie po nasadení jeho podpory. Úspech
-jedného produktu nepotvrdzuje plošný crawler ani automatickú synchronizáciu.
+Pôvodný jednorazový AI test bol na produkcii úspešne overený 13. 10. 2026.
+Jeho výsledky ostávajú čitateľné cez GET `/api/suppliers/sloger/lookup/{id}`
+a historické odkazy s `?request=`. POST `/api/suppliers/sloger/lookup/preview`
+je zrušený a vracia HTTP 410; nové platené testy nemožno spustiť. Prihlásenie
+ani čítanie B2B už nemá samostatný pracovný postup pomenovaný podľa modelu.
 
 ## Použitie
 

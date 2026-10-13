@@ -34,6 +34,19 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_new_preview_requires_proved_zero_product_attempts_across_all_targets(self):
+        draft = SimpleNamespace(shop='biketrek', document={'publications': {
+            'biketrek': {'preview_id': 'first'}, 'xtrek': {'preview_id': 'second'}}})
+        expired = {'status': 'failed', 'errors': ['import_source_availability_expired'],
+            'items': [{'status': 'ready', 'errors': [], 'product_write_attempted': False}]}
+        with patch.object(service, 'target_result', return_value=expired):
+            self.assertTrue(service.source_preview_retryable(draft))
+        for state, attempted in [('created', True), ('uncertain', True), ('failed', True), ('ready', None)]:
+            blocked = deepcopy(expired)
+            blocked['items'][0].update(status=state, product_write_attempted=attempted)
+            with patch.object(service, 'target_result', side_effect=lambda shop, _: expired if shop == 'biketrek' else blocked):
+                self.assertFalse(service.source_preview_retryable(draft))
+
     def test_multiple_shop_outcomes_keep_unstarted_and_uncertain_targets_visible(self):
         previews = {shop: {'preview_id': shop, 'items': [{'product_ids': [1], 'status': 'ready'}]}
                     for shop in ('biketrek', 'xtrek')}
@@ -276,6 +289,27 @@ class ProductImportAsyncTests(unittest.IsolatedAsyncioTestCase):
              patch.object(catalog_import, 'create_preview', AsyncMock()) as create:
             self.assertEqual(await service.preview(None, draft, SimpleNamespace(expected_revision=5)), 'original')
         create.assert_not_called()
+
+    async def test_zero_attempt_expiry_can_prepare_new_preview_and_keeps_old_journal_reference(self):
+        doc = document()
+        old = {'preview_id': 'old', 'items': [{'status': 'ready'}]}
+        doc.update(target='biketrek', targets={'biketrek': 'biketrek'}, feed_key='products',
+            publication=old, publications={'biketrek': old})
+        doc['saved_hash'] = service.content_hash(doc)
+        draft = SimpleNamespace(id='draft', shop='biketrek', supplier='paul-lange', revision=1, status='saved', document=doc)
+        expired = {'status': 'failed', 'errors': ['import_source_availability_expired'],
+            'items': [{'status': 'ready', 'errors': [], 'product_write_attempted': False}]}
+        new = {'preview_id': 'new', 'items': [{'product_ids': [1], 'status': 'ready'}], 'errors': []}
+        with patch.object(service, 'target_result', side_effect=lambda shop, preview: expired if preview['preview_id'] == 'old' else None), \
+             patch.object(service, 'assert_ai_applied', AsyncMock()), \
+             patch.object(service, 'public', AsyncMock(side_effect=lambda db, value: value.document)), \
+             patch.object(catalog_import, 'shop_config', side_effect=lambda shop: shop), \
+             patch.object(catalog_import, '_target', side_effect=lambda shop: shop), \
+             patch.object(catalog_import, 'create_preview', AsyncMock(return_value=SimpleNamespace(model_dump=lambda **_: new))):
+            await service.preview(SimpleNamespace(flush=AsyncMock()), draft, SimpleNamespace(expected_revision=1))
+        self.assertEqual(draft.document['publications']['biketrek']['preview_id'], 'new')
+        self.assertEqual(draft.document['previous_publications'][0]['previews'], {'biketrek': 'old'})
+        self.assertEqual(expired['items'][0]['product_write_attempted'], False)
 
     async def test_ai_must_be_applied_or_explicitly_disabled_before_publication(self):
         item = row(ai_enabled=True)

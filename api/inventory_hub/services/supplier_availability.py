@@ -29,10 +29,13 @@ def _feed_keys(cfg):
 
 
 def public(supplier, cfg, settings=None):
-    keys = _feed_keys(cfg)
+    manual_only = supplier == "sloger"
+    keys = ["b2b"] if manual_only else _feed_keys(cfg)
     result = {"supplier": supplier, "name": cfg.get("name") or supplier,
-        "feed_keys": keys, "feed_key": settings.feed_key if settings else ("stock" if "stock" in keys else "products"),
-        "revision": settings.revision if settings else 0, "enabled": settings.enabled if settings else False,
+        "feed_keys": keys, "feed_key": settings.feed_key if settings else ("b2b" if manual_only else "stock" if "stock" in keys else "products"),
+        "revision": settings.revision if settings else 0, "enabled": bool(settings and settings.enabled and not manual_only),
+        "manual_only": manual_only, "source_kind": "b2b" if manual_only else "feed",
+        "refresh_scope": "hub_products" if manual_only else "supplier_catalog", "refresh_progress": None,
         "interval_seconds": settings.interval_seconds if settings else 3600,
         "freshness_seconds": settings.freshness_seconds if settings else 21600,
         "min_coverage_percent": settings.min_coverage_percent if settings else 100,
@@ -53,11 +56,17 @@ async def overview(db):
     result = []
     for code in codes:
         cfg = config_io.load_supplier(code, write_back_on_load=False)
-        result.append(public(code, cfg, rows.get(code)))
+        value = public(code, cfg, rows.get(code))
+        if code == "sloger" and rows.get(code):
+            from inventory_hub.services.supplier_availability_b2b import latest_progress
+            value["refresh_progress"] = await latest_progress(db, rows[code].supplier_id)
+        result.append(value)
     return {"suppliers": result}
 
 
 async def configure(db, supplier, payload):
+    if supplier == "sloger" and payload.enabled:
+        raise AvailabilityError("supplier_availability_manual_only", 422)
     cfg, _source, _parser, _fingerprint = configuration(supplier, payload.feed_key)
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": catalog._lock_key(supplier)})
     feed = await catalog._feed(db, supplier, cfg, payload.feed_key, create=True)
@@ -106,7 +115,8 @@ async def start_run(db, supplier_id):
     if not locked:
         return None
     row = await db.get(SupplierAvailabilitySettings, supplier_id, with_for_update=True)
-    if not row or row.running_run_id or row.next_run_at > now() or (not row.enabled and row.manual_requested_at is None):
+    if not row or row.running_run_id or row.next_run_at > now() or (
+            (not row.enabled or supplier.code == "sloger") and row.manual_requested_at is None):
         return None
     try:
         cfg, source, parser, fingerprint = configuration(supplier.code, row.feed_key)
@@ -117,17 +127,39 @@ async def start_run(db, supplier_id):
     feed = await catalog._feed(db, supplier.code, cfg, row.feed_key, create=True)
     number = (await db.scalar(select(func.max(SupplierFeedRun.run_number)).where(SupplierFeedRun.feed_id == feed.id)) or 0) + 1
     started = now()
+    details = {"workflow": "supplier_availability", "revision": row.revision,
+               "configuration_hash": fingerprint}
+    if supplier.code == "sloger":
+        from inventory_hub.services.supplier_availability_b2b import scope_skus
+        details.update(scope="hub_products", skus=await scope_skus(db, supplier_id), cursor=0,
+                       succeeded=0, failed=0, failures=[])
     run = SupplierFeedRun(feed_id=feed.id, run_number=number, status=FeedRunStatus.running,
-        started_at=started, error_details={"workflow": "supplier_availability", "revision": row.revision,
-            "configuration_hash": fingerprint})
+        started_at=started, error_details=details)
     db.add(run)
     await db.flush()
     row.running_run_id, row.last_started_at, row.manual_requested_at = run.id, started, None
     row.next_run_at = started + timedelta(seconds=row.interval_seconds)
-    return {"supplier": supplier.code, "supplier_id": supplier.id, "feed_key": row.feed_key,
+    plan = {"supplier": supplier.code, "supplier_id": supplier.id, "feed_key": row.feed_key,
         "feed_id": feed.id, "run_id": run.id, "revision": row.revision,
         "configuration_hash": fingerprint, "config": cfg, "source": source, "parser": parser,
         "observed_at": started}
+    if supplier.code == "sloger":
+        from inventory_hub.services.sloger_data import MAX_BATCH_ITEMS
+        plan["skus"] = details["skus"][:MAX_BATCH_ITEMS]
+        plan["cursor"] = 0
+    return plan
+
+
+async def resume_run(db, supplier_id, run_id):
+    """Resume only an explicitly requested B2B run; ordinary feeds are not retried."""
+    from inventory_hub.services.supplier_availability_b2b import resume
+    return await resume(db, supplier_id, run_id)
+
+
+async def record_sloger_import(db, observations, draft_id):
+    """Record source facts during import without activating a supplier crawler."""
+    from inventory_hub.services.supplier_availability_b2b import record_import
+    return await record_import(db, observations, draft_id)
 
 
 def coverage_ok(item_count, baseline, percent):
@@ -263,7 +295,7 @@ changes availability even when no newer feed has arrived. No data is turned into
             except (catalog.CatalogError, ValueError):
                 labels[supplier.code] = None
         label = labels[supplier.code]
-        if (not settings or not settings.last_success_at or not observation
+        if (not settings or (not settings.last_success_at and supplier.code != "sloger") or not observation
                 or feed_keys.get(observation.feed_id) != settings.feed_key or not label):
             continue
         candidate = project_observation(observation, label, supplier.code, at, settings.freshness_seconds)

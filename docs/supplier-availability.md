@@ -18,6 +18,18 @@ Pri viacerých dodávateľoch sa použije prvý čerstvý dostupný zdroj podľa
 
 Ručné spustenie počas prebiehajúceho načítania pripraví jeden ďalší beh. Opakované kliknutia nevytvárajú paralelné sťahovania. Zmena konfigurácie počas sťahovania zneplatní rozpracovaný výsledok a vyžiada nový beh.
 
+## Sloger: iba ručné B2B čítanie
+
+Sloger nemá skladový feed. Prihlásenie sa uloží raz v nastavení dodávateľa a na obrazovke dostupností sa používa pevný zdroj **Sloger B2B**. Obsluha nastaví platnosť údajov a spustí ručný refresh. Automatické spúšťanie nie je dostupné: API odmietne jeho zapnutie a worker ignoruje aj prípadnú starú zapnutú hodnotu. Samotné nasadenie alebo uplynutie intervalu nikdy nezačne nový Sloger crawl.
+
+Rozsah tvorí zoznam aktívnych produktov už evidovaných v Hube s aktívnou objednateľnou väzbou na Sloger; zahŕňa aj aktuálne vypredané produkty. Zoznam sa zmrazí na začiatku ručného behu. Celý dodávateľský katalóg sa neprechádza. Staršie jednoznačné zdrojové väzby sa použijú iba tam, kde produkt nemá novšie dodávateľské väzby.
+
+Existujúci trvalý beh uchováva kurzor a počty spracovaných, úspešných a neúspešných SKU. Worker spracúva najviac desať SKU na dávku, v jednej prihlásenej relácii, s odstupom medzi požiadavkami. Spoločný zámok zabráni súbežnému B2B čítaniu s prípravou importu. Pokračovanie už vyžiadaného behu po dávkach nie je pravidelné spúšťanie nového crawlu.
+
+Úspešné pozorovania dostanú vlastný čas a platnosť. Chybná položka zachová starší údaj len do pôvodnej expirácie a zobrazí sa vo výsledku. Chyba prihlásenia, ochranná výzva alebo nedostupný zdroj zastaví ďalšie čítanie; neúspešné položky sa automaticky neopakujú. Neznáme hodnoty ostávajú neznáme a nevytvárajú nulovú dostupnosť. Prerušený rozpracovaný chunk možno obnoviť ako čítanie; potvrdené dávky sa neopakujú.
+
+Rovnaká služba uloží dodávateľské pozorovania aj pri príprave importu, aby sa po uložení produktu dali použiť v existujúcom prepočte dostupnosti. Tento čiastkový importný záznam nepredstiera úspech celého ručného refreshu. Sloger B2B nevolá AI, nemení vlastné zásoby, FIFO ani sám neposiela údaje do e-shopov. Dostupnosť dodávateľa **do 2-4 dní** platí iba pri potvrdenej čerstvej dostupnosti; bez nej ostáva **overíme**.
+
 ## Pre vývojárov
 
 Implementované v kóde: migrácia `014_supplier_availability.sql`, ORM `supplier_availability_models.py`, služby `supplier_availability.py`, `supplier_availability_source.py`, `supplier_availability_worker.py` a chránený router. Stav nasadenia je vedený v `mvp-progress.md`; samotná prítomnosť tejto dokumentácie nedokazuje zapnutie automatizácie na produkcii.

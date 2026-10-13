@@ -1,4 +1,5 @@
 """Durable import staging against an isolated PostgreSQL schema and fake shops."""
+import asyncio
 import json
 import unittest
 from contextlib import asynccontextmanager
@@ -93,6 +94,87 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             available = await competing.scalar(text('SELECT pg_try_advisory_xact_lock(:key)'), {'key':catalog._lock_key('paul-lange')})
             self.assertTrue(available)
             await competing.rollback()
+
+    async def test_sloger_data_preparation_is_durable_unpaid_and_reuses_b2b_ean_identity(self):
+        from test_catalog_sloger import product as sloger_xml
+        from test_product_import_source import observation
+        from inventory_hub.services import product_import_source as sources
+        from inventory_hub.services.identifiers import ProductIdentifierService
+        from inventory_hub.sloger_probe_types import SlogerBatchResult, SlogerLookupResult
+        from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
+
+        path = config_io.supplier_path('sloger')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'name': 'Sloger', 'feeds': {'sources': {'products': {
+            'mode': 'local', 'local_path': str(self.feed)}}}, 'adapter_settings': {
+            'vat_rate': 23, 'product_code_prefix': 'SLG-',
+            'availability': {'orderable': 'do 2-4 dní', 'unknown': 'overíme'}}}))
+        self.feed.write_text('<products>' + sloger_xml(code='7700860', ean='', price='8.50') + '</products>')
+        async with self.sessions() as db:
+            await catalog.refresh_catalog(db, 'sloger')
+            selected = await catalog.catalog_selection(db, 'sloger')
+            other = Supplier(code='existing-supplier', name='Existing supplier')
+            db.add(other)
+            await db.flush()
+            existing = Product(sku='EXISTING-BRUSH', name='Existing brush', supplier_id=other.id)
+            db.add(existing)
+            await db.flush()
+            await ProductIdentifierService(db).add_identifier(existing.id, '0763477003706', is_primary=True)
+            existing_id = existing.id
+            await db.commit()
+        request = DraftCreate(request_id=uuid4(), supplier='sloger', shop='biketrek', product_ids=selected.ids,
+            options={'category_code': 'K-TEST'})
+        initial = await self.create(request)
+        self.assertEqual(initial['source_lookup']['state'], 'queued')
+        replay = await self.create(request)
+        self.assertEqual(replay['id'], initial['id'])
+        with self.assertRaises(catalog.CatalogError) as pending:
+            await self.mutate(initial, service.save)
+        self.assertEqual(pending.exception.code, 'import_source_pending')
+
+        @asynccontextmanager
+        async def sessions():
+            async with self.sessions() as db:
+                yield db
+                await db.commit()
+
+        calls = []
+        async def lookup(codes):
+            calls.append(codes)
+            # Supplier network work must not retain the creation/global source
+            # locks or the draft row lock while another request loads progress.
+            async with self.sessions() as competing:
+                for key in (691432122, catalog._lock_key('sloger')):
+                    self.assertTrue(await competing.scalar(text('SELECT pg_try_advisory_xact_lock(:key)'), {'key': key}))
+                await competing.execute(select(ProductImportDraft).where(ProductImportDraft.id == initial['id']).with_for_update(nowait=True))
+            await asyncio.sleep(.01)
+            return SlogerBatchResult(items=[SlogerLookupResult(sku='7700860', observation=observation('7700860'))])
+
+        with patch.object(sources, 'get_session_context', sessions), \
+             patch.object(sources.sloger_data, 'lookup_products', side_effect=lookup), \
+             patch.object(service.ai_content, 'create_batch', AsyncMock(side_effect=AssertionError('B2B ingestion must not call AI'))):
+            await asyncio.gather(sources.process(initial['id']), sources.process(initial['id']))
+            await sources.process(initial['id'])
+        self.assertEqual(calls, [['7700860']])
+        async with self.sessions() as db:
+            ready = await service.public(db, await service.get_draft(db, initial['id']))
+            self.assertEqual(ready['source_lookup']['state'], 'completed')
+            self.assertEqual(ready['rows'][0]['values']['code'], 'EXISTING-BRUSH')
+            self.assertEqual(ready['rows'][0]['values']['purchase_net'], '5.10')
+            self.assertEqual(ready['rows'][0]['values']['sale_gross'], '8.50')
+            self.assertEqual(ready['rows'][0]['values']['availability'], 'do 2-4 dní')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(AiJob)), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierAvailabilityObservation)), 1)
+            settings_row = await db.scalar(select(SupplierAvailabilitySettings))
+            self.assertFalse(settings_row.enabled)
+            self.assertIsNone(settings_row.manual_requested_at)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        await self.mutate(ready, service.save)
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual((await db.get(Product, existing_id)).sku, 'EXISTING-BRUSH')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
 
     async def test_snapshot_replay_cas_and_hub_save_never_create_shop_or_stock(self):
         request = self.request()

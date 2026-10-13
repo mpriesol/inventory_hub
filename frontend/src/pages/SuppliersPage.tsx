@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { Modal } from '../components/ui/Modal';
+import { SlogerCredentials } from '../features/suppliers/SlogerCredentials';
 import {
   listSuppliers,
   getSupplierConfig,
@@ -148,8 +149,6 @@ function SupplierCard({ supplier, onEdit, onCatalog, onMapping }: SupplierCardPr
         onClick={(event) => { event.stopPropagation(); onMapping(supplier.code); }}>
         {t('feedMapping.open')}
       </Button>
-      {supplier.code === 'sloger' && <Link className="inline-block mt-4 ml-4 text-sm" to="/suppliers/sloger/b2b-test"
-        onClick={event => event.stopPropagation()}>{t('slogerProbe.title')}</Link>}
     </div>
   );
 }
@@ -666,13 +665,13 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {activeTab === 'general' && (
-            <GeneralTab
+            <><GeneralTab
               config={config}
               identity={originalConfig}
               updateConfig={updateConfig}
               showPasswords={showPasswords}
               setShowPasswords={setShowPasswords}
-            />
+            />{code === 'sloger' && <SlogerCredentials />}</>
           )}
           {activeTab === 'prices' && (
             <PricesTab config={config} updateConfig={updateConfig} />
