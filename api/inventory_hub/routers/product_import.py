@@ -53,6 +53,12 @@ async def retry_source(id: DraftId, request: DraftRevision, background: Backgrou
     return result
 
 
+@router.post('/{id}/source-skip')
+async def skip_source(id: DraftId, request: DraftRevision, db: DB):
+    from inventory_hub.services.product_import_source import skip
+    return await mutate(db, id, request, skip)
+
+
 async def mutate(db, id, request, fn):
     async def operation():
         return await fn(db, await service.get_draft(db, id, lock=True), request)

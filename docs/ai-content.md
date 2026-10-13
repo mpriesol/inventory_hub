@@ -7,8 +7,10 @@ Funkcia používa OpenAI Responses API z Hubu. Nepotrebuje projekt/GPT v ChatGPT
 Sloger B2B je bežný dodávateľský zdroj, nezávislý od AI. Pri vytvorení
 prípravy importu Hub najprv načíta vybrané produkty pomocou uloženého prihlásenia.
 Priame čítanie nevolá model, nevyžaduje OpenAI API kľúč a nerezervuje AI rozpočet.
-Až pripravené údaje možno voliteľne spracovať cez existujúce AI checkboxy;
-model a úroveň uvažovania pochádzajú zo spoločných nastavení Hubu.
+Po dokončení B2B čítania alebo výslovnom pokračovaní z feedu po jeho zlyhaní
+možno údaje voliteľne spracovať cez existujúce AI checkboxy. Chýbajúca B2B
+cena a dostupnosť sa tým nepotvrdzujú; model a úroveň uvažovania pochádzajú
+zo spoločných nastavení Hubu.
 
 Prihlásenie sa ukladá v nastavení dodávateľa Sloger. Chránené GET/PUT
 `/api/suppliers/sloger/lookup/credentials` vracajú iba stav a meno, nikdy heslo.

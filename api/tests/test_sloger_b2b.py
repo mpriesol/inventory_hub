@@ -65,7 +65,79 @@ def variant_product():
         + "".join(rows) + '</div>'))
 
 
+def row_priced_variant_product():
+    document = variant_product()
+    price = document.xpath("//*[@id='price-detail']/span")[0]
+    price.clear()
+    price.append(b2b.html.fromstring('<small><strong>21.25€ - 27.50€</strong> <small>bez DPH</small></small>'))
+    for label, current, marker in zip(document.xpath('//label'), ('21.25', '27.50'), ('31.20', '36.90')):
+        label.insert(0, b2b.html.fromstring('<strong>' + current + '€</strong>'))
+        label.insert(1, b2b.html.fromstring('<span class="muted">bez DPH</span>'))
+        label.insert(2, b2b.html.fromstring('<small class="priceBckp"><i>30.00€ bez DPH</i>'
+                                         '<span class="label label-warning">Zľava 15%</span></small>'))
+        document.xpath('//input[@id="' + label.get('for') + '"]')[0].set('price', marker + '€')
+    return document
+
+
 class SlogerVariantTests(unittest.TestCase):
+    def test_explicit_row_quotes_ignore_range_backup_and_untyped_radio_amounts(self):
+        document = row_priced_variant_product()
+        for sku, ean, amount, quantity in (("HELMET-S", "0012345678912", "21.25", "2"),
+                                           ("HELMET-M", "0012345678929", "27.5", "7")):
+            with self.subTest(sku=sku):
+                result = b2b._parse_product(document, sku, PRODUCT_URL)
+                self.assertEqual(result['eans'], [ean])
+                self.assertEqual((result['purchase_price'], result['price_basis']), (amount, 'net'))
+                self.assertIsNone(result['retail_price'])
+                self.assertEqual(result['quantity'], quantity)
+                self.assertEqual([tier['label'] for tier in result['availability_tiers']], [f'Skladom {quantity} ks'])
+                SlogerObservation.model_validate(result)
+
+    def test_missing_or_untyped_row_quote_never_inherits_family_or_sibling_price(self):
+        for change in (lambda label: label.remove(label.xpath('./strong')[0]),
+                       lambda label: label.remove(label.xpath('./span[@class="muted"]')[0]),
+                       lambda label: setattr(label.xpath('./strong')[0], 'text', 'neznáma cena'),
+                       lambda label: setattr(label.xpath('./span[@class="muted"]')[0], 'text', 'DPH neznáma'),
+                       lambda label: [label.remove(node) for node in label.xpath('./strong | ./span[@class="muted"][not(i)]')]):
+            document = row_priced_variant_product()
+            # Even equal option markers cannot replace an absent row quote.
+            for radio in document.xpath('//input'):
+                radio.set('price', '86.10€')
+            change(document.xpath('//label')[1])
+            result = b2b._parse_product(document, 'HELMET-M', PRODUCT_URL)
+            self.assertIsNone(result['purchase_price'])
+            self.assertEqual(result['price_basis'], 'unknown')
+            self.assertIsNone(result['retail_price'])
+            self.assertEqual(result['quantity'], '7')
+            self.assertEqual(b2b._parse_product(document, 'HELMET-S', PRODUCT_URL)['purchase_price'], '21.25')
+
+    def test_gross_row_current_price_is_not_a_b2b_purchase_quote(self):
+        document = row_priced_variant_product()
+        document.xpath('//label')[1].xpath('./span[@class="muted"]')[0].text = 's DPH'
+        with self.assertRaises(b2b.SlogerB2BError) as caught:
+            b2b._parse_product(document, 'HELMET-M', PRODUCT_URL)
+        self.assertEqual(caught.exception.code, 'sloger_auth_failed')
+
+    def test_duplicate_row_quotes_or_barcode_identities_fail_closed(self):
+        for extra in ('<strong>99.99€</strong>',
+                      '<span class="muted">(OTHER / <i class="fa fa-barcode"></i> 0012345678936)</span>',
+                      '<span><i class="fa fa-barcode"></i> 0012345678936</span>'):
+            document = row_priced_variant_product()
+            document.xpath('//label')[1].append(b2b.html.fromstring(extra))
+            with self.subTest(extra=extra), self.assertRaises(b2b.SlogerB2BError):
+                b2b._parse_product(document, 'HELMET-M', PRODUCT_URL)
+
+    def test_variant_stock_outside_dispatch_is_not_availability_evidence(self):
+        document = row_priced_variant_product()
+        label = document.xpath('//label')[1]
+        label.remove(label.xpath('./span[@class="dispatch"]')[0])
+        label.append(b2b.html.fromstring('<span class="label">Skladom 888 ks</span>'))
+        result = b2b._parse_product(document, 'HELMET-M', PRODUCT_URL)
+        self.assertEqual(result['availability_tiers'], [])
+        self.assertIsNone(result['available'])
+        self.assertIsNone(result['quantity'])
+        self.assertEqual(result['purchase_price'], '27.5')
+
     def test_exact_radio_label_sku_gets_own_ean_quantity_and_shared_current_price(self):
         document = variant_product()
         for sku, ean, quantity in (("HELMET-S", "0012345678912", "2"), ("HELMET-M", "0012345678929", "7")):

@@ -42,15 +42,19 @@ def public_status(draft):
     if state in ('queued', 'running') and _expired(progress):
         state, error = 'failed', 'import_source_interrupted'
     rows = draft.document['rows']
+    can_skip = (state == 'failed' and draft.status in ('source_pending', 'source_running', 'source_failed')
+        and not any(draft.document.get(key) for key in ('saved_hash', 'publication', 'publications', 'previous_publications'))
+        and not any(row.get('hub_product_id') for row in rows))
     return {'state': state, 'total': len(rows),
         'completed': sum(r.get('source_status') == 'completed' for r in rows),
         'failed': sum(r.get('source_status') == 'failed' for r in rows),
-        'error': error, 'retryable': state == 'failed'}
+        'skipped': sum(r.get('source_status') == 'skipped' for r in rows),
+        'error': error, 'retryable': state == 'failed', 'skippable': can_skip}
 
 
 def assert_ready(draft):
     progress = public_status(draft)
-    if progress and progress['state'] != 'completed':
+    if progress and progress['state'] not in ('completed', 'skipped'):
         code = 'import_source_failed' if progress['state'] == 'failed' else 'import_source_pending'
         raise CatalogError(code, 'Wait for supplier data before editing or importing this preparation', 409)
 
@@ -68,6 +72,40 @@ async def retry(db, draft, request):
             row.update(source_status='pending', source_error=None)
     imports.changed(draft, document, 'Supplier data retry requested', dirty=False)
     draft.status = 'source_pending'
+    await db.flush()
+    return await imports.public(db, draft)
+
+
+async def skip(db, draft, request):
+    """Explicitly accept listing data after a failed read, under the draft lock."""
+    from inventory_hub.services import product_import as imports
+    imports.expect(draft, request.expected_revision)
+    progress = public_status(draft)
+    if not progress or not progress['skippable']:
+        raise CatalogError('import_source_not_skippable', 'Supplier data must fail or be interrupted before continuing with the feed', 409)
+    document = deepcopy(draft.document)
+    policy = availability_policy(draft.supplier, supplier_config(draft.supplier))
+    for row in document['rows']:
+        if row.get('source_status') == 'completed':
+            continue
+        evidence = row['source']
+        if 'availability' not in row.get('manual_fields', []):
+            row['values']['availability'] = policy['unknown']
+            row['provenance']['availability'] = 'derived'
+        if evidence.get('sloger_observation') and 'purchase_net' not in row.get('manual_fields', []):
+            row['values']['purchase_net'] = None
+            row['provenance']['purchase_net'] = 'derived'
+        # A failed current read cannot endorse old cached B2B stock or quotes.
+        # Completed rows retain their original evidence and freshness checks.
+        for key in ('availability', 'supplier_available', 'supplier_stock', 'supplier_stock_min',
+                    'supplier_stock_raw', 'supplier_stock_external', 'supplier_stock_external_raw',
+                    'supplier_external_available', 'sloger_observation', 'supplier_observation_expires_at'):
+            evidence[key] = None
+        row.update(source_status='skipped', source_error=row.get('source_error') or progress['error'] or 'import_source_failed')
+        evidence['warnings'] = sorted(set([*evidence.get('warnings', []), 'sloger_b2b_feed_fallback']))
+    # Reconcile all available identifiers just as successful ingestion does.
+    # The terminal state drops the old worker token, fencing any late response.
+    await _complete(db, draft, document, skipped=True, error=progress['error'])
     await db.flush()
     return await imports.public(db, draft)
 
@@ -251,7 +289,7 @@ async def _fail(id, token, code):
         draft.status = 'source_failed'
 
 
-async def _complete(db, draft, document):
+async def _complete(db, draft, document, *, skipped=False, error=None):
     from inventory_hub.services import product_import as imports
     products = await catalog_import.canonical_products(db, [imports.to_source(row) for row in document['rows']])
     for row, product in zip(document['rows'], products):
@@ -260,8 +298,9 @@ async def _complete(db, draft, document):
         row['group_key'] = parent_shop_code(product)
         row['source'] = product.model_dump(mode='json')
     imports.validate_rows(document)
-    document['source_lookup'] = {'state': 'completed', 'error': None}
-    imports.changed(draft, document, 'Supplier data ready for import preparation', dirty=False)
+    document['source_lookup'] = {'state': 'skipped' if skipped else 'completed', 'error': error}
+    note = 'Continue with feed data for unread supplier products' if skipped else 'Supplier data ready for import preparation'
+    imports.changed(draft, document, note, dirty=False)
     draft.status = 'draft'
 
 

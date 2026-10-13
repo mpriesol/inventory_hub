@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Columns, Save, ExternalLink, RefreshCw, Upload } from 'lucide-react';
 import { accessRevision, hubUnlocked, subscribeAccess } from '../api/access';
-import { applyProductImportAi, createProductImport, editProductImport, ImportField, ImportValue, listProductImports, prepareProductImportAi, previewProductImport, ProductImportDraft, ProductImportRow, ProductImportSelection, ProductImportSummary, publishProductImport, readProductImport, retryProductImportSource, saveProductImport, startProductImportAi } from '../api/productImport';
+import { applyProductImportAi, createProductImport, editProductImport, ImportField, ImportValue, listProductImports, prepareProductImportAi, previewProductImport, ProductImportDraft, ProductImportRow, ProductImportSelection, ProductImportSummary, publishProductImport, readProductImport, retryProductImportSource, saveProductImport, skipProductImportSource, startProductImportAi } from '../api/productImport';
 import { AiCategory, AiRules, aiRequest, aiContentStatusKey } from '../api/aiContent';
 import { catalogImageUrl } from '../api/catalog';
 import { Button } from '../components/ui/Button.new';
@@ -18,7 +18,7 @@ const APPLY_AI = new Set(['review', 'ready', 'approved']);
 const VIEWS: ImportView[] = ['basic', 'prices', 'content', 'categories', 'parameters', 'all'];
 const DEFAULT_VISIBLE: ImportField[] = ['name', 'brand', 'eans', 'category_code', 'sale_gross', 'availability'];
 const PREFERENCES = 'product-import-columns-v1';
-const sourcePending = (draft: ProductImportDraft | null) => !!draft && (['source_pending', 'source_running', 'source_failed'].includes(draft.status) || !!draft.source_lookup && draft.source_lookup.state !== 'completed');
+const sourcePending = (draft: ProductImportDraft | null) => !!draft && (['source_pending', 'source_running', 'source_failed'].includes(draft.status) || !!draft.source_lookup && !['completed', 'skipped'].includes(draft.source_lookup.state));
 interface ColumnSettings { visible: ImportField[]; widths: Record<string, number> }
 function loadSettings(): ColumnSettings {
   try { const saved = JSON.parse(localStorage.getItem(PREFERENCES) || 'null'); if (Array.isArray(saved?.visible)) return { visible: saved.visible.filter((key: ImportField) => IMPORT_COLUMNS.some(column => column.key === key)), widths: saved.widths || {} }; } catch { /* Browser preferences are optional. */ }
@@ -44,7 +44,7 @@ export function ProductImportPage() {
   const busyRef = useRef(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [sourceRetryUncertain, setSourceRetryUncertain] = useState(false);
+  const [sourceActionUncertain, setSourceActionUncertain] = useState(false);
   const [view, setView] = useState<ImportView>('basic');
   const [settings, setSettings] = useState(loadSettings);
   const [showColumns, setShowColumns] = useState(false);
@@ -99,7 +99,7 @@ export function ProductImportPage() {
   const width = (column: ImportColumn) => Math.max(100, Math.min(600, Number(settings.widths[column.key]) || column.width || 150));
   const cellEditable = (row: ProductImportRow, column: ImportColumn) => !locked && !(row.hub_product_id && ['supplier_code', 'eans'].includes(column.key));
   function replaceChanges(value: ImportChanges) { changesRef.current = value; setChanges(value); }
-  function accept(value: ProductImportDraft) { draftRef.current = value; setDraft(value); setSourceRetryUncertain(false); }
+  function accept(value: ProductImportDraft) { draftRef.current = value; setDraft(value); setSourceActionUncertain(false); }
   function stage(row: ProductImportRow, field: ImportField, value: ImportValue) {
     if (locked) return;
     generation.current++; replaceChanges(stageImportValue(rows, changesRef.current, row, field, value)); setNotice('');
@@ -144,8 +144,9 @@ export function ProductImportPage() {
   useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing?.id, editing?.key]);
   useEffect(() => { setPage(1); }, [filter]);
   async function run(name: string, action: (value: ProductImportDraft) => Promise<ProductImportDraft>, persist = true) {
-    if (busyRef.current || !draftRef.current || (sourcePending(draftRef.current) && !['refreshed', 'sourceRetried'].includes(name))) return;
-    if (name === 'sourceRetried' && (!draftRef.current.source_lookup?.retryable || sourceRetryUncertain)) return;
+    if (busyRef.current || !draftRef.current || (sourcePending(draftRef.current) && !['refreshed', 'sourceRetried', 'sourceSkipped'].includes(name))) return;
+    if (name === 'sourceRetried' && (!draftRef.current.source_lookup?.retryable || sourceActionUncertain)) return;
+    if (name === 'sourceSkipped' && (!draftRef.current.source_lookup?.skippable || sourceActionUncertain)) return;
     if (name === 'previewRenewed' && draftRef.current.publication_preview_retryable !== true) return;
     busyRef.current = true; generation.current++; setBusy(name); setError(''); setNotice('');
     try {
@@ -155,7 +156,7 @@ export function ProductImportPage() {
         accept(value); replaceChanges({});
       }
       value = await action(value); accept(value); setNotice(name);
-    } catch (error: any) { if (name === 'sourceRetried') setSourceRetryUncertain(true); setError(error.code || error.message); }
+    } catch (error: any) { if (['sourceRetried', 'sourceSkipped'].includes(name)) setSourceActionUncertain(true); setError(error.code || error.message); }
     finally { busyRef.current = false; setBusy(''); }
   }
   async function continueImport() {
@@ -232,21 +233,23 @@ export function ProductImportPage() {
     <header className="import-heading"><div><button className="import-back" onClick={goBack}><ArrowLeft size={16} />{c('back')}</button><h1>{c('title')}</h1><p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
     {!unlocked ? <div className="import-panel"><p>{c('loginRequired')}</p><Link to="/login">{t('accounts.login')}</Link></div> : <>
       {error && <div className="import-error import-panel" role="alert">{errorText(error)}{draft ? <Button variant="secondary" size="sm" disabled={!!busy} onClick={reload}>{c('reload')}</Button> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button>}{error.startsWith('sloger_credentials_') && <Link to="/suppliers?edit=sloger">{t('slogerProbe.settingsLink')}</Link>}</div>}
-      {notice && !['continued', 'sourceRetried'].includes(notice) && !(notice === 'published' && !publicationBusy) && <div className="import-notice" role="status">{c(`notices.${notice}`)}</div>}
+      {notice && !['continued', 'sourceRetried', 'sourceSkipped'].includes(notice) && !(notice === 'published' && !publicationBusy) && <div className="import-notice" role="status">{c(`notices.${notice}`)}</div>}
       {busy === 'loading' && <p role="status">{t('common.loading')}</p>}
       {!draft && !busy && <div className="import-panel"><h2>{c('recent')}</h2>{!recent.length ? <p>{c('empty')}</p> : <div className="import-recent">{recent.map(item => <Link key={item.id} to={`?draft=${item.id}`}>{item.supplier} · {item.shop}<strong>{item.publication_state ? c(`delivery.${item.publication_state}`) : c(item.status === 'saved' ? 'savedHub' : 'draft')}</strong><span>{c('rowCount', { count: item.rows_count })} · {new Date(item.updated_at).toLocaleString()}</span></Link>)}</div>}</div>}
       {draft && <>
-        {sourceLocked && <section className="import-panel" data-testid="import-source-status" role="status">
+        {(sourceLocked || draft.source_lookup?.state === 'skipped') && <section className="import-panel" data-testid="import-source-status" role="status">
           <h2>{c(`sourceStates.${draft.source_lookup?.state || 'queued'}`)}</h2>
-          <p>{c('sourceHelp')}</p>
-          {draft.source_lookup && <p>{c('sourceProgress', draft.source_lookup)}</p>}
-          {draft.source_lookup?.error && <p className="import-error">{errorText(draft.source_lookup.error)}</p>}
-          {sourceRetryUncertain && <p className="import-error">{c('sourceRetryUncertain')}</p>}
-          <div className="import-actions">
+          <p>{c(sourceLocked ? 'sourceHelp' : 'sourceSkippedHelp')}</p>
+          {draft.source_lookup && <p>{c(sourceLocked ? 'sourceProgress' : 'sourceSkippedProgress', draft.source_lookup)}</p>}
+          {sourceLocked && draft.source_lookup?.error && <p className="import-error">{errorText(draft.source_lookup.error)}</p>}
+          {sourceActionUncertain && <p className="import-error">{c('sourceActionUncertain')}</p>}
+          {draft.source_lookup?.skippable && <p>{c('sourceSkipHelp')}</p>}
+          {sourceLocked && <div className="import-actions">
             <Button data-testid="import-source-refresh" variant="secondary" disabled={!!busy} onClick={reload}>{c('refresh')}</Button>
-            {draft.source_lookup?.retryable && <Button data-testid="import-source-retry" disabled={!!busy || sourceRetryUncertain} onClick={() => run('sourceRetried', retryProductImportSource, false)}>{c('sourceRetry')}</Button>}
+            {draft.source_lookup?.retryable && <Button data-testid="import-source-retry" disabled={!!busy || sourceActionUncertain} onClick={() => run('sourceRetried', retryProductImportSource, false)}>{c('sourceRetry')}</Button>}
+            {draft.source_lookup?.skippable && <Button data-testid="import-source-skip" variant="secondary" disabled={!!busy || sourceActionUncertain} onClick={() => run('sourceSkipped', skipProductImportSource, false)}>{c('sourceSkip')}</Button>}
             <Link to={`/suppliers?edit=${encodeURIComponent(draft.supplier)}`}>{t('slogerProbe.settingsLink')}</Link>
-          </div>
+          </div>}
         </section>}
         {profilesError && <p className="import-error" role="alert">{c('profilesLoadError')} <Button variant="ghost" size="sm" onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button></p>}
         {publicationDone && <div className="import-notice" role="status"><strong>{c('delivery.completed')}</strong><p>{c('completedHelp')}</p>{aiPending && <p>{c('completedWithoutAi')}</p>}<a href="#import-publication">{c('showResult')}</a></div>}
@@ -292,7 +295,7 @@ export function ProductImportPage() {
                   {column.key === 'category_code' && <small className="import-source-category">{c('sourceCategory')}: {row.source_category || '—'}{value ? ` · ${c('withAncestors')}` : ''}</small>}
                 </td>;
               })}
-              <td className="import-row-state">{row.source_status && <span className="import-status">{c(`sourceRowStates.${row.source_status}`)}</span>}{row.source_error && !row.errors.includes(row.source_error) && <p className="import-error">{errorText(row.source_error)}</p>}{row.errors.map((issue, n) => <p key={n} className="import-error">{errorText(issue)}</p>)}{row.warnings.length > 0 && <details><summary>{c('warnings', { count: row.warnings.length })}</summary>{row.warnings.map((issue, n) => <p key={n}>{errorText(issue)}</p>)}</details>}{row.hub_product_id && <span className="import-status is-saved">{c('savedHub')}</span>}{row.publication_status && <span className={`import-status ${['created', 'exists'].includes(row.publication_status) ? 'is-saved' : ''}`}>{t(`catalog.itemStatus.${row.publication_status}`, {defaultValue:row.publication_status})}</span>}{row.ai_job && <div><span className="import-ai-state">AI · {needsPreparation(row) ? c('profileNeedsPreparation') : t(aiContentStatusKey(row.ai_job), { defaultValue: row.ai_job.status })}</span><Link to={`/ai-content?job=${encodeURIComponent(row.ai_job.id)}`}>{c('openAI')}</Link>{row.ai_job.staging?.automation_paused && <small>{t('ai.staging.automationPaused')}</small>}{row.ai_job.error && <small className="import-error">{errorText(row.ai_job.error)}</small>}{row.ai_job.checks?.errors?.map((issue, n) => <small key={n} className="import-error">{errorText(issue)}</small>)}</div>}</td>
+              <td className="import-row-state">{row.source_status && <span className="import-status">{c(`sourceRowStates.${row.source_status}`)}</span>}{row.source_error && !row.errors.includes(row.source_error) && (row.source_status === 'skipped' ? <details><summary>{c('sourceSkippedDetails')}</summary><p>{errorText(row.source_error)}</p></details> : <p className="import-error">{errorText(row.source_error)}</p>)}{row.errors.map((issue, n) => <p key={n} className="import-error">{errorText(issue)}</p>)}{row.warnings.length > 0 && <details><summary>{c('warnings', { count: row.warnings.length })}</summary>{row.warnings.map((issue, n) => <p key={n}>{errorText(issue)}</p>)}</details>}{row.hub_product_id && <span className="import-status is-saved">{c('savedHub')}</span>}{row.publication_status && <span className={`import-status ${['created', 'exists'].includes(row.publication_status) ? 'is-saved' : ''}`}>{t(`catalog.itemStatus.${row.publication_status}`, {defaultValue:row.publication_status})}</span>}{row.ai_job && <div><span className="import-ai-state">AI · {needsPreparation(row) ? c('profileNeedsPreparation') : t(aiContentStatusKey(row.ai_job), { defaultValue: row.ai_job.status })}</span><Link to={`/ai-content?job=${encodeURIComponent(row.ai_job.id)}`}>{c('openAI')}</Link>{row.ai_job.staging?.automation_paused && <small>{t('ai.staging.automationPaused')}</small>}{row.ai_job.error && <small className="import-error">{errorText(row.ai_job.error)}</small>}{row.ai_job.checks?.errors?.map((issue, n) => <small key={n} className="import-error">{errorText(issue)}</small>)}</div>}</td>
             </tr>
           </React.Fragment>; })}
         </tbody></table></div>
