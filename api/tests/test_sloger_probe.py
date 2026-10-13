@@ -16,7 +16,7 @@ from inventory_hub.routers.sloger_probe import router
 from inventory_hub.services import ai_content, catalog_import, sloger_b2b, sloger_probe as service
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
-from inventory_hub.sloger_probe_types import ProbeRequest, SlogerObservation
+from inventory_hub.sloger_probe_types import ProbeRequest, SlogerCredentials, SlogerObservation
 
 
 def observation():
@@ -116,7 +116,8 @@ class ProbeExecutionTests(unittest.IsolatedAsyncioTestCase):
             "id": id, "status": kwargs.get("status", "lookup_running"), "model": service.MODEL,
             "result": kwargs.get("result"), "error": kwargs.get("error"),
             "actual_usd": str(kwargs["cost"]), "usage": {"calls": kwargs["usages"]}})
-        self.patches = [patch.object(service, "reserve", AsyncMock(return_value=({"id": self.request.request_id.hex}, True))),
+        self.credentials = SlogerCredentials(username=self.request.username, password=self.request.password)
+        self.patches = [patch.object(service, "reserve", AsyncMock(return_value=({"id": self.request.request_id.hex}, self.credentials))),
                         patch.object(service, "record", self.audit), patch.object(service, "call_provider", self.calls),
                         patch.object(service, "lookup_product", self.adapter),
                         patch.object(catalog_import, "create_preview", AsyncMock(side_effect=AssertionError("No publication"))),
@@ -138,9 +139,18 @@ class ProbeExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["usage"]["calls"]), 2)
         self.assertGreater(Decimal(result["actual_usd"]), 0)
 
+    async def test_saved_mode_uses_resolved_credentials_without_sending_them_to_luna_or_audit(self):
+        request = ProbeRequest(request_id=self.request.request_id, sku=self.request.sku)
+        result = await service.probe(request)
+        self.assertEqual(result["status"], "lookup_completed")
+        self.adapter.assert_awaited_once_with(self.credentials.username, self.credentials.password.get_secret_value(), request.sku)
+        for call in [*self.calls.call_args_list, *self.audit.call_args_list]:
+            self.assertNotIn(self.credentials.username, str(call))
+            self.assertNotIn(self.credentials.password.get_secret_value(), str(call))
+
     async def test_replayed_id_returns_prior_outcome_without_any_network_or_audit_write(self):
         prior = {"id": self.request.request_id.hex, "status": "lookup_uncertain"}
-        with patch.object(service, "reserve", AsyncMock(return_value=(prior, False))):
+        with patch.object(service, "reserve", AsyncMock(return_value=(prior, None))):
             self.assertEqual(await service.probe(self.request), prior)
         self.calls.assert_not_awaited()
         self.adapter.assert_not_awaited()
@@ -172,6 +182,26 @@ class ProbeExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"], "sloger_probe_invalid_evidence")
         self.assertEqual(self.calls.await_count, 1)
         self.assertNotIn(self.request.password.get_secret_value(), str(self.audit.call_args_list))
+
+    async def test_saved_special_character_secrets_in_nested_evidence_never_reach_model_or_audit(self):
+        request = ProbeRequest(request_id=self.request.request_id, sku=self.request.sku)
+        for secret in ('quoted"password', 'backslash\\password', 'newline\npassword'):
+            with self.subTest(secret="redacted"):
+                credentials = SlogerCredentials(username="saved-login@example.test", password=secret)
+                facts = observation()
+                facts["availability_tiers"][0]["label"] = "Supplier text: " + secret
+                self.adapter.return_value = facts
+                self.calls.reset_mock(side_effect=True)
+                self.calls.side_effect = [tool_response(), final_response()]
+                self.audit.reset_mock()
+                with patch.object(service, "reserve", AsyncMock(return_value=({"id": request.request_id.hex}, credentials))):
+                    result = await service.probe(request)
+                self.assertEqual(result["error"], "sloger_probe_invalid_evidence")
+                self.assertEqual(self.calls.await_count, 1)
+                # Both literal and JSON-escaped forms stay out of stored/model data.
+                for output in (str(self.audit.call_args_list), json.dumps(self.calls.call_args.args[0]), json.dumps(result)):
+                    self.assertNotIn(secret, output)
+                    self.assertNotIn(json.dumps(secret)[1:-1], output)
 
     async def test_supplier_failure_records_safe_diagnostic_without_another_paid_call(self):
         error = sloger_b2b._error(reason="http_status", http_status=403)

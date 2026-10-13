@@ -4,14 +4,28 @@ Funkcia používa OpenAI Responses API z Hubu. Nepotrebuje projekt/GPT v ChatGPT
 
 ## Samostatný test Sloger B2B cez Luna
 
-Implementácia v kóde poskytuje chránený formulár `/suppliers/sloger/b2b-test` a
-`POST /api/suppliers/sloger/lookup/preview` s `request_id` (UUID), `username`,
-`password` a presným dodávateľským `sku`. Vyžaduje existujúci prístup operátora,
+Chránený formulár `/suppliers/sloger/b2b-test` umožňuje uložiť prihlasovacie
+údaje Sloger raz a používať ich pri ďalších produktoch. Uloženie prihlásenia
+nevolá AI ani samo nepotvrdzuje správnosť hesla. Po uložení sa pri produkte
+zadáva iba presný dodávateľský kód. Zmena prihlásenia vyžaduje nové zadanie
+hesla; existujúce heslo sa nikdy nevracia do prehliadača.
+
+Operátorom chránený `PUT /api/suppliers/sloger/lookup/credentials` prijíma
+`username` a `password`. `GET` tej istej cesty vracia iba `configured` a
+prihlasovacie meno. Údaje sú v samostatnom serverovom súbore s oprávnením
+`0600`, v adresári `0700`, mimo verejne poskytovaného dátového adresára.
+Produkčné nasadenie pripája trvalý Docker volume `supplier_secrets` iba do API na
+`/var/lib/inventory-hub-secrets`; musí sa zachovať pri obnove servera aj rollbacku. Ide
+o ochranu prístupovými právami systému, nie o šifrovanie súboru.
+
+`POST /api/suppliers/sloger/lookup/preview` bežne potrebuje len `request_id`
+(UUID) a `sku`; prihlasovanie zabezpečí Hub z uložených údajov. Doterajšia
+explicitná dvojica `username`/`password` zostáva podporovaná pre jednorazový
+test a sama uložené prihlásenie nemení. Vyžaduje sa existujúci prístup operátora,
 `AI_CONTENT_ENABLED`, serverový `OPENAI_API_KEY` a bežné rozpočtové limity AI.
-Heslo patrí iba do tohto formulára. Prihlasovacie údaje sa neukladajú do
-konfigurácie, auditu ani podkladov modelu; server ich použije iba počas jednej
-požiadavky. Odpovede vrátane validačných chýb majú `Cache-Control: no-store` a
-chyby nevracajú hodnoty vstupu.
+Heslo sa neposiela modelu ani nezapisuje do bežnej konfigurácie dodávateľa,
+auditu či logov. Odpovede vrátane validačných chýb majú `Cache-Control: no-store`
+a chyby nevracajú hodnoty vstupu.
 
 Pred ďalším zadaním hesla možno cez operátorom chránený
 `GET /api/suppliers/sloger/lookup/connection` overiť dostupnosť pevnej prihlasovacej
@@ -71,20 +85,12 @@ Kód nepotrebuje novú databázovú migráciu. Lokálne testy používajú
 syntetické odpovede a prihlasovacie údaje; samy nepotvrdzujú úspešné živé
 prihlásenie alebo platené spracovanie.
 
-Živý test 13. 10. 2026 potvrdil prvé volanie Luna API a vyžiadanie povolenej
-funkcie. Následné načítanie B2B adaptérom zlyhalo; úspešné čítanie produktových
-údajov cez celý API tok zatiaľ nie je potvrdené. Následná kontrola spojenia
-odhalila presmerovanie pôvodnej `/sk/b2b` na `/prihlasenie-b2b`, ktoré adaptér
-odmietol. Priama slovenská `/sk/prihlasenie-b2b` bola bez hesla overená ako
-HTTP 200 s prihlasovacím formulárom. Oprava prihlasovacej URL, slovenskej
-navigácie, rozpoznania prihlásenia a diagnostika vychádzajú z pozorovaného webu;
-úspešný výsledok vyžaduje ďalšie samostatné overenie po nasadení.
-Po nasadení opravy prihlasovacej URL ďalší živý test v ten istý deň skončil
-vo fáze `login_submit` s HTTP 404. Vtedajšia diagnostika ešte nerozlišovala
-POST od následného GET. Neprihlásená relácia reprodukovala HTTP 404 na
-návratovej `/shop/`; táto skutočnosť sama nepotvrdzuje príčinu živého zlyhania.
-Úzka obnova návratovej stránky a presnejšia diagnostika sú implementované
-a overované syntetickými testami; úspešný živý produktový tok zostáva nepotvrdený.
+Živý produkčný test 13. 10. 2026 po nasadení PR62 úspešne dokončil celý tok
+cez dve volania Luna API: prihlásenie, presné SKU, nákupnú ponuku, EAN a
+oddelené dostupnosti. Výsledok bol porovnaný s aktuálnym B2B detailom.
+Tento test použil jednorazové prihlasovacie údaje; opakované použitie trvalo
+uloženého prihlásenia má vlastné overenie po nasadení jeho podpory. Úspech
+jedného produktu nepotvrdzuje plošný crawler ani automatickú synchronizáciu.
 
 ## Použitie
 

@@ -13,10 +13,10 @@ from sqlalchemy import func, select, text
 
 import test_catalog_db as catalog_db
 from inventory_hub.ai_content_models import AiBatch, AiJob
-from inventory_hub.services import ai_content, sloger_probe as service
+from inventory_hub.services import ai_content, sloger_credentials, sloger_probe as service
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
-from inventory_hub.sloger_probe_types import ProbeRequest, SlogerObservation
+from inventory_hub.sloger_probe_types import ProbeRequest, SlogerCredentials, SlogerObservation
 
 
 @unittest.skipUnless(catalog_db.TEST_URL, "Dedicated localhost *_catalog_test database required")
@@ -135,6 +135,32 @@ class SlogerProbeDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(secret, persisted)
             self.assertNotIn(secret, provider_requests)
             self.assertNotIn(secret, json.dumps(result))
+
+    async def test_saved_login_reuse_and_secret_sku_rejection_precede_persistent_audit(self):
+        credentials = SlogerCredentials(username="saved-fixture-user", password="saved-fixture-secret")
+        with patch.object(sloger_credentials, "load", return_value=credentials) as load:
+            for secret in (credentials.username, credentials.password.get_secret_value()):
+                with self.assertRaises(CatalogError) as caught:
+                    await service.probe(self.request(username=None, password=None, sku="SKU-" + secret))
+                self.assertEqual(caught.exception.code, "sloger_probe_request_invalid")
+            self.assertEqual(await self.audit_counts(), (0, 0))
+            self.provider.assert_not_awaited()
+            request = self.request(username=None, password=None)
+            result = await service.probe(request)
+            self.assertEqual(result["status"], "lookup_completed")
+            self.adapter.assert_awaited_once_with(credentials.username, credentials.password.get_secret_value(), request.sku)
+            async with self.sessions() as db:
+                persisted = await db.scalar(text(
+                    "SELECT to_jsonb(item)::text FROM ai_content_jobs AS item WHERE id = :id"
+                ), {"id": request.request_id.hex})
+            for secret in (credentials.username, credentials.password.get_secret_value()):
+                self.assertNotIn(secret, persisted)
+                self.assertNotIn(secret, str(self.provider.await_args_list))
+            load.reset_mock()
+            load.side_effect = AssertionError("Replays must work without stored credentials")
+            self.assertEqual(await service.probe(request), result)
+            load.assert_not_called()
+            self.assertEqual(self.provider.await_count, 2)
 
     async def test_inflight_replay_preserves_partial_cost_without_repeating_paid_work(self):
         request = self.request()

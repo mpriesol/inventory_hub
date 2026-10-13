@@ -1,4 +1,4 @@
-"""Request-only credentials and bounded, factual Sloger lookup results."""
+"""Write-only credentials and bounded, factual Sloger lookup results."""
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
@@ -8,23 +8,40 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
+class SlogerCredentials(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=1, max_length=200)
+    password: SecretStr = Field(min_length=1, max_length=500)
+
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, value):
+        if value != value.strip() or any(ord(c) < 32 for c in value):
+            raise ValueError("Use a nonempty username without surrounding whitespace or control characters")
+        return value
+
+
 class ProbeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID
-    username: str = Field(min_length=1, max_length=200)
-    password: SecretStr = Field(min_length=1, max_length=500)
+    username: str | None = Field(default=None, min_length=1, max_length=200)
+    password: SecretStr | None = Field(default=None, min_length=1, max_length=500)
     sku: str = Field(min_length=1, max_length=100)
 
     @field_validator("username", "sku")
     @classmethod
     def clean_identity(cls, value):
+        if value is None:
+            return value
         if value != value.strip() or any(ord(c) < 32 for c in value):
             raise ValueError("Use a nonempty identity without surrounding whitespace or control characters")
         return value
 
     @model_validator(mode="after")
     def credentials_are_not_product_identity(self):
-        if self.username in self.sku or self.password.get_secret_value() in self.sku:
+        if (self.username is None) != (self.password is None):
+            raise ValueError("Provide both credentials or use the stored login")
+        if self.username is not None and (self.username in self.sku or self.password.get_secret_value() in self.sku):
             raise ValueError("Product identity must not contain login credentials")
         return self
 

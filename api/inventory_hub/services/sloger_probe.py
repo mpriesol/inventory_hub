@@ -1,4 +1,4 @@
-"""A bounded Luna lookup: request-only credentials, audit only, no publication."""
+"""A bounded Luna lookup: server-only credentials, audit only, no publication."""
 from __future__ import annotations
 
 import asyncio
@@ -10,10 +10,10 @@ from sqlalchemy import select, text
 
 from inventory_hub.ai_content_models import AiBatch, AiJob
 from inventory_hub.database import get_session_context
-from inventory_hub.services import ai_content, ai_content_provider as provider
+from inventory_hub.services import ai_content, ai_content_provider as provider, sloger_credentials
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.settings import settings
-from inventory_hub.sloger_probe_types import ProbeRequest, SlogerObservation
+from inventory_hub.sloger_probe_types import ProbeRequest, SlogerCredentials, SlogerObservation
 
 
 MODEL = "gpt-6-luna"
@@ -49,7 +49,7 @@ async def read(id: str) -> dict:
         return public(job)
 
 
-async def reserve(request: ProbeRequest) -> tuple[dict, bool]:
+async def reserve(request: ProbeRequest) -> tuple[dict, SlogerCredentials | None]:
     id = request.request_id.hex
     fingerprint = ai_content.digest({"kind": KIND, "sku": request.sku, "model": MODEL})
     async with get_session_context() as db:
@@ -61,7 +61,13 @@ async def reserve(request: ProbeRequest) -> tuple[dict, bool]:
             job = await db.get(AiJob, id)
             if previous.request_hash != fingerprint or job is None or job.kind != KIND:
                 raise CatalogError("sloger_probe_request_reused", "Use a new request ID for a different lookup", 409)
-            return public(job), False
+            return public(job), None
+        # Never persist a requested SKU that contains either stored secret.
+        # Read only once, after replay recovery and before audit or paid calls.
+        credentials = (SlogerCredentials(username=request.username, password=request.password)
+                       if request.username is not None else sloger_credentials.load())
+        if credentials.username in request.sku or credentials.password.get_secret_value() in request.sku:
+            raise CatalogError("sloger_probe_request_invalid", "Product identity must not contain login credentials", 422)
         if not settings.AI_CONTENT_ENABLED or not settings.OPENAI_API_KEY.get_secret_value():
             raise CatalogError("ai_not_configured", "AI is not enabled or the server API key is missing", 503)
         amount = estimate()
@@ -77,7 +83,7 @@ async def reserve(request: ProbeRequest) -> tuple[dict, bool]:
                              "estimate_usd": str(amount)}, reserved_usd=amount, usage={}, events=[])
         db.add(job)
         await db.flush()
-        return public(job), True
+        return public(job), credentials
 
 
 def request_body(sku: str, *, previous: dict | None = None, facts: dict | None = None, call_id: str | None = None) -> dict:
@@ -183,14 +189,27 @@ async def lookup_product(username: str, password: str, sku: str) -> dict:
     return await adapter_lookup(username, password, sku)
 
 
+def _contains_credentials(value, credentials: tuple[str, str]) -> bool:
+    # Compare actual source strings before JSON escaping can hide quotes,
+    # backslashes or control characters present in a credential.
+    if isinstance(value, str):
+        return any(secret in value for secret in credentials)
+    if isinstance(value, dict):
+        return any(_contains_credentials(item, credentials) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_credentials(item, credentials) for item in value)
+    return False
+
+
 async def probe(request: ProbeRequest) -> dict:
-    previous, created = await reserve(request)
-    if not created:
+    previous, credentials = await reserve(request)
+    if credentials is None:
         return previous
     id = request.request_id.hex
     usages, cost = [], Decimal(0)
     provider_pending = False
     try:
+        username, password = credentials.username, credentials.password.get_secret_value()
         first_body = request_body(request.sku)
         provider_pending = True
         first = await call_provider(first_body)
@@ -200,11 +219,9 @@ async def probe(request: ProbeRequest) -> dict:
         cost += amount
         await record(id, usages=usages, cost=cost)
         call_id = function_call(first, request.sku)
-        raw = await lookup_product(request.username, request.password.get_secret_value(), request.sku)
+        raw = await lookup_product(username, password, request.sku)
         facts = SlogerObservation.model_validate(raw).model_dump(mode="json")
-        encoded = json.dumps(facts, ensure_ascii=False)
-        if (facts["sku"] != request.sku or request.username in encoded
-                or request.password.get_secret_value() in encoded):
+        if facts["sku"] != request.sku or _contains_credentials(facts, (username, password)):
             raise CatalogError("sloger_probe_invalid_evidence", "Supplier evidence failed identity or privacy validation", 422)
         second_body = request_body(request.sku, previous=first, facts=facts, call_id=call_id)
         provider_pending = True
@@ -225,6 +242,7 @@ async def probe(request: ProbeRequest) -> dict:
             "ai_outcome_unknown", "ai_provider_rejected", "sloger_probe_invalid_call", "sloger_probe_input_limit",
             "sloger_probe_invalid_result", "sloger_probe_fact_mismatch", "sloger_probe_invalid_evidence",
             "sloger_auth_failed", "sloger_product_not_found", "sloger_product_ambiguous", "sloger_b2b_unavailable",
+            "sloger_credentials_not_configured", "sloger_credentials_unavailable", "sloger_probe_request_invalid",
         } else "sloger_probe_failed"
         return await record(id, usages=usages, cost=cost,
                             status="lookup_uncertain" if code == "ai_outcome_unknown" else "lookup_failed", error=code,
