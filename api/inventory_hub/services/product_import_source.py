@@ -176,14 +176,20 @@ def apply_observation(row, observation, options, cfg):
             values['sale_gross'] = imports.money(catalog_import._prices(product, options, cfg, True)[0]['pricelists'][0]['price_original'])
         except (ValueError, ArithmeticError):
             values['sale_gross'] = None
+    manual = set(row.get('manual_fields', []))
+    for field in manual:
+        values[field] = row['values'][field]
     # Apply through the same editable-cell validation before retaining a result.
     row['values'] = ImportValues.model_validate(values).model_dump(mode='json')
     row['source'] = product.model_dump(mode='json')
     for field in ('eans', 'manufacturer_code', 'purchase_net', 'availability'):
-        row['provenance'][field] = 'supplier'
+        if field not in manual:
+            row['provenance'][field] = 'supplier'
     if prices.retail_gross != before.prices.retail_gross:
-        row['provenance']['retail_gross'] = 'supplier'
-        row['provenance']['sale_gross'] = 'derived'
+        if 'retail_gross' not in manual:
+            row['provenance']['retail_gross'] = 'supplier'
+        if 'sale_gross' not in manual:
+            row['provenance']['sale_gross'] = 'derived'
     row.update(source_status='completed', source_error=None)
 
 
@@ -291,7 +297,10 @@ async def _fail(id, token, code):
 
 async def _complete(db, draft, document, *, skipped=False, error=None):
     from inventory_hub.services import product_import as imports
-    products = await catalog_import.canonical_products(db, [imports.to_source(row) for row in document['rows']])
+    sources = [imports.to_source(row) for row in document['rows']]
+    products = await imports._receiving_sources(db, sources,
+        {int(key): value for key, value in document['receiving_rows'].items()}) if document.get('receiving_origin') \
+        else await catalog_import.canonical_products(db, sources)
     for row, product in zip(document['rows'], products):
         row['values']['code'] = product.shop_code
         row['canonical_code'] = product.shop_code

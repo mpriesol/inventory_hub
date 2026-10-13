@@ -64,9 +64,11 @@ export function ProductImportPage() {
   const createId = useRef(crypto.randomUUID());
   const creating = useRef<Promise<ProductImportDraft> | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [receiptDestination, setReceiptDestination] = useState<string | null>(null);
   const generation = useRef(0);
   const dirty = Object.keys(changes).length;
   useUnsavedNavigationGuard(!!dirty || !!editing || modalDirty, c('discardChanges'));
+  useEffect(() => { if (receiptDestination && !dirty && !editing && !modalDirty && !busy) navigate(receiptDestination); }, [receiptDestination, dirty, editing, modalDirty, busy, navigate]);
   const errorText = (value: string) => t(`productImport.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) });
   const rows = draft?.rows || [];
   const profileChanged = (row: ProductImportRow) => (effectiveImportValues(row, changes).ai_category_profile || 'auto') !== (row.values.ai_category_profile || 'auto');
@@ -97,7 +99,7 @@ export function ProductImportPage() {
   const primaryLabel = estimates.length && !needsAiPreparation ? c('startAI', { amount: estimate.toFixed(3) }) : canApplyAi && !needsAiPreparation ? c('acceptAndContinue') : chosenShops.length ? c('prepareImport') : c('prepareHub');
   const actual = jobs.reduce((sum, job) => sum + Number(job.actual_usd || 0), 0);
   const width = (column: ImportColumn) => Math.max(100, Math.min(600, Number(settings.widths[column.key]) || column.width || 150));
-  const cellEditable = (row: ProductImportRow, column: ImportColumn) => !locked && !(row.hub_product_id && ['supplier_code', 'eans'].includes(column.key));
+  const cellEditable = (row: ProductImportRow, column: ImportColumn) => !locked && !((row.hub_product_id || row.expected_hub_product_id) && ['code', 'supplier_code', 'eans'].includes(column.key));
   function replaceChanges(value: ImportChanges) { changesRef.current = value; setChanges(value); }
   function accept(value: ProductImportDraft) { draftRef.current = value; setDraft(value); setSourceActionUncertain(false); }
   function stage(row: ProductImportRow, field: ImportField, value: ImportValue) {
@@ -222,7 +224,18 @@ export function ProductImportPage() {
     } catch (error) { setError((error as Error).message); }
   }
   function toggleAI(enabled: boolean) { if (locked) return; let next = changesRef.current; for (const row of rows.filter(item => selected.has(item.id))) next = stageImportValue(rows, next, row, 'ai_enabled', enabled); generation.current++; replaceChanges(next); }
-  function goBack() { navigate(draft ? `/suppliers/${encodeURIComponent(draft.supplier)}/catalog` : '/suppliers'); }
+  async function goBack() {
+    const origin = draft?.receiving_origin;
+    if (!origin) { navigate(draft ? `/suppliers/${encodeURIComponent(draft.supplier)}/catalog` : '/suppliers'); return; }
+    if (busyRef.current || editingRef.current) return;
+    if (Object.keys(changesRef.current).length) {
+      await run('draftSaved', async value => value);
+      if (Object.keys(changesRef.current).length) return;
+    }
+    // Navigate after the saved state renders, so the unsaved-change guard sees
+    // the persisted values and does not ask to discard them.
+    setReceiptDestination(`/receiving/${encodeURIComponent(origin.invoice_no)}?${new URLSearchParams({ supplier: origin.supplier, session: String(origin.session_id) })}`);
+  }
   const categories = draft?.categories || [];
   const leafCategories = categories.filter(category => category.assignable !== false && category.active !== false && !categories.some(child => child.parent_code === category.code && child.assignable !== false));
   const previewItems = draft?.publication?.items || [];
@@ -230,13 +243,14 @@ export function ProductImportPage() {
   const onlyExisting = previewItems.length > 0 && previewItems.every(item => item.status === 'exists');
   const previewPublishable = previewItems.length > 0 && previewItems.every(item => ['ready', 'exists'].includes(item.status));
   return <div className="product-import">
-    <header className="import-heading"><div><button className="import-back" onClick={goBack}><ArrowLeft size={16} />{c('back')}</button><h1>{c('title')}</h1><p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
+    <header className="import-heading"><div><button className="import-back" data-testid="import-back" disabled={!!busy || (!!draft?.receiving_origin && (!!editing || !!editor))} onClick={goBack}><ArrowLeft size={16} />{draft?.receiving_origin ? c('backToReceiving', { invoice: draft.receiving_origin.invoice_no }) : c('back')}</button><h1>{c('title')}</h1><p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
     {!unlocked ? <div className="import-panel"><p>{c('loginRequired')}</p><Link to="/login">{t('accounts.login')}</Link></div> : <>
       {error && <div className="import-error import-panel" role="alert">{errorText(error)}{draft ? <Button variant="secondary" size="sm" disabled={!!busy} onClick={reload}>{c('reload')}</Button> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button>}{error.startsWith('sloger_credentials_') && <Link to="/suppliers?edit=sloger">{t('slogerProbe.settingsLink')}</Link>}</div>}
       {notice && !['continued', 'sourceRetried', 'sourceSkipped'].includes(notice) && !(notice === 'published' && !publicationBusy) && <div className="import-notice" role="status">{c(`notices.${notice}`)}</div>}
       {busy === 'loading' && <p role="status">{t('common.loading')}</p>}
       {!draft && !busy && <div className="import-panel"><h2>{c('recent')}</h2>{!recent.length ? <p>{c('empty')}</p> : <div className="import-recent">{recent.map(item => <Link key={item.id} to={`?draft=${item.id}`}>{item.supplier} · {item.shop}<strong>{item.publication_state ? c(`delivery.${item.publication_state}`) : c(item.status === 'saved' ? 'savedHub' : 'draft')}</strong><span>{c('rowCount', { count: item.rows_count })} · {new Date(item.updated_at).toLocaleString()}</span></Link>)}</div>}</div>}
       {draft && <>
+        {draft.receiving_origin && <p className="import-notice" data-testid="import-receiving-help">{c('receivingHelp')}</p>}
         {(sourceLocked || draft.source_lookup?.state === 'skipped') && <section className="import-panel" data-testid="import-source-status" role="status">
           <h2>{c(`sourceStates.${draft.source_lookup?.state || 'queued'}`)}</h2>
           <p>{c(sourceLocked ? 'sourceHelp' : 'sourceSkippedHelp')}</p>

@@ -44,6 +44,42 @@ export interface ReceivingSessionSummary {
   summary: ReceivingSummary;
 }
 
+export type ReceivingProductStatus = 'matched' | 'basic_card' | 'feed_only' | 'not_found' | 'ambiguous' | 'feed_unverified';
+export interface ReceivingProductMatch {
+  line_id: number;
+  status: ReceivingProductStatus;
+  product_id: number | null;
+  product_code: string | null;
+  product_name: string | null;
+  catalog_product_id: number | null;
+  display_ean: string;
+  own_stock_qty: number | null;
+  stock_confirmed: boolean;
+  can_prepare: boolean;
+  draft_id: string | null;
+  warnings: string[];
+  conflict_reasons?: string[];
+  candidate_products?: { id: number; code: string; name: string }[];
+  candidate_sources?: { id: number; code: string; name: string; eans: string[] }[];
+}
+export interface ReceivingProducts {
+  session_id: string | number;
+  invoice_no: string;
+  warehouse_id: number;
+  feed_verified: boolean;
+  feed_warning?: string | null;
+  items: ReceivingProductMatch[];
+  counts: Record<ReceivingProductStatus, number>;
+}
+export const getReceivingProducts = (supplier: string, sessionId: string) =>
+  fetchJSON<ReceivingProducts>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products`);
+export const reconcileReceivingProducts = (supplier: string, sessionId: string) =>
+  fetchJSON<ReceivingProducts>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products/reconcile`, { method: 'POST' });
+export const prepareReceivingProducts = (supplier: string, sessionId: string, lineIds: number[]) =>
+  fetchJSON<{ draft_id: string; created: boolean }>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products/prepare`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ line_ids: lineIds }),
+  });
+
 export interface FinalizeResult {
   success: boolean;
   invoice_no: string;

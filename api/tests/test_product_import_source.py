@@ -65,6 +65,25 @@ class ProductImportSourceTests(unittest.TestCase):
         self.assertIsNone(mismatched.prices.retail_gross)
         self.assertIn('sloger_currency_mismatch', mismatched.warnings)
 
+    def test_receiving_card_manual_values_survive_b2b_retail_fallback(self):
+        item = sloger_product()
+        item.prices.retail_gross = item.prices.retail_net = None
+        staged = row(code=item.shop_code, supplier_code=item.code, sale_gross='29.90', purchase_net='4.00',
+            availability='Vlastné označenie', manufacturer_code='MANUAL-MODEL')
+        staged['source'] = item.model_dump(mode='json')
+        fields = ['sale_gross', 'purchase_net', 'availability', 'manufacturer_code']
+        staged['manual_fields'] = fields
+        staged['provenance'] = {field: 'manual' for field in fields}
+        source.apply_observation(staged, observation(), source.ShopImportOptions(),
+            {'adapter_settings': {'vat_rate': 23, 'availability': {'orderable': 'do 2-4 dní', 'unknown': 'overíme'}}})
+        self.assertEqual(staged['values']['sale_gross'], '29.90')
+        self.assertEqual(staged['values']['purchase_net'], '4.00')
+        self.assertEqual(staged['values']['availability'], 'Vlastné označenie')
+        self.assertEqual(staged['values']['manufacturer_code'], 'MANUAL-MODEL')
+        self.assertTrue(all(staged['provenance'][field] == 'manual' for field in fields))
+        self.assertEqual(staged['values']['retail_gross'], '8.50')
+        self.assertEqual(staged['source']['sloger_observation']['purchase_price'], '5.1')
+
     def test_unknown_or_zero_observation_clears_all_stale_positive_stock(self):
         item = sloger_product().model_copy(update={'supplier_stock': Decimal(99),
             'supplier_stock_min': Decimal(20), 'supplier_external_available': True,

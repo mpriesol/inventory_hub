@@ -72,8 +72,9 @@ async function change(element, value) { assert.ok(element); await act(async () =
 async function key(element, value) { await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true }))); }
 async function paste(element, text) { await act(async () => { const event = new window.Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } }); element.dispatchEvent(event); }); }
 async function render(entry) {
-  const router = createMemoryRouter([{ path: '/product-import', element: React.createElement(ProductImportPage) }, { path: '/suppliers/:supplier/catalog', element: React.createElement('p', null, 'Catalog') }], { initialEntries: [entry] });
+  const router = createMemoryRouter([{ path: '/product-import', element: React.createElement(ProductImportPage) }, { path: '/suppliers/:supplier/catalog', element: React.createElement('p', null, 'Catalog') }, { path: '/receiving/:invoiceId', element: React.createElement('p', { 'data-testid': 'return-receiving' }, 'Invoice receipt') }], { initialEntries: [entry] });
   await act(async () => root.render(React.createElement(React.StrictMode, null, React.createElement(RouterProvider, { key: typeof entry === 'string' ? entry : 'new', router }))));
+  return router;
 }
 
 (async () => {
@@ -420,6 +421,36 @@ async function render(entry) {
   assert.equal(pollers.size, 0, 'Skipped source data never resumes background polling');
   failSourceSkip = false;
   await act(async () => i18n.changeLanguage('sk'));
+  server = { ...server, status: 'draft', source_lookup: null, publication: null, publication_result: null,
+    receiving_origin: { kind: 'receiving', supplier: 'sk-profi-bike', session_id: 42, invoice_no: 'INV 26/7' },
+    rows: server.rows.map(row => ({ ...row, ai_job: null, hub_product_id: null, expected_hub_product_id: row.id === 1 ? 500 : null, source_status: undefined, source_error: null, errors: ['missing_price', 'missing_vat'],
+      values: { ...row.values, ai_enabled: false, sale_gross: null, vat_percent: null, target_shops: [] } })) };
+  const receiptRouter = await render('/product-import?draft=test-draft&case=invoice-origin');
+  assert(document.querySelector('[data-testid="import-receiving-help"]').textContent.includes('nákupné ceny na faktúre'), 'Receipt costs and quantities stay outside merchandising edits');
+  assert(document.querySelector('[data-testid="import-back"]').textContent.includes('INV 26/7'), 'Return action identifies the source invoice');
+  assert(!button('Uložiť produkty do Hubu').disabled, 'Invoice cards can be saved without invented sale price or VAT');
+  await click(button('Všetky polia'));
+  assert(field(1, 'supplier_code').querySelector('button').disabled && field(1, 'eans').querySelector('button').disabled, 'An existing basic card cannot offer identity edits before its first draft save');
+  await click(button('Uložiť produkty do Hubu'));
+  assert.equal(server.rows[0].values.sale_gross, null);
+  assert.equal(server.rows[0].values.vat_percent, null);
+  await click(field(2, 'name').querySelector('button'));
+  assert(document.querySelector('[data-testid="import-back"]').disabled, 'Return waits for an active cell to be committed');
+  await change(label('Názov'), 'Doplnený názov pred návratom');
+  await key(label('Názov'), 'Enter');
+  failEdit = true;
+  await click(document.querySelector('[data-testid="import-back"]'));
+  assert(!document.querySelector('[data-testid="return-receiving"]'), 'Failed draft persistence keeps edits in the preparation editor');
+  assert(field(2, 'name').textContent.includes('Doplnený názov pred návratom'));
+  failEdit = false;
+  const beforeReturn = calls.length;
+  await click(document.querySelector('[data-testid="import-back"]'));
+  assert.equal(server.rows[1].values.name, 'Doplnený názov pred návratom', 'Return persists edits in the same durable draft');
+  assert(document.querySelector('[data-testid="return-receiving"]'));
+  assert.equal(receiptRouter.state.location.pathname, '/receiving/INV%2026%2F7');
+  assert.equal(new URLSearchParams(receiptRouter.state.location.search).get('session'), '42');
+  assert.equal(new URLSearchParams(receiptRouter.state.location.search).get('supplier'), 'sk-profi-bike');
+  assert.deepEqual(calls.slice(beforeReturn).map(call => [call.method, call.path]), [['PUT', '/api/product-imports/test-draft']], 'Returning saves only the draft and performs no publication or stock operation');
   await act(async () => root.unmount());
   console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

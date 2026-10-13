@@ -5,7 +5,7 @@ Receiving Router - PostgreSQL-backed implementation for v12 FINAL.
 Replaces JSON-based receiving.py with proper database operations.
 """
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Body, Depends, Query
+from fastapi import APIRouter, HTTPException, Body, Depends, Query, BackgroundTasks
 from typing import Any, Dict, Optional, List
 from pathlib import Path
 from datetime import datetime, timezone
@@ -43,8 +43,12 @@ from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.config_io import claim_supplier_prefix
 from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 from inventory_hub.routers.receiving import _update_invoice_status
+from inventory_hub.access import operator_access
+from inventory_hub.routers.product_editor import NoStoreRoute
 
 router = APIRouter(tags=["Receiving"])
+product_router = APIRouter(tags=["Receiving"], route_class=NoStoreRoute,
+                           dependencies=[Depends(operator_access)])
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -199,6 +203,10 @@ class AcceptAllRequest(BaseModel):
 
 class FinalizeRequest(BaseModel):
     force: bool = False
+
+
+class PrepareProductsRequest(BaseModel):
+    line_ids: List[int] = Field(min_length=1, max_length=500)
 
 
 # ============================================================================
@@ -419,7 +427,30 @@ async def _ensure_product_for_line(
     if sku_raw:
         existing_sp = await db.scalar(select(SupplierProduct).where(
             SupplierProduct.supplier_id == supplier.id, SupplierProduct.supplier_sku == sku_raw))
-        if existing_sp is None:
+        # The feed may use another supplier code for the same verified EAN.
+        # Keep the original invoice code as an alias, without manufacturing a
+        # second supplier offer when this receipt already matched the real one.
+        matched_source = None
+        if line.matched_supplier_product_id:
+            matched_source = await db.scalar(select(SupplierProduct).where(
+                    SupplierProduct.id == line.matched_supplier_product_id,
+                    SupplierProduct.supplier_id == supplier.id))
+            if matched_source is not None:
+                source_identity = RemoteIdentity(0, canonical_supplier_sku(prefix, matched_source.supplier_sku),
+                    barcodes=(matched_source.ean or "",), supplier_id=supplier.id,
+                    supplier_sku=matched_source.supplier_sku)
+                source_index = await load_identity_index(db, 0, [source_identity], local=True)
+                source_resolution = source_index.resolve(source_identity)
+                if source_resolution.status == "conflict" or source_resolution.product_id != product.id:
+                    raise _identity_error(line, source_resolution)
+                if not await db.scalar(select(ProductIdentifier.id).where(
+                        ProductIdentifier.product_id == product.id,
+                        ProductIdentifier.identifier_type == IdentifierType.supplier_sku,
+                        ProductIdentifier.supplier_id == supplier.id,
+                        ProductIdentifier.value == matched_source.supplier_sku)):
+                    await identifier_service.add_identifier(product.id, matched_source.supplier_sku,
+                        IdentifierType.supplier_sku, supplier_id=supplier.id)
+        if existing_sp is None and matched_source is None:
             db.add(SupplierProduct(supplier_id=supplier.id, supplier_sku=sku_raw,
                 ean=ean or None, name=(line.description or product.sku)[:500], purchase_price=line.unit_price))
             await db.flush()
@@ -579,6 +610,44 @@ def _sync_finalized_invoice(supplier_code: str, result: Dict[str, Any]) -> None:
 # ============================================================================
 # Endpoints — canonical contract: /suppliers/{supplier_code}/receiving/...
 # ============================================================================
+
+async def _product_operation(operation):
+    from inventory_hub.services.catalog import CatalogError
+    try:
+        return await operation
+    except CatalogError as error:
+        raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
+
+
+@product_router.get("/suppliers/{supplier_code}/receiving/sessions/{session_id}/products")
+async def get_receiving_products(supplier_code: str, session_id: int, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services.receiving_products import inspect_products
+    session = await _get_session_for_supplier(db, supplier_code, session_id)
+    report, _ = await _product_operation(inspect_products(db, session, _product_code_prefix(supplier_code)))
+    return report
+
+
+@product_router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/products/reconcile")
+async def reconcile_receiving_products(supplier_code: str, session_id: int, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services.receiving_products import reconcile_products
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
+    return await _product_operation(reconcile_products(db, session, _product_code_prefix(supplier_code)))
+
+
+@product_router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/products/prepare")
+async def prepare_receiving_products(supplier_code: str, session_id: int, request: PrepareProductsRequest,
+                                     background: BackgroundTasks, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services.receiving_products import prepare_products
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
+    result = await _product_operation(prepare_products(db, session, _product_code_prefix(supplier_code), request.line_ids))
+    await db.commit()
+    if result["created"] and (result.get("source_lookup") or {}).get("state") == "queued":
+        from inventory_hub.services.product_import_source import process
+        background.add_task(process, result["draft_id"])
+    return {"draft_id": result["draft_id"], "created": result["created"]}
+
+
+router.include_router(product_router)
 
 @router.post("/suppliers/{supplier_code}/receiving/sessions")
 async def create_session(

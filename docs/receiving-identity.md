@@ -20,6 +20,39 @@ Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity
 
 Kompletná administrácia opráv identifikátorov a priraďovanie neskôr prijatej faktúry k už vykonanému príjmu zostávajú ďalšími krokmi. Chýbajúca nákupná cena vo faktúrovom príjme sa naďalej musí vyriešiť pred jeho dokončením. Samostatný príjem bez známej ceny používa existujúci postup v [dokumentácii nákupných vrstiev](fifo.md).
 
+## Založenie skladových kariet z príjemky
+
+Príjemka používa ten istý zoznam produktov ako Hub. Existencia skladovej karty a počet fyzických kusov sú dve samostatné informácie. Pri položkách sa zobrazuje stav karty a **Náš sklad** v sklade danej príjemky; neoverený historický stav sa nezobrazuje ako potvrdená nula.
+
+| Stav karty | Význam a ďalší krok |
+| --- | --- |
+| Spárovaný | Jednoznačne existujúca karta; možno ju otvoriť. |
+| Základná karta | Karta založená predchádzajúcim príjmom bez dokončeného produktového obsahu; **Doplniť údaje karty** otvorí spoločnú prípravu. |
+| Len vo feede | Dodávateľský produkt je v načítanom katalógu, ale karta v Hube chýba. |
+| Nenájdený | V overenom načítanom katalógu ani v Hube sa nenašla jednoznačná zhoda; príprava vychádza z faktúry. |
+| Nejasná zhoda | Identifikátory si odporujú alebo existuje viac kandidátov; treba opraviť identitu pred založením. |
+| Feed sa nepodarilo overiť | Chýba použiteľný katalógový podklad. Nejde o potvrdenie, že produkt vo feede neexistuje. |
+
+**Vybrať chýbajúce produkty** a **Založiť skladové karty (N)** otvoria existujúci editor `/product-import` s konkrétnymi vybranými položkami. Feed poskytne produktové údaje; pri položke bez feedu sa použije dostupný názov, kód a EAN faktúry. Chýbajúce údaje možno doplniť ručne alebo cez spoločnú voliteľnú AI prípravu s oficiálnymi zdrojmi. Predajná cena, DPH, EAN ani dostupnosť sa nevymýšľajú. Rovnaký produkt na viacerých riadkoch faktúry sa pripraví iba raz; faktúrové riadky, bonusy, množstvá a rozdielne nákupné ceny zostanú samostatné.
+
+Rozpracovaná príprava je trvalo naviazaná na príjemku. Opakované otvorenie pokračuje v uloženom koncepte. **Späť na príjem faktúry …** vráti tú istú príjemku; pozastavený príjem možno obnoviť bez straty prijatých množstiev. Uložené karty sa opäť overia spoločným resolverom. Konflikt sa nesmie vyriešiť vytvorením duplicity.
+
+Uloženie kariet **nemení fyzický sklad ani faktúrovú nákupnú cenu**. Pohyby a FIFO vzniknú až bežným dokončením príjmu podľa pôvodných prijatých množstiev a jednotkových cien faktúry. Samostatné voľby BIKETREK, xTrek a AI používajú [spoločný importný postup](product-imports.md). Uloženie iba do Hubu je možné aj bez kompletných obchodných údajov; publikovanie do e-shopu naďalej vyžaduje platné ceny, DPH, kategóriu a ostatné kontroly.
+
+### API prípravy kariet
+
+Pod cestou `/suppliers/{supplier_code}/receiving/sessions/{session_id}`:
+
+| Metóda a koncovka | Úloha |
+| --- | --- |
+| `GET /products` | Čítací prehľad identity, katalógového zdroja, potvrdeného vlastného skladu a prepojených konceptov. |
+| `POST /products/prepare` | Založenie alebo opätovné otvorenie prípravy pre `line_ids`; načíta zdroje na serveri. |
+| `POST /products/reconcile` | Opätovné overenie a priradenie uložených kariet do nedokončeného príjmu; bez zmeny množstiev. |
+
+Rozšírenie používa existujúce JSON dokumenty príjemky a importných konceptov, bez novej SQL migrácie. Bežné čítanie nevolá dodávateľské portály ani e-shopy; príprava nadväzuje na aktuálne uložený katalóg a existujúci importér.
+
+Tieto tri nové endpointy vyžadujú operátorské prihlásenie a vracajú `Cache-Control: no-store`. Testy `test_receiving_products_db.py` a importné regresie pokrývajú výpadok feedu, overenú zhodu viacerých EAN, odlišný kód vo feede a na faktúre, opakované uloženie, zachovanie ručných údajov a pôvodného SKU, návrat do tej istej príjemky a oddelenie založenia karty od skladového pohybu. Databázové prípady používajú iba izolovanú testovaciu schému; UI scenáre používajú syntetické odpovede.
+
 ## Spoločná identita
 
 `services/product_identity.py` je spoločný resolver pre načítanie z e-shopov, objednávky, lokálny katalógový import a faktúrový príjem. Presný spoločný SKU má prednosť ako identifikátor. Overené EAN/UPC a kód dodávateľa v rámci konkrétneho dodávateľa sú ďalšie kontrolné dôkazy. Rôzni vlastníci týchto dôkazov znamenajú konflikt, nie automatické zlúčenie. Zmena iba veľkosti písmen SKU je tiež konflikt.

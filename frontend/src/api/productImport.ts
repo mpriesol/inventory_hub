@@ -13,7 +13,7 @@ export interface ImportValues {
 }
 export type ImportField = keyof ImportValues;
 export type ImportValue = ImportValues[ImportField];
-export type ImportProvenance = 'feed' | 'mapping' | 'manual' | 'ai' | 'derived' | 'supplier';
+export type ImportProvenance = 'feed' | 'invoice' | 'mapping' | 'manual' | 'ai' | 'derived' | 'supplier';
 export interface ProductImportLink { shop: string; shop_url: string | null; shop_admin_url: string | null; status: string }
 export interface ProductImportItem extends ImportItem { shop?: string; shop_url?: string | null; shop_admin_url?: string | null }
 export interface ProductImportPreview extends Omit<ImportPreview, 'items'> { items: ProductImportItem[] }
@@ -23,6 +23,7 @@ export interface ProductImportRow {
   mapping_revision: number | null; mapping_provenance?: Record<string, unknown>; values: ImportValues;
   manual_fields: string[]; provenance: Partial<Record<ImportField, ImportProvenance>>;
   publication_status?: string | null; publication_links?: ProductImportLink[]; warnings: string[]; errors: string[]; hub_product_id: number | null; ai_job: AiJob | null;
+  expected_hub_product_id?: number | null;
   categories?: { code: string; main_yn: boolean }[];
   source_status?: 'pending' | 'completed' | 'failed' | 'skipped'; source_error?: string | null;
 }
@@ -33,6 +34,7 @@ export interface ProductImportDraft {
   publications?: Record<string, { preview: ImportPreview; result: ImportResult | null; state: string | null }>;
   publication_state?: string | null; rows: ProductImportRow[]; publication: ProductImportPreview | null; publication_result: ProductImportResult | null;
   publication_preview_retryable?: boolean;
+  receiving_origin?: { kind: 'receiving'; supplier: string; session_id: string | number; invoice_no: string } | null;
   source_lookup?: { state: 'queued' | 'running' | 'failed' | 'completed' | 'skipped'; total: number; completed: number; failed: number; skipped: number; error: string | null; retryable: boolean; skippable: boolean } | null;
 }
 export interface ProductImportSummary { id: string; revision: number; status: string; publication_state?: string | null; supplier: string; shop: string; updated_at: string; rows_count: number }
