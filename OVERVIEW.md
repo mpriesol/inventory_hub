@@ -29,8 +29,9 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 | [Automatika — vývojársky kontrakt](docs/order-automation.md) | Konfigurácia, fronta, transakcie, API a obnova. |
 | [AI obsah](docs/ai-content.md) | Príprava a kontrola obsahu, existujúce produkty, pravidlá, fronta a konfigurácia. |
 | [Nákupné ceny v e-shopoch](docs/fifo-purchase-costs.md) | Prenos ďalšej FIFO ceny produktu, nákladov vydaných objednávok a konkrétnej historickej opravy. |
-| [PR kontroly](.github/workflows/ci.yml) | Automatické testy a izolovaná testovacia databáza. |
-| [Build a deployment](.github/workflows/build.yml) | Skutočný automatický postup nasadenia po zmene `main`. |
+| [PR kontroly](.github/workflows/ci.yml) | Štyri paralelné backendové skupiny s vlastnou DB, kontrola úplnosti a frontendové testy. |
+| [Build a deployment](.github/workflows/build.yml) | Paralelné zostavenie obrazov a serializované nasadenie po zmene `main`; dokumentačné zmeny sú vynechané. |
+| [CI a meranie nasadenia](docs/ci-deployment.md) | Pokrytie testov, časové reporty, cache a vykonanie migrácií. |
 
 Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované súbory a kópie nepovažuj za používané iba preto, že sú v repozitári. Tabuľka alebo tlačidlo samy osebe nedokazujú dokončený pracovný postup.
 
@@ -239,7 +240,7 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
 
-**Aktuálny deployment spúšťa `005` až `023`** explicitnými migračnými modulmi uvedenými v [.github/workflows/build.yml](.github/workflows/build.yml), pod transakčnými DB zámkami a pred reštartom API. Nová `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania; spúšťa ju [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie. [API Dockerfile](api/Dockerfile) všetkých devätnásť upgrade SQL súborov balí do obrazu. Nejde o všeobecný migrátor číslovaných súborov.
+**Deployment spúšťa `005` až `023` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá existujúce moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých devätnásť upgrade SQL súborov balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
@@ -271,17 +272,21 @@ API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.t
 
 Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a jsdom sady vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
 
+CI rozdelí celý backendový zoznam do štyroch paralelných skupín podľa trvania modulov. Každá má vlastný PostgreSQL; záverečná povinná kontrola `backend-compile` odmietne chýbajúce, duplicitné aj preskočené testy. Váhy nemenia výber testov. Súhrny ukazujú najpomalšie testy a čas ich prípravy, vykonania a upratania; JSON reporty zostávajú dostupné 14 dní. Novší commit zruší zastarané kontroly rovnakého PR. Podrobný kontrakt je v [CI a nasadzovaní](docs/ci-deployment.md).
+
 ## Produkčné nasadzovanie a diagnostika
 
 Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 
-1. Push do `main` alebo ručne spustený workflow zostaví API a frontend a publikuje obrazy do GHCR s tagmi `main` a `sha-<commit>`.
+1. Push do `main` s aspoň jednou zmenou mimo `**/*.md` a `docs/**`, alebo ručne spustený workflow na `main`, zostaví API a frontend paralelne. Obrazy používajú oddelené cache `api` a `frontend`. Bežné nasadenie publikuje do GHCR tagy `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `023` a obnoví služby `api`, `frontend-build` a `caddy` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `023` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
-Aj dokumentačný merge aktuálne spúšťa tento workflow. Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
+Workflow je serializovaný s vypnutým rušením rozbehnutého nasadenia. Zmeny iba Markdown súborov alebo `docs/**` produkčný workflow nespúšťajú, úplné PR kontroly však zostávajú. Ručné spustenie na `main` s `deploy=false` slúži na meranie zostavenia/cache: publikuje iba SHA tag, nemení produkčný tag `main` a nepripája sa na produkčný server. Predvolená hodnota je `deploy=true`.
+
+Actions súhrn zobrazuje namerané časy zostavenia a nasadenia; deploy log samostatne meria sťahovanie, migrácie, reštart, pripravenosť a čistenie. Každá migrácia vypíše aj vlastný čas. Východiskové meranie a interpretácia sú v [CI a nasadzovaní](docs/ci-deployment.md). Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
 
 [infra/docker-compose.prod.yml](infra/docker-compose.prod.yml) je referencia. Server používa vlastný `docker-compose.yml` a deploy pridáva `docker-compose.ai-content.yml`; ich celý aktuálny obsah nebol touto kontrolou repozitára overený. Pred manuálnym zásahom over nasadené súbory a oprávnenia. Starý návod cez `docker compose down` a `up -d` nevystihoval tento postup a nie je štandardným krokom bežného nasadenia.
 

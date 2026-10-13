@@ -7,9 +7,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pull-request-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  backend-compile:
+  backend-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     services:
       postgres:
         image: postgres:16
@@ -30,6 +38,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements.txt
 
       - name: Compile backend
         run: python -m compileall -q api/inventory_hub
@@ -41,7 +51,44 @@ jobs:
         env:
           PYTHONPATH: api
           CATALOG_TEST_DATABASE_URL: postgresql://catalog_test:catalog_test@localhost:5432/inventory_hub_catalog_test
-        run: python -m unittest discover -s api/tests -v
+        run: >-
+          python scripts/ci_backend_tests.py
+          --shard-index ${{ matrix.shard }} --shard-count 4
+          --report artifacts/backend-${{ matrix.shard }}.json
+          --require-database --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Save backend test timings and inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-${{ matrix.shard }}
+          path: artifacts/backend-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # Keep the existing required check name; all four shards must pass this gate.
+  backend-compile:
+    if: always()
+    needs: backend-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Collect backend reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backend-test-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify complete backend coverage
+        run: >-
+          python scripts/ci_backend_tests.py
+          --verify-reports 'artifacts/backend-*.json' --shard-count 4
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: Require every backend shard to succeed
+        env:
+          SHARD_RESULT: ${{ needs.backend-tests.result }}
+        run: test "$SHARD_RESULT" = success
 
   frontend-build:
     runs-on: ubuntu-latest

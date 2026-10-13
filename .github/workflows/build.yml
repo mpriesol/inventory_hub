@@ -3,15 +3,42 @@ name: build
 on:
   push:
     branches: ["main"]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy after building (disable for a cache benchmark)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
   packages: write
+  actions: read
+
+# Serialize the entire release, including mutable image tags. Never cancel migrations.
+concurrency:
+  group: inventory-hub-production
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            context: .
+            dockerfile: api/Dockerfile
+            build_args: ''
+          - image: frontend
+            context: ./frontend
+            dockerfile: frontend/Dockerfile
+            build_args: VITE_API_BASE=/api
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,33 +53,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push API
+      - name: Build & push ${{ matrix.image }}
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: api/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
+          build-args: ${{ matrix.build_args }}
           tags: |
-            ghcr.io/mpriesol/inventory-hub-api:main
-            ghcr.io/mpriesol/inventory-hub-api:sha-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build & push Frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          file: frontend/Dockerfile
-          push: true
-          build-args: |
-            VITE_API_BASE=/api
-          tags: |
-            ghcr.io/mpriesol/inventory-hub-frontend:main
-            ghcr.io/mpriesol/inventory-hub-frontend:sha-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ (github.event_name != 'workflow_dispatch' || inputs.deploy) && format('ghcr.io/mpriesol/inventory-hub-{0}:main', matrix.image) || '' }}
+            ghcr.io/mpriesol/inventory-hub-${{ matrix.image }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   deploy:
+      if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || inputs.deploy)
       needs: build-and-push
       runs-on: ubuntu-latest
       steps:
@@ -79,27 +94,23 @@ jobs:
               volumes:
                 supplier_secrets:
               YAML
-              docker compose pull
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.ai_content_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.opening_stock_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.order_stock_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.order_collection_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_automation_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_publication_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.fifo_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.product_editor_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.receiving_scan_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.supplier_availability_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_sync_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.product_publication_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_adjustment_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.fifo_cost_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.stock_tracking_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.user_sessions_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.product_feed_mapping_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.product_import_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.ai_content_settings_migrate
-              docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
+              run_phase() {
+                phase_name="$1"
+                shift
+                phase_started=$(date +%s)
+                printf 'DEPLOY_PHASE %s start\n' "$phase_name"
+                if "$@"; then
+                  printf 'DEPLOY_TIMING %s %ss success\n' "$phase_name" "$(( $(date +%s) - phase_started ))"
+                else
+                  phase_status=$?
+                  printf 'DEPLOY_TIMING %s %ss failed\n' "$phase_name" "$(( $(date +%s) - phase_started ))"
+                  exit "$phase_status"
+                fi
+              }
+              run_phase pull docker compose pull
+              run_phase migrations docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.migrate
+              run_phase restart docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
+              readiness_started=$(date +%s)
               # Both routes are public; allow startup without logging response bodies.
               readiness_deadline=$(( $(date +%s) + 60 ))
               readiness_ok=false
@@ -136,7 +147,22 @@ jobs:
                 sleep "$readiness_pause"
               done
               if [ "$readiness_ok" != true ]; then
+                printf 'DEPLOY_TIMING readiness %ss failed\n' "$(( $(date +%s) - readiness_started ))"
                 printf '%s\n' 'Deployment readiness failed within the 60-second limit.' >&2
                 exit 1
               fi
-              docker image prune -f
+              printf 'DEPLOY_TIMING readiness %ss success\n' "$(( $(date +%s) - readiness_started ))"
+              run_phase cleanup docker image prune -f
+
+  timing-summary:
+    if: always()
+    needs: [build-and-push, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Summarize release timings
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_workflow_summary.py
