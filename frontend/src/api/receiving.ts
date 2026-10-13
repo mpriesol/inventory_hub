@@ -1,4 +1,5 @@
 import { API_BASE, fetchJSON } from "./client";
+import { hubRequest } from './access';
 
 export interface ReceivingSession {
   session_id: string;
@@ -72,13 +73,11 @@ export interface ReceivingProducts {
   counts: Record<ReceivingProductStatus, number>;
 }
 export const getReceivingProducts = (supplier: string, sessionId: string) =>
-  fetchJSON<ReceivingProducts>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products`);
+  hubRequest<ReceivingProducts>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products`);
 export const reconcileReceivingProducts = (supplier: string, sessionId: string) =>
-  fetchJSON<ReceivingProducts>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products/reconcile`, { method: 'POST' });
+  hubRequest<ReceivingProducts>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products/reconcile`, {});
 export const prepareReceivingProducts = (supplier: string, sessionId: string, lineIds: number[]) =>
-  fetchJSON<{ draft_id: string; created: boolean }>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products/prepare`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ line_ids: lineIds }),
-  });
+  hubRequest<{ draft_id: string; created: boolean }>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/products/prepare`, { line_ids: lineIds });
 
 export interface FinalizeResult {
   success: boolean;
