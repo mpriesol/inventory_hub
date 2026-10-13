@@ -35,6 +35,8 @@ export interface SlogerProbe {
     stage: 'login_page' | 'login_submit' | 'search' | 'product';
     reason: 'http_status' | 'network' | 'redirect' | 'content_type' | 'challenge' | 'size' | 'deadline' | 'url' | 'structure' | 'authentication';
     http_status: number | null;
+    method?: 'GET' | 'POST';
+    path_class?: 'login' | 'shop_return' | 'b2b' | 'search' | 'product' | 'other';
   } | null;
 }
 export const startSlogerProbe = (body: { request_id: string; username: string; password: string; sku: string }) =>

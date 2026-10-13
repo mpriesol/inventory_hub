@@ -107,6 +107,71 @@ class SlogerTransportTests(unittest.TestCase):
                 session.read(b2b.LOGIN_URL, data=data)
             self.client.request.assert_called_once()
 
+    def test_only_exact_post_login_shop_get_404_uses_one_fixed_b2b_get(self):
+        for status in (301, 302, 303):
+            self.client.reset_mock()
+            self.client.request.side_effect = [response(status=status, Location="/shop/"),
+                                              response(page("Page not found"), 404), response(page(AUTH))]
+            session = b2b._Session(self.client)
+            session.stage = "login_submit"
+            document, final = session.read(b2b.LOGIN_URL, data={"password": "synthetic-secret"})
+            with self.subTest(status=status):
+                self.assertTrue(b2b._authenticated(document))
+                self.assertEqual(final, b2b.B2B_URL)
+                calls = self.client.request.call_args_list
+                self.assertEqual([call.args for call in calls], [
+                    ("POST", b2b.LOGIN_URL), ("GET", b2b.ORIGIN + "/shop/"), ("GET", b2b.B2B_URL)])
+                self.assertTrue(all(call.kwargs["data"] is None for call in calls[1:]))
+
+    def test_post_failures_never_use_landing_recovery_and_identify_the_actual_request(self):
+        for status in (401, 403, 404, 429, 500):
+            self.client.reset_mock()
+            self.client.request.return_value = response(status=status)
+            session = b2b._Session(self.client)
+            session.stage = "login_submit"
+            with self.subTest(status=status), self.assertRaises(b2b.SlogerB2BError) as caught:
+                session.read(b2b.LOGIN_URL, data={"password": "synthetic-secret"})
+            self.client.request.assert_called_once()
+            self.assertEqual(caught.exception.diagnostic()["method"], "POST")
+            self.assertEqual(caught.exception.diagnostic()["path_class"], "login")
+
+    def test_landing_recovery_does_not_retry_blocks_challenges_or_network_failures(self):
+        for failure in [response(status=status) for status in (401, 403, 429, 500)] + [
+            response(b"<html><title>Just a moment...</title></html>"),
+            response(b"<html><title>Just a moment...</title></html>", 404),
+            response(b"x" * (b2b.MAX_HTML_BYTES + 1), 404),
+            response(b"not html", 404, **{"Content-Type": "application/json"}),
+            requests.RequestException("synthetic-secret"),
+        ]:
+            self.client.reset_mock()
+            self.client.request.side_effect = [response(status=302, Location="/shop/"), failure]
+            session = b2b._Session(self.client)
+            session.stage = "login_submit"
+            with self.subTest(failure=failure), self.assertRaises(b2b.SlogerB2BError) as caught:
+                session.read(b2b.LOGIN_URL, data={"password": "synthetic-secret"})
+            self.assertEqual(self.client.request.call_count, 2)
+            diagnostic = caught.exception.diagnostic()
+            self.assertEqual((diagnostic["method"], diagnostic["path_class"]), ("GET", "shop_return"))
+            self.assertNotIn("synthetic-secret", str(diagnostic))
+
+    def test_direct_shop_get_and_failed_b2b_fallback_are_not_recovered(self):
+        self.client.request.return_value = response(page("Not found"), 404)
+        session = b2b._Session(self.client)
+        session.stage = "login_submit"
+        with self.assertRaises(b2b.SlogerB2BError):
+            session.read(b2b.ORIGIN + "/shop/")
+        self.client.request.assert_called_once()
+
+        self.client.reset_mock()
+        self.client.request.side_effect = [response(status=302, Location="/shop/"),
+                                          response(page("Not found"), 404), response(status=404)]
+        with self.assertRaises(b2b.SlogerB2BError) as caught:
+            session.read(b2b.LOGIN_URL, data={"password": "synthetic-secret"})
+        self.assertEqual(self.client.request.call_count, 3)
+        diagnostic = caught.exception.diagnostic()
+        self.assertEqual((diagnostic["method"], diagnostic["path_class"], diagnostic["http_status"]),
+                         ("GET", "b2b", 404))
+
     def test_network_errors_and_challenges_are_sanitized(self):
         self.client.request.side_effect = requests.RequestException("synthetic-secret in request")
         with self.assertRaises(CatalogError) as caught:
@@ -250,6 +315,28 @@ class SlogerProductTests(unittest.TestCase):
                 b2b._lookup("synthetic-user", "synthetic-secret", "TEST-42")
         self.assertEqual(caught.exception.code, "sloger_product_ambiguous")
 
+    def test_login_return_recovery_still_requires_authentication_before_search(self):
+        for authenticated in (False, True):
+            client = MagicMock()
+            client.__enter__.return_value = client
+            client.request.side_effect = [response(LOGIN), response(status=302, Location="/shop/"),
+                                          response(page("Not found"), 404),
+                                          response(page(AUTH) if authenticated else LOGIN),
+                                          response(search(PRODUCT_URL)), response(product())]
+            with self.subTest(authenticated=authenticated), patch.object(b2b.requests, "Session", return_value=client), patch.object(b2b.time, "sleep"):
+                if authenticated:
+                    self.assertEqual(b2b._lookup("synthetic-user", "synthetic-secret", "TEST-42")["sku"], "TEST-42")
+                    self.assertEqual(client.request.call_count, 6)
+                else:
+                    with self.assertRaises(b2b.SlogerB2BError) as caught:
+                        b2b._lookup("synthetic-user", "synthetic-secret", "TEST-42")
+                    self.assertEqual(caught.exception.code, "sloger_auth_failed")
+                    self.assertEqual(client.request.call_count, 4)
+            calls = client.request.call_args_list
+            self.assertEqual(sum(call.args[0] == "POST" for call in calls), 1)
+            self.assertEqual(calls[3].args, ("GET", b2b.B2B_URL))
+            self.assertTrue(all(call.kwargs["data"] is None for call in calls[2:]))
+
 
 class SlogerConnectionTests(unittest.TestCase):
     def test_prelogin_check_reads_only_fixed_login_page_without_credentials(self):
@@ -270,7 +357,8 @@ class SlogerConnectionTests(unittest.TestCase):
         with patch.object(b2b.requests, "Session", return_value=client):
             result = b2b._connection()
         self.assertEqual(result, {"reachable": False, "login_form_found": False,
-                                 "diagnostic": {"stage": "login_page", "reason": "http_status", "http_status": 403}})
+                                 "diagnostic": {"stage": "login_page", "reason": "http_status", "http_status": 403,
+                                                "method": "GET", "path_class": "login"}})
         self.assertNotIn("synthetic-secret", str(result))
         client.request.assert_called_once()
 
@@ -288,6 +376,8 @@ class SlogerConnectionTests(unittest.TestCase):
     def test_diagnostic_values_are_allowlisted_even_if_error_attributes_are_changed(self):
         error = b2b._error(reason="synthetic-secret", http_status="synthetic-secret")
         error.stage = "synthetic-secret"
+        error.method = "synthetic-secret"
+        error.path_class = "synthetic-secret"
         self.assertEqual(error.diagnostic(), {"stage": "login_page", "reason": "structure", "http_status": None})
 
 
