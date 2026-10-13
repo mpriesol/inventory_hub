@@ -2,7 +2,7 @@
 import unittest
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -242,6 +242,133 @@ class ProductImportSourceWorkerTests(unittest.IsolatedAsyncioTestCase):
             await source.process(item.id)
         self.assertEqual(item.document['rows'][0]['source_status'], 'pending')
         self.assertEqual(item.document['source_lookup']['token'], 'replacement')
+
+    async def test_explicit_feed_fallback_preserves_successes_and_reconciles_available_identity(self):
+        item = draft(2)
+        self.fixture(item)
+        completed, failed = item.document['rows']
+        source.apply_observation(completed, observation(), source.ShopImportOptions(), source.supplier_config('sloger'))
+        completed['source']['supplier_observation_expires_at'] = (ai_content.now() + timedelta(hours=6)).isoformat()
+        failed.update(source_status='failed', source_error='sloger_product_not_found')
+        failed['values']['availability'] = 'overíme'
+        item.document['source_lookup'] = {'state': 'failed', 'error': 'sloger_product_not_found'}
+        original_completed, original_failed = deepcopy(completed), deepcopy(failed)
+        async def canonical(db, products):
+            self.assertIn('0763477003706', products[0].eans)
+            return [products[0], products[1].model_copy(update={'shop_code': 'EXISTING-2'})]
+        with patch.object(catalog_import, 'canonical_products', side_effect=canonical), \
+             patch.object(product_import, 'public', AsyncMock(side_effect=lambda db, value: source.public_status(value))), \
+             patch.object(source.sloger_data, 'lookup_products', AsyncMock(side_effect=AssertionError('No B2B on fallback'))), \
+             patch.object(ai_content, 'create_batch', AsyncMock(side_effect=AssertionError('No AI on fallback'))):
+            status = await source.skip(SimpleNamespace(flush=AsyncMock()), item, DraftRevision(expected_revision=1))
+        self.assertEqual(status, {'state': 'skipped', 'total': 2, 'completed': 1, 'failed': 0, 'skipped': 1,
+            'error': 'sloger_product_not_found', 'retryable': False, 'skippable': False})
+        self.assertEqual(item.status, 'draft')
+        self.assertEqual(item.revision, 2)
+        completed, failed = item.document['rows']
+        self.assertEqual(completed['values'], original_completed['values'])
+        self.assertEqual(completed['source']['sloger_observation'], original_completed['source']['sloger_observation'])
+        self.assertEqual(datetime.fromisoformat(completed['source']['supplier_observation_expires_at']),
+            datetime.fromisoformat(original_completed['source']['supplier_observation_expires_at']))
+        self.assertEqual(completed['source_status'], 'completed')
+        self.assertEqual(failed['values'], {**original_failed['values'], 'code': 'EXISTING-2'})
+        self.assertIsNone(failed['values']['purchase_net'])
+        self.assertEqual(failed['source_error'], 'sloger_product_not_found')
+        self.assertEqual(failed['canonical_code'], 'EXISTING-2')
+        self.assertEqual(failed['source_status'], 'skipped')
+        self.assertIn('sloger_b2b_feed_fallback', failed['warnings'])
+        product_import.assert_editable(item)
+        # Later cell validation retains the durable warning; completed rows still
+        # carry their original expiry and normal publication freshness guards.
+        product_import.validate_rows(item.document)
+        self.assertIn('sloger_b2b_feed_fallback', failed['warnings'])
+        with patch.object(source, '_freshness_seconds', AsyncMock(return_value=1)):
+            with self.assertRaises(CatalogError):
+                await source.assert_current_availability(object(), {
+                    'supplier_availability_expires_at': completed['source']['supplier_observation_expires_at'],
+                    'supplier_availability_observed_at': (ai_content.now() - timedelta(hours=1)).isoformat()})
+
+    async def test_feed_fallback_requires_failed_source_and_current_revision(self):
+        item = draft()
+        self.fixture(item)
+        db = SimpleNamespace(flush=AsyncMock())
+        for state in ('queued', 'running', 'completed', 'skipped'):
+            item.document['source_lookup'].update(state=state, lease_expires_at=source._lease())
+            before = deepcopy(item.document)
+            with self.assertRaises(CatalogError) as denied:
+                await source.skip(db, item, DraftRevision(expected_revision=item.revision))
+            self.assertEqual(denied.exception.code, 'import_source_not_skippable')
+            self.assertEqual(item.document, before)
+        item.document['source_lookup'] = {'state': 'failed', 'error': 'sloger_b2b_unavailable'}
+        with self.assertRaises(CatalogError) as conflict:
+            await source.skip(db, item, DraftRevision(expected_revision=item.revision + 1))
+        self.assertEqual(conflict.exception.code, 'import_draft_changed')
+        db.flush.assert_not_awaited()
+
+    async def test_feed_fallback_cannot_unlock_saved_or_published_preparations(self):
+        item = draft()
+        self.fixture(item)
+        item.document['source_lookup'] = {'state': 'failed', 'error': 'sloger_b2b_unavailable'}
+        for status in ('saved', 'preview', 'publishing', 'published'):
+            item.status = status
+            with self.assertRaises(CatalogError):
+                await source.skip(SimpleNamespace(flush=AsyncMock()), item, DraftRevision(expected_revision=1))
+        item.status = 'source_failed'
+        for key, value in (('saved_hash', 'saved'), ('publication', {'preview_id': 'old'}),
+                ('publications', {'biketrek': {'preview_id': 'old'}}), ('previous_publications', ['old'])):
+            item.document[key] = value
+            with self.assertRaises(CatalogError):
+                await source.skip(SimpleNamespace(flush=AsyncMock()), item, DraftRevision(expected_revision=1))
+            self.assertEqual(item.document[key], value)
+            del item.document[key]
+        item.document['rows'][0]['hub_product_id'] = 42
+        with self.assertRaises(CatalogError):
+            await source.skip(SimpleNamespace(flush=AsyncMock()), item, DraftRevision(expected_revision=1))
+
+    async def test_skipped_rows_do_not_inherit_unconfirmed_b2b_availability_or_quote(self):
+        item = draft(2)
+        self.fixture(item)
+        for row in item.document['rows']:
+            source.apply_observation(row, observation(row['values']['supplier_code']),
+                source.ShopImportOptions(), source.supplier_config('sloger'))
+            row['source'].update(supplier_stock='99', supplier_stock_external='999', supplier_available=True,
+                supplier_observation_expires_at=(ai_content.now() + timedelta(hours=6)).isoformat())
+            row.update(source_status='failed', source_error='sloger_b2b_unavailable')
+        item.document['rows'][1]['manual_fields'] = ['availability', 'purchase_net']
+        item.document['rows'][1]['values'].update(availability='na objednávku', purchase_net='12.00')
+        item.document['source_lookup'] = {'state': 'failed', 'error': 'sloger_b2b_unavailable'}
+        with patch.object(product_import, 'public', AsyncMock()):
+            await source.skip(SimpleNamespace(flush=AsyncMock()), item, DraftRevision(expected_revision=1))
+        derived, manual = item.document['rows']
+        self.assertEqual(derived['values']['availability'], 'overíme')
+        self.assertIsNone(derived['values']['purchase_net'])
+        self.assertEqual(manual['values']['availability'], 'na objednávku')
+        self.assertEqual(manual['values']['purchase_net'], '12.00')
+        for row in item.document['rows']:
+            for field in ('supplier_available', 'supplier_stock', 'supplier_stock_external',
+                    'sloger_observation', 'supplier_observation_expires_at'):
+                self.assertIsNone(row['source'][field])
+
+    async def test_expired_worker_result_and_failure_cannot_overwrite_feed_fallback(self):
+        item = draft()
+        self.fixture(item)
+        old_token = None
+        async def skip_expired(codes):
+            nonlocal old_token
+            old_token = item.document['source_lookup']['token']
+            item.document['source_lookup']['lease_expires_at'] = (ai_content.now() - timedelta(seconds=1)).isoformat()
+            self.assertTrue(source.public_status(item)['skippable'])
+            await source.skip(SimpleNamespace(flush=AsyncMock()), item, DraftRevision(expected_revision=item.revision))
+            return SlogerBatchResult(items=[SlogerLookupResult(sku='1', observation=observation())])
+        with patch.object(source.sloger_data, 'lookup_products', side_effect=skip_expired), \
+             patch.object(product_import, 'public', AsyncMock(side_effect=lambda db, value: source.public_status(value))):
+            await source.process(item.id)
+            await source._fail(item.id, old_token, 'sloger_b2b_unavailable')
+        self.assertEqual(item.document['source_lookup'], {'state': 'skipped', 'error': 'import_source_interrupted'})
+        self.assertEqual(item.document['rows'][0]['source_status'], 'skipped')
+        self.assertEqual(item.document['rows'][0]['source_error'], 'import_source_interrupted')
+        self.assertIsNone(item.document['rows'][0]['values']['purchase_net'])
+        self.assertEqual(item.status, 'draft')
 
 
 if __name__ == '__main__':

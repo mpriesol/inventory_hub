@@ -24,7 +24,7 @@ export interface ProductImportRow {
   manual_fields: string[]; provenance: Partial<Record<ImportField, ImportProvenance>>;
   publication_status?: string | null; publication_links?: ProductImportLink[]; warnings: string[]; errors: string[]; hub_product_id: number | null; ai_job: AiJob | null;
   categories?: { code: string; main_yn: boolean }[];
-  source_status?: 'pending' | 'completed' | 'failed'; source_error?: string | null;
+  source_status?: 'pending' | 'completed' | 'failed' | 'skipped'; source_error?: string | null;
 }
 export interface ProductImportDraft {
   id: string; revision: number; status: string; supplier: string; shop: string; feed_key: string;
@@ -33,7 +33,7 @@ export interface ProductImportDraft {
   publications?: Record<string, { preview: ImportPreview; result: ImportResult | null; state: string | null }>;
   publication_state?: string | null; rows: ProductImportRow[]; publication: ProductImportPreview | null; publication_result: ProductImportResult | null;
   publication_preview_retryable?: boolean;
-  source_lookup?: { state: 'queued' | 'running' | 'failed' | 'completed'; total: number; completed: number; failed: number; error: string | null; retryable: boolean } | null;
+  source_lookup?: { state: 'queued' | 'running' | 'failed' | 'completed' | 'skipped'; total: number; completed: number; failed: number; skipped: number; error: string | null; retryable: boolean; skippable: boolean } | null;
 }
 export interface ProductImportSummary { id: string; revision: number; status: string; publication_state?: string | null; supplier: string; shop: string; updated_at: string; rows_count: number }
 export interface ImportRowPatch { id: number; values: Partial<ImportValues> }
@@ -42,6 +42,7 @@ export const listProductImports = (signal?: AbortSignal) => hubRequest<{ items: 
 export const createProductImport = (selection: ProductImportSelection, request_id: string) => hubRequest<ProductImportDraft>(base, { ...selection, request_id });
 export const readProductImport = (id: string, signal?: AbortSignal) => hubRequest<ProductImportDraft>(`${base}/${encodeURIComponent(id)}`, undefined, signal);
 export const retryProductImportSource = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/source-retry`, { expected_revision: draft.revision });
+export const skipProductImportSource = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/source-skip`, { expected_revision: draft.revision });
 export const editProductImport = (draft: ProductImportDraft, rows: ImportRowPatch[]) => hubRequest<ProductImportDraft>(`${base}/${draft.id}`, { expected_revision: draft.revision, rows }, undefined, 'PUT');
 export const saveProductImport = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/save`, { expected_revision: draft.revision });
 export const previewProductImport = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/publish-preview`, { expected_revision: draft.revision });

@@ -199,6 +199,68 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         saved2 = await self.mutate(saved, service.save)
         self.assertEqual(saved['rows'][0]['hub_product_id'], saved2['rows'][0]['hub_product_id'])
 
+    async def test_failed_sloger_read_can_explicitly_continue_to_feed_save_and_publication_preview(self):
+        from test_catalog_sloger import product as sloger_xml
+        from inventory_hub.services import product_import_source as sources
+        from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation
+
+        path = config_io.supplier_path('sloger')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'name': 'Sloger', 'feeds': {'sources': {'products': {
+            'mode': 'local', 'local_path': str(self.feed)}}}, 'adapter_settings': {
+            'vat_rate': 23, 'product_code_prefix': 'SLG-',
+            'availability': {'orderable': 'do 2-4 dní', 'unknown': 'overíme'}}}))
+        self.feed.write_text('<products>' + sloger_xml(code='FEED-ONLY', price='24.60', ean='0763477003706') + '</products>')
+        async with self.sessions() as db:
+            await catalog.refresh_catalog(db, 'sloger')
+            selected = await catalog.catalog_selection(db, 'sloger')
+            await db.commit()
+        initial = await self.create(DraftCreate(request_id=uuid4(), supplier='sloger', shop='biketrek',
+            product_ids=selected.ids, options={'category_code': 'K-TEST'}))
+
+        @asynccontextmanager
+        async def sessions():
+            async with self.sessions() as db:
+                yield db
+                await db.commit()
+
+        with patch.object(sources, 'get_session_context', sessions), \
+             patch.object(sources.sloger_data, 'lookup_products', AsyncMock(side_effect=
+                 catalog.CatalogError('sloger_b2b_unavailable', 'Unavailable', 503))):
+            await sources.process(initial['id'])
+        async with self.sessions() as db:
+            failed = await service.public(db, await service.get_draft(db, initial['id']))
+        self.assertTrue(failed['source_lookup']['skippable'])
+        with self.assertRaises(catalog.CatalogError) as blocked:
+            await self.mutate(failed, service.save)
+        self.assertEqual(blocked.exception.code, 'import_source_failed')
+        with self.assertRaises(catalog.CatalogError) as stale:
+            await self.mutate(initial, sources.skip)
+        self.assertEqual(stale.exception.code, 'import_draft_changed')
+        skipped = await self.mutate(failed, sources.skip)
+        self.assertEqual(skipped['source_lookup']['state'], 'skipped')
+        self.assertEqual(skipped['source_lookup']['skipped'], 1)
+        self.assertEqual(skipped['rows'][0]['source_error'], 'sloger_b2b_unavailable')
+        self.assertIn('sloger_b2b_feed_fallback', skipped['rows'][0]['warnings'])
+        edited = await self.mutate(skipped, service.patch_rows, DraftPatch,
+            rows=[{'id': selected.ids[0], 'values': {'name': 'Feed product after unavailable B2B'}}])
+        saved = await self.mutate(edited, service.save)
+        previewed = await self.mutate(saved, service.preview)
+        payload = previewed['publication']['items'][0]['payload']
+        self.assertEqual(payload['descriptions'][0]['title'], 'Feed product after unavailable B2B')
+        self.assertEqual(payload['code'], 'SLG-FEED-ONLY')
+        self.assertEqual(payload['availability'], 'overíme')
+        self.assertNotIn('price_purchase', payload['prices'][0])
+        self.assertEqual(previewed['rows'][0]['values']['sale_gross'], '24.60')
+        self.assertFalse(previewed['rows'][0]['values']['ai_enabled'])
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(AiJob)), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierAvailabilityObservation)), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        self.assertEqual(self.client.sent, [])
+
     async def test_explicit_publication_uses_edited_snapshot_after_feed_refresh(self):
         result = await self.create()
         result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{'id':self.ids[0], 'values': {

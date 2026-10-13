@@ -306,6 +306,24 @@ def _tier(label: str) -> dict:
             "quantity_relation": relation, "lead_days": lead}
 
 
+def _variant_quote(label):
+    """Only the row's explicit current amount and adjacent VAT label are a quote."""
+    amounts = label.xpath("./strong")
+    tax_labels = label.xpath("./span[contains(concat(' ', normalize-space(@class), ' '), ' muted ')]")
+    if not amounts:
+        # A missing amount must not fall back to the family's price when the
+        # row still declares the per-option price layout.
+        return (None, "unknown") if any(_fold(_text(node)) in ("bez dph", "s dph") for node in tax_labels) else None
+    if len(amounts) != 1:
+        raise _error("sloger_product_ambiguous")
+    amount = amounts[0]
+    following = amount.getnext()
+    if (following is None or following not in tax_labels or (amount.tail or "").strip()
+            or len(amount) or len(following)):
+        return None, "unknown"
+    return _price(_text(amount) + " " + _text(following))
+
+
 def _variant_selection(boxes, sku: str):
     """Observed radio/label layout: bind identity and stock to one exact row."""
     choices, ids, codes, prices, selected = [], set(), set(), [], 0
@@ -319,8 +337,9 @@ def _variant_selection(boxes, sku: str):
         if (not value.isdigit() or identifier != "option-" + value or radio.get("name") != "option[1]"
                 or label.get("for") != identifier):
             raise _error()
-        identities = label.xpath(".//span[contains(concat(' ', normalize-space(@class), ' '), ' muted ')]")
-        if len(identities) != 1:
+        identities = label.xpath(".//span[contains(concat(' ', normalize-space(@class), ' '), ' muted ')]"
+                                 "[./i[contains(concat(' ', normalize-space(@class), ' '), ' fa-barcode ')]]")
+        if len(identities) != 1 or len(label.xpath(".//i[contains(concat(' ', normalize-space(@class), ' '), ' fa-barcode ')]")) != 1:
             raise _error()
         identity = identities[0]
         barcode = identity.xpath("./i[contains(concat(' ', normalize-space(@class), ' '), ' fa-barcode ')]")
@@ -333,7 +352,7 @@ def _variant_selection(boxes, sku: str):
             raise _error("sloger_product_ambiguous")
         ids.add(identifier)
         codes.add(code)
-        choices.append((code, ean, label))
+        choices.append((code, ean, label, _variant_quote(label)))
         selected += "checked" in radio.attrib
         amount = re.fullmatch(r"\s*([\d\s.,]+)\s*€\s*", radio.get("price") or "")
         prices.append(_decimal(amount[1]) if amount else None)
@@ -346,7 +365,11 @@ def _variant_selection(boxes, sku: str):
     # unproven variant and both price fields remain unknown.
     common_price = (selected == 1 and all(price is not None for price in prices)
                     and len(set(prices)) == 1)
-    return exact[0][1], exact[0][2], common_price
+    # An explicit per-option layout takes precedence over family prices. A
+    # missing/untyped quote on this row remains unknown even if a sibling has one.
+    row_priced = any(choice[3] is not None for choice in choices)
+    quote = (exact[0][3] or (None, "unknown")) if row_priced else None
+    return exact[0][1], exact[0][2], common_price and not row_priced, quote
 
 
 def _parse_product(document, sku: str, url: str) -> dict | None:
@@ -361,14 +384,14 @@ def _parse_product(document, sku: str, url: str) -> dict | None:
     if len(names) != 1 or len(price_nodes) != 1 or len(offer_nodes) != 1:
         raise _error()
     boxes = offer_nodes[0].xpath(".//div[contains(concat(' ', normalize-space(@class), ' '), ' boxOptionWithRadioAndLabel ')]")
-    eans, manufacturer, stock_scope, common_price = [], None, offer_nodes[0], True
+    eans, manufacturer, stock_scope, common_price, row_quote = [], None, offer_nodes[0], True, None
     if boxes:
         if code_nodes:
             raise _error("sloger_product_ambiguous")
         choice = _variant_selection(boxes, sku)
         if choice is None:
             return None
-        ean, stock_scope, common_price = choice
+        ean, stock_scope, common_price, row_quote = choice
         # Do not prove a shared quote from only a subset of the offer's
         # choices when another radio has an unsupported/missing wrapper.
         if len(offer_nodes[0].xpath(".//input[@type='radio']")) != len(boxes):
@@ -388,21 +411,28 @@ def _parse_product(document, sku: str, url: str) -> dict | None:
         manufacturer = code_parts[1].strip() if len(code_parts) == 3 and barcode else None
     purchase, purchase_basis, retail, retail_basis = None, "unknown", None, "unknown"
     main_prices = price_nodes[0].xpath("./span")
-    if len(main_prices) == 1:
+    if row_quote is not None:
+        purchase, purchase_basis = row_quote
+    elif len(main_prices) == 1:
         purchase, purchase_basis = _price(_text(main_prices[0]))
-        # VOC was requested. A gross-only main price may be an unauthenticated
-        # MOC view, so it must never become an alleged supplier purchase quote.
-        if purchase_basis == "gross":
-            raise _error("sloger_auth_failed")
+    # VOC was requested. A gross-only current price may be an unauthenticated
+    # MOC view, so it must never become an alleged supplier purchase quote.
+    if purchase_basis == "gross":
+        raise _error("sloger_auth_failed")
     retail_nodes = [node for node in price_nodes[0].xpath("./small") if _text(node).startswith("MOC ")]
     if len(retail_nodes) > 1:
         raise _error()
     if retail_nodes:
         retail, retail_basis = _price(_text(retail_nodes[0])[4:])
     if not common_price:
-        purchase, purchase_basis, retail, retail_basis = None, "unknown", None, "unknown"
-    tiers = [_tier(_text(node)) for node in stock_scope.xpath(
-        ".//span[contains(concat(' ', normalize-space(@class), ' '), ' label ')]")]
+        if row_quote is None:
+            purchase, purchase_basis = None, "unknown"
+        retail, retail_basis = None, "unknown"
+    stock_labels = stock_scope.xpath(
+        ".//span[contains(concat(' ', normalize-space(@class), ' '), ' dispatch ')]"
+        "//span[contains(concat(' ', normalize-space(@class), ' '), ' label ')]" if boxes else
+        ".//span[contains(concat(' ', normalize-space(@class), ' '), ' label ')]")
+    tiers = [_tier(_text(node)) for node in stock_labels]
     if any(not tier["label"] or len(tier["label"]) > 200 for tier in tiers) or len(tiers) > 10:
         raise _error()
     own_tiers = [tier for tier in tiers if re.match(r"skladom\b", _fold(tier["label"]))]

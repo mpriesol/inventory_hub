@@ -3129,6 +3129,8 @@
       "import_source_interrupted": "Načítanie údajov bolo prerušené. Môžeš pokračovať od chýbajúcich produktov.",
       "import_source_failed": "Údaje dodávateľa nie sú kompletné. Skontroluj chyby a pokračuj v načítaní.",
       "import_source_not_retryable": "Toto načítanie nemožno znova spustiť. Obnov aktuálny stav prípravy.",
+      "import_source_not_skippable": "Teraz nemožno pokračovať bez B2B údajov. Obnov aktuálny stav prípravy.",
+      "sloger_b2b_feed_fallback": "B2B údaje sa nepodarilo načítať. Používajú sa údaje z feedu; nákupná cena a dostupnosť môžu zostať neznáme.",
       "sloger_product_identity_mismatch": "Údaje z B2B sa nezhodujú s identitou vybraného produktu.",
       "sloger_product_data_invalid": "Sloger vrátil neplatné údaje produktu.",
       "sloger_invalid_result": "Odpoveď zo Sloger B2B sa nepodarilo overiť.",
@@ -3177,17 +3179,24 @@
       "queued": "Čaká sa na údaje zo Sloger B2B",
       "running": "Načítavajú sa údaje zo Sloger B2B",
       "failed": "Údaje zo Sloger B2B nie sú kompletné",
-      "completed": "Údaje zo Sloger B2B sú načítané"
+      "completed": "Údaje zo Sloger B2B sú načítané",
+      "skipped": "Pokračovanie bez chýbajúcich B2B údajov"
     },
     "sourceRowStates": {
       "pending": "B2B: čaká na načítanie",
       "completed": "B2B: načítané",
-      "failed": "B2B: chyba načítania"
+      "failed": "B2B: chyba načítania",
+      "skipped": "Iba feed: B2B preskočené"
     },
-    "sourceHelp": "Najprv sa bez AI načítajú údaje dodávateľa pre vybrané produkty. Úpravy a import sa odomknú po dokončení. Voliteľné vylepšenie cez AI potom použije model nastavený v Hube.",
+    "sourceHelp": "Najprv sa bez AI načítajú údaje dodávateľa pre vybrané produkty. Po dokončení alebo výslovnom pokračovaní bez chýbajúcich B2B údajov sa odomknú úpravy a import. Voliteľné vylepšenie cez AI potom použije model nastavený v Hube.",
     "sourceProgress": "Načítané: {{completed}} / {{total}} · chyby: {{failed}}",
     "sourceRetry": "Pokračovať v načítaní chýbajúcich údajov",
-    "sourceRetryUncertain": "Spustenie sa nepodarilo potvrdiť. Najprv obnov stav prípravy; načítanie sa automaticky neopakuje.",
+    "sourceSkip": "Pokračovať iba s údajmi z feedu",
+    "sourceSkipHelp": "Pri nenačítaných produktoch môžeš pokračovať s feedom. Nákupná cena a dostupnosť môžu zostať neznáme; už načítané B2B údaje sa zachovajú.",
+    "sourceSkippedHelp": "Nenačítané produkty používajú údaje z feedu. Nákupná cena a dostupnosť môžu zostať neznáme. Úspešne načítané B2B údaje zostali zachované.",
+    "sourceSkippedProgress": "B2B načítané: {{completed}} / {{total}} · bez B2B: {{skipped}}",
+    "sourceSkippedDetails": "Dôvod chýbajúcich B2B údajov",
+    "sourceActionUncertain": "Výsledok operácie sa nepodarilo potvrdiť. Najprv obnov stav prípravy; operácia sa automaticky neopakuje.",
     "freshPreview": "Pripraviť nový náhľad"
   },
   "slogerProbe": {

@@ -3127,6 +3127,8 @@
       "import_source_interrupted": "Fetching was interrupted. You can resume with the missing products.",
       "import_source_failed": "Supplier facts are incomplete. Check the errors and resume fetching.",
       "import_source_not_retryable": "This fetch cannot be restarted. Reload the current preparation state.",
+      "import_source_not_skippable": "Cannot continue without B2B facts in this state. Reload the current preparation.",
+      "sloger_b2b_feed_fallback": "B2B facts could not be loaded. Feed data is used; purchase price and availability may remain unknown.",
       "sloger_product_identity_mismatch": "B2B facts do not match the selected product identity.",
       "sloger_product_data_invalid": "Sloger returned invalid product facts.",
       "sloger_invalid_result": "The Sloger B2B response could not be verified.",
@@ -3175,17 +3177,24 @@
       "queued": "Waiting for Sloger B2B facts",
       "running": "Fetching Sloger B2B facts",
       "failed": "Sloger B2B facts are incomplete",
-      "completed": "Sloger B2B facts loaded"
+      "completed": "Sloger B2B facts loaded",
+      "skipped": "Continuing without missing B2B facts"
     },
     "sourceRowStates": {
       "pending": "B2B: pending",
       "completed": "B2B: loaded",
-      "failed": "B2B: failed"
+      "failed": "B2B: failed",
+      "skipped": "Feed only: B2B skipped"
     },
-    "sourceHelp": "Supplier facts for the selected products are fetched first, without AI. Editing and import become available when this finishes. Optional AI enhancement then uses the model configured in Hub.",
+    "sourceHelp": "Supplier facts for the selected products are fetched first, without AI. Editing and import become available when this finishes or you explicitly continue without the missing B2B facts. Optional AI enhancement then uses the model configured in Hub.",
     "sourceProgress": "Loaded: {{completed}} / {{total}} · failed: {{failed}}",
     "sourceRetry": "Resume fetching missing facts",
-    "sourceRetryUncertain": "The start could not be confirmed. Reload the preparation state first; fetching is not retried automatically.",
+    "sourceSkip": "Continue with feed data only",
+    "sourceSkipHelp": "Products that failed to load can use the feed. Purchase price and availability may remain unknown; successfully loaded B2B facts are retained.",
+    "sourceSkippedHelp": "Products that failed to load use feed data. Purchase price and availability may remain unknown. Successfully loaded B2B facts have been retained.",
+    "sourceSkippedProgress": "B2B loaded: {{completed}} / {{total}} · without B2B: {{skipped}}",
+    "sourceSkippedDetails": "Reason for missing B2B facts",
+    "sourceActionUncertain": "The outcome could not be confirmed. Reload the preparation state first; the operation is not repeated automatically.",
     "freshPreview": "Prepare a fresh preview"
   },
   "slogerProbe": {

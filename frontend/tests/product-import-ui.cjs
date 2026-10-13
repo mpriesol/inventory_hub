@@ -25,7 +25,7 @@ const options = { language: 'sk', currency: 'EUR', pricelist: 'Default', categor
 const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, { code: 'PARTS', parent_code: 'MENU', names: { sk: 'Komponenty' } }, { code: 'TUBES', parent_code: 'PARTS', names: { sk: 'Duše' } }];
 const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
-const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false;
+const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, method: init.method || 'GET', body });
@@ -44,8 +44,16 @@ global.fetch = async (path, init = {}) => {
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
   } else if (path.endsWith('/source-retry')) {
     assert.deepEqual(body, { expected_revision: server.revision });
-    server.revision++; server.status = 'source_pending'; server.source_lookup = { ...server.source_lookup, state: 'queued', error: null, retryable: false };
+    server.revision++; server.status = 'source_pending'; server.source_lookup = { ...server.source_lookup, state: 'queued', error: null, retryable: false, skippable: false };
     if (failSourceRetry) throw new TypeError('Synthetic lost source-retry response');
+  } else if (path.endsWith('/source-skip')) {
+    if (failSourceSkip === 'conflict') return { ok: false, status: 409, json: async () => ({ detail: { code: 'import_draft_changed' } }) };
+    assert.deepEqual(body, { expected_revision: server.revision });
+    assert.equal(server.source_lookup.skippable, true);
+    server.revision++; server.status = 'draft';
+    server.rows.filter(row => row.source_status !== 'completed').forEach(row => { row.source_status = 'skipped'; row.warnings.push('sloger_b2b_feed_fallback'); });
+    server.source_lookup = { ...server.source_lookup, state: 'skipped', failed: 0, skipped: server.rows.filter(row => row.source_status === 'skipped').length, retryable: false, skippable: false };
+    if (failSourceSkip === 'lost') throw new TypeError('Synthetic lost source-skip response');
   } else if (path.endsWith('/save')) { assert.equal(body.expected_revision, server.revision); server.revision++; server.status = 'saved'; server.rows.forEach(row => row.hub_product_id = row.id + 100); }
   else if (path.endsWith('/ai')) { assert.equal(body.research, 'official'); server.revision++; server.rows.filter(row => row.values.ai_enabled).forEach(row => row.ai_job = { id: `job-${row.group_key}`, status: 'estimate', estimate_usd: '0.04', actual_usd: null, checks: {} }); }
   else if (path.endsWith('/ai-start')) { server.revision++; server.rows.filter(row => row.ai_job).forEach(row => { row.ai_job.status = 'generating'; row.ai_job.actual_usd = '0.03'; }); }
@@ -312,7 +320,7 @@ async function render(entry) {
 
   server = { ...server, revision: server.revision + 1, supplier: 'sloger', status: 'source_pending', publication: null, publication_result: null,
     rows: [{ ...clone(initial[0]), values: { ...values(1), code: 'SLG-1' }, source_status: 'pending', source_error: null }],
-    source_lookup: { state: 'queued', total: 1, completed: 0, failed: 0, error: null, retryable: false } };
+    source_lookup: { state: 'queued', total: 1, completed: 0, failed: 0, skipped: 0, error: null, retryable: false, skippable: false } };
   await render('/product-import?draft=test-draft&case=source-pending');
   const sourceControl = id => document.querySelector(`[data-testid="${id}"]`);
   const sourceWrites = () => calls.filter(call => call.method !== 'GET');
@@ -326,18 +334,22 @@ async function render(entry) {
   assert(!field(1, 'name').querySelector('input'), 'Pending B2B facts block keyboard and paste editing');
   assert.equal(sourceWrites().length, beforeSourceWrites);
   assert.equal(sourceControl('import-source-retry'), null);
+  assert.equal(sourceControl('import-source-skip'), null, 'Queued fetching cannot be bypassed');
   server.status = 'source_running'; server.source_lookup.state = 'running';
   await act(async () => { for (const poll of [...pollers.values()]) await poll(); });
   assert.equal(sourceWrites().length, beforeSourceWrites, 'Source progress polling only reads the existing draft');
   assert(sourceControl('import-source-status').textContent.includes('Načítavajú sa'));
+  assert.equal(sourceControl('import-source-skip'), null, 'Running fetching cannot be bypassed');
 
-  server.status = 'source_failed'; server.source_lookup = { ...server.source_lookup, state: 'failed', failed: 1, error: 'sloger_credentials_not_configured', retryable: true };
+  server.status = 'source_failed'; server.source_lookup = { ...server.source_lookup, state: 'failed', failed: 1, error: 'sloger_credentials_not_configured', retryable: true, skippable: true };
   server.rows[0].source_status = 'failed'; server.rows[0].source_error = 'sloger_credentials_not_configured';
   await click(sourceControl('import-source-refresh'));
   assert(button('Pripraviť import').disabled && field(1, 'name').querySelector('button').disabled);
   assert(document.querySelector('a[href="/suppliers?edit=sloger"]'), 'Missing B2B login links to supplier settings');
+  assert(!sourceControl('import-source-skip').disabled, 'Failed B2B facts offer an explicit feed fallback');
   failSourceRetry = true; await click(sourceControl('import-source-retry'));
   assert(sourceControl('import-source-retry').disabled, 'Unconfirmed retry cannot be blindly repeated');
+  assert(sourceControl('import-source-skip').disabled, 'An uncertain retry also blocks a conflicting skip until GET recovery');
   assert.equal(sourceWrites().length, beforeSourceWrites + 1);
   await click(sourceControl('import-source-refresh'));
   assert.equal(sourceControl('import-source-retry'), null, 'GET recovery observes the already queued source request');
@@ -357,6 +369,57 @@ async function render(entry) {
   const beforeNoAi = calls.filter(call => /\/ai(?:-|$)/.test(call.path) && call.method !== 'GET').length;
   await click(button('Pripraviť import'));
   assert.equal(calls.filter(call => /\/ai(?:-|$)/.test(call.path) && call.method !== 'GET').length, beforeNoAi, 'Ordinary import with AI unchecked uses fetched supplier facts without an AI call');
+
+  // A deliberate fallback unlocks the ordinary flow while preserving partial B2B facts.
+  const failedSource = () => ({ ...server, revision: server.revision + 1, status: 'source_failed', publication: null, publication_result: null,
+    rows: [1, 2].map(id => ({ ...clone(initial[id - 1]), values: { ...values(id), code: `SLG-${id}`, purchase_net: id === 1 ? '67.08' : null, availability: id === 1 ? 'do 2-4 dní' : 'overíme' }, source_status: id === 1 ? 'completed' : 'failed', source_error: id === 1 ? null : 'sloger_b2b_unavailable' })),
+    source_lookup: { state: 'failed', total: 2, completed: 1, failed: 1, skipped: 0, error: 'sloger_b2b_unavailable', retryable: true, skippable: true } });
+  server = failedSource();
+  await render('/product-import?draft=test-draft&case=feed-fallback');
+  assert.equal(sourceControl('import-source-skip').textContent, 'Pokračovať iba s údajmi z feedu');
+  assert(sourceControl('import-source-status').textContent.includes('Nákupná cena a dostupnosť môžu zostať neznáme'));
+  const beforeSkipWrites = sourceWrites().length;
+  const completedFacts = clone(server.rows[0]);
+  const failedFacts = clone(server.rows[1].values);
+  await act(async () => { sourceControl('import-source-skip').click(); sourceControl('import-source-skip').click(); });
+  assert.deepEqual(sourceWrites().slice(beforeSkipWrites).map(call => call.path), ['/api/product-imports/test-draft/source-skip'], 'Rapid fallback clicks perform one CAS update without AI, Hub save or shop publication');
+  assert.equal(sourceControl('import-source-skip'), null);
+  assert.equal(sourceControl('import-source-retry'), null);
+  assert(sourceControl('import-source-status').textContent.includes('bez B2B: 1'));
+  assert(document.querySelector('tr[data-row="2"] .import-row-state').textContent.includes('Iba feed: B2B preskočené'));
+  assert(document.querySelector('tr[data-row="2"] .import-row-state details').textContent.includes('Údaje zo Sloger B2B sa nepodarilo načítať.'), 'Original error remains available as an explanation');
+  assert(document.querySelector('tr[data-row="2"] .import-row-state').textContent.includes(i18n.t('productImport.errors.sloger_b2b_feed_fallback')));
+  assert.equal(document.querySelector('tr[data-row="2"] .import-row-state .import-error'), null, 'Skipped source errors are explanatory, not active validation failures');
+  assert.deepEqual(server.rows[0], completedFacts);
+  assert.deepEqual(server.rows[1].values, failedFacts, 'Fallback does not invent purchase or availability values');
+  assert(!button('Pripraviť import').disabled && !button('Uložiť produkty do Hubu').disabled && !field(2, 'name').querySelector('button').disabled);
+  assert(!label('Vylepšiť pomocou AI: SLG-2').disabled && !label('Import do xTrek: SLG-2').disabled);
+  await click(button('Pripraviť import'));
+  assert.deepEqual(sourceWrites().slice(beforeSkipWrites).map(call => call.path), ['/api/product-imports/test-draft/source-skip', '/api/product-imports/test-draft/save', '/api/product-imports/test-draft/publish-preview'], 'The operator can explicitly prepare the ordinary feed-only import afterward');
+
+  // English controls use the same conflict and uncertain-response recovery path.
+  server = failedSource();
+  await act(async () => i18n.changeLanguage('en'));
+  await render('/product-import?draft=test-draft&case=feed-fallback-recovery');
+  assert.equal(sourceControl('import-source-skip').textContent, 'Continue with feed data only');
+  failSourceSkip = 'conflict';
+  await click(sourceControl('import-source-skip'));
+  assert(button('Prepare import').disabled && field(2, 'name').querySelector('button').disabled, 'A stale revision never unlocks the draft locally');
+  assert(sourceControl('import-source-skip').disabled && sourceControl('import-source-retry').disabled);
+  await click(sourceControl('import-source-refresh'));
+  failSourceSkip = 'lost';
+  const beforeLostSkip = sourceWrites().length;
+  await click(sourceControl('import-source-skip'));
+  assert(button('Prepare import').disabled, 'A lost response does not optimistically unlock the draft');
+  assert(sourceControl('import-source-skip').disabled && sourceControl('import-source-retry').disabled);
+  await click(sourceControl('import-source-refresh'));
+  assert.equal(sourceWrites().length, beforeLostSkip + 1, 'GET recovery never blindly repeats the skip');
+  assert(!button('Prepare import').disabled && !field(2, 'name').querySelector('button').disabled);
+  assert(sourceControl('import-source-status').textContent.includes('without B2B: 1'));
+  assert(document.querySelector('tr[data-row="2"] .import-row-state').textContent.includes('Feed only: B2B skipped'));
+  assert.equal(pollers.size, 0, 'Skipped source data never resumes background polling');
+  failSourceSkip = false;
+  await act(async () => i18n.changeLanguage('sk'));
   await act(async () => root.unmount());
   console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });
