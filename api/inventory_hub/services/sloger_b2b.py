@@ -306,20 +306,86 @@ def _tier(label: str) -> dict:
             "quantity_relation": relation, "lead_days": lead}
 
 
+def _variant_selection(boxes, sku: str):
+    """Observed radio/label layout: bind identity and stock to one exact row."""
+    choices, ids, codes, prices, selected = [], set(), set(), [], 0
+    for box in boxes:
+        radios = box.xpath("./input[@type='radio']")
+        labels = box.xpath("./label")
+        if len(radios) != 1 or len(labels) != 1:
+            raise _error()
+        radio, label = radios[0], labels[0]
+        identifier, value = radio.get("id") or "", radio.get("value") or ""
+        if (not value.isdigit() or identifier != "option-" + value or radio.get("name") != "option[1]"
+                or label.get("for") != identifier):
+            raise _error()
+        identities = label.xpath(".//span[contains(concat(' ', normalize-space(@class), ' '), ' muted ')]")
+        if len(identities) != 1:
+            raise _error()
+        identity = identities[0]
+        barcode = identity.xpath("./i[contains(concat(' ', normalize-space(@class), ' '), ' fa-barcode ')]")
+        match = re.fullmatch(r"\(\s*([^\s/()]{1,100})\s*/\s*(\d{1,32})\s*\)", _text(identity))
+        if (len(barcode) != 1 or match is None or set(match[2]) == {"0"}
+                or not re.fullmatch(r"\s*" + re.escape(match[2]) + r"\s*\)\s*", barcode[0].tail or "")):
+            raise _error()
+        code, ean = match[1], match[2]
+        if identifier in ids or code in codes:
+            raise _error("sloger_product_ambiguous")
+        ids.add(identifier)
+        codes.add(code)
+        choices.append((code, ean, label))
+        selected += "checked" in radio.attrib
+        amount = re.fullmatch(r"\s*([\d\s.,]+)\s*€\s*", radio.get("price") or "")
+        prices.append(_decimal(amount[1]) if amount else None)
+    exact = [choice for choice in choices if choice[0] == sku]
+    if not exact:
+        return None
+    # These radio attributes have no tax basis and are never a purchase quote.
+    # They only establish a common price across all explicit choices, anchored
+    # by one selected radio. Otherwise the displayed price belongs to an
+    # unproven variant and both price fields remain unknown.
+    common_price = (selected == 1 and all(price is not None for price in prices)
+                    and len(set(prices)) == 1)
+    return exact[0][1], exact[0][2], common_price
+
+
 def _parse_product(document, sku: str, url: str) -> dict | None:
     code_nodes = [node for node in document.xpath("//p[contains(concat(' ', normalize-space(@class), ' '), ' muted ')]")
                   if _fold(_text(node)).startswith("kod:")]
-    if len(code_nodes) != 1:
-        raise _error()
-    code_node = code_nodes[0]
-    code_parts = _text(code_node).split(":", 1)[1].strip().split("/")
-    if code_parts[0].strip() != sku:
+    code_parts = _text(code_nodes[0]).split(":", 1)[1].strip().split("/") if len(code_nodes) == 1 else None
+    if code_parts is not None and code_parts[0].strip() != sku:
         return None
     names = document.xpath("//h1")
     price_nodes = document.xpath("//*[@id='price-detail']")
     offer_nodes = document.xpath("//div[@itemprop='offers'][contains(concat(' ', normalize-space(@class), ' '), ' product-info ')]")
     if len(names) != 1 or len(price_nodes) != 1 or len(offer_nodes) != 1:
         raise _error()
+    boxes = offer_nodes[0].xpath(".//div[contains(concat(' ', normalize-space(@class), ' '), ' boxOptionWithRadioAndLabel ')]")
+    eans, manufacturer, stock_scope, common_price = [], None, offer_nodes[0], True
+    if boxes:
+        if code_nodes:
+            raise _error("sloger_product_ambiguous")
+        choice = _variant_selection(boxes, sku)
+        if choice is None:
+            return None
+        ean, stock_scope, common_price = choice
+        # Do not prove a shared quote from only a subset of the offer's
+        # choices when another radio has an unsupported/missing wrapper.
+        if len(offer_nodes[0].xpath(".//input[@type='radio']")) != len(boxes):
+            common_price = False
+        eans = [ean]
+    else:
+        if len(code_nodes) != 1:
+            raise _error()
+        code_node = code_nodes[0]
+        barcode = code_node.xpath(".//i[contains(concat(' ', normalize-space(@class), ' '), ' fa-barcode ')]")
+        if len(barcode) > 1:
+            raise _error()
+        if barcode:
+            candidate = (barcode[0].tail or "").strip()
+            if re.fullmatch(r"\d{1,32}", candidate) and set(candidate) != {"0"}:
+                eans.append(candidate)
+        manufacturer = code_parts[1].strip() if len(code_parts) == 3 and barcode else None
     purchase, purchase_basis, retail, retail_basis = None, "unknown", None, "unknown"
     main_prices = price_nodes[0].xpath("./span")
     if len(main_prices) == 1:
@@ -333,16 +399,9 @@ def _parse_product(document, sku: str, url: str) -> dict | None:
         raise _error()
     if retail_nodes:
         retail, retail_basis = _price(_text(retail_nodes[0])[4:])
-    eans = []
-    barcode = code_node.xpath(".//i[contains(concat(' ', normalize-space(@class), ' '), ' fa-barcode ')]")
-    if len(barcode) > 1:
-        raise _error()
-    if barcode:
-        candidate = (barcode[0].tail or "").strip()
-        if re.fullmatch(r"\d{1,32}", candidate) and set(candidate) != {"0"}:
-            eans.append(candidate)
-    manufacturer = code_parts[1].strip() if len(code_parts) == 3 and barcode else None
-    tiers = [_tier(_text(node)) for node in offer_nodes[0].xpath(
+    if not common_price:
+        purchase, purchase_basis, retail, retail_basis = None, "unknown", None, "unknown"
+    tiers = [_tier(_text(node)) for node in stock_scope.xpath(
         ".//span[contains(concat(' ', normalize-space(@class), ' '), ' label ')]")]
     if any(not tier["label"] or len(tier["label"]) > 200 for tier in tiers) or len(tiers) > 10:
         raise _error()
