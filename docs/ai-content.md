@@ -15,7 +15,8 @@ chyby nevracajú hodnoty vstupu.
 
 Pred ďalším zadaním hesla možno cez operátorom chránený
 `GET /api/suppliers/sloger/lookup/connection` overiť dostupnosť pevnej prihlasovacej
-stránky. Kontrola používa iba ohraničené GET požiadavky na Sloger, neposiela
+stránky `https://www.sloger.sk/sk/prihlasenie-b2b`. Kontrola používa iba
+ohraničené GET požiadavky na Sloger, neposiela
 prihlasovacie údaje, nevolá model a nezapisuje audit úlohy. Vracia iba
 `reachable`, `login_form_found` a bezpečnú `diagnostic`; dostupný formulár ešte
 nepotvrdzuje úspešné prihlásenie ani čítanie produktu.
@@ -27,6 +28,9 @@ hlavičky, cookies ani hodnoty formulára. Vyhľadávanie používa overenú slo
 cestu `/sk/shop/hladaj.html`; produktové odkazy podporujú pôvodné `/shop/`
 a slovenské `/sk/shop/`. Iné jazykové presmerovania sa odmietajú. Prihlásenie
 rozpoznáva aj overený odkaz na odhlásenie zobrazený iba ikonou; odkaz neotvára.
+Po prihlasovacom POST povoľuje aj presný návrat na `https://www.sloger.sk/shop/`
+bez query, uvedený vo formulári. Pokračuje iba GET bez prihlasovacích údajov;
+HTTP 307/308 po POST aj tento návrat mimo prihlasovania odmieta.
 
 Hub vykoná najviac dve volania Responses API s `gpt-6-luna`, úsilím `high`,
 `store: false` a limitom 4 096 výstupných tokenov na volanie. Prvé smie vyžiadať
@@ -60,8 +64,11 @@ prihlásenie alebo platené spracovanie.
 
 Živý test 13. 10. 2026 potvrdil prvé volanie Luna API a vyžiadanie povolenej
 funkcie. Následné načítanie B2B adaptérom zlyhalo; úspešné čítanie produktových
-údajov cez celý API tok zatiaľ nie je potvrdené. Oprava slovenskej navigácie,
-rozpoznania prihlásenia a diagnostika vychádzajú z pozorovaného webu;
+údajov cez celý API tok zatiaľ nie je potvrdené. Následná kontrola spojenia
+odhalila presmerovanie pôvodnej `/sk/b2b` na `/prihlasenie-b2b`, ktoré adaptér
+odmietol. Priama slovenská `/sk/prihlasenie-b2b` bola bez hesla overená ako
+HTTP 200 s prihlasovacím formulárom. Oprava prihlasovacej URL, slovenskej
+navigácie, rozpoznania prihlásenia a diagnostika vychádzajú z pozorovaného webu;
 úspešný výsledok vyžaduje ďalšie samostatné overenie po nasadení.
 
 ## Použitie

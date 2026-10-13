@@ -20,7 +20,7 @@ from inventory_hub.services.catalog import CatalogError
 
 
 ORIGIN = "https://www.sloger.sk"
-LOGIN_URL = ORIGIN + "/sk/b2b"
+LOGIN_URL = ORIGIN + "/sk/prihlasenie-b2b"
 SEARCH_URL = ORIGIN + "/sk/shop/hladaj.html"
 MAX_HTML_BYTES = 2_000_000
 MAX_SECONDS = 100
@@ -138,7 +138,13 @@ class _Session:
                     same_slovak_page = (method == "GET" and source.query == destination.query
                         and (source_path.startswith("/shop/") and target_path == "/sk" + source_path
                              or target_path.startswith("/shop/") and source_path == "/sk" + target_path))
-                    if target_path not in (source_path, "/", "/b2b", "/b2b/", "/sk/b2b", "/sk/b2b/") and not same_slovak_page:
+                    # The observed login form returns to this exact shop root.
+                    # Permit only the credential-dropping redirect of that POST,
+                    # never a search/product redirect or a credential replay.
+                    login_return = (self.stage == "login_submit" and method == "POST"
+                                    and url == LOGIN_URL and target == ORIGIN + "/shop/")
+                    if (target_path not in (source_path, "/", "/b2b", "/b2b/", "/sk/b2b", "/sk/b2b/")
+                            and not same_slovak_page and not login_return):
                         raise _error(reason="redirect")
                     url, method, data = target, "GET", None
                     continue

@@ -37,7 +37,7 @@ def product(sku="TEST-42", *, purchase="12.50€ bez DPH", stock="Skladom 7 ks",
 
 
 LOGIN = page('''<div class="modal"><form method="post"><input name="username"><input name="password"></form></div>
-    <form action="" method="post"><input type="hidden" name="redirect" value="/b2b">
+    <form action="/sk/prihlasenie-b2b" method="post"><input type="hidden" name="redirect" value="https://www.sloger.sk/shop/">
       <input type="hidden" name="loginPage" value="1"><input type="hidden" name="login" value="1">
       <input name="username"><input name="password" type="password"><button>Prihlásiť</button></form>''')
 
@@ -84,6 +84,28 @@ class SlogerTransportTests(unittest.TestCase):
         self.assertEqual(second.args, ("GET", b2b.ORIGIN + "/b2b"))
         self.assertIsNone(second.kwargs["data"])
         self.assertFalse(first.kwargs["allow_redirects"])
+
+    def test_shop_return_is_limited_to_login_post_without_query_or_credential_replay(self):
+        for stage, method, status, target in (
+            ("login_page", "POST", 302, "/shop/"),
+            ("search", "GET", 302, "/shop/"),
+            ("product", "GET", 302, "/shop/"),
+            ("login_submit", "GET", 302, "/shop/"),
+            ("login_submit", "POST", 302, "/shop/?add_to_cart=1"),
+            ("login_submit", "POST", 302, "/en/shop/"),
+            ("login_submit", "POST", 302, "/sk/shop/"),
+            ("login_submit", "POST", 302, "https://example.test/shop/"),
+            ("login_submit", "POST", 307, "/shop/"),
+            ("login_submit", "POST", 308, "/shop/"),
+        ):
+            self.client.reset_mock()
+            self.client.request.return_value = response(status=status, Location=target)
+            session = b2b._Session(self.client)
+            session.stage = stage
+            data = {"password": "synthetic-secret"} if method == "POST" else None
+            with self.subTest(stage=stage, method=method, status=status, target=target), self.assertRaises(CatalogError):
+                session.read(b2b.LOGIN_URL, data=data)
+            self.client.request.assert_called_once()
 
     def test_network_errors_and_challenges_are_sanitized(self):
         self.client.request.side_effect = requests.RequestException("synthetic-secret in request")
@@ -191,15 +213,20 @@ class SlogerProductTests(unittest.TestCase):
         other = b2b.ORIGIN + "/shop/tools/other.html"
         client = MagicMock()
         client.__enter__.return_value = client
-        client.request.side_effect = [response(LOGIN), response(page(AUTH)), response(search(other, PRODUCT_URL)),
+        client.request.side_effect = [response(LOGIN), response(status=302, Location=b2b.ORIGIN + "/shop/"),
+                                      response(page(AUTH)), response(search(other, PRODUCT_URL)),
                                       response(product("OTHER")), response(product())]
         with patch.object(b2b.requests, "Session", return_value=client), patch.object(b2b.time, "sleep"):
             result = b2b._lookup("synthetic-user", "synthetic-secret", "TEST-42")
         self.assertEqual(result["sku"], "TEST-42")
-        self.assertEqual(client.request.call_count, 5)
-        self.assertEqual(client.request.call_args_list[2].args[1], b2b.ORIGIN + "/sk/shop/hladaj.html?s=TEST-42")
+        self.assertEqual(client.request.call_count, 6)
+        self.assertEqual(client.request.call_args_list[0].args, ("GET", "https://www.sloger.sk/sk/prihlasenie-b2b"))
+        self.assertEqual(client.request.call_args_list[1].args, ("POST", "https://www.sloger.sk/sk/prihlasenie-b2b"))
+        self.assertEqual(client.request.call_args_list[2].args, ("GET", b2b.ORIGIN + "/shop/"))
+        self.assertIsNone(client.request.call_args_list[2].kwargs["data"])
+        self.assertEqual(client.request.call_args_list[3].args[1], b2b.ORIGIN + "/sk/shop/hladaj.html?s=TEST-42")
         methods = [call.args[0] for call in client.request.call_args_list]
-        self.assertEqual(methods, ["GET", "POST", "GET", "GET", "GET"])
+        self.assertEqual(methods, ["GET", "POST", "GET", "GET", "GET", "GET"])
         # The only submitted dict was cleared once authentication completed.
         self.assertEqual(client.request.call_args_list[1].kwargs["data"], {})
         self.assertNotIn("synthetic-user", str(result))
@@ -233,7 +260,7 @@ class SlogerConnectionTests(unittest.TestCase):
             result = b2b._connection()
         self.assertEqual(result, {"reachable": True, "login_form_found": True, "diagnostic": None})
         client.request.assert_called_once()
-        self.assertEqual(client.request.call_args.args, ("GET", b2b.LOGIN_URL))
+        self.assertEqual(client.request.call_args.args, ("GET", "https://www.sloger.sk/sk/prihlasenie-b2b"))
         self.assertIsNone(client.request.call_args.kwargs["data"])
 
     def test_connection_failure_reports_only_stage_reason_and_http_status(self):
