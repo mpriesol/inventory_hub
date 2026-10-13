@@ -71,8 +71,13 @@ jobs:
               cat > docker-compose.ai-content.yml <<'YAML'
               services:
                 api:
+                  environment:
+                    SUPPLIER_CREDENTIALS_ROOT: /var/lib/inventory-hub-secrets
                   volumes:
                     - ./ai-content.env:/run/secrets/hub-ai.env:ro
+                    - supplier_secrets:/var/lib/inventory-hub-secrets
+              volumes:
+                supplier_secrets:
               YAML
               docker compose pull
               docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.ai_content_migrate

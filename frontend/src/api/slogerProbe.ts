@@ -39,7 +39,15 @@ export interface SlogerProbe {
     path_class?: 'login' | 'shop_return' | 'b2b' | 'search' | 'product' | 'other';
   } | null;
 }
-export const startSlogerProbe = (body: { request_id: string; username: string; password: string; sku: string }) =>
+export interface SlogerCredentials {
+  configured: boolean;
+  username: string | null;
+}
+export const readSlogerCredentials = () =>
+  hubRequest<SlogerCredentials>(`${API_BASE}/suppliers/sloger/lookup/credentials`);
+export const saveSlogerCredentials = (body: { username: string; password: string }) =>
+  hubRequest<SlogerCredentials>(`${API_BASE}/suppliers/sloger/lookup/credentials`, body, undefined, 'PUT');
+export const startSlogerProbe = (body: { request_id: string; sku: string }) =>
   hubRequest<SlogerProbe>(`${API_BASE}/suppliers/sloger/lookup/preview`, body);
 export const readSlogerProbe = (id: string) =>
   hubRequest<SlogerProbe>(`${API_BASE}/suppliers/sloger/lookup/${encodeURIComponent(id)}`);

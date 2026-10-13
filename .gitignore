@@ -20,6 +20,7 @@ venv/
 .env
 .env.*
 *.local
+supplier-secrets/
 
 # Build artifacts
 *.log

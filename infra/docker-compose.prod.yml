@@ -27,6 +27,7 @@ services:
     image: ghcr.io/mpriesol/inventory-hub-api:main
     environment:
       INVENTORY_DATA_ROOT: /data/inventory-data
+      SUPPLIER_CREDENTIALS_ROOT: /var/lib/inventory-hub-secrets
       USE_POSTGRES: "true"
       ROOT_PATH: /api
       DB_HOST: postgres
@@ -36,6 +37,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
     volumes:
       - /opt/inventory-data:/data/inventory-data
+      - supplier_secrets:/var/lib/inventory-hub-secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,6 +72,7 @@ services:
       - hubnet
 
 volumes:
+  supplier_secrets:
   pg_data:
   redis_data:
   caddy_data:

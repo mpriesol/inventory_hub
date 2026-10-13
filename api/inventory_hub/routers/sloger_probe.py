@@ -1,12 +1,12 @@
-"""Authenticated, request-only credentials for a read-only supplier AI probe."""
+"""Authenticated, write-only login configuration and read-only supplier AI probe."""
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 
 from inventory_hub.access import operator_access
-from inventory_hub.services import sloger_b2b, sloger_probe
+from inventory_hub.services import sloger_b2b, sloger_credentials, sloger_probe
 from inventory_hub.services.catalog import CatalogError
-from inventory_hub.sloger_probe_types import ProbeRequest
+from inventory_hub.sloger_probe_types import ProbeRequest, SlogerCredentials
 
 
 class ProbeRoute(APIRoute):
@@ -47,6 +47,16 @@ async def preview(body: ProbeRequest):
 @router.get("/connection")
 async def connection():
     return await sloger_b2b.connection()
+
+
+@router.get("/credentials")
+def credentials_status():
+    return sloger_credentials.status()
+
+
+@router.put("/credentials")
+def save_credentials(body: SlogerCredentials):
+    return sloger_credentials.save(body)
 
 
 @router.get("/{id}")

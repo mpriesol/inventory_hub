@@ -1,4 +1,4 @@
-/* Synthetic Sloger preview only: credentials, bounded submission and read-only recovery. */
+/* Synthetic Sloger preview only: reusable server credentials, bounded submission and recovery. */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const ts = require('typescript');
@@ -43,6 +43,9 @@ const facts = {
   source_url: 'https://www.sloger.sk/synthetic-product/', observed_at: '2026-10-12T12:00:00Z',
 };
 let savedId = '', route = '', resolvePost, holdPost = true, failPost = false, readStatus = 'lookup_running';
+let credentials = { configured: false, username: null }, failCredentialsGet = true;
+let holdSave = true, resolveSave, saveMode = 'success';
+let requestedSku = facts.sku;
 const calls = [];
 const result = status => ({ id: savedId, status, model: 'gpt-6-luna', result: status === 'lookup_completed' ? facts : null,
   usage: { input_tokens: 2000, output_tokens: 200 }, actual_usd: '0.000300', error: status === 'lookup_uncertain' ? 'ai_outcome_unknown' : null });
@@ -52,12 +55,28 @@ global.fetch = async (path, options = {}) => {
   assert.equal(options.headers['X-Hub-Request'], '1');
   assert.equal(options.headers.Authorization, 'Bearer synthetic-hub-token');
   assert(!url.href.includes(secret), 'Credentials never enter request URLs');
+  if (url.pathname === '/api/suppliers/sloger/lookup/credentials') {
+    if (options.method === 'GET') {
+      assert.equal(options.body, undefined, 'Reading login status never submits a password');
+      if (failCredentialsGet) throw new TypeError(secret);
+      return reply(credentials);
+    }
+    assert.equal(options.method, 'PUT', 'Login save is explicit and separate from paid lookup');
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body, { username: 'info@xtrek.sk', password: secret });
+    if (saveMode === 'reject') return reply({ detail: { code: 'sloger_credentials_unavailable', message: secret } }, 503);
+    credentials = { configured: true, username: body.username };
+    if (saveMode === 'uncertain') throw new TypeError(secret);
+    if (holdSave) return new Promise(resolve => { resolveSave = () => resolve(reply(credentials)); });
+    return reply(credentials);
+  }
   if (options.method === 'POST') {
     assert.equal(url.pathname, '/api/suppliers/sloger/lookup/preview', 'Only the read-only preview can receive a POST');
     const body = JSON.parse(options.body);
     savedId = body.request_id.replace(/-/g, '');
     assert.match(savedId, /^[0-9a-f]{32}$/);
-    assert.equal(body.password, secret); assert.equal(body.username, 'info@xtrek.sk'); assert.equal(body.sku, facts.sku);
+    assert.deepEqual(Object.keys(body).sort(), ['request_id', 'sku'], 'A lookup reuses saved credentials without sending login fields');
+    assert.equal(body.sku, requestedSku);
     if (failPost) throw new TypeError(secret);
     if (holdPost) return new Promise(resolve => { resolvePost = status => resolve(reply(result(status))); });
     return reply({ detail: { code: 'ai_monthly_budget', message: secret } }, 422);
@@ -78,6 +97,8 @@ async function mount(path = '/suppliers/sloger/b2b-test') {
   });
 }
 const posts = () => calls.filter(call => call.options.method === 'POST');
+const saves = () => calls.filter(call => call.options.method === 'PUT');
+const reads = () => calls.filter(call => call.options.method === 'GET' && /\/lookup\/[0-9a-f]{32}$/.test(call.url.pathname));
 const assertPrivate = () => {
   assert(!document.body.textContent.includes(secret));
   assert(!route.includes(secret));
@@ -88,10 +109,23 @@ const assertPrivate = () => {
   unlockHub(''); await mount();
   assert.equal(calls.length, 0); assert(!find('sloger-start'), 'Locked page has no supplier credential form');
   await act(async () => { unlockHub('synthetic-hub-token'); await tick(); });
+  assert(find('sloger-credentials-error'), 'Unknown stored state has an explicit error');
+  assert(!find('sloger-password'), 'A status error is not treated as an unconfigured login');
+  assert(required('sloger-start').disabled); assertPrivate();
+  failCredentialsGet = false; await click('sloger-credentials-reload');
   assert.equal(required('sloger-username').value, 'info@xtrek.sk');
   assert.equal(required('sloger-sku').value, '7700860');
   assert(required('sloger-start').disabled);
+  assert(required('sloger-credentials-save').disabled);
   await input('sloger-password', secret);
+  await act(async () => { const save = required('sloger-credentials-save'); save.click(); save.click(); await tick(); });
+  assert.equal(saves().length, 1, 'Rapid duplicate clicks save once');
+  assert(!find('sloger-password'), 'Password clears immediately while saving');
+  assert(required('sloger-start').disabled); assertPrivate();
+  await act(async () => { resolveSave(); await tick(); });
+  assert.equal(posts().length, 0, 'Saving credentials never starts a paid lookup');
+  assert(required('sloger-credentials-status').textContent.includes('info@xtrek.sk'));
+  assert(!find('sloger-password')); assert(!required('sloger-start').disabled);
   await act(async () => { const start = required('sloger-start'); start.click(); start.click(); await tick(); });
   assert.equal(posts().length, 1, 'Rapid duplicate clicks start one paid request');
   assert(!find('sloger-password'), 'Credentials disappear immediately while the request is pending');
@@ -101,12 +135,12 @@ const assertPrivate = () => {
   assertPrivate();
   await act(async () => { resolvePost('lookup_uncertain'); await tick(); });
   assert(!find('sloger-new'), 'Unknown paid outcome does not expose a fresh request');
-  assert.equal(calls.length, 1, 'No polling or implicit retry follows an uncertain result');
+  assert.equal(posts().length, 1, 'No polling or implicit retry follows an uncertain result');
   assertPrivate();
 
   await mount(route);
   assert.equal(posts().length, 1, 'Reloading recovery link never repeats POST');
-  assert.equal(calls.length, 2, 'Recovery link performs one protected GET');
+  assert.equal(reads().length, 1, 'Recovery link performs one protected result GET');
   assert(!find('sloger-new')); assert(!find('sloger-password'));
   readStatus = 'lookup_completed'; await click('sloger-refresh');
   assert.equal(posts().length, 1);
@@ -121,16 +155,44 @@ const assertPrivate = () => {
   assertPrivate();
 
   await click('sloger-new');
-  assert.equal(required('sloger-password').value, '', 'A new request never reuses the previous password');
-  assert(required('sloger-start').disabled);
+  assert(!find('sloger-password'), 'The next product reuses the saved login without asking for a password');
+  assert(!required('sloger-start').disabled);
+  await click('sloger-credentials-change');
+  assert.equal(required('sloger-password').value, '', 'Changing a login never retrieves the saved password');
+  assert(required('sloger-start').disabled, 'Finish or cancel a credential edit before starting a lookup');
+  await input('sloger-password', secret); await click('sloger-credentials-cancel');
+  assert(!find('sloger-password')); assert(!required('sloger-start').disabled);
+  await mount();
+  assert(!find('sloger-password'), 'Reloading the page uses the server status');
+  assert(!required('sloger-start').disabled);
+  requestedSku = '7700861'; await input('sloger-sku', requestedSku);
   const completedId = savedId;
-  holdPost = false; await input('sloger-password', secret); await click('sloger-start');
+  holdPost = false; await click('sloger-start');
   assert.notEqual(savedId, completedId, 'A new UUID is created only after an explicit new lookup');
   assert(find('sloger-new'), 'A definite pre-request budget rejection allows a fresh form');
   assertPrivate();
 
-  await click('sloger-new'); failPost = true;
-  await input('sloger-password', secret); await click('sloger-start');
+  await click('sloger-new');
+  await click('sloger-credentials-change'); await input('sloger-password', secret);
+  holdSave = false; saveMode = 'uncertain'; await click('sloger-credentials-save');
+  assert(find('sloger-credentials-error')); assert(!find('sloger-password')); assert(required('sloger-start').disabled);
+  assert.equal(saves().length, 2, 'An uncertain save is never repeated automatically');
+  assert.equal(posts().length, 2, 'An uncertain save starts no paid lookup'); assertPrivate();
+  await click('sloger-credentials-reload');
+  assert(!find('sloger-password')); assert(!required('sloger-start').disabled);
+  assert.equal(saves().length, 2, 'Reloading status does not repeat a save');
+
+  await click('sloger-credentials-change'); await input('sloger-password', secret);
+  saveMode = 'reject'; await click('sloger-credentials-save');
+  assert(find('sloger-credentials-error')); assert(!find('sloger-password')); assert(required('sloger-start').disabled);
+  assertPrivate();
+  failCredentialsGet = true; await click('sloger-credentials-reload');
+  assert(!find('sloger-password'), 'Failed recovery of saved status does not offer a blank setup form');
+  assert(required('sloger-start').disabled); assertPrivate();
+  failCredentialsGet = false; await click('sloger-credentials-reload');
+  assert(!required('sloger-start').disabled);
+
+  failPost = true; await click('sloger-start');
   assert(!find('sloger-new'), 'Network failure keeps the existing request ID');
   readStatus = 'not_found'; await click('sloger-refresh');
   assert(!find('sloger-new'), 'A missing audit read does not implicitly restart a possibly pending request');
@@ -138,5 +200,5 @@ const assertPrivate = () => {
   await act(async () => { unlockHub(''); await tick(); });
   assert(!find('sloger-result')); assert(!find('sloger-password'));
   await act(async () => { root.unmount(); await tick(); });
-  console.log('Sloger probe UI: duplicate submit, password clearing, protected GET recovery, budgets and separate stock tiers passed');
+  console.log('Sloger probe UI: saved login, secret-free product requests, uncertain save recovery, duplicate submit, protected GET recovery and stock tiers passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
