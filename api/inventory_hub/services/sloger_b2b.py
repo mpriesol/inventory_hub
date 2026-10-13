@@ -1,4 +1,4 @@
-"""Ephemeral, read-only Sloger B2B access for a single exact supplier SKU.
+"""Ephemeral, read-only Sloger B2B access for bounded exact supplier SKU batches.
 
 The session, credentials and HTML never leave this adapter. Only scoped product
 facts are returned; supplier quotes are not inventory acquisition costs.
@@ -17,6 +17,8 @@ from lxml import etree, html
 import requests
 
 from inventory_hub.services.catalog import CatalogError
+from inventory_hub.services.sloger_credentials import contains_secret
+from inventory_hub.sloger_probe_types import SlogerBatchResult, SlogerLookupResult, SlogerObservation
 
 
 ORIGIN = "https://www.sloger.sk"
@@ -26,6 +28,7 @@ SEARCH_URL = ORIGIN + "/sk/shop/hladaj.html"
 MAX_HTML_BYTES = 2_000_000
 MAX_SECONDS = 100
 MAX_CANDIDATES = 5
+MAX_BATCH_ITEMS = 10
 _PRODUCT_PATH = re.compile(r"^/(?:sk/)?shop/(?:[^/.]+/)+[^/]+\.html$")
 _HEADERS = {"User-Agent": "InventoryHub-Sloger-ReadOnly/1.0", "Accept": "text/html,application/xhtml+xml",
             "Accept-Language": "sk-SK,sk;q=0.9"}
@@ -54,6 +57,7 @@ def _error(code="sloger_b2b_unavailable", *, reason="structure", http_status=Non
         "sloger_auth_failed": "Sloger did not confirm the B2B login",
         "sloger_product_not_found": "Sloger did not return the exact requested supplier SKU",
         "sloger_product_ambiguous": "Sloger returned ambiguous product evidence",
+        "sloger_b2b_invalid_evidence": "Sloger returned invalid or private product evidence",
     }
     error = SlogerB2BError(code, messages[code], 422 if code != "sloger_b2b_unavailable" else 502)
     error.reason, error.http_status = reason, http_status
@@ -365,31 +369,35 @@ def _parse_product(document, sku: str, url: str) -> dict | None:
             "observed_at": datetime.now(timezone.utc).isoformat()}
 
 
+def _lookup_in_session(session: _Session, sku: str) -> dict:
+    session.stage = "search"
+    search_url = SEARCH_URL + "?" + urlencode({"s": sku})
+    document, final_url = session.read(search_url)
+    if not _authenticated(document):
+        raise _error("sloger_auth_failed", reason="authentication")
+    found = []
+    for product_url in _candidate_urls(document, final_url):
+        session.stage = "product"
+        product, final_product_url = session.read(product_url)
+        if not _authenticated(product):
+            raise _error("sloger_auth_failed", reason="authentication")
+        observation = _parse_product(product, sku, final_product_url)
+        if observation is not None:
+            found.append(observation)
+    if not found:
+        raise _error("sloger_product_not_found")
+    if len(found) != 1:
+        raise _error("sloger_product_ambiguous")
+    return found[0]
+
+
 def _lookup(username: str, password: str, sku: str) -> dict:
     with requests.Session() as client:
         client.headers.update(_HEADERS)
         session = _Session(client)
         try:
             _login(session, username, password)
-            session.stage = "search"
-            search_url = SEARCH_URL + "?" + urlencode({"s": sku})
-            document, final_url = session.read(search_url)
-            if not _authenticated(document):
-                raise _error("sloger_auth_failed", reason="authentication")
-            found = []
-            for product_url in _candidate_urls(document, final_url):
-                session.stage = "product"
-                product, final_product_url = session.read(product_url)
-                if not _authenticated(product):
-                    raise _error("sloger_auth_failed", reason="authentication")
-                observation = _parse_product(product, sku, final_product_url)
-                if observation is not None:
-                    found.append(observation)
-            if not found:
-                raise _error("sloger_product_not_found")
-            if len(found) != 1:
-                raise _error("sloger_product_ambiguous")
-            return found[0]
+            return _lookup_in_session(session, sku)
         except SlogerB2BError as error:
             error.stage = session.stage
             raise
@@ -397,6 +405,62 @@ def _lookup(username: str, password: str, sku: str) -> dict:
 
 async def lookup_product(username: str, password: str, sku: str) -> dict:
     return await asyncio.to_thread(_lookup, username, password, sku)
+
+
+def validate_skus(username: str, password: str, skus: list[str]) -> None:
+    if (not isinstance(skus, list) or not 1 <= len(skus) <= MAX_BATCH_ITEMS
+            or any(not isinstance(sku, str) or not 1 <= len(sku) <= 100 or sku != sku.strip()
+                   or any(ord(c) < 32 for c in sku) for sku in skus)
+            or len(set(skus)) != len(skus) or contains_secret(skus, (username, password))):
+        raise CatalogError("sloger_b2b_request_invalid", "Use 1 to 10 unique supplier SKUs", 422)
+
+
+def _lookup_many(username: str, password: str, skus: list[str]) -> SlogerBatchResult:
+    """One login, one deadline and sequential paced reads; never retry failures."""
+    validate_skus(username, password, skus)
+    items, aborted = [], False
+    with requests.Session() as client:
+        client.headers.update(_HEADERS)
+        session = _Session(client)
+        login_error = None
+        try:
+            _login(session, username, password)
+        except SlogerB2BError as error:
+            error.stage = session.stage
+            login_error = error
+        except Exception:
+            login_error = _error()
+            login_error.stage = session.stage
+        for sku in skus:
+            if aborted:
+                items.append(SlogerLookupResult(sku=sku, error="sloger_batch_aborted"))
+                continue
+            try:
+                if login_error is not None:
+                    raise login_error
+                raw = _lookup_in_session(session, sku)
+                try:
+                    observation = SlogerObservation.model_validate(raw)
+                except (ValueError, TypeError):
+                    raise _error("sloger_b2b_invalid_evidence") from None
+                if observation.sku != sku or contains_secret(observation.model_dump(mode="json"), (username, password)):
+                    raise _error("sloger_b2b_invalid_evidence")
+                items.append(SlogerLookupResult(sku=sku, observation=observation))
+            except SlogerB2BError as error:
+                error.stage = session.stage
+                items.append(SlogerLookupResult(sku=sku, error=error.code, diagnostic=error.diagnostic()))
+                aborted = error.code not in {"sloger_product_not_found", "sloger_product_ambiguous"}
+            except Exception:
+                # Unknown parser errors can include source/credential fragments.
+                error = _error("sloger_b2b_invalid_evidence")
+                error.stage = session.stage
+                items.append(SlogerLookupResult(sku=sku, error=error.code, diagnostic=error.diagnostic()))
+                aborted = True
+    return SlogerBatchResult(items=items, aborted=aborted)
+
+
+async def lookup_products(username: str, password: str, skus: list[str]) -> SlogerBatchResult:
+    return await asyncio.to_thread(_lookup_many, username, password, skus)
 
 
 def _connection() -> dict:

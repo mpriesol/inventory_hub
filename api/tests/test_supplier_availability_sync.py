@@ -1,11 +1,12 @@
 """Supplier ambiguity, expiry and queue API without any supplier network access."""
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,12 +15,24 @@ from pydantic import SecretStr, ValidationError
 from inventory_hub.database import get_session
 from inventory_hub.routers.supplier_availability import router
 from inventory_hub.services import supplier_availability as service
-from inventory_hub.services.supplier_availability_source import AvailabilityError, observation, parse, quantity
+from inventory_hub.services.supplier_availability_source import AvailabilityError, configuration, observation, parse, quantity
 from inventory_hub.settings import settings
 from inventory_hub.supplier_availability_types import SupplierAvailabilityInput
 
 
 class SupplierFactsTests(unittest.TestCase):
+    def test_sloger_uses_only_manual_b2b_source_even_with_listing_feeds(self):
+        cfg = {"name": "Sloger", "feeds": {"sources": {"products": {"remote": {"url": "https://example.invalid/listing"}}}}}
+        with patch("inventory_hub.services.catalog.supplier_config", return_value=cfg):
+            self.assertEqual(configuration("sloger", "b2b")[2], "sloger-b2b")
+            with self.assertRaises(AvailabilityError):
+                configuration("sloger", "products")
+        displayed = service.public("sloger", cfg)
+        self.assertEqual(displayed["feed_keys"], ["b2b"])
+        self.assertTrue(displayed["manual_only"])
+        self.assertFalse(displayed["enabled"])
+        self.assertEqual(displayed["refresh_scope"], "hub_products")
+
     def test_unknown_exact_minimum_boolean_and_external_remain_distinct(self):
         cases = [(None, (None, None, "unknown")), ("0", (False, Decimal(0), "exact")),
                  ("6+", (True, Decimal(6), "minimum")), ("0+", (None, Decimal(0), "minimum")),
@@ -126,3 +139,48 @@ class SupplierRoutesTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422)
             self.assertNotIn("DO-NOT-ECHO", response.text)
             self.assertEqual(response.headers["cache-control"], "no-store")
+
+
+class SlogerSchedulingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_automatic_crawling_is_rejected_before_any_database_mutation(self):
+        db = SimpleNamespace(execute=AsyncMock())
+        with self.assertRaises(AvailabilityError) as error:
+            await service.configure(db, "sloger", SupplierAvailabilityInput(expected_revision=0, feed_key="b2b", enabled=True))
+        self.assertEqual(error.exception.code, "supplier_availability_manual_only")
+        db.execute.assert_not_awaited()
+
+    async def test_due_ordinary_feed_precedes_resumed_b2b_and_next_cycle_keeps_same_run(self):
+        from inventory_hub.services import supplier_availability_worker as worker
+        from inventory_hub.services import supplier_availability_b2b as b2b
+        from inventory_hub.services import sloger_data
+        from inventory_hub import database
+
+        connection = SimpleNamespace(scalar=AsyncMock(return_value=True), commit=AsyncMock(), execute=AsyncMock())
+        db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [(42, 99)])),
+            scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [1, 42])))
+
+        @asynccontextmanager
+        async def connect():
+            yield connection
+
+        @asynccontextmanager
+        async def transaction():
+            yield db
+
+        ongoing = {"supplier": "sloger", "supplier_id": 42, "run_id": 99, "cursor": 10, "skus": ["7700860"]}
+        ordinary = {"supplier": "paul-lange", "supplier_id": 1, "run_id": 100}
+        with patch.object(database, "_engine", SimpleNamespace(connect=connect)), \
+             patch.object(worker, "get_session_context", transaction), \
+             patch.object(service, "resume_run", AsyncMock(return_value=ongoing)), \
+             patch.object(service, "start_run", AsyncMock(side_effect=[ordinary, None, None])), \
+             patch.object(worker, "fetch", Mock(return_value=([], 0))) as fetch, \
+             patch.object(service, "accept_run", AsyncMock()) as accept_feed, \
+             patch.object(sloger_data, "lookup_products", AsyncMock(return_value="source-result")) as lookup, \
+             patch.object(b2b, "accept_batch", AsyncMock()) as accept_b2b:
+            self.assertTrue(await worker.cycle())
+            lookup.assert_not_awaited()
+            accept_feed.assert_awaited_once_with(db, ordinary, [], 0)
+            self.assertTrue(await worker.cycle())
+            fetch.assert_called_once_with(ordinary)
+            lookup.assert_awaited_once_with(["7700860"])
+            accept_b2b.assert_awaited_once_with(db, ongoing, "source-result")

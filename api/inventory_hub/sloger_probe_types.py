@@ -3,7 +3,6 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 from urllib.parse import urlsplit
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -19,31 +18,6 @@ class SlogerCredentials(BaseModel):
         if value != value.strip() or any(ord(c) < 32 for c in value):
             raise ValueError("Use a nonempty username without surrounding whitespace or control characters")
         return value
-
-
-class ProbeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    request_id: UUID
-    username: str | None = Field(default=None, min_length=1, max_length=200)
-    password: SecretStr | None = Field(default=None, min_length=1, max_length=500)
-    sku: str = Field(min_length=1, max_length=100)
-
-    @field_validator("username", "sku")
-    @classmethod
-    def clean_identity(cls, value):
-        if value is None:
-            return value
-        if value != value.strip() or any(ord(c) < 32 for c in value):
-            raise ValueError("Use a nonempty identity without surrounding whitespace or control characters")
-        return value
-
-    @model_validator(mode="after")
-    def credentials_are_not_product_identity(self):
-        if (self.username is None) != (self.password is None):
-            raise ValueError("Provide both credentials or use the stored login")
-        if self.username is not None and (self.username in self.sku or self.password.get_secret_value() in self.sku):
-            raise ValueError("Product identity must not contain login credentials")
-        return self
 
 
 class AvailabilityTier(BaseModel):
@@ -107,3 +81,41 @@ class SlogerObservation(BaseModel):
         if value.tzinfo is None:
             raise ValueError("Observation time must include its timezone")
         return value
+
+
+class SlogerDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stage: Literal["login_page", "login_submit", "search", "product"]
+    reason: Literal["http_status", "network", "redirect", "content_type", "challenge", "size", "deadline", "url", "structure", "authentication"]
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    method: Literal["GET", "POST"] | None = None
+    path_class: Literal["login", "shop_return", "b2b", "search", "product", "other"] | None = None
+
+
+class SlogerLookupResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sku: str = Field(min_length=1, max_length=100)
+    observation: SlogerObservation | None = None
+    error: Literal["sloger_b2b_unavailable", "sloger_auth_failed", "sloger_product_not_found",
+                   "sloger_product_ambiguous", "sloger_b2b_invalid_evidence", "sloger_batch_aborted"] | None = None
+    diagnostic: SlogerDiagnostic | None = None
+
+    @model_validator(mode="after")
+    def one_outcome(self):
+        if (self.observation is None) == (self.error is None):
+            raise ValueError("A supplier lookup needs exactly one observation or error")
+        if self.observation is not None and self.observation.sku != self.sku:
+            raise ValueError("The supplier observation must match the requested SKU")
+        return self
+
+
+class SlogerBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[SlogerLookupResult] = Field(default_factory=list, max_length=10)
+    aborted: bool = False
+
+    @model_validator(mode="after")
+    def unique_skus(self):
+        if len({item.sku for item in self.items}) != len(self.items):
+            raise ValueError("A supplier lookup batch must contain unique SKUs")
+        return self

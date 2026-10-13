@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -20,6 +21,8 @@ from inventory_hub.db_models import FeedRunStatus, IdentifierType, Product, Prod
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services import supplier_availability as service
 from inventory_hub.services import supplier_links
+from inventory_hub.services import supplier_availability_b2b as b2b
+from inventory_hub.sloger_probe_types import SlogerObservation
 from inventory_hub.services.supplier_availability_source import AvailabilityError, observation
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
 from inventory_hub.supplier_availability_types import SupplierAvailabilityInput, SupplierAvailabilityRunInput
@@ -345,3 +348,151 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(report["linked"], 0)
         self.assertFalse(config_io.supplier_prefix_status("new-supplier")["product_prefix_locked"])
         config_io.save_supplier("new-supplier", {"product_code_prefix": "NEWER-"})
+
+    async def sloger_fixture(self, count=12):
+        config_io.save_supplier("sloger", {"name": "Sloger", "adapter_settings": {
+            "availability": {"orderable": "do 2-4 dní", "unknown": "overíme"}}})
+        async with self.transaction() as db:
+            await service.configure(db, "sloger", SupplierAvailabilityInput(expected_revision=0, feed_key="b2b"))
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == "sloger"))
+            ids = []
+            for index in range(count + 1):
+                source = SupplierProduct(supplier_id=supplier_id, supplier_sku=f"SLG-{index:02d}", name="Supplier source")
+                db.add(source)
+                await db.flush()
+                # Last source exists only in the supplier catalog and must never be crawled.
+                if index < count:
+                    product = Product(sku=f"CANONICAL-{index:02d}", name="Existing product",
+                        source_supplier_product_id=source.id)
+                    db.add(product)
+                    await db.flush()
+                    ids.append(product.id)
+                    db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id))
+            return supplier_id, ids
+
+    def sloger_fact(self, sku, **changes):
+        return SlogerObservation(**{"sku": sku, "available": True, "quantity": "8", "quantity_kind": "exact",
+            "quantity_relation": "equal", "availability": "Skladom 8 ks", "observed_at": service.now(),
+            "purchase_price": "5.10", "price_basis": "net", "currency": "EUR",
+            "source_url": "https://www.sloger.sk/shop/tools/brush.html", **changes})
+
+    async def sloger_start(self, supplier_id):
+        async with self.transaction() as db:
+            await service.request_run(db, "sloger", SupplierAvailabilityRunInput(expected_revision=1))
+        async with self.transaction() as db:
+            return await service.start_run(db, supplier_id)
+
+    async def test_sloger_scope_uses_only_active_hub_links_and_never_auto_runs(self):
+        supplier_id, ids = await self.sloger_fixture(3)
+        async with self.transaction() as db:
+            inactive = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == ids[1]))
+            inactive.orderable = False
+            product = await db.get(Product, ids[2])
+            product.is_active = False
+            row = await db.get(SupplierAvailabilitySettings, supplier_id)
+            row.enabled = True  # Even legacy/out-of-band enabled state cannot start a timer crawl.
+        async with self.transaction() as db:
+            self.assertEqual(await b2b.scope_skus(db, supplier_id), ["SLG-00"])
+            self.assertIsNone(await service.start_run(db, supplier_id))
+        plan = await self.sloger_start(supplier_id)
+        self.assertEqual(plan["skus"], ["SLG-00"])
+
+    async def test_sloger_batches_resume_successes_and_preserve_failed_observation_expiry(self):
+        supplier_id, ids = await self.sloger_fixture()
+        old = self.sloger_fact("SLG-01", observed_at=service.now() - timedelta(hours=1), quantity="2")
+        async with self.transaction() as db:
+            await service.record_sloger_import(db, [old], "draft-before-refresh")
+        plan = await self.sloger_start(supplier_id)
+        self.assertEqual(len(plan["skus"]), 10)
+        results = [SimpleNamespace(sku=sku, observation=None if sku == "SLG-01" else self.sloger_fact(sku),
+                                  error="sloger_product_not_found" if sku == "SLG-01" else None)
+                   for sku in plan["skus"]]
+        async with self.transaction() as db:
+            await b2b.accept_batch(db, plan, SimpleNamespace(items=results, aborted=False))
+        with self.assertRaises(AvailabilityError):
+            async with self.transaction() as db:
+                await b2b.accept_batch(db, plan, SimpleNamespace(items=results, aborted=False))
+        async with self.transaction() as db:
+            resumed = await service.resume_run(db, supplier_id, plan["run_id"])
+            self.assertEqual((resumed["cursor"], resumed["skus"]), (10, ["SLG-10", "SLG-11"]))
+            previous = await db.get(SupplierAvailabilityObservation, (supplier_id, "SLG-01"))
+            self.assertEqual(previous.observed_at, old.observed_at)
+            self.assertEqual(previous.expires_at, old.observed_at + timedelta(seconds=21600))
+            self.assertEqual((await service.project(db, [ids[0]]))[ids[0]]["label"], "do 2-4 dní")
+            self.assertIsNone((await db.get(SupplierAvailabilitySettings, supplier_id)).last_success_at)
+        async with self.transaction() as db:
+            await b2b.accept_batch(db, resumed, SimpleNamespace(aborted=False, items=[
+                SimpleNamespace(sku=sku, observation=self.sloger_fact(sku), error=None) for sku in resumed["skus"]]))
+        async with self.transaction() as db:
+            report = await b2b.latest_progress(db, supplier_id)
+            self.assertEqual((report["total"], report["processed"], report["succeeded"], report["failed"]), (12, 12, 11, 1))
+            self.assertEqual(report["status"], "completed")
+            self.assertIsNone(await service.start_run(db, supplier_id))
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_balances")), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct).where(
+                SupplierProduct.supplier_id == supplier_id)), 13)
+
+    async def test_sloger_fatal_batch_stops_remaining_scope_until_explicit_manual_run(self):
+        supplier_id, _ids = await self.sloger_fixture()
+        plan = await self.sloger_start(supplier_id)
+        async with self.transaction() as db:
+            await b2b.accept_batch(db, plan, SimpleNamespace(aborted=True, items=[
+                SimpleNamespace(sku=sku, observation=None, error="sloger_auth_failed") for sku in plan["skus"]]))
+        async with self.transaction() as db:
+            row = await db.get(SupplierAvailabilitySettings, supplier_id)
+            self.assertIsNone(row.running_run_id)
+            self.assertEqual(row.last_error, "supplier_availability_b2b_aborted")
+            self.assertIsNone(await service.resume_run(db, supplier_id, plan["run_id"]))
+            self.assertIsNone(await service.start_run(db, supplier_id))
+            report = await b2b.latest_progress(db, supplier_id)
+            self.assertEqual((report["total"], report["processed"], report["status"]), (12, 10, "failed"))
+
+    async def test_sloger_delayed_batch_does_not_overwrite_newer_import_observation(self):
+        supplier_id, _ids = await self.sloger_fixture(1)
+        plan = await self.sloger_start(supplier_id)
+        older = self.sloger_fact("SLG-00", observed_at=service.now() - timedelta(minutes=1), quantity="2")
+        newer = self.sloger_fact("SLG-00", quantity="8")
+        async with self.transaction() as db:
+            await service.record_sloger_import(db, [newer], "newer-import")
+        async with self.transaction() as db:
+            await b2b.accept_batch(db, plan, SimpleNamespace(aborted=False, items=[
+                SimpleNamespace(sku="SLG-00", observation=older, error=None)]))
+        async with self.transaction() as db:
+            stored = await db.get(SupplierAvailabilityObservation, (supplier_id, "SLG-00"))
+            self.assertEqual(stored.observed_at, newer.observed_at)
+            self.assertEqual(stored.quantity, 8)
+
+    async def test_sloger_import_creates_only_supplier_observations_and_no_crawler(self):
+        config_io.save_supplier("sloger", {"name": "Sloger"})
+        fact = self.sloger_fact("7700860", available=None, quantity=None, quantity_kind="unknown", quantity_relation="unknown")
+        async with self.transaction() as db:
+            await service.record_sloger_import(db, [fact], "draft-only")
+        async with self.transaction() as db:
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == "sloger"))
+            row = await db.get(SupplierAvailabilitySettings, supplier_id)
+            self.assertFalse(row.enabled)
+            self.assertIsNone(row.manual_requested_at)
+            self.assertIsNone(row.last_success_at)
+            self.assertIsNone(await service.start_run(db, supplier_id))
+            stored = await db.get(SupplierAvailabilityObservation, (supplier_id, fact.sku))
+            self.assertIsNone(stored.available)
+            self.assertIsNone(stored.quantity)
+            self.assertNotIn("purchase_price", stored.raw)
+            self.assertIsNone(await b2b.latest_progress(db, supplier_id))
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_sloger_resume_rejects_changed_settings_and_empty_scope_completes(self):
+        supplier_id, _ids = await self.sloger_fixture(0)
+        plan = await self.sloger_start(supplier_id)
+        self.assertEqual(plan["skus"], [])
+        async with self.transaction() as db:
+            await b2b.accept_batch(db, plan, SimpleNamespace(items=[], aborted=False))
+            self.assertEqual((await b2b.latest_progress(db, supplier_id))["processed"], 0)
+        plan = await self.sloger_start(supplier_id)
+        async with self.transaction() as db:
+            await service.configure(db, "sloger", SupplierAvailabilityInput(expected_revision=1, feed_key="b2b",
+                interval_seconds=300, freshness_seconds=300))
+        with self.assertRaises(AvailabilityError):
+            async with self.transaction() as db:
+                await service.resume_run(db, supplier_id, plan["run_id"])

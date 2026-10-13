@@ -22,6 +22,11 @@ def configuration(supplier, feed_key):
         cfg = catalog.supplier_config(supplier)
     except catalog.CatalogError:
         raise AvailabilityError("supplier_availability_source_missing", 404) from None
+    if supplier == "sloger":
+        if feed_key != "b2b":
+            raise AvailabilityError("supplier_availability_source_missing", 422)
+        fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+        return cfg, {"type": "stock", "mode": "b2b"}, "sloger-b2b", fingerprint
     source = (cfg.get("feeds", {}).get("sources") or {}).get(feed_key)
     if not isinstance(source, dict):
         raise AvailabilityError("supplier_availability_source_missing", 422)

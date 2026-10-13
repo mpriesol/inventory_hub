@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -133,6 +133,59 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         if queued:
             await imports.execute_import("test-shop", self.id)
         return imports.import_result("test-shop", self.id)
+
+    async def test_supplier_expiry_after_queue_prevents_all_remote_writes(self):
+        self.document['staging'] = {'draft_id': 'draft', 'hash': 'hash',
+            'supplier_availability_expires_at': (imports.now() - timedelta(seconds=1)).isoformat()}
+        imports._write(self.path, self.document)
+        imports.queue_import('test-shop', self.id, staging_id='draft')
+        await imports.execute_import('test-shop', self.id)
+        result = imports.import_result('test-shop', self.id)
+        self.assertEqual(result['errors'], ['import_source_availability_expired'])
+        self.assertIs(result['items'][0]['product_write_attempted'], False)
+        self.assertEqual(self.client.sent, [])
+
+    async def test_supplier_expiry_during_remote_options_check_prevents_auxiliary_post(self):
+        from inventory_hub.services import product_import_source
+        instant = imports.now()
+        clock = {'now': instant}
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock['now']
+        self.document['staging'] = {'draft_id': 'draft', 'hash': 'hash',
+            'supplier_availability_expires_at': (instant + timedelta(hours=1)).isoformat()}
+        self.document['preview']['create_validation_field'] = True
+        self.client.has_field = False
+        imports._write(self.path, self.document)
+        imports.queue_import('test-shop', self.id, staging_id='draft')
+        original = imports.cached_import_options
+        def options(*args, **kwargs):
+            value = original(*args, **kwargs)
+            clock['now'] = instant + timedelta(hours=2)
+            return value
+        with patch.object(product_import_source, 'datetime', Clock), \
+             patch.object(imports, 'cached_import_options', side_effect=options):
+            await imports.execute_import('test-shop', self.id)
+        self.assertEqual(imports.import_result('test-shop', self.id)['errors'], ['import_source_availability_expired'])
+        self.assertEqual(self.client.sent, [])
+
+    async def test_expired_supplier_evidence_still_allows_uncertain_readback_without_resending(self):
+        self.client.timeout, self.client.accept = True, False
+        first = await self.run_import()
+        self.assertEqual(first['items'][0]['status'], 'uncertain')
+        self.assertIs(first['items'][0]['product_write_attempted'], True)
+        saved = imports._load_job(self.path)
+        saved['staging'] = {'draft_id': 'draft', 'hash': 'hash',
+            'supplier_availability_expires_at': (imports.now() - timedelta(seconds=1)).isoformat()}
+        imports._save_job(self.path, saved)
+        writes = len(self.client.sent)
+        imports.queue_import('test-shop', self.id, retry_failed=True, staging_id='draft')
+        with patch.object(imports, '_verify_created', return_value=None) as readback:
+            await imports.execute_import('test-shop', self.id)
+        readback.assert_called_once()
+        self.assertEqual(len(self.client.sent), writes)
+        self.assertEqual(imports.import_result('test-shop', self.id)['items'][0]['status'], 'uncertain')
 
     async def test_preview_freezes_manual_price_and_execution_sends_that_price(self):
         patch.object(imports, "supplier_config", return_value={}).start()

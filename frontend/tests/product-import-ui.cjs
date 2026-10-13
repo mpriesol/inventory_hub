@@ -25,7 +25,7 @@ const options = { language: 'sk', currency: 'EUR', pricelist: 'Default', categor
 const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, { code: 'PARTS', parent_code: 'MENU', names: { sk: 'Komponenty' } }, { code: 'TUBES', parent_code: 'PARTS', names: { sk: 'Duše' } }];
 const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
-const calls = []; let failEdit = false, deferRead = false, releaseRead;
+const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, method: init.method || 'GET', body });
@@ -42,11 +42,15 @@ global.fetch = async (path, init = {}) => {
     assert.equal(body.expected_revision, server.revision);
     for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
+  } else if (path.endsWith('/source-retry')) {
+    assert.deepEqual(body, { expected_revision: server.revision });
+    server.revision++; server.status = 'source_pending'; server.source_lookup = { ...server.source_lookup, state: 'queued', error: null, retryable: false };
+    if (failSourceRetry) throw new TypeError('Synthetic lost source-retry response');
   } else if (path.endsWith('/save')) { assert.equal(body.expected_revision, server.revision); server.revision++; server.status = 'saved'; server.rows.forEach(row => row.hub_product_id = row.id + 100); }
   else if (path.endsWith('/ai')) { assert.equal(body.research, 'official'); server.revision++; server.rows.filter(row => row.values.ai_enabled).forEach(row => row.ai_job = { id: `job-${row.group_key}`, status: 'estimate', estimate_usd: '0.04', actual_usd: null, checks: {} }); }
   else if (path.endsWith('/ai-start')) { server.revision++; server.rows.filter(row => row.ai_job).forEach(row => { row.ai_job.status = 'generating'; row.ai_job.actual_usd = '0.03'; }); }
   else if (path.endsWith('/ai-apply')) { server.revision++; server.status = 'draft'; server.rows.filter(row => row.ai_job).forEach(row => { if (!row.manual_fields.includes('name')) row.values.name = 'AI názov'; if (!row.manual_fields.includes('description_html')) { row.values.description_html = '<p>Vylepšené AI</p>'; row.provenance.description_html = 'ai'; } row.ai_job.status = 'completed'; }); }
-  else if (path.endsWith('/publish-preview')) { assert.equal(server.status, 'saved'); server.revision++; server.publication = { preview_id: 'preview-1', options, errors: [], warnings: [], expires_at: new Date(Date.now() + 60000).toISOString(), items: ['biketrek','xtrek'].map(shop => ({ shop, code: 'PL-G', name: 'Rodina duší', product_ids: [1, 2], variants_count: 2, status: 'ready', warnings: [], errors: [], payload: { code: 'PL-G', active_yn: false } })) }; }
+  else if (path.endsWith('/publish-preview')) { assert.equal(server.status, 'saved'); server.revision++; server.publication_result = null; server.publication_preview_retryable = false; server.publication = { preview_id: 'preview-1', options, errors: [], warnings: [], expires_at: new Date(Date.now() + 60000).toISOString(), items: ['biketrek','xtrek'].map(shop => ({ shop, code: 'PL-G', name: 'Rodina duší', product_ids: [1, 2], variants_count: 2, status: 'ready', warnings: [], errors: [], payload: { code: 'PL-G', active_yn: false } })) }; }
   else if (path.endsWith('/publish')) { assert.equal(body.preview_id, server.publication.preview_id); server.revision++; server.publication_result = { ...server.publication, status: 'completed', items: server.publication.items.map(item => ({ ...item, status: item.status === 'exists' ? 'exists' : 'created' })) }; server.rows.forEach(row => row.publication_links = row.values.target_shops.map(shop => ({shop,status:'created',shop_admin_url:`https://${shop}.example.test/admin/${row.id}`,shop_url:`https://${shop}.example.test/product/${row.id}`}))); }
   else if (path !== '/api/product-imports/test-draft') throw new Error(`Unexpected API ${path}`);
   return { ok: true, status: 200, json: async () => clone(server) };
@@ -286,6 +290,73 @@ async function render(entry) {
   assert(document.body.textContent.includes('Import do e-shopu dokončený'));
   assert.equal(server.publication_result.items[0].status, 'exists', 'No-op completion retains the already-existing outcome');
   assert(document.querySelector('a[href="https://biketrek.example.test/admin/1"]'));
+
+  server.status = 'saved';
+  server.publication_result = { ...server.publication_result, status: 'failed', errors: ['import_source_availability_expired'], items: server.publication_result.items.map(item => ({ ...item, status: 'failed', errors: ['import_source_availability_expired'] })) };
+  server.publication_preview_retryable = true;
+  await render('/product-import?draft=test-draft&case=expired-with-no-writes');
+  const freshPreview = () => document.querySelector('[data-testid="import-fresh-preview"]');
+  assert(freshPreview() && !freshPreview().disabled, 'Server proof of zero attempted product writes permits a fresh preview');
+  assert(field(1, 'name').querySelector('button').disabled && label('Vylepšiť pomocou AI: PL-1').disabled, 'Expiry recovery does not reopen editing or AI');
+  assert.equal(button('Uložiť produkty do Hubu'), undefined, 'Expiry recovery does not save the product again');
+  const beforeFreshPreview = calls.length;
+  await act(async () => { freshPreview().click(); freshPreview().click(); });
+  const freshCalls = calls.slice(beforeFreshPreview).filter(call => call.method !== 'GET');
+  assert.deepEqual(freshCalls.map(call => call.path), ['/api/product-imports/test-draft/publish-preview'], 'Fresh preview is explicit and invokes no save, AI or product publication');
+  assert.equal(server.publication_result, null); assert.equal(freshPreview(), null);
+  server.publication_result = { ...server.publication, status: 'failed', items: server.publication.items.map((item, index) => ({ ...item, status: index ? 'uncertain' : 'created' })) };
+  server.publication_preview_retryable = false;
+  await render('/product-import?draft=test-draft&case=mixed-outcome');
+  assert.equal(freshPreview(), null, 'A mixed or uncertain result never offers a replacement preview');
+  assert(document.body.textContent.includes(i18n.t('productImport.recover')), 'Ordinary recovery remains available for existing publication journals');
+
+  server = { ...server, revision: server.revision + 1, supplier: 'sloger', status: 'source_pending', publication: null, publication_result: null,
+    rows: [{ ...clone(initial[0]), values: { ...values(1), code: 'SLG-1' }, source_status: 'pending', source_error: null }],
+    source_lookup: { state: 'queued', total: 1, completed: 0, failed: 0, error: null, retryable: false } };
+  await render('/product-import?draft=test-draft&case=source-pending');
+  const sourceControl = id => document.querySelector(`[data-testid="${id}"]`);
+  const sourceWrites = () => calls.filter(call => call.method !== 'GET');
+  const beforeSourceWrites = sourceWrites().length;
+  assert(sourceControl('import-source-status'));
+  assert(button('Pripraviť import').disabled && button('Uložiť produkty do Hubu').disabled);
+  assert(label('Vylepšiť pomocou AI: SLG-1').disabled && label('Import do BIKETREK: SLG-1').disabled);
+  assert(label('Pravidlá AI pre SLG-1').disabled);
+  assert(field(1, 'name').querySelector('button').disabled);
+  await key(field(1, 'name'), 'F2'); await paste(field(1, 'name'), 'Must not edit');
+  assert(!field(1, 'name').querySelector('input'), 'Pending B2B facts block keyboard and paste editing');
+  assert.equal(sourceWrites().length, beforeSourceWrites);
+  assert.equal(sourceControl('import-source-retry'), null);
+  server.status = 'source_running'; server.source_lookup.state = 'running';
+  await act(async () => { for (const poll of [...pollers.values()]) await poll(); });
+  assert.equal(sourceWrites().length, beforeSourceWrites, 'Source progress polling only reads the existing draft');
+  assert(sourceControl('import-source-status').textContent.includes('Načítavajú sa'));
+
+  server.status = 'source_failed'; server.source_lookup = { ...server.source_lookup, state: 'failed', failed: 1, error: 'sloger_credentials_not_configured', retryable: true };
+  server.rows[0].source_status = 'failed'; server.rows[0].source_error = 'sloger_credentials_not_configured';
+  await click(sourceControl('import-source-refresh'));
+  assert(button('Pripraviť import').disabled && field(1, 'name').querySelector('button').disabled);
+  assert(document.querySelector('a[href="/suppliers?edit=sloger"]'), 'Missing B2B login links to supplier settings');
+  failSourceRetry = true; await click(sourceControl('import-source-retry'));
+  assert(sourceControl('import-source-retry').disabled, 'Unconfirmed retry cannot be blindly repeated');
+  assert.equal(sourceWrites().length, beforeSourceWrites + 1);
+  await click(sourceControl('import-source-refresh'));
+  assert.equal(sourceControl('import-source-retry'), null, 'GET recovery observes the already queued source request');
+  assert.equal(sourceWrites().length, beforeSourceWrites + 1);
+
+  failSourceRetry = false; server.status = 'source_failed'; server.source_lookup = { ...server.source_lookup, state: 'failed', retryable: true };
+  await click(sourceControl('import-source-refresh'));
+  await act(async () => { sourceControl('import-source-retry').click(); sourceControl('import-source-retry').click(); });
+  assert.equal(sourceWrites().length, beforeSourceWrites + 2, 'Rapid retry clicks enqueue only once');
+  server.status = 'draft'; server.source_lookup = { ...server.source_lookup, state: 'completed', completed: 1, failed: 0, error: null, retryable: false };
+  server.rows[0].source_status = 'completed'; server.rows[0].source_error = null; server.rows[0].provenance.eans = 'supplier';
+  await act(async () => { for (const poll of [...pollers.values()]) await poll(); });
+  assert.equal(sourceControl('import-source-status'), null);
+  assert(!button('Pripraviť import').disabled && !field(1, 'name').querySelector('button').disabled);
+  assert(field(1, 'eans').textContent.includes('B2B dodávateľa'));
+  assert.equal(sourceWrites().length, beforeSourceWrites + 2, 'Completed B2B facts never automatically invoke AI or import');
+  const beforeNoAi = calls.filter(call => /\/ai(?:-|$)/.test(call.path) && call.method !== 'GET').length;
+  await click(button('Pripraviť import'));
+  assert.equal(calls.filter(call => /\/ai(?:-|$)/.test(call.path) && call.method !== 'GET').length, beforeNoAi, 'Ordinary import with AI unchecked uses fetched supplier facts without an AI call');
   await act(async () => root.unmount());
   console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

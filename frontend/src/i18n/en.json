@@ -2398,7 +2398,18 @@
       "supplier_prefix_validation_incomplete": "Prefix uniqueness cannot be verified because another supplier configuration is unreadable. Repair that configuration first.",
       "supplier_prefix_registry_invalid": "The prefix registry could not be read. Identity changes are blocked until the registry is restored or repaired.",
       "supplier_prefix_required": "Configure a unique supplier prefix first.",
-      "supplier_prefix_changed": "The prefix changed after these data were prepared. Reload the supplier data before trying again."
+      "supplier_prefix_changed": "The prefix changed after these data were prepared. Reload the supplier data before trying again.",
+      "sloger_credentials_not_configured": "Save the Sloger B2B login in supplier settings first.",
+      "sloger_credentials_unavailable": "The saved Sloger B2B login could not be loaded.",
+      "sloger_auth_failed": "Sloger did not confirm the login. Check the supplier settings.",
+      "sloger_b2b_unavailable": "Sloger B2B facts could not be loaded.",
+      "sloger_product_not_found": "Sloger did not return the exact requested product code.",
+      "sloger_product_ambiguous": "The product or its facts could not be verified unambiguously.",
+      "sloger_b2b_busy": "Another task is using Sloger B2B. Resume after it finishes.",
+      "supplier_availability_manual_only": "Sloger availability is refreshed manually; automatic refresh is not enabled.",
+      "supplier_availability_b2b_aborted": "Refresh stopped. Successfully fetched facts were retained; refresh the remaining products manually.",
+      "supplier_availability_partial": "Some products could not be refreshed. Their previous facts remain valid only until the configured expiry.",
+      "sloger_batch_aborted": "Fetching from Sloger B2B was interrupted. Check the error and start a manual refresh."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",
@@ -2424,7 +2435,10 @@
       "supplier_identifier_conflict": "The supplier code has an ambiguous owner.",
       "identifier_conflict": "The EAN or code conflicts with an existing product.",
       "unmapped_sku_collision": "The SKU is ambiguous or differs in letter case."
-    }
+    },
+    "manualB2bHelp": "Sloger B2B availability is refreshed manually for products already recorded in Hub. The full catalog is not crawled periodically. Refresh uses the saved login and does not call AI.",
+    "b2bProgress": "Processed: {{processed}} / {{total}} · succeeded: {{succeeded}} · failed: {{failed}}",
+    "b2bFailures": "Products that could not be refreshed"
   },
   "productPublication": {
     "intro": "Choose a saved product and fields. Review the proposed change first; the shop changes only after you confirm sending.",
@@ -3000,7 +3014,8 @@
       "mapping": "Mapping",
       "manual": "Manual",
       "ai": "AI",
-      "derived": "Derived"
+      "derived": "Derived",
+      "supplier": "Supplier B2B"
     },
     "warnings": "Warnings: {{count}}",
     "keyboardHelp": "Click or press F2 to edit. Tab moves between cells. Paste a spreadsheet block into the active cell.",
@@ -3069,7 +3084,8 @@
       "aiStarted": "AI processing started.",
       "aiApplied": "AI results are in the table. Manual values were preserved. Save products to Hub.",
       "previewReady": "Preview is ready for review and confirmation.",
-      "published": "The request was submitted. Each product result is being verified."
+      "published": "The request was submitted. Each product result is being verified.",
+      "previewRenewed": "A fresh preview is ready. Check availability before sending."
     },
     "errors": {
       "invalidMoney": "Enter a non-negative number with at most two decimal places.",
@@ -3097,9 +3113,28 @@
       "import_code_prefix": "Product code must use the configured supplier prefix.",
       "category_must_be_leaf": "Choose the leaf category in the branch.",
       "category_missing": "Target category is missing; configure mapping or select it in the cell.",
-      "local_identity_conflict": "A code or EAN already belongs to another Hub product. Reconcile its identity first.",
+      "local_identity_conflict": "The product identity in Hub is ambiguous. Resolve the conflict before continuing.",
       "import_ai_not_applied": "Apply the AI results to the table for products with AI enabled. To send the original data without AI, explicitly turn AI off for those products.",
-      "import_publication_finished": "The saved delivery result is shown below for each product. This preparation is closed; use the product editor for further changes to existing products."
+      "import_publication_finished": "The saved delivery result is shown below for each product. This preparation is closed; use the product editor for further changes to existing products.",
+      "sloger_credentials_not_configured": "Save the Sloger B2B login in supplier settings first.",
+      "sloger_credentials_unavailable": "The saved Sloger B2B login could not be loaded.",
+      "sloger_auth_failed": "Sloger did not confirm the login. Check the supplier settings.",
+      "sloger_b2b_unavailable": "Sloger B2B facts could not be loaded.",
+      "sloger_product_not_found": "Sloger did not return the exact requested product code.",
+      "sloger_product_ambiguous": "The product or its facts could not be verified unambiguously.",
+      "import_source_pending": "Wait for supplier facts to finish loading first.",
+      "import_source_interrupted": "Fetching was interrupted. You can resume with the missing products.",
+      "import_source_failed": "Supplier facts are incomplete. Check the errors and resume fetching.",
+      "import_source_not_retryable": "This fetch cannot be restarted. Reload the current preparation state.",
+      "sloger_product_identity_mismatch": "B2B facts do not match the selected product identity.",
+      "sloger_product_data_invalid": "Sloger returned invalid product facts.",
+      "sloger_invalid_result": "The Sloger B2B response could not be verified.",
+      "sloger_lookup_failed": "Fetching the product from Sloger B2B failed.",
+      "sloger_currency_mismatch": "The B2B currency differs from the product currency. Check the prices.",
+      "sloger_purchase_price_unknown": "The purchase price could not be verified and remains unknown.",
+      "sloger_availability_unknown": "Supplier availability could not be confirmed.",
+      "sloger_b2b_busy": "Another task is using Sloger B2B. Resume after it finishes.",
+      "import_source_availability_expired": "Supplier availability has expired. Prepare a fresh import preview before sending."
     },
     "delivery": {
       "queued": "Shop delivery queued",
@@ -3134,17 +3169,30 @@
     "aiSourcesHelp": "AI always uses the feed and official sources. Configured cost review, approval and import confirmation rules still apply.",
     "finishExisting": "Finish preparation - products already exist",
     "targetUnavailable": "This shop is not ready. Check its configuration and create a new preparation.",
-    "secondaryTargetHelp": "New products in {{shop}} will be hidden and marked for review."
+    "secondaryTargetHelp": "New products in {{shop}} will be hidden and marked for review.",
+    "sourceStates": {
+      "queued": "Waiting for Sloger B2B facts",
+      "running": "Fetching Sloger B2B facts",
+      "failed": "Sloger B2B facts are incomplete",
+      "completed": "Sloger B2B facts loaded"
+    },
+    "sourceRowStates": {
+      "pending": "B2B: pending",
+      "completed": "B2B: loaded",
+      "failed": "B2B: failed"
+    },
+    "sourceHelp": "Supplier facts for the selected products are fetched first, without AI. Editing and import become available when this finishes. Optional AI enhancement then uses the model configured in Hub.",
+    "sourceProgress": "Loaded: {{completed}} / {{total}} · failed: {{failed}}",
+    "sourceRetry": "Resume fetching missing facts",
+    "sourceRetryUncertain": "The start could not be confirmed. Reload the preparation state first; fetching is not retried automatically.",
+    "freshPreview": "Prepare a fresh preview"
   },
   "slogerProbe": {
-    "title": "Sloger - B2B product verification",
-    "back": "Suppliers",
-    "description": "Verify one specific product with Luna. The result remains in this preview; products, stock and shops are unchanged.",
     "signIn": "Sign in to Hub",
     "username": "Sloger username",
     "password": "Sloger password",
     "sku": "Sloger product code",
-    "credentialsHelp": "The login is saved on the Hub server and reused for subsequent products. The password is cleared from the form when sent and never sent to AI. Saving the login does not start paid verification or confirm that the password is correct.",
+    "credentialsHelp": "The login is saved on the Hub server and reused for product imports and manual availability refreshes. The password is never sent to AI. B2B facts are fetched without AI; optional content enhancement uses the model configured in Hub. Saving the login does not confirm that the password is correct.",
     "credentialsTitle": "Sloger B2B login",
     "credentialsLoading": "Loading login status…",
     "credentialsSaving": "Saving login…",
@@ -3155,12 +3203,10 @@
     "credentialsReload": "Reload login status",
     "credentialsLoadFailed": "The saved login status could not be loaded. Reload its status before verifying another product.",
     "credentialsSaveFailed": "Saving the login could not be confirmed. Reload the login status; the save will not be retried automatically.",
-    "start": "Start paid verification with Luna",
     "request": "Verification ID:",
     "recoveryHelp": "Reload the stored state of this request. This does not start another paid lookup. You can refresh this page or save its link.",
     "loading": "Verification in progress…",
     "refresh": "Reload stored result",
-    "newLookup": "New verification",
     "model": "Model",
     "cost": "Known AI cost so far",
     "tokens": "Input / output tokens",
@@ -3211,6 +3257,9 @@
       "sloger_probe_fact_mismatch": "The AI result did not match the verified Sloger facts.",
       "hub_access_required": "Sign in to Hub and reload the stored state.",
       "hub_access_not_configured": "Hub access is not configured."
-    }
+    },
+    "archiveTitle": "Saved Sloger verification result",
+    "archiveHelp": "This page only displays a historical verification. B2B facts are fetched automatically during normal product import.",
+    "settingsLink": "Supplier settings"
   }
 }

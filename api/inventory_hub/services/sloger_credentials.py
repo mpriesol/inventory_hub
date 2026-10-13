@@ -18,6 +18,17 @@ MAX_BYTES = 8192
 FILENAME = "sloger.json"
 
 
+def contains_secret(value, secrets: tuple[str, str]) -> bool:
+    """Check actual strings before JSON escaping could obscure a credential."""
+    if isinstance(value, str):
+        return any(secret in value for secret in secrets)
+    if isinstance(value, dict):
+        return any(contains_secret(item, secrets) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_secret(item, secrets) for item in value)
+    return False
+
+
 def _unavailable():
     return CatalogError("sloger_credentials_unavailable", "Stored Sloger credentials are unavailable", 503)
 

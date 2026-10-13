@@ -2399,7 +2399,18 @@
       "supplier_prefix_validation_incomplete": "Jedinečnosť prefixu nemožno overiť, pretože konfiguráciu iného dodávateľa nemožno načítať. Najprv treba opraviť túto konfiguráciu.",
       "supplier_prefix_registry_invalid": "Register prefixov sa nepodarilo načítať. Zmeny identít sú zablokované; register treba obnoviť alebo opraviť.",
       "supplier_prefix_required": "Najprv nastav jedinečný prefix dodávateľa.",
-      "supplier_prefix_changed": "Prefix sa od prípravy údajov zmenil. Obnov údaje dodávateľa pred ďalším pokusom."
+      "supplier_prefix_changed": "Prefix sa od prípravy údajov zmenil. Obnov údaje dodávateľa pred ďalším pokusom.",
+      "sloger_credentials_not_configured": "Najprv ulož prihlásenie do Sloger B2B v nastaveniach dodávateľa.",
+      "sloger_credentials_unavailable": "Uložené prihlásenie do Sloger B2B sa nepodarilo načítať.",
+      "sloger_auth_failed": "Sloger nepotvrdil prihlásenie. Skontroluj údaje v nastaveniach dodávateľa.",
+      "sloger_b2b_unavailable": "Údaje zo Sloger B2B sa nepodarilo načítať.",
+      "sloger_product_not_found": "Sloger nevrátil produkt s presne zadaným kódom.",
+      "sloger_product_ambiguous": "Produkt alebo jeho údaje sa nepodarilo jednoznačne overiť.",
+      "sloger_b2b_busy": "Sloger B2B práve používa iná úloha. Skús pokračovať po jej dokončení.",
+      "supplier_availability_manual_only": "Dostupnosť Slogeru sa obnovuje iba ručne; automatické obnovovanie nie je povolené.",
+      "supplier_availability_b2b_aborted": "Obnovenie sa zastavilo. Úspešne načítané údaje zostali uložené; zvyšné produkty obnov ručne.",
+      "supplier_availability_partial": "Niektoré produkty sa nepodarilo obnoviť. Ich predchádzajúce údaje platia iba do uplynutia nastavenej lehoty.",
+      "sloger_batch_aborted": "Načítanie zo Sloger B2B bolo prerušené. Skontroluj chybu a spusti ručné obnovenie."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
@@ -2425,7 +2436,10 @@
       "supplier_identifier_conflict": "Dodávateľský kód má nejednoznačného vlastníka.",
       "identifier_conflict": "EAN alebo kód sú v konflikte s existujúcim produktom.",
       "unmapped_sku_collision": "SKU nie je jednoznačné alebo sa líši veľkosťou písmen."
-    }
+    },
+    "manualB2bHelp": "Dostupnosť zo Sloger B2B sa obnovuje iba ručne pre produkty už evidované v Hube. Celý katalóg sa pravidelne neprehľadáva. Obnovenie používa uložené prihlásenie a nevolá AI.",
+    "b2bProgress": "Spracované: {{processed}} / {{total}} · úspešné: {{succeeded}} · chyby: {{failed}}",
+    "b2bFailures": "Produkty, ktoré sa nepodarilo obnoviť"
   },
   "productPublication": {
     "intro": "Vyberte uložený produkt a polia. Najprv sa načíta a ukáže zmena; e-shop sa zmení až po potvrdení odoslania.",
@@ -3002,7 +3016,8 @@
       "mapping": "Mapovanie",
       "manual": "Ručne",
       "ai": "AI",
-      "derived": "Odvodené"
+      "derived": "Odvodené",
+      "supplier": "B2B dodávateľa"
     },
     "warnings": "Upozornenia: {{count}}",
     "keyboardHelp": "Kliknutie alebo F2 upraví bunku. Tab presúva medzi bunkami. Z Excelu možno vložiť blok do aktívnej bunky.",
@@ -3071,7 +3086,8 @@
       "aiStarted": "AI spracovanie bolo spustené.",
       "aiApplied": "Výsledky AI sú v tabuľke. Ručne upravené hodnoty zostali zachované. Uložte produkty do Hubu.",
       "previewReady": "Náhľad je pripravený na kontrolu a potvrdenie.",
-      "published": "Požiadavka bola odovzdaná na spracovanie. Výsledok sa overuje pre každý produkt."
+      "published": "Požiadavka bola odovzdaná na spracovanie. Výsledok sa overuje pre každý produkt.",
+      "previewRenewed": "Nový náhľad je pripravený. Pred odoslaním skontroluj dostupnosť."
     },
     "errors": {
       "invalidMoney": "Zadajte nezáporné číslo, najviac dve desatinné miesta.",
@@ -3099,9 +3115,28 @@
       "import_code_prefix": "Kód musí obsahovať nakonfigurovaný prefix dodávateľa.",
       "category_must_be_leaf": "Vyberte najnižšiu kategóriu vo vetve.",
       "category_missing": "Chýba cieľová kategória; nastavte mapovanie alebo ju vyberte v bunke.",
-      "local_identity_conflict": "Kód alebo EAN už patrí inému produktu v Hube. Najprv zosúlaďte identitu.",
+      "local_identity_conflict": "Identita produktu v Hube je nejednoznačná. Oprav konflikt pred pokračovaním.",
       "import_ai_not_applied": "Pri produktoch so zapnutým AI najprv prijmite výsledky AI do tabuľky. Ak chcete odoslať pôvodné údaje bez AI, vypnite pri nich AI.",
-      "import_publication_finished": "Výsledok odoslania je uložený nižšie pri jednotlivých produktoch. Táto príprava je uzavretá; ďalšie zmeny existujúcich produktov patria do produktového editora."
+      "import_publication_finished": "Výsledok odoslania je uložený nižšie pri jednotlivých produktoch. Táto príprava je uzavretá; ďalšie zmeny existujúcich produktov patria do produktového editora.",
+      "sloger_credentials_not_configured": "Najprv ulož prihlásenie do Sloger B2B v nastaveniach dodávateľa.",
+      "sloger_credentials_unavailable": "Uložené prihlásenie do Sloger B2B sa nepodarilo načítať.",
+      "sloger_auth_failed": "Sloger nepotvrdil prihlásenie. Skontroluj údaje v nastaveniach dodávateľa.",
+      "sloger_b2b_unavailable": "Údaje zo Sloger B2B sa nepodarilo načítať.",
+      "sloger_product_not_found": "Sloger nevrátil produkt s presne zadaným kódom.",
+      "sloger_product_ambiguous": "Produkt alebo jeho údaje sa nepodarilo jednoznačne overiť.",
+      "import_source_pending": "Najprv počkaj na dokončenie načítania údajov dodávateľa.",
+      "import_source_interrupted": "Načítanie údajov bolo prerušené. Môžeš pokračovať od chýbajúcich produktov.",
+      "import_source_failed": "Údaje dodávateľa nie sú kompletné. Skontroluj chyby a pokračuj v načítaní.",
+      "import_source_not_retryable": "Toto načítanie nemožno znova spustiť. Obnov aktuálny stav prípravy.",
+      "sloger_product_identity_mismatch": "Údaje z B2B sa nezhodujú s identitou vybraného produktu.",
+      "sloger_product_data_invalid": "Sloger vrátil neplatné údaje produktu.",
+      "sloger_invalid_result": "Odpoveď zo Sloger B2B sa nepodarilo overiť.",
+      "sloger_lookup_failed": "Načítanie produktu zo Sloger B2B zlyhalo.",
+      "sloger_currency_mismatch": "Mena v B2B sa líši od meny produktu. Skontroluj ceny.",
+      "sloger_purchase_price_unknown": "Nákupnú cenu sa nepodarilo zistiť; zostáva neznáma.",
+      "sloger_availability_unknown": "Dostupnosť dodávateľa sa nepodarilo potvrdiť.",
+      "sloger_b2b_busy": "Sloger B2B práve používa iná úloha. Skús pokračovať po jej dokončení.",
+      "import_source_availability_expired": "Dostupnosť dodávateľa vypršala. Pred odoslaním priprav nový náhľad importu."
     },
     "delivery": {
       "queued": "Odoslanie vo fronte",
@@ -3136,17 +3171,30 @@
     "aiSourcesHelp": "AI vždy používa feed a oficiálne zdroje. Platia nastavené pravidlá kontroly nákladov, schvaľovania a potvrdenia importu.",
     "finishExisting": "Dokončiť prípravu - produkty už existujú",
     "targetUnavailable": "E-shop nie je pripravený. Skontrolujte jeho konfiguráciu a vytvorte novú prípravu.",
-    "secondaryTargetHelp": "Nové produkty v {{shop}} budú skryté a označené na kontrolu."
+    "secondaryTargetHelp": "Nové produkty v {{shop}} budú skryté a označené na kontrolu.",
+    "sourceStates": {
+      "queued": "Čaká sa na údaje zo Sloger B2B",
+      "running": "Načítavajú sa údaje zo Sloger B2B",
+      "failed": "Údaje zo Sloger B2B nie sú kompletné",
+      "completed": "Údaje zo Sloger B2B sú načítané"
+    },
+    "sourceRowStates": {
+      "pending": "B2B: čaká na načítanie",
+      "completed": "B2B: načítané",
+      "failed": "B2B: chyba načítania"
+    },
+    "sourceHelp": "Najprv sa bez AI načítajú údaje dodávateľa pre vybrané produkty. Úpravy a import sa odomknú po dokončení. Voliteľné vylepšenie cez AI potom použije model nastavený v Hube.",
+    "sourceProgress": "Načítané: {{completed}} / {{total}} · chyby: {{failed}}",
+    "sourceRetry": "Pokračovať v načítaní chýbajúcich údajov",
+    "sourceRetryUncertain": "Spustenie sa nepodarilo potvrdiť. Najprv obnov stav prípravy; načítanie sa automaticky neopakuje.",
+    "freshPreview": "Pripraviť nový náhľad"
   },
   "slogerProbe": {
-    "title": "Sloger - overenie B2B produktu",
-    "back": "Dodávatelia",
-    "description": "Jednorazové overenie konkrétneho produktu cez Lunu. Výsledok zostane v tomto náhľade; nemení produkty, zásoby ani e-shopy.",
     "signIn": "Prihlásiť sa do Hubu",
     "username": "Prihlasovacie meno Sloger",
     "password": "Heslo Sloger",
     "sku": "Kód produktu Sloger",
-    "credentialsHelp": "Prihlásenie sa uloží na serveri Hubu a použije pri ďalších produktoch. Heslo sa po odoslaní vymaže z formulára a neposiela sa AI. Uloženie prihlásenia nespúšťa platené overenie ani nepotvrdzuje správnosť hesla.",
+    "credentialsHelp": "Prihlásenie sa uloží na serveri Hubu a použije pri importe produktov aj ručnom obnovení dostupností. Heslo sa neposiela AI. Údaje z B2B sa načítajú bez AI; voliteľné vylepšenie obsahu používa model nastavený v Hube. Uloženie prihlásenia ešte nepotvrdzuje správnosť hesla.",
     "credentialsTitle": "Prihlásenie do Sloger B2B",
     "credentialsLoading": "Načítavam stav prihlásenia…",
     "credentialsSaving": "Ukladám prihlásenie…",
@@ -3157,12 +3205,10 @@
     "credentialsReload": "Obnoviť stav prihlásenia",
     "credentialsLoadFailed": "Stav uloženého prihlásenia sa nepodarilo načítať. Obnov stav pred ďalším overením produktu.",
     "credentialsSaveFailed": "Uloženie prihlásenia sa nepodarilo potvrdiť. Obnov stav prihlásenia; uloženie sa automaticky neopakuje.",
-    "start": "Spustiť platené overenie cez Lunu",
     "request": "ID overenia:",
     "recoveryHelp": "Obnov stav tej istej požiadavky. Týmto sa nespustí nové platené overenie. Túto stránku môžeš obnoviť alebo si uložiť jej odkaz.",
     "loading": "Prebieha overovanie…",
     "refresh": "Obnoviť uložený výsledok",
-    "newLookup": "Nové overenie",
     "model": "Model",
     "cost": "Doteraz známa cena AI",
     "tokens": "Vstupné / výstupné tokeny",
@@ -3213,6 +3259,9 @@
       "sloger_probe_fact_mismatch": "Odpoveď AI sa nezhodovala s overenými údajmi Sloger.",
       "hub_access_required": "Prihlás sa do Hubu a obnov uložený stav.",
       "hub_access_not_configured": "Prístup do Hubu nie je nakonfigurovaný."
-    }
+    },
+    "archiveTitle": "Uložený výsledok overenia Sloger",
+    "archiveHelp": "Táto stránka zobrazuje iba staršie overenie. Údaje z B2B sa načítajú automaticky pri bežnom importe produktov.",
+    "settingsLink": "Nastavenia dodávateľa"
   }
 }

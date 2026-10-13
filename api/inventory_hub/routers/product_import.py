@@ -28,8 +28,13 @@ async def history(db: DB):
 
 
 @router.post('')
-async def create(request: DraftCreate, db: DB):
-    return await call(service.create(db, request))
+async def create(request: DraftCreate, background: BackgroundTasks, db: DB):
+    result = await call(service.create(db, request))
+    await db.commit()
+    if (result.get('source_lookup') or {}).get('state') == 'queued':
+        from inventory_hub.services.product_import_source import process
+        background.add_task(process, result['id'])
+    return result
 
 
 @router.get('/{id}')
@@ -37,6 +42,15 @@ async def detail(id: DraftId, db: DB):
     async def operation():
         return await service.public(db, await service.get_draft(db, id))
     return await call(operation())
+
+
+@router.post('/{id}/source-retry')
+async def retry_source(id: DraftId, request: DraftRevision, background: BackgroundTasks, db: DB):
+    from inventory_hub.services.product_import_source import retry, process
+    result = await mutate(db, id, request, retry)
+    await db.commit()
+    background.add_task(process, id)
+    return result
 
 
 async def mutate(db, id, request, fn):

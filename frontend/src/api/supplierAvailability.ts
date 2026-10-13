@@ -6,6 +6,8 @@ export interface SupplierAvailabilitySettings {
   min_coverage_percent: number; last_started_at: string | null; last_success_at: string | null;
   next_run_at: string | null; last_error: string | null; manual_requested_at: string | null;
   last_item_count: number | null; running: boolean; availability: { orderable: string; unknown: string };
+  manual_only?: boolean; source_kind?: 'feed' | 'b2b'; refresh_scope?: 'supplier_catalog' | 'hub_products';
+  refresh_progress?: { total: number; processed: number; succeeded: number; failed: number; failures: { sku: string; code: string }[]; status: 'running' | 'completed' | 'failed' } | null;
 }
 export interface SupplierAvailabilityUpdate {
   expected_revision: number; enabled: boolean; feed_key: string; interval_seconds: number;

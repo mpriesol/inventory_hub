@@ -124,6 +124,7 @@ def _item_checkpoint(path: Path, result: dict, item: dict) -> None:
     # would turn a normal batch into hundreds of GB of filesystem writes.
     event = {"updated_at": now().isoformat(), "code": item["code"],
              "status": item["status"], "errors": item["errors"], "warnings": item["warnings"],
+             "product_write_attempted": item.get("product_write_attempted"),
              "shop_url": item.get("shop_url"), "shop_admin_url": item.get("shop_admin_url")}
     with path.with_suffix(".events.jsonl").open("a", encoding="utf-8") as output:
         output.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -149,7 +150,7 @@ def _read_result(path: Path) -> dict | None:
                     break
                 event = json.loads(line)
                 if event["updated_at"] > checkpoint and event["code"] in items:
-                    items[event["code"]].update({k: event[k] for k in ("status", "errors", "warnings", "shop_url", "shop_admin_url") if k in event})
+                    items[event["code"]].update({k: event[k] for k in ("status", "errors", "warnings", "shop_url", "shop_admin_url", "product_write_attempted") if k in event})
                     result["updated_at"] = event["updated_at"]
     return result
 
@@ -580,6 +581,9 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         document["supplier_meta"] = supplier_meta
     if staging:
         document["staging"] = {k: staging[k] for k in ("draft_id", "hash")}
+        for key in ('supplier_availability_expires_at', 'supplier_availability_observed_at'):
+            if staging.get(key):
+                document['staging'][key] = staging[key]
     if enrichment:
         document["content_approval"] = {k: enrichment[k] for k in ("job_id", "revision", "rules_version", "active_after_import")}
     _write(_path(shop, preview.preview_id), document)
@@ -825,6 +829,8 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, stag
         if result is None:
             result = {"preview_id": preview_id, "shop": shop, "options": preview["options"],
                       "prices_with_vat": document["prices_with_vat"], "status": "queued", "items": preview["items"], "errors": [], "updated_at": now().isoformat()}
+            for item in result['items']:
+                item['product_write_attempted'] = False
         else:
             result.update(status="queued", errors=[], updated_at=now().isoformat())
         document["result"] = result
@@ -885,8 +891,11 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
     if document["target"] != _target(shop_config(shop)):
         raise CatalogError("shop_target_changed", "The shop connection changed", 409)
     policy_current = True
+    from inventory_hub.services.product_import_source import assert_availability_fresh, assert_current_availability
     try:
         assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
+        async with get_session_context() as db:
+            await assert_current_availability(db, document.get('staging'))
     except CatalogError:
         # Old/changed previews may still reconcile an uncertain POST, but must
         # never create more products or auxiliary metadata with stale settings.
@@ -905,6 +914,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
     if policy_current and remote_options["create_validation_field"]:
         if not preview["create_validation_field"]:
             raise CatalogError("shop_options_changed", "The validation field changed; create a new preview", 409)
+        assert_availability_fresh(document.get('staging'))
         try:
             await asyncio.to_thread(client.post, "metas", {"metas": [{"key": "validation_required", "category": "products",
                 "type": "checkbox", "label": "Vyžaduje kontrolu", "active": True, "common_languages_value_yn": True}]})
@@ -920,9 +930,11 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         for item in preview["items"] for description in item["payload"].get("descriptions", []))
     if policy_current and has_content and (document.get("content_approval") or staged_h1):
         from inventory_hub.services.ai_content_upgates import content_fields
+        assert_availability_fresh(document.get('staging'))
         await asyncio.to_thread(content_fields, shop, client, create=True)
     if policy_current and document.get("supplier_meta"):
         from inventory_hub.services.catalog_supplier_meta import prepare_meta
+        assert_availability_fresh(document.get('staging'))
         supplier_name = supplier_config(preview["supplier"]).get("name")
         current_meta = await asyncio.to_thread(prepare_meta, shop, client, supplier_name, options["language"], create=True)
         if current_meta != document["supplier_meta"]:
@@ -990,7 +1002,8 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 async with get_session_context() as db:
                     await claim_product_prefix(db, [sources[id] for id in item["product_ids"]])
-                item.update(status="uncertain", errors=["import_outcome_unknown"])
+                assert_availability_fresh(document.get('staging'))
+                item.update(status="uncertain", errors=["import_outcome_unknown"], product_write_attempted=True)
                 result["updated_at"] = now().isoformat()
                 _item_checkpoint(path, result, item)
                 rejected = None
