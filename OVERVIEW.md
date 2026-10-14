@@ -323,6 +323,8 @@ Po aktivácii FIFO sa nemožno vrátiť k starému kódu váženého priemeru be
 
 Kontrolované údržbové publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md); samostatný implementovaný pravidelný prenos v [stock-sync.md](docs/stock-sync.md). Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného nezávislého odpočtu. Pravidelný prenos preto vyžaduje nastavenú skladovú autoritu a spracovanie objednávok. Údržbová cesta vyžaduje externú údržbu; jej lokálna blokácia sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.
 
+Kontrola 14. 10. 2026 potvrdzuje, že samotná autorita a čerstvý inbox nezabraňujú prepísaniu natívnej Upgates objednávkovej zmeny. Verejne doložené vypnutie týchto zápisov ani CAS zatiaľ chýba. Čítacia diagnostika kapacity v nastaveniach dostupností zistí kvótu a oprávnenia jediným volaním `/status` a porovná ich s modelom dnešného publishera/zberača/spracovateľa. Neaktivuje synchronizáciu, nemení intervaly a nie je dôkazom bezpečného živého pilotu. [Presné hranice, kapacitný model a návrh protokolu](docs/upgates-sync-readiness.md).
+
 ## Nové oddelené workflow (014–017)
 
 Dodávateľský worker `supplier_availability_worker` uchováva prijaté pozorovania a vyhodnocuje ich platnosť. Zlyhanie alebo neúplný feed nikdy nevynuluje fyzickú zásobu. `stock_sync_worker` prenáša vlastné voľné kusy, dostupnosť a objednateľnosť iba pri výslovne nastavenej skladovej autorite, čerstvých objednávkach a povolenom serverovom zápise `STOCK_SYNC_WRITE_ENABLED` (default false). Údržbový publisher zostáva samostatný.

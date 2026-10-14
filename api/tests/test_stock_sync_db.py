@@ -363,6 +363,53 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             holds=await db.scalar(text('SELECT count(*) FROM stock_publication_holds'))
             self.assertEqual(holds,0)
 
+    async def test_violated_single_writer_precondition_readback_cannot_prove_absence_of_overwritten_native_order(self):
+        """Violated single-writer precondition; readback cannot prove absence of overwritten native order."""
+        # Establish a real, fully accounted order and four free Hub units. The
+        # declaration external_stock_writers_disabled below is deliberately
+        # violated by the synthetic shop event; this is not a supported mode.
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_reserved=0
+        order=await self.processed_order(quantity='2')
+        self.remote['stock']='4'
+        self.remote['availability']='overíme'  # A changed label forces the absolute stock PUT too.
+        row=await self.prepare()
+        async with self.session() as db:
+            job=await db.get(OrderProcessingJob,order['job_id'])
+            self.assertEqual(job.status,'completed')
+            self.assertEqual((await db.get(OrderCollectionSettings,self.shop_id)).last_completed_at,self.clock)
+            tables=('stock_balances','stock_movements','reservations','shop_orders','shop_order_items')
+            before={table:(await db.execute(text(f'SELECT * FROM {table} ORDER BY id'))).mappings().all()
+                    for table in tables}
+        events=[]
+        async def observed(*args):
+            value=await self.read_remote(*args)
+            events.append(('read',value['stock'],value['availability']))
+            return value
+        async def concurrent_native_order(shop,target,desired,fingerprint):
+            # The order reaches Upgates after Hub's GET. It is not yet known to
+            # the poller and does not participate in any of Hub's row locks.
+            self.assertEqual(self.remote['stock'],'4')
+            self.remote['stock']='3'
+            events.append(('native_order','4','3'))
+            events.append(('absolute_put',self.remote['stock'],desired['stock']))
+            return await self.write_remote(shop,target,desired,fingerprint)
+        service.source.read.side_effect=observed
+        service.source.write_once.side_effect=concurrent_native_order
+        await self.invoke('process_run',row['id'])
+        result=await self.invoke('get_run',row['id'])
+        self.assertEqual(events,[('read','4','overíme'),('native_order','4','3'),
+                                 ('absolute_put','3','4'),('read','4','SKLADOM')])
+        self.assertEqual((result['status'],result['counts']['verified']),('completed',1))
+        self.assertEqual(result['items'][0]['status'],'verified')
+        self.assertEqual(self.remote['stock'],'4','Matching readback still overwrote the native deduction')
+        service.source.write_once.assert_awaited_once()
+        async with self.session() as db:
+            after={table:(await db.execute(text(f'SELECT * FROM {table} ORDER BY id'))).mappings().all()
+                   for table in tables}
+            self.assertEqual(after,before,'The counterexample changes only the synthetic upstream shop')
+
     async def test_settings_inherit_warehouse_and_shop_override(self):
         await self.invoke('configure_warehouse',WarehouseSyncInput(warehouse_code='regular-central',expected_revision=0,
                           interval_seconds=600,batch_size=10,max_order_age_seconds=1200,confirmed=True))

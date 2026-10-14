@@ -2,6 +2,8 @@
 
 Táto funkcia prenáša vlastné voľné množstvo a dostupnosť konkrétnych SKU z Hubu do BIKETREK a xTrek. Je oddelená od [údržbového publikovania](stock-publication.md). Neuzatvára sklad a neblokuje bežné príjmy ani spracovanie objednávok počas sieťových požiadaviek. Nasadenie nepovoľuje žiadny nový živý prenos: plánovač, oprávnenie e-shopu aj serverový prepínač začínajú vypnuté.
 
+**Overenie Upgates 14. 10. 2026:** hlavný sklad menia aj natívne objednávky. Verejný kontrakt nepotvrdzuje vypnutie týchto zmien ani podmienený absolútny zápis. Predpoklad výlučného zapisovateľa preto zatiaľ nie je pre bežnú prevádzku preukázaný; zaškrtnutie autority ho nenahrádza. [Rozbor súbehu, meranie kvóty a plán pilotu](upgates-sync-readiness.md) odlišuje implementovaný publisher od bezpečne overenej prevádzky.
+
 ## Použitie
 
 V nastaveniach dostupností a synchronizácie vyber e-shop. Interval, veľkosť pracovnej dávky a najvyšší prípustný vek načítania objednávok môžeš nastaviť pre sklad; prázdna hodnota v e-shope znamená zdedenie. Vlastná hodnota e-shopu má prednosť. Zmena intervalu sama neoprávňuje Hub odosielať zásoby.
