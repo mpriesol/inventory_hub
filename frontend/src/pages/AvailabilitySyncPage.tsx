@@ -208,6 +208,8 @@ function CapacityPanel({ shop }: { shop: string }) {
   const error = value?.probe.error || operation.error;
   const sample = value?.catalog_probe;
   const sampleCalls = sample?.requests_attempted;
+  const sampleError = sample?.error ? t([`availabilitySync.capacity.errors.${sample.error}`,
+    `availabilitySync.errors.${sample.error}`, `stockPublication.errors.${sample.error}`], { defaultValue: '' }) : '';
   const actualCalls = !value ? undefined : sample?.requested || includeProductSample
     ? typeof sampleCalls === 'number' && Number.isInteger(sampleCalls) && sampleCalls >= 0
       ? value.probe.requests_attempted + sampleCalls : undefined
@@ -241,7 +243,7 @@ function CapacityPanel({ shop }: { shop: string }) {
       {(sample?.requested || includeProductSample) && <section data-testid="upgates-capacity-sample"><h3>{copy('sampleTitle')}</h3>
         <p role={sample?.ok ? 'status' : 'alert'}>{copy(sample?.ok ? 'sampleOk' : 'sampleFailed')}</p>
         {sample?.requested && <p>{t('availabilitySync.capacity.sampleCounts', { products: amount(sample.selected_products), variants: amount(sample.selected_variants) })}</p>}
-        {sample?.error && <p className="opening-stock-errors">{t(`availabilitySync.capacity.errors.${sample.error}`, { defaultValue: t(`availabilitySync.errors.${sample.error}`, { defaultValue: copy('sampleFailed') }) })}</p>}
+        {sampleError && sampleError !== copy('sampleFailed') && <p className="opening-stock-errors">{sampleError}</p>}
       </section>}
       {stock && orders && <>
         <h3>{copy('estimateTitle')}</h3><p>{copy('estimateHelp')}</p>
