@@ -67,7 +67,7 @@ const capacity = shop => ({ shop_code: shop, observed_at: '2026-10-14T19:00:00Z'
       poll_interval_seconds: 300, retry_minutes: 5, full_check_hours: 24, inbox_count: 5, jobs_by_status: { pending: 1, running: 0, completed: 3, retry: 1, review: 0 },
       unprocessed_count: 2, collector_empty_poll_calls: 2, collector_daily_if_enabled: 576, retry_daily_if_processing: 288, history_daily_if_processing: 6 },
     estimate_kind: 'theoretical_no_runtime_delay', not_included: ['other_integrations', 'manual_operations', 'extra_order_pages', 'new_orders', 'errors_and_retries', 'other_hub_sync'] } });
-let capacityMode = 'ok', finishCapacity;
+let capacityMode = 'ok', sampleErrorCode = 'stock_sync_untranslated_sample_error', finishCapacity;
 const capacityText = key => i18n.t(`availabilitySync.capacity.${key}`);
 const calls = [];
 global.fetch = async (path, init = {}) => {
@@ -78,7 +78,7 @@ global.fetch = async (path, init = {}) => {
     assert.equal(init.method, 'GET'); assert.equal(body, undefined);
     let result = capacity(url.pathname.split('/')[3]);
     if (url.searchParams.get('include_product_sample') === 'true') result.catalog_probe = { requested: true, ok: true, selected_products: 4, selected_variants: 4, planned_requests: 2, requests_attempted: 2, error: null };
-    if (capacityMode === 'sample-failed' && result.catalog_probe) result.catalog_probe = { ...result.catalog_probe, ok: false, requests_attempted: null, error: 'stock_sync_source_unavailable' };
+    if (capacityMode === 'sample-failed' && result.catalog_probe) result.catalog_probe = { ...result.catalog_probe, ok: false, requests_attempted: null, error: sampleErrorCode };
     if (capacityMode === 'pending') return new Promise(resolve => { finishCapacity = () => resolve(reply(result)); });
     if (capacityMode === 'missing') result.quota = { ...result.quota, hour_limit: null, hour_remaining: null, day_limit: null, day_remaining: null, total_remaining: null, theoretical_daily_max: null, headers_complete: false };
     if (capacityMode === 'empty-catalog') result.projection.stock = { ...result.projection.stock, initial_batch_calls: 0, singleton_pass_calls: 0, unchanged_pass_calls: 0, all_changed_pass_calls: 0, daily_unchanged_if_enabled: 0, daily_all_changed_if_enabled: 0 };
@@ -187,6 +187,10 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   const failedSampleScope = required('probe-upgates-capacity').closest('.action-control').querySelector('[data-action-effects]');
   assert(failedSampleScope.textContent.includes(i18n.t('actions.callsUnmeasured')), 'An unknown sample attempt count stays unknown, not zero or status-only');
   assert(!failedSampleScope.textContent.includes(i18n.t('actions.callsActual', { count: 0 })));
+  assert.equal([...required('upgates-capacity-sample').querySelectorAll('p')].filter(p => p.textContent === capacityText('sampleFailed')).length, 1, 'An untranslated sample failure does not repeat the generic explanation');
+  sampleErrorCode = 'stock_publication_stock_unknown'; await click('probe-upgates-capacity');
+  assert(required('upgates-capacity-sample').textContent.includes(i18n.t('stockPublication.errors.stock_publication_stock_unknown')), 'Sample failures expose the existing specific stock-source explanation');
+  assert(!required('upgates-capacity-sample').textContent.includes(sampleErrorCode), 'A translated reason is displayed without raw implementation codes');
   assert.equal(writes().length, 0, 'Sample diagnostics make no mutation requests');
   await click('capacity-product-sample');
   capacityMode = 'empty-catalog'; await click('probe-upgates-capacity');
