@@ -61,7 +61,8 @@ const capacity = shop => ({ shop_code: shop, observed_at: '2026-10-14T19:00:00Z'
   projection: { captured_at: '2026-10-14T19:00:00Z', warehouse_code: 'main', listed_skus: 50, confirmed_skus: 15, eligible_skus: 30, unpublishable_skus: 20,
     eligibility_errors: [{ code: 'stock_sync_mapping_ambiguous', count: 20 }],
     stock: { configured: true, enabled: false, authorized: false, server_enabled: false, interval_seconds: 300,
-      unchanged_pass_calls: 30, all_changed_pass_calls: 90, daily_unchanged_if_enabled: 8640, daily_all_changed_if_enabled: 25920 },
+      batch_size: 20, call_model: 'batched_unchanged_fresh_reads_before_write', initial_batch_calls: 2, singleton_pass_calls: 30,
+      unchanged_pass_calls: 2, all_changed_pass_calls: 92, daily_unchanged_if_enabled: 576, daily_all_changed_if_enabled: 26496 },
     orders: { collector_enabled: false, processing_mode: 'manual', processing_ready: false, processing_error: 'order_processing_manual',
       poll_interval_seconds: 300, retry_minutes: 5, full_check_hours: 24, inbox_count: 5, jobs_by_status: { pending: 1, running: 0, completed: 3, retry: 1, review: 0 },
       unprocessed_count: 2, collector_empty_poll_calls: 2, collector_daily_if_enabled: 576, retry_daily_if_processing: 288, history_daily_if_processing: 6 },
@@ -76,8 +77,12 @@ global.fetch = async (path, init = {}) => {
   if (/^\/api\/shops\/(biketrek|xtrek)\/upgates\/capacity$/.test(url.pathname)) {
     assert.equal(init.method, 'GET'); assert.equal(body, undefined);
     let result = capacity(url.pathname.split('/')[3]);
+    if (url.searchParams.get('include_product_sample') === 'true') result.catalog_probe = { requested: true, ok: true, selected_products: 4, selected_variants: 4, planned_requests: 2, requests_attempted: 2, error: null };
+    if (capacityMode === 'sample-failed' && result.catalog_probe) result.catalog_probe = { ...result.catalog_probe, ok: false, requests_attempted: null, error: 'stock_sync_source_unavailable' };
     if (capacityMode === 'pending') return new Promise(resolve => { finishCapacity = () => resolve(reply(result)); });
     if (capacityMode === 'missing') result.quota = { ...result.quota, hour_limit: null, hour_remaining: null, day_limit: null, day_remaining: null, total_remaining: null, theoretical_daily_max: null, headers_complete: false };
+    if (capacityMode === 'empty-catalog') result.projection.stock = { ...result.projection.stock, initial_batch_calls: 0, singleton_pass_calls: 0, unchanged_pass_calls: 0, all_changed_pass_calls: 0, daily_unchanged_if_enabled: 0, daily_all_changed_if_enabled: 0 };
+    if (capacityMode === 'unknown-catalog') result.projection.stock = { ...result.projection.stock, initial_batch_calls: null, singleton_pass_calls: null, unchanged_pass_calls: null, all_changed_pass_calls: null, daily_unchanged_if_enabled: null, daily_all_changed_if_enabled: null };
     if (capacityMode === 'limited') { result.probe = { ...result.probe, ok: false, http_status: 429, error: 'upgates_capacity_rate_limited' }; result.quota.retry_after_seconds = 60; }
     if (capacityMode === 'malformed') result = { shop_code: result.shop_code, probe: {}, quota: {} };
     return reply(result);
@@ -146,11 +151,13 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   const capacityScope = required('probe-upgates-capacity').closest('.action-control').querySelector('[data-action-effects]');
   assert.equal(capacityScope.dataset.actionEffects, 'hub-read upgates-read');
   assert(capacityScope.textContent.includes(i18n.t('actions.callsKnown', { count: 1 })));
-  assert(!required('upgates-capacity-panel').querySelector('input'), 'Diagnostics have no activation or stock-write controls');
+  assert.equal(required('upgates-capacity-panel').querySelectorAll('input').length, 1, 'The only diagnostic option is a read-only product sample');
+  assert.equal(required('capacity-product-sample').checked, false, 'Product reads are off by default');
   capacityMode = 'pending';
   await act(async () => { required('probe-upgates-capacity').click(); required('probe-upgates-capacity').click(); await tick(); });
   assert.equal(calls.length, beforeCapacity + 1, 'An explicit double click starts exactly one diagnostic GET');
   assert.equal(calls.at(-1).path, '/api/shops/xtrek/upgates/capacity');
+  assert(required('capacity-product-sample').disabled, 'The scope cannot change during an in-flight probe');
   await act(async () => { finishCapacity(); await tick(); });
   assert.equal(required('upgates-capacity-remaining').textContent, '0', 'Observed zero quota remains a real zero');
   assert.equal(required('upgates-capacity-daily-max').textContent.replace(/[^0-9]/g, ''), '48000', 'The theoretical daily limit is separate from current remaining quota');
@@ -158,7 +165,36 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   assert(required('upgates-capacity-result').textContent.includes(capacityText('writeUntested')));
   assert(!required('upgates-capacity-result').textContent.includes('synthetic-fingerprint'), 'Internal target fingerprints are not shown');
   assert(required('upgates-capacity-panel').textContent.includes(i18n.t('actions.callsActual', { count: 1 })));
+  assert.equal(required('upgates-capacity-singleton-calls').textContent, '30');
+  assert.equal(required('upgates-capacity-batch-calls').textContent, '2', 'Batched initial calls come from the backend grouping plan');
+  assert.equal(required('upgates-capacity-read-savings').textContent, (1 - 2 / 30).toLocaleString(i18n.language, { style: 'percent', maximumFractionDigits: 1 }));
+  const capacityRows = required('upgates-capacity-estimate').querySelectorAll('tbody tr');
+  assert.equal(capacityRows[0].children[1].textContent, '2', 'The unchanged full pass uses batch reads');
+  assert.equal(capacityRows[1].children[1].textContent, '92', 'The all-changed estimate retains batch discovery plus fresh read, write and verification per item');
+  assert(required('upgates-capacity-result').textContent.includes(capacityText('changedReadsHelp')), 'Expired reads and cooldown overhead are disclosed');
   assert.equal(writes().length, 0, 'Capacity diagnostics never mutate Hub settings or stock');
+  const beforeSampleOption = calls.length; await click('capacity-product-sample');
+  assert.equal(calls.length, beforeSampleOption, 'Selecting the sample never starts requests by itself');
+  assert(!element('upgates-capacity-result'), 'Changing the diagnostic scope clears the previous count');
+  assert(required('upgates-capacity-panel').textContent.includes(i18n.t('actions.callsKnown', { count: 3 })));
+  capacityMode = 'ok'; await click('probe-upgates-capacity');
+  assert.equal(calls.at(-1).path, '/api/shops/xtrek/upgates/capacity?include_product_sample=true');
+  assert(required('upgates-capacity-panel').textContent.includes(i18n.t('actions.callsActual', { count: 3 })), 'Actual calls include status and the confirmed sample request count');
+  assert(required('upgates-capacity-sample').textContent.includes(capacityText('sampleOk')));
+  assert(required('upgates-capacity-sample').textContent.includes(i18n.t('availabilitySync.capacity.sampleCounts', { products: '4', variants: '4' })));
+  capacityMode = 'sample-failed'; await click('probe-upgates-capacity');
+  assert(required('upgates-capacity-sample').textContent.includes(capacityText('sampleFailed')));
+  const failedSampleScope = required('probe-upgates-capacity').closest('.action-control').querySelector('[data-action-effects]');
+  assert(failedSampleScope.textContent.includes(i18n.t('actions.callsUnmeasured')), 'An unknown sample attempt count stays unknown, not zero or status-only');
+  assert(!failedSampleScope.textContent.includes(i18n.t('actions.callsActual', { count: 0 })));
+  assert.equal(writes().length, 0, 'Sample diagnostics make no mutation requests');
+  await click('capacity-product-sample');
+  capacityMode = 'empty-catalog'; await click('probe-upgates-capacity');
+  assert.equal(required('upgates-capacity-batch-calls').textContent, '0');
+  assert.equal(required('upgates-capacity-read-savings').textContent, capacityText('unknown'), 'An empty baseline never manufactures a 100% saving');
+  capacityMode = 'unknown-catalog'; await click('probe-upgates-capacity');
+  assert.equal(required('upgates-capacity-singleton-calls').textContent, capacityText('unknown'));
+  assert.equal(required('upgates-capacity-read-savings').textContent, capacityText('unknown'), 'Missing catalog eligibility never becomes a savings estimate');
   capacityMode = 'missing'; await click('probe-upgates-capacity');
   assert.equal(required('upgates-capacity-remaining').textContent, capacityText('unknown'));
   assert.equal(required('upgates-capacity-daily-max').textContent, capacityText('unknown'));

@@ -2557,9 +2557,9 @@
       "connection": "Pripojenie",
       "connected": "Overené čítaním",
       "unavailable": "Neoverené",
-      "latency": "Trvanie kontroly",
+      "latency": "Trvanie kontroly stavu API",
       "quotaTitle": "Limity a aktuálny zostatok",
-      "quotaHelp": "Zostatok je stav v okamihu merania a môže ho čerpať aj iná integrácia. Teoretický limit za 24 hodín nie je dnešný zostávajúci počet požiadaviek.",
+      "quotaHelp": "Zostatok je stav v okamihu merania a môže ho čerpať aj iná integrácia. Teoretický limit za 24 hodín nie je dnešný zostávajúci počet požiadaviek. Pri kontrole vzorky ide o zostatok pred produktovými požiadavkami.",
       "window": "Obdobie",
       "limit": "Limit požiadaviek",
       "remaining": "Zostávalo pri meraní",
@@ -2599,8 +2599,8 @@
       "operation": "Scenár",
       "perPass": "Na jeden priechod",
       "dailyIfEnabled": "Za 24 h pri zapnutí",
-      "unchangedStock": "Kontrola zásob bez zmien",
-      "changedStock": "Kontrola a prenos pri zmene všetkých položiek",
+      "unchangedStock": "Dávková kontrola zásob bez zmien",
+      "changedStock": "Dávková kontrola a zmena všetkých položiek",
       "emptyOrderPoll": "Načítavanie objednávok bez nových zmien",
       "orderRetries": "Opakované spracovanie čakajúcich objednávok",
       "orderHistory": "Priebežná kontrola už spracovaných objednávok",
@@ -2618,9 +2618,23 @@
         "upgates_capacity_source_unavailable": "API e-shopu momentálne nie je dostupné. Skús kontrolu neskôr.",
         "upgates_capacity_invalid_response": "API vrátilo neúplnú alebo neplatnú odpoveď. Údaje sa nepovažujú za overené.",
         "upgates_capacity_shop_not_found": "Vybraný e-shop sa nenašiel alebo nie je aktívny.",
-        "upgates_capacity_local_unavailable": "Podklady v Hube sa nepodarilo načítať. Skús kontrolu neskôr."
+        "upgates_capacity_local_unavailable": "Podklady v Hube sa nepodarilo načítať. Skús kontrolu neskôr.",
+        "upgates_capacity_sample_empty": "V Hube nie sú vhodné jednoznačne prepojené produkty pre túto vzorku.",
+        "upgates_capacity_sample_status_required": "Najprv musí prejsť kontrola pripojenia k API.",
+        "upgates_capacity_sample_unavailable": "Vzorku sa nepodarilo načítať. Kontrolu môžeš zopakovať ručne."
       },
-      "cooperation": "Úspešné spojenie ani dostatočná kvóta nepotvrdzujú bezpečný zápis zásob. Upgates mení hlavný sklad aj pri objednávkach; súbeh s absolútnym zápisom treba vyriešiť pred zapnutím."
+      "cooperation": "Úspešné spojenie ani dostatočná kvóta nepotvrdzujú bezpečný zápis zásob. Upgates mení hlavný sklad aj pri objednávkach; súbeh s absolútnym zápisom treba vyriešiť pred zapnutím.",
+      "formerInitialReads": "Úvodné čítania po jednej položke – predtým",
+      "batchedInitialReads": "Úvodné čítania v dávkach – teraz",
+      "initialReadSavings": "Odhad úspory úvodných čítaní",
+      "batchReadsHelp": "Úvodné porovnanie načíta viac položiek jedným volaním; pracovná dávka má najviac {{count}} SKU. Percento porovnáva iba úvodné čítania, nie všetky API operácie. Rozdelenie podľa typu produktov a dĺžky dopytu je už zahrnuté.",
+      "changedReadsHelp": "Každá zmenená položka si zachováva samostatné čerstvé načítanie pred zápisom, samotný zápis a overenie výsledku. Odhad počíta s platnými dávkovými údajmi; pomalé odpovede, prestávky API alebo vypršanie platnosti môžu vyžiadať ďalšie čítania.",
+      "sampleOption": "Overiť aj čítanie vzorky produktov",
+      "sampleCallLimit": "So vzorkou ide najviac o 3 čítania: stav API a dve malé produktové dávky.",
+      "sampleTitle": "Čítanie vzorky produktov",
+      "sampleOk": "Dávkové čítanie vybranej vzorky bolo overené. Zásoby sa nemenili.",
+      "sampleFailed": "Čítanie vzorky sa nepodarilo potvrdiť. Zásoby sa nemenili.",
+      "sampleCounts": "Vybrané jednoduché produkty: {{products}} · varianty: {{variants}}."
     }
   },
   "productPublication": {

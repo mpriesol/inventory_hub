@@ -158,6 +158,13 @@ class CapacityRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json(), report)
         self.assertEqual(response.headers['cache-control'], 'no-store')
         diagnose.assert_awaited_once()
+        self.assertEqual(diagnose.await_args.kwargs, {'include_product_sample': False})
+
+    async def test_catalog_sample_is_explicitly_opt_in_on_protected_route(self):
+        with patch.object(service, 'diagnose', AsyncMock(return_value={'catalog_probe': {'requested': True}})) as diagnose:
+            response = await self.request('/shops/biketrek/upgates/capacity?include_product_sample=true')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(diagnose.await_args.kwargs, {'include_product_sample': True})
 
     async def test_local_errors_are_allowlisted_without_exception_detail(self):
         for error, status, code in ((service.CapacityError('upgates_capacity_shop_not_found', 404), 404,
@@ -169,3 +176,52 @@ class CapacityRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()['detail']['code'], code)
             self.assertEqual(response.headers['cache-control'], 'no-store')
             self.assertNotIn('private-db', response.text)
+
+
+class CapacityCatalogSampleTests(unittest.IsolatedAsyncioTestCase):
+    def targets(self):
+        # Four maximum-length UTF-8 codes of each kind still fit into two GETs.
+        targets = []
+        for variant in (False, True):
+            for index in range(4):
+                code = '\U0001f6b2' * 98 + ('V' if variant else 'P') + str(index)
+                targets.append({'code': code, 'parent_code': 'PARENT' if variant else code,
+                                'variant_code': code if variant else None})
+        return targets
+
+    async def test_success_reports_counts_without_returning_raw_product_data(self):
+        targets = self.targets()
+        raw = {'private-code': {'ean': 'private-ean', 'purchase_price': 'private-price',
+                               'url': 'https://private-catalog.invalid'}}
+        with patch.object(service.stock_sync.source, 'read_many', AsyncMock(return_value=raw)) as read:
+            report = await service._sample_probe('biketrek', targets, {'ok': True, 'target_fingerprint': 'a' * 64})
+        read.assert_awaited_once_with('biketrek', targets, 'a' * 64)
+        self.assertEqual(report, {'requested': True, 'ok': True, 'selected_products': 4, 'selected_variants': 4,
+            'planned_requests': 2, 'requests_attempted': 2, 'error': None})
+        for private in ('private-code', 'private-ean', 'private-price', 'private-catalog', targets[0]['code']):
+            self.assertNotIn(private, json.dumps(report, ensure_ascii=False))
+
+    async def test_failure_has_unknown_actual_call_count_and_never_retries(self):
+        failures = ((service.stock_sync.source.SourceError('stock_publication_rate_limited', 429),
+                     'stock_publication_rate_limited'),
+                    (RuntimeError('private-login:private-key@private-target'), 'upgates_capacity_sample_unavailable'))
+        for failure, expected in failures:
+            with self.subTest(error=expected), patch.object(service.stock_sync.source, 'read_many',
+                    AsyncMock(side_effect=failure)) as read:
+                report = await service._sample_probe('biketrek', self.targets(), {'ok': True, 'target_fingerprint': 'a' * 64})
+                read.assert_awaited_once()
+            self.assertFalse(report['ok'])
+            self.assertEqual(report['planned_requests'], 2)
+            self.assertIsNone(report['requests_attempted'], 'Failure may follow an unknown number of sent groups')
+            self.assertEqual(report['error'], expected)
+            self.assertNotIn('private-', json.dumps(report))
+
+    async def test_failed_status_or_no_exact_targets_sends_no_catalog_request(self):
+        for targets, status, expected in ((self.targets(), {'ok': False}, 'upgates_capacity_sample_status_required'),
+                ([], {'ok': True}, 'upgates_capacity_sample_empty')):
+            with self.subTest(error=expected), patch.object(service.stock_sync.source, 'read_many', AsyncMock()) as read:
+                report = await service._sample_probe('biketrek', targets, status)
+                read.assert_not_awaited()
+            self.assertFalse(report['ok'])
+            self.assertEqual(report['requests_attempted'], 0)
+            self.assertEqual(report['error'], expected)

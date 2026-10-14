@@ -193,24 +193,36 @@ function CapacityPanel({ shop }: { shop: string }) {
   const { t, i18n } = useTranslation();
   const operation = useOperation();
   const [value, setValue] = useState<UpgatesCapacity | null>(null);
+  const [includeProductSample, setIncludeProductSample] = useState(false);
   const copy = (key: string) => t(`availabilitySync.capacity.${key}`);
   const amount = (number: number | null | undefined) => typeof number === 'number' && Number.isFinite(number)
     ? number.toLocaleString(i18n.language) : copy('unknown');
   function probe() {
     if (operation.busy) return;
     setValue(null);
-    operation.run(false, signal => getUpgatesCapacity(shop, signal), result => {
+    operation.run(false, signal => getUpgatesCapacity(shop, signal, includeProductSample), result => {
       if (!result || result.shop_code !== shop || !result.probe?.permissions || !result.quota || !result.projection?.stock || !result.projection.orders || !Array.isArray(result.projection.eligibility_errors)) throw new Error('Invalid capacity result');
       setValue(result);
     });
   }
   const error = value?.probe.error || operation.error;
+  const sample = value?.catalog_probe;
+  const sampleCalls = sample?.requests_attempted;
+  const actualCalls = !value ? undefined : sample?.requested || includeProductSample
+    ? typeof sampleCalls === 'number' && Number.isInteger(sampleCalls) && sampleCalls >= 0
+      ? value.probe.requests_attempted + sampleCalls : undefined
+    : value.probe.requests_attempted;
   const stock = value?.projection.stock, orders = value?.projection.orders;
+  const batched = stock?.call_model === 'batched_unchanged_fresh_reads_before_write';
+  const baselineCalls = stock?.singleton_pass_calls, batchCalls = stock?.initial_batch_calls;
+  const savedInitialShare = typeof baselineCalls === 'number' && Number.isSafeInteger(baselineCalls) && baselineCalls > 0
+    && typeof batchCalls === 'number' && Number.isSafeInteger(batchCalls) && batchCalls >= 0 && batchCalls <= baselineCalls
+    ? 1 - batchCalls / baselineCalls : null;
   return <section className="opening-stock-panel" data-testid="upgates-capacity-panel">
     <div className="opening-stock-actions"><h2>{t('availabilitySync.capacity.title', { shop: shop === 'xtrek' ? 'xTrek' : 'BIKETREK' })}</h2>
       <span className="action-control"><Button data-testid="probe-upgates-capacity" variant="secondary" disabled={operation.busy} onClick={probe}>{copy('probe')}</Button>
-        <ActionScope effects={['hub-read', 'upgates-read']} shop={shop} calls={{ kind: 'known', count: 1 }} actualCalls={value?.probe.requests_attempted} /></span></div>
-    <p>{copy('help')}</p><p className="opening-stock-notice">{copy('cooperation')}</p>
+        <ActionScope effects={['hub-read', 'upgates-read']} shop={shop} calls={{ kind: 'known', count: includeProductSample ? 3 : 1 }} actualCalls={actualCalls}>{includeProductSample && copy('sampleCallLimit')}</ActionScope></span></div>
+    <p>{copy('help')}</p><label className="availability-check"><input data-testid="capacity-product-sample" type="checkbox" checked={includeProductSample} disabled={operation.busy} onChange={event => { setValue(null); setIncludeProductSample(event.target.checked); }} />{copy('sampleOption')}</label><p className="opening-stock-notice">{copy('cooperation')}</p>
     {error && <p role="alert" className="opening-stock-errors">{t(`availabilitySync.capacity.errors.${error}`, { defaultValue: copy('failed') })}</p>}
     {value && <div data-testid="upgates-capacity-result">
       <dl className="availability-status"><div><dt>{copy('checked')}</dt><dd>{new Date(value.observed_at).toLocaleString(i18n.language)}</dd></div>
@@ -226,6 +238,11 @@ function CapacityPanel({ shop }: { shop: string }) {
         <div><dt>{copy('dailyMaximum')}</dt><dd data-testid="upgates-capacity-daily-max">{amount(value.quota.theoretical_daily_max)}</dd></div></dl>
       {value.quota.retry_after_seconds !== null && <p className="opening-stock-notice">{t('availabilitySync.capacity.retryAfter', { seconds: value.quota.retry_after_seconds })}</p>}
       <details><summary>{copy('permissionsTitle')}</summary><dl className="availability-status">{(['products', 'orders', 'order_statuses'] as const).map(key => <div key={key}><dt>{copy(key)}</dt><dd>{t(`availabilitySync.capacity.permissions.${value.probe.permissions[key]}`, { defaultValue: copy('unknown') })}</dd></div>)}</dl><p>{copy('writeUntested')}</p></details>
+      {(sample?.requested || includeProductSample) && <section data-testid="upgates-capacity-sample"><h3>{copy('sampleTitle')}</h3>
+        <p role={sample?.ok ? 'status' : 'alert'}>{copy(sample?.ok ? 'sampleOk' : 'sampleFailed')}</p>
+        {sample?.requested && <p>{t('availabilitySync.capacity.sampleCounts', { products: amount(sample.selected_products), variants: amount(sample.selected_variants) })}</p>}
+        {sample?.error && <p className="opening-stock-errors">{t(`availabilitySync.capacity.errors.${sample.error}`, { defaultValue: t(`availabilitySync.errors.${sample.error}`, { defaultValue: copy('sampleFailed') }) })}</p>}
+      </section>}
       {stock && orders && <>
         <h3>{copy('estimateTitle')}</h3><p>{copy('estimateHelp')}</p>
         <dl className="availability-status"><div><dt>{copy('listed')}</dt><dd>{amount(value.projection.listed_skus)}</dd></div><div><dt>{copy('confirmed')}</dt><dd>{amount(value.projection.confirmed_skus)}</dd></div>
@@ -233,6 +250,11 @@ function CapacityPanel({ shop }: { shop: string }) {
         <p>{copy('stockSchedule')}: <strong>{copy(stock.enabled ? 'enabled' : 'disabled')}</strong> · {copy('stockPermission')}: <strong>{copy(stock.authorized ? 'enabled' : 'disabled')}</strong> · {copy('serverPermission')}: <strong>{copy(stock.server_enabled ? 'enabled' : 'disabled')}</strong></p>
         <p>{copy('orderCollection')}: <strong>{copy(orders.collector_enabled ? 'enabled' : 'disabled')}</strong> · {copy('orderProcessing')}: <strong>{t(`stockSettings.modes.${orders.processing_mode}`)}</strong>{!orders.processing_ready && <> · {copy('processingNotReady')}</>}</p>
         <p className="opening-stock-muted">{t('availabilitySync.capacity.intervals', { stock: amount(stock.interval_seconds), orders: amount(orders.poll_interval_seconds) })}</p>
+        {batched && <><dl className="availability-status" data-testid="upgates-capacity-batch-comparison">
+          <div><dt>{copy('formerInitialReads')}</dt><dd data-testid="upgates-capacity-singleton-calls">{amount(baselineCalls)}</dd></div>
+          <div><dt>{copy('batchedInitialReads')}</dt><dd data-testid="upgates-capacity-batch-calls">{amount(batchCalls)}</dd></div>
+          <div><dt>{copy('initialReadSavings')}</dt><dd data-testid="upgates-capacity-read-savings">{savedInitialShare === null ? copy('unknown') : savedInitialShare.toLocaleString(i18n.language, { style: 'percent', maximumFractionDigits: 1 })}</dd></div>
+        </dl><p>{t('availabilitySync.capacity.batchReadsHelp', { count: stock.batch_size })}</p></>}
         <div className="opening-stock-table-scroll"><table data-testid="upgates-capacity-estimate"><thead><tr><th>{copy('operation')}</th><th>{copy('perPass')}</th><th>{copy('dailyIfEnabled')}</th></tr></thead><tbody>
           <tr><td>{copy('unchangedStock')}</td><td>{amount(stock.unchanged_pass_calls)}</td><td>{amount(stock.daily_unchanged_if_enabled)}</td></tr>
           <tr><td>{copy('changedStock')}</td><td>{amount(stock.all_changed_pass_calls)}</td><td>{amount(stock.daily_all_changed_if_enabled)}</td></tr>
@@ -240,6 +262,7 @@ function CapacityPanel({ shop }: { shop: string }) {
           <tr><td>{copy('orderRetries')}</td><td>—</td><td>{amount(orders.retry_daily_if_processing)}</td></tr>
           <tr><td>{copy('orderHistory')}</td><td>—</td><td>{amount(orders.history_daily_if_processing)}</td></tr>
         </tbody></table></div>
+        {batched && <p>{copy('changedReadsHelp')}</p>}
         <p className="opening-stock-muted">{copy('alternatives')}</p><p>{copy('excluded')}</p>
         {!!value.projection.eligibility_errors.length && <details><summary>{copy('eligibilityErrors')}</summary><ul>{value.projection.eligibility_errors.map(item => <li key={item.code}>{t(`availabilitySync.errors.${item.code}`, { defaultValue: copy('eligibilityUnknown') })} ({amount(item.count)})</li>)}</ul></details>}
       </>}

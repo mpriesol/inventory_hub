@@ -6,6 +6,7 @@ order polling delay. Ambiguous absolute PUTs retain durable per-target fences.
 """
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from time import monotonic
 from uuid import uuid4
 from sqlalchemy import case, func, or_, select, text
 from inventory_hub.db_models import Product, Shop, Warehouse
@@ -24,6 +25,7 @@ from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 DEFAULTS = {'interval_seconds': 300, 'batch_size': 20, 'max_order_age_seconds': 900}
 ACTIVE = ('queued', 'running')
 FENCED = ('sending', 'uncertain')
+BATCH_OBSERVATION_SECONDS = 30
 
 
 class SyncError(Exception):
@@ -309,7 +311,20 @@ async def finish(db, run, policy, values, error=None):
     await db.commit()
 
 
-async def process_item(db, item_id):
+async def remember_rate_limit(db, shop_id, shop_code, fingerprint, error):
+    """Remember a known response even if all candidate leaves changed locally."""
+    policy = await one(db, Policy, Policy.shop_id == shop_id, True)
+    if (policy is not None and policy.target_fingerprint == fingerprint
+            and target_fingerprint(shop_code) == fingerprint):
+        delay = getattr(error, 'retry_after', None)
+        until = now() + timedelta(seconds=min(604800, max(60, delay if type(delay) is int else 300)))
+        policy.retry_after_at = max(policy.retry_after_at, until) if policy.retry_after_at else until
+    await db.commit()
+    from inventory_hub.services.stock_publication import _remember_rate_limit
+    await _remember_rate_limit(db, shop_code, fingerprint, error)
+
+
+async def process_item(db, item_id, prefetched=None):
     item = await one(db, Item, Item.id == item_id)
     if item is None or item.status != 'prepared':
         await db.commit()
@@ -333,7 +348,25 @@ async def process_item(db, item_id):
         if await db.scalar(select(Item.id).where(Item.shop_id == shop.id, Item.sku == item.sku, Item.status.in_(FENCED)).limit(1)):
             raise SyncError('stock_sync_target_uncertain')
         target, value = await desired(db, shop_code, item.sku)
+        if prefetched is not None:
+            if 'error' in prefetched:
+                raise prefetched['error']
+            if prefetched['target'] != target:
+                raise SyncError('stock_sync_identity_changed')
+            cached = prefetched['result']
+            age = monotonic() - cached['observed_monotonic']
+            if 0 <= age <= BATCH_OBSERVATION_SECONDS and matches(cached['observation'], value):
+                # Only unchanged leaves may use this in-memory observation.
+                # All current identity/stock/order/fence gates are locked above.
+                observation = cached['observation']
+                item = await one(db, Item, Item.id == item_id, True)
+                item.target, item.desired, item.before = observation['identity'], value, observation
+                item.status, item.after, item.verified_at = 'verified', observation, cached['observed_at']
+                await db.commit()
+                return
         await db.commit()
+        # A batch difference (or expired observation) never authorizes a PUT.
+        # Preserve the existing fresh single GET and post-GET local recheck.
         observation = await source.read(shop_code, target, fingerprint)
         # Recompute after the remote GET; local receipts/reservations are not
         # frozen during network work and must not use an older desired value.
@@ -371,13 +404,7 @@ async def process_item(db, item_id):
         item.status = 'uncertain' if started else 'skipped'
         item.error = error.code
         if getattr(error, 'status', None) == 429:
-            policy = await one(db, Policy, Policy.shop_id == item.shop_id, True)
-            delay = getattr(error, 'retry_after', None)
-            policy.retry_after_at = now() + timedelta(seconds=min(604800, max(60, delay if type(delay) is int else 300)))
-            # Share rate-limit pressure with collector/maintenance readers.
-            from inventory_hub.services.stock_publication import _remember_rate_limit
-            await db.commit()
-            await _remember_rate_limit(db, shop_code, fingerprint, error)
+            await remember_rate_limit(db, item.shop_id, shop_code, fingerprint, error)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -393,9 +420,11 @@ async def process_run(db, identifier):
         await db.commit()
         return
     shop_code = await db.scalar(select(Shop.code).where(Shop.id == run.shop_id))
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
     shop, warehouse, policy, _, values = await scope(db, shop_code, True)
     reasons = await blockers(db, shop, warehouse, policy, values)
-    if reasons or policy.revision != run.settings_revision:
+    if (reasons or policy.revision != run.settings_revision
+            or run.target_fingerprint != policy.target_fingerprint or run.warehouse_id != warehouse.id):
         await finish(db, run, policy, values, (reasons or ['stock_sync_settings_changed'])[0])
         return
     run.status = 'running'
@@ -418,9 +447,41 @@ async def process_run(db, identifier):
             db.add(item)
             await db.flush()
             pending.append(item.id)
-    await db.commit()
+    # Snapshot only locally eligible leaves while holding the same ordered
+    # gates as process_item. Failures still follow its ordinary per-item path.
+    targets, preflight_errors = {}, {}
     for item_id in pending:
-        await process_item(db, item_id)
+        item = await one(db, Item, Item.id == item_id)
+        if await db.scalar(select(Item.id).where(Item.shop_id == shop.id, Item.sku == item.sku,
+                                                Item.status.in_(FENCED)).limit(1)):
+            continue
+        try:
+            target, _ = await desired(db, shop_code, item.sku)
+            targets[item_id] = source.transport._target(target)
+        except (SyncError, source.SourceError, stock_settings.SettingsError, stock_projection.StockProjectionError):
+            continue
+        except Exception as error:
+            # Preserve the ordinary per-item failure isolation: a broken local
+            # projection must not repeatedly strand the entire pending chunk.
+            preflight_errors[item_id] = {'error': error}
+    fingerprint, shop_id = run.target_fingerprint, shop.id
+    await db.commit()
+    prefetched = dict(preflight_errors)
+    if targets:
+        try:
+            observations = await source.read_many(shop_code, list(targets.values()), fingerprint)
+            prefetched.update({item_id: {'target': target, 'result': observations[target['code']]}
+                               for item_id, target in targets.items()})
+        except Exception as error:
+            # Incomplete or throttled batches fail closed. Never multiply a
+            # failed GET into N single reads or use a partially parsed batch.
+            # Include currently ineligible rows too: one may become eligible
+            # during the request, but must not bypass a known batch failure.
+            prefetched = {item_id: {'error': error} for item_id in pending}
+            if getattr(error, 'status', None) == 429:
+                await remember_rate_limit(db, shop_id, shop_code, fingerprint, error)
+    for item_id in pending:
+        await process_item(db, item_id, prefetched.get(item_id))
     # A skipped/failed item rolls back its transaction and expires this run.
     # Reload using the frozen scalar key, never run.id from the expired object.
     run = await one(db, Run, Run.id == run_id, True)

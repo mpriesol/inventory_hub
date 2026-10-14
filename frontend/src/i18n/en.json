@@ -2556,9 +2556,9 @@
       "connection": "Connection",
       "connected": "Verified by reading",
       "unavailable": "Not verified",
-      "latency": "Check duration",
+      "latency": "API status check duration",
       "quotaTitle": "Limits and current remaining quota",
-      "quotaHelp": "Remaining quota is a snapshot at the time of the check and can also be used by other integrations. The theoretical 24-hour limit is not today’s remaining quota.",
+      "quotaHelp": "Remaining quota is a snapshot at the time of the check and can also be used by other integrations. The theoretical 24-hour limit is not today’s remaining quota. With a sample check, this balance is observed before the product requests.",
       "window": "Period",
       "limit": "Request limit",
       "remaining": "Remaining at measurement",
@@ -2598,8 +2598,8 @@
       "operation": "Scenario",
       "perPass": "Per pass",
       "dailyIfEnabled": "Per 24 h if enabled",
-      "unchangedStock": "Stock check with no changes",
-      "changedStock": "Stock check and transfer with all items changed",
+      "unchangedStock": "Batched stock check with no changes",
+      "changedStock": "Batched check with all items changed",
       "emptyOrderPoll": "Order collection without new changes",
       "orderRetries": "Retry processing of waiting orders",
       "orderHistory": "Ongoing checks of processed orders",
@@ -2617,9 +2617,23 @@
         "upgates_capacity_source_unavailable": "The shop API is currently unavailable. Try the check again later.",
         "upgates_capacity_invalid_response": "The API returned incomplete or invalid data. The information is not considered verified.",
         "upgates_capacity_shop_not_found": "The selected shop was not found or is inactive.",
-        "upgates_capacity_local_unavailable": "The Hub data could not be loaded. Try the check again later."
+        "upgates_capacity_local_unavailable": "The Hub data could not be loaded. Try the check again later.",
+        "upgates_capacity_sample_empty": "The Hub has no suitable unambiguously mapped products for this sample.",
+        "upgates_capacity_sample_status_required": "The API connection check must succeed first.",
+        "upgates_capacity_sample_unavailable": "The sample could not be loaded. You can repeat the check manually."
       },
-      "cooperation": "A successful connection or sufficient quota does not confirm that stock writes are safe. Upgates also changes its main stock for orders; concurrent absolute stock writes must be addressed before enabling transfers."
+      "cooperation": "A successful connection or sufficient quota does not confirm that stock writes are safe. Upgates also changes its main stock for orders; concurrent absolute stock writes must be addressed before enabling transfers.",
+      "formerInitialReads": "Initial single-item reads – before",
+      "batchedInitialReads": "Initial batch reads – now",
+      "initialReadSavings": "Estimated initial-read savings",
+      "batchReadsHelp": "The initial comparison reads multiple items per request; a work batch contains up to {{count}} SKUs. The percentage compares initial reads only, not all API operations. Splits by product type and query length are already included.",
+      "changedReadsHelp": "Each changed item retains a separate fresh read before writing, the write itself and result verification. The estimate assumes valid batch data; slow responses, API cooldowns or expired data can require additional reads.",
+      "sampleOption": "Also verify reading a product sample",
+      "sampleCallLimit": "With a sample, there are at most 3 reads: API status and two small product batches.",
+      "sampleTitle": "Product sample read",
+      "sampleOk": "The selected sample was successfully read in batches. Stock was not changed.",
+      "sampleFailed": "The product sample read could not be confirmed. Stock was not changed.",
+      "sampleCounts": "Selected simple products: {{products}} · variants: {{variants}}."
     }
   },
   "productPublication": {

@@ -6,7 +6,7 @@ import unittest
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 import asyncpg
@@ -62,6 +62,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             patch.object(order_collection,'load_shop',return_value={'upgates_api_base_url':'https://regular-test.invalid/api/v2',
                 'upgates_login':'synthetic-test','upgates_api_key':'test-only'}),
             patch.object(service.source,'read',AsyncMock(side_effect=self.read_remote)),
+            patch.object(service.source,'read_many',AsyncMock(side_effect=self.read_many_remote)),
             patch.object(service.source,'write_once',AsyncMock(side_effect=self.write_remote)),
             patch('inventory_hub.services.supplier_availability.project',AsyncMock(return_value={}))]
         for p in self.patches:p.start()
@@ -112,6 +113,33 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def read_remote(self,*args):
         self.assertFalse(self.io_session.in_transaction(),'No locks across network')
         return copy.deepcopy(self.remote)
+
+    async def read_many_remote(self,shop,targets,fingerprint):
+        self.assertFalse(self.io_session.in_transaction(),'No locks across batched network reads')
+        result={}
+        for index,target in enumerate(targets):
+            observation=copy.deepcopy(self.remote)
+            variant=target['variant_code'] is not None
+            observation['identity']={**target,'product_id':90 if variant else 1000+index,
+                                     'variant_id':91+index if variant else None}
+            result[target['code']]={'observation':observation,'observed_at':self.clock,
+                                   'observed_monotonic':service.monotonic()}
+        return result
+
+    async def seed_batch_products(self,codes,variant=True):
+        from stock_tracking_fixture import confirmed_inventory
+        async with self.session() as db:
+            for code in codes:
+                product=Product(sku=code,name=code);db.add(product);await db.flush()
+                db.add(ShopProduct(shop_id=self.shop_id,product_id=product.id,is_variant=variant,
+                    external_code='xTrek' if variant else code,parent_code='xTrek' if variant else None,
+                    variant_code=code if variant else None))
+                db.add(StockBalance(product_id=product.id,warehouse_id=self.warehouse_id,
+                    qty_on_hand=4,qty_reserved=0,qty_quarantined=0,avg_cost=1,total_value=4))
+                db.add(confirmed_inventory(product.id,self.warehouse_id))
+                db.add(StockMovement(product_id=product.id,warehouse_id=self.warehouse_id,
+                    movement_type=MovementType.INITIAL,quantity=4,unit_cost=1,balance_after=4,
+                    avg_cost_after=1,idempotency_key=uuid4().hex))
 
     async def write_remote(self,shop,target,desired,fingerprint):
         self.assertFalse(self.io_session.in_transaction(),'Intent must commit before write')
@@ -328,16 +356,21 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await available(),'Identity lock must be released before remote reads')
             network.append('read')
             return await self.read_remote(*args)
+        async def read_many(*args):
+            self.assertTrue(await available(),'Identity lock must be released before batch reads')
+            network.append('batch')
+            return await self.read_many_remote(*args)
         async def write(*args):
             self.assertTrue(await available(),'Identity lock must be released before remote writes')
             network.append('write')
             return await self.write_remote(*args)
         service.source.read.side_effect=read
+        service.source.read_many.side_effect=read_many
         service.source.write_once.side_effect=write
         with patch.object(service,'desired',side_effect=projected):
             await self.invoke('process_run',row['id'])
-        self.assertEqual(len(projections),2)
-        self.assertEqual(network,['read','write','read'])
+        self.assertEqual(len(projections),3)
+        self.assertEqual(network,['batch','read','write','read'])
         self.assertEqual((await self.invoke('get_run',row['id']))['status'],'completed')
 
     async def test_off_defaults_and_authority_required(self):
@@ -362,6 +395,196 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(balance.qty_on_hand,7);self.assertEqual(balance.qty_reserved,2)
             holds=await db.scalar(text('SELECT count(*) FROM stock_publication_holds'))
             self.assertEqual(holds,0)
+
+    async def test_twenty_unchanged_leaves_use_one_batch_get_without_single_reads_or_puts(self):
+        variants=['SKU-A',*[f'VARIANT-{index:02d}' for index in range(19)]]
+        simples=[f'SIMPLE-{index:02d}' for index in range(20)]
+        await self.seed_batch_products(variants[1:])
+        await self.seed_batch_products(simples,variant=False)
+        await self.invoke('configure',self.config())
+        async with self.session() as db:
+            before={table:(await db.execute(text(f'SELECT * FROM {table} ORDER BY id'))).mappings().all()
+                    for table in ('stock_balances','stock_movements')}
+        async def real_batch(*args):
+            self.assertFalse(self.io_session.in_transaction())
+            return await asyncio.to_thread(service.source._read_many,*args)
+        def response(client,method,path,*,params):
+            self.assertEqual(method,'get')
+            variant=path=='products/variants'
+            codes=params['variant_codes' if variant else 'codes'].split(';')
+            rows=[{'code':code,'product_id':90 if variant else 1000+index,'stock':4,
+                   'availability':'SKLADOM','can_add_to_basket_yn':True,
+                   **({'product_code':'xTrek','variant_id':91+index} if variant else
+                      {'variants_exists_yn':False,'variants':[],'set_yn':False})}
+                  for index,code in enumerate(codes)]
+            return {'current_page':1,'current_page_items':len(rows),'number_of_items':len(rows),
+                    'number_of_pages':1,'variants' if variant else 'products':rows}
+        service.source.read_many.side_effect=real_batch
+        with patch.object(service.source.transport,'_client',return_value=Mock()), \
+             patch.object(service.source.transport,'_request',side_effect=response) as request:
+            for codes in (variants,simples):
+                request.reset_mock()
+                run=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=codes))
+                await self.invoke('process_run',run['id'])
+                result=await self.invoke('get_run',run['id'])
+                self.assertEqual((result['status'],result['counts']['verified']),('completed',20))
+                request.assert_called_once()
+        service.source.read.assert_not_awaited()
+        service.source.write_once.assert_not_awaited()
+        async with self.session() as db:
+            after={table:(await db.execute(text(f'SELECT * FROM {table} ORDER BY id'))).mappings().all()
+                   for table in before}
+        self.assertEqual(after,before)
+
+    async def test_batch_match_rechecks_reservation_and_changed_leaf_keeps_fresh_write_protocol(self):
+        await self.seed_batch_products(['SKU-B'])
+        self.remote.update(stock='4',availability='SKLADOM')
+        await self.invoke('configure',self.config())
+        run=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A','SKU-B']))
+        async def reserved_during_batch(*args):
+            result=await self.read_many_remote(*args)
+            async with self.session() as db:
+                balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+                balance.qty_reserved=3
+            return result
+        service.source.read_many.side_effect=reserved_during_batch
+        await self.invoke('process_run',run['id'])
+        result=await self.invoke('get_run',run['id'])
+        self.assertEqual((result['status'],result['counts']['verified']),('completed',2))
+        self.assertEqual(self.remote['stock'],'3')
+        self.assertEqual(service.source.read.await_count,2,'Changed leaf retains fresh GET and verification GET')
+        service.source.write_once.assert_awaited_once()
+        rows={item['sku']:item for item in result['items']}
+        self.assertEqual(rows['SKU-A']['desired']['stock'],'3')
+        self.assertEqual(rows['SKU-B']['desired']['stock'],'4')
+        self.assertIsNone(rows['SKU-B']['attempt_started_at'])
+
+    async def test_expired_or_future_batch_proof_uses_fresh_read_without_write(self):
+        self.remote.update(stock='4',availability='SKLADOM')
+        await self.invoke('configure',self.config())
+        for offset in (-31,60):
+            run=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A']))
+            async def aged(*args):
+                result=await self.read_many_remote(*args)
+                result['SKU-A']['observed_monotonic']+=offset
+                return result
+            service.source.read_many.side_effect=aged
+            service.source.read.reset_mock()
+            await self.invoke('process_run',run['id'])
+            self.assertEqual((await self.invoke('get_run',run['id']))['status'],'completed')
+            service.source.read.assert_awaited_once()
+        service.source.write_once.assert_not_awaited()
+
+    async def test_batch_matching_value_cannot_skip_new_order_blocker(self):
+        order=await self.processed_order()
+        self.remote.update(stock='0',availability='overíme')
+        run=await self.prepare()
+        async def header_changed(*args):
+            result=await self.read_many_remote(*args)
+            async with self.session() as db:
+                (await db.get(OrderInboxEntry,order['entry_id'])).observation_hash='c'*64
+            return result
+        service.source.read_many.side_effect=header_changed
+        await self.invoke('process_run',run['id'])
+        result=await self.invoke('get_run',run['id'])
+        self.assertEqual(result['items'][0]['error'],'stock_sync_orders_pending')
+        service.source.read.assert_not_awaited()
+        service.source.write_once.assert_not_awaited()
+
+    async def test_batch_matching_value_cannot_skip_policy_revision_change(self):
+        self.remote.update(stock='4',availability='SKLADOM')
+        run=await self.prepare()
+        async def changed_settings(*args):
+            result=await self.read_many_remote(*args)
+            async with self.session() as db:
+                (await db.get(StockSyncSettings,self.shop_id)).revision+=1
+            return result
+        service.source.read_many.side_effect=changed_settings
+        await self.invoke('process_run',run['id'])
+        result=await self.invoke('get_run',run['id'])
+        self.assertEqual(result['items'][0]['error'],'stock_sync_settings_changed')
+        service.source.read.assert_not_awaited()
+        service.source.write_once.assert_not_awaited()
+
+    async def test_batch_matching_value_cannot_skip_mapping_change(self):
+        self.remote.update(stock='4',availability='SKLADOM')
+        run=await self.prepare()
+        async def mapped_elsewhere(*args):
+            result=await self.read_many_remote(*args)
+            async with self.session() as db:
+                await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':IDENTITY_WRITE_LOCK})
+                mapping=await db.scalar(select(ShopProduct).where(ShopProduct.product_id==self.product_id))
+                mapping.parent_code=mapping.external_code='OTHER-PARENT'
+            return result
+        service.source.read_many.side_effect=mapped_elsewhere
+        await self.invoke('process_run',run['id'])
+        result=await self.invoke('get_run',run['id'])
+        self.assertEqual(result['items'][0]['error'],'stock_sync_identity_changed')
+        service.source.read.assert_not_awaited()
+        service.source.write_once.assert_not_awaited()
+
+    async def test_failed_batch_never_fans_out_to_newly_eligible_earlier_item(self):
+        from stock_tracking_fixture import confirmed_inventory
+        await self.invoke('configure',self.config())
+        for index,error in enumerate((service.source.SourceError('stock_publication_invalid_response'),
+                                     service.source.SourceError('stock_publication_rate_limited',429,retry_after=420))):
+            code=f'A-UNOPENED-{index}'
+            async with self.session() as db:
+                product=Product(sku=code,name=code);db.add(product);await db.flush()
+                product_id=product.id
+                db.add(ShopProduct(shop_id=self.shop_id,product_id=product_id,external_code=code,is_variant=False))
+            run=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=[code,'SKU-A']))
+            async def opened_during_failed_batch(*args):
+                self.assertFalse(self.io_session.in_transaction())
+                self.assertEqual([target['code'] for target in args[1]],['SKU-A'])
+                async with self.session() as db:
+                    db.add(StockBalance(product_id=product_id,warehouse_id=self.warehouse_id,
+                        qty_on_hand=0,qty_reserved=0,qty_quarantined=0,avg_cost=0,total_value=0))
+                    db.add(confirmed_inventory(product_id,self.warehouse_id))
+                raise error
+            service.source.read_many.side_effect=opened_during_failed_batch
+            await self.invoke('process_run',run['id'])
+            result=await self.invoke('get_run',run['id'])
+            self.assertEqual(result['counts']['skipped'],2)
+            service.source.read.assert_not_awaited()
+            service.source.write_once.assert_not_awaited()
+        async with self.session() as db:
+            policy=await db.get(StockSyncSettings,self.shop_id)
+            processing=await db.get(StockShopSettings,self.shop_id)
+            self.assertEqual(policy.retry_after_at,self.clock+timedelta(seconds=420))
+            self.assertIsNotNone(processing.processing_retry_after_at)
+
+    async def test_batch_429_is_remembered_even_if_all_targets_become_ineligible(self):
+        run=await self.prepare()
+        async def disappeared(*args):
+            async with self.session() as db:
+                (await db.get(Product,self.product_id)).is_active=False
+            raise service.source.SourceError('stock_publication_rate_limited',429,retry_after=480)
+        service.source.read_many.side_effect=disappeared
+        await self.invoke('process_run',run['id'])
+        async with self.session() as db:
+            policy=await db.get(StockSyncSettings,self.shop_id)
+            self.assertEqual(policy.retry_after_at,self.clock+timedelta(seconds=480))
+        service.source.read.assert_not_awaited()
+        service.source.write_once.assert_not_awaited()
+
+    async def test_unexpected_prefetch_projection_error_does_not_strand_other_items(self):
+        await self.seed_batch_products(['SKU-B'])
+        self.remote.update(stock='4',availability='SKLADOM')
+        await self.invoke('configure',self.config())
+        run=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A','SKU-B']))
+        original=service.desired
+        async def broken_one(db,shop,sku):
+            if sku=='SKU-A':
+                raise RuntimeError('Synthetic per-item failure')
+            return await original(db,shop,sku)
+        with patch.object(service,'desired',side_effect=broken_one):
+            await self.invoke('process_run',run['id'])
+        result=await self.invoke('get_run',run['id'])
+        self.assertEqual((result['status'],result['counts']['verified'],result['counts']['failed']),('partial',1,1))
+        self.assertEqual(result['items'][0]['error'],'stock_sync_worker_error')
+        service.source.read.assert_not_awaited()
+        service.source.write_once.assert_not_awaited()
 
     async def test_violated_single_writer_precondition_readback_cannot_prove_absence_of_overwritten_native_order(self):
         """Violated single-writer precondition; readback cannot prove absence of overwritten native order."""
