@@ -58,7 +58,8 @@ def _batch_observations(payload, targets):
         single = {key: [row], 'current_page': 1, 'current_page_items': 1, 'number_of_items': 1, 'number_of_pages': 1}
         observation = transport._observation(single, target)
         if ('availability' not in row or row['availability'] is not None and not isinstance(row['availability'], str)
-                or type(row.get('can_add_to_basket_yn')) is not bool):
+                or 'can_add_to_basket_yn' not in row
+                or row['can_add_to_basket_yn'] is not None and type(row['can_add_to_basket_yn']) is not bool):
             raise SourceError('stock_publication_invalid_response')
         observed[target['code']] = {'identity': observation['identity'], 'stock': observation['quantity'],
             'availability': row['availability'], 'can_add_to_basket_yn': row['can_add_to_basket_yn']}

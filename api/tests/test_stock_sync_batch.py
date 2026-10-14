@@ -124,6 +124,19 @@ class StockSyncBatchTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(patch_value=patch_value), self.assertRaises(source.SourceError):
                 await self.read(targets, [body])
 
+    async def test_nullable_orderability_is_unknown_and_never_matches_desired_true(self):
+        from inventory_hub.services.stock_sync import matches
+        targets = [target('A', True)]
+        body = page(targets)
+        body['variants'][0]['can_add_to_basket_yn'] = None
+        result, _ = await self.read(targets, [body])
+        observed = result['A']['observation']
+        self.assertIsNone(observed['can_add_to_basket_yn'])
+        self.assertFalse(matches(observed, {'stock': '4', 'availability': 'SKLADOM', 'can_add_to_basket_yn': True}))
+        del body['variants'][0]['can_add_to_basket_yn']
+        with self.assertRaises(source.SourceError):
+            await self.read(targets, [body])
+
     async def test_duplicate_remote_ids_or_inconsistent_parent_identity_are_rejected(self):
         for variant, changes in ((False, {'product_id': 100}), (True, {'variant_id': 200}),
                                  (True, {'product_id': 91})):
