@@ -47,11 +47,12 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         self.patcher = patch.object(config_io, "DATA_ROOT", self.root)
         self.patcher.start()
-        self.feed = self.root / "fixture.xml"
+        self.feed = self.root / "suppliers" / "paul-lange" / "feeds" / "xml" / "fixture.xml"
         cfg_path = config_io.supplier_path("paul-lange")
         cfg_path.parent.mkdir(parents=True)
         cfg_path.write_text(json.dumps({"name": "Test supplier", "feeds": {"sources": {"products": {"mode": "local", "local_path": str(self.feed)}}},
             "adapter_settings": {"vat": 23, "mapping": {"postprocess": {"product_code_prefix": "PL-"}}}}))
+        self.feed.parent.mkdir(parents=True)
         self.write_feed(xml_item(), xml_item("A-002", "Modrá prilba", ean="00012346"), xml_item("A-003", "Červené rukavice", ean="00012347"))
 
     async def asyncTearDown(self):

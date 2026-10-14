@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from inventory_hub.file_access import stored_document_path, document_response
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -642,15 +642,9 @@ async def download_invoice(invoice_id: int, db: AsyncSession = Depends(get_sessi
     if not row:
         raise HTTPException(404, "Invoice not found")
     
-    file_path = Path(row.file_path)
-    if not file_path.exists():
-        raise HTTPException(404, "File not found on disk")
-    
-    return FileResponse(
-        path=str(file_path),
-        filename=row.original_filename,
-        media_type="application/octet-stream"
-    )
+    file_path = stored_document_path(settings.INVENTORY_DATA_ROOT, row.file_path)
+    return document_response(file_path, filename=row.original_filename)
+
 
 
 @router.patch("/{invoice_id}")

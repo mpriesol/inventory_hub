@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 
-from inventory_hub.access import operator_access
+from inventory_hub.access import admin_access, operator_access
 from inventory_hub.services import sloger_b2b, sloger_credentials, sloger_probe
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.sloger_probe_types import SlogerCredentials
@@ -55,7 +55,7 @@ def credentials_status():
     return sloger_credentials.status()
 
 
-@router.put("/credentials")
+@router.put("/credentials", dependencies=[Depends(admin_access)])
 def save_credentials(body: SlogerCredentials):
     return sloger_credentials.save(body)
 

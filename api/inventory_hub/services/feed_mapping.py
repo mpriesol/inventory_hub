@@ -1,6 +1,9 @@
 """Database-owned feed mappings, source inspection and deterministic normalization."""
 from __future__ import annotations
 
+from fastapi import HTTPException
+from inventory_hub.file_access import local_feed_path
+
 import asyncio
 import hashlib
 import html
@@ -406,9 +409,7 @@ async def source_path(db, supplier, feed_key, sample_id=None):
         relative = metadata.get("mapping_source_path") or metadata.get("xml_path")
         if relative:
             root = Path(config_io.DATA_ROOT).resolve()
-            path = (root / relative).resolve()
-            if not path.is_relative_to(root):
-                raise _error("feed_source_invalid", "The saved source location is invalid")
+            path = root / relative
         else:
             source = (cfg.get("feeds", {}).get("sources") or {}).get(feed_key, {})
             if source.get("mode") == "local" and source.get("local_path"):
@@ -417,9 +418,10 @@ async def source_path(db, supplier, feed_key, sample_id=None):
                     path = config_io.supplier_path(supplier).parent / path
             else:
                 raise _error("feed_sample_missing", "First download a feed in the catalog or upload a sample here", 404)
-    if not path.is_file():
-        raise _error("feed_sample_missing", "The saved feed sample is no longer available; upload it again", 404)
-    return path
+    try:
+        return local_feed_path(config_io.DATA_ROOT, path)
+    except HTTPException:
+        raise _error("feed_sample_missing", "The feed must be an existing file in a supplier feeds directory; upload it again", 404) from None
 
 
 async def inspect_source(db, supplier, feed_key, definition, sample_id=None):

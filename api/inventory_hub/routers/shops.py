@@ -1,8 +1,10 @@
 
 from __future__ import annotations
 from typing import Dict, Any
-from fastapi import APIRouter, Body, HTTPException, UploadFile, File
+from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File
+from inventory_hub.access import admin_access
 from inventory_hub.config_io import load_shop as io_load_shop, save_shop as io_save_shop
+from inventory_hub.config_secrets import ConfigSecretError, config_patch, public_config
 from inventory_hub.settings import settings
 from pathlib import Path
 
@@ -18,11 +20,15 @@ def save_shop_config(shop: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/shops/{shop}/config")
 def get_shop_config(shop: str) -> Dict[str, Any]:
-    return io_load_shop(shop, write_back_on_load=False)
+    return public_config(io_load_shop(shop, write_back_on_load=False))
 
-@router.put("/shops/{shop}/config")
+@router.put("/shops/{shop}/config", dependencies=[Depends(admin_access)])
 def put_shop_config(shop: str, data: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    return io_save_shop(shop, data)
+    try:
+        patch = config_patch(io_load_shop(shop, write_back_on_load=False), data)
+    except ConfigSecretError as error:
+        raise HTTPException(422, detail=str(error)) from None
+    return public_config(io_save_shop(shop, patch))
 
 @router.post("/shops/{shop}/upload-export")
 async def upload_shop_export(
@@ -87,8 +93,8 @@ async def fetch_shop_export(shop: str, export_type: str = "full") -> Dict[str, A
             resp = await client.get(url)
             resp.raise_for_status()
             content = resp.content
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Chyba pri sťahovaní exportu: {e}")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Export sa nepodarilo stiahnuť. Overte prístup a konfiguráciu zdroja.") from None
 
     if len(content) < 100:
         raise HTTPException(status_code=502, detail="Stiahnutý súbor je príliš malý")
@@ -105,7 +111,7 @@ async def fetch_shop_export(shop: str, export_type: str = "full") -> Dict[str, A
         "ok": True,
         "shop": shop,
         "export_type": export_type,
-        "url": url,
+        "url_configured": True,
         "size_bytes": len(content),
         "saved_as": "latest.csv",
     }

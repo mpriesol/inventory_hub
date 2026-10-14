@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import delete, select, text
 
@@ -11,15 +12,49 @@ from inventory_hub.access import _require_token, operator_access
 from inventory_hub.auth_models import HubUser, HubSession
 from inventory_hub.database import get_session_context
 from inventory_hub.services import auth
+from inventory_hub.settings import settings
+
+
+# Everything else, including legacy routes, downloads and API documentation,
+# is private. Match methods and complete paths, never a path prefix.
+PUBLIC_ENDPOINTS = frozenset({
+    ('GET', '/health'), ('HEAD', '/health'),
+    ('GET', '/auth/session'), ('POST', '/auth/login'),
+    ('POST', '/auth/logout'), ('POST', '/auth/token-session'),
+})
+
+
+def route_path(request):
+    path = request.scope.get('path', '')
+    root = request.scope.get('root_path', '').rstrip('/')
+    if root and path.startswith(root + '/'):
+        path = path[len(root):]
+    return path
+
+
+def private_headers(response):
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    return response
 
 
 def install(app):
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, error):
+        # Pydantic's default response echoes rejected inputs and exception
+        # context, which can include passwords, tokens or credential URLs.
+        return private_headers(JSONResponse(status_code=422, content={
+            'detail': {'code': 'hub_request_invalid', 'message': 'Invalid request fields'},
+        }))
+
     @app.middleware('http')
     async def session_boundary(request: Request, call_next):
         request.state.hub_user = None
         request.state.hub_bearer = False
         token = request.cookies.get(auth.COOKIE)
-        if token:
+        if token and settings.USE_POSTGRES:
             async with get_session_context() as db:
                 request.state.hub_user = await auth.session_user(db, token)
         valid_cookie = request.state.hub_user is not None
@@ -33,12 +68,18 @@ def install(app):
                 request.state.hub_user = auth.public_user(None)
             except HTTPException:
                 pass
+        path = route_path(request)
+        if (request.method, path) not in PUBLIC_ENDPOINTS:
+            try:
+                operator_access(authorization, request)
+            except HTTPException as error:
+                return private_headers(JSONResponse(status_code=error.status_code,
+                    content={'detail': error.detail}, headers=error.headers))
         response = await call_next(request)
-        if '/auth/' in request.url.path:
-            response.headers['Cache-Control'] = 'no-store'
-        if (request.state.hub_bearer and not valid_cookie and response.status_code < 400
+        private_headers(response)
+        if (settings.USE_POSTGRES and request.state.hub_bearer and not valid_cookie and response.status_code < 400
                 and request.headers.get('sec-fetch-site') == 'same-origin'
-                and not request.url.path.endswith(('/auth/logout', '/auth/token-session'))):
+                and path not in ('/auth/logout', '/auth/token-session')):
             async with get_session_context() as db:
                 await auth.new_session(db, response)
         return response
@@ -83,7 +124,7 @@ async def session(request: Request, response: Response):
     response.headers['Cache-Control'] = 'no-store'
     principal = getattr(request.state, 'hub_user', None)
     cookie = request.cookies.get(auth.COOKIE)
-    if principal and cookie and not getattr(request.state, 'hub_bearer', False):
+    if settings.USE_POSTGRES and principal and cookie and not getattr(request.state, 'hub_bearer', False):
         async with get_session_context() as db:
             row = await db.get(HubSession, auth.fingerprint(cookie), with_for_update=True)
             if row:

@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File, Query, Request
+from inventory_hub.access import admin_access
 from pydantic import BaseModel
 
 from inventory_hub.settings import settings
@@ -33,6 +34,7 @@ from inventory_hub.config_io import (
     DATA_ROOT,
 )
 from inventory_hub.supplier_prefix import SupplierPrefixError, get_supplier_prefix
+from inventory_hub.config_secrets import ConfigSecretError, config_patch, public_config
 
 from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
 
@@ -126,7 +128,7 @@ def _validate_price_coefficients(cfg: Dict[str, Any]) -> None:
 
 def _config_response(supplier: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        return {**cfg, **supplier_prefix_status(supplier)}
+        return {**public_config(cfg), **supplier_prefix_status(supplier)}
     except SupplierPrefixError as error:
         raise _prefix_http_error(error) from None
 
@@ -138,7 +140,7 @@ def _suppliers_root() -> Path:
 
 def _supplier_dir(supplier: str) -> Path:
     """Directory for specific supplier"""
-    return _suppliers_root() / supplier
+    return supplier_path(supplier).parent
 
 
 def _history_dir(supplier: str) -> Path:
@@ -249,10 +251,10 @@ def _save_to_history(supplier: str, current_cfg: Dict[str, Any]) -> None:
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')
     history_file = history_dir / f"{ts}.json"
 
-    history_file.write_text(
-        json.dumps(current_cfg, ensure_ascii=False, indent=2),
-        encoding='utf-8'
-    )
+    descriptor = os.open(history_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(json.dumps(current_cfg, ensure_ascii=False, indent=2))
 
     _cleanup_old_history(supplier)
 
@@ -306,14 +308,16 @@ def _list_history(supplier: str) -> List[SupplierHistoryEntry]:
 
 def _load_history_version(supplier: str, version: str) -> Dict[str, Any]:
     """Load specific history version"""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", version):
+        raise HTTPException(status_code=400, detail="Invalid history version")
     history_file = _history_dir(supplier) / f"{version}.json"
     if not history_file.exists():
         raise HTTPException(status_code=404, detail=f"History version '{version}' not found")
 
     try:
         return json.loads(history_file.read_text(encoding='utf-8'))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load history: {e}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to load configuration history") from None
 
 
 async def _validate_url(url: str, timeout: float = 5.0) -> bool:
@@ -323,7 +327,7 @@ async def _validate_url(url: str, timeout: float = 5.0) -> bool:
 
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.head(url, follow_redirects=True)
             return resp.status_code < 500
     except Exception:
@@ -425,7 +429,7 @@ def list_suppliers() -> List[SupplierSummary]:
     return summaries
 
 
-@router.post("/suppliers", response_model=Dict[str, Any])
+@router.post("/suppliers", response_model=Dict[str, Any], dependencies=[Depends(admin_access)])
 def create_supplier(req: SupplierCreateRequest) -> Dict[str, Any]:
     """Create new supplier with basic config"""
     code = _sanitize_code(req.code)
@@ -542,12 +546,17 @@ def get_supplier_config(supplier: str) -> Dict[str, Any]:
     return _config_response(supplier, cfg)
 
 
-@router.put("/suppliers/{supplier}/config")
-@router.post("/suppliers/{supplier}/config")
+@router.put("/suppliers/{supplier}/config", dependencies=[Depends(admin_access)])
+@router.post("/suppliers/{supplier}/config", dependencies=[Depends(admin_access)])
 def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Update supplier configuration with automatic history backup"""
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON")
+    current_cfg = io_load_supplier(supplier, write_back_on_load=False)
+    try:
+        payload = config_patch(current_cfg, payload)
+    except ConfigSecretError as error:
+        raise HTTPException(422, detail=str(error)) from None
     adapter = payload.get("adapter_settings", {})
     try:
         if not isinstance(adapter, dict):
@@ -558,7 +567,6 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
     _validate_price_coefficients(payload)
 
     try:
-        current_cfg = io_load_supplier(supplier, write_back_on_load=False)
         if current_cfg:
             _save_to_history(supplier, current_cfg)
     except Exception:
@@ -579,10 +587,10 @@ def get_supplier_history(supplier: str) -> List[SupplierHistoryEntry]:
 @router.get("/suppliers/{supplier}/history/{version}")
 def get_supplier_history_version(supplier: str, version: str) -> Dict[str, Any]:
     """Get specific history version of supplier config"""
-    return _load_history_version(supplier, version)
+    return public_config(_load_history_version(supplier, version))
 
 
-@router.post("/suppliers/{supplier}/restore/{version}")
+@router.post("/suppliers/{supplier}/restore/{version}", dependencies=[Depends(admin_access)])
 def restore_supplier_version(supplier: str, version: str) -> Dict[str, Any]:
     """Restore supplier config from history version"""
     old_cfg = _load_history_version(supplier, version)
@@ -597,7 +605,7 @@ def restore_supplier_version(supplier: str, version: str) -> Dict[str, Any]:
     return _config_response(supplier, io_save_supplier(supplier, old_cfg))
 
 
-@router.post("/suppliers/{supplier}/validate", response_model=ValidationResult)
+@router.post("/suppliers/{supplier}/validate", response_model=ValidationResult, dependencies=[Depends(admin_access)])
 async def validate_supplier_config(
     supplier: str,
     check_urls: bool = Query(default=False, description="Also check URL reachability")
@@ -620,7 +628,7 @@ async def validate_supplier_config(
             if feed_url:
                 result.feed_url_reachable = await _validate_url(feed_url)
                 if not result.feed_url_reachable:
-                    result.warnings.append(f"Feed URL not reachable: {feed_url}")
+                    result.warnings.append("Configured feed URL is not reachable")
 
         invoices = cfg.get('invoices', {})
         download = invoices.get('download', {})
@@ -631,7 +639,7 @@ async def validate_supplier_config(
             if login_url:
                 result.login_url_reachable = await _validate_url(login_url)
                 if not result.login_url_reachable:
-                    result.warnings.append(f"Login URL not reachable: {login_url}")
+                    result.warnings.append("Configured login URL is not reachable")
 
     return result
 
@@ -844,7 +852,7 @@ def _update_invoice_index(supplier: str, filename: str) -> None:
     _update_invoice_index_map(supplier, filename, csv_path, None)
 
 
-@router.delete("/suppliers/{supplier}")
+@router.delete("/suppliers/{supplier}", dependencies=[Depends(admin_access)])
 def delete_supplier(supplier: str, confirm: bool = Query(default=False)):
     """Delete supplier (soft delete - moves to .deleted folder)"""
     supplier_dir = _supplier_dir(supplier)
@@ -908,7 +916,12 @@ def _apply_auth(session: "requests.Session", auth: Optional[Dict]) -> None:
 
 # ---- endpoint ----
 
-@router.post("/suppliers/{supplier}/feeds/refresh")
+def _feed_override_access(request: Request, source_url: Optional[str] = Query(None)) -> None:
+    if source_url:
+        admin_access(request.headers.get("authorization"), request)
+
+
+@router.post("/suppliers/{supplier}/feeds/refresh", dependencies=[Depends(_feed_override_access)])
 def refresh_supplier_feed(
     supplier: str,
     source_url: Optional[str] = Query(None, description="Prepíše URL z configu"),
@@ -944,13 +957,13 @@ def refresh_supplier_feed(
         sess = _req.Session()
         sess.headers["User-Agent"] = "InventoryHub/1.0"
         _apply_auth(sess, auth)
-        resp = sess.get(url, timeout=120, verify=False)
+        resp = sess.get(url, timeout=120)
         resp.raise_for_status()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Chyba pri sťahovaní feedu: {e}")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Feed sa nepodarilo stiahnuť. Overte prístup a konfiguráciu zdroja.") from None
 
     # Ulož XML
-    stem = Path(url.split("?")[0]).stem or "feed"
+    stem = "feed"
     xml_path = xml_dir / f"{stem}_{ts}.xml"
     xml_path.write_bytes(resp.content)
 
@@ -973,8 +986,8 @@ def refresh_supplier_feed(
             default_category=category,
             prefix=prefix,
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Chyba pri konverzii XML: {e}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Konverzia XML feedu zlyhala; overte formát zdroja.") from None
 
     # Ulož timestamp poslednej synchronizácie do configu
     cfg["last_feed_sync"] = datetime.now(timezone.utc).isoformat()
@@ -983,7 +996,7 @@ def refresh_supplier_feed(
     return {
         "ok": True,
         "supplier": supplier,
-        "url": url,
+        "url_configured": True,
         "xml_saved": xml_path.relative_to(sup_dir).as_posix(),
         "csv_saved": csv_path.relative_to(sup_dir).as_posix(),
         "rows_converted": rows,

@@ -111,28 +111,15 @@ jobs:
               run_phase migrations docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.migrate
               run_phase restart docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
               readiness_started=$(date +%s)
-              # Both routes are public; allow startup without logging response bodies.
+              # Verify public health, anonymous denial and authenticated access.
+              # The probe reads the configured token inside the container only.
               readiness_deadline=$(( $(date +%s) + 60 ))
               readiness_ok=false
               while [ "$(date +%s)" -lt "$readiness_deadline" ]; do
-                readiness_ok=true
-                for readiness_path in health ai-content/status; do
-                  readiness_remaining=$(( readiness_deadline - $(date +%s) ))
-                  if [ "$readiness_remaining" -le 0 ]; then
-                    readiness_ok=false
-                    break
-                  fi
-                  readiness_timeout=5
-                  if [ "$readiness_remaining" -lt "$readiness_timeout" ]; then
-                    readiness_timeout=$readiness_remaining
-                  fi
-                  readiness_exit=0
-                  readiness_status=$(curl --silent --fail --output /dev/null --write-out '%{http_code}' --connect-timeout "$readiness_timeout" --max-time "$readiness_timeout" "https://hub.biketrek.sk/api/$readiness_path") || readiness_exit=$?
-                  printf 'Readiness /api/%s: HTTP %s (curl exit %s)\n' "$readiness_path" "$readiness_status" "$readiness_exit"
-                  if [ "$readiness_exit" -ne 0 ] || [ "$readiness_status" != 200 ]; then
-                    readiness_ok=false
-                  fi
-                done
+                readiness_remaining=$(( readiness_deadline - $(date +%s) ))
+                if docker compose -f docker-compose.yml -f docker-compose.ai-content.yml exec -T api python -m inventory_hub.security_check --timeout "$readiness_remaining"; then
+                  readiness_ok=true
+                fi
                 if [ "$readiness_ok" = true ]; then
                   break
                 fi

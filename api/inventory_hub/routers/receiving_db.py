@@ -5,7 +5,7 @@ Receiving Router - PostgreSQL-backed implementation for v12 FINAL.
 Replaces JSON-based receiving.py with proper database operations.
 """
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Body, Depends, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Body, Depends, Query, BackgroundTasks, Request
 from typing import Any, Dict, Optional, List
 from pathlib import Path
 from datetime import datetime, timezone
@@ -45,6 +45,7 @@ from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplie
 from inventory_hub.routers.receiving import _update_invoice_status
 from inventory_hub.access import operator_access
 from inventory_hub.routers.product_editor import NoStoreRoute
+from inventory_hub.file_access import document_path, filename_component, code_component
 
 router = APIRouter(tags=["Receiving"])
 product_router = APIRouter(tags=["Receiving"], route_class=NoStoreRoute,
@@ -161,14 +162,18 @@ def _product_code_prefix(supplier_code: str) -> str:
 
 
 def _invoice_csv_path(supplier_code: str, invoice_no: str) -> Path:
-    return Path(settings.INVENTORY_DATA_ROOT) / "suppliers" / supplier_code / "invoices" / "csv" / f"{invoice_no}.csv"
+    supplier = code_component(supplier_code)
+    invoice = filename_component(invoice_no)
+    return document_path(Path(settings.INVENTORY_DATA_ROOT),
+                         f"suppliers/{supplier}/invoices/csv/{invoice}.csv")
 
 
-def _invoice_no_from_id(invoice_id: str) -> str:
-    try:
-        return invoice_id.split(":", 1)[1]
-    except Exception:
-        return invoice_id
+def _invoice_no_from_id(invoice_id: str, supplier_code: str) -> str:
+    if ":" in invoice_id:
+        supplier, invoice_id = invoice_id.split(":", 1)
+        if supplier != supplier_code:
+            raise HTTPException(400, detail="Invoice reference belongs to another supplier")
+    return filename_component(invoice_id)
 
 
 # ============================================================================
@@ -325,6 +330,21 @@ async def _get_session_for_supplier(
 ACTIVE_STATUSES = (ReceivingStatus.new, ReceivingStatus.in_progress, ReceivingStatus.paused)
 
 
+def _require_mutable_session(session: ReceivingSession) -> None:
+    if session.status == ReceivingStatus.paused:
+        raise HTTPException(400, detail="Session is paused — resume it first")
+    if session.status not in (ReceivingStatus.new, ReceivingStatus.in_progress):
+        raise HTTPException(400, detail="Session already finalized or cancelled")
+
+
+def _request_actor(request: Optional[Request], fallback: str) -> str:
+    """Attribute HTTP writes to the server-authenticated identity, not payload text."""
+    user = getattr(request.state, "hub_user", None) if request is not None else None
+    if user is not None:
+        return f"user:{user['id']}" if user.get("id") is not None else "operator-token"
+    return fallback  # Internal service calls preserve their existing attribution.
+
+
 def _receiving_identity(supplier: Supplier, line: ReceivingLine, prefix: str) -> RemoteIdentity:
     sku = (line.supplier_sku or "").strip()
     return RemoteIdentity(0, f"{prefix}{sku}" if sku else "", barcodes=(line.ean or "",),
@@ -470,6 +490,7 @@ async def _write_stock_for_line(
     product: Product,
     supplier_code: str,
     balance: StockBalance,
+    operator_name: str = "receiving",
 ) -> StockMovement:
     """
     Append immutable RECEIVING_IN stock movement and update stock balance
@@ -481,7 +502,7 @@ async def _write_stock_for_line(
 
     try:
         await stock_tracking.activate(db, balance, source_type="receiving_session", source_id=session.id,
-                                     operator_name="receiving")
+                                     operator_name=operator_name)
     except fifo.FifoError as error:
         raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
 
@@ -517,7 +538,7 @@ async def _write_stock_for_line(
         reference_source=f"{supplier_code}:{session.invoice_number}",
         balance_after=new_qty,
         avg_cost_after=new_avg,
-        created_by="receiving",
+        created_by=operator_name,
     )
     db.add(movement)
     await db.flush()
@@ -656,11 +677,8 @@ async def create_session(
     db: AsyncSession = Depends(get_session),
 ):
     """Create a new receiving session from invoice CSV (lines stored in DB)."""
-    invoice_no = _invoice_no_from_id(request.invoice_id)
+    invoice_no = _invoice_no_from_id(request.invoice_id, supplier_code)
     invoice_csv = _invoice_csv_path(supplier_code, invoice_no)
-
-    if not invoice_csv.exists():
-        raise HTTPException(404, detail=f"Invoice CSV not found: {invoice_csv}")
 
     supplier = await _get_supplier(db, supplier_code)
 
@@ -744,6 +762,7 @@ async def scan_code(
     session_id: int,
     request: ScanRequest,
     db: AsyncSession = Depends(get_session),
+    http_request: Request = None,
 ):
     """One physical scan per request UUID; never deduplicate by EAN or time."""
     session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
@@ -765,10 +784,7 @@ async def scan_code(
                     "message": "Identifikátor skenu už bol použitý s inými údajmi. Nový fyzický sken musí mať nové ID."})
             return {**previous.response, "replayed": True}
 
-    if session.status == ReceivingStatus.paused:
-        raise HTTPException(400, detail="Session is paused — resume it first")
-    if session.status not in (ReceivingStatus.new, ReceivingStatus.in_progress):
-        raise HTTPException(400, detail="Session already finalized or cancelled")
+    _require_mutable_session(session)
 
     prefix = _product_code_prefix(supplier_code)
     identifier_service = ProductIdentifierService(db)
@@ -828,7 +844,8 @@ async def scan_code(
         scanned_code_type=identifier_service.classify_barcode(code),
         product_id=product.id if product else None,
         match_method=(matched_line.match_method or "invoice_code") if matched_line else None,
-        quantity=qty, status=ScanStatus.active, scanned_by=request.scanned_by,
+        quantity=qty, status=ScanStatus.active,
+        scanned_by=_request_actor(http_request, request.scanned_by),
     )
     db.add(scan_event)
     unexpected = await _count_unexpected(db, session.id)
@@ -873,11 +890,11 @@ async def set_line_quantity(
     session_id: int,
     request: SetQtyRequest,
     db: AsyncSession = Depends(get_session),
+    http_request: Request = None,
 ):
     """Manually set received quantity for a line. line_index is 0-based index in the sorted lines array."""
     session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
-    if session.status == ReceivingStatus.completed:
-        raise HTTPException(400, detail="Session already finalized")
+    _require_mutable_session(session)
 
     lines = _lines_sorted(session)
     if request.line_index < 0 or request.line_index >= len(lines):
@@ -908,7 +925,7 @@ async def set_line_quantity(
         quantity=new_qty - old_qty,
         match_method="manual",
         status=ScanStatus.active,
-        scanned_by="manual_edit",
+        scanned_by=_request_actor(http_request, "manual_edit"),
     ))
 
     unexpected = await _count_unexpected(db, session.id)
@@ -929,8 +946,7 @@ async def accept_all_items(
 ):
     """Mark items as fully received (received_qty = ordered_qty)."""
     session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
-    if session.status == ReceivingStatus.completed:
-        raise HTTPException(400, detail="Session already finalized")
+    _require_mutable_session(session)
 
     updated = 0
     for line in _lines_sorted(session):
@@ -964,8 +980,7 @@ async def reset_all_items(
 ):
     """Reset all received quantities to 0."""
     session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
-    if session.status == ReceivingStatus.completed:
-        raise HTTPException(400, detail="Session already finalized")
+    _require_mutable_session(session)
 
     updated = 0
     for line in session.lines:
@@ -991,6 +1006,7 @@ async def finalize_session(
     session_id: int,
     request: FinalizeRequest = Body(default=FinalizeRequest()),
     db: AsyncSession = Depends(get_session),
+    http_request: Request = None,
 ):
     """Finalize once; retries return the original committed result.
 
@@ -1020,12 +1036,13 @@ async def finalize_session(
         _sync_finalized_invoice(supplier_code, result)
         return result
 
+    _require_mutable_session(session)
     lines = _lines_sorted(session)
-    pending = sum(1 for ln in lines if ln.status == "pending")
-    if pending and not request.force:
+    incomplete = sum(1 for ln in lines if ln.status in ("pending", "partial"))
+    if incomplete and not request.force:
         raise HTTPException(
             400,
-            detail=f"{pending} lines not received. Use force=true to finalize anyway.",
+            detail=f"{incomplete} lines not fully received. Use force=true to finalize anyway.",
         )
 
     # Validate the entire receipt before resolving products or writing stock.
@@ -1073,7 +1090,8 @@ async def finalize_session(
 
     balances = await _lock_stock_balances(db, session.warehouse_id, {product.id for _, product in resolved})
     for line, product in resolved:
-        await _write_stock_for_line(db, session, line, product, supplier_code, balances[product.id])
+        await _write_stock_for_line(db, session, line, product, supplier_code, balances[product.id],
+                                    operator_name=_request_actor(http_request, "receiving"))
 
     session.status = ReceivingStatus.completed
     session.finished_at = datetime.now(timezone.utc)

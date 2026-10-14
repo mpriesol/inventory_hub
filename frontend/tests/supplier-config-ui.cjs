@@ -237,6 +237,20 @@ async function input(element, value) {
   assert.deepEqual(writes.at(-1), {...beforeDefault, default_shop:'xtrek'}, 'The supplier default shop is saved independently of pricing and feed settings');
   await mount('default-shop-saved');
   assert.equal(document.getElementById('supplier-default-shop').value, 'xtrek', 'The saved supplier default survives reopening');
+  stored = structuredClone(original);
+  stored.feeds.sources.products.remote = { url: '', url_configured: true, method: 'GET',
+    auth: { mode: 'basic', basic_user: 'fixture-user', basic_pass: '', basic_pass_configured: true } };
+  await mount('redacted-credentials');
+  assert(document.body.textContent.includes('Uložené heslá, kľúče a odkazy na feedy sú skryté.'));
+  await click(button('Feedy'));
+  assert.equal(document.querySelectorAll('input[placeholder="Uložené - ponechať bez zmeny"]').length, 2, 'Configured URL and password show saved placeholders without exposing values');
+  assert.equal(document.querySelector('input[type="password"]').value, '');
+  assert(button('Uložiť').disabled, 'Redacted secrets do not manufacture unsaved changes');
+  await click(button('Obecné'));
+  await input(field('orderable'), 'do 8 dní');
+  await click(button('Uložiť'));
+  assert.equal(writes.at(-1).feeds.sources.products.remote.auth.basic_pass, '', 'Unchanged redacted secret stays empty for server-side preservation');
+  assert.equal(writes.at(-1).feeds.sources.products.remote.url_configured, true);
   await act(async () => root.unmount());
   console.log('Supplier configuration UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

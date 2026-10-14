@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import requests
+from fastapi import HTTPException
+from inventory_hub.file_access import local_feed_path
 from sqlalchemy import cast, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, JSONPATH, insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,8 +101,10 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
             local = Path(source.get("local_path") or "")
             if not local.is_absolute():
                 local = config_io.supplier_path(supplier).parent / local
-            if not local.is_file():
-                raise CatalogError("feed_file_missing", "Configured local feed file does not exist", 404)
+            try:
+                local = local_feed_path(config_io.DATA_ROOT, local)
+            except HTTPException:
+                raise CatalogError("feed_file_missing", "Local feed must be an existing file in a supplier feeds directory", 404) from None
             if local.stat().st_size > limit:
                 raise CatalogError("feed_too_large", "Feed exceeds the download size limit", 413)
             temporary.write_bytes(local.read_bytes())

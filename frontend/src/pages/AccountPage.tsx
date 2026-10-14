@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { accessRevision, HubUser, hubRequest, hubUser, logoutHub, setHubUser, subscribeAccess, unlockHub } from '../api/access';
 import './AiContentPage.css';
@@ -7,6 +7,7 @@ import './AiContentPage.css';
 export function AccountPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   useSyncExternalStore(subscribeAccess, accessRevision);
   const user = hubUser();
   const [tokenMode, setTokenMode] = useState(false);
@@ -34,7 +35,11 @@ export function AccountPage() {
         try { result = await hubRequest('/api/auth/token-session', {}); }
         finally { unlockHub(''); }
       } else result = await hubRequest('/api/auth/login', { username: username.trim(), password });
-      setPassword(''); setHubUser(result.user); navigate('/settings/ai-content');
+      const returnTo = location.state?.returnTo;
+      const destination = typeof returnTo === 'string' && returnTo.startsWith('/') &&
+        !returnTo.startsWith('//') && !/[\\\x00-\x1f]/.test(returnTo) && returnTo.split(/[?#]/)[0] !== '/login'
+        ? returnTo : '/';
+      setPassword(''); setHubUser(result.user); navigate(destination, { replace: true });
     });
   }
   async function create(event: React.FormEvent) {

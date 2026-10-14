@@ -9,24 +9,52 @@ import csv, json, io, re
 from inventory_hub.settings import settings
 from inventory_hub.config_io import load_supplier as load_supplier_config, claim_supplier_prefix
 from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
+from inventory_hub.file_access import code_component, filename_component, confined_path, document_path
 
 router = APIRouter()
 
 # ---------- Paths ----------
 def _supplier_root(supplier: str) -> Path:
-    return Path(settings.INVENTORY_DATA_ROOT).expanduser() / "suppliers" / supplier
+    return confined_path(Path(settings.INVENTORY_DATA_ROOT), f"suppliers/{code_component(supplier)}")
+
+def _supplier_path(supplier: str, relative: str) -> Path:
+    return confined_path(Path(settings.INVENTORY_DATA_ROOT), f"suppliers/{code_component(supplier)}/{relative}")
 
 def _invoice_csv_path(supplier: str, invoice_no: str) -> Path:
-    return _supplier_root(supplier) / "invoices" / "csv" / f"{invoice_no}.csv"
+    return document_path(Path(settings.INVENTORY_DATA_ROOT),
+        f"suppliers/{code_component(supplier)}/invoices/csv/{filename_component(invoice_no)}.csv")
 
 def _receiving_dir(supplier: str, invoice_no: str) -> Path:
-    return _supplier_root(supplier) / "receiving" / invoice_no
+    return _supplier_path(supplier, f"receiving/{filename_component(invoice_no)}")
+
+def _receiving_file(supplier: str, invoice_no: str, filename: str) -> Path:
+    return _supplier_path(supplier, f"receiving/{filename_component(invoice_no)}/{filename_component(filename)}")
 
 def _session_path(supplier: str, invoice_no: str, session_id: str) -> Path:
-    return _receiving_dir(supplier, invoice_no) / f"session_{session_id}.json"
+    return _receiving_file(supplier, invoice_no, f"session_{filename_component(session_id)}.json")
 
 def _summary_path(supplier: str, invoice_no: str) -> Path:
-    return _receiving_dir(supplier, invoice_no) / "summary_latest.json"
+    return _receiving_file(supplier, invoice_no, "summary_latest.json")
+
+def _find_session(supplier: str, session_id: str) -> tuple[Path, str]:
+    filename_component(session_id)
+    base = _supplier_path(supplier, "receiving")
+    if base.is_dir():
+        for invoice_dir in base.iterdir():
+            if invoice_dir.is_symlink() or not invoice_dir.is_dir():
+                continue
+            target = _session_path(supplier, invoice_dir.name, session_id)
+            if target.is_file():
+                return target, invoice_dir.name
+    raise HTTPException(404, detail="Session not found")
+
+def _receiving_documents(supplier: str, invoice_no: str):
+    directory = _receiving_dir(supplier, invoice_no)
+    for candidate in directory.iterdir():
+        if (candidate.is_symlink() or not candidate.is_file() or candidate.suffix != ".json"
+                or not candidate.name.startswith(("session_", "completed_"))):
+            continue
+        yield _receiving_file(supplier, invoice_no, candidate.name)
 
 
 # ---------- Helpers ----------
@@ -41,11 +69,12 @@ def _norm_text(s: str) -> str:
 def _now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-def _invoice_no_from_id(invoice_id: str) -> str:
-    try:
-        return invoice_id.split(":", 1)[1]
-    except Exception:
-        return invoice_id
+def _invoice_no_from_id(invoice_id: str, supplier: str) -> str:
+    if ":" in invoice_id:
+        prefix, invoice_id = invoice_id.split(":", 1)
+        if prefix != supplier:
+            raise HTTPException(400, detail="Invoice reference belongs to another supplier")
+    return filename_component(invoice_id)
 
 def _cfg_try_get(obj: Any, path: Tuple[str, ...]) -> Optional[Any]:
     cur = obj
@@ -167,7 +196,7 @@ def create_session(
     supplier: str,
     invoice_id: str = Body(..., embed=True),
 ) -> Dict[str, Any]:
-    inv_no = _invoice_no_from_id(invoice_id)
+    inv_no = _invoice_no_from_id(invoice_id, supplier)
     inv_csv = _invoice_csv_path(supplier, inv_no)
     rows = _parse_invoice_rows(inv_csv)
 
@@ -207,18 +236,7 @@ def scan_code(
     code: str = Body(..., embed=True),
     qty: float = Body(1.0, embed=True)
 ) -> Dict[str, Any]:
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     lines = data.get("lines", [])
@@ -273,18 +291,7 @@ def scan_code(
 
 @router.get("/suppliers/{supplier}/receiving/sessions/{session_id}/summary")
 def get_summary(supplier: str, session_id: str) -> Dict[str, Any]:
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     lines = data.get("lines", [])
@@ -315,18 +322,7 @@ def set_line_quantity(
     received_qty: new received quantity (can be 0 to reset)
     note: optional note for manual edit
     """
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     lines = data.get("lines", [])
@@ -385,18 +381,7 @@ def accept_all_items(
     Mark all items as fully received (received_qty = ordered_qty).
     only_pending: if True, only update items with status 'pending'
     """
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     lines = data.get("lines", [])
@@ -454,18 +439,7 @@ def reset_all_items(
     session_id: str,
 ) -> Dict[str, Any]:
     """Reset all received quantities to 0."""
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     lines = data.get("lines", [])
@@ -512,18 +486,7 @@ def finalize_session(
     2. Update invoice status to 'processed' in index
     3. Return summary for frontend
     """
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     lines = data.get("lines", [])
@@ -579,8 +542,7 @@ def finalize_session(
         "scans": scans,
     }
 
-    receiving_dir = _receiving_dir(supplier, inv_no)
-    completed_path = receiving_dir / f"completed_{session_id}.json"
+    completed_path = _receiving_file(supplier, inv_no, f"completed_{filename_component(session_id)}.json")
     completed_path.write_text(
         json.dumps(completed_record, ensure_ascii=False, indent=2),
         encoding="utf-8"
@@ -625,8 +587,8 @@ def _update_invoice_status(
     extra_data: Optional[Dict[str, Any]] = None
 ) -> bool:
     """Update invoice status in index.latest.json"""
-    sup_root = _supplier_root(supplier)
-    idx_path = sup_root / "invoices" / "index.latest.json"
+    filename_component(invoice_no)
+    idx_path = _supplier_path(supplier, "invoices/index.latest.json")
 
     if not idx_path.is_file():
         return False
@@ -651,7 +613,7 @@ def _update_invoice_status(
                 raw[invoice_key].update(extra_data)
 
             # Write back
-            idx_tmp = idx_path.with_suffix(".tmp")
+            idx_tmp = _supplier_path(supplier, "invoices/index.latest.tmp")
             idx_tmp.write_text(
                 json.dumps(raw, ensure_ascii=False, indent=2),
                 encoding="utf-8"
@@ -677,7 +639,7 @@ def get_receiving_history(supplier: str, invoice_no: str) -> Dict[str, Any]:
     sessions = []
     completed = []
 
-    for f in recv_dir.iterdir():
+    for f in _receiving_documents(supplier, invoice_no):
         if f.name.startswith("session_") and f.suffix == ".json":
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
@@ -720,18 +682,7 @@ def pause_session(
     Pause receiving session - save current state and mark invoice as in_progress.
     User can resume later.
     """
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     # Load and update session
     data = json.loads(target_path.read_text(encoding="utf-8"))
@@ -788,18 +739,7 @@ def resume_session(
     Resume a paused receiving session.
     Returns full session data so frontend can restore state.
     """
-    base = _supplier_root(supplier) / "receiving"
-    target_path: Optional[Path] = None
-    inv_no = None
-    if base.is_dir():
-        for inv_dir in base.iterdir():
-            cand = inv_dir / f"session_{session_id}.json"
-            if cand.is_file():
-                target_path = cand
-                inv_no = inv_dir.name
-                break
-    if not target_path:
-        raise HTTPException(404, detail="Session not found")
+    target_path, inv_no = _find_session(supplier, session_id)
 
     data = json.loads(target_path.read_text(encoding="utf-8"))
     
@@ -836,7 +776,7 @@ def get_active_session(supplier: str, invoice_no: str) -> Dict[str, Any]:
     
     # Find most recent session
     sessions = []
-    for f in recv_dir.iterdir():
+    for f in _receiving_documents(supplier, invoice_no):
         if f.name.startswith("session_") and f.suffix == ".json":
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))

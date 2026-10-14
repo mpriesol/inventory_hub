@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Body, Query
 from pydantic import BaseModel
+from inventory_hub.file_access import code_component, confined_path, document_path, filename_component
 
 from inventory_hub.settings import settings
 from inventory_hub.config_io import load_supplier as load_supplier_config
@@ -34,16 +35,16 @@ class ReceivedItemsPayload(BaseModel):
 # ── Path helpers ──────────────────────────────────────────────────────────────
 
 def _supplier_root(supplier: str) -> Path:
-    return settings.INVENTORY_DATA_ROOT / "suppliers" / supplier
+    return confined_path(settings.INVENTORY_DATA_ROOT, f"suppliers/{code_component(supplier)}")
 
 def _invoices_dir(supplier: str) -> Path:
-    return _supplier_root(supplier) / "invoices"
+    return confined_path(_supplier_root(supplier), "invoices")
 
 def _index_latest_path(supplier: str) -> Path:
-    return _invoices_dir(supplier) / "index.latest.json"
+    return confined_path(_invoices_dir(supplier), "index.latest.json")
 
 def _imports_upgates_dir(supplier: str) -> Path:
-    return settings.INVENTORY_DATA_ROOT / "suppliers" / supplier / "imports" / "upgates"
+    return confined_path(_supplier_root(supplier), "imports/upgates")
 
 def _strip_data_prefix(p: str) -> str:
     return p[5:] if p.startswith("data/") else p
@@ -191,7 +192,7 @@ def _canon_from_invoice(inv_rec: dict, supplier: str) -> dict:
 # ── Received items helpers ────────────────────────────────────────────────────
 
 def _received_items_path(supplier: str, invoice_no: str) -> Path:
-    return _supplier_root(supplier) / "invoices" / "received" / f"{invoice_no}.json"
+    return confined_path(_supplier_root(supplier), f"invoices/received/{filename_component(invoice_no)}.json")
 
 def _load_received_items(supplier: str, invoice_no: str) -> Optional[Dict[str, Any]]:
     path = _received_items_path(supplier, invoice_no)
@@ -230,7 +231,7 @@ def _load_prev_index_map(supplier: str) -> Dict[str, Dict[str, Any]]:
     return mp
 
 def _save_index(idx_path: Path, idx: dict) -> None:
-    tmp = idx_path.with_suffix(".tmp")
+    tmp = confined_path(idx_path.parent, idx_path.with_suffix(".tmp").name)
     tmp.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(idx_path)
 
@@ -470,7 +471,18 @@ def run_prepare(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not (supplier and shop and relpath):
         raise HTTPException(400, detail="supplier_ref, shop_ref and invoice_relpath are required.")
 
-    inv_stem = Path(relpath).stem
+    supplier = code_component(supplier)
+    shop = code_component(shop)
+    if not isinstance(relpath, str):
+        raise HTTPException(400, detail="Invalid invoice reference")
+    full_relative = f"suppliers/{supplier}/{relpath}"
+    invoice_path = document_path(settings.INVENTORY_DATA_ROOT, full_relative)
+    expected_root = _supplier_root(supplier) / "invoices" / "csv"
+    if not invoice_path.is_relative_to(expected_root.resolve()) or invoice_path.suffix.lower() != ".csv":
+        raise HTTPException(400, detail="Choose a CSV invoice from this supplier")
+    document_path(settings.INVENTORY_DATA_ROOT, f"shops/{shop}/latest.csv")
+    inv_stem = filename_component(invoice_path.stem)
+    relpath = invoice_path.relative_to(_supplier_root(supplier)).as_posix()
     received_overrides = _load_received_items(supplier, inv_stem)
 
     data_root = Path(settings.INVENTORY_DATA_ROOT).expanduser()
@@ -573,7 +585,7 @@ _SHOP_PRICE_CANDIDATES = ["[PRICE_WITH_VAT „Predvolené“]", "[PRICE_WITH_VAT
 _SHOP_BUY_CANDIDATES   = ["PRICE_BUY", "[PRICE_BUY]", "BUY_PRICE", "CENA_NAKUP"]
 
 def _shops_latest_csv(shop: str) -> Path:
-    return settings.INVENTORY_DATA_ROOT / "shops" / shop / "latest.csv"
+    return confined_path(settings.INVENTORY_DATA_ROOT, f"shops/{code_component(shop)}/latest.csv")
 
 def _read_csv_map(path: Path, key_candidates: list) -> tuple:
     if not path.is_file():

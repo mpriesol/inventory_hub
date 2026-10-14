@@ -102,6 +102,33 @@ class CredentialsStorageTests(unittest.TestCase):
 
 
 class CredentialsRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_operator_can_check_status_but_only_admin_can_replace_credentials(self):
+        app = FastAPI()
+        app.include_router(router)
+
+        @app.middleware("http")
+        async def account_fixture(request, call_next):
+            request.state.hub_user = {"role": request.headers.get("x-test-role", "operator")}
+            request.state.hub_bearer = True
+            return await call_next(request)
+
+        payload = {"username": "test-login@example.test", "password": "synthetic-password"}
+        status = {"configured": True, "username": payload["username"]}
+        with patch.object(service, "save", return_value=status) as save, patch.object(service, "status", return_value=status):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://hub.example.test") as client:
+                path = "/suppliers/sloger/lookup/credentials"
+                read = await client.get(path)
+                self.assertEqual(read.status_code, 200)
+                denied = await client.put(path, json=payload)
+                self.assertEqual(denied.status_code, 403)
+                self.assertEqual(denied.json()["detail"]["code"], "hub_admin_required")
+                save.assert_not_called()
+                accepted = await client.put(path, json=payload, headers={"x-test-role": "admin"})
+                self.assertEqual(accepted.status_code, 200)
+                save.assert_called_once()
+                self.assertNotIn(payload["password"], accepted.text)
+                self.assertEqual(accepted.headers["cache-control"], "no-store")
+
     async def test_operator_only_uncached_save_status_and_public_data_isolation(self):
         with tempfile.TemporaryDirectory() as temporary:
             public = Path(temporary) / "public"

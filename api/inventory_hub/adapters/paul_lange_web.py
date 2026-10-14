@@ -7,6 +7,7 @@ import csv, datetime as dt, hashlib, json, re
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, parse_qs, urlparse
+from inventory_hub.file_access import code_component, document_path, confined_path, filename_component
 
 CSV_ACCEPT_HEADERS = {"Accept": "text/csv,application/octet-stream,application/*;q=0.9,*/*;q=0.8"}
 CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -422,14 +423,11 @@ def prepare_from_invoice(
 
     When not provided: all invoice items processed (backward compat).
     """
-    sup_root = data_root / "suppliers" / supplier
-    inv_path = sup_root / invoice_relpath
-    if not inv_path.is_file():
-        raise FileNotFoundError(f"Invoice not found: {invoice_relpath}")
-
-    upg_csv = data_root / "shops" / shop / "latest.csv"
-    if not upg_csv.exists():
-        raise FileNotFoundError(f"Upgates export missing: shops/{shop}/latest.csv")
+    supplier = code_component(supplier)
+    shop = code_component(shop)
+    sup_root = confined_path(data_root, f"suppliers/{supplier}")
+    inv_path = document_path(data_root, f"suppliers/{supplier}/{invoice_relpath}")
+    upg_csv = document_path(data_root, f"shops/{shop}/latest.csv")
 
     conv_dir_new = sup_root / "feeds" / "converted"
     conv_dir_old = sup_root / "feeds_converted"
@@ -438,7 +436,7 @@ def prepare_from_invoice(
     if conv_dir_old.exists(): candidates += sorted(conv_dir_old.glob("*.csv"))
     if not candidates:
         raise FileNotFoundError("No converted feed found.")
-    xml_converted_csv = candidates[-1]
+    xml_converted_csv = document_path(data_root, candidates[-1].relative_to(data_root).as_posix())
 
     inv_items = _parse_invoice_csv(inv_path)
     if not inv_items:
@@ -495,15 +493,15 @@ def prepare_from_invoice(
             if not code.upper().startswith("PL-"):
                 xml_map[f"PL-{code}"] = row
 
-    out_dir = sup_root / "imports" / "upgates"
+    out_dir = confined_path(sup_root, "imports/upgates")
     _ensure_dir(out_dir)
     datestr = dt.date.today().strftime("%Y%m%d")
-    inv_stem = Path(invoice_relpath).stem
+    inv_stem = filename_component(Path(invoice_relpath).stem)
 
-    updates_csv   = out_dir / f"{inv_stem}_updates_existing_{datestr}.csv"
-    new_csv       = out_dir / f"{inv_stem}_new_products_{datestr}.csv"
-    unmatched_csv = out_dir / f"{inv_stem}_unmatched_{datestr}.csv"
-    pending_csv   = out_dir / f"{inv_stem}_pending_{datestr}.csv"
+    updates_csv = confined_path(out_dir, f"{inv_stem}_updates_existing_{datestr}.csv")
+    new_csv = confined_path(out_dir, f"{inv_stem}_new_products_{datestr}.csv")
+    unmatched_csv = confined_path(out_dir, f"{inv_stem}_unmatched_{datestr}.csv")
+    pending_csv = confined_path(out_dir, f"{inv_stem}_pending_{datestr}.csv")
 
     existing_header  = ["[PRODUCT_CODE]", "[STOCK]", "[AVAILABILITY]",
                         '[META „original_product_code"]', '[META „validation_required"]',

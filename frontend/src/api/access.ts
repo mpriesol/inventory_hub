@@ -1,9 +1,11 @@
 import { CatalogApiError } from './catalog';
+import { hubApiUrl } from './transport';
 
 // Operator credentials stay in this tab's memory, never in storage or URLs.
 export interface HubUser { id: number | null; username: string; display_name: string; role: 'admin' | 'operator'; active: boolean; token_login?: boolean }
 let currentUser: HubUser | null = null;
 let accessToken = '';
+export function hubAccessToken() { return accessToken; }
 export function hubUser() { return currentUser; }
 export function setHubUser(user: HubUser | null) {
   if (!accessToken && ((!user && !currentUser) || (user && currentUser &&
@@ -38,30 +40,35 @@ export function subscribeAccess(listener: () => void) {
 }
 
 export async function hubRequest<T>(path: string, body?: unknown, signal?: AbortSignal, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+  if (!hubApiUrl(path)) throw new CatalogApiError('request_failed', 'Invalid Hub API destination');
+  const started = revision;
   const response = await fetch(path, {
     method: body === undefined ? 'GET' : method,
     credentials: 'same-origin',
     headers: { 'X-Hub-Request': '1', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',
+    redirect: 'error',
     signal,
   });
   const data = await response.json();
-  if (response.status === 401 && currentUser) setHubUser(null);
+  if (response.status === 401 && currentUser && started === revision) setHubUser(null);
   if (!response.ok) throw new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
   return data;
 }
 
 /** Multipart requests share the same in-memory credential and session protection. */
 export async function hubUpload<T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> {
+  if (!hubApiUrl(path)) throw new CatalogApiError('request_failed', 'Invalid Hub API destination');
+  const started = revision;
   const response = await fetch(path, {
     method: 'POST', credentials: 'same-origin',
     headers: { 'X-Hub-Request': '1', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-    body, signal, cache: 'no-store',
+    body, signal, cache: 'no-store', redirect: 'error',
   });
   let data: any;
   try { data = await response.json(); } catch { throw new CatalogApiError('request_failed', String(response.status)); }
-  if (response.status === 401 && currentUser) setHubUser(null);
+  if (response.status === 401 && currentUser && started === revision) setHubUser(null);
   if (!response.ok) throw new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
   return data;
 }

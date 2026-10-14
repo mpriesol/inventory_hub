@@ -1,5 +1,7 @@
 // src/api/client.ts
 // Unified API client with: global fetch tap (logs), session-persisted ring buffer, and fetchJSON helper.
+import { accessRevision, hubAccessToken, setHubUser } from './access';
+import { hubApiUrl, hubFetchInit } from './transport';
 
 export type ClientLogEvent = {
   ts: number;                 // epoch ms
@@ -14,12 +16,19 @@ export type ClientLogEvent = {
 const CLIENT_LOG_KEY = "biketrek_client_logs_v1";
 const MAX_EVENTS = 300;
 
+function logPath(value: string): string {
+  try { return new URL(value, window.location.href).pathname; } catch { return '/api'; }
+}
+
 let clientLogBuffer: ClientLogEvent[] = (() => {
   try {
     const raw = sessionStorage.getItem(CLIENT_LOG_KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    // Old buffers may contain query values (feed URLs, searches or credentials).
+    const clean = Array.isArray(arr) ? arr.map(({ note, ...event }) => ({ ...event, url: logPath(event.url) })) : [];
+    sessionStorage.setItem(CLIENT_LOG_KEY, JSON.stringify(clean));
+    return clean;
   } catch {
     return [];
   }
@@ -60,19 +69,22 @@ export function installFetchTap(base = API_BASE) {
 
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === "string" ? input : (input as Request).url;
+    const apiUrl = hubApiUrl(input, base);
+    const url = apiUrl?.pathname || '';
     const method = ((init?.method || (typeof input !== "string" ? (input as Request).method : "GET")) || "GET").toUpperCase();
-    const isApi = !!base && typeof url === "string" && url.startsWith(base);
+    const isApi = !!apiUrl;
+    const started = accessRevision();
 
     if (isApi) pushClientLog({ ts: Date.now(), dir: "→", level: "info", method, url });
     try {
-      const res = await origFetch(input as any, init);
+      const res = await origFetch(input, hubFetchInit(input, init, hubAccessToken(), base));
       if (isApi) {
+        if (res.status === 401 && started === accessRevision()) setHubUser(null);
         pushClientLog({ ts: Date.now(), dir: "←", level: res.ok ? "info" : "error", method, url, status: res.status });
       }
       return res;
     } catch (err: any) {
-      if (isApi) pushClientLog({ ts: Date.now(), dir: "!", level: "error", method, url, note: String(err?.message || err) });
+      if (isApi) pushClientLog({ ts: Date.now(), dir: "!", level: "error", method, url, note: 'Request failed' });
       throw err;
     }
   };

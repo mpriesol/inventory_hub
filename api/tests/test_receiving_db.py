@@ -6,12 +6,14 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import asyncpg
-from fastapi import HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -24,6 +26,7 @@ from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services.identifiers import ProductIdentifierService, IdentifierConflict
 from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
+from inventory_hub.database import get_session
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
 D = Decimal
@@ -48,6 +51,109 @@ class ReceivingInputTests(unittest.TestCase):
             with self.subTest(set_qty=value), self.assertRaises(ValidationError):
                 receiving.SetQtyRequest(line_index=0, received_qty=value)
         self.assertEqual(receiving.SetQtyRequest(line_index=0, received_qty="0").received_qty, D("0"))
+
+
+class ReceivingLifecycleEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inactive_receipts_reject_direct_quantity_and_finalize_requests(self):
+        app = FastAPI()
+        app.include_router(receiving.router)
+        db = AsyncMock()
+
+        async def database():
+            yield db
+
+        app.dependency_overrides[get_session] = database
+        mutations = {
+            "set-qty": {"line_index": 0, "received_qty": "5"},
+            "accept-all": {"only_pending": False},
+            "reset-all": {},
+            "scan": {"code": "ITEM"},
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            for status in (ReceivingStatus.paused, ReceivingStatus.cancelled, ReceivingStatus.completed):
+                receipt = SimpleNamespace(status=status)
+                with patch.object(receiving, "_get_session_for_supplier", AsyncMock(return_value=receipt)):
+                    for operation, payload in mutations.items():
+                        with self.subTest(status=status, operation=operation):
+                            response = await client.post(
+                                f"/suppliers/receipt-test/receiving/sessions/1/{operation}", json=payload)
+                            self.assertEqual(response.status_code, 400, response.text)
+                            self.assertEqual(receipt.status, status)
+                    if status != ReceivingStatus.completed:
+                        response = await client.post(
+                            "/suppliers/receipt-test/receiving/sessions/1/finalize", json={"force": True})
+                        self.assertEqual(response.status_code, 400, response.text)
+        db.add.assert_not_called()
+        db.execute.assert_not_called()
+        db.commit.assert_not_called()
+
+    async def test_partial_receipt_needs_explicit_confirmation_before_any_writes(self):
+        receipt = SimpleNamespace(status=ReceivingStatus.in_progress, lines=[SimpleNamespace(
+            line_number=1, status="partial", ordered_qty=D("2"), received_qty=D("1"))])
+        db = AsyncMock()
+        with patch.object(receiving, "_get_session_for_supplier", AsyncMock(return_value=receipt)):
+            with self.assertRaises(HTTPException) as error:
+                await receiving.finalize_session("receipt-test", 1, receiving.FinalizeRequest(), db)
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("force=true", error.exception.detail)
+        db.add.assert_not_called()
+        db.execute.assert_not_called()
+        db.commit.assert_not_called()
+
+
+class ReceivingInvoicePathTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invoice_reference_rejects_paths_and_wrong_supplier_before_database_access(self):
+        invalid = ("../private", "/tmp/private", r"C:\private", r"..\private",
+                   "%2e%2e%2fprivate", "%252e%252e%252fprivate", "file%2fname",
+                   "receipt-test:../private", "other-supplier:invoice", "receipt-test:",
+                   ".", "..", "name\x00", "name\n")
+        db = AsyncMock()
+        for invoice_id in invalid:
+            with self.subTest(invoice_id=invoice_id), self.assertRaises(HTTPException) as error:
+                await receiving.create_session("receipt-test", receiving.CreateSessionRequest(invoice_id=invoice_id), db)
+            self.assertEqual(error.exception.status_code, 400)
+        db.execute.assert_not_called()
+        db.add.assert_not_called()
+
+    async def test_real_invoice_stems_and_matching_supplier_prefix_remain_supported(self):
+        with TemporaryDirectory() as folder, patch.object(receiving.settings, "INVENTORY_DATA_ROOT", Path(folder)):
+            directory = Path(folder) / "suppliers" / "receipt-test" / "invoices" / "csv"
+            directory.mkdir(parents=True)
+            for name in ("2_26_00683", "Invoice 2026-10.14", "Faktúra_001"):
+                path = directory / f"{name}.csv"
+                path.write_text("SCM;QTY;PRICE\nITEM;1;5\n")
+                for invoice_id in (name, f"receipt-test:{name}"):
+                    with self.subTest(invoice_id=invoice_id):
+                        number = receiving._invoice_no_from_id(invoice_id, "receipt-test")
+                        self.assertEqual(receiving._invoice_csv_path("receipt-test", number), path.resolve())
+            with self.assertRaises(HTTPException) as error:
+                receiving._invoice_csv_path("receipt-test", "missing")
+            self.assertEqual(error.exception.status_code, 404)
+
+    async def test_invoice_file_and_directory_symlinks_are_rejected_before_database_access(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder) / "data"
+            directory = root / "suppliers" / "receipt-test" / "invoices" / "csv"
+            directory.mkdir(parents=True)
+            outside = Path(folder) / "private.csv"
+            outside.write_text("SCM;QTY;PRICE\nPRIVATE;1;5\n")
+            linked = directory / "invoice.csv"
+            linked.symlink_to(outside)
+            db = AsyncMock()
+            with patch.object(receiving.settings, "INVENTORY_DATA_ROOT", root):
+                with self.assertRaises(HTTPException) as error:
+                    await receiving.create_session("receipt-test",
+                        receiving.CreateSessionRequest(invoice_id="invoice"), db)
+                self.assertEqual(error.exception.status_code, 404)
+                linked.unlink()
+                directory.rmdir()
+                directory.symlink_to(Path(folder), target_is_directory=True)
+                with self.assertRaises(HTTPException) as error:
+                    await receiving.create_session("receipt-test",
+                        receiving.CreateSessionRequest(invoice_id="private"), db)
+                self.assertEqual(error.exception.status_code, 404)
+            db.execute.assert_not_called()
+            db.add.assert_not_called()
 
 
 @unittest.skipUnless(TEST_URL, "Set CATALOG_TEST_DATABASE_URL to an isolated localhost *_catalog_test DB")
@@ -311,7 +417,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_ean_without_supplier_code_is_not_a_generated_product(self):
         session_id = await self.make_session([{"ean": "4006381333931", "received_qty": D("1"), "unit_price": D("5")}])
         with self.assertRaises(HTTPException) as error:
-            await self.finalize(session_id)
+            await self.finalize(session_id, force=True)
         self.assertEqual(error.exception.status_code, 409)
         self.assertIn("missing supplier SKU", str(error.exception.detail))
         self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
@@ -323,7 +429,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         from inventory_hub.db_models import SupplierProduct
         session_id = await self.make_session([{"product_id": self.product_id, "supplier_sku": "001234",
             "received_qty": D("1"), "unit_price": D("5")}])
-        await self.finalize(session_id)
+        await self.finalize(session_id, force=True)
         async with self.sessions() as db:
             source = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id,
                 SupplierProduct.supplier_sku == "001234"))
@@ -447,6 +553,61 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             line = await db.scalar(select(ReceivingLine).where(ReceivingLine.session_id == session_id))
             self.assertEqual(line.received_qty, D("0"))
+
+    async def test_successful_scan_replays_after_pause_or_cancel_but_new_scan_cannot_mutate(self):
+        session_id = await self.make_session([{"product_id": self.product_id,
+            "supplier_sku": "scan-item", "unit_price": D("5")}])
+        request = receiving.ScanRequest(code="scan-item", request_id=uuid4())
+        original = await self.scan(session_id, request)
+        for status in (ReceivingStatus.paused, ReceivingStatus.cancelled):
+            async with self.sessions() as db:
+                (await db.get(ReceivingSession, session_id)).status = status
+                await db.commit()
+            self.assertEqual(await self.scan(session_id, request), {**original, "replayed": True})
+            with self.assertRaises(HTTPException) as error:
+                await self.scan(session_id, receiving.ScanRequest(code="scan-item", request_id=uuid4()))
+            self.assertEqual(error.exception.status_code, 400)
+            with self.assertRaises(HTTPException) as error:
+                await self.finalize(session_id, force=True)
+            self.assertEqual(error.exception.status_code, 400)
+            self.assertEqual(await self.counts(session_id), (status, 0))
+            async with self.sessions() as db:
+                line = await db.scalar(select(ReceivingLine).where(ReceivingLine.session_id == session_id))
+                self.assertEqual(line.received_qty, D("1"))
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ScanEvent).where(
+                    ScanEvent.receiving_session_id == session_id)), 1)
+
+    async def test_receipt_records_authenticated_actor_and_replay_preserves_original_actor(self):
+        def authenticated(user_id):
+            request = Request({"type": "http", "method": "POST", "headers": []})
+            request.state.hub_user = {"id": user_id, "username": "test-operator"}
+            return request
+
+        session_id = await self.make_session([{"product_id": self.product_id,
+            "supplier_sku": "scan-item", "unit_price": D("5")}])
+        scan = receiving.ScanRequest(code="scan-item", request_id=uuid4(), scanned_by="untrusted-payload-name")
+        async with self.sessions() as db:
+            await receiving.scan_code("receipt-test", session_id, scan, db, authenticated(7))
+            await db.commit()
+        async with self.sessions() as db:
+            replay = await receiving.scan_code("receipt-test", session_id, scan, db, authenticated(8))
+            self.assertTrue(replay["replayed"])
+            await receiving.set_line_quantity("receipt-test", session_id,
+                receiving.SetQtyRequest(line_index=0, received_qty="2"), db, authenticated(8))
+            await db.commit()
+        async with self.sessions() as db:
+            original = await receiving.finalize_session("receipt-test", session_id,
+                receiving.FinalizeRequest(), db, authenticated(9))
+        async with self.sessions() as db:
+            replay = await receiving.finalize_session("receipt-test", session_id,
+                receiving.FinalizeRequest(), db, authenticated(10))
+            self.assertEqual(replay, original)
+            events = (await db.scalars(select(ScanEvent).where(
+                ScanEvent.receiving_session_id == session_id).order_by(ScanEvent.id))).all()
+            self.assertEqual([event.scanned_by for event in events], ["user:7", "user:8"])
+            movement = await db.scalar(select(StockMovement).where(
+                StockMovement.reference_type == "receiving_session", StockMovement.reference_id == str(session_id)))
+            self.assertEqual(movement.created_by, "user:9")
 
     async def test_unexpected_scan_is_idempotent_too(self):
         session_id = await self.make_session()
