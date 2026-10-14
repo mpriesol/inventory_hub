@@ -1,5 +1,6 @@
 """Exact leaf reads and single-leaf writes; never batch or retry a stock PUT."""
 import asyncio
+import re
 from datetime import datetime, timezone
 from time import monotonic
 from urllib.parse import quote, urlencode
@@ -112,6 +113,19 @@ def _fields(value):
     return {**value, 'stock': transport._quantity(value['stock'], outgoing=True)}
 
 
+def _delta_fields(value):
+    if (not isinstance(value, dict)
+            or set(value) != {'stock_increment', 'availability', 'can_add_to_basket_yn'}
+            or not isinstance(value['stock_increment'], str)
+            or re.fullmatch(r'0|-?[1-9][0-9]{0,9}', value['stock_increment']) is None):
+        raise SourceError('stock_sync_invalid_payload', 422)
+    # Share metadata validation with the legacy transport without allowing an
+    # absolute stock value into a delta request.
+    _fields({'stock': '0', 'availability': value['availability'],
+             'can_add_to_basket_yn': value['can_add_to_basket_yn']})
+    return dict(value)
+
+
 def _read(shop_code, target, fingerprint):
     client = transport._client(shop_code, fingerprint)
     try:
@@ -142,6 +156,22 @@ def _write(shop_code, target, desired, fingerprint):
         client.session.close()
 
 
+def _write_delta(shop_code, target, desired, fingerprint):
+    client = transport._client(shop_code, fingerprint)
+    try:
+        leaf = {'code': target['code'], 'availability': desired['availability'],
+                'can_add_to_basket_yn': desired['can_add_to_basket_yn']}
+        if desired['stock_increment'] != '0':
+            leaf['stock_increment'] = int(desired['stock_increment'])
+        product = leaf if target['variant_code'] is None else {'code': target['parent_code'], 'variants': [leaf]}
+        payload = transport._request(client, 'put', 'products', payload={'products': [product]})
+        if not transport._acknowledged(payload, target):
+            raise SourceError('stock_publication_write_unconfirmed', uncertain=True)
+        return {'acknowledged': True}
+    finally:
+        client.session.close()
+
+
 async def read(shop_code, target, fingerprint):
     return await asyncio.to_thread(_read, shop_code, transport._target(target), fingerprint)
 
@@ -153,3 +183,10 @@ async def read_many(shop_code, targets, fingerprint):
 
 async def write_once(shop_code, target, desired, fingerprint):
     return await asyncio.to_thread(_write, shop_code, transport._target(target, frozen=True), _fields(desired), fingerprint)
+
+
+async def write_delta_once(shop_code, target, desired, fingerprint):
+    # An acknowledgement is not a readback proof. The caller must durably fence
+    # this non-idempotent intent before dispatch, including cancellation/crash.
+    return await asyncio.to_thread(_write_delta, shop_code, transport._target(target, frozen=True),
+                                   _delta_fields(desired), fingerprint)

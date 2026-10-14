@@ -23,6 +23,7 @@ class StockSyncSettings(Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     authorized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    protocol: Mapped[str] = mapped_column(String(32), nullable=False, default="legacy_absolute")
     interval_seconds: Mapped[int | None] = mapped_column(Integer)
     batch_size: Mapped[int | None] = mapped_column(Integer)
     max_order_age_seconds: Mapped[int | None] = mapped_column(Integer)
@@ -44,6 +45,7 @@ class StockSyncRun(Base):
     target_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     settings_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(32), nullable=False, default="legacy_absolute")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     selected_skus: Mapped[list | None] = mapped_column(JSONB(none_as_null=True))
     cursor_product_id: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -70,5 +72,6 @@ class StockSyncItem(Base):
     attempt_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolution: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    delta_snapshot: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     __table_args__ = (Index("uq_stock_sync_target_fence", "shop_id", "sku", unique=True,
                            postgresql_where="status IN ('sending','uncertain')"),)

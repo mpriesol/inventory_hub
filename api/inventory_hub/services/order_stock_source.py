@@ -168,13 +168,14 @@ def _line(raw: dict) -> dict:
         if not pieces or any(part not in verified for part in pieces):
             invalid = True
     native = False
+    native_ids = {"product_id": None, "option_set_id": None}
     for key in ("product_id", "option_set_id"):
         value = raw.get(key)
         if value is None or (not isinstance(value, bool) and value in ("", 0, "0")):
             continue
         native = True
         try:
-            _positive_id(value)
+            native_ids[key] = _positive_id(value)
         except SourceError:
             invalid = True
     length = raw.get("length")
@@ -185,7 +186,8 @@ def _line(raw: dict) -> dict:
             "unit": _optional_text(raw.get("unit"), 30), "kind": _optional_text(raw.get("type"), 30),
             "parent_uuid": _uuid(raw["parent_uuid"]) if raw.get("parent_uuid") not in (None, "") else "",
             "length": _optional_text(length), "length_unit": _optional_text(raw.get("length_unit"), 30),
-            "has_native_identity": native, "identity_invalid": invalid}
+            "has_native_identity": native, "identity_invalid": invalid,
+            "native_product_id": native_ids["product_id"], "native_option_set_id": native_ids["option_set_id"]}
 
 
 def _order(payload: dict, order_number: str) -> tuple[dict, str]:

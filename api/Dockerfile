@@ -43,6 +43,9 @@ COPY infra/db-init/020_user_sessions.sql /app/inventory_hub/migrations/020_user_
 COPY infra/db-init/021_product_feed_mapping.sql /app/inventory_hub/migrations/021_product_feed_mapping.sql
 COPY infra/db-init/022_product_import_drafts.sql /app/inventory_hub/migrations/022_product_import_drafts.sql
 COPY infra/db-init/023_ai_content_settings.sql /app/inventory_hub/migrations/023_ai_content_settings.sql
+COPY infra/db-init/024_upgates_api_budget.sql /app/inventory_hub/migrations/024_upgates_api_budget.sql
+COPY infra/db-init/025_stock_native.sql /app/inventory_hub/migrations/025_stock_native.sql
+COPY infra/db-init/026_stock_delta.sql /app/inventory_hub/migrations/026_stock_delta.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

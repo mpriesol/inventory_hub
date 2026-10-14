@@ -12,7 +12,7 @@ from inventory_hub.db_models import Shop, Warehouse
 from inventory_hub.db_models_ext import ShopOrder
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderCollectionRun, OrderInboxEntry
 from inventory_hub.order_stock_models import OrderStockPolicy
-from inventory_hub.services.order_collection_source import connection_fingerprint
+from inventory_hub.services.order_collection_source import OLDEST_ORDER_CREATION, connection_fingerprint
 from inventory_hub.services import stock_settings
 
 
@@ -249,7 +249,9 @@ async def start_run(db, shop_id):
         created_from, changed_from = start, policy.starts_at
     else:
         start, until = max(policy.starts_at, row.cursor_at - timedelta(minutes=values["overlap_minutes"])), at
-        created_from, changed_from = policy.starts_at, start
+        # Old orders can still change the native Upgates stock after cutover.
+        # Observe their recent changes without replaying their physical history.
+        created_from, changed_from = OLDEST_ORDER_CREATION, start
     run = OrderCollectionRun(id=str(uuid4()), shop_id=shop_id, settings_revision=row.revision, mode=mode,
         status="running", started_at=at, from_at=start, until_at=until, pages=0, observed_count=0, manual=manual,
         configuration_hash=configuration["configuration_hash"], configuration_snapshot=dict(values))
@@ -283,7 +285,7 @@ async def _running(db, run_id):
         raise CollectionError("order_collection_not_configured")
     if target_fingerprint(shop.code) != row.target_fingerprint:
         raise CollectionError("order_collection_target_changed")
-    return row, run
+    return row, run, policy
 
 
 async def check_run(db, run_id):
@@ -291,7 +293,7 @@ async def check_run(db, run_id):
 
 
 async def save_page(db, run_id, entries):
-    row, run = await _running(db, run_id)
+    row, run, policy = await _running(db, run_id)
     at = now()
     if entries:
         existing = (await db.scalars(select(OrderInboxEntry).where(OrderInboxEntry.shop_id == run.shop_id,
@@ -310,11 +312,13 @@ async def save_page(db, run_id, entries):
                 continue
             digest = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             created, updated = datetime.fromisoformat(data["created_at"]), datetime.fromisoformat(data["updated_at"])
+            review_reason = ("stock_native_historical_change" if created < policy.starts_at else
+                             "order_collection_deleted" if data["deleted"] else None)
             if old is None:
                 old = OrderInboxEntry(shop_id=run.shop_id, source_uuid=identifier, order_number=number,
                     created_at=created, updated_at=updated, deleted=data["deleted"], origin=data["origin"],
                     status_id=data["status_id"], observation_hash=digest, observed_at=at, last_seen_at=at,
-                    review_reason="order_collection_deleted" if data["deleted"] else None)
+                    review_reason=review_reason)
                 db.add(old)
                 by_uuid[identifier], by_number[number] = old, old
             else:
@@ -330,7 +334,10 @@ async def save_page(db, run_id, entries):
                     old.updated_at, old.deleted, old.origin = updated, data["deleted"], data["origin"]
                     old.status_id, old.observation_hash, old.observed_at = data["status_id"], digest, at
                     if old.review_reason not in ("order_collection_identity_conflict", "order_collection_source_conflict"):
-                        old.review_reason = "order_collection_deleted" if data["deleted"] else None
+                        old.review_reason = review_reason
+                elif created < policy.starts_at and old.review_reason not in (
+                        "order_collection_identity_conflict", "order_collection_source_conflict"):
+                    old.review_reason = "stock_native_historical_change"
     run.pages += 1
     run.observed_count += len(entries)
     row.entries_seen = run.observed_count
@@ -338,14 +345,13 @@ async def save_page(db, run_id, entries):
 
 
 async def complete_run(db, run_id):
-    row, run = await _running(db, run_id)
+    row, run, policy = await _running(db, run_id)
     at = now()
     if run.mode == "delta":
         row.cursor_at = max(row.cursor_at, run.started_at)
     else:
         row.reconcile_cursor_at = run.until_at
         if run.until_at >= row.reconcile_until_at:
-            policy = await db.get(OrderStockPolicy, run.shop_id)
             row.reconcile_cursor_at, row.reconcile_until_at = policy.starts_at, None
             row.last_reconciled_at = run.started_at
     row.last_completed_at, row.last_error, row.failure_count, row.retry_after_at = at, None, 0, None

@@ -10,7 +10,7 @@ from inventory_hub.services.stock_sync import matches
 class StockSyncContractTests(unittest.TestCase):
     def test_activation_does_not_accept_truthy_strings(self):
         base = dict(shop_code='biketrek', expected_revision=0, enabled=False, authorized=False, confirmed=True)
-        for field in ('enabled','authorized','confirmed','hub_is_stock_authority','external_stock_writers_disabled','orders_reconciled'):
+        for field in ('enabled','authorized','confirmed','hub_is_stock_authority','external_stock_writers_disabled','orders_reconciled','native_order_stock_enabled'):
             with self.subTest(field=field), self.assertRaises(ValidationError):
                 ShopSyncInput(**{**base, field: 'true'})
         for value in (1, 'true', False):

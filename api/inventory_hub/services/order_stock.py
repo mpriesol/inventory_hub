@@ -189,7 +189,9 @@ def _action(policy: OrderStockPolicy, source: dict, status_hash: str, statuses: 
 
 def _content(source: dict) -> dict:
     """Physical lock covers all line identities/quantities, not later timestamps."""
-    ignored = {"title", "classification", "sku", "matched_by", "reasons"}
+    # Newly preserved indicative native IDs are evidence for stock sync, not a
+    # reason to invalidate the immutable content of an older issued snapshot.
+    ignored = {"title", "classification", "sku", "matched_by", "reasons", "native_product_id", "native_option_set_id"}
     return {"uuid": source["uuid"], "order_number": source["order_number"],
             "lines": sorted(({key: value for key, value in line.items() if key not in ignored}
                               for line in source["lines"]), key=lambda row: row["line_key"])}
@@ -254,6 +256,9 @@ async def preview(db: AsyncSession, payload: OrderStockPreviewRequest) -> dict:
             plan = await ledger.plan_order(db, order, source, action, warehouse.id, lock=True)
     except ledger.LedgerError as error:
         raise OrderStockError(error.code, error.status) from None
+    if result is not None:
+        from inventory_hub.services import stock_native
+        await stock_native.record(db, order, source, fetched["statuses"], fetched["source_hash"])
     at = now()
     expires = at + timedelta(minutes=EXPIRY_MINUTES)
     snapshot = {"id": preview_id, "created_at": at.isoformat(), "expires_at": expires.isoformat(),
@@ -325,6 +330,8 @@ async def apply(db: AsyncSession, preview_id: str, payload: OrderStockApplyReque
     except ledger.LedgerError as error:
         raise OrderStockError(error.code, error.status) from None
     order.stock_source_hash = fetched["source_hash"]
+    from inventory_hub.services import stock_native
+    await stock_native.record(db, order, source, fetched["statuses"], fetched["source_hash"])
     row.status, row.completed_at, row.result = "completed", now(), result
     await db.flush()
     await db.commit()

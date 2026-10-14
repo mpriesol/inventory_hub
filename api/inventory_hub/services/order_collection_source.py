@@ -14,6 +14,9 @@ from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connecti
 
 
 MAX_PAGE_SIZE = 100
+# Delta discovery must include modifications to orders predating Hub cutover.
+# The last-update filter still bounds work to the current incremental window.
+OLDEST_ORDER_CREATION = datetime(1900, 1, 1, tzinfo=timezone.utc)
 
 
 class CollectionSourceError(SourceError):

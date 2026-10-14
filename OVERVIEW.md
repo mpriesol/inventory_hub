@@ -119,7 +119,9 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `routers/stock_settings.py`, `services/stock_settings.py`, `routers/order_processing.py`, `services/order_processing*.py` | Dedené nastavenia, samostatná autorizácia automatiky, trvalé úlohy a lokálne skladové spracovanie. |
 | `routers/order_collection.py`, `services/order_collection*.py`, `services/stock_projection.py` | Chránené nastavenie, obnoviteľný čítací zber, inbox a lokálny návrh zásob bez externých zápisov. |
 | `routers/stock_publication.py`, `services/stock_publication*.py` | Chránené dávky, blokácia skladu a samostatné odoslanie absolútneho stavu počas potvrdenej údržby. |
+| `routers/stock_sync.py`, `services/stock_sync.py`, `services/stock_delta.py`, `services/stock_native.py` | Pravidelný `stock_increment`, kontrolné body po údržbe a evidencia natívnych objednávkových účinkov; bez automatickej aktivácie. |
 | `routers/upgates_sync.py`, `services/upgates.py` | Načítanie produktov a vybrané operácie ich prenosu. |
+| `services/upgates_budget.py` | Spoločný rozpočet a jedna súbežná API požiadavka na HTTPS origin naprieč procesmi, cez samostatné autocommit PostgreSQL spojenie. |
 | `routers/catalog.py`, `services/catalog.py`, `services/catalog_import.py` | Katalóg, identita, náhľad a založenie produktov. |
 | `routers/feed_mapping.py`, `services/feed_mapping*.py` | Uložené mapovanie feedov a zdrojová analýza. |
 | `routers/product_import.py`, `services/product_import.py` | Trvalé náhľady, ručné hodnoty, AI príprava a riadené uloženie/import. |
@@ -149,6 +151,9 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `shop_orders`, `shop_order_items`, `reservations`, `order_stock_policies`, `order_stock_previews` | Kontrolované skladové spracovanie objednávok, potvrdené politiky a trvalé náhľady/výsledky. Existujúce nespravované objednávky sa automaticky nepreberajú. |
 | `stock_warehouse_settings`, `stock_shop_settings`, `order_processing_jobs` | Predvolené hodnoty, výslovné aktivácie a trvalá fronta lokálneho spracovania. |
 | `order_collection_settings`, `order_collection_runs`, `order_inbox` | Aktivácia čítacieho zberu, kontrolné body/behy a stručné hlavičky objednávok; oddelené od skladového zaúčtovania. |
+| `stock_native_orders`, `stock_native_events`, `stock_native_lines` | Auditovaný natívny skladový účinok vlastných Upgates objednávok; žiadne fiktívne lokálne príjmy alebo výdaje. |
+| `stock_sync_checkpoints`, `stock_sync_baseline_events` | Revízie lokálneho/natívneho stavu a audit počiatočného zosúladenia v údržbe pre rozdielový prenos. |
+| `upgates_api_budget` | Zdieľané zostatky API a odloženie požiadaviek; iba hash originu, bez prihlasovacích údajov. |
 | `inventory_counts`, `inventory_count_lines`, `shop_sync_outbox` | Modely pre širšie workflow; over ich skutočných producentov a konzumentov. |
 | `ai_rule_versions`, `ai_rule_state`, `ai_content_batches`, `ai_content_jobs`, `ai_content_revisions` | AI pravidlá, úlohy, náklady a história kontroly. |
 
@@ -245,12 +250,15 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `012_product_editor.sql` | Ručné produktové overrides, revízie, uložené výsledky dávok a audit; prirodzené radenie kódov. |
 | `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
 | `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
+| `024_upgates_api_budget.sql` | Spoločná evidencia API rozpočtu; bez aktivácie skladových zápisov alebo nákupu kvóty. |
+| `025_stock_native.sql` | Natívne objednávkové účinky s auditom a kontrolou pokrytia; nemení fyzickú skladovú históriu. |
+| `026_stock_delta.sql` | Rozdielový protokol, kontrolné body po údržbe a zmrazené podklady pokusov; bez prevzatia starého oprávnenia či automatickej aktivácie. |
 
-**Deployment spúšťa `005` až `023` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá existujúce moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých devätnásť upgrade SQL súborov balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky.
+**Deployment spúšťa `005` až `026` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých dvadsaťdva upgrade SQL súborov balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Nové `024`–`026` sú aditívne a neaktivujú synchronizáciu.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`023` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`026` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -287,7 +295,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` s aspoň jednou zmenou mimo `**/*.md` a `docs/**`, alebo ručne spustený workflow na `main`, zostaví API a frontend paralelne. Obrazy používajú oddelené cache `api` a `frontend`. Bežné nasadenie publikuje do GHCR tagy `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `023` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `026` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Workflow je serializovaný s vypnutým rušením rozbehnutého nasadenia. Zmeny iba Markdown súborov alebo `docs/**` produkčný workflow nespúšťajú, úplné PR kontroly však zostávajú. Ručné spustenie na `main` s `deploy=false` slúži na meranie zostavenia/cache: publikuje iba SHA tag, nemení produkčný tag `main` a nepripája sa na produkčný server. Predvolená hodnota je `deploy=true`.
@@ -321,11 +329,11 @@ Lokálne rezervácie/výdaje, FIFO, editácia produktov a odoslanie podporovaný
 
 Po aktivácii FIFO sa nemožno vrátiť k starému kódu váženého priemeru bez kontrolovaného plánu. Ponechaj nové tabuľky aj nemenné pohyby a použi opravu vpred; podrobnosti v [FIFO](docs/fifo.md).
 
-Kontrolované údržbové publikovanie vlastných zásob je zdokumentované v [stock-publication.md](docs/stock-publication.md); samostatný implementovaný pravidelný prenos v [stock-sync.md](docs/stock-sync.md). Upgates nemá doložený podmienený zápis, ktorý by zabránil prepísaniu súbežného nezávislého odpočtu. Pravidelný prenos preto vyžaduje nastavenú skladovú autoritu a spracovanie objednávok. Údržbová cesta vyžaduje externú údržbu; jej lokálna blokácia sama nezatvára predaj. Pred návratom k verzii bez tejto blokácie treba bezpečne dokončiť všetky aktívne údržby; tabuľky, audity a pohyby sa nemažú.
+Kontrolované údržbové publikovanie absolútneho množstva je v [stock-publication.md](docs/stock-publication.md); pravidelný prenos používa [rozdielový protokol `delta_v1`](docs/stock-sync.md). Kontrolný bod po výslovne potvrdenej údržbe ukladá lokálne množstvo a auditovaný natívny účinok konkrétneho e-shopu. Prenos `stock_increment` odčíta natívnu zmenu od lokálnej, aby sa vlastná objednávka neodpočítala dvakrát. Neistý PUT sa neopakuje a samotná zhoda aktuálneho množstva ho nevyrieši. Údržbová lokálna blokácia sama nezatvára predaj. Natívne audity, kontrolné body a zámery sa nemažú; návrat k starému absolútnemu pravidelnému zapisovateľovi nie je bezpečný rollback.
 
-Kontrola 14. 10. 2026 potvrdzuje, že samotná autorita a čerstvý inbox nezabraňujú prepísaniu natívnej Upgates objednávkovej zmeny. Verejne doložené vypnutie týchto zápisov ani CAS zatiaľ chýba. Čítacia diagnostika kapacity v nastaveniach dostupností zistí kvótu a oprávnenia jediným volaním `/status` a porovná ich s modelom dnešného publishera/zberača/spracovateľa. Neaktivuje synchronizáciu, nemení intervaly a nie je dôkazom bezpečného živého pilotu. [Presné hranice, kapacitný model a návrh protokolu](docs/upgates-sync-readiness.md).
+Nepodporované alebo nepreukázané natívne objednávkové účinky blokujú bežný prenos. Inkrementálny zber zachytáva aj čerstvé zmeny objednávok vytvorených od roku 1900, ale historické fyzické účtovanie automaticky neprehráva. Živý objednávkový cyklus nového protokolu ešte nie je potvrdený a implementácia neaktivuje produkčné zápisy. [Presné hranice, kapacitný model a pilot](docs/upgates-sync-readiness.md) odlišujú kód, historické čítacie merania a overenie prevádzky.
 
-Pravidelný publisher číta úvodný stav v presne ohraničených skupinách produktov a variantov. Čerstvá úplná odpoveď môže po lokálnych kontrolách potvrdiť nezmenené SKU bez ďalšieho volania. Zmenená alebo časovo stará položka zachováva samostatné čítanie pred zápisom; PUT a kontrolné čítanie zostávajú po jednej položke. Diagnostika porovnáva pôvodné individuálne čítania s presným počtom skupín. Táto úspora API nemení nevyriešený kontrakt skladových zapisovateľov ani nezapína prenos.
+Nezmenený kontrolný bod a dostupnosť potrebujú 0 vzdialených volaní medzi šesťhodinovými auditmi. Potrebné čítania zostávajú dávkové; model plne zmeneného priechodu je `G + K` (skupiny GET + jednotlivé PUT), bez okamžitého kontrolného GET. Všetky relácie `UpgatesClient.from_shop` navyše zdieľajú limit jednej súbežnej požiadavky na HTTPS origin naprieč procesmi, hodinový/denný rozpočet a `Retry-After`. PostgreSQL výpadok blokuje odoslanie; iba výslovný legacy režim má slabšiu procesnú ochranu. Cudzie integrácie nie sú riadené a kvóta sa automaticky nekupuje.
 
 ## Nové oddelené workflow (014–017)
 

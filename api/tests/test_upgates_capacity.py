@@ -72,6 +72,17 @@ class CapacityProbeTests(unittest.TestCase):
                 session.get.assert_called_once()
                 response.close.assert_called_once()
 
+    def test_local_budget_rejection_records_no_remote_call(self):
+        from inventory_hub.services.upgates_budget import _deferred
+        client = SimpleNamespace(base_url='https://budget-test.invalid/api/v2',
+                                 session=Mock(auth=('synthetic', 'synthetic')))
+        client.session.get.return_value = _deferred(30)
+        with patch.object(service.UpgatesClient, 'from_shop', return_value=client):
+            report = service.probe('biketrek')
+        self.assertEqual(report['probe']['requests_attempted'], 0)
+        self.assertEqual(report['probe']['error'], 'upgates_capacity_rate_limited')
+        self.assertEqual(report['quota']['retry_after_seconds'], 30)
+
     def test_invalid_upstream_payloads_and_ambiguous_permissions_are_rejected(self):
         conflict = {'services': {'products': {**BODY['services']['orders']}}, 'documentation_link': ''}
         duplicate_service = {'services': {'products': BODY['services']['products'],

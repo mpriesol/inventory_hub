@@ -55,7 +55,7 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
-                             "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql"):
+                             "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql", "025_stock_native.sql"):
                 await connection.execute((sql_root / filename).read_text())
         finally:
             await connection.close()

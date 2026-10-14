@@ -26,7 +26,7 @@ const required = id => { const result = element(id); assert(result, `${id} exist
 async function click(id) { await act(async () => { required(id).click(); await tick(); }); }
 async function input(id, value) {
   await act(async () => {
-    const target = required(id), proto = target.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype;
+    const target = required(id), proto = target.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : target.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(target, value);
     target.dispatchEvent(new dom.window.Event(target.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); await tick();
   });
@@ -41,7 +41,7 @@ let showSloger = false;
 let sloger = { ...clone(supplier), supplier: 'sloger', name: 'Sloger', revision: 1, feed_keys: ['b2b'], feed_key: 'b2b',
   manual_only: true, source_kind: 'b2b', refresh_scope: 'hub_products', refresh_progress: null };
 let defaults = { revision: 2, warehouse_code: 'main', interval_seconds: 300, batch_size: 20, max_order_age_seconds: 900 };
-const emptySettings = () => ({ revision: 0, enabled: false, authorized: false, interval_seconds: null, batch_size: null, max_order_age_seconds: null,
+const emptySettings = () => ({ revision: 0, enabled: false, authorized: false, protocol: 'legacy_absolute', interval_seconds: null, batch_size: null, max_order_age_seconds: null,
   authority_confirmed_at: null, next_run_at: null, last_started_at: null, last_completed_at: null, last_error: null });
 let shops = { xtrek: emptySettings(), biketrek: emptySettings() }, authorityChanged = false;
 let run = { id: '22222222-2222-4222-8222-222222222222', shop_code: 'xtrek', trigger: 'manual', status: 'queued', started_at: null,
@@ -52,7 +52,7 @@ let repairMode = 'ok', finishRepair;
 const options = shop => ({ shop: { code: shop, name: shop }, warehouse: { code: 'main', name: 'Main warehouse' }, warehouse_settings: clone(defaults),
   settings: clone(shops[shop]), effective: Object.fromEntries(['interval_seconds','batch_size','max_order_age_seconds'].map(key => [key, shops[shop][key] ?? defaults[key]])),
   blockers: !shops[shop].authorized ? ['stock_sync_authority_required'] : authorityChanged ? ['stock_sync_authority_changed'] : [],
-  runs: hasRun ? [clone(run)] : [], server_write_enabled: true });
+  baseline_count: 2, runs: hasRun ? [clone(run)] : [], server_write_enabled: true });
 const capacity = shop => ({ shop_code: shop, observed_at: '2026-10-14T19:00:00Z',
   probe: { ok: true, http_status: 200, error: null, requests_attempted: 1, latency_ms: 123,
     target_fingerprint: 'synthetic-fingerprint-not-for-display', permissions: { products: 'all', orders: 'read', order_statuses: 'read' }, write_tested: false },
@@ -61,8 +61,8 @@ const capacity = shop => ({ shop_code: shop, observed_at: '2026-10-14T19:00:00Z'
   projection: { captured_at: '2026-10-14T19:00:00Z', warehouse_code: 'main', listed_skus: 50, confirmed_skus: 15, eligible_skus: 30, unpublishable_skus: 20,
     eligibility_errors: [{ code: 'stock_sync_mapping_ambiguous', count: 20 }],
     stock: { configured: true, enabled: false, authorized: false, server_enabled: false, interval_seconds: 300,
-      batch_size: 20, call_model: 'batched_unchanged_fresh_reads_before_write', initial_batch_calls: 2, singleton_pass_calls: 30,
-      unchanged_pass_calls: 2, all_changed_pass_calls: 92, daily_unchanged_if_enabled: 576, daily_all_changed_if_enabled: 26496 },
+      batch_size: 20, call_model: 'origin_aware_delta', audit_interval_seconds: 21600, audit_pass_calls: 2, initial_batch_calls: 2, singleton_pass_calls: 30,
+      unchanged_pass_calls: 0, all_changed_pass_calls: 32, daily_unchanged_if_enabled: 8, daily_all_changed_if_enabled: 9216 },
     orders: { collector_enabled: false, processing_mode: 'manual', processing_ready: false, processing_error: 'order_processing_manual',
       poll_interval_seconds: 300, retry_minutes: 5, full_check_hours: 24, inbox_count: 5, jobs_by_status: { pending: 1, running: 0, completed: 3, retry: 1, review: 0 },
       unprocessed_count: 2, collector_empty_poll_calls: 2, collector_daily_if_enabled: 576, retry_daily_if_processing: 288, history_daily_if_processing: 6 },
@@ -81,8 +81,8 @@ global.fetch = async (path, init = {}) => {
     if (capacityMode === 'sample-failed' && result.catalog_probe) result.catalog_probe = { ...result.catalog_probe, ok: false, requests_attempted: null, error: sampleErrorCode };
     if (capacityMode === 'pending') return new Promise(resolve => { finishCapacity = () => resolve(reply(result)); });
     if (capacityMode === 'missing') result.quota = { ...result.quota, hour_limit: null, hour_remaining: null, day_limit: null, day_remaining: null, total_remaining: null, theoretical_daily_max: null, headers_complete: false };
-    if (capacityMode === 'empty-catalog') result.projection.stock = { ...result.projection.stock, initial_batch_calls: 0, singleton_pass_calls: 0, unchanged_pass_calls: 0, all_changed_pass_calls: 0, daily_unchanged_if_enabled: 0, daily_all_changed_if_enabled: 0 };
-    if (capacityMode === 'unknown-catalog') result.projection.stock = { ...result.projection.stock, initial_batch_calls: null, singleton_pass_calls: null, unchanged_pass_calls: null, all_changed_pass_calls: null, daily_unchanged_if_enabled: null, daily_all_changed_if_enabled: null };
+    if (capacityMode === 'empty-catalog') result.projection.stock = { ...result.projection.stock, audit_pass_calls: 0, initial_batch_calls: 0, singleton_pass_calls: 0, unchanged_pass_calls: 0, all_changed_pass_calls: 0, daily_unchanged_if_enabled: 0, daily_all_changed_if_enabled: 0 };
+    if (capacityMode === 'unknown-catalog') result.projection.stock = { ...result.projection.stock, audit_pass_calls: null, initial_batch_calls: null, singleton_pass_calls: null, unchanged_pass_calls: null, all_changed_pass_calls: null, daily_unchanged_if_enabled: null, daily_all_changed_if_enabled: null };
     if (capacityMode === 'limited') { result.probe = { ...result.probe, ok: false, http_status: 429, error: 'upgates_capacity_rate_limited' }; result.quota.retry_after_seconds = 60; }
     if (capacityMode === 'malformed') result = { shop_code: result.shop_code, probe: {}, quota: {} };
     return reply(result);
@@ -123,8 +123,8 @@ global.fetch = async (path, init = {}) => {
   if (url.pathname === '/api/stock-sync/warehouse') { assert.equal(body.expected_revision, defaults.revision); defaults = { ...body, revision: defaults.revision + 1 }; return reply(defaults); }
   if (url.pathname === '/api/stock-sync/configure') {
     const previous = shops[body.shop_code]; assert.equal(body.expected_revision, previous.revision); assert.equal(body.confirmed, true);
-    if (body.authorized && (!previous.authorized || authorityChanged)) assert(body.hub_is_stock_authority && body.external_stock_writers_disabled && body.orders_reconciled);
-    shops[body.shop_code] = { ...previous, ...body, revision: previous.revision + 1 }; authorityChanged = false;
+    if (body.authorized && (!previous.authorized || previous.protocol !== 'delta_v1' || authorityChanged)) assert(body.hub_is_stock_authority && body.native_order_stock_enabled && body.external_stock_writers_disabled && body.orders_reconciled);
+    shops[body.shop_code] = { ...previous, ...body, protocol: body.authorized ? 'delta_v1' : previous.protocol, revision: previous.revision + 1 }; authorityChanged = false;
     if (stockSaveMode === 'pending') return new Promise((resolve, reject) => { rejectStock = () => reject(new TypeError('Synthetic lost response')); });
     return reply(options(body.shop_code));
   }
@@ -135,7 +135,7 @@ global.fetch = async (path, init = {}) => {
   }
   if (url.pathname === `/api/stock-sync/runs/${run.id}`) { assert.equal(init.method, 'GET'); const offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit') || 1000); return reply({ ...run, items: run.items.slice(offset, offset + limit), items_offset: offset, items_limit: limit, items_total: run.items.length, items_truncated: offset + limit < run.items.length }); }
   if (url.pathname === '/api/stock-sync/items/77/resolve') {
-    assert.deepEqual(body, { confirmed: true, external_requests_finished: true });
+    assert.deepEqual(body, run.protocol === 'delta_v1' ? { confirmed: true, external_requests_finished: true, outcome: 'not_applied', evidence: 'Upgates support confirmed the request was never applied.' } : { confirmed: true, external_requests_finished: true });
     run.items[0].status = 'verified'; run.counts.verified = 1; run.counts.uncertain = 0; return reply(run);
   }
   throw new Error('Unexpected endpoint ' + path);
@@ -169,9 +169,11 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   assert.equal(required('upgates-capacity-batch-calls').textContent, '2', 'Batched initial calls come from the backend grouping plan');
   assert.equal(required('upgates-capacity-read-savings').textContent, (1 - 2 / 30).toLocaleString(i18n.language, { style: 'percent', maximumFractionDigits: 1 }));
   const capacityRows = required('upgates-capacity-estimate').querySelectorAll('tbody tr');
-  assert.equal(capacityRows[0].children[1].textContent, '2', 'The unchanged full pass uses batch reads');
-  assert.equal(capacityRows[1].children[1].textContent, '92', 'The all-changed estimate retains batch discovery plus fresh read, write and verification per item');
-  assert(required('upgates-capacity-result').textContent.includes(capacityText('changedReadsHelp')), 'Expired reads and cooldown overhead are disclosed');
+  assert.equal(capacityRows[0].children[1].textContent, '0', 'Unchanged local counters and metadata use no API requests between audits');
+  assert.equal(capacityRows[0].children[2].textContent, '8', 'The unchanged daily estimate includes four six-hour batch audits');
+  assert(required('upgates-capacity-audits').textContent.includes(i18n.t('availabilitySync.capacity.auditHelp', { hours: '6', calls: '2' })), 'Audit request count and interval are explicit');
+  assert.equal(capacityRows[1].children[1].textContent, '32', 'The all-changed estimate uses batch identity reads and one delta write per changed item');
+  assert(required('upgates-capacity-result').textContent.includes(capacityText('changedReadsHelp')), 'Delta acknowledgement, uncertainty and retry limitations are disclosed');
   assert.equal(writes().length, 0, 'Capacity diagnostics never mutate Hub settings or stock');
   const beforeSampleOption = calls.length; await click('capacity-product-sample');
   assert.equal(calls.length, beforeSampleOption, 'Selecting the sample never starts requests by itself');
@@ -199,6 +201,10 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   capacityMode = 'unknown-catalog'; await click('probe-upgates-capacity');
   assert.equal(required('upgates-capacity-singleton-calls').textContent, capacityText('unknown'));
   assert.equal(required('upgates-capacity-read-savings').textContent, capacityText('unknown'), 'Missing catalog eligibility never becomes a savings estimate');
+  const unknownRows = required('upgates-capacity-estimate').querySelectorAll('tbody tr');
+  assert.equal(unknownRows[0].children[1].textContent, capacityText('unknown'), 'Unknown eligible stock cannot be claimed as a zero-call scenario');
+  assert.equal(unknownRows[0].children[2].textContent, capacityText('unknown'));
+  assert(required('upgates-capacity-audits').textContent.includes(capacityText('unknown')), 'Unknown audit scope remains unknown');
   capacityMode = 'missing'; await click('probe-upgates-capacity');
   assert.equal(required('upgates-capacity-remaining').textContent, capacityText('unknown'));
   assert.equal(required('upgates-capacity-daily-max').textContent, capacityText('unknown'));
@@ -264,16 +270,16 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   assert.equal(writes().at(-1).body.expected_revision, 2); assert(required('save-stock-sync').disabled && required('run-stock-sync').disabled, 'Warehouse save requires fresh effective shop read');
   await click('load-stock-sync'); assert.equal(required('sync-shop-interval_seconds').value, '600');
   await click('sync-authorized'); assert(required('save-stock-sync').disabled);
-  await click('sync-authority'); await click('sync-writers-disabled'); assert(required('save-stock-sync').disabled, 'All three authority assertions are required');
-  await click('sync-orders-reconciled'); assert(!required('save-stock-sync').disabled);
+  await click('sync-authority'); await click('sync-writers-disabled'); assert(required('save-stock-sync').disabled, 'Every authority assertion is required');
+  await click('sync-orders-reconciled'); assert(required('save-stock-sync').disabled, 'Native order stock behavior needs explicit confirmation'); await click('sync-native-orders'); assert(!required('save-stock-sync').disabled);
   await click('sync-enabled'); assert(!required('sync-authority').checked, 'Editing configuration clears authority assertions');
   await click('sync-inherit-interval_seconds'); await input('sync-shop-interval_seconds', '900');
-  await click('sync-authority'); await click('sync-writers-disabled'); await click('sync-orders-reconciled');
+  await click('sync-authority'); await click('sync-native-orders'); await click('sync-writers-disabled'); await click('sync-orders-reconciled');
   stockSaveMode = 'pending';
   const beforeStock = writes().length;
   await act(async () => { required('save-stock-sync').click(); required('save-stock-sync').click(); await tick(); });
   assert.equal(writes().length, beforeStock + 1); assert(required('sync-shop').disabled, 'Cannot switch target while saving');
-  assert.deepEqual(writes().at(-1).body, { shop_code: 'xtrek', expected_revision: 0, enabled: true, authorized: true, interval_seconds: 900, batch_size: null, max_order_age_seconds: null, hub_is_stock_authority: true, external_stock_writers_disabled: true, orders_reconciled: true, confirmed: true });
+  assert.deepEqual(writes().at(-1).body, { shop_code: 'xtrek', expected_revision: 0, enabled: true, authorized: true, interval_seconds: 900, batch_size: null, max_order_age_seconds: null, hub_is_stock_authority: true, native_order_stock_enabled: true, external_stock_writers_disabled: true, orders_reconciled: true, confirmed: true });
   await act(async () => { rejectStock(); await tick(); }); assert(required('save-stock-sync').disabled && required('run-stock-sync').disabled);
   stockSaveMode = 'ok'; await click('load-stock-sync'); assert(!required('run-stock-sync').disabled); assert(!element('sync-authority'));
   await click('sync-enabled'); await click('save-stock-sync'); assert.equal(writes().at(-1).body.hub_is_stock_authority, false, 'Existing authorization need not be asserted for an interval-only save');
@@ -286,13 +292,31 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   await click('refresh-sync-run'); assert(required('resolve-sync-77').disabled); const beforeResolve = writes().length;
   await click('resolve-sync-77'); assert.equal(writes().length, beforeResolve);
   await click('sync-finished-77'); await click('resolve-sync-77'); assert(!element('resolve-sync-77')); assert.equal(writes().length, beforeResolve + 1);
+  run.protocol = 'delta_v1'; run.items[0].status = 'uncertain'; run.items[0].desired.stock_increment = '-1'; delete run.items[0].desired.stock;
+  await click('refresh-sync-run');
+  assert(required('sync-run-detail').textContent.includes(i18n.t('availabilitySync.deltaRecoveryHelp')));
+  assert.equal(required('resolve-sync-77').closest('.action-control').querySelector('[data-action-effects]').dataset.actionEffects, 'hub-write', 'Saving a verified delta outcome does not read or write Upgates');
+  await click('sync-finished-77'); assert(required('resolve-sync-77').disabled, 'A finished request and numeric readback cannot resolve an uncertain delta');
+  await input('sync-outcome-77', 'not_applied'); await input('sync-evidence-77', 'short');
+  assert(required('resolve-sync-77').disabled, 'Outcome requires meaningful independent evidence');
+  await input('sync-evidence-77', 'Upgates support confirmed the request was never applied.');
+  const beforeDeltaResolve = writes().length;
+  await act(async () => { required('resolve-sync-77').click(); required('resolve-sync-77').click(); await tick(); });
+  assert.equal(writes().length, beforeDeltaResolve + 1, 'Delta resolution is sent once with the selected outcome and evidence');
+  assert(!element('resolve-sync-77'));
   run.items = Array.from({ length: 101 }, (_, index) => ({ id: 100 + index, sku: `FIXTURE-${index}`, status: 'verified', error: null, desired: { stock: 1, availability: 'SKLADOM', can_add_to_basket_yn: true } }));
   await click('refresh-sync-run'); assert(!required('sync-items-next').disabled && required('sync-items-previous').disabled);
   await click('sync-items-next'); assert(calls.at(-1).path.includes('offset=100&limit=100')); assert(required('sync-items-next').disabled && !required('sync-items-previous').disabled);
   assert(required('sync-run-detail').textContent.includes('FIXTURE-100') && !required('sync-run-detail').textContent.includes('FIXTURE-99'), 'Pagination can inspect all transfer items');
   await click('sync-items-previous'); assert(calls.at(-1).path.includes('offset=0&limit=100'));
   authorityChanged = true; await click('load-stock-sync'); assert(element('sync-authority'), 'Changed shop topology offers explicit reauthorization');
-  await click('sync-authority'); await click('sync-writers-disabled'); await click('sync-orders-reconciled'); assert(!required('save-stock-sync').disabled); await click('save-stock-sync'); assert.equal(authorityChanged, false);
+  await click('sync-authority'); await click('sync-native-orders'); await click('sync-writers-disabled'); await click('sync-orders-reconciled'); assert(!required('save-stock-sync').disabled); await click('save-stock-sync'); assert.equal(authorityChanged, false);
+
+  shops.xtrek.protocol = 'legacy_absolute'; await click('load-stock-sync');
+  assert(required('run-stock-sync').disabled && element('sync-native-orders'), 'A previously authorized absolute writer cannot run without reconfirmation');
+  await click('sync-authority'); await click('sync-native-orders'); await click('sync-writers-disabled'); await click('sync-orders-reconciled'); await click('save-stock-sync');
+  assert.equal(shops.xtrek.protocol, 'delta_v1');
+  assert(required('sync-baseline-count').textContent.includes('2'));
 
   showSloger = true; const beforeSloger = writes().length; await click('load-suppliers');
   assert(!element('supplier-sloger-enabled') && !element('supplier-sloger-interval') && !element('supplier-sloger-coverage') && !element('supplier-sloger-feed'), 'Sloger offers no feed or periodic scheduler controls');

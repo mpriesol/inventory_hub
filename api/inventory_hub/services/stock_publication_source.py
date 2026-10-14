@@ -24,9 +24,11 @@ IDENTITY_KEYS = {"code", "parent_code", "variant_code", "product_id", "variant_i
 
 
 class SourceError(Exception):
-    def __init__(self, code: str, status: int = 502, retry_after: int | None = None, uncertain: bool = False):
+    def __init__(self, code: str, status: int = 502, retry_after: int | None = None, uncertain: bool = False,
+                 request_sent: bool | None = None):
         self.code, self.status = code, status
         self.retry_after, self.uncertain = retry_after, uncertain
+        self.request_sent = request_sent
         super().__init__(code)
 
 
@@ -163,7 +165,8 @@ def _request(client, method, path, *, params=None, payload=None):
             raise SourceError("stock_publication_upgates_access", 502)
         if status == 429:
             raise SourceError("stock_publication_rate_limited", 429,
-                              _retry_after_seconds(response.headers.get("Retry-After")))
+                              _retry_after_seconds(response.headers.get("Retry-After")),
+                              request_sent=getattr(response, "hub_request_sent", None) is not False)
         if not writing and status == 404:
             raise SourceError("stock_publication_source_missing", 409)
         if status != 200:

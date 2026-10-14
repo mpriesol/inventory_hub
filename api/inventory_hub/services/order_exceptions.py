@@ -239,6 +239,8 @@ async def resolve(db, identifier, payload, actor):
         raise ExceptionError("order_exception_source_changed")
     if await _issued_lines(db, order, lock=True) != snapshot["lines"]:
         raise ExceptionError("order_exception_ledger_changed")
+    from inventory_hub.services import stock_native
+    await stock_native.record(db, order, fetched["order"], fetched["statuses"], fetched["source_hash"])
     result = {"action": "resolve_exception", "preview_id": row.id, "order_id": order.id,
         "order_number": job.order_number, "stock_state": "issued", "stock_accounting": "accounted",
         "reason": payload.reason, "actor": actor, "movements_created": 0,

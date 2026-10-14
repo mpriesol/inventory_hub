@@ -243,6 +243,9 @@ async def finish_job(db, plan, fetched):
     from inventory_hub.services.order_exceptions import current_resolution
     resolved = await current_resolution(db, job, entry, config, config["warehouse_id"], fetched=fetched)
     if resolved is not None:
+        from inventory_hub.services import stock_native
+        resolved_order = await db.get(ShopOrder, resolved["order_id"])
+        await stock_native.record(db, resolved_order, source, fetched["statuses"], fetched["source_hash"])
         _schedule(job, config, status="completed", result=resolved)
         return resolved
     action = authorize(config, policy, source, fetched)
@@ -252,6 +255,8 @@ async def finish_job(db, plan, fetched):
             raise ProcessingError("order_stock_issued_locked")
         result = order.stock_issue_result
         job.source_hash = fetched["source_hash"]
+        from inventory_hub.services import stock_native
+        await stock_native.record(db, order, source, fetched["statuses"], fetched["source_hash"])
         _schedule(job, config, status="completed", result=result)
         return result
     projected = await ledger.plan_order(db, order, source, action, config["warehouse_id"], lock=True)
@@ -287,6 +292,8 @@ async def finish_job(db, plan, fetched):
             expires_at=at, completed_at=at, result=result))
         await db.flush()
         job.audit_preview_id = identifier
+    from inventory_hub.services import stock_native
+    await stock_native.record(db, order, source, fetched["statuses"], fetched["source_hash"])
     shortage = any(Decimal(row["shortage"]) > 0 for row in projected["lines"])
     _schedule(job, config, status="retry" if shortage else "completed",
               error="order_processing_backorder" if shortage else None, result=result)

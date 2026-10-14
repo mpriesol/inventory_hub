@@ -13,7 +13,7 @@ export interface UpgatesCapacity {
   projection: { captured_at: string; warehouse_code: string | null; listed_skus: number; confirmed_skus: number | null;
     eligible_skus: number | null; unpublishable_skus: number | null; eligibility_errors: { code: string; count: number }[];
     stock: { configured: boolean; enabled: boolean; authorized: boolean; server_enabled: boolean; interval_seconds: number | null;
-      batch_size: number; call_model: 'batched_unchanged_fresh_reads_before_write';
+      batch_size: number; call_model: 'origin_aware_delta'; audit_interval_seconds: number; audit_pass_calls: number | null;
       initial_batch_calls: number | null; singleton_pass_calls: number | null;
       unchanged_pass_calls: number | null; all_changed_pass_calls: number | null;
       daily_unchanged_if_enabled: number | null; daily_all_changed_if_enabled: number | null };

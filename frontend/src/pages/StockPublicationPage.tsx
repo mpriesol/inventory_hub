@@ -7,10 +7,11 @@ import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/
 import { cancelPublication, configurePublication, createPublicationHold, getPublicationBatch, getPublicationBatches,
   getPublicationOptions, previewPublication, PublicationBatch, PublicationBatches, PublicationOptions,
   releasePublicationHold, resolvePublication, submitPublication, verifyPublication } from '../api/stockPublication';
+import { establishStockSyncBaseline, StockSyncBaseline } from '../api/stockSync';
 import './OpeningStockPage.css';
 import './StockPublicationPage.css';
 
-type Operation = 'options' | 'configure' | 'hold' | 'release' | 'preview' | 'batch' | 'batches' | 'submit' | 'cancel' | 'verify' | 'resolve' | null;
+type Operation = 'options' | 'configure' | 'hold' | 'release' | 'preview' | 'batch' | 'batches' | 'submit' | 'cancel' | 'verify' | 'resolve' | 'baseline' | null;
 const uuid = () => crypto.randomUUID();
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 interface Scoped<T> { value: T; shop: string; revision: number }
@@ -36,6 +37,8 @@ export function StockPublicationPage() {
   const [submitConfirm, setSubmitConfirm] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
   const [requestsFinished, setRequestsFinished] = useState(false);
+  const [baselineWritersPaused, setBaselineWritersPaused] = useState(false), [baselineOrdersReconciled, setBaselineOrdersReconciled] = useState(false);
+  const [baselineResult, setBaselineResult] = useState<StockSyncBaseline | null>(null);
   const [busy, setBusy] = useState<Operation>(null);
   const [uncertain, setUncertain] = useState<'options' | 'batch' | null>(null);
   const [error, setError] = useState('');
@@ -49,11 +52,12 @@ export function StockPublicationPage() {
   const dangerousBatch = (!!batch && (['queued', 'running', 'uncertain'].includes(batch.status) || batch.items.some(item => ['sending', 'uncertain'].includes(item.status))))
     || Object.values(blockedBatches).includes(activeHold?.id || '');
   const expired = !!batch && new Date(batch.expires_at).getTime() <= Date.now();
-  function clearConfirmations() { setPolicyConfirm(false); setWritersPaused(false); setOrdersReconciled(false); setMaintenanceCompleted(false); setSubmitConfirm(false); setCancelConfirm(false); setRequestsFinished(false); }
+  const baselineEligible = !!batch && sameHold && activeHold?.shop_code === shop && !policyDirty && !dangerousBatch && ['prepared', 'completed'].includes(batch.status) && batch.preview_data.rows.length > 0 && batch.preview_data.rows.every(row => row.quantity_known && row.errors.length === 0) && batch.items.every(item => ['prepared', 'verified'].includes(item.status));
+  function clearConfirmations() { setBaselineWritersPaused(false); setBaselineOrdersReconciled(false); setPolicyConfirm(false); setWritersPaused(false); setOrdersReconciled(false); setMaintenanceCompleted(false); setSubmitConfirm(false); setCancelConfirm(false); setRequestsFinished(false); }
   function reset() {
     generation.current += 1; controller.current?.abort(); controller.current = null; busyRef.current = null; setBusy(null);
     setLoaded(null); setBatchLoaded(null); setRecentLoaded(null); setSkuText(''); setBatchId(''); setPolicyEnabled(false); setBlockedBatches({}); previewRequest.current = null;
-    clearConfirmations(); setUncertain(null); setError('');
+    clearConfirmations(); setBaselineResult(null); setUncertain(null); setError('');
   }
   useEffect(() => { reset(); setToken(''); return () => { generation.current += 1; controller.current?.abort(); }; }, [revision]);
   function report(value: unknown) {
@@ -62,12 +66,12 @@ export function StockPublicationPage() {
     setError(code);
   }
   function acceptOptions(value: PublicationOptions) {
-    setLoaded({ value, shop, revision: accessRevision() }); setPolicyEnabled(value.policy.enabled); clearConfirmations();
+    setBaselineResult(null); setLoaded({ value, shop, revision: accessRevision() }); setPolicyEnabled(value.policy.enabled); clearConfirmations();
     if (uncertain === 'options') setUncertain(null);
   }
   function acceptBatch(value: PublicationBatch) {
     if (value.shop_code !== shop) { setError('stock_publication_wrong_shop'); return; }
-    setBatchLoaded({ value, shop, revision: accessRevision() }); setBatchId(value.id); setSkuText(value.items.map(item => item.sku).join('\n'));
+    setBaselineResult(null); setBatchLoaded({ value, shop, revision: accessRevision() }); setBatchId(value.id); setSkuText(value.items.map(item => item.sku).join('\n'));
     if (value.preview_data.rows) setSkuText(value.preview_data.rows.map(row => row.sku).join('\n'));
     setBlockedBatches(previous => { const next = { ...previous }; if (['queued', 'running', 'uncertain'].includes(value.status) || value.items.some(item => ['sending', 'uncertain'].includes(item.status))) next[value.id] = value.hold_id; else delete next[value.id]; return next; });
     previewRequest.current = null; clearConfirmations(); if (uncertain === 'batch') setUncertain(null);
@@ -95,7 +99,7 @@ export function StockPublicationPage() {
     finally { writeRef.current = false; if (current()) { busyRef.current = null; setBusy(null); } }
   }
   function changeSkus(value: string) {
-    setSkuText(value); setBatchLoaded(null); previewRequest.current = null; clearConfirmations(); setError('');
+    setBaselineResult(null); setSkuText(value); setBatchLoaded(null); previewRequest.current = null; clearConfirmations(); setError('');
     if (busyRef.current === 'preview' || busyRef.current === 'batch') { generation.current += 1; controller.current?.abort(); busyRef.current = null; setBusy(null); }
   }
   function prepare() {
@@ -125,11 +129,19 @@ export function StockPublicationPage() {
     if (!activeHold || activeHold.shop_code !== shop || !maintenanceCompleted || dangerousBatch) return;
     mutate('release', () => releasePublicationHold(activeHold.id), hold => { setLoaded(previous => previous ? { ...previous, value: { ...previous.value, hold } } : null); setBatchLoaded(null); previewRequest.current = null; }, 'options');
   }
+  function establishBaseline() {
+    if (!batch || !activeHold || !baselineEligible || !baselineWritersPaused || !baselineOrdersReconciled) return;
+    const skus = batch.preview_data.rows.map(row => row.sku);
+    mutate('baseline', () => establishStockSyncBaseline({ shop_code: shop, hold_id: activeHold.id, skus, confirmed: true, external_writers_paused: true, orders_reconciled: true }), value => {
+      if (value.shop_code !== shop || !Number.isSafeInteger(value.baseline_count) || value.baseline_count < 0 || !Array.isArray(value.skus) || value.skus.length !== skus.length || new Set(value.skus).size !== skus.length || value.skus.some(sku => !skus.includes(sku))) throw new Error('Invalid baseline response');
+      setBaselineResult(value);
+    }, 'options');
+  }
   function submit() {
     if (!batch || !sameHold || !options?.server_write_enabled || !options.external_write_enabled || !submitConfirm || expired || batch.status !== 'prepared' || policyDirty) return;
     mutate('submit', () => submitPublication(batch.id, batch.preview_hash), acceptBatch, 'batch');
   }
-  const message = (code: string) => t(`stockPublication.errors.${code}`, { defaultValue: t(`orderCollection.errors.${code}`, { defaultValue: t(`stockSettings.errors.${code}`, { defaultValue: t('stockPublication.errors.request_failed') }) }) });
+  const message = (code: string) => t(`stockPublication.errors.${code}`, { defaultValue: t(`availabilitySync.errors.${code}`, { defaultValue: t(`orderCollection.errors.${code}`, { defaultValue: t(`stockSettings.errors.${code}`, { defaultValue: t('stockPublication.errors.request_failed') }) }) }) });
   const date = (value: string | null | undefined) => value ? new Date(value).toLocaleString(i18n.language) : '—';
   const state = (value: string) => t(`stockPublication.states.${value}`, { defaultValue: t('stockPublication.unknown') });
   const quantity = (value: string | null) => value ?? t('stockPublication.unknown');
@@ -207,6 +219,11 @@ export function StockPublicationPage() {
           <span className="action-control"><Button variant="secondary" disabled={!!busy} onClick={() => recover(batch.id)}>{t('stockPublication.recover')}</Button><ActionScope effects={['hub-read']} /></span>
         </div>
         {batch.status === 'uncertain' && <><div className="opening-stock-confirmations"><label><input data-testid="requests-finished" type="checkbox" checked={requestsFinished} disabled={!!busy || !!uncertain || !sameHold} onChange={event => setRequestsFinished(event.target.checked)} />{t('stockPublication.requestsFinished')}</label></div><span className="action-control"><Button data-testid="resolve" disabled={!!busy || !!uncertain || !requestsFinished || !sameHold} onClick={() => { if (requestsFinished && sameHold) mutate('resolve', () => resolvePublication(batch.id), acceptBatch, 'batch'); }}>{t('stockPublication.resolve')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} calls={{ kind: 'variable' }} /></span></>}
+        {baselineEligible && <section className="opening-stock-notice" data-testid="sync-baseline-panel"><h3>{t('stockPublication.baselineTitle')}</h3><p>{t('stockPublication.baselineHelp')}</p>
+          {baselineResult ? <p role="status" className="opening-stock-success" data-testid="sync-baseline-result">{t('stockPublication.baselineSaved', { count: baselineResult.skus.length })}</p> : <><div className="opening-stock-confirmations"><label><input data-testid="baseline-writers-paused" type="checkbox" checked={baselineWritersPaused} disabled={!!busy || !!uncertain} onChange={event => setBaselineWritersPaused(event.target.checked)} />{t('stockPublication.writersPaused')}</label><label><input data-testid="baseline-orders-reconciled" type="checkbox" checked={baselineOrdersReconciled} disabled={!!busy || !!uncertain} onChange={event => setBaselineOrdersReconciled(event.target.checked)} />{t('stockPublication.ordersReconciled')}</label></div>
+          <span className="action-control"><Button data-testid="establish-sync-baseline" variant="secondary" disabled={!!busy || !!uncertain || !baselineWritersPaused || !baselineOrdersReconciled} onClick={establishBaseline}>{t('stockPublication.establishBaseline')}</Button><ActionScope effects={['hub-write', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span></>}
+          <p><Link to={`/settings/availability?shop=${shop}`}>{t('stockPublication.openStockSync')}</Link></p>
+        </section>}
         {['prepared', 'queued'].includes(batch.status) && <><div className="opening-stock-confirmations"><label><input data-testid="cancel-confirm" type="checkbox" disabled={!!busy || !!uncertain} checked={cancelConfirm} onChange={event => setCancelConfirm(event.target.checked)} />{t('stockPublication.cancelConfirm')}</label></div><span className="action-control"><Button data-testid="cancel" variant="secondary" disabled={!!busy || !!uncertain || !cancelConfirm} onClick={() => { if (cancelConfirm) mutate('cancel', () => cancelPublication(batch.id), acceptBatch, 'batch'); }}>{t('stockPublication.cancel')}</Button><ActionScope effects={['hub-write']} /></span></>}
       </section>}
     </>}{error && <div role="alert" className="opening-stock-errors">{message(error)}</div>}

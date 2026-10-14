@@ -135,6 +135,8 @@ def probe(shop_code):
         result['requests_attempted'] = 1
         response = client.session.get(f'{client.base_url}/status', timeout=(5, 10),
                                       verify=True, allow_redirects=False, stream=True)
+        if getattr(response, 'hub_request_sent', None) is False:
+            result['requests_attempted'] = 0
         status = response.status_code
         result['http_status'] = status
         quota = _quota(response.headers, status)
@@ -255,12 +257,12 @@ are scenarios if enabled, never a claim about measured or current API usage.
         'stock': {'configured': policy is not None, 'enabled': bool(policy and policy.enabled),
                   'authorized': bool(policy and policy.authorized), 'server_enabled': stock_sync.enabled(),
                   'interval_seconds': values['interval_seconds'], 'batch_size': values['batch_size'],
-                  'call_model': 'batched_unchanged_fresh_reads_before_write',
+                  'call_model': 'origin_aware_delta', 'audit_interval_seconds': 21600, 'audit_pass_calls': initial_batches,
                   'initial_batch_calls': initial_batches, 'singleton_pass_calls': eligible,
-                  'unchanged_pass_calls': initial_batches,
-                  'all_changed_pass_calls': initial_batches + 3 * eligible if eligible is not None else None,
-                  'daily_unchanged_if_enabled': _daily(initial_batches, values['interval_seconds']),
-                  'daily_all_changed_if_enabled': _daily(initial_batches + 3 * eligible if eligible is not None else None,
+                  'unchanged_pass_calls': 0 if eligible is not None else None,
+                  'all_changed_pass_calls': initial_batches + eligible if eligible is not None else None,
+                  'daily_unchanged_if_enabled': _daily(initial_batches, 21600),
+                  'daily_all_changed_if_enabled': _daily(initial_batches + eligible if eligible is not None else None,
                                                           values['interval_seconds'])},
         'orders': {'collector_enabled': bool(collector and collector.enabled),
                    'processing_mode': config['mode'] if config else 'manual',

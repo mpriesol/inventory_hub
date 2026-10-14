@@ -304,6 +304,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             await db.execute(update(OrderCollectionSettings).values(cursor_at=NOW - timedelta(hours=1)))
         plan = await self.start()
+        self.assertEqual(plan["created_from"], datetime(1900, 1, 1, tzinfo=timezone.utc))
         self.assertEqual(plan["changed_from"], NOW - timedelta(minutes=90))
         self.assertEqual(plan["configuration_snapshot"]["poll_interval_seconds"], 900)
         self.assertEqual(plan["configuration_snapshot"]["max_pages_per_pass"], 2)
@@ -499,6 +500,49 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["stock_updated_at"], CUTOVER.isoformat())
         self.assertNotIn("observation_hash", row)
         self.assertNotIn("products", row)
+
+    async def test_delta_discovers_historical_native_changes_without_replaying_local_stock(self):
+        await self.enable(delta=True)
+        async with self.transaction() as db:
+            await db.execute(update(OrderCollectionSettings).values(cursor_at=NOW - timedelta(hours=1)))
+        old_active = entry("HISTORICAL-ACTIVE", created_at=(CUTOVER - timedelta(days=365)).isoformat())
+        old_deleted = entry("HISTORICAL-DELETED", created_at=(CUTOVER - timedelta(days=10)).isoformat(), deleted=True)
+        current = entry("AT-CUTOVER", created_at=CUTOVER.isoformat())
+
+        async def source(shop, **params):
+            self.assertEqual(params['created_from'], datetime(1900, 1, 1, tzinfo=timezone.utc))
+            self.assertEqual(params['changed_from'], NOW - timedelta(hours=1, minutes=OperationalValues().overlap_minutes))
+            return page(old_deleted) if params['deleted'] else page(old_active, current)
+
+        self.source.side_effect = source
+        self.assertTrue(await worker.cycle())
+        rows = {row.order_number: row for row in await self.inbox_rows()}
+        self.assertIsNone(rows['AT-CUTOVER'].review_reason)
+        for name in ('HISTORICAL-ACTIVE', 'HISTORICAL-DELETED'):
+            self.assertEqual(rows[name].review_reason, 'stock_native_historical_change')
+        self.assertTrue(rows['HISTORICAL-DELETED'].deleted)
+        self.assertEqual((await self.settings()).cursor_at, NOW)
+        run = (await self.runs())[0]
+        self.assertEqual((run.status, run.pages, run.observed_count), ('completed', 2, 3))
+        self.assertEqual(await self.stock_snapshot(), self.stock_before)
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT COUNT(*) FROM order_processing_jobs')), 0)
+
+    async def test_historical_change_marker_survives_updates_without_erasing_source_conflicts(self):
+        await self.enable(delta=True)
+        plan = await self.start()
+        historical = entry('HISTORICAL', created_at=(CUTOVER - timedelta(days=1)).isoformat())
+        await self.save(plan, historical)
+        await self.save(plan, historical)
+        self.assertEqual((await self.inbox_rows())[0].review_reason, 'stock_native_historical_change')
+        newer = {**historical, 'updated_at': NOW.isoformat(), 'deleted': True, 'status_id': 2}
+        await self.save(plan, newer)
+        latest = (await self.inbox_rows())[0]
+        self.assertEqual((latest.updated_at, latest.deleted, latest.review_reason),
+                         (NOW, True, 'stock_native_historical_change'))
+        await self.save(plan, {**newer, 'status_id': 8})
+        await self.save(plan, {**newer, 'updated_at': (NOW + timedelta(seconds=1)).isoformat()})
+        self.assertEqual((await self.inbox_rows())[0].review_reason, 'order_collection_source_conflict')
 
     async def test_cursor_advances_only_after_all_active_and_deleted_pages_commit(self):
         await self.enable(delta=True)

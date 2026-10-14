@@ -38,7 +38,7 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for name in ('001_schema.sql', '007_order_stock.sql', '008_order_collection.sql',
-                         '009_stock_automation.sql', '011_fifo.sql', '015_stock_sync.sql', '019_stock_tracking.sql'):
+                         '009_stock_automation.sql', '011_fifo.sql', '010_stock_publication.sql', '015_stock_sync.sql', '026_stock_delta.sql', '019_stock_tracking.sql'):
                 await connection.execute((root / name).read_text())
         finally:
             await connection.close()
@@ -120,6 +120,7 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         for field in ('warehouse_code', 'confirmed_skus', 'eligible_skus', 'unpublishable_skus'):
             self.assertIsNone(local[field], field)
         self.assertFalse(local['stock']['configured'])
+        self.assertEqual((local['stock']['audit_interval_seconds'], local['stock']['audit_pass_calls']), (21600, 1))
         self.assertFalse(local['stock']['enabled'])
         self.assertFalse(local['stock']['authorized'])
         self.assertIsNone(local['stock']['unchanged_pass_calls'])
@@ -226,9 +227,10 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {'code': 'stock_projection_product_inactive', 'count': 1}])
         self.assertEqual(local['stock']['interval_seconds'], 600)
         self.assertEqual((local['stock']['initial_batch_calls'], local['stock']['singleton_pass_calls']), (1, 2))
-        self.assertEqual(local['stock']['call_model'], 'batched_unchanged_fresh_reads_before_write')
-        self.assertEqual((local['stock']['unchanged_pass_calls'], local['stock']['all_changed_pass_calls']), (1, 7))
-        self.assertEqual((local['stock']['daily_unchanged_if_enabled'], local['stock']['daily_all_changed_if_enabled']), (144, 1008))
+        self.assertEqual(local['stock']['call_model'], 'origin_aware_delta')
+        self.assertEqual((local['stock']['unchanged_pass_calls'], local['stock']['all_changed_pass_calls']), (0, 3))
+        self.assertEqual((local['stock']['daily_unchanged_if_enabled'], local['stock']['daily_all_changed_if_enabled']), (4, 432))
+        self.assertEqual((local['stock']['audit_interval_seconds'], local['stock']['audit_pass_calls']), (21600, 1))
         self.assertFalse(local['stock']['enabled'])
         self.assertFalse(local['stock']['server_enabled'])
         orders = local['orders']
@@ -253,7 +255,7 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             chunked = await service.projection(db, 'biketrek')
         self.assertEqual(chunked['stock']['batch_size'], 2)
         self.assertEqual(chunked['stock']['initial_batch_calls'], 2)
-        self.assertEqual(chunked['stock']['all_changed_pass_calls'], 8)
+        self.assertEqual(chunked['stock']['all_changed_pass_calls'], 4)
         self.assertEqual(await self.snapshot(), before_small_batches)
 
     async def test_missing_shop_never_probes_and_staged_local_changes_are_not_flushed(self):
