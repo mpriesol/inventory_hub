@@ -20,6 +20,7 @@ export interface OrderProcessingJob {
   id: number; source_uuid: string; order_number: string; generation: number;
   status: 'pending' | 'running' | 'completed' | 'retry' | 'review'; next_attempt_at: string | null;
   last_started_at: string | null; last_completed_at: string | null; last_checked_at: string | null;
+  stock_accounting?: 'accounted' | 'review' | 'pending'; resolution_available?: boolean;
   attempts: number; error: string | null; result: { action?: string; stock_state?: string } | null; audit_preview_id: string | null;
 }
 export interface OrderProcessingJobs { jobs: OrderProcessingJob[]; total: number; limit: number; offset: number }
@@ -41,3 +42,18 @@ export const getOrderInbox = (shop: string, offset = 0, signal?: AbortSignal) =>
 export const getCollectionRuns = (shop: string, signal?: AbortSignal) => hubRequest<{ runs: CollectionRun[] }>(`${base}/runs?shop_code=${encodeURIComponent(shop)}`, undefined, signal);
 export const getOrderProcessingJobs = (shop: string, offset = 0, signal?: AbortSignal) => hubRequest<OrderProcessingJobs>(`/api/order-processing/jobs?shop_code=${encodeURIComponent(shop)}&limit=50&offset=${offset}`, undefined, signal);
 export const previewCollectionStock = (shop: string, skus: string[], signal?: AbortSignal) => hubRequest<CollectionStockPreview>(`${base}/stock-preview`, { shop_code: shop, skus }, signal);
+
+export interface OrderExceptionResolution {
+  id: string; preview_hash: string; status: 'prepared' | 'completed'; order_number: string; shop_code: string;
+  warehouse: { id: number; code: string; name: string }; expires_at: string; source_status_name: string | null; issued_at: string;
+  lines: { sku: string; product_id: number; issue_movement_id: number; issued_qty: string;
+    returned_qty: string | null; returnable_qty: string | null; physical_return_supported: boolean }[];
+  result: { action: 'resolve_exception'; reason: string; actor: string; movements_created: 0 } | null;
+}
+export const previewOrderException = (job: number, requestId: string) => hubRequest<OrderExceptionResolution>(
+  `/api/order-processing/jobs/${job}/resolution-preview`, { request_id: requestId });
+export const getOrderException = (id: string, signal?: AbortSignal) => hubRequest<OrderExceptionResolution>(
+  `/api/order-processing/resolutions/${encodeURIComponent(id)}`, undefined, signal);
+export const resolveOrderException = (preview: OrderExceptionResolution, reason: string) => hubRequest<NonNullable<OrderExceptionResolution['result']>>(
+  `/api/order-processing/resolutions/${encodeURIComponent(preview.id)}/resolve`,
+  { preview_hash: preview.preview_hash, confirmed: true, stock_accounted: true, reason });

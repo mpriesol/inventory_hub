@@ -25,6 +25,14 @@ Ak sa nedá výlučné zapisovanie zásob v konkrétnom nastavení Upgates zabez
 
 Pravidelná synchronizácia pracuje s oneskorením načítania objednávok. Nejde o okamžitú spoločnú pokladňovú rezerváciu medzi oboma e-shopmi. Kontrola aktuálnosti znižuje riziko starej projekcie, ale nedokazuje, že tesne pred odoslaním nevznikla nová objednávka. Kratší interval načítania objednávok a prenosu znižuje túto medzeru. Hub kontroluje čerstvé dokončené načítanie, kurzor objednávok a chýbajúce alebo nedokončené spracovanie na všetkých zúčastnených kanáloch.
 
+### Čakajúca objednávka a skladové spracovanie
+
+Objednávka nemusí byť obchodne vybavená, aby sa mohli publikovať správne skladové zásoby. Už zaúčtovaná rezervácia s nekrytou časťou môže zostať v stave opakovanej kontroly a prenos pokračuje, ak Hub overí jej aktuálny skladový podklad. Nestačí samotný text chyby ani stav úlohy: musí súhlasiť aktuálna hlavička, identita objednávky, zdrojový hash a skladová revízia. Čítací prepočet rezervácie nesmie požadovať zmenu doterajších alokácií.
+
+Po novom príjme alebo uvoľnení rezervácie inej objednávky môže pribudnúť tovar pre čakajúcu objednávku. Vtedy sa prenos pozastaví, kým spracovateľ doplní jej rezerváciu. Novoprijaté kusy sa tak nepublikujú ako voľné pred ich pridelením. Nedokončený výdaj pre nedostatok zásoby, chyba zdroja, zmazaná alebo konfliktná objednávka sa týmto pravidlom neobchádzajú.
+
+Vratku alebo storno po pôvodnom výdaji možno výslovne uzavrieť cez skladovú výnimku v prehľade objednávok, ak sa vydaný obsah nezmenil a obsluha overila evidenciu. Uzavretie má vlastný nemenný audit a nevytvára príjem ani nový výdaj. Pri zmene podkladu, politiky alebo nastavení oprávnenia je potrebná nová kontrola. Postup je v [objednávkovej príručke](order-workflows.md#po-výdaji).
+
 ## Prenášané údaje
 
 Vlastné voľné množstvo je fyzické množstvo mínus rezervácie mínus karanténa. Zásoby dodávateľa sa doň nepripočítavajú. Dostupnosť sa vyhodnotí pri každom priechode:
@@ -62,7 +70,7 @@ Všetky cesty vyžadujú operátorský token a `Cache-Control: no-store`. Prefix
 
 Migrácia `015_stock_sync.sql` pridáva samostatné predvoľby skladu, politiky e-shopov, priechody a položky. Existujúce bilancie ani pohyby nemení. Uplatní sa cez `python -m inventory_hub.stock_sync_migrate` pred štartom novej aplikácie. Spoločný pracovník používa session advisory lock; sieťové volania prebiehajú po ukončení DB transakcie. Každý PUT má najprv uložený stav `sending`. Čiastočný unikátny index drží konflikt pre `(shop_id,sku)` v stavoch `sending` a `uncertain`. Po páde sa `sending` zmení na `uncertain`, nikdy na stav oprávňujúci opakovanie PUT.
 
-Identita aj vlastná bilancia sa znovu vyhodnotia po vzdialenom čítaní pred uložením zámeru. Sklad sa počas sieťovej práce nemení na údržbový režim; následné lokálne zmeny sa premietnu ďalším priechodom. Otvorenie údržby a príprava pravidelného `sending` zámeru krátko zamykajú rovnaký riadok skladu, takže jeden postup nemôže prekryť druhý. HTTP 429 zohľadňuje uložený `Retry-After` aj spoločné limity objednávkových integrácií.
+Identita aj vlastná bilancia sa znovu vyhodnotia po vzdialenom čítaní pred uložením zámeru. Obe lokálne kontroly a ich projekcie používajú poradie zámkov **identita → e-shop → sklad**, aby sa produktové prepojenie nezmenilo medzi overením objednávok a výpočtom odosielaného množstva. Zámky sa uvoľnia pred každým sieťovým volaním. Sklad sa počas sieťovej práce nemení na údržbový režim; následné lokálne zmeny sa premietnu ďalším priechodom. Otvorenie údržby a príprava pravidelného `sending` zámeru krátko zamykajú rovnaký riadok skladu, takže jeden postup nemôže prekryť druhý. HTTP 429 zohľadňuje uložený `Retry-After` aj spoločné limity objednávkových integrácií.
 
 Transport zdieľa overovanie HTTPS, presnej identity, veľkosti odpovede a jednoznačného potvrdenia s údržbovým transportom. Nepoužíva presmerovania ani automatické opakovanie zápisu. Oficiálny kontrakt podporuje sklad a dostupnosť aj na variantoch cez [PUT products](https://docs.upgates.com/api-reference/produkty) a samostatné načítanie variantov cez [produktové zoznamy](https://docs.upgates.com/api-reference/produkty-seznamy). Verejný kontrakt nedokumentuje podmienený zápis či idempotentný kľúč; preto výlučná autorita a explicitné riešenie neistoty zostávajú nevyhnutnou súčasťou aktivácie.
 

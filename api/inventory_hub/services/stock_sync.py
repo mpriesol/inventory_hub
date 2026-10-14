@@ -7,18 +7,19 @@ order polling delay. Ambiguous absolute PUTs retain durable per-target fences.
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, text
 from inventory_hub.db_models import Product, Shop, Warehouse
 from inventory_hub.db_models_ext import ShopProduct, StockBalance
 from inventory_hub.order_stock_models import OrderStockPolicy
-from inventory_hub.order_collection_models import OrderCollectionSettings, OrderInboxEntry
-from inventory_hub.order_processing_models import OrderProcessingJob
+from inventory_hub.order_collection_models import OrderCollectionSettings
 from inventory_hub.stock_publication_models import StockPublicationHold
 from inventory_hub.stock_settings_models import StockShopSettings
 from inventory_hub.stock_sync_models import StockSyncSettings as Policy, StockSyncWarehouseSettings as Defaults, StockSyncRun as Run, StockSyncItem as Item
 from inventory_hub.settings import settings
 from inventory_hub.services import stock_projection, stock_settings, stock_sync_source as source
 from inventory_hub.services.order_collection import target_fingerprint
+from inventory_hub.services.order_sync_readiness import has_unaccounted_orders
+from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 
 DEFAULTS = {'interval_seconds': 300, 'batch_size': 20, 'max_order_age_seconds': 900}
 ACTIVE = ('queued', 'running')
@@ -126,14 +127,7 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
         if not config['processing_ready'] or config['automation_starts_at'] is None:
             result.append('stock_sync_order_processing_required')
             continue
-        pending = await db.scalar(select(OrderInboxEntry.id).outerjoin(OrderProcessingJob,
-            (OrderProcessingJob.shop_id == OrderInboxEntry.shop_id) &
-            (OrderProcessingJob.source_uuid == OrderInboxEntry.source_uuid)).where(
-                OrderInboxEntry.shop_id == peer['shop_id'], OrderInboxEntry.created_at >= config['automation_starts_at'],
-                or_(OrderInboxEntry.review_reason.is_not(None), OrderProcessingJob.id.is_(None),
-                    OrderProcessingJob.status != 'completed',
-                    OrderProcessingJob.observation_hash != OrderInboxEntry.observation_hash)).limit(1))
-        if pending:
+        if await has_unaccounted_orders(db, peer['shop_id'], warehouse.id, config):
             result.append('stock_sync_orders_pending')
     return list(dict.fromkeys(result))
 
@@ -327,6 +321,9 @@ async def process_item(db, item_id):
     fingerprint = run.target_fingerprint
     started = False
     try:
+        # Keep mapping changes out of the order proof and its stock projection.
+        # Match physical/order writers: identity -> shop -> warehouse.
+        await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
         shop, warehouse, policy, _, values = await scope(db, shop_code, True)
         reasons = await blockers(db, shop, warehouse, policy, values)
         if reasons:
@@ -340,6 +337,7 @@ async def process_item(db, item_id):
         observation = await source.read(shop_code, target, fingerprint)
         # Recompute after the remote GET; local receipts/reservations are not
         # frozen during network work and must not use an older desired value.
+        await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
         shop, warehouse, policy, _, values = await scope(db, shop_code, True)
         reasons = await blockers(db, shop, warehouse, policy, values)
         if reasons:

@@ -1454,7 +1454,8 @@
       "issue": "Issue and lock",
       "cancel": "Release reservations",
       "review": "Needs review",
-      "noop": "No stock change"
+      "noop": "No stock change",
+      "resolve_exception": "Exception review confirmed"
     },
     "previewStatus": {
       "prepared": "Prepared",
@@ -1712,6 +1713,52 @@
     "triggers": {
       "manual": "One-off request",
       "automatic": "Scheduled collection"
+    },
+    "stockAccounting": "Stock accounting",
+    "accountingStates": {
+      "accounted": "Accounted for synchronization",
+      "review": "Blocks synchronization – review",
+      "pending": "Awaiting stock accounting",
+      "unknown": "Not verified yet"
+    },
+    "exception": {
+      "open": "Resolve stock exception",
+      "title": "Stock exception review",
+      "help": "Confirmation closes the review of this order change for synchronization. Physical stock, reservations and the original issue remain unchanged.",
+      "prepareHelp": "First load the current order and recorded issues and returns. Then check that the ledger reflects the actual movement of goods.",
+      "prepare": "Load exception details",
+      "previewId": "Review ID",
+      "recover": "Check saved result",
+      "uncertain": "The request result is unconfirmed. Check the saved result first. Another confirmation or reason change is unavailable until then.",
+      "missing": "The review was not found yet. If you started loading its details on this page, you can repeat the same request. Otherwise close this panel and select the order again.",
+      "sourceStatus": "Shop status",
+      "issuedAt": "Issued",
+      "issue": "Issue ID",
+      "issued": "Units issued",
+      "returned": "Recorded returns",
+      "remaining": "Still eligible for return",
+      "legacy": "Return quantities are not proven for this legacy issue. Check the stock ledger.",
+      "returnHelp": "If goods have physically returned, first record the return in the product detail → Stock and purchase costs, using the SKU and issue ID shown here. Then close this review and load fresh details.",
+      "openStock": "Open stock in a new tab",
+      "reason": "Reason and outcome of the physical check",
+      "confirmation": "I checked the stock ledger: goods have not returned yet, or all physically returned units have already been recorded separately. The displayed record matches reality.",
+      "resolve": "Confirm exception review",
+      "completed": "The review is saved. No stock movement was created.",
+      "refreshHelp": "Refresh the Hub list for current synchronization status. Another order change may require a new review.",
+      "expires": "Review expires",
+      "expired": "The review expired. Close it and load fresh details.",
+      "close": "Close review",
+      "errors": {
+        "order_exception_not_available": "This exception cannot be closed through this workflow. Refresh the list and open the order’s manual review.",
+        "order_exception_preview_not_found": "The saved review was not found.",
+        "order_exception_request_changed": "This request ID belongs to another review. Check the saved result.",
+        "order_exception_preview_changed": "Review details changed. Check the result and prepare a new review.",
+        "order_exception_preview_expired": "The review expired. Check the result and prepare a new review.",
+        "order_exception_source_changed": "The shop order changed. Check the result and load fresh details.",
+        "order_exception_context_changed": "Settings or processing state changed. Check the result and load fresh details.",
+        "order_exception_ledger_changed": "Issues or returns changed. Check the result and load fresh details.",
+        "order_exception_confirmation_changed": "This review was already confirmed with a different reason. Check the saved result."
+      }
     }
   },
   "stockSettings": {

@@ -50,21 +50,44 @@ const job = (id, orderNumber, changes = {}) => ({ id, source_uuid: `00000000-000
 const reviewOrderNumber = 'REVIEW / 1?x=2';
 const jobs = offset => ({ jobs: offset ? [job(51, 'NEXT-JOB-PAGE')] : [
   job(1, reviewOrderNumber, { status: 'review', error: 'order_processing_identity_conflict' }),
-  job(2, 'RETRY-ORDER', { status: 'retry', error: 'order_processing_source_unavailable', attempts: 3 }),
+  job(2, 'RETRY-ORDER', { status: 'retry', error: 'order_processing_backorder', attempts: 3, stock_accounting: 'accounted' }),
+  job(3, 'RETURN-ORDER', { status: 'review', error: 'order_processing_plan_blocked', stock_accounting: 'review', resolution_available: true }),
 ], total: 51, limit: 50, offset });
 const newCollector = () => ({ enabled: false, revision: 1, cursor_at: '2026-09-23T10:00:00Z', last_reconciled_at: null,
   next_poll_at: '2026-09-23T12:10:00Z', last_started_at: null, last_completed_at: null, last_error: null, entries_seen: 5, manual_pending: false });
 const stock = (shop, sku = 'KNOWN-ZERO') => ({ shop_code: shop, warehouse: { id: 1, code: 'main', name: 'Main fixture' }, captured_at: '2026-09-23T12:05:00Z', external_write_enabled: false,
   rows: [{ sku, product_id: 1, target: { parent_code: 'PARENT', variant_code: sku, code: sku }, quantity_known: true, qty_on_hand: '3', qty_reserved: '3', qty_available: '0', errors: [] },
     { sku: 'UNKNOWN-BALANCE', product_id: 2, target: null, quantity_known: false, qty_on_hand: null, qty_reserved: null, qty_available: null, errors: ['stock_projection_balance_missing'] }] });
+let exceptionMode = 'valid', resolveMode = 'valid', pendingException, pendingResolution, exceptionPreview;
+const exceptionFixture = (id, shop) => ({ id, preview_hash: 'synthetic-preview-hash', status: 'prepared', order_number: 'RETURN-ORDER', shop_code: shop,
+  warehouse: { id: 1, code: 'main', name: 'Main fixture' }, expires_at: '2099-10-14T20:00:00Z', source_status_name: 'Returned', issued_at: '2026-10-14T10:00:00Z',
+  lines: [{ sku: 'EXCEPTION-SKU', product_id: 12, issue_movement_id: 600, issued_qty: '3.000', returned_qty: '1.000', returnable_qty: '2.000', physical_return_supported: true },
+    { sku: 'LEGACY-ISSUE', product_id: 13, issue_movement_id: 601, issued_qty: '1.000', returned_qty: null, returnable_qty: null, physical_return_supported: false }], result: null });
+const exceptionButton = action => document.querySelector(`[data-testid="${action}-order-exception"]`);
 const calls = []; let pendingStatus; let pendingStock; let statusMode = 'valid'; let stockMode = 'valid'; let configMode = 'valid'; let rejectConfig;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(path.startsWith('/api/order-collection/') || (path.startsWith('/api/order-processing/jobs?') && init.method === 'GET'),
-    'Only collection endpoints and read-only processing jobs can be invoked; never stock apply, outbox or shop writes');
+  assert(path.startsWith('/api/order-collection/') || (path.startsWith('/api/order-processing/jobs?') && init.method === 'GET') || /^\/api\/order-processing\/(?:jobs\/3\/resolution-preview|resolutions\/[0-9a-f-]+(?:\/resolve)?)$/.test(path),
+    'Only collection, read-only jobs and exception audit endpoints can be invoked; never stock apply, physical returns, outbox or shop writes');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   const url = new URL(path, dom.window.location.origin); const shop = url.searchParams.get('shop_code') || body?.shop_code;
+  if (url.pathname.endsWith('/resolution-preview')) {
+    assert.equal(init.method, 'POST'); assert.deepEqual(Object.keys(body), ['request_id']);
+    exceptionPreview = exceptionFixture(body.request_id, field('shop').value);
+    if (exceptionMode === 'pending') return new Promise((resolve, reject) => { pendingException = { resolve: value => resolve({ ok: true, json: async () => value }), reject: () => reject(new TypeError('Synthetic preview response lost')) }; });
+    if (exceptionMode === 'expired') exceptionPreview = { ...exceptionPreview, expires_at: '2000-01-01T00:00:00Z' };
+    if (exceptionMode === 'malformed') return { ok: true, json: async () => ({ ...exceptionPreview, lines: [{ sku: 'INCOMPLETE' }] }) };
+    return { ok: true, json: async () => exceptionPreview };
+  }
+  if (url.pathname.endsWith('/resolve')) {
+    assert.equal(init.method, 'POST'); assert.deepEqual(Object.keys(body).sort(), ['confirmed', 'preview_hash', 'reason', 'stock_accounted']);
+    assert.equal(body.confirmed, true); assert.equal(body.stock_accounted, true); assert.equal(body.preview_hash, exceptionPreview.preview_hash);
+    exceptionPreview = { ...exceptionPreview, status: 'completed', result: { action: 'resolve_exception', reason: body.reason, actor: 'user:7', movements_created: 0 } };
+    if (resolveMode === 'pending') return new Promise((resolve, reject) => { pendingResolution = { resolve: () => resolve({ ok: true, json: async () => exceptionPreview.result }), reject: () => reject(new TypeError('Synthetic confirmation response lost')) }; });
+    return { ok: true, json: async () => exceptionPreview.result };
+  }
+  if (url.pathname.includes('/resolutions/')) { assert.equal(init.method, 'GET'); return { ok: true, json: async () => exceptionPreview }; }
   if (url.pathname.endsWith('/status')) {
     if (statusMode === 'pending') return new Promise(resolve => { pendingStatus = value => resolve({ ok: true, json: async () => value }); });
     return { ok: true, json: async () => status(shop) };
@@ -117,7 +140,9 @@ const posts = () => calls.filter(call => call.method === 'POST');
   assert(jobsTable, 'Processing exceptions appear in their own table');
   assert(jobsTable.textContent.includes(t('jobStates.review')) && jobsTable.textContent.includes(t('jobStates.retry')));
   assert(jobsTable.textContent.includes(t('processingErrors.order_processing_identity_conflict')));
-  assert(jobsTable.textContent.includes(t('processingErrors.order_processing_source_unavailable')));
+  assert(jobsTable.textContent.includes(t('processingErrors.order_processing_backorder')));
+  assert(jobsTable.textContent.includes(t('accountingStates.accounted')) && jobsTable.textContent.includes(t('accountingStates.review')), 'Stock accounting readiness is separate from an operational retry status');
+  assert.equal(jobsTable.querySelectorAll('[data-testid^="open-order-exception-"]').length, 1, 'Only an explicitly eligible job exposes exception closure');
   assert(!jobsTable.textContent.includes('order_processing_'), 'Operators see helpful translated errors, not backend codes');
   assert([...jobsTable.querySelectorAll('a')].some(link => link.getAttribute('href') === '/orders/stock?shop=xtrek&order=REVIEW%20%2F%201%3Fx%3D2'),
     'The review link preserves the exact order number through URL encoding');
@@ -164,6 +189,53 @@ const posts = () => calls.filter(call => call.method === 'POST');
   await click(document.querySelector('[data-testid="jobs-previous"]'));
   assert.equal(calls.at(-1).path, '/api/order-processing/jobs?shop_code=xtrek&limit=50&offset=0');
 
+  // Exception closure is an audited check, not a physical return or blind job dismissal.
+  const beforeOpenException = posts().length;
+  await click(document.querySelector('[data-testid="open-order-exception-3"]'));
+  assert.equal(posts().length, beforeOpenException, 'Opening a review does not start remote reads or change stock');
+  exceptionMode = 'pending';
+  await act(async () => { exceptionButton('prepare').click(); exceptionButton('prepare').click(); await tick(); });
+  assert.equal(calls.filter(call => call.path.endsWith('/resolution-preview')).length, 1, 'Double preview click reuses one request');
+  const previewId = calls.at(-1).body.request_id;
+  assert.equal(dom.window.sessionStorage.getItem('order-exception-preview:xtrek'), previewId, 'Only the recoverable UUID is persisted, never reasons, credentials or order contents');
+  assert(field('shop').disabled, 'A pending exception write fences shop changes');
+  await act(async () => { pendingException.reject(); await tick(); });
+  assert(document.body.textContent.includes(t('exception.uncertain')) && exceptionButton('close').disabled);
+  const beforePreviewRecovery = posts().length; await click(exceptionButton('recover'));
+  assert.equal(posts().length, beforePreviewRecovery, 'A lost preview response recovers through GET only');
+  assert.equal(calls.at(-1).path, '/api/order-processing/resolutions/' + previewId);
+  const exceptionRows = document.querySelectorAll('[data-testid="order-exception-lines"] tbody tr');
+  assert.equal(exceptionRows[0].children[2].textContent, '3.000'); assert.equal(exceptionRows[0].children[3].textContent, '1.000');
+  assert.equal(exceptionRows[1].children[3].textContent, t('unknown'), 'Unsupported legacy returns remain unknown, never zero');
+  assert(document.querySelector('[data-testid="order-exception-panel"] a[href="/stock"][target="_blank"]'));
+  assert(exceptionButton('resolve').disabled);
+  await input(document.querySelector('[data-testid="order-exception-reason"]'), '  Goods have not physically returned yet.  ');
+  assert(exceptionButton('resolve').disabled, 'A reason alone cannot confirm physical accounting');
+  await click(document.querySelector('[data-testid="order-exception-confirm"]'));
+  assert(!exceptionButton('resolve').disabled);
+  const resolveScope = exceptionButton('resolve').closest('.action-control').querySelector('[data-action-effects]');
+  assert.equal(resolveScope.dataset.actionEffects, 'hub-write upgates-read', 'The final check discloses source reread and local audit write');
+  resolveMode = 'pending';
+  await act(async () => { exceptionButton('resolve').click(); exceptionButton('resolve').click(); await tick(); });
+  assert.equal(calls.filter(call => call.path.endsWith('/resolve')).length, 1, 'Double confirmation cannot send two writes');
+  assert.equal(calls.at(-1).body.reason, 'Goods have not physically returned yet.');
+  await act(async () => { pendingResolution.reject(); await tick(); });
+  assert(exceptionButton('resolve').disabled && document.querySelector('[data-testid="order-exception-reason"]').disabled, 'Unknown confirmation freezes further writes and the original reason');
+  const beforeResolutionRecovery = posts().length; await click(exceptionButton('recover'));
+  assert.equal(posts().length, beforeResolutionRecovery); assert(document.body.textContent.includes(t('exception.completed')));
+  assert(!exceptionButton('resolve'), 'Completed review cannot be confirmed again');
+  assert.equal(dom.window.sessionStorage.length, 0);
+  await click(exceptionButton('close')); assert(!document.querySelector('[data-testid="order-exception-panel"]'));
+  exceptionMode = 'malformed'; resolveMode = 'valid';
+  await click(document.querySelector('[data-testid="open-order-exception-3"]')); await click(exceptionButton('prepare'));
+  assert(!exceptionButton('resolve'), 'Malformed HTTP 200 preview cannot unlock confirmation');
+  await click(exceptionButton('recover')); await click(exceptionButton('close'));
+  exceptionMode = 'expired';
+  await click(document.querySelector('[data-testid="open-order-exception-3"]')); await click(exceptionButton('prepare'));
+  assert(exceptionButton('resolve').disabled && document.querySelector('[data-testid="order-exception-confirm"]').disabled);
+  assert(document.body.textContent.includes(t('exception.expired')), 'An expired review must load fresh evidence');
+  await click(exceptionButton('close')); exceptionMode = 'valid';
+
   await input(field('skus'), 'KNOWN-ZERO\nUNKNOWN-BALANCE'); await click(button('previewStock'));
   assert.deepEqual(calls.at(-1).body, { shop_code: 'xtrek', skus: ['KNOWN-ZERO', 'UNKNOWN-BALANCE'] });
   const stockTable = [...document.querySelectorAll('table')].find(table => table.textContent.includes('KNOWN-ZERO'));
@@ -196,6 +268,16 @@ const posts = () => calls.filter(call => call.method === 'POST');
   connection = true; hasPolicy = true; connectionMatches = false; await click(button('load')); await click(field('enableConfirm'));
   assert(button('enable').disabled && button('fetchNow').disabled && document.body.textContent.includes(t('connectionChanged')), 'A different target connection stays visibly blocked');
   connectionMatches = true; await click(button('load'));
+  exceptionMode = 'pending'; await click(document.querySelector('[data-testid="open-order-exception-3"]')); await click(exceptionButton('prepare'));
+  const oldException = pendingException, oldExceptionValue = { ...exceptionPreview, order_number: 'STALE-PRIVATE-ORDER' };
+  const storedExceptionId = exceptionPreview.id;
+  await act(async () => { unlockHub('synthetic-new-exception-session'); await tick(); oldException.resolve(oldExceptionValue); await tick(); });
+  assert(!document.body.textContent.includes('STALE-PRIVATE-ORDER'), 'An old credential’s delayed preview is never displayed in the new session');
+  assert(!exceptionButton('resolve'), 'A changed session must recover the stored ID explicitly before confirmation');
+  assert.equal(dom.window.sessionStorage.getItem('order-exception-preview:biketrek'), storedExceptionId, 'A session change preserves only the recovery ID');
+  const beforeSessionRecovery = posts().length; await click(exceptionButton('recover'));
+  assert.equal(posts().length, beforeSessionRecovery); await click(exceptionButton('close'));
+  exceptionMode = 'valid';
   statusMode = 'pending'; await click(button('load')); const oldTokenStatus = pendingStatus;
   await act(async () => { unlockHub('synthetic-replacement-token'); await tick(); oldTokenStatus(status('biketrek')); await tick(); });
   assert(!document.body.textContent.includes('ACTIVE-1'));
