@@ -4,18 +4,15 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict
-import mimetypes
-from urllib.parse import unquote
 import os, shutil
 import asyncio
 from contextlib import suppress
 from contextlib import asynccontextmanager
 
 from fastapi import Query
-from fastapi.responses import FileResponse, Response
 from fastapi import UploadFile, File, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from inventory_hub.file_access import PrivateDataFiles, document_path, document_response, stored_document_path
 
 from .settings import settings
 from .models import (
@@ -133,6 +130,10 @@ app = FastAPI(
     lifespan=lifespan,
     root_path=os.environ.get("ROOT_PATH", ""),
 )
+from inventory_hub.routers.auth import install as install_auth
+install_auth(app)
+# CORS handles preflight before the private API boundary; preflight never
+# executes a business endpoint or carries an authentication exemption.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -145,11 +146,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "Last-Modified"],
 )
-app.mount("/data", StaticFiles(directory=str(settings.INVENTORY_DATA_ROOT)), name="data")
-
-if settings.USE_POSTGRES:
-    from inventory_hub.routers.auth import install as install_auth
-    install_auth(app)
+app.mount("/data", PrivateDataFiles(directory=str(settings.INVENTORY_DATA_ROOT)), name="data")
 
 app.include_router(configs_router)
 # ---------------------------------------------------------
@@ -258,10 +255,12 @@ async def health():
     }
     if settings.USE_POSTGRES:
         db_health = await check_db_health()
-        result["database"] = db_health
+        # Public liveness must not expose database exception/connection details.
+        result["database"] = {"status": db_health.get("status", "unhealthy")}
         if db_health.get("status") != "healthy":
             result["status"] = "degraded"
-    return result
+    from fastapi.responses import JSONResponse
+    return JSONResponse(result, status_code=200 if result["status"] == "ok" else 503)
 
 
 @app.get("/suppliers/{supplier_code}/files")
@@ -288,20 +287,6 @@ def supplier_files(supplier_code: str, area: str, months_back: int = 3):
 
     return {"files": list_files(area_norm, supplier_code, months_back)}
 
-# -------- Supplier CONFIG (persist do .../suppliers/<s>/state/config.json)
-@app.get("/suppliers/{supplier_code}/config")
-def get_supplier_config(supplier_code: str):
-    if supplier_code not in SUPPLIERS:
-        raise HTTPException(404, detail="Supplier not found")
-    return load_supplier_config(supplier_code).model_dump()
-
-@app.put("/suppliers/{supplier_code}/config")
-def put_supplier_config(supplier_code: str, cfg: SupplierConfig):
-    if supplier_code not in SUPPLIERS:
-        raise HTTPException(404, detail="Supplier not found")
-    save_supplier_config(supplier_code, cfg)
-    return cfg
-
 # -------- Runs/prepare (invoice + shop export -> Upgates CSVs)
 @app.post("/runs/prepare_legacy", response_model=RunPrepareOut)
 def prepare_run(payload: RunPrepareIn):
@@ -319,17 +304,13 @@ def prepare_run(payload: RunPrepareIn):
     supplier_base = _supplier_base(supplier_code)
 
     # invoice CSV (relatívne voči INVENTORY_DATA_ROOT)
-    invoice_csv = settings.INVENTORY_DATA_ROOT / payload.invoice_relpath
-    if not invoice_csv.exists():
-        raise HTTPException(404, detail=f"Invoice CSV not found: {invoice_csv}")
+    invoice_csv = document_path(settings.INVENTORY_DATA_ROOT, payload.invoice_relpath)
 
     # shop export CSV
     if payload.upgates_csv_override:
-        shop_export_csv = Path(payload.upgates_csv_override)
+        shop_export_csv = stored_document_path(settings.INVENTORY_DATA_ROOT, payload.upgates_csv_override)
     else:
-        shop_export_csv = _shop_latest_export(payload.shop_ref)
-    if not shop_export_csv.exists():
-        raise HTTPException(404, detail=f"Shop export not found: {shop_export_csv}")
+        shop_export_csv = document_path(settings.INVENTORY_DATA_ROOT, f"shops/{payload.shop_ref}/latest.csv")
 
     now = datetime.now()
     try:
@@ -405,9 +386,7 @@ def preview_file(relpath: str, max_rows: int = 50, strip_upgates_brackets: bool 
     Vracia:
       { columns: [...], rows: [[...],...], total_columns: int, preview_rows: int }
     """
-    p = settings.INVENTORY_DATA_ROOT / relpath
-    if not p.exists() or not p.is_file():
-        raise HTTPException(404, detail=f"File not found: {relpath}")
+    p = document_path(settings.INVENTORY_DATA_ROOT, relpath)
     if p.suffix.lower() != ".csv":
         raise HTTPException(400, detail="Only CSV preview is supported")
 
@@ -439,34 +418,8 @@ def files_download(
     - podpora Content-Disposition: attachment/inline
     - pre .log / stable=1 pošle SNAPSHOT (fixuje Content-Length)
     """
-    root = Path(settings.INVENTORY_DATA_ROOT).expanduser().resolve()
-
-    relpath_decoded = unquote(relpath).lstrip("/\\")
-    target = (root / relpath_decoded).resolve()
-
-    try:
-        target.relative_to(root)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid relpath")
-
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-    out_name = filename or target.name
-    headers = {"Content-Disposition": f'{disposition}; filename="{out_name}"'}
-
-    # LOGY alebo stable režim => vytvoríme snapshot v pamäti
-    if stable or target.suffix.lower() in {".log", ".txt"}:
-        data = target.read_bytes()
-        return Response(content=data, media_type=media_type, headers=headers)
-
-    # Ostatné súbory: klasický FileResponse (rýchlejšie, bez kópie)
-    return FileResponse(
-        path=str(target),
-        media_type=media_type,
-        headers=headers,
-    )
+    target = document_path(settings.INVENTORY_DATA_ROOT, relpath)
+    return document_response(target, disposition=disposition, filename=filename, stable=stable)
 
 @app.post("/suppliers/{supplier}/feeds/upload")
 async def upload_feed_xml(supplier: str, file: UploadFile = File(...)):
@@ -490,24 +443,10 @@ def get_invoices_state(supplier: str):
         raise HTTPException(404, detail="Supplier not found")
     return load_invoices_state(supplier),
 
-def _safe_path(relpath: str) -> Path:
-    p = (settings.INVENTORY_DATA_ROOT / relpath).resolve()
-    if not str(p).startswith(str(settings.INVENTORY_DATA_ROOT)):
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return p
-
 @app.get("/files/stat")
 def files_stat(relpath: str = Query(..., description="Relatívna cesta v rámci INVENTORY_DATA_ROOT")):
-    root = Path(settings.INVENTORY_DATA_ROOT).expanduser().resolve()
-    relpath_decoded = unquote(relpath).lstrip("/\\")
-    target = (root / relpath_decoded).resolve()
-    try:
-        target.relative_to(root)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid relpath")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
+    target = document_path(settings.INVENTORY_DATA_ROOT, relpath)
+    relpath_decoded = target.relative_to(Path(settings.INVENTORY_DATA_ROOT).resolve()).as_posix()
     st = target.stat()
     return {
         "relpath": relpath_decoded,

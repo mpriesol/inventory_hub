@@ -570,6 +570,10 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
           </div>
         </div>
 
+        <p className="px-6 py-3 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('security.savedSecretsHelp')}
+        </p>
+
         {/* Error/Validation display */}
         {(error || validation || pricesInvalid) && (
           <div className="px-6 py-3 space-y-2">
@@ -986,6 +990,10 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
   const { t } = useTranslation();
   const sources = config.feeds?.sources || {};
   const [urlsText, setUrlsText] = useState(() => (sources.products?.remote?.urls ?? (sources.products?.remote?.url ? [sources.products.remote.url] : [])).join('\n'));
+  useEffect(() => {
+    const remote = sources.products?.remote;
+    if (remote?.urls_configured && !remote.urls?.length && !remote.url) setUrlsText('');
+  }, [sources.products?.remote?.urls, sources.products?.remote?.url, sources.products?.remote?.urls_configured]);
   
   // Ensure both products and stock exist
   const feedKeys = ['products', 'stock'];
@@ -1010,7 +1018,9 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
   const FeedCard = ({ feedKey, label, description }: { feedKey: string; label: string; description: string }) => {
     const source = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
     const multiSource = supplier === 'sloger' && feedKey === 'products';
-    const configured = !!source.remote?.url || !!source.remote?.urls?.length;
+    const configured = !!source.remote?.url || !!source.remote?.urls?.length ||
+      !!source.remote?.url_configured || !!source.remote?.urls_configured ||
+      (source.mode === 'local' && !!source.local_path);
     
     return (
       <div
@@ -1060,6 +1070,7 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
                   id="supplier-sloger-feed-urls"
                   rows={10}
                   value={urlsText}
+                  placeholder={configured ? t('security.savedSecret') : 'https://...'}
                   aria-describedby="supplier-sloger-feed-urls-help"
                   onChange={e => {
                     setUrlsText(e.target.value);
@@ -1067,14 +1078,14 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
                   }}
                   className="w-full font-mono text-sm"
                 />
-                <p id="supplier-sloger-feed-urls-help" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.feeds.brandUrlsHelp')}</p>
+                <p id="supplier-sloger-feed-urls-help" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>{t('suppliers.feeds.brandUrlsHelp')} {t('security.replaceFeedList')}</p>
               </> : <input
                 type="text"
                 value={source.remote?.url || ''}
                 onChange={(e) =>
                   updateSource(feedKey, { remote: { ...source.remote, url: e.target.value } })
                 }
-                placeholder="https://..."
+                placeholder={configured ? t('security.savedSecret') : 'https://...'}
                 className="w-full font-mono text-sm"
               />}
             </div>
@@ -1129,6 +1140,8 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
                   <input
                     type={showPasswords ? 'text' : 'password'}
                     value={source.remote?.auth?.basic_pass || ''}
+                    autoComplete="new-password"
+                    placeholder={source.remote?.auth?.basic_pass_configured ? t('security.savedSecret') : ''}
                     onChange={(e) =>
                       updateSource(feedKey, {
                         remote: {
@@ -1151,6 +1164,8 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
                 <input
                   type={showPasswords ? 'text' : 'password'}
                   value={source.remote?.auth?.token || ''}
+                  autoComplete="new-password"
+                  placeholder={source.remote?.auth?.token_configured ? t('security.savedSecret') : ''}
                   onChange={(e) =>
                     updateSource(feedKey, {
                       remote: {
@@ -1198,6 +1213,7 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
 }
 
 function InvoicesTab({ config, updateConfig, showPasswords, onUpload, uploading }: TabProps & { onUpload: () => void; uploading: boolean }) {
+  const { t } = useTranslation();
   const download = config.invoices?.download || { strategy: 'manual', web: { login: {} } };
   const webLogin = download.web?.login || {};
 
@@ -1346,6 +1362,8 @@ function InvoicesTab({ config, updateConfig, showPasswords, onUpload, uploading 
               <input
                 type={showPasswords ? 'text' : 'password'}
                 value={webLogin.password || ''}
+                autoComplete="new-password"
+                placeholder={webLogin.password_configured ? t('security.savedSecret') : ''}
                 onChange={(e) => updateWebLogin({ password: e.target.value })}
                 className="w-full"
               />

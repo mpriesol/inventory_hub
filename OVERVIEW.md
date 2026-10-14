@@ -4,6 +4,10 @@ Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Ob
 
 **Posledné porovnanie s kódom:** 24. 9. 2026, dostupnosti, pravidelný prenos a jednotná tabuľka nad `main 6bdfd71` (nasadený PR #34). Aktuálny stav overenia a nadväzujúce priority sú v [MVP postupe](docs/mvp-progress.md). Popis kódu nepotvrdzuje obsah produkčnej DB ani celú serverovú konfiguráciu.
 
+## Bezpečnostná hranica API (14. 10. 2026)
+
+Všetky prevádzkové API aj dokumenty vyžadujú prihlásenie; verejné sú iba presné bootstrap autentizačné cesty a sanitizovaný health check. Cookie zápisy majú spoločnú CSRF ochranu, integračné nastavenia spravuje administrátor a uložené tajomstvá sa nevracajú do formulárov. Dokumenty majú osobitnú cestovú allowlist ochranu aj po prihlásení. Deployment overuje anonymné odmietnutie aj autorizovaný prístup; skladové autority/automatizácie sa tým nezapínajú. Podrobný kontrakt a rotácia údajov: [docs/user-accounts.md](docs/user-accounts.md). Stav implementácie treba odlíšiť od potvrdeného výsledku konkrétneho nasadenia.
+
 ## Kde začať
 
 Príjem faktúry sa prepája s rovnakou prípravou produktov cez **Založiť skladové karty**. Položky rozlišujú existujúcu kartu, základnú kartu z príjmu, produkt iba vo feede, nenájdený produkt a nejasnú či neoverenú zhodu. Vlastný potvrdený sklad sa zobrazuje samostatne. Vybrané položky možno doplniť z feedu, ručne alebo voliteľne cez AI a vrátiť sa k tej istej príjemke so zachovanými množstvami. Uloženie kariet nemení zásoby ani faktúrové ceny; fyzický príjem zostáva samostatným potvrdením. [Postup a API](docs/receiving-identity.md), [spoločný editor](docs/product-imports.md).

@@ -58,7 +58,14 @@ class InvoiceIndexTests(unittest.TestCase):
         return entry
 
     def prepare_invoice(self):
-        # CSV generation is unrelated to identity; no supplier or shop calls.
+        # CSV generation is unrelated to identity; retain real safe input paths.
+        invoice = self.index_path.parent / "csv" / f"{self.number}.csv"
+        invoice.parent.mkdir(parents=True, exist_ok=True)
+        if not invoice.exists():
+            invoice.write_text("SCM;TITLE;QTY\nTEST-SKU;Test;1\n")
+        export = self.root / "shops/test-shop/latest.csv"
+        export.parent.mkdir(parents=True, exist_ok=True)
+        export.write_text("PRODUCT_CODE;NAME\nTEST-SKU;Test\n")
         with patch.object(invoices, "prepare_from_invoice", return_value={"outputs": {}}):
             response = self.client.post("/runs/prepare", json={
                 "supplier_ref": self.supplier,

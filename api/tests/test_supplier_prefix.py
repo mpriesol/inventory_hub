@@ -185,6 +185,7 @@ class SupplierPrefixTests(unittest.TestCase):
         remote = changed["feeds"]["sources"]["products"]["remote"]
         remote["headers"] = {}
         del remote["params"]["obsolete"]
+        changed["_clear_secrets"] = ["/feeds/sources/products/remote/headers", "/feeds/sources/products/remote/params"]
         del changed["feeds"]["sources"]["obsolete"]
         del changed["adapter_settings"]["mapping"]["invoice_to_canon"]["EAN"]
         suppliers.put_supplier_config("synthetic", changed)

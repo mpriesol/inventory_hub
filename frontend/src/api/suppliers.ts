@@ -51,7 +51,9 @@ export interface SupplierConfig {
       local_path: string | null;
       remote: {
         url: string;
+        url_configured?: boolean;
         urls?: string[];
+        urls_configured?: boolean;
         method: string;
         headers: Record<string, string>;
         params: Record<string, string>;
@@ -62,10 +64,13 @@ export interface SupplierConfig {
           pass_field?: string;
           username?: string;
           password?: string;
+          password_configured?: boolean;
           cookie?: string;
           basic_user?: string;
           basic_pass?: string;
+          basic_pass_configured?: boolean;
           token?: string;
+          token_configured?: boolean;
           header_name?: string;
           insecure_all?: boolean;
         };
@@ -85,6 +90,7 @@ export interface SupplierConfig {
           pass_field: string;
           username: string;
           password: string;
+          password_configured?: boolean;
           cookie: string;
           basic_user: string;
           basic_pass: string;

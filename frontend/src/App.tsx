@@ -1,6 +1,7 @@
 import React from 'react';
 import { AccountPage } from './pages/AccountPage';
 import { SessionBootstrap } from './components/SessionBootstrap';
+import { RequireHubSession } from './components/RequireHubSession';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
 import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
@@ -39,7 +40,7 @@ import {
 
 // A data router lets editable imports use the supported navigation blocker.
 const router = createBrowserRouter(createRoutesFromElements(
-        <Route element={<SessionBootstrap><Layout /></SessionBootstrap>}>
+        <Route element={<SessionBootstrap><RequireHubSession><Layout /></RequireHubSession></SessionBootstrap>}>
           {/* Dashboard */}
           <Route path="/" element={<DashboardPage />} />
 

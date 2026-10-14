@@ -18,6 +18,14 @@ Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity
 - Pred skenovaním sa vždy načíta aktuálny stav relácie. Samotných 100 % prijatých položiek neznamená, že príjem bol dokončený; rozhoduje uložený stav. Pri odchode z rozpracovaného príjmu sa stav znovu overí a až potom sa príjem pozastaví. Ak pozastavenie zlyhá a server stále eviduje rozpracovaný príjem, stránka zostane otvorená s chybou.
 - Nepotvrdené skeny dokončeného alebo pozastaveného príjmu možno overiť pôvodným tlačidlom opakovania. Samotná neodosielajúca sa uložená fronta neblokuje návrat na zoznam a nezmaže sa pri odchode. Počas práve prebiehajúcej požiadavky treba počkať na odpoveď.
 
+Server kontroluje stav príjmu pod zámkom aj pri priamom API volaní. Nový sken, ručná zmena množstva, prijatie všetkých riadkov, reset a prvé dokončenie sú dovolené iba pre nový alebo rozpracovaný príjem. Pozastavený príjem treba obnoviť; zrušený sa nesmie zaúčtovať ani s `force=true`. Úspešný pôvodný sken možno naďalej overiť jeho UUID a dokončenie opakovať bez ďalšieho pohybu. Čiastočne aj vôbec neprijaté riadky vyžadujú výslovné `force=true`; potvrdenie neobchádza kontroly identity a ceny.
+
+Nové HTTP skeny, ručné zmeny množstva a pohyby dokončeného príjmu zapisujú identitu prihlásenej obsluhy (`user:<id>`, prípadne spoločný `operator-token`). Klientsky údaj `scanned_by` nemôže nahradiť túto identitu. Historické záznamy sa nemenia a opakovanie úspešnej požiadavky zachová pôvodného autora. Použitie spoločného tokenu nerozlišuje konkrétnych ľudí; na to používaj samostatné účty.
+
+Založenie príjmu prijíma faktúrový názov z indexu alebo jeho tvar `dodávateľ:názov`. Prefix musí patriť zvolenému dodávateľovi. Odkaz nemôže obsahovať cestu, zakódované oddeľovače ani odkazovať cez symlink; číta sa iba existujúci CSV dokument v priečinku faktúr daného dodávateľa. Neplatný odkaz sa odmietne pred prístupom do databázy.
+
+Rovnaké obmedzenie názvov a súborových ciest platí aj pre starší JSON režim príjmu. Vyhľadanie relácie, história, súhrny, dokončenie a zápis indexu nesmú nasledovať symlinky ani meniť súbory mimo pevne určených priečinkov dodávateľa.
+
 Kompletná administrácia opráv identifikátorov a priraďovanie neskôr prijatej faktúry k už vykonanému príjmu zostávajú ďalšími krokmi. Chýbajúca nákupná cena vo faktúrovom príjme sa naďalej musí vyriešiť pred jeho dokončením. Samostatný príjem bez známej ceny používa existujúci postup v [dokumentácii nákupných vrstiev](fifo.md).
 
 ## Založenie skladových kariet z príjemky

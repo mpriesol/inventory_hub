@@ -2739,6 +2739,11 @@
     "scanCompletionHelp": "Dokončený priechod znamená kontrolu položiek. Zaradené odoslania ešte môžu pokračovať; ich overený výsledok je v histórii.",
     "retryAfter": "Ďalší pokus je pozastavený do {{date}} kvôli obmedzeniu API."
   },
+  "security": {
+    "savedSecretsHelp": "Uložené heslá, kľúče a odkazy na feedy sú skryté. Prázdne pole ponechá uloženú hodnotu; zadaním novej ju nahradíte.",
+    "savedSecret": "Uložené - ponechať bez zmeny",
+    "replaceFeedList": "Nový zoznam nahradí všetky uložené odkazy. Prázdny zoznam ponechá pôvodné odkazy."
+  },
   "accounts": {
     "login": "Prihlásiť sa",
     "title": "Používateľské účty",

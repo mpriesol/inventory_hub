@@ -106,3 +106,6 @@ deployment 1:15. The original builds were sequential. Migration execution used
 nineteen container starts and took approximately 33 seconds. These are historical
 baseline values, not measurements of the optimized implementation. The proposed
 6–8-minute combined target is an estimate until comparable runs establish it.
+
+
+Od 14. 10. 2026 readiness používa `inventory_hub.security_check` v API kontajneri proti verejnému HTTPS. Overuje zdravú DB, anonymné HTTP 401 pre sklad a konfiguračné cesty, autorizovaný stav AI a HTTP 404 pre raw konfiguráciu aj po prihlásení. Kľúč sa neobjaví v argumentoch ani logu. Kontrola je čítacia, nepovoľuje presmerovania a opakuje sa najviac počas existujúceho 60-sekundového okna. Anonymné HTTP 200 pre `/ai-content/status` už nie je úspešný stav.

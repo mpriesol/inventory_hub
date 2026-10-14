@@ -39,3 +39,13 @@ def ai_access(authorization: Annotated[str | None, Header()] = None, request: Re
             csrf(request)
         return
     _require_token(authorization, ai=True)
+
+
+def admin_access(authorization: Annotated[str | None, Header()] = None, request: Request = None) -> None:
+    """Credential destinations are administrative; ordinary stock work is not."""
+    operator_access(authorization, request)
+    principal = getattr(request.state, 'hub_user', None) if request is not None else None
+    if principal is not None and principal.get('role') != 'admin':
+        raise HTTPException(403, detail={
+            'code': 'hub_admin_required', 'message': 'Administrator account required',
+        })

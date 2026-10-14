@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
+from inventory_hub.file_access import stored_document_path, confined_path, filename_component, code_component
 
 # Reuse helpers & settings from invoices router
 from .invoices import (
@@ -25,32 +26,34 @@ router = APIRouter()
 # ---------- interné helpery ----------
 
 def _supplier_root(supplier: str) -> Path:
-    return settings.INVENTORY_DATA_ROOT / "suppliers" / supplier
+    return confined_path(settings.INVENTORY_DATA_ROOT, f"suppliers/{code_component(supplier)}")
 
 def _selected_dir(supplier: str) -> Path:
-    p = _supplier_root(supplier) / "imports" / "upgates_selected"
+    p = confined_path(_supplier_root(supplier), "imports/upgates_selected")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 def _sent_dir(supplier: str) -> Path:
-    p = _supplier_root(supplier) / "imports" / "sent"
+    p = confined_path(_supplier_root(supplier), "imports/sent")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 def _history_dir(supplier: str) -> Path:
-    p = _supplier_root(supplier) / "invoices" / "history"
+    p = confined_path(_supplier_root(supplier), "invoices/history")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 def _now_ts() -> str:
     return time.strftime("%Y%m%d_%H%M%S")
 
-def _parse_invoice_no(invoice_id: str) -> str:
-    # supports "supplier:INVNO" or "INVNO"
-    try:
-        return invoice_id.split(":", 1)[1]
-    except Exception:
-        return invoice_id
+def _parse_invoice_no(invoice_id: str, supplier: str) -> str:
+    code_component(supplier)
+    if ":" in invoice_id:
+        prefix, invoice_id = invoice_id.split(":", 1)
+        if prefix != supplier:
+            raise HTTPException(400, detail="Invoice reference belongs to another supplier")
+    return filename_component(invoice_id)
+
 
 def _find_latest_for(inv_no: str, upg_dir: Path, tab: str) -> Path | None:
     # tab in {"updates","new"}
@@ -134,7 +137,7 @@ def apply_imports(
     invoice_id = str(payload.get("invoice_id") or "").strip()
     if not invoice_id:
         raise HTTPException(400, detail="Missing invoice_id")
-    inv_no = _parse_invoice_no(invoice_id)
+    inv_no = _parse_invoice_no(invoice_id, supplier)
 
     tab = str(payload.get("tab") or "updates").strip().lower()
     if tab not in ("updates", "new"):
@@ -158,6 +161,7 @@ def apply_imports(
     if not src_path:
         raise HTTPException(404, detail=f"Source CSV for tab '{tab}' not found.")
 
+    src_path = stored_document_path(settings.INVENTORY_DATA_ROOT, src_path)
     headers, rows, delim = _read_csv(src_path)
     norm_idx = { _norm_header(h): i for i, h in enumerate(headers) }
 
@@ -236,7 +240,7 @@ def apply_imports(
         out_name = f"{inv_no}_updates_existing_selected_{ts}.csv"
     else:
         out_name = f"{inv_no}_new_products_selected_{ts}.csv"
-    out_path = _selected_dir(supplier) / out_name
+    out_path = confined_path(_selected_dir(supplier), out_name)
     _write_csv(out_path, headers, filtered, delimiter=delim)
 
     # history (apply)
@@ -255,7 +259,7 @@ def apply_imports(
         "edits": edits,
         "added_columns": added_columns,
     }
-    hist_path = _history_dir(supplier) / f"{inv_no}_apply_{ts}.json"
+    hist_path = confined_path(_history_dir(supplier), f"{inv_no}_apply_{ts}.json")
     hist_path.write_text(json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8")
 
     result = {
@@ -276,9 +280,11 @@ def apply_imports(
     return result
 
 def _send_selected_file(supplier: str, selected_file: Path, inv_no: str, tab: str) -> Dict[str, Any]:
+    inv_no = filename_component(inv_no)
+    selected_file = _selected_file(supplier, selected_file)
     ts = _now_ts()
     dest_name = f"{Path(selected_file).stem}_sent_{ts}.csv"
-    dest = _sent_dir(supplier) / dest_name
+    dest = confined_path(_sent_dir(supplier), dest_name)
     shutil.copyfile(selected_file, dest)
     hist = {
         "type": "send",
@@ -290,9 +296,20 @@ def _send_selected_file(supplier: str, selected_file: Path, inv_no: str, tab: st
         "sent_file": str(dest),
         "mode": "upgates-csv"
     }
-    hist_path = _history_dir(supplier) / f"{inv_no}_send_{ts}.json"
+    hist_path = confined_path(_history_dir(supplier), f"{inv_no}_send_{ts}.json")
     hist_path.write_text(json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"history_entry": str(hist_path), "sent_file": str(dest)}
+
+def _selected_file(supplier: str, path: str | Path) -> Path:
+    if not isinstance(path, (str, Path)):
+        raise HTTPException(400, detail="Invalid selected file")
+    target = stored_document_path(settings.INVENTORY_DATA_ROOT, path)
+    relative = target.relative_to(Path(settings.INVENTORY_DATA_ROOT).resolve()).parts
+    if (len(relative) != 5 or relative[:4] != ("suppliers", code_component(supplier), "imports", "upgates_selected")
+            or target.suffix.lower() != ".csv"):
+        raise HTTPException(400, detail="Select a prepared CSV from this supplier")
+    return target
+
 
 # ---------- SEND: po apply vezmeme *_selected.csv a "odošleme" ----------
 
@@ -313,7 +330,7 @@ def send_imports(
     invoice_id = str(payload.get("invoice_id") or "").strip()
     if not invoice_id:
         raise HTTPException(400, detail="Missing invoice_id")
-    inv_no = _parse_invoice_no(invoice_id)
+    inv_no = _parse_invoice_no(invoice_id, supplier)
 
     tab = str(payload.get("tab") or "updates").strip().lower()
     if tab not in ("updates", "new"):
@@ -324,12 +341,8 @@ def send_imports(
         raise HTTPException(400, detail="No selected_files.")
 
     # For now, just copy files into 'sent' and log
-    out = []
-    for f in selected_files:
-        p = Path(f)
-        if not p.is_file():
-            raise HTTPException(404, detail=f"Selected file not found: {f}")
-        out.append(_send_selected_file(supplier, p, inv_no, tab))
+    paths = [_selected_file(supplier, path) for path in selected_files]
+    out = [_send_selected_file(supplier, path, inv_no, tab) for path in paths]
 
     return {"status": "ok", "sent": out}
 
@@ -341,11 +354,12 @@ def invoice_history(
     invoice: str,
     limit: int = Query(100)
 ):
-    inv_no = _parse_invoice_no(invoice)
+    inv_no = _parse_invoice_no(invoice, supplier)
     hdir = _history_dir(supplier)
     items: List[Dict[str, Any]] = []
     for p in sorted(hdir.glob(f"{inv_no}_*.json")):
         try:
+            p = stored_document_path(settings.INVENTORY_DATA_ROOT, p)
             obj = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             obj = {"_error": "json_read_failed"}

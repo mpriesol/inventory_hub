@@ -2738,6 +2738,11 @@
     "scanCompletionHelp": "A completed scan means the items were checked. Queued sends may still be processing; history shows their verified results.",
     "retryAfter": "The next attempt is paused until {{date}} because of an API rate limit."
   },
+  "security": {
+    "savedSecretsHelp": "Saved passwords, keys and feed URLs are hidden. Leave a field empty to keep its saved value, or enter a new value to replace it.",
+    "savedSecret": "Saved - keep unchanged",
+    "replaceFeedList": "A new list replaces all saved URLs. An empty list keeps the existing URLs."
+  },
   "accounts": {
     "login": "Sign in",
     "title": "User accounts",

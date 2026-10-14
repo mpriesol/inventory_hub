@@ -3,14 +3,14 @@ from __future__ import annotations
 import datetime as dt
 import mimetypes
 from pathlib import Path
-from typing import List, Dict, Any, Iterable, Optional
+from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from ..settings import INVENTORY_DATA_ROOT
+from inventory_hub.file_access import log_path, read_log_document
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
-TEXT_EXTS = {".txt", ".log", ".html", ".htm", ".json", ".xml", ".csv"}
 MAX_READ_BYTES = 2 * 1024 * 1024  # 2MB
 
 def _suppliers_logs_roots() -> List[Path]:
@@ -19,10 +19,10 @@ def _suppliers_logs_roots() -> List[Path]:
         return []
     out: List[Path] = []
     for sup_dir in base.iterdir():
-        if not sup_dir.is_dir():
+        if sup_dir.is_symlink() or not sup_dir.is_dir():
             continue
         p = sup_dir / "logs"
-        if p.exists() and p.is_dir():
+        if not p.is_symlink() and p.exists() and p.is_dir():
             out.append(p)
     return out
 
@@ -31,7 +31,6 @@ def _rel_to_data_root(p: Path) -> str:
 
 def _gather_logs(allowed_exts: set[str], supplier_filter: Optional[set[str]]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
-    sup_base = INVENTORY_DATA_ROOT / "suppliers"
 
     for logs_root in _suppliers_logs_roots():
         # ak je filter, skontroluj supplier kód
@@ -49,6 +48,7 @@ def _gather_logs(allowed_exts: set[str], supplier_filter: Optional[set[str]]) ->
             if allowed_exts and ext not in allowed_exts:
                 continue
             try:
+                fp = log_path(INVENTORY_DATA_ROOT, _rel_to_data_root(fp))
                 st = fp.stat()
             except Exception:
                 continue
@@ -86,66 +86,4 @@ def read_log(relpath: str):
     Prečíta konkrétny log podľa relpath (voči INVENTORY_DATA_ROOT).
     Povolené súbory len pod suppliers/*/logs.
     """
-    if not relpath:
-        raise HTTPException(400, detail="relpath is required")
-
-    fp = (INVENTORY_DATA_ROOT / relpath).resolve()
-
-    # bezpečnostná kontrola – musí začínať na INVENTORY_DATA_ROOT/suppliers/*/logs
-    try:
-        rel = fp.relative_to(INVENTORY_DATA_ROOT / "suppliers")
-    except Exception:
-        raise HTTPException(400, detail="relpath must be under suppliers/*/logs")
-
-    # navyše musí obsahovať 'logs' v ceste
-    if "/logs/" not in rel.as_posix():
-        raise HTTPException(400, detail="relpath must point into a logs/ directory")
-
-    if not fp.exists() or not fp.is_file():
-        raise HTTPException(404, detail="log not found")
-
-    ext = fp.suffix.lower()
-    st = fp.stat()
-    size = st.st_size
-    mtime_iso = dt.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")
-
-    if size > MAX_READ_BYTES:
-        data = fp.read_bytes()[:MAX_READ_BYTES]
-        try:
-            text = data.decode("utf-8", errors="replace")
-        except Exception:
-            text = ""
-        return {
-            "relpath": _rel_to_data_root(fp),
-            "size": size,
-            "mtime_iso": mtime_iso,
-            "is_html": ext in {".html", ".htm"},
-            "truncated": True,
-            "text": text,
-        }
-
-    if ext in TEXT_EXTS:
-        text = fp.read_text(encoding="utf-8", errors="replace")
-        return {
-            "relpath": _rel_to_data_root(fp),
-            "size": size,
-            "mtime_iso": mtime_iso,
-            "is_html": ext in {".html", ".htm"},
-            "truncated": False,
-            "text": text,
-        }
-
-    # binárny fallback -> pokus o text
-    data = fp.read_bytes()[:MAX_READ_BYTES]
-    try:
-        text = data.decode("utf-8", errors="replace")
-    except Exception:
-        text = ""
-    return {
-        "relpath": _rel_to_data_root(fp),
-        "size": size,
-        "mtime_iso": mtime_iso,
-        "is_html": False,
-        "truncated": size > MAX_READ_BYTES,
-        "text": text,
-    }
+    return read_log_document(INVENTORY_DATA_ROOT, relpath, max_bytes=MAX_READ_BYTES)
