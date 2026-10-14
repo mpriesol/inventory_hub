@@ -13,7 +13,7 @@ for (const ext of ['.ts', '.tsx']) require.extensions[ext] = (module, filename) 
   }).outputText, filename);
 };
 require.extensions['.css'] = () => {};
-require('../src/i18n/index.ts');
+const i18n = require('../src/i18n/index.ts').default;
 const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
 const { MemoryRouter } = require('react-router-dom');
@@ -53,11 +53,35 @@ const options = shop => ({ shop: { code: shop, name: shop }, warehouse: { code: 
   settings: clone(shops[shop]), effective: Object.fromEntries(['interval_seconds','batch_size','max_order_age_seconds'].map(key => [key, shops[shop][key] ?? defaults[key]])),
   blockers: !shops[shop].authorized ? ['stock_sync_authority_required'] : authorityChanged ? ['stock_sync_authority_changed'] : [],
   runs: hasRun ? [clone(run)] : [], server_write_enabled: true });
+const capacity = shop => ({ shop_code: shop, observed_at: '2026-10-14T19:00:00Z',
+  probe: { ok: true, http_status: 200, error: null, requests_attempted: 1, latency_ms: 123,
+    target_fingerprint: 'synthetic-fingerprint-not-for-display', permissions: { products: 'all', orders: 'read', order_statuses: 'read' }, write_tested: false },
+  quota: { hour_limit: 1000, day_limit: 24000, hour_remaining: 0, day_remaining: 19000,
+    total_remaining: 0, retry_after_seconds: null, theoretical_daily_max: 48000, headers_complete: true },
+  projection: { captured_at: '2026-10-14T19:00:00Z', warehouse_code: 'main', listed_skus: 50, confirmed_skus: 15, eligible_skus: 30, unpublishable_skus: 20,
+    eligibility_errors: [{ code: 'stock_sync_mapping_ambiguous', count: 20 }],
+    stock: { configured: true, enabled: false, authorized: false, server_enabled: false, interval_seconds: 300,
+      unchanged_pass_calls: 30, all_changed_pass_calls: 90, daily_unchanged_if_enabled: 8640, daily_all_changed_if_enabled: 25920 },
+    orders: { collector_enabled: false, processing_mode: 'manual', processing_ready: false, processing_error: 'order_processing_manual',
+      poll_interval_seconds: 300, retry_minutes: 5, full_check_hours: 24, inbox_count: 5, jobs_by_status: { pending: 1, running: 0, completed: 3, retry: 1, review: 0 },
+      unprocessed_count: 2, collector_empty_poll_calls: 2, collector_daily_if_enabled: 576, retry_daily_if_processing: 288, history_daily_if_processing: 6 },
+    estimate_kind: 'theoretical_no_runtime_delay', not_included: ['other_integrations', 'manual_operations', 'extra_order_pages', 'new_orders', 'errors_and_retries', 'other_hub_sync'] } });
+let capacityMode = 'ok', finishCapacity;
+const capacityText = key => i18n.t(`availabilitySync.capacity.${key}`);
 const calls = [];
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, ...init, body });
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-')); assert(!path.includes('synthetic-'));
   const url = new URL(path, dom.window.location.origin);
+  if (/^\/api\/shops\/(biketrek|xtrek)\/upgates\/capacity$/.test(url.pathname)) {
+    assert.equal(init.method, 'GET'); assert.equal(body, undefined);
+    let result = capacity(url.pathname.split('/')[3]);
+    if (capacityMode === 'pending') return new Promise(resolve => { finishCapacity = () => resolve(reply(result)); });
+    if (capacityMode === 'missing') result.quota = { ...result.quota, hour_limit: null, hour_remaining: null, day_limit: null, day_remaining: null, total_remaining: null, theoretical_daily_max: null, headers_complete: false };
+    if (capacityMode === 'limited') { result.probe = { ...result.probe, ok: false, http_status: 429, error: 'upgates_capacity_rate_limited' }; result.quota.retry_after_seconds = 60; }
+    if (capacityMode === 'malformed') result = { shop_code: result.shop_code, probe: {}, quota: {} };
+    return reply(result);
+  }
   if (url.pathname === '/api/supplier-availability') { assert.equal(init.method, 'GET'); return reply({ suppliers: showSloger ? [supplier, sloger] : [supplier] }); }
   if (url.pathname === '/api/supplier-availability/sloger') {
     assert.equal(init.method, 'PUT'); assert.equal(body.expected_revision, sloger.revision);
@@ -118,6 +142,42 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   assert.equal(calls.length, 0);
   await input('sync-token', 'synthetic-sync-token'); await click('unlock-sync'); assert.equal(calls.length, 0, 'Unlock never starts external work');
   assert.equal(required('sync-shop').value, 'xtrek');
+  const beforeCapacity = calls.length;
+  const capacityScope = required('probe-upgates-capacity').closest('.action-control').querySelector('[data-action-effects]');
+  assert.equal(capacityScope.dataset.actionEffects, 'hub-read upgates-read');
+  assert(capacityScope.textContent.includes(i18n.t('actions.callsKnown', { count: 1 })));
+  assert(!required('upgates-capacity-panel').querySelector('input'), 'Diagnostics have no activation or stock-write controls');
+  capacityMode = 'pending';
+  await act(async () => { required('probe-upgates-capacity').click(); required('probe-upgates-capacity').click(); await tick(); });
+  assert.equal(calls.length, beforeCapacity + 1, 'An explicit double click starts exactly one diagnostic GET');
+  assert.equal(calls.at(-1).path, '/api/shops/xtrek/upgates/capacity');
+  await act(async () => { finishCapacity(); await tick(); });
+  assert.equal(required('upgates-capacity-remaining').textContent, '0', 'Observed zero quota remains a real zero');
+  assert.equal(required('upgates-capacity-daily-max').textContent.replace(/[^0-9]/g, ''), '48000', 'The theoretical daily limit is separate from current remaining quota');
+  assert(required('upgates-capacity-result').textContent.includes(capacityText('estimateHelp')));
+  assert(required('upgates-capacity-result').textContent.includes(capacityText('writeUntested')));
+  assert(!required('upgates-capacity-result').textContent.includes('synthetic-fingerprint'), 'Internal target fingerprints are not shown');
+  assert(required('upgates-capacity-panel').textContent.includes(i18n.t('actions.callsActual', { count: 1 })));
+  assert.equal(writes().length, 0, 'Capacity diagnostics never mutate Hub settings or stock');
+  capacityMode = 'missing'; await click('probe-upgates-capacity');
+  assert.equal(required('upgates-capacity-remaining').textContent, capacityText('unknown'));
+  assert.equal(required('upgates-capacity-daily-max').textContent, capacityText('unknown'));
+  assert(element('upgates-capacity-missing-quota'), 'Missing quota is explained instead of silently using zero');
+  capacityMode = 'limited'; await click('probe-upgates-capacity');
+  assert(required('upgates-capacity-panel').textContent.includes(capacityText('errors.upgates_capacity_rate_limited')));
+  assert(required('upgates-capacity-result').textContent.includes(i18n.t('availabilitySync.capacity.retryAfter', { seconds: 60 })));
+  const afterLimited = calls.length; await tick(); assert.equal(calls.length, afterLimited, 'Rate limits never trigger automatic diagnostic retries');
+  capacityMode = 'pending'; await click('probe-upgates-capacity'); const oldCapacity = finishCapacity, oldCapacityRequest = calls.at(-1);
+  await input('sync-shop', 'biketrek'); assert(oldCapacityRequest.signal.aborted);
+  await act(async () => { oldCapacity(); await tick(); }); assert(!element('upgates-capacity-result'), 'Changing shop clears and rejects a delayed diagnostic for the previous target');
+  assert.equal(calls.length, afterLimited + 1, 'Changing shop never starts a new external probe');
+  capacityMode = 'ok'; await click('probe-upgates-capacity'); assert.equal(calls.at(-1).path, '/api/shops/biketrek/upgates/capacity');
+  capacityMode = 'pending'; await click('probe-upgates-capacity'); const staleCapacity = finishCapacity, staleCapacityRequest = calls.at(-1);
+  await act(async () => { unlockHub('synthetic-capacity-replacement'); await tick(); staleCapacity(); await tick(); });
+  assert(staleCapacityRequest.signal.aborted && !element('upgates-capacity-result'), 'An old credential response cannot repopulate capacity results');
+  capacityMode = 'malformed'; await click('probe-upgates-capacity');
+  assert(!element('upgates-capacity-result') && required('upgates-capacity-panel').textContent.includes(capacityText('failed')), 'Incomplete successful responses fail visibly');
+  capacityMode = 'ok'; await input('sync-shop', 'xtrek'); assert.equal(writes().length, 0);
   await click('load-suppliers'); assert.equal(writes().length, 0); assert(required('supplier-fixture-run').disabled, 'Unconfigured supplier requires saved settings');
   await input('supplier-fixture-interval', '299'); assert(required('supplier-fixture-save').disabled);
   await input('supplier-fixture-interval', '300.5'); assert(required('supplier-fixture-save').disabled);

@@ -2,13 +2,35 @@
 from __future__ import annotations
 from typing import Dict, Any
 from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File
-from inventory_hub.access import admin_access
+from inventory_hub.access import admin_access, operator_access
 from inventory_hub.config_io import load_shop as io_load_shop, save_shop as io_save_shop
 from inventory_hub.config_secrets import ConfigSecretError, config_patch, public_config
 from inventory_hub.settings import settings
 from pathlib import Path
+from typing import Annotated
+from fastapi import Path as ApiPath, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+from inventory_hub.database import get_session
+from inventory_hub.services import upgates_capacity
 
 router = APIRouter(tags=["shops"])
+
+
+@router.get('/shops/{shop}/upgates/capacity', dependencies=[Depends(operator_access)])
+async def get_upgates_capacity(
+    shop: Annotated[str, ApiPath(pattern=r'^[a-z0-9][a-z0-9_-]{0,49}$')],
+    response: Response, db: AsyncSession = Depends(get_session),
+):
+    response.headers['Cache-Control'] = 'no-store'
+    try:
+        return await upgates_capacity.diagnose(db, shop)
+    except upgates_capacity.CapacityError as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'message': error.code},
+                            headers={'Cache-Control': 'no-store'}) from None
+    except Exception:
+        raise HTTPException(503, detail={'code': 'upgates_capacity_local_unavailable',
+                            'message': 'upgates_capacity_local_unavailable'},
+                            headers={'Cache-Control': 'no-store'}) from None
 
 def load_shop_config(shop: str) -> Dict[str, Any]:
     return io_load_shop(shop, write_back_on_load=False)

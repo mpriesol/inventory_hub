@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
+import { getUpgatesCapacity, UpgatesCapacity } from '../api/upgatesCapacity';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { getSupplierAvailability, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
 import { getStockSyncOptions, getStockSyncRun, resolveStockSyncItem, runStockSync, saveStockSyncSettings, saveStockSyncWarehouse,
@@ -188,6 +189,64 @@ function StockPanel({ shop, onBusy }: { shop: string; onBusy: (busy: boolean) =>
   </section>;
 }
 
+function CapacityPanel({ shop }: { shop: string }) {
+  const { t, i18n } = useTranslation();
+  const operation = useOperation();
+  const [value, setValue] = useState<UpgatesCapacity | null>(null);
+  const copy = (key: string) => t(`availabilitySync.capacity.${key}`);
+  const amount = (number: number | null | undefined) => typeof number === 'number' && Number.isFinite(number)
+    ? number.toLocaleString(i18n.language) : copy('unknown');
+  function probe() {
+    if (operation.busy) return;
+    setValue(null);
+    operation.run(false, signal => getUpgatesCapacity(shop, signal), result => {
+      if (!result || result.shop_code !== shop || !result.probe?.permissions || !result.quota || !result.projection?.stock || !result.projection.orders || !Array.isArray(result.projection.eligibility_errors)) throw new Error('Invalid capacity result');
+      setValue(result);
+    });
+  }
+  const error = value?.probe.error || operation.error;
+  const stock = value?.projection.stock, orders = value?.projection.orders;
+  return <section className="opening-stock-panel" data-testid="upgates-capacity-panel">
+    <div className="opening-stock-actions"><h2>{t('availabilitySync.capacity.title', { shop: shop === 'xtrek' ? 'xTrek' : 'BIKETREK' })}</h2>
+      <span className="action-control"><Button data-testid="probe-upgates-capacity" variant="secondary" disabled={operation.busy} onClick={probe}>{copy('probe')}</Button>
+        <ActionScope effects={['hub-read', 'upgates-read']} shop={shop} calls={{ kind: 'known', count: 1 }} actualCalls={value?.probe.requests_attempted} /></span></div>
+    <p>{copy('help')}</p><p className="opening-stock-notice">{copy('cooperation')}</p>
+    {error && <p role="alert" className="opening-stock-errors">{t(`availabilitySync.capacity.errors.${error}`, { defaultValue: copy('failed') })}</p>}
+    {value && <div data-testid="upgates-capacity-result">
+      <dl className="availability-status"><div><dt>{copy('checked')}</dt><dd>{new Date(value.observed_at).toLocaleString(i18n.language)}</dd></div>
+        <div><dt>{copy('connection')}</dt><dd>{copy(value.probe.ok ? 'connected' : 'unavailable')}</dd></div>
+        <div><dt>{copy('latency')}</dt><dd>{amount(value.probe.latency_ms)}{value.probe.latency_ms !== null && ' ms'}</dd></div></dl>
+      <h3>{copy('quotaTitle')}</h3><p>{copy('quotaHelp')}</p>
+      <div className="opening-stock-table-scroll"><table data-testid="upgates-capacity-quota"><thead><tr><th>{copy('window')}</th><th>{copy('limit')}</th><th>{copy('remaining')}</th></tr></thead><tbody>
+        <tr><td>{copy('hour')}</td><td>{amount(value.quota.hour_limit)}</td><td>{amount(value.quota.hour_remaining)}</td></tr>
+        <tr><td>{copy('day')}</td><td>{amount(value.quota.day_limit)}</td><td>{amount(value.quota.day_remaining)}</td></tr>
+      </tbody></table></div>
+      {!value.quota.headers_complete && <p className="opening-stock-notice" data-testid="upgates-capacity-missing-quota">{copy('missingQuota')}</p>}
+      <dl className="availability-status"><div><dt>{copy('totalRemaining')}</dt><dd data-testid="upgates-capacity-remaining">{amount(value.quota.total_remaining)}</dd></div>
+        <div><dt>{copy('dailyMaximum')}</dt><dd data-testid="upgates-capacity-daily-max">{amount(value.quota.theoretical_daily_max)}</dd></div></dl>
+      {value.quota.retry_after_seconds !== null && <p className="opening-stock-notice">{t('availabilitySync.capacity.retryAfter', { seconds: value.quota.retry_after_seconds })}</p>}
+      <details><summary>{copy('permissionsTitle')}</summary><dl className="availability-status">{(['products', 'orders', 'order_statuses'] as const).map(key => <div key={key}><dt>{copy(key)}</dt><dd>{t(`availabilitySync.capacity.permissions.${value.probe.permissions[key]}`, { defaultValue: copy('unknown') })}</dd></div>)}</dl><p>{copy('writeUntested')}</p></details>
+      {stock && orders && <>
+        <h3>{copy('estimateTitle')}</h3><p>{copy('estimateHelp')}</p>
+        <dl className="availability-status"><div><dt>{copy('listed')}</dt><dd>{amount(value.projection.listed_skus)}</dd></div><div><dt>{copy('confirmed')}</dt><dd>{amount(value.projection.confirmed_skus)}</dd></div>
+          <div><dt>{copy('eligible')}</dt><dd>{amount(value.projection.eligible_skus)}</dd></div><div><dt>{copy('unpublishable')}</dt><dd>{amount(value.projection.unpublishable_skus)}</dd></div></dl>
+        <p>{copy('stockSchedule')}: <strong>{copy(stock.enabled ? 'enabled' : 'disabled')}</strong> · {copy('stockPermission')}: <strong>{copy(stock.authorized ? 'enabled' : 'disabled')}</strong> · {copy('serverPermission')}: <strong>{copy(stock.server_enabled ? 'enabled' : 'disabled')}</strong></p>
+        <p>{copy('orderCollection')}: <strong>{copy(orders.collector_enabled ? 'enabled' : 'disabled')}</strong> · {copy('orderProcessing')}: <strong>{t(`stockSettings.modes.${orders.processing_mode}`)}</strong>{!orders.processing_ready && <> · {copy('processingNotReady')}</>}</p>
+        <p className="opening-stock-muted">{t('availabilitySync.capacity.intervals', { stock: amount(stock.interval_seconds), orders: amount(orders.poll_interval_seconds) })}</p>
+        <div className="opening-stock-table-scroll"><table data-testid="upgates-capacity-estimate"><thead><tr><th>{copy('operation')}</th><th>{copy('perPass')}</th><th>{copy('dailyIfEnabled')}</th></tr></thead><tbody>
+          <tr><td>{copy('unchangedStock')}</td><td>{amount(stock.unchanged_pass_calls)}</td><td>{amount(stock.daily_unchanged_if_enabled)}</td></tr>
+          <tr><td>{copy('changedStock')}</td><td>{amount(stock.all_changed_pass_calls)}</td><td>{amount(stock.daily_all_changed_if_enabled)}</td></tr>
+          <tr><td>{copy('emptyOrderPoll')}</td><td>{amount(orders.collector_empty_poll_calls)}</td><td>{amount(orders.collector_daily_if_enabled)}</td></tr>
+          <tr><td>{copy('orderRetries')}</td><td>—</td><td>{amount(orders.retry_daily_if_processing)}</td></tr>
+          <tr><td>{copy('orderHistory')}</td><td>—</td><td>{amount(orders.history_daily_if_processing)}</td></tr>
+        </tbody></table></div>
+        <p className="opening-stock-muted">{copy('alternatives')}</p><p>{copy('excluded')}</p>
+        {!!value.projection.eligibility_errors.length && <details><summary>{copy('eligibilityErrors')}</summary><ul>{value.projection.eligibility_errors.map(item => <li key={item.code}>{t(`availabilitySync.errors.${item.code}`, { defaultValue: copy('eligibilityUnknown') })} ({amount(item.count)})</li>)}</ul></details>}
+      </>}
+    </div>}
+  </section>;
+}
+
 export function AvailabilitySyncPage() {
   const { t } = useTranslation();
   const [query] = useSearchParams();
@@ -196,6 +255,6 @@ export function AvailabilitySyncPage() {
   useEffect(() => { setToken(''); }, [revision]);
   return <div className="opening-stock availability-sync"><Link className="opening-stock-back" to="/settings">← {t('availabilitySync.back')}</Link><header><div><h1>{t('availabilitySync.title')}</h1><p>{t('availabilitySync.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" data-testid="lock-sync" onClick={() => unlockHub('')}>{t('availabilitySync.lock')}</Button>}</header>
     <p><Link to={`/settings/purchase-costs?shop=${shop}`}>{t('fifoCostSync.title')}</Link></p>
-    {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><p>{t('availabilitySync.tokenHelp')}</p><label>{t('availabilitySync.token')}<input data-testid="sync-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><Button data-testid="unlock-sync" type="submit" disabled={!token.trim()}>{t('availabilitySync.unlock')}</Button></form> : <React.Fragment key={revision}><SuppliersPanel /><section className="opening-stock-panel availability-shop-selector"><label>{t('availabilitySync.shop')}<select data-testid="sync-shop" value={shop} disabled={stockBusy} onChange={event => setShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label></section><StockPanel key={shop} shop={shop} onBusy={setStockBusy} /></React.Fragment>}
+    {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><p>{t('availabilitySync.tokenHelp')}</p><label>{t('availabilitySync.token')}<input data-testid="sync-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><Button data-testid="unlock-sync" type="submit" disabled={!token.trim()}>{t('availabilitySync.unlock')}</Button></form> : <React.Fragment key={revision}><SuppliersPanel /><section className="opening-stock-panel availability-shop-selector"><label>{t('availabilitySync.shop')}<select data-testid="sync-shop" value={shop} disabled={stockBusy} onChange={event => setShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label></section><CapacityPanel key={`capacity:${shop}`} shop={shop} /><StockPanel key={shop} shop={shop} onBusy={setStockBusy} /></React.Fragment>}
   </div>;
 }
