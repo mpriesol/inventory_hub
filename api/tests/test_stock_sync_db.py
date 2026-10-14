@@ -14,15 +14,19 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 from inventory_hub.db_models import MovementType, Product, Shop, Warehouse
-from inventory_hub.db_models_ext import ShopProduct, StockBalance, StockMovement
+from inventory_hub.db_models_ext import ShopOrder, ShopProduct, StockBalance, StockMovement
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderInboxEntry
+from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.stock_settings_models import StockShopSettings
 from inventory_hub.stock_sync_models import StockSyncSettings, StockSyncRun, StockSyncItem
 from inventory_hub.stock_sync_types import ShopSyncInput, WarehouseSyncInput, SyncRunInput, SyncResolveInput
 from inventory_hub.stock_publication_types import StockPublicationOpenHold
 from inventory_hub.services import stock_sync as service, stock_publication
 from inventory_hub.services import order_collection
+from inventory_hub.services import order_processing, order_stock_source
+from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+from test_order_stock import ACTIONS, STATUSES, raw_line, raw_order, raw_page
 
 TEST_URL = os.environ.get('CATALOG_TEST_DATABASE_URL','')
 
@@ -124,6 +128,217 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def prepare(self):
         await self.invoke('configure',self.config())
         return await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A']))
+
+    async def processed_order(self, quantity='8', status_id=1, shop_code='biketrek', previous=None):
+        """Use the actual processor/ledger; only the external detail read is synthetic."""
+        statuses=order_stock_source._statuses(STATUSES)
+        if previous is None:
+            raw=raw_order(raw_line(quantity=quantity),order_number='WAIT-'+uuid4().hex[:12],
+                          creation_time=self.clock.isoformat(),last_update_time=self.clock.isoformat(),status_id=status_id)
+            source,source_hash=order_stock_source._order(raw_page(raw),raw['order_number'])
+            async with self.session() as db:
+                shop=await db.scalar(select(Shop).where(Shop.code==shop_code))
+                policy=await db.get(OrderStockPolicy,shop.id)
+                policy.status_actions,policy.status_hash,policy.statuses=dict(ACTIONS),statuses['status_hash'],statuses['statuses']
+                if status_id==8:
+                    config=await db.get(StockShopSettings,shop.id)
+                    config.mode,config.issue_starts_at='fulfill',self.clock-timedelta(hours=1)
+                entry=OrderInboxEntry(shop_id=shop.id,source_uuid=source['uuid'],order_number=source['order_number'],
+                    created_at=self.clock,updated_at=self.clock,deleted=False,origin=source['origin'],status_id=status_id,
+                    observation_hash=order_stock_source._hash(source),observed_at=self.clock,last_seen_at=self.clock)
+                db.add(entry);await db.flush()
+                data={'shop_id':shop.id,'entry_id':entry.id,'source':source,'source_hash':source_hash}
+        else:
+            data=previous
+        async with self.session() as db:
+            await order_processing.enqueue(db,data['shop_id'],force=True)
+        async with self.session() as db:
+            job=await db.scalar(select(OrderProcessingJob).where(OrderProcessingJob.inbox_id==data['entry_id']))
+            plan=await order_processing.start_job(db,job.id)
+            self.assertIsNotNone(plan)
+            data['job_id']=job.id
+        async with self.session() as db:
+            await order_processing.finish_job(db,plan,{'order':copy.deepcopy(data['source']),
+                'source_hash':data['source_hash'],**statuses})
+            job=await db.get(OrderProcessingJob,data['job_id'])
+            data['result']=copy.deepcopy(job.result)
+        return data
+
+    async def assert_order_blocked(self):
+        with self.assertRaises(service.SyncError) as raised:
+            await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A']))
+        self.assertEqual(raised.exception.code,'stock_sync_orders_pending')
+        service.source.write_once.assert_not_awaited()
+
+    async def test_accounted_backorder_publishes_zero_and_supplier_availability(self):
+        order=await self.processed_order()
+        row=await self.prepare()
+        offer={self.product_id:{'available':True,'fresh':True,'label':'do 2–4 dní'}}
+        with patch('inventory_hub.services.supplier_availability.project',AsyncMock(return_value=offer)):
+            await self.invoke('process_run',row['id'])
+        result=await self.invoke('get_run',row['id'])
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual((self.remote['stock'],self.remote['availability']),('0','do 2–4 dní'))
+        async with self.session() as db:
+            job=await db.get(OrderProcessingJob,order['job_id'])
+            self.assertEqual((job.status,job.error),('retry','order_processing_backorder'))
+            self.assertEqual(len((await db.scalars(select(StockMovement))).all()),1)
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            self.assertEqual((balance.qty_on_hand,balance.qty_reserved),(7,6))
+
+    async def test_receipt_and_released_units_require_backorder_reallocation(self):
+        order=await self.processed_order()
+        await self.invoke('configure',self.config())
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=2;balance.total_value+=6
+        await self.assert_order_blocked()
+        order=await self.processed_order(previous=order)
+        self.assertNotIn('stock_sync_orders_pending',(await self.invoke('options','biketrek'))['blockers'])
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_reserved-=2
+        await self.assert_order_blocked()
+        await self.processed_order(previous=order)
+        self.assertNotIn('stock_sync_orders_pending',(await self.invoke('options','biketrek'))['blockers'])
+
+    async def test_backorder_proof_rejects_stale_or_mismatched_evidence(self):
+        order=await self.processed_order()
+        await self.invoke('configure',self.config())
+        cases=[(OrderInboxEntry,order['entry_id'],'observation_hash','c'*64),
+               (OrderInboxEntry,order['entry_id'],'review_reason','order_collection_identity_conflict'),
+               (OrderInboxEntry,order['entry_id'],'deleted',True),
+               (OrderProcessingJob,order['job_id'],'order_number','OTHER'),
+               (OrderProcessingJob,order['job_id'],'source_hash','d'*64),
+               (OrderProcessingJob,order['job_id'],'configuration_hash','e'*64),
+               (OrderProcessingJob,order['job_id'],'result',{**order['result'],'revision':999}),
+               (ShopOrder,order['result']['order_id'],'stock_source_uuid',str(uuid4())),
+               (ShopOrder,order['result']['order_id'],'stock_source_hash','f'*64),
+               (ShopOrder,order['result']['order_id'],'stock_revision',999)]
+        async with self.session() as db:
+            other=Warehouse(code='other-proof',name='Other proof');db.add(other);await db.flush()
+            cases.append((ShopOrder,order['result']['order_id'],'stock_warehouse_id',other.id))
+        for model,identifier,field,value in cases:
+            with self.subTest(field=field,model=model.__name__):
+                async with self.session() as db:
+                    item=await db.get(model,identifier);original=copy.deepcopy(getattr(item,field));setattr(item,field,value)
+                await self.assert_order_blocked()
+                async with self.session() as db:
+                    setattr(await db.get(model,identifier),field,original)
+        self.assertNotIn('stock_sync_orders_pending',(await self.invoke('options','biketrek'))['blockers'])
+
+    async def test_insufficient_issue_and_failed_recheck_remain_blocking(self):
+        order=await self.processed_order(status_id=8)
+        await self.invoke('configure',self.config())
+        async with self.session() as db:
+            job=await db.get(OrderProcessingJob,order['job_id'])
+            self.assertEqual((job.status,job.error),('retry','order_stock_insufficient_stock'))
+        await self.assert_order_blocked()
+        async with self.session() as db:
+            job=await db.get(OrderProcessingJob,order['job_id'])
+            job.error='order_processing_source_unavailable'
+        await self.assert_order_blocked()
+
+    async def test_backorder_rechecks_current_identity_without_rewriting_saved_snapshot(self):
+        order=await self.processed_order()
+        await self.invoke('configure',self.config())
+        async with self.session() as db:
+            saved=copy.deepcopy((await db.get(ShopOrder,order['result']['order_id'])).stock_snapshot)
+            db.add(Product(sku='sku-a',name='Conflicting case identity'))
+        await self.assert_order_blocked()
+        async with self.session() as db:
+            self.assertEqual((await db.get(ShopOrder,order['result']['order_id'])).stock_snapshot,saved)
+
+    async def test_safe_backorder_cannot_hide_another_unprocessed_order(self):
+        await self.processed_order()
+        await self.invoke('configure',self.config())
+        async with self.session() as db:
+            db.add(OrderInboxEntry(shop_id=self.shop_id,source_uuid=str(uuid4()),order_number='NEW-UNPROCESSED',
+                created_at=self.clock,updated_at=self.clock,deleted=False,origin='web',status_id=1,
+                observation_hash='b'*64,observed_at=self.clock,last_seen_at=self.clock))
+        await self.assert_order_blocked()
+
+    async def test_backorder_on_shared_peer_allows_sync_but_new_peer_header_blocks_it(self):
+        async with self.session() as db:
+            shop=await db.scalar(select(Shop).where(Shop.code=='xtrek'))
+            fingerprint=order_collection.target_fingerprint(shop.code)
+            db.add(OrderStockPolicy(shop_id=shop.id,warehouse_id=self.warehouse_id,
+                starts_at=self.clock-timedelta(days=30),revision=1,status_actions={},status_hash='a'*64,statuses=[]))
+            db.add(StockShopSettings(shop_id=shop.id,revision=1,mode='reserve',overrides={},updated_at=self.clock,
+                automation_starts_at=self.clock-timedelta(days=1),authorized_policy_revision=1,
+                target_fingerprint=fingerprint))
+            db.add(OrderCollectionSettings(shop_id=shop.id,enabled=True,revision=1,target_fingerprint=fingerprint,
+                cursor_at=self.clock,reconcile_cursor_at=self.clock,last_completed_at=self.clock,next_poll_at=self.clock))
+            db.add(ShopProduct(shop_id=shop.id,product_id=self.product_id,external_code='SKU-A',is_variant=False))
+        order=await self.processed_order(shop_code='xtrek')
+        row=await self.prepare()
+        await self.invoke('process_run',row['id'])
+        self.assertEqual((await self.invoke('get_run',row['id']))['status'],'completed')
+        self.assertEqual(self.remote['stock'],'0')
+        service.source.write_once.reset_mock()
+        async with self.session() as db:
+            entry=await db.get(OrderInboxEntry,order['entry_id'])
+            entry.observation_hash='c'*64
+        await self.assert_order_blocked()
+
+    async def test_backorder_rechecked_after_remote_read_before_stock_write(self):
+        order=await self.processed_order()
+        row=await self.prepare()
+        async def changed_header(*args):
+            observation=await self.read_remote(*args)
+            async with self.session() as db:
+                entry=await db.get(OrderInboxEntry,order['entry_id'])
+                entry.observation_hash='c'*64
+            return observation
+        service.source.read.side_effect=changed_header
+        await self.invoke('process_run',row['id'])
+        result=await self.invoke('get_run',row['id'])
+        self.assertEqual(result['items'][0]['error'],'stock_sync_orders_pending')
+        service.source.write_once.assert_not_awaited()
+
+    async def test_backorder_identity_change_during_remote_read_blocks_stock_write(self):
+        await self.processed_order()
+        row=await self.prepare()
+        async def changed_identity(*args):
+            observation=await self.read_remote(*args)
+            async with self.session() as db:
+                await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':IDENTITY_WRITE_LOCK})
+                db.add(Product(sku='sku-a',name='Identity changed during read'))
+            return observation
+        service.source.read.side_effect=changed_identity
+        await self.invoke('process_run',row['id'])
+        result=await self.invoke('get_run',row['id'])
+        self.assertEqual(result['items'][0]['error'],'stock_sync_orders_pending')
+        service.source.write_once.assert_not_awaited()
+
+    async def test_identity_lock_covers_both_projections_and_releases_for_network(self):
+        await self.processed_order()
+        row=await self.prepare()
+        projections=[]
+        network=[]
+        original=service.desired
+        async def available():
+            async with self.sessions() as other:
+                return await other.scalar(text('SELECT pg_try_advisory_xact_lock(:key)'),{'key':IDENTITY_WRITE_LOCK})
+        async def projected(*args):
+            self.assertFalse(await available(),'Identity changes must wait through proof and projection')
+            projections.append(True)
+            return await original(*args)
+        async def read(*args):
+            self.assertTrue(await available(),'Identity lock must be released before remote reads')
+            network.append('read')
+            return await self.read_remote(*args)
+        async def write(*args):
+            self.assertTrue(await available(),'Identity lock must be released before remote writes')
+            network.append('write')
+            return await self.write_remote(*args)
+        service.source.read.side_effect=read
+        service.source.write_once.side_effect=write
+        with patch.object(service,'desired',side_effect=projected):
+            await self.invoke('process_run',row['id'])
+        self.assertEqual(len(projections),2)
+        self.assertEqual(network,['read','write','read'])
+        self.assertEqual((await self.invoke('get_run',row['id']))['status'],'completed')
 
     async def test_off_defaults_and_authority_required(self):
         options=await self.invoke('options','biketrek')

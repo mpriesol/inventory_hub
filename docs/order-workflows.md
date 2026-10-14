@@ -37,6 +37,8 @@ Pred výdajom možno v e-shope pridať, odstrániť alebo vymeniť tovar a zmeni
 
 Pri nedostatku tovaru sa rezervujú dostupné kusy a zvyšok zostane nekrytý. **Čiastočný výdaj sa nevykonáva.** Objednávku možno vydať až po pokrytí všetkých jej skladovaných riadkov pri zachovaní rezervácií ostatných objednávok.
 
+Správne započítaná rezervácia čakajúca na tovar sama nezastavuje pravidelný prenos zásob. Hub pred odoslaním overí, že jej rezervácie stále zodpovedajú skutočným zásobám. Po príjme nových kusov ich musí najprv prideliť čakajúcim objednávkam. Stav automatickej úlohy a stav skladového podkladu preto sleduj oddelene v prehľade objednávok.
+
 Po výpadku spojenia najprv over uložený výsledok podľa ID náhľadu alebo v zozname nedávnych náhľadov. Stratená odpoveď sama neznamená, že operácia zlyhala. Opakované potvrdenie tej istej dokončenej operácie nevytvorí ďalší výdaj.
 
 ## Režimy automatického spracovania
@@ -103,7 +105,15 @@ Pokladňový rodič „xTrek“ v BIKETREK môže obsahovať tisíce nesúvisiac
 
 ## Po výdaji
 
-Vydaný obsah je uzamknutý. Zmena stavu, odstránenie riadka, zmazanie objednávky ani opätovné načítanie nevytvárajú automatickú vratku. Vrátený tovar sa musí riešiť s väzbou na pôvodný výdaj a potvrdeným fyzickým návratom. Vratky, reklamácie a neprevzaté zásielky sú zatiaľ na samostatnú kontrolu.
+Vydaný obsah je uzamknutý. Zmena stavu, odstránenie riadka, zmazanie objednávky ani opätovné načítanie nevytvárajú automatickú vratku. Vrátený tovar sa rieši s väzbou na pôvodný výdaj a potvrdeným fyzickým návratom cez skladový detail produktu a jeho pôvodný výdaj.
+
+Pri vratke, reklamácii alebo storne po výdaji môže byť fyzický sklad správny, hoci objednávka obchodne čaká na ďalšie riešenie. Na `/orders/inbox` pri podporovanej výnimke použi **Vyriešiť skladovú výnimku**:
+
+1. Načítaj čerstvý podklad a skontroluj vydané a už vrátené množstvá jednotlivých položiek.
+2. Ak sa tovar skutočne vrátil, najprv zaeviduj fyzickú vratku cez pôvodný výdaj v skladovom detaile produktu. Tovar, ktorý ešte neprišiel, nesmie byť naskladnený.
+3. Uveď dôvod a výslovne potvrď, že zobrazená skladová evidencia zodpovedá skutočnosti. Potom uzavri skladovú výnimku.
+
+Uzavretie uloží kto, kedy a aký podklad skontroloval. Nemení množstvá, pôvodný výdaj, stav objednávky v e-shope ani zákaznícku reklamáciu. Pri nezmenenom podklade už táto výnimka neblokuje prenos zásob; nová zmena objednávky alebo oprávnenia vyžaduje nové overenie. Zmenený vydaný obsah, nejednoznačná identita alebo zmazaná objednávka sa týmto postupom neuzatvárajú. Po strate odpovede použi obnovenie uloženého výsledku; nezakladaj ďalšiu operáciu len preto, že odpoveď neprišla.
 
 ## Kontrola problémov
 
@@ -121,7 +131,7 @@ Vydaný obsah je uzamknutý. Zmena stavu, odstránenie riadka, zmazanie objedná
 
 Pri probléme prepni automatické spracovanie dotknutého e-shopu na ručný režim alebo použi príslušnú pauzu automatického spracovania. Pred obnovením skontroluj posledné výsledky a čakajúce objednávky. Pozastavenie zberu hlavičiek a pozastavenie skladových operácií sú rozdielne nastavenia.
 
-Vypnutie automatiky ani návrat staršej verzie aplikácie nevrátia rezervácie a vydaný tovar späť. Už zaúčtované operácie ostávajú v evidencii. Návrh vlastných zásob neposiela údaje do Upgates; odosielanie zásob je samostatná nedokončená etapa.
+Vypnutie automatiky ani návrat staršej verzie aplikácie nevrátia rezervácie a vydaný tovar späť. Už zaúčtované operácie ostávajú v evidencii. Návrh vlastných zásob neposiela údaje do Upgates; [pravidelný prenos zásob](stock-sync.md) má vlastné výslovné povolenie a kontroly pripravenosti.
 
 Technický kontrakt a testovacie hranice sú v [order-automation.md](order-automation.md); podrobné doménové pravidlá v [central-stock.md](central-stock.md).
 

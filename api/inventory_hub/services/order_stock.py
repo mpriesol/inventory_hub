@@ -207,7 +207,7 @@ def _response(row: OrderStockPreview) -> dict:
 
 async def get_preview(db: AsyncSession, preview_id: str) -> dict:
     row = await db.get(OrderStockPreview, str(preview_id))
-    if row is None:
+    if row is None or row.preview_data.get("trigger") == "exception_resolution":
         raise OrderStockError("order_stock_preview_not_found", 404)
     return _public(row)
 
@@ -215,6 +215,7 @@ async def get_preview(db: AsyncSession, preview_id: str) -> dict:
 async def list_previews(db: AsyncSession, shop_code: str) -> dict:
     shop = await _shop(db, shop_code)
     rows = (await db.scalars(select(OrderStockPreview).where(OrderStockPreview.shop_id == shop.id)
+                            .where(OrderStockPreview.preview_data["trigger"].astext.is_distinct_from("exception_resolution"))
                             .order_by(OrderStockPreview.created_at.desc(), OrderStockPreview.id).limit(20))).all()
     return {"previews": [{"id": row.id, "shop_code": shop.code,
                            "order_number": row.preview_data["source"]["order_number"],
@@ -276,6 +277,8 @@ async def apply(db: AsyncSession, preview_id: str, payload: OrderStockApplyReque
     row = await db.get(OrderStockPreview, str(preview_id))
     if row is None:
         raise OrderStockError("order_stock_preview_not_found", 404)
+    if row.preview_data.get("trigger") == "exception_resolution":
+        raise OrderStockError("order_stock_preview_blocked")
     if row.preview_hash != payload.preview_hash:
         raise OrderStockError("order_stock_preview_changed")
     if row.status == "completed":

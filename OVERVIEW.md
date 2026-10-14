@@ -327,6 +327,8 @@ Kontrolované údržbové publikovanie vlastných zásob je zdokumentované v [s
 
 Dodávateľský worker `supplier_availability_worker` uchováva prijaté pozorovania a vyhodnocuje ich platnosť. Zlyhanie alebo neúplný feed nikdy nevynuluje fyzickú zásobu. `stock_sync_worker` prenáša vlastné voľné kusy, dostupnosť a objednateľnosť iba pri výslovne nastavenej skladovej autorite, čerstvých objednávkach a povolenom serverovom zápise `STOCK_SYNC_WRITE_ENABLED` (default false). Údržbový publisher zostáva samostatný.
 
+Pravidelný prenos odlišuje čakajúcu objednávku od nespracovaného skladového podkladu. Zaúčtovaná nekrytá rezervácia neblokuje celý sklad, ak čítací prepočet potvrdí rovnaké alokácie; nový príjem sa najprv pridelí čakajúcej objednávke. Pre vratky a storná po výdaji je v objednávkovom inboxe samostatné potvrdenie skladovej výnimky s nemenným auditom. Nevytvára automatickú vratku a pri zmene podkladu sa zneplatní. Podrobnosti: [prenos zásob](docs/stock-sync.md), [objednávky](docs/order-workflows.md). Táto oprava neaktivuje živú synchronizáciu ani nepotvrdzuje pilot na reálnych objednávkach.
+
 Migrácie `014_supplier_availability.sql`, `015_stock_sync.sql`, `016_product_publication.sql` a `017_stock_adjustments.sql` sú aditívne, zabalené v API obraze a zapojené do deploymentu po `013` pred spustením nového API. Nezapínajú nové plánovanie ani hromadné zápisy. Príslušné zámery, nejasné pokusy a účtovné výsledky sa pri návrate verzie nemažú; pre riešenie nasadenej chyby uprednostni kompatibilnú doprednú opravu.
 
 ## Dodávateľské prefixy a väzby dostupností

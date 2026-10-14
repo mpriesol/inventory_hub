@@ -118,6 +118,28 @@ Ledger, výsledok úlohy a dokončený audit sa commitnú spolu. Každá skutoč
 
 Nekryté rezervácie, nedostatok pred výdajom a dočasné chyby idú na `retry` podľa `processing_retry_minutes`. `completed` aj `review` dostanú ďalšiu úplnú kontrolu podľa `full_order_check_hours`; zmenené pozorovanie ich môže prebudiť skôr. Nepodporovaný stav, zmazanie, nejednoznačná identita alebo zmenený vydaný obsah zostávajú na kontrolu bez automatického storna či vratky. `run_timeout_seconds` ohraničuje aj sieť a dokončenie jedného spracovateľského pokusu.
 
+### Skladový podklad pre pravidelný prenos
+
+`services/order_sync_readiness.py` odlišuje stav úlohy od účinku už zapísaného do skladu. Všetky bežné kontroly čerstvosti, autority a predajných kanálov zostávajú povinné. Výnimku z požiadavky `completed` má iba `retry/order_processing_backorder` s doloženou aktuálnou rezerváciou. Kontrola viaže inbox, úlohu, konfiguráciu, zdroj a skladovú revíziu objednávky. Znovu overí identitu riadkov a čítací plán ledgeru; alokácie sa nesmú meniť. Nový príjem alebo uvoľnenie kusov preto zablokuje prenos, kým čakajúcu rezerváciu doplní spracovateľ. Čítanie nevytvára zostatky, rezervácie ani pohyby.
+
+Pravidelný publisher pri príprave odoslania drží zámky v poradí identita → e-shop → sklad cez kontrolu podkladu a finálnu projekciu. Túto kontrolu opakuje aj po vzdialenom čítaní pred uložením `sending`; pred sieťovým volaním zámky uvoľní commitom. UI diagnostika bez zápisového zámku je informatívna; nie je oprávnením na odoslanie.
+
+### Potvrdenie skladovej výnimky po výdaji
+
+`services/order_exceptions.py` poskytuje osobitný postup pre `review` po vydaní nezmeneného obsahu, napríklad následné storno alebo vratku. Náhľad načíta aktuálnu objednávku, identitu a číselník stavov. Potvrdenie načíta podklad znovu, overí hash, platnosť náhľadu, inbox/generáciu, politiku, konfiguráciu, cieľ, skladovú revíziu a zobrazené doklady výdaja/vratiek. Vyžaduje výslovné potvrdenie skladovej evidencie a neprázdny dôvod; vykonávateľ pochádza z autentizovanej požiadavky.
+
+| API | Kontrakt |
+| --- | --- |
+| `POST /order-processing/jobs/{id}/resolution-preview` | `{request_id}`; čerstvé čítanie Upgates a uloženie náhľadu pod týmto UUID. |
+| `GET /order-processing/resolutions/{id}` | Čítacie obnovenie náhľadu alebo potvrdeného výsledku. |
+| `POST /order-processing/resolutions/{id}/resolve` | `{preview_hash, confirmed:true, stock_accounted:true, reason}`; čerstvé overenie a audit bez skladových pohybov. |
+
+Audit používa existujúci `OrderStockPreview` s `trigger:exception_resolution` a `action:resolve_exception`. Je oddelený od bežných náhľadov výdaja a nemožno ho vykonať bežnou cestou `order-stock/.../apply`. Pôvodný `stock_snapshot`, `stock_issue_result` a nemenné pohyby zostávajú zachované. Toto potvrdenie neúčtuje vratku, nevracia peniaze a nemení objednávku v e-shope. Fyzický návrat sa naďalej zapisuje cez existujúce FIFO vratky; historický výdaj bez FIFO alokácií neposkytuje vymyslený údaj o vrátenom množstve.
+
+Opakované potvrdenie rovnakého náhľadu a payloadu vráti uložený výsledok. Odlišný payload sa odmietne. Spracovateľ pri ďalšej úplnej kontrole uzná iba stále platný audit toho istého podkladu; nová hlavička, zdroj, identita, politika alebo konfigurácia vyžadujú novú kontrolu. Pravidelný prenos overuje rovnakú väzbu, nestačí samotný stav úlohy `completed`. Zmazané alebo konfliktné objednávky ani zmenený vydaný obsah nemožno týmto potvrdením obísť.
+
+Táto oprava nepridáva migráciu, historické automatické potvrdenia ani zapnutie synchronizácie. Stará verzia môže bezpečne obnoviť prísnejšie blokovanie; nemaž audit ani pohyby a uprednostni opravu vpred.
+
 HTTP 429 ukladá prestávku pre celý e-shop, najmenej bežný odstup spracovania a prípadne dlhší sanitizovaný `Retry-After` (najviac sedem dní). Zberač aj spracovateľ rešpektujú spoločný termín pred ďalším čítaním a pri prijímaní odpovede. Pozastavenie, zmena generácie ani explicitné prebudenie termín neskrátia. Zberač pri ostatných chybách používa exponenciálny odstup zo zachovaného snapshotu nastavenia; novšiu konfiguráciu starý neúspešný beh neprepíše.
 
 Migrácia neaktivuje automatické režimy, nezakladá skladové pohyby a nemaže staré dáta. Musí byť zabalená do API obrazu a vykonaná explicitným migračným runnerom po `008` pred spustením nového API/workerov. Samotný nový SQL súbor v inicializačnom adresári nestačí na upgrade existujúcej databázy.

@@ -1455,7 +1455,8 @@
       "issue": "Vyskladniť a uzamknúť",
       "cancel": "Uvoľniť rezervácie",
       "review": "Vyžaduje kontrolu",
-      "noop": "Bez zmeny skladu"
+      "noop": "Bez zmeny skladu",
+      "resolve_exception": "Kontrola výnimky potvrdená"
     },
     "previewStatus": {
       "prepared": "Pripravený",
@@ -1713,6 +1714,52 @@
     "triggers": {
       "manual": "Jednorazové vyžiadanie",
       "automatic": "Pravidelné načítavanie"
+    },
+    "stockAccounting": "Skladové zaúčtovanie",
+    "accountingStates": {
+      "accounted": "Zaúčtované pre synchronizáciu",
+      "review": "Blokuje synchronizáciu – kontrola",
+      "pending": "Čaká na zaúčtovanie",
+      "unknown": "Zatiaľ neoverené"
+    },
+    "exception": {
+      "open": "Vyriešiť skladovú výnimku",
+      "title": "Kontrola skladovej výnimky",
+      "help": "Potvrdenie uzavrie kontrolu tejto zmeny objednávky pre synchronizáciu. Fyzická zásoba, rezervácie ani pôvodný výdaj sa tým nemenia.",
+      "prepareHelp": "Najprv načítaj aktuálnu objednávku a uložené výdaje a vratky. Potom over, že evidencia zodpovedá skutočnému pohybu tovaru.",
+      "prepare": "Načítať podklady výnimky",
+      "previewId": "ID kontroly",
+      "recover": "Overiť uložený výsledok",
+      "uncertain": "Výsledok požiadavky nie je potvrdený. Najprv over uložený výsledok. Nové potvrdenie ani zmena dôvodu zatiaľ nie sú dostupné.",
+      "missing": "Kontrola sa zatiaľ nenašla. Ak podklady načítavaš v tejto stránke, môžeš zopakovať rovnakú požiadavku. Inak zavri panel a znova vyber objednávku.",
+      "sourceStatus": "Stav v e-shope",
+      "issuedAt": "Výdaj",
+      "issue": "ID výdaja",
+      "issued": "Vydané kusy",
+      "returned": "Zaúčtované vratky",
+      "remaining": "Zostáva na prípadnú vratku",
+      "legacy": "Pri staršom výdaji množstvo vratiek nie je preukázané. Over ho podľa skladovej evidencie.",
+      "returnHelp": "Ak sa tovar už fyzicky vrátil, najprv zaúčtuj vratku v detaile produktu → Sklad a nákupné ceny podľa uvedeného SKU a ID výdaja. Potom zavri túto kontrolu a načítaj nové podklady.",
+      "openStock": "Otvoriť sklad v novej karte",
+      "reason": "Dôvod a výsledok fyzickej kontroly",
+      "confirmation": "Overil som skladovú evidenciu: tovar sa ešte nevrátil alebo sú už všetky skutočne vrátené kusy samostatne zaúčtované. Zobrazený stav zodpovedá skutočnosti.",
+      "resolve": "Potvrdiť kontrolu výnimky",
+      "completed": "Kontrola je uložená. Nevznikol žiadny skladový pohyb.",
+      "refreshHelp": "Obnov zoznam v Hube pre aktuálny stav synchronizácie. Ďalšia zmena objednávky môže vyžadovať novú kontrolu.",
+      "expires": "Platnosť kontroly",
+      "expired": "Platnosť kontroly vypršala. Zavri ju a načítaj nové podklady.",
+      "close": "Zavrieť kontrolu",
+      "errors": {
+        "order_exception_not_available": "Túto výnimku nemožno uzavrieť týmto postupom. Obnov zoznam a otvor ručnú kontrolu objednávky.",
+        "order_exception_preview_not_found": "Uložená kontrola sa nenašla.",
+        "order_exception_request_changed": "Identifikátor požiadavky patrí inej kontrole. Obnov uložený výsledok.",
+        "order_exception_preview_changed": "Podklady kontroly sa zmenili. Over výsledok a priprav novú kontrolu.",
+        "order_exception_preview_expired": "Platnosť kontroly vypršala. Over výsledok a priprav novú kontrolu.",
+        "order_exception_source_changed": "Objednávka sa v e-shope zmenila. Over výsledok a načítaj nové podklady.",
+        "order_exception_context_changed": "Nastavenie alebo stav spracovania sa zmenil. Over výsledok a načítaj nové podklady.",
+        "order_exception_ledger_changed": "Výdaje alebo vratky sa zmenili. Over výsledok a načítaj nové podklady.",
+        "order_exception_confirmation_changed": "Táto kontrola už bola potvrdená s iným dôvodom. Over uložený výsledok."
+      }
     }
   },
   "stockSettings": {

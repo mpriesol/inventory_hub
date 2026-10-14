@@ -14,6 +14,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from inventory_hub.db_models import Shop, Warehouse
+from inventory_hub.db_models_ext import ShopOrder
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderInboxEntry
 from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.order_stock_models import OrderStockPolicy, OrderStockPreview
@@ -236,6 +237,14 @@ async def finish_job(db, plan, fetched):
     if updated == entry.updated_at and (source["status_id"] != entry.status_id or source["origin"] != entry.origin):
         raise ProcessingError("order_processing_source_conflict")
     source["lines"] = await resolve_lines(db, shop, source)
+    # A reviewed post-issue cancellation/return is accounted in the immutable
+    # ledger, without pretending that a physical return has happened. Revalidate
+    # its exact audit before status authorization (returns intentionally raise).
+    from inventory_hub.services.order_exceptions import current_resolution
+    resolved = await current_resolution(db, job, entry, config, config["warehouse_id"], fetched=fetched)
+    if resolved is not None:
+        _schedule(job, config, status="completed", result=resolved)
+        return resolved
     action = authorize(config, policy, source, fetched)
     order = await ledger.get_or_create_order(db, shop, source, config["warehouse_id"])
     if order.stock_state == "issued":
@@ -330,7 +339,40 @@ async def jobs(db, shop_code, limit=50, offset=0):
         .order_by(OrderProcessingJob.updated_at.desc(), OrderProcessingJob.id.desc()).offset(offset).limit(limit))).all()
     keys = ("id", "source_uuid", "order_number", "generation", "status", "next_attempt_at", "last_started_at",
             "last_completed_at", "last_checked_at", "attempts", "error", "result", "audit_preview_id")
-    return {"jobs": [{key: getattr(row, key) for key in keys} for row in rows], "total": total, "limit": limit, "offset": offset}
+    if not rows:
+        return {"jobs": [], "total": total, "limit": limit, "offset": offset}
+    from inventory_hub.services.order_exceptions import candidate, current_resolution
+    from inventory_hub.services.order_sync_readiness import backorder_accounted
+    try:
+        config = await stock_settings.effective(db, shop.id)
+    except stock_settings.SettingsError:
+        config = None  # Keep historical jobs readable when setup needs repair.
+    entries = {entry.id: entry for entry in (await db.scalars(select(OrderInboxEntry)
+        .where(OrderInboxEntry.id.in_([row.inbox_id for row in rows])))).all()}
+    issued = {order.stock_source_uuid: order for order in (await db.scalars(select(ShopOrder).where(
+        ShopOrder.shop_id == shop.id, ShopOrder.stock_state == "issued",
+        ShopOrder.stock_source_uuid.in_([row.source_uuid for row in rows])))).all()}
+    public = []
+    for row in rows:
+        entry = entries.get(row.inbox_id)
+        accounting = "review" if row.status == "review" else "pending"
+        if config and entry and not _inbox_error(entry, row) and row.observation_hash == entry.observation_hash:
+            if row.status == "completed":
+                if row.result and row.result.get("action") == "resolve_exception":
+                    accounting = "accounted" if await current_resolution(db, row, entry, config,
+                        config["warehouse_id"]) else "review"
+                else:
+                    accounting = "accounted"
+            elif await backorder_accounted(db, entry, row, config["warehouse_id"], config):
+                accounting = "accounted"
+        order = issued.get(row.source_uuid)
+        available = bool(candidate(row) and config and config.get("processing_ready") and entry
+            and not _inbox_error(entry, row) and row.observation_hash == entry.observation_hash
+            and order and order.external_id == row.order_number and order.stock_warehouse_id == config["warehouse_id"]
+            and order.stock_snapshot and order.stock_issue_result and order.stock_issued_at)
+        public.append({**{key: getattr(row, key) for key in keys}, "stock_accounting": accounting,
+            "resolution_available": available})
+    return {"jobs": public, "total": total, "limit": limit, "offset": offset}
 
 
 async def refresh(db, shop_code):
