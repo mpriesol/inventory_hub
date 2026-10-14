@@ -68,15 +68,23 @@ const makeBatch = body => {
 const calls = [], batches = new Map(), previewRequests = new Map();
 let holdSequence = 0;
 let optionsMode = 'valid', previewMode = 'valid', submitMode = 'valid';
-let resolveOptions, resolvePreview, rejectSubmit;
+let resolveOptions, resolvePreview, rejectSubmit, rejectBaseline;
+let baselineMode = 'ok';
 const posts = suffix => calls.filter(call => call.method === 'POST' && (!suffix || call.path.endsWith(suffix)));
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(path.startsWith('/api/stock-publication/'), 'The page uses only protected publication endpoints');
+  assert(path.startsWith('/api/stock-publication/') || path === '/api/stock-sync/baseline', 'The page uses only protected publication endpoints');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   assert(!path.includes('synthetic-'), 'Credentials never enter request URLs');
   const url = new URL(path, dom.window.location.origin);
+  if (url.pathname === '/api/stock-sync/baseline') {
+    assert.equal(init.method, 'POST');
+    assert.deepEqual(body, { shop_code: 'xtrek', hold_id: hold.id, skus: ['KNOWN-ZERO', 'SELECTED-VARIANT'], confirmed: true, external_writers_paused: true, orders_reconciled: true });
+    assert(hold.active, 'Baseline requires the current maintenance hold');
+    if (baselineMode === 'pending') return new Promise((resolve, reject) => { rejectBaseline = () => reject(new TypeError('Synthetic lost baseline response')); });
+    return reply({ shop_code: body.shop_code, baseline_count: body.skus.length, skus: body.skus });
+  }
   if (url.pathname.endsWith('/options')) {
     assert.equal(init.method, 'GET');
     const snapshot = clone(options(url.searchParams.get('shop_code')));
@@ -174,6 +182,7 @@ global.fetch = async (path, init = {}) => {
   assert.equal(calls.length, beforeInvalid, 'Invalid or duplicate SKU selection is rejected before any API call');
   await input('skus', 'KNOWN-ZERO\nUNKNOWN-BALANCE'); await click('preview');
   assert(cannotUse('submit'), 'One unknown row blocks publication of the entire selection');
+  assert(!element('sync-baseline-panel'), 'Unknown quantities cannot establish a starting balance');
   const unknownRow = [...document.querySelectorAll('tr')].find(row => row.textContent.includes('UNKNOWN-BALANCE'));
   assert(unknownRow && unknownRow.textContent.includes(t('unknown')), 'An unknown balance remains visible in the blocked snapshot');
   assert(!unknownRow.textContent.includes('stock_projection_balance_missing'), 'Missing balance is explained with translated text');
@@ -231,6 +240,24 @@ global.fetch = async (path, init = {}) => {
   assert.equal(posts('/resolve').length, 1); assert.equal(posts('/submit').length, 1);
   assert(document.body.textContent.includes(t('states.completed')));
   assert(cannotUse('release-hold'), 'Resolving a batch still requires the separate maintenance completion confirmation');
+  assert(required('sync-baseline-panel')); assert(cannotUse('establish-sync-baseline'), 'A verified batch still needs current baseline confirmations');
+  await click('baseline-writers-paused'); assert(cannotUse('establish-sync-baseline'));
+  await click('baseline-orders-reconciled');
+  const baselineScope = required('establish-sync-baseline').closest('.action-control').querySelector('[data-action-effects]').dataset.actionEffects;
+  assert.equal(baselineScope, 'hub-write upgates-read', 'Establishing a baseline never promises or invokes a shop write');
+  baselineMode = 'pending';
+  await act(async () => { required('establish-sync-baseline').click(); required('establish-sync-baseline').click(); await tick(); });
+  assert.equal(posts('/baseline').length, 1, 'Repeated clicks establish one baseline for only the selected leaves');
+  assert(required('shop').disabled && required('skus').disabled, 'Baseline scope cannot change while its result is pending');
+  await act(async () => { rejectBaseline(); await tick(); });
+  assert(cannotUse('establish-sync-baseline') && cannotUse('release-hold'), 'A lost checkpoint result requires a fresh saved status');
+  await tick(); assert.equal(posts('/baseline').length, 1, 'Lost baseline response does not retry automatically');
+  baselineMode = 'ok'; await click('load-options');
+  await click('baseline-writers-paused'); await click('baseline-orders-reconciled'); await click('establish-sync-baseline');
+  assert.equal(posts('/baseline').length, 2, 'An operator may explicitly verify the unchanged held selection again');
+  assert(required('sync-baseline-result').textContent.includes('2'));
+  assert(hold.active && cannotUse('release-hold'), 'A saved baseline neither activates transfers nor releases maintenance');
+
   await click('maintenance-completed'); await click('release-hold');
   assert.equal(posts('/release').length, 1); assert.equal(hold.active, false);
 

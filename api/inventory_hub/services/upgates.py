@@ -99,13 +99,25 @@ class UpgatesClient:
     def from_shop(cls, shop_code: str) -> "UpgatesClient":
         cfg = load_shop_config(shop_code) or {}
         log_dir = Path(settings.INVENTORY_DATA_ROOT) / "shops" / shop_code / "logs"
-        return cls(
+        client = cls(
             base_url=cfg.get("upgates_api_base_url") or "",
             login=cfg.get("upgates_login") or "",
             api_key=cfg.get("upgates_api_key") or "",
             verify_ssl=bool(cfg.get("verify_ssl", True)),
             log_dir=log_dir,
         )
+        # Also covers strict transports which call client.session directly.
+        from inventory_hub.services.upgates_budget import AdmissionDenied, BudgetSession
+        try:
+            session = BudgetSession(client.base_url)
+        except AdmissionDenied:
+            client.session.close()
+            raise UpgatesError("Invalid Upgates API target") from None
+        session.auth = client.session.auth
+        session.headers.update(client.session.headers)
+        client.session.close()
+        client.session = session
+        return client
 
     # ── Low level ────────────────────────────────────────────────────────
 
@@ -134,7 +146,8 @@ class UpgatesClient:
                 "Over upgates_login / upgates_api_key v konfigurácii shopu."
             )
         if r.status_code >= 400:
-            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}")
+            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}",
+                               status_code=r.status_code, retry_after=_retry_after_seconds(r.headers.get("Retry-After")))
         try:
             data = r.json()
         except ValueError as e:
@@ -156,7 +169,8 @@ class UpgatesClient:
                 "Over upgates_login / upgates_api_key v konfigurácii shopu.", status_code=r.status_code
             )
         if r.status_code >= 400:
-            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}", status_code=r.status_code)
+            raise UpgatesError(f"Upgates API chyba HTTP {r.status_code}: {r.text[:300]}", status_code=r.status_code,
+                               retry_after=_retry_after_seconds(r.headers.get("Retry-After")))
         try:
             data = r.json()
         except ValueError:
@@ -170,7 +184,8 @@ class UpgatesClient:
         except requests.RequestException:
             raise UpgatesError("Upgates update outcome unknown") from None
         if response.status_code >= 400:
-            raise UpgatesError(f"Upgates update HTTP {response.status_code}", status_code=response.status_code)
+            raise UpgatesError(f"Upgates update HTTP {response.status_code}", status_code=response.status_code,
+                               retry_after=_retry_after_seconds(response.headers.get("Retry-After")))
         try:
             return response.json()
         except ValueError:

@@ -23,6 +23,7 @@ class ShopSyncInput(StockPublicationConfirmed):
     hub_is_stock_authority: StrictBool = False
     external_stock_writers_disabled: StrictBool = False
     orders_reconciled: StrictBool = False
+    native_order_stock_enabled: StrictBool = False
 
 
 class SyncRunInput(StockPublicationConfirmed):
@@ -35,4 +36,24 @@ class SyncRunInput(StockPublicationConfirmed):
         return StockPublicationPreview.exact_skus(value) if value is not None else None
 
 
-SyncResolveInput = StockPublicationResolve
+class SyncResolveInput(StockPublicationResolve):
+    outcome: Literal['applied', 'not_applied'] | None = None
+    evidence: StrictStr | None = Field(default=None, min_length=8, max_length=1000)
+
+
+class SyncBaselineInput(StockPublicationConfirmed):
+    shop_code: StrictStr = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,49}$")
+    hold_id: StrictStr = Field(pattern=r"^[0-9a-f-]{36}$")
+    skus: list[StrictStr] = Field(min_length=1, max_length=100)
+    external_writers_paused: Literal[True]
+    orders_reconciled: Literal[True]
+
+    @field_validator('skus')
+    @classmethod
+    def exact_skus(cls, value):
+        return StockPublicationPreview.exact_skus(value)
+
+    @field_validator('external_writers_paused', 'orders_reconciled', mode='before')
+    @classmethod
+    def assertions(cls, value):
+        return cls.explicit_confirmation(value)

@@ -1,8 +1,8 @@
 """Regular eventual publication with an explicitly selected central stock authority.
 
-No inventory ledger writes or maintenance holds. The authority contract requires
-shop-side stock writers disabled; freshness gates reduce, but cannot eliminate,
-order polling delay. Ambiguous absolute PUTs retain durable per-target fences.
+No inventory ledger writes or maintenance holds. Normal writes use signed deltas
+and account for native Upgates order effects. Absolute stock writes are reserved
+for separately confirmed maintenance. Ambiguous deltas retain target fences.
 """
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -67,7 +67,7 @@ def warehouse_dto(warehouse, row):
 
 
 def policy_dto(policy):
-    fields = ('revision', 'enabled', 'authorized', *DEFAULTS, 'authority_confirmed_at', 'next_run_at',
+    fields = ('revision', 'enabled', 'authorized', 'protocol', *DEFAULTS, 'authority_confirmed_at', 'next_run_at',
               'last_started_at', 'last_completed_at', 'last_error', 'retry_after_at')
     if policy:
         return {key: getattr(policy, key) for key in fields}
@@ -104,6 +104,8 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
             result.append('stock_sync_authority_required')
         elif policy.warehouse_id != warehouse.id or policy.target_fingerprint != target_fingerprint(shop.code):
             result.append('stock_sync_target_changed')
+    if check_authority and policy and policy.authorized and policy.protocol != 'delta_v1':
+        result.append('stock_sync_protocol_confirmation_required')
     if not enabled():
         result.append('stock_sync_server_disabled')
     if policy and policy.retry_after_at and policy.retry_after_at > now():
@@ -115,6 +117,12 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
     if check_authority and policy and policy.authorized and policy.authority_snapshot != peers:
         result.append('stock_sync_authority_changed')
     cutoff = now() - timedelta(seconds=values['max_order_age_seconds'])
+    oldest = None
+    if check_authority and policy and policy.protocol == 'delta_v1':
+        from inventory_hub.stock_delta_models import StockSyncCheckpoint
+        oldest = await db.scalar(select(func.min(StockSyncCheckpoint.baseline_at)).where(
+            StockSyncCheckpoint.shop_id == shop.id,
+            StockSyncCheckpoint.warehouse_id == warehouse.id))
     for peer in peers:
         if peer['warehouse_id'] != warehouse.id or not peer['target']:
             result.append('stock_sync_channel_not_configured')
@@ -131,6 +139,21 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
             continue
         if await has_unaccounted_orders(db, peer['shop_id'], warehouse.id, config):
             result.append('stock_sync_orders_pending')
+            continue
+        if check_authority and policy and policy.protocol == 'delta_v1':
+            from inventory_hub.services import stock_native
+            try:
+                await stock_native.coverage(db, peer['shop_id'], warehouse.id)
+            except stock_native.NativeError as error:
+                result.append(error.code)
+            # Any peer can change this target's shared local stock after its
+            # baseline, even if that peer has not initialized publication yet.
+            from inventory_hub.order_collection_models import OrderInboxEntry
+            if oldest is not None and await db.scalar(select(OrderInboxEntry.id).where(
+                OrderInboxEntry.shop_id == peer['shop_id'],
+                OrderInboxEntry.created_at < datetime.fromisoformat(peer['starts_at']),
+                OrderInboxEntry.updated_at > oldest).limit(1)):
+                result.append('stock_native_historical_change')
     return list(dict.fromkeys(result))
 
 
@@ -142,14 +165,14 @@ async def counts(db, run_id):
 
 
 async def run_dto(db, row, detail=False, offset=0, limit=1000):
-    data = {key: getattr(row, key) for key in ('id', 'trigger', 'status', 'started_at', 'completed_at', 'error')}
+    data = {key: getattr(row, key) for key in ('id', 'trigger', 'status', 'protocol', 'started_at', 'completed_at', 'error')}
     data.update(shop_code=await db.scalar(select(Shop.code).where(Shop.id == row.shop_id)), counts=await counts(db, row.id),
                 more_pending=row.cursor_product_id < row.max_product_id)
     if detail:
         items = (await db.scalars(select(Item).where(Item.run_id == row.id)
             .order_by(case((Item.status == 'uncertain', 0), else_=1), Item.id).offset(offset).limit(limit))).all()
-        data['items'] = [{key: getattr(item, key) for key in ('id', 'sku', 'status', 'error', 'desired', 'before',
-                        'after', 'attempt_started_at', 'verified_at')} for item in items]
+        data['items'] = [{**{key: getattr(item, key) for key in ('id', 'sku', 'status', 'error', 'desired', 'before',
+                        'after', 'attempt_started_at', 'verified_at', 'delta_snapshot')}, 'protocol': row.protocol} for item in items]
         data['items_total'] = await db.scalar(select(func.count()).select_from(Item).where(Item.run_id == row.id))
         data['items_offset'], data['items_limit'] = offset, limit
         data['items_truncated'] = data['items_total'] > offset + len(items)
@@ -159,7 +182,10 @@ async def run_dto(db, row, detail=False, offset=0, limit=1000):
 async def options(db, shop_code):
     shop, warehouse, policy, defaults, values = await scope(db, shop_code)
     runs = (await db.scalars(select(Run).where(Run.shop_id == shop.id).order_by(Run.started_at.desc()).limit(20))).all()
-    return {'shop': {'code': shop.code, 'name': shop.name},
+    from inventory_hub.stock_delta_models import StockSyncCheckpoint
+    baseline_count = await db.scalar(select(func.count()).select_from(StockSyncCheckpoint).where(
+        StockSyncCheckpoint.shop_id == shop.id, StockSyncCheckpoint.target_fingerprint == target_fingerprint(shop.code)))
+    return {'baseline_count': baseline_count, 'shop': {'code': shop.code, 'name': shop.name},
             'warehouse': {'code': warehouse.code, 'name': warehouse.name} if warehouse else None,
             'warehouse_settings': warehouse_dto(warehouse, defaults) if warehouse else None,
             'settings': policy_dto(policy), 'effective': values if warehouse else None,
@@ -206,9 +232,10 @@ async def configure(db, payload):
     if payload.enabled and not payload.authorized:
         raise SyncError('stock_sync_authority_required')
     peers = await channels(db, warehouse.id)
-    reauthorize = payload.authorized and (policy is None or not policy.authorized or policy.authority_snapshot != peers
+    reauthorize = payload.authorized and (policy is None or not policy.authorized or policy.protocol != 'delta_v1' or policy.authority_snapshot != peers
                      or policy.target_fingerprint != target_fingerprint(shop.code) or policy.warehouse_id != warehouse.id)
-    if reauthorize and not (payload.hub_is_stock_authority and payload.external_stock_writers_disabled and payload.orders_reconciled):
+    if reauthorize and not (payload.hub_is_stock_authority and payload.external_stock_writers_disabled
+                            and payload.native_order_stock_enabled and payload.orders_reconciled):
         raise SyncError('stock_sync_authority_confirmation_required')
     if payload.authorized and (not peers or any(peer['warehouse_id'] != warehouse.id or not peer['target'] for peer in peers)):
         raise SyncError('stock_sync_channel_not_configured')
@@ -221,6 +248,7 @@ async def configure(db, payload):
     for key in DEFAULTS:
         setattr(policy, key, getattr(payload, key))
     if reauthorize:
+        policy.protocol = 'delta_v1'
         policy.authority_snapshot, policy.authority_confirmed_at = peers, now()
         policy.warehouse_id, policy.target_fingerprint = warehouse.id, target_fingerprint(shop.code)
     policy.next_run_at = max(now(), policy.retry_after_at or now())
@@ -252,7 +280,7 @@ async def enqueue(db, payload, *, automatic=False):
     maximum = await db.scalar(select(func.max(Product.id)).join(ShopProduct, ShopProduct.product_id == Product.id)
                              .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True))) or 0
     row = Run(id=str(uuid4()), shop_id=shop.id, warehouse_id=warehouse.id, target_fingerprint=policy.target_fingerprint,
-              settings_revision=policy.revision, trigger='automatic' if automatic else 'manual', status='queued',
+              settings_revision=policy.revision, protocol=policy.protocol, trigger='automatic' if automatic else 'manual', status='queued',
               selected_skus=selected, cursor_product_id=0, max_product_id=maximum, started_at=now())
     db.add(row)
     policy.last_started_at, policy.last_error = now(), None
@@ -325,92 +353,8 @@ async def remember_rate_limit(db, shop_id, shop_code, fingerprint, error):
 
 
 async def process_item(db, item_id, prefetched=None):
-    item = await one(db, Item, Item.id == item_id)
-    if item is None or item.status != 'prepared':
-        await db.commit()
-        return
-    run = await one(db, Run, Run.id == item.run_id)
-    shop_code = await db.scalar(select(Shop.code).where(Shop.id == run.shop_id))
-    # Rollback expires every ORM instance, including the caller's run. Keep
-    # scalar intent data for error recovery before any path can roll back.
-    fingerprint = run.target_fingerprint
-    started = False
-    try:
-        # Keep mapping changes out of the order proof and its stock projection.
-        # Match physical/order writers: identity -> shop -> warehouse.
-        await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-        shop, warehouse, policy, _, values = await scope(db, shop_code, True)
-        reasons = await blockers(db, shop, warehouse, policy, values)
-        if reasons:
-            raise SyncError(reasons[0])
-        if policy.revision != run.settings_revision or run.target_fingerprint != policy.target_fingerprint or run.warehouse_id != warehouse.id:
-            raise SyncError('stock_sync_settings_changed')
-        if await db.scalar(select(Item.id).where(Item.shop_id == shop.id, Item.sku == item.sku, Item.status.in_(FENCED)).limit(1)):
-            raise SyncError('stock_sync_target_uncertain')
-        target, value = await desired(db, shop_code, item.sku)
-        if prefetched is not None:
-            if 'error' in prefetched:
-                raise prefetched['error']
-            if prefetched['target'] != target:
-                raise SyncError('stock_sync_identity_changed')
-            cached = prefetched['result']
-            age = monotonic() - cached['observed_monotonic']
-            if 0 <= age <= BATCH_OBSERVATION_SECONDS and matches(cached['observation'], value):
-                # Only unchanged leaves may use this in-memory observation.
-                # All current identity/stock/order/fence gates are locked above.
-                observation = cached['observation']
-                item = await one(db, Item, Item.id == item_id, True)
-                item.target, item.desired, item.before = observation['identity'], value, observation
-                item.status, item.after, item.verified_at = 'verified', observation, cached['observed_at']
-                await db.commit()
-                return
-        await db.commit()
-        # A batch difference (or expired observation) never authorizes a PUT.
-        # Preserve the existing fresh single GET and post-GET local recheck.
-        observation = await source.read(shop_code, target, fingerprint)
-        # Recompute after the remote GET; local receipts/reservations are not
-        # frozen during network work and must not use an older desired value.
-        await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-        shop, warehouse, policy, _, values = await scope(db, shop_code, True)
-        reasons = await blockers(db, shop, warehouse, policy, values)
-        if reasons:
-            raise SyncError(reasons[0])
-        if policy.revision != run.settings_revision:
-            raise SyncError('stock_sync_settings_changed')
-        current_target, value = await desired(db, shop_code, item.sku)
-        if target != current_target:
-            raise SyncError('stock_sync_identity_changed')
-        item = await one(db, Item, Item.id == item_id, True)
-        item.target, item.desired, item.before = observation['identity'], value, observation
-        if matches(observation, value):
-            item.status, item.after, item.verified_at = 'verified', observation, now()
-            await db.commit()
-            return
-        item.status, item.attempt_started_at = 'sending', now()
-        await db.commit()  # durable fence before any possible PUT dispatch
-        started = True
-        await source.write_once(shop_code, item.target, value, fingerprint)
-        after = await source.read(shop_code, item.target, fingerprint)
-        item = await one(db, Item, Item.id == item_id, True)
-        item.after = after
-        if matches(after, value):
-            item.status, item.verified_at, item.error = 'verified', now(), None
-        else:
-            item.status, item.error = 'uncertain', 'stock_sync_readback_mismatch'
-        await db.commit()
-    except (SyncError, source.SourceError, stock_settings.SettingsError, stock_projection.StockProjectionError) as error:
-        await db.rollback()
-        item = await one(db, Item, Item.id == item_id, True)
-        item.status = 'uncertain' if started else 'skipped'
-        item.error = error.code
-        if getattr(error, 'status', None) == 429:
-            await remember_rate_limit(db, item.shop_id, shop_code, fingerprint, error)
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        item = await one(db, Item, Item.id == item_id, True)
-        item.status, item.error = ('uncertain' if started else 'failed'), 'stock_sync_worker_error'
-        await db.commit()
+    from inventory_hub.services.stock_delta import process_item as process_delta
+    return await process_delta(db, item_id, prefetched)
 
 
 async def process_run(db, identifier):
@@ -456,8 +400,12 @@ async def process_run(db, identifier):
                                                 Item.status.in_(FENCED)).limit(1)):
             continue
         try:
-            target, _ = await desired(db, shop_code, item.sku)
-            targets[item_id] = source.transport._target(target)
+            from inventory_hub.services import stock_delta
+            state = await stock_delta.current(db, shop, warehouse, item.sku)
+            cp = await stock_delta.checkpoint(db, shop.id, item.sku)
+            stock_delta.check_binding(cp, state, warehouse.id, run.target_fingerprint)
+            if stock_delta.needs_read(cp, state, now()):
+                targets[item_id] = source.transport._target(cp.target, frozen=True)
         except (SyncError, source.SourceError, stock_settings.SettingsError, stock_projection.StockProjectionError):
             continue
         except Exception as error:
@@ -504,6 +452,9 @@ async def resolve(db, identifier, payload):
     shop_code = await db.scalar(select(Shop.code).where(Shop.id == item.shop_id))
     if run.target_fingerprint != target_fingerprint(shop_code):
         raise SyncError('stock_sync_target_changed')
+    if run.protocol == 'delta_v1':
+        from inventory_hub.services import stock_delta
+        return await stock_delta.resolve(db, item, run, payload)
     target, value, run_id, fingerprint = item.target, item.desired, run.id, run.target_fingerprint
     await db.commit()
     try:

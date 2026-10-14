@@ -56,6 +56,23 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
         with self.assertRaises(source.CollectionSourceError):
             await self.load(payload(order(deleted_yn=False)), deleted=True)
 
+    async def test_incremental_window_includes_recent_changes_to_pre_cutover_orders_only(self):
+        created = START - timedelta(days=3650)
+        raw = order(creation_time=created.isoformat())
+        for deleted in (False, True):
+            result, fetch = await self.load(payload(raw), created_from=source.OLDEST_ORDER_CREATION, deleted=deleted)
+            params = fetch.call_args.args[1]
+            self.assertEqual(params['creation_time_from'], '1900-01-01T00:00:00+00:00')
+            self.assertEqual(params['last_update_time_from'], START.isoformat())
+            self.assertEqual(params['creation_time_to'], END.isoformat())
+            self.assertEqual(result['entries'][0]['created_at'], created.isoformat())
+            self.assertEqual(result['entries'][0]['deleted'], deleted)
+        # Widening creation coverage never widens the change window: old,
+        # unchanged history must not become a full-history scan every poll.
+        with self.assertRaises(source.CollectionSourceError):
+            await self.load(payload({**raw, 'last_update_time': (START - timedelta(seconds=1)).isoformat()}),
+                            created_from=source.OLDEST_ORDER_CREATION)
+
     async def test_utc_normalization_inclusive_creation_window_and_no_invented_update_upper_bound(self):
         raw = order(creation_time="2026-09-23T10:00:00+02:00", last_update_time=(END + timedelta(seconds=1)).isoformat())
         result, _ = await self.load(payload(raw))

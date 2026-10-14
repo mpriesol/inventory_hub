@@ -29,6 +29,9 @@ MIGRATIONS = (
     "product_feed_mapping_migrate",   # 021
     "product_import_migrate",         # 022
     "ai_content_settings_migrate",    # 023
+    "upgates_api_budget_migrate",     # 024
+    "stock_native_migrate",           # 025
+    "stock_delta_migrate",            # 026
 )
 
 

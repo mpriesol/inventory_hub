@@ -40,7 +40,7 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for name in ('002_invoice_management.sql', '005_ai_content.sql', '006_opening_stock.sql',
                          '007_order_stock.sql', '008_order_collection.sql', '009_stock_automation.sql',
                          '010_stock_publication.sql', '011_fifo.sql', '012_product_editor.sql',
-                         '015_stock_sync.sql', '016_product_publication.sql', '017_stock_adjustments.sql',
+                         '015_stock_sync.sql', '026_stock_delta.sql', '016_product_publication.sql', '017_stock_adjustments.sql',
                          '018_fifo_cost_sync.sql'):
                 await connection.execute((root / name).read_text())
         finally:

@@ -1,12 +1,12 @@
 # Upgates: súbeh zásob a kapacita API
 
-Overenie kontraktu: 14. 10. 2026. Tento dokument oddeľuje vlastnosti aktuálneho publishera, verejný kontrakt Upgates, meranie konkrétneho pripojenia a ešte nevykonaný živý pilot.
+Overenie kontraktu: 14. 10. 2026. Tento dokument oddeľuje implementovaný protokol `delta_v1`, verejný kontrakt Upgates a ešte nepotvrdený živý pilot celého objednávkového cyklu. Popis implementácie nie je potvrdením nasadenia ani zapnutia skladových zápisov.
 
 ## Výsledok kontroly súbehu
 
 Upgates automaticky mení hlavný sklad pri dokončení objednávky, zmene počtu kusov, storne a odstránení objednávky. Verejná dokumentácia nepotvrdzuje prepínač, ktorý by tieto zápisy vypol, ani podmienený zápis `stock` cez očakávanú revíziu/`If-Match`. Hlavný sklad nemožno deaktivovať; vedľajšie sklady nemajú rovnaké objednávkové správanie.
 
-Aktuálny `stock_sync.process_item` vykonáva vzdialené čítanie, novú lokálnu kontrolu, absolútny zápis a kontrolné čítanie. Nasledujúci priebeh sa tým nedá vylúčiť:
+Predchádzajúci absolútny publisher vykonával vzdialené čítanie, lokálnu kontrolu, zápis celého množstva a kontrolné čítanie. Nasledujúci protipríklad vysvetľuje, prečo ho nový pravidelný protokol nahrádza:
 
 | Krok | Hub | Upgates |
 | --- | --- | --- |
@@ -16,19 +16,19 @@ Aktuálny `stock_sync.process_item` vykonáva vzdialené čítanie, novú lokál
 | Absolútny PUT | Pošle uložené `stock:4` | Prepíše množstvo na 4 |
 | Kontrolný GET | Zhoda s požadovanou hodnotou | 4 kusy; zhoda nedokazuje správnosť |
 
-Existujúce zámky chránia lokálne transakcie Hubu, nie vzdialené prijatie objednávky. Čerstvý kurzor ani ďalšie čítanie pred zápisom nie sú distribuovanou transakciou. Databázový hraničný test s napodobeným Upgates transportom overuje tento protipríklad priamo cez produkčný publisher; nie je to živý test e-shopu ani dôkaz bezpečného súbehu.
+Lokálne zámky nechránia vzdialené prijatie objednávky. Čerstvý kurzor ani ďalšie čítanie pred zápisom nie sú distribuovanou transakciou. Tento protipríklad bol reprodukovaný izolovaným databázovým testom predchádzajúceho publishera s napodobeným transportom; nešlo o živú zmenu e-shopu.
 
-Preto potvrdenie skladovej autority samo osebe nestačí na ostré zapnutie aktuálneho absolútneho publishera. Jeho existujúci kontrakt vyžaduje neprítomnosť nezávislých zapisovateľov; tento predpoklad zatiaľ pre bežný Upgates hlavný sklad nie je preukázaný. Riadená údržbová inicializácia zostáva osobitným postupom pri skutočne pozastavených predajoch a zosúladených objednávkach.
+Bežný publisher preto už neposiela absolútne `stock`. Posiela `stock_increment` vypočítaný z lokálnej zmeny a doloženého natívneho účinku vlastných Upgates objednávok. Riadená absolútna inicializácia zostáva osobitným údržbovým postupom pri skutočne pozastavených predajoch a zosúladených objednávkach. Zmena protokolu nepreukazuje podporu neznámych objednávkových prechodov a sama neoprávňuje zapnúť ostrú synchronizáciu.
 
 ## Kapacitný model aktuálneho kódu
 
-Pôvodný priechod používal `K + 2 × D` volaní: `K` je počet položiek, ktoré prejdú lokálnou kontrolou a vyžadujú vzdialené čítanie, `D` počet odlišných položiek. Neoverené lokálne množstvo sa preskočí pred sieťovým volaním.
+Platný nezmenený kontrolný bod s nezmenenou dostupnosťou spotrebuje **0 vzdialených volaní** medzi pravidelnými šesťhodinovými kontrolami. Aj vlastná natívna objednávka a rovnaká lokálna rezervácia môžu vyrušiť prenášaný rozdiel: oba počítadlá sa posunú bez ďalšieho odpočtu či volania.
 
-Po optimalizácii sa úvodné čítanie zoskupuje podľa pracovnej dávky `batch_size`, osobitne pre samostatné produkty a varianty. Každá požiadavka má najviac 100 presných kódov a obmedzenú dĺžku zakódovaného filtra. Kompletná odpoveď musí obsahovať práve požadované položky, jednoznačné identity a úplné stránkovanie; chyba nevyvolá opakovanie požiadavky pre každý produkt zvlášť.
+Zmeny a kontroly po termíne sa načítajú podľa pracovnej dávky `batch_size`, osobitne pre samostatné produkty a varianty. Požiadavka má najviac 100 presných kódov a obmedzenú dĺžku filtra. Kompletná odpoveď musí obsahovať práve požadované položky, jednoznačné identity a úplné stránkovanie; chyba nevyvolá pokusy po každom produkte zvlášť. Po čítaní sa opäť overí lokálny podklad. Úspešný zápis má jeden PUT bez následného GET.
 
-Čerstvý dávkový výsledok môže potvrdiť iba nezmenenú položku, po opätovnej lokálnej kontrole. Pred odlišnou položkou zostáva pôvodný samostatný GET, nová lokálna kontrola, najviac jeden PUT a kontrolný GET. Zastaraný dávkový výsledok sa na vynechanie tejto kontroly nepoužije. Optimalizácia nemení absolútny zápis ani nerieši konflikt natívneho odpočtu objednávky.
+Model čerstvého priechodu je `G + D`, kde `G` je počet potrebných čítacích skupín a `D` počet skutočných zápisov. Pri zmene všetkých `K` oprávnených položiek je to `G + K`. Samostatná kontrola nezmenených položiek po šiestich hodinách potrebuje iba `G`. Zastaraný dávkový výsledok alebo nová lokálna zmena môžu vyžiadať ďalší GET; chyby, ručné údržby a ostatné workflow tento model nezahŕňa. Neoverené lokálne množstvo alebo chýbajúci kontrolný bod sa neprevedú na nulu.
 
-Model čerstvého priechodu je `G + 3 × D`, kde `G` je skutočný počet skupín podľa druhu produktov, pracovných dávok a dĺžky filtrov. Pri dvadsiatich nezmenených produktoch rovnakého typu ide o 1 GET namiesto 20 (úspora 95 % úvodných čítaní). Pri zmene všetkých dvadsiatich je to 61 namiesto pôvodných 60; ide o optimalizáciu prevažne nezmeneného katalógu. Expirované pozorovania môžu pridať ďalšie GET a čerstvé samostatné čítanie môže naopak odhaliť, že zápis už nie je potrebný. Diagnostika počíta skupiny z rovnakých pravidiel ako transport, vrátane neplatných produktov, ktoré zaberajú miesto v pracovnej dávke.
+Historické modely `K + 2 × D` a neskorší `G + 3 × D` opisovali predchádzajúci absolútny publisher. Nie sú modelom `delta_v1` ani dôvodom na návrat k starému zapisovateľovi.
 
 Prázdne načítanie objednávok spravidla potrebuje dve požiadavky (aktívne a zmazané objednávky). Každý úplný pokus spracovania objednávky používa detail a číselník stavov. Pri päťminútovom intervale ide ideálne o 576 čítaní denne už pri prázdnom zberači a ďalších 576 pre každú objednávku opakovanú každých päť minút. Čas spracovania tento počet znižuje; nové objednávky, stránkovanie, ručné operácie a ďalšie integrácie ho zvyšujú. Dokončené objednávky majú tiež periodickú úplnú kontrolu.
 
@@ -45,37 +45,32 @@ Voliteľné overenie vzorky pridá najviac dve produktové požiadavky: do štyr
 - Zobrazená kvóta pochádza z úvodného `/status`; pri kontrole vzorky teda predchádza jej produktovým GET.
 - Chýbajúca alebo neplatná hlavička znamená neznámu hodnotu, nie nulu.
 - Zdokumentované tri súbežné požiadavky platia pre skupinu API prístupov. Hub nevie z jedného diagnostického čítania zmerať súbeh ostatných integrácií.
-- Diagnostika nie je trvalé meranie všetkých volaní, globálny limiter ani automatické nastavenie vhodného intervalu. Existujúce reakcie na 429 zostávajú v jednotlivých workflow.
+- Diagnostika sama nenastavuje interval ani nekupuje kvótu. Jej požiadavky prechádzajú rovnakým spoločným limiterom ako ostatné pripojenia Hubu; lokálne odloženie sa počíta ako nula odoslaných požiadaviek.
 
-Živé čítanie po nasadení diagnostiky bolo vykonané 14. 10. 2026. Časy sú Europe/Bratislava; každý pokus vykonal presne jeden GET a žiadny zápis:
+### Spoločné riadenie rozpočtu
 
-| E-shop | Čas | Odpoveď | Hodinový limit / denná rezerva | Hlásený zostatok | Prepojené SKU v Hube |
-| --- | --- | --- | --- | --- | --- |
-| BIKETREK | 21:52:32 | úspešná, 368 ms | 50 / 600 | 650 | 5 686 |
-| xTrek | 21:52:53 | úspešná, 1 734 ms | 50 / 600 | 650 | 32 |
+`UpgatesClient.from_shop` vytvára riadenú reláciu pre všetky aktívne API transporty Hubu: objednávky, katalóg, pravidelný aj údržbový sklad, vybrané produktové polia, FIFO ceny a diagnostiku. Kľúčom je normalizovaný HTTPS origin bez prihlasovacích údajov. Samostatné PostgreSQL spojenie v autocommit režime povoľuje jednu súbežnú požiadavku naprieč procesmi a drží iba vlastný session advisory lock, nie obchodnú transakciu. Streamovaná odpoveď drží povolenie do uzavretia; ukončenie spojenia uvoľní zámok.
 
-Oba účty deklarovali čítanie a zápis produktov, objednávok a stavov objednávok. U oboch bol pravidelný skladový prenos, jeho oprávnenie, serverový prepínač a načítavanie objednávok vypnuté. Chýbajúca politika skladu znamená neznámy počet SKU oprávnených na skladový prenos, nie nulu ani celý počet prepojených SKU. Úspešný `/status` nepreukazuje bezpečnosť skladových zápisov; tieto merania tiež nie sú živým testom dávkového produktového transportu.
+Zvyšok hodinového limitu sa spotrebuje pred dennou rezervou. `Total-Remaining` sa nepoužíva ako obnoviteľný lokálny rozpočet. Neplatné alebo chýbajúce hlavičky nevytvoria novú kapacitu: bez známeho rozpočtu je povolený jeden overovací pokus a potom dočasné odloženie. HTTP 429 uloží spoločné `Retry-After`. Lokálne zamietnutie vznikne pred odoslaním a nesmie sa zameniť s neistým vzdialeným PUT. Transport nič automaticky neopakuje. Pri nedostupnosti PostgreSQL sa požiadavka neodošle; výslovný legacy režim `USE_POSTGRES=false` má iba procesnú ochranu.
 
-### Pozorovanie administrácie BIKETREK
+Iné integrácie zostávajú mimo tohto riadenia. Ich spotreba sa prejaví v hlavičkách, ale Hub nemôže zaručiť ich súbeh. Potrebné navýšenie kvóty sa určuje podľa skutočných zmien, objednávok a kontrol, nie iba podľa celkového katalógu; táto implementácia nič neobjednáva.
 
-Pri čítacej kontrole 14. 10. 2026 administrácia v Doplnky → API zobrazila limit **50 za hodinu + 600 v dennej rezerve**, bez dokúpených požiadaviek. To znamená teoreticky 1 800 požiadaviek za deň pri využití všetkých hodinových období, nie 1 800 okamžite dostupných požiadaviek. Aktuálny zostatok a pripojenie Hubu treba overiť diagnostikou.
+Konkrétne kvóty, počty prepojených SKU a prevádzkové merania sa kontrolujú v diagnostike Hubu; nie sú súčasťou repozitárovej dokumentácie. Úspešný `/status` nepreukazuje bezpečnosť skladových zápisov ani celý objednávkový cyklus.
 
-Pôvodný model deviatich nezmenených SKU pri päťminútovom intervale predstavoval 2 592 čítaní denne; s prázdnym zberačom objednávok 3 168. Pri jednej čerstvej skupine rovnakého typu je nový model 288 + 576 = 864. Nie je to zmeraná prevádzková spotreba ani potvrdený počet aktuálne oprávnených SKU. Väčší katalóg aj naďalej potrebuje interval, rozpočet a prípadné navýšenie kvóty podľa reálneho počtu skupín, zmien a objednávok.
+## Implementovaný rozdielový protokol a jeho hranice
 
-V Sklad a dostupnosti boli aktívne hlavný sklad, Predajňa – vystavené a Sklad dodávateľa. Viditeľné nastavenia dostupnosti, súčtu variantov, akcie pri zmene a limitu zásob neobsahovali prepínač natívneho odpočtu objednávkou. Žiadne nastavenie ani množstvo sa počas kontroly nezmenilo. Táto kontrola nepotvrdzuje neprítomnosť iného, zdokumentovaného len podporou poskytovateľa, mechanizmu.
+Verejné API má `stock_increment`, ktorý neprepisuje celý práve platný stav. Implementácia `stock_delta.py` ho spája s kontrolnými bodmi a `stock_native.py` s auditovaným pôvodom objednávkových účinkov:
 
-## Nadväzujúca zmena protokolu
+1. Kontrolný bod vzniká po potvrdenej údržbe, dokončenom zbere a spracovaní objednávok a čítacej zhode vzdialeného a lokálneho množstva. Ukladá lokálne množstvo, natívny účinok, presnú vzdialenú identitu, pripojenie a revíziu.
+2. Prenáša sa `(nové lokálne − uložené lokálne) − (nové natívne − uložené natívne)`. Vlastná Upgates objednávka sa neodpočíta druhýkrát; príjem, inventúrna oprava alebo zmena druhého kanála zostáva súčasťou lokálneho rozdielu. Výdaj rezervovaného kusa sa neposudzuje ako ďalšia nezávislá rezervácia.
+3. Natívny účinok používa presné identity a systémové typy stavov. Neznámy typ, nepodporovaná položka, zmazanie, nepreukázané storno alebo opätovné otvorenie sa nezamenia za nulový účinok. Podklady musia pokrývať aktuálne spracované objednávky; nejasné prípady blokujú bežný prenos.
+4. Každý PUT má trvalý zámer a zmrazenú revíziu kontrolného bodu. Po jednoznačnom potvrdení sa kontrolný bod posunie. Nejasný výsledok sa neopakuje; vyžaduje doložené `applied`/`not_applied` a vysvetlenie po skončení pôvodnej požiadavky. Obyčajné kontrolné čítanie nemôže rozhodnúť výsledok súbežného rozdielu.
+5. Absolútne `stock` zostáva iba na samostatnú riadenú údržbu pri zastavených vzdialených zmenách. Periodický audit rozdiel oznámi, ale neopravuje ho absolútnym zápisom.
+6. Inkrementálny zber zahŕňa vytvorenie objednávok od roku 1900 a ďalej filtruje podľa poslednej zmeny. Zachytí tak novú úpravu starej objednávky bez automatického prehrania jej fyzickej histórie. Zmena pred začiatkom lokálnej evidencie vyžaduje kontrolu; nesmie sa potichu ignorovať.
 
-Verejné API má aj `stock_increment`. Je vhodným kandidátom na prenos rozdielov, pretože neprepisuje celý práve platný stav. Samotná zámena názvu poľa nie je správna implementácia:
+Migrácie `024` (rozpočet), `025` (natívna evidencia) a `026` (rozdielový protokol a kontrolné body) sú aditívne a súčasťou explicitného deployment spúšťača. Nezakladajú historické pohyby a neaktivujú živé zápisy. Staré oprávnenie absolútneho protokolu nestačí; nové zapnutie vyžaduje potvrdené podmienky a platné kontrolné body. Návrat k starému absolútnemu pravidelnému zapisovateľovi nie je prípustný spôsob obnovy po použití rozdielov; treba ponechať evidenciu a použiť kompatibilnú doprednú opravu.
 
-1. Evidovať pôvod každej udalosti. Natívny odpočet vlastnej Upgates objednávky sa nesmie do toho istého e-shopu poslať druhýkrát.
-2. Príjmy, inventúrne opravy, rezervácie a udalosti druhého predajného kanála musia mať presnú, nemennú väzbu na zmenu disponibilného množstva. Výdaj už rezervovaného kusa nesmie vytvoriť ďalší odpočet voľných kusov.
-3. Každý odosielaný rozdiel potrebuje trvalý zámer a audit. Upgates verejne nedokumentuje idempotentný identifikátor takého pohybu: nejasný výsledok sa nesmie automaticky zopakovať a obyčajná zhoda aktuálneho počtu ho pri súbežných predajoch nedokazuje.
-4. Absolútny zápis ponechať iba na kontrolovanú inicializáciu/zosúladenie pri zastavených vzdialených zmenách, prípadne až po získaní inej doloženej záruky Upgates.
-5. Existujúce dávkové čítanie doplniť o plánovanie podľa skutočných zmien a spoločné riadenie API rozpočtu spolu s týmto protokolom. Samotná cache absolútneho publishera neopraví konflikt zapisovateľov.
-6. Webhooky môžu zrýchliť zistenie zmien. Prijatú udalosť treba najprv trvalo uložiť a rýchlo potvrdiť; kontrolný inkrementálny zber zostáva potrebný. Nie sú zámkom hlavného skladu.
-
-Ide o návrh ďalšej implementácie, nie vlastnosť tejto diagnostiky. Súčasný predaj posledného kusu v oboch e-shopoch je osobitný problém. Polling môže zmenšiť časové okno; úplná garancia vyžaduje centrálnu rezerváciu pri nákupe alebo rozdelenie kusov medzi kanály. Doterajšie pravidlo objednateľnosti `overíme` umožňuje aj objednávky nekryté vlastným skladom a bez nového obchodného rozhodnutia sa nemení.
+Živý cyklus vytvorenia, úpravy a storna objednávky s novým protokolom ešte nie je potvrdený. Súčasný predaj posledného kusu v oboch e-shopoch je osobitný problém. Polling môže zmenšiť časové okno; úplná garancia vyžaduje centrálnu rezerváciu pri nákupe alebo rozdelenie kusov medzi kanály. Pravidlo objednateľnosti `overíme` sa nemení. Webhooky môžu neskôr zrýchliť zistenie zmien, ale nie sú zámkom hlavného skladu a tento krok ich neimplementuje.
 
 ## Ohraničený živý pilot
 

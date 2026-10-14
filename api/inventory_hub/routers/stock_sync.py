@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.routers.stock_publication import NoStoreRoute
-from inventory_hub.stock_sync_types import WarehouseSyncInput, ShopSyncInput, SyncRunInput, SyncResolveInput
+from inventory_hub.stock_sync_types import WarehouseSyncInput, ShopSyncInput, SyncRunInput, SyncResolveInput, SyncBaselineInput
 from inventory_hub.services import stock_sync as service
 
 router = APIRouter(prefix='/stock-sync', tags=['stock-sync'], route_class=NoStoreRoute,
@@ -39,6 +39,12 @@ async def configure(payload: ShopSyncInput, db: AsyncSession = Depends(get_sessi
 @router.post('/run')
 async def run(payload: SyncRunInput, db: AsyncSession = Depends(get_session)):
     return await call(service.enqueue(db, payload))
+
+
+@router.post('/baseline')
+async def baseline(payload: SyncBaselineInput, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services.stock_delta import baseline as establish
+    return await call(establish(db, payload))
 
 
 @router.get('/runs/{run_id}')
