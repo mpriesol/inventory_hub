@@ -117,6 +117,12 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
     if check_authority and policy and policy.authorized and policy.authority_snapshot != peers:
         result.append('stock_sync_authority_changed')
     cutoff = now() - timedelta(seconds=values['max_order_age_seconds'])
+    oldest = None
+    if check_authority and policy and policy.protocol == 'delta_v1':
+        from inventory_hub.stock_delta_models import StockSyncCheckpoint
+        oldest = await db.scalar(select(func.min(StockSyncCheckpoint.baseline_at)).where(
+            StockSyncCheckpoint.shop_id == shop.id,
+            StockSyncCheckpoint.warehouse_id == warehouse.id))
     for peer in peers:
         if peer['warehouse_id'] != warehouse.id or not peer['target']:
             result.append('stock_sync_channel_not_configured')
@@ -140,13 +146,9 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
                 await stock_native.coverage(db, peer['shop_id'], warehouse.id)
             except stock_native.NativeError as error:
                 result.append(error.code)
-            # A post-baseline edit to an order excluded by the local cutover
-            # is a real native writer. Never silently ignore its stock effect.
-            from inventory_hub.stock_delta_models import StockSyncCheckpoint
+            # Any peer can change this target's shared local stock after its
+            # baseline, even if that peer has not initialized publication yet.
             from inventory_hub.order_collection_models import OrderInboxEntry
-            oldest = await db.scalar(select(func.min(StockSyncCheckpoint.baseline_at)).where(
-                StockSyncCheckpoint.shop_id == peer['shop_id'],
-                StockSyncCheckpoint.warehouse_id == warehouse.id))
             if oldest is not None and await db.scalar(select(OrderInboxEntry.id).where(
                 OrderInboxEntry.shop_id == peer['shop_id'],
                 OrderInboxEntry.created_at < datetime.fromisoformat(peer['starts_at']),

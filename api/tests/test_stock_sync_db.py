@@ -863,6 +863,32 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         service.source.read_many.assert_not_awaited()
         service.source.write_delta_once.assert_not_awaited()
 
+    async def test_peer_historical_change_uses_target_baseline_even_without_peer_checkpoint(self):
+        async with self.session() as db:
+            peer=await db.scalar(select(Shop).where(Shop.code=='xtrek'))
+            fingerprint=order_collection.target_fingerprint(peer.code)
+            db.add(OrderStockPolicy(shop_id=peer.id,warehouse_id=self.warehouse_id,
+                starts_at=self.clock-timedelta(days=30),revision=1,status_actions={},status_hash='a'*64,statuses=[]))
+            db.add(StockShopSettings(shop_id=peer.id,revision=1,mode='reserve',overrides={},updated_at=self.clock,
+                automation_starts_at=self.clock-timedelta(days=1),authorized_policy_revision=1,target_fingerprint=fingerprint))
+            db.add(OrderCollectionSettings(shop_id=peer.id,enabled=True,revision=1,target_fingerprint=fingerprint,
+                cursor_at=self.clock,reconcile_cursor_at=self.clock,last_completed_at=self.clock,next_poll_at=self.clock))
+            entry=OrderInboxEntry(shop_id=peer.id,source_uuid=str(uuid4()),order_number='PEER-OLD-NATIVE',
+                created_at=self.clock-timedelta(days=31),updated_at=self.clock-timedelta(days=2),
+                deleted=False,origin='web',status_id=1,observation_hash='b'*64,
+                observed_at=self.clock,last_seen_at=self.clock)
+            db.add(entry);await db.flush();entry_id=entry.id
+            self.assertIsNone(await db.get(StockSyncCheckpoint,(peer.id,'SKU-A')))
+        # BIKETREK was reconciled yesterday; older xTrek changes are absorbed.
+        await self.prepare()
+        async with self.session() as db:
+            (await db.get(OrderInboxEntry,entry_id)).updated_at=self.clock
+        with self.assertRaises(service.SyncError) as raised:
+            await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A']))
+        self.assertEqual(raised.exception.code,'stock_native_historical_change')
+        service.source.read_many.assert_not_awaited()
+        service.source.write_delta_once.assert_not_awaited()
+
     async def test_audit_reports_unexplained_drift_without_overwriting_remote_quantity(self):
         self.remote.update(stock='5',availability='SKLADOM')
         await self.checkpoint(local=4,audit_due=True)
