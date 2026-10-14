@@ -20,10 +20,11 @@ router = APIRouter(tags=["shops"])
 async def get_upgates_capacity(
     shop: Annotated[str, ApiPath(pattern=r'^[a-z0-9][a-z0-9_-]{0,49}$')],
     response: Response, db: AsyncSession = Depends(get_session),
+    include_product_sample: bool = False,
 ):
     response.headers['Cache-Control'] = 'no-store'
     try:
-        return await upgates_capacity.diagnose(db, shop)
+        return await upgates_capacity.diagnose(db, shop, include_product_sample=include_product_sample)
     except upgates_capacity.CapacityError as error:
         raise HTTPException(error.status, detail={'code': error.code, 'message': error.code},
                             headers={'Cache-Control': 'no-store'}) from None

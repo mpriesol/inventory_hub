@@ -16,6 +16,8 @@ V nastaveniach dostupností a synchronizácie vyber e-shop. Interval, veľkosť 
 
 Jeden priechod spracuje postupne všetky zalistované SKU daného e-shopu. Väčší katalóg sa rozdelí na dávky; nejde iba o prvých 20 produktov pri každom intervale. **Spustiť teraz** vytvorí ručný priechod bez zapnutia pravidelného plánovača. API môže ručný prenos zúžiť na vybrané SKU. Opakované stlačenie pri rovnakom rozpracovanom výbere zobrazí existujúci priechod. Iný výber počká, kým prebiehajúci priechod skončí.
 
+Úvodné vzdialené čítanie používa skupiny presných kódov: samostatné produkty a varianty osobitne, s obmedzením počtu a dĺžky filtra. Úplný čerstvý výsledok umožní vynechať ďalšiu požiadavku pri nezmenenom SKU. Odlišné alebo zastarané pozorovanie vyžaduje pôvodné samostatné čítanie pred zápisom. Zápisy sa nezoskupujú a nejasný výsledok sa automaticky neopakuje. Chybná alebo neúplná dávková odpoveď sa nerozšíri na pokusy po každom produkte. [Model spotreby a jeho hranice](upgates-sync-readiness.md#kapacitný-model-aktuálneho-kódu).
+
 Pravidelný prenos vyžaduje výslovné nastavenie Hubu ako autority zásob. Pred jeho povolením musí obsluha overiť všetky predajné kanály spoločného skladu, vrátane pokladne BIKETREK:
 
 - Samostatné znižovanie či zvyšovanie zásob v Upgates a ostatných integráciách je vypnuté. Hub je jediný zapisovateľ týchto skladových hodnôt. Toto nastavenie sa v Upgates musí overiť osobitne; zaškrtávacie pole ho samo nemení.

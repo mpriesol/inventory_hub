@@ -3,7 +3,7 @@ import os
 from datetime import timedelta
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -70,8 +70,8 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def seed_products(self):
         async with self.sessions() as db:
             for code, active, listed, confirmed, quantity in (
-                    ('VALID', True, True, True, 4), ('ZERO', True, True, True, 0),
-                    ('UNVERIFIED', True, True, False, 7), ('INACTIVE', False, True, True, 1),
+                    ('VALID', True, True, True, 4), ('INACTIVE', False, True, True, 1),
+                    ('ZERO', True, True, True, 0), ('UNVERIFIED', True, True, False, 7),
                     ('ALIAS', True, True, True, 1), ('UNLISTED', True, False, True, 2)):
                 product = Product(sku=code, name=code, is_active=active)
                 db.add(product)
@@ -109,9 +109,12 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(db.in_transaction(), 'No database transaction across status GET')
                 return {'observed_at': self.clock.isoformat(), 'probe': {'ok': True, 'requests_attempted': 1},
                         'quota': {'total_remaining': None}}
-            with patch.object(service, 'probe', Mock(side_effect=status_probe)) as probe:
+            with patch.object(service, 'probe', Mock(side_effect=status_probe)) as probe, \
+                    patch.object(service.stock_sync.source, 'read_many', AsyncMock()) as read:
                 report = await service.diagnose(db, 'biketrek')
             probe.assert_called_once_with('biketrek')
+            read.assert_not_awaited()
+        self.assertNotIn('catalog_probe', report, 'Ordinary capacity requests must not sample products')
         local = report['projection']
         self.assertEqual(local['listed_skus'], 5)
         for field in ('warehouse_code', 'confirmed_skus', 'eligible_skus', 'unpublishable_skus'):
@@ -127,6 +130,59 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local['orders']['processing_error'], 'stock_settings_policy_required')
         self.assertEqual(local['orders']['collector_daily_if_enabled'], 576)
         self.assertEqual(await self.snapshot(), before)
+
+    async def test_optional_catalog_sample_uses_exact_local_mappings_without_policy_or_database_writes(self):
+        await self.seed_products()
+        async with self.sessions() as db:
+            # Put ambiguous/case-colliding mappings before eligible extras so
+            # an unsafe selector would consume the fourth sample slot.
+            for sku, remote in (('AMBIGUOUS', 'AMBIGUOUS'), ('ALIAS-AMBIGUOUS', 'AMBIGUOUS'), ('ambiguous', 'ambiguous')):
+                product = Product(sku=sku, name=sku)
+                db.add(product)
+                await db.flush()
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code=remote, is_listed=True))
+            for variant, count in ((False, 3), (True, 6)):
+                for index in range(count):
+                    code = ('VARIANT-' if variant else 'EXTRA-') + str(index)
+                    product = Product(sku=code, name=code)
+                    db.add(product)
+                    await db.flush()
+                    db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code='PARENT' if variant else code,
+                        is_variant=variant, parent_code='PARENT' if variant else None,
+                        variant_code=code if variant else None, is_listed=True))
+            await db.commit()
+        before = await self.snapshot()
+        expected = [
+            {'code': code, 'parent_code': code, 'variant_code': None}
+            for code in ('VALID', 'ZERO', 'UNVERIFIED', 'EXTRA-0')
+        ] + [{'code': f'VARIANT-{index}', 'parent_code': 'PARENT', 'variant_code': f'VARIANT-{index}'}
+             for index in range(4)]
+        async with self.sessions() as db:
+            staged = Product(sku='UNCOMMITTED-SAMPLE', name='Uncommitted sample')
+            db.add(staged)
+            def status_probe(shop_code):
+                self.assertEqual(shop_code, 'biketrek')
+                self.assertFalse(db.in_transaction(), 'Status GET follows rollback of all local reads')
+                return {'observed_at': self.clock.isoformat(), 'probe': {'ok': True, 'requests_attempted': 1,
+                    'target_fingerprint': 'a' * 64}, 'quota': {'total_remaining': 100}}
+            async def read_sample(shop_code, targets, fingerprint):
+                self.assertEqual((shop_code, targets, fingerprint), ('biketrek', expected, 'a' * 64))
+                self.assertFalse(db.in_transaction(), 'Catalog GET must not hold a database transaction either')
+                self.assertIsNone(staged.id, 'Diagnostic must not flush unrelated pending changes')
+                return {'private-catalog-product': {'stock': '100', 'ean': 'private-ean'}}
+            with patch.object(service, 'probe', Mock(side_effect=status_probe)) as probe, \
+                    patch.object(service.stock_sync.source, 'read_many', AsyncMock(side_effect=read_sample)) as read:
+                report = await service.diagnose(db, 'biketrek', include_product_sample=True)
+            probe.assert_called_once_with('biketrek')
+            read.assert_awaited_once()
+        self.assertIsNone(report['projection']['eligible_skus'], 'Catalog readability does not establish stock authority')
+        self.assertFalse(report['projection']['stock']['configured'])
+        self.assertEqual(report['catalog_probe'], {'requested': True, 'ok': True, 'selected_products': 4,
+            'selected_variants': 4, 'planned_requests': 2, 'requests_attempted': 2, 'error': None})
+        self.assertNotIn('private-catalog-product', str(report))
+        self.assertNotIn('private-ean', str(report))
+        self.assertEqual(await self.snapshot(), before)
+
 
     async def test_real_eligible_leaves_effective_intervals_and_order_workload_without_writes(self):
         await self.seed_products()
@@ -169,8 +225,10 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {'code': 'stock_projection_mapping_alias', 'count': 1},
             {'code': 'stock_projection_product_inactive', 'count': 1}])
         self.assertEqual(local['stock']['interval_seconds'], 600)
-        self.assertEqual((local['stock']['unchanged_pass_calls'], local['stock']['all_changed_pass_calls']), (2, 6))
-        self.assertEqual((local['stock']['daily_unchanged_if_enabled'], local['stock']['daily_all_changed_if_enabled']), (288, 864))
+        self.assertEqual((local['stock']['initial_batch_calls'], local['stock']['singleton_pass_calls']), (1, 2))
+        self.assertEqual(local['stock']['call_model'], 'batched_unchanged_fresh_reads_before_write')
+        self.assertEqual((local['stock']['unchanged_pass_calls'], local['stock']['all_changed_pass_calls']), (1, 7))
+        self.assertEqual((local['stock']['daily_unchanged_if_enabled'], local['stock']['daily_all_changed_if_enabled']), (144, 1008))
         self.assertFalse(local['stock']['enabled'])
         self.assertFalse(local['stock']['server_enabled'])
         orders = local['orders']
@@ -183,6 +241,20 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local['estimate_kind'], 'theoretical_no_runtime_delay')
         self.assertIn('other_integrations', local['not_included'])
         self.assertEqual(await self.snapshot(), before)
+
+        # Invalid listed rows consume worker chunk slots. Two valid leaves in
+        # separate listed chunks require two GETs, not ceil(2 / 2) == one.
+        async with self.sessions() as db:
+            policy = await db.get(StockSyncSettings, self.shop_id)
+            policy.batch_size = 2
+            await db.commit()
+        before_small_batches = await self.snapshot()
+        async with self.sessions() as db:
+            chunked = await service.projection(db, 'biketrek')
+        self.assertEqual(chunked['stock']['batch_size'], 2)
+        self.assertEqual(chunked['stock']['initial_batch_calls'], 2)
+        self.assertEqual(chunked['stock']['all_changed_pass_calls'], 8)
+        self.assertEqual(await self.snapshot(), before_small_batches)
 
     async def test_missing_shop_never_probes_and_staged_local_changes_are_not_flushed(self):
         before = await self.snapshot()

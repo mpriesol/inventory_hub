@@ -325,6 +325,8 @@ Kontrolované údržbové publikovanie vlastných zásob je zdokumentované v [s
 
 Kontrola 14. 10. 2026 potvrdzuje, že samotná autorita a čerstvý inbox nezabraňujú prepísaniu natívnej Upgates objednávkovej zmeny. Verejne doložené vypnutie týchto zápisov ani CAS zatiaľ chýba. Čítacia diagnostika kapacity v nastaveniach dostupností zistí kvótu a oprávnenia jediným volaním `/status` a porovná ich s modelom dnešného publishera/zberača/spracovateľa. Neaktivuje synchronizáciu, nemení intervaly a nie je dôkazom bezpečného živého pilotu. [Presné hranice, kapacitný model a návrh protokolu](docs/upgates-sync-readiness.md).
 
+Pravidelný publisher číta úvodný stav v presne ohraničených skupinách produktov a variantov. Čerstvá úplná odpoveď môže po lokálnych kontrolách potvrdiť nezmenené SKU bez ďalšieho volania. Zmenená alebo časovo stará položka zachováva samostatné čítanie pred zápisom; PUT a kontrolné čítanie zostávajú po jednej položke. Diagnostika porovnáva pôvodné individuálne čítania s presným počtom skupín. Táto úspora API nemení nevyriešený kontrakt skladových zapisovateľov ani nezapína prenos.
+
 ## Nové oddelené workflow (014–017)
 
 Dodávateľský worker `supplier_availability_worker` uchováva prijaté pozorovania a vyhodnocuje ich platnosť. Zlyhanie alebo neúplný feed nikdy nevynuluje fyzickú zásobu. `stock_sync_worker` prenáša vlastné voľné kusy, dostupnosť a objednateľnosť iba pri výslovne nastavenej skladovej autorite, čerstvých objednávkach a povolenom serverovom zápise `STOCK_SYNC_WRITE_ENABLED` (default false). Údržbový publisher zostáva samostatný.

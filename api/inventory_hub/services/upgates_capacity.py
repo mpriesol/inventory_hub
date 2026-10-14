@@ -199,6 +199,8 @@ are scenarios if enabled, never a claim about measured or current API usage.
         listed = (await db.execute(listed_query.order_by(Product.id))).all()
         confirmed = None
         eligible = None
+        initial_batches = None
+        eligible_targets = {}
         errors = Counter()
         if warehouse is not None:
             confirmed = await db.scalar(select(func.count()).select_from(StockTracking).where(
@@ -224,6 +226,15 @@ are scenarios if enabled, never a claim about measured or current API usage.
                         errors[error.code] += 1
                         continue
                     eligible += 1
+                    eligible_targets[row['sku']] = row['target']
+            # The worker chunks listed Product.id rows before filtering local
+            # eligibility; invalid rows still occupy space in that chunk.
+            initial_batches = 0
+            for start in range(0, len(listed), values['batch_size']):
+                targets = [eligible_targets[row.sku] for row in listed[start:start + values['batch_size']]
+                           if row.sku in eligible_targets]
+                if targets:
+                    initial_batches += len(stock_sync.source.batch_groups(targets))
         jobs = dict.fromkeys(JOB_STATUSES, 0)
         jobs.update(dict((await db.execute(select(OrderProcessingJob.status, func.count())
             .where(OrderProcessingJob.shop_id == shop.id).group_by(OrderProcessingJob.status))).all()))
@@ -243,10 +254,13 @@ are scenarios if enabled, never a claim about measured or current API usage.
         'eligibility_errors': [{'code': code, 'count': count} for code, count in sorted(errors.items())],
         'stock': {'configured': policy is not None, 'enabled': bool(policy and policy.enabled),
                   'authorized': bool(policy and policy.authorized), 'server_enabled': stock_sync.enabled(),
-                  'interval_seconds': values['interval_seconds'], 'unchanged_pass_calls': eligible,
-                  'all_changed_pass_calls': 3 * eligible if eligible is not None else None,
-                  'daily_unchanged_if_enabled': _daily(eligible, values['interval_seconds']),
-                  'daily_all_changed_if_enabled': _daily(3 * eligible if eligible is not None else None,
+                  'interval_seconds': values['interval_seconds'], 'batch_size': values['batch_size'],
+                  'call_model': 'batched_unchanged_fresh_reads_before_write',
+                  'initial_batch_calls': initial_batches, 'singleton_pass_calls': eligible,
+                  'unchanged_pass_calls': initial_batches,
+                  'all_changed_pass_calls': initial_batches + 3 * eligible if eligible is not None else None,
+                  'daily_unchanged_if_enabled': _daily(initial_batches, values['interval_seconds']),
+                  'daily_all_changed_if_enabled': _daily(initial_batches + 3 * eligible if eligible is not None else None,
                                                           values['interval_seconds'])},
         'orders': {'collector_enabled': bool(collector and collector.enabled),
                    'processing_mode': config['mode'] if config else 'manual',
@@ -265,9 +279,72 @@ are scenarios if enabled, never a claim about measured or current API usage.
     }
 
 
-async def diagnose(db, shop_code):
+async def _sample_targets(db, shop_code):
+    """At most four exact leaves per kind; bounded to two product requests.
+
+    Four 100-character UTF-8 codes fit the transport's 6 KB encoded filter
+    even in the worst case. Never infer or require a local stock quantity.
+    """
+    from inventory_hub.db_models import Shop
+    with db.no_autoflush:
+        rows = (await db.execute(select(Product.id, Product.sku, Product.is_active, ShopProduct)
+            .join(ShopProduct, ShopProduct.product_id == Product.id).join(Shop, Shop.id == ShopProduct.shop_id)
+            .where(Shop.code == shop_code).order_by(Product.id, ShopProduct.id))).all()
+    codes = [row.ShopProduct.variant_code if row.ShopProduct.is_variant else row.ShopProduct.external_code for row in rows]
+    owners = Counter(code.casefold() for code in codes if isinstance(code, str))
+    mappings = Counter(row.id for row in rows)
+    counts = Counter()
+    targets = []
+    for row, code in zip(rows, codes):
+        mapping = row.ShopProduct
+        if (not row.is_active or not mapping.is_listed or code != row.sku or not isinstance(code, str)
+                or owners[code.casefold()] != 1 or mappings[row.id] != 1):
+            continue
+        kind = 'variants' if mapping.is_variant else 'products'
+        if counts[kind] >= 4:
+            continue
+        try:
+            target = stock_sync.source.transport._target({'code': code,
+                'parent_code': mapping.parent_code if mapping.is_variant else code,
+                'variant_code': code if mapping.is_variant else None})
+        except stock_sync.source.SourceError:
+            continue
+        targets.append(target)
+        counts[kind] += 1
+    return targets
+
+
+async def _sample_probe(shop_code, targets, status_probe):
+    report = {'requested': True, 'ok': False,
+              'selected_products': sum(row['variant_code'] is None for row in targets),
+              'selected_variants': sum(row['variant_code'] is not None for row in targets),
+              'planned_requests': len(stock_sync.source.batch_groups(targets)) if targets else 0,
+              'requests_attempted': 0, 'error': None}
+    if not targets:
+        report['error'] = 'upgates_capacity_sample_empty'
+    elif not status_probe['ok']:
+        report['error'] = 'upgates_capacity_sample_status_required'
+    else:
+        # On a partial/failed group sequence the exact sent count is unknown.
+        # Never report the maximum planned count as actual measured traffic.
+        report['requests_attempted'] = None
+        try:
+            await stock_sync.source.read_many(shop_code, targets, status_probe['target_fingerprint'])
+            report.update(ok=True, requests_attempted=report['planned_requests'])
+        except stock_sync.source.SourceError as error:
+            report['error'] = error.code
+        except Exception:
+            report['error'] = 'upgates_capacity_sample_unavailable'
+    return report
+
+
+async def diagnose(db, shop_code, *, include_product_sample=False):
     local = await projection(db, shop_code)
+    targets = await _sample_targets(db, shop_code) if include_product_sample else None
     # End the read-only transaction before the single external request.
     await db.rollback()
     remote = await asyncio.to_thread(probe, shop_code)
-    return {'shop_code': shop_code, **remote, 'projection': local}
+    report = {'shop_code': shop_code, **remote, 'projection': local}
+    if targets is not None:
+        report['catalog_probe'] = await _sample_probe(shop_code, targets, remote['probe'])
+    return report
