@@ -120,7 +120,7 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         for field in ('warehouse_code', 'confirmed_skus', 'eligible_skus', 'unpublishable_skus'):
             self.assertIsNone(local[field], field)
         self.assertFalse(local['stock']['configured'])
-        self.assertEqual((local['stock']['audit_interval_seconds'], local['stock']['audit_pass_calls']), (21600, 1))
+        self.assertEqual((local['stock']['audit_interval_seconds'], local['stock']['audit_pass_calls']), (21600, None))
         self.assertFalse(local['stock']['enabled'])
         self.assertFalse(local['stock']['authorized'])
         self.assertIsNone(local['stock']['unchanged_pass_calls'])

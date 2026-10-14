@@ -683,7 +683,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_order_deduction_is_not_sent_back_to_its_own_shop(self):
         async with self.session() as db:
             balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
-            balance.qty_on_hand,balance.qty_reserved=5,0
+            balance.qty_on_hand,balance.qty_reserved,balance.total_value=5,0,15
         self.remote.update(stock='4',availability='SKLADOM')
         await self.checkpoint(local=4)
         await self.processed_order(quantity='2')
@@ -699,7 +699,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_backorder_offset_uses_full_native_demand_not_only_allocated_quantity(self):
         async with self.session() as db:
             balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
-            balance.qty_on_hand,balance.qty_reserved=5,0
+            balance.qty_on_hand,balance.qty_reserved,balance.total_value=5,0,15
         self.remote.update(stock='4',availability='SKLADOM')
         await self.checkpoint(local=4)
         await self.processed_order(quantity='8')
@@ -811,7 +811,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.session() as db:
             hold=await db.get(StockPublicationHold,self.hold_id)
             hold.active,hold.created_at,hold.closed_at=True,self.clock,None
-            (await db.get(StockShopSettings,self.shop_id)).automation_starts_at=None
+            processing=await db.get(StockShopSettings,self.shop_id)
+            processing.mode,processing.automation_starts_at='manual',None
         self.remote.update(stock='4',availability='SKLADOM')
         with self.assertRaises(service.SyncError) as raised:
             await self.invoke('baseline',SyncBaselineInput(shop_code='biketrek',hold_id=self.hold_id,
