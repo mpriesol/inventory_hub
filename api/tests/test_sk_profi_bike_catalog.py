@@ -175,15 +175,14 @@ class SkProfiBikeCatalogTests(unittest.TestCase):
         with patch("inventory_hub.services.catalog.supplier_config", return_value=cfg):
             self.assertEqual(configuration("sk-profi-bike", "availability")[2], "sk-profi-bike")
         rows = parse_availability(self.path, "sk-profi-bike", cfg, "availability", "sk-profi-bike")
-        self.assertEqual([row.sku for row in rows], ["0001", "0002", "0003", "0004"])
+        self.assertEqual([row.sku for row in rows], ["0001", "0002"])
         self.assertEqual((rows[0].quantity, rows[0].available, rows[0].quantity_kind), (3, True, "exact"))
         self.assertEqual((rows[1].quantity, rows[1].available), (0, False))
-        for row in rows[2:]:
-            self.assertIsNone(row.quantity)
-            self.assertIsNone(row.available)
-            self.assertEqual(row.quantity_kind, "unknown")
-        self.assertEqual(rows[2].raw["stock"], "-1")
-        self.assertEqual(rows[2].raw["warning"], "negative_supplier_stock")
+        self.assertEqual(rows.report()["total"], 6)
+        self.assertEqual(rows.report()["rejected"], 3)
+        self.assertEqual(rows.report()["unknown"], 1)
+        self.assertEqual(rows.issues[0]["stock"], "-1")
+        self.assertEqual(rows.issues[0]["code"], "supplier_availability_invalid_quantity")
 
     def test_stock_refresh_rejects_duplicates_malformed_and_unknown_only_feeds(self):
         cfg = {**CFG, "feeds": {"sources": {"stock": {"type": "stock"}}}}
@@ -195,8 +194,10 @@ class SkProfiBikeCatalogTests(unittest.TestCase):
             '<option><sklad>1</sklad></option>',
         ):
             self.path.write_text(f'<products><product><id>p</id><options>{options}</options></product></products>', encoding="utf-8")
-            with self.subTest(options=options), self.assertRaises(AvailabilityError):
-                parse_availability(self.path, "sk-profi-bike", cfg, "stock", "sk-profi-bike")
+            with self.subTest(options=options):
+                result = parse_availability(self.path, "sk-profi-bike", cfg, "stock", "sk-profi-bike")
+                self.assertEqual(len(result), 0)
+                self.assertGreater(result.report()["rejected"], 0)
         for xml in ('<products><unexpected/></products>',
                     '<products><product><options><bad/></options></product></products>',
                     '<products><product><options/><options/></product></products>',
