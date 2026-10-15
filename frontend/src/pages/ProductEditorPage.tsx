@@ -347,8 +347,7 @@ export function ProductEditorPage() {
     const label = supplier?.fresh && supplier.available === true ? supplier.label : supplier?.fresh && supplier.available === false ? t('productEditor.supplierOutOfStock') : t('productEditor.verifyAvailability');
     const status = supplier?.reason === 'supplier_quantity_unknown' ? 'unknown_quantity' : supplier?.status || (supplier?.fresh ? 'fresh' : 'unknown');
     const supplierCode = supplier?.supplier || supplier?.source || (row.supplier_codes.length === 1 ? row.supplier_codes[0].supplier_code : '');
-    const supplierSku = supplier?.supplier_sku || row.supplier_codes.find(item => item.supplier_code === supplierCode)?.code;
-    const params = new URLSearchParams(); if (supplierCode) params.set('supplier', supplierCode); if (supplierSku) params.set('sku', supplierSku);
+    const params = new URLSearchParams(); if (supplierCode) params.set('supplier', supplierCode);
     const action = supplier?.action || (status === 'missing_link' || status === 'conflict' ? 'link' : status === 'unconfigured' || status === 'configuration_error' ? 'configure' : 'check_source');
     const refreshState = supplier?.refresh_state;
     const navigationBlocked = dirtyCount > 0 || !!editing || locked || !!busy;

@@ -33,14 +33,13 @@ def read_products(path: Path):
 
 
 def read_stock(path: Path):
-    """Skip anonymous stock options rather than inventing a supplier SKU."""
+    """Return every stock option so validation can report missing identities."""
     for parent in read_products(path):
         for option in parent.findall("options/option"):
             if len(option.findall("kod")) > 1 or len(option.findall("sklad")) > 1:
                 raise ValueError("Ambiguous SK Profi Bike stock item")
             code = _get_text(option, "kod")
-            if code:
-                yield code, _get_text(option, "sklad") or None
+            yield code, _get_text(option, "sklad") or None
 
 
 def _parameters(parent):

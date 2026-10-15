@@ -5,11 +5,11 @@ Používateľský postup pre stránku **Nastavenia → Dostupnosti a prenos zás
 ## Načítanie dostupnosti dodávateľa
 
 1. Odomknite stránku existujúcim operátorským tokenom a kliknite **Načítať / obnoviť nastavenia a stav**.
-2. Vyberte nakonfigurovaný zdroj dostupnosti. Nastavte interval načítania v sekundách, platnosť údajov a minimálne pokrytie oproti predchádzajúcemu prijatému zdroju.
+2. Vyberte nakonfigurovaný zdroj dostupnosti. Nastavte interval načítania v sekundách, v rozšírených nastaveniach platnosť údajov a prah upozornenia na menší feed.
 3. Uložte nastavenia. Pre jednorazový import stačí **Načítať dostupnosť teraz**. Pre ďalšie pravidelné importy zapnite **Pravidelne načítavať tento zdroj** a uložte zmenu.
-4. Obnovte stav. Sledujte posledné úspešné načítanie, počet položiek a prípadnú chybu. Ručné spustenie iba zaradí prácu do fronty; neznamená dokončený import.
+4. Počas čakania a načítania sa stav obnovuje automaticky. Súhrn ukáže počet položiek vo feede, prijatých, chybných a bez údaja o množstve. **Zobraziť preskočené položky** otvorí kódy, hodnoty a konkrétne dôvody. Ručné spustenie iba zaradí prácu do fronty; neznamená dokončený import.
 
-Interval je 300 až 604 800 sekúnd. Platnosť je 300 až 2 592 000 sekúnd a musí byť aspoň taká dlhá ako interval. Minimálne pokrytie 1 až 100 % chráni pred neúplným zdrojom; predvolené nastavenie je 100 %. Pri výrazne menšom zdroji najprv overte príčinu. Chybný zdroj neprepíše predchádzajúce údaje nulami. Po vypršaní ich platnosti sa použije neznáma dostupnosť.
+Interval je 300 až 604 800 sekúnd. Platnosť je 300 až 2 592 000 sekúnd a musí byť aspoň taká dlhá ako interval. Prah 1 až 100 % upozorní na menší zdroj; predvolené nastavenie je 100 %. Platné položky sa prijmú aj pri upozornení. Pri výrazne menšom zdroji najprv overte príčinu. Chybné alebo chýbajúce položky neprepíšu predchádzajúce údaje nulami a nepredĺžia ich platnosť. Po vypršaní ich platnosti sa použije neznáma dostupnosť.
 
 Údaje dodávateľa nikdy nepridávajú fyzické kusy do nášho skladu. Text dostupnosti patrí do konfigurácie konkrétneho dodávateľa. Štandardný text pre dostupný tovar dodávateľa je **do 5 dní**, ak dodávateľ nemá vlastné nastavenie. Neznáma alebo zastaraná dostupnosť má text **overíme** a tovar zostáva objednateľný.
 

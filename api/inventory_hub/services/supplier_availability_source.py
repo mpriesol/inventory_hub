@@ -1,4 +1,5 @@
 """Bounded supplier reads, sharing the catalog downloader and proven parsers."""
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -96,32 +97,46 @@ def observation(sku, internal, external=None, label=None):
          "availability": str(label)[:255] if label else None})
 
 
-def parse(path, supplier, cfg, feed_key, parser):
-    records = []
+def diagnostic_value(value):
+    """Only bounded stock fields are exposed; never echo a URL or exception."""
+    if value is None:
+        return None
+    token = str(value)
+    if "://" in token:
+        return "[redacted]"
+    return "".join(c for c in token if ord(c) >= 32 and ord(c) != 127)[:120]
+
+
+class ParsedAvailability(list):
+    """Accepted observations plus rejected source rows; list-compatible callers."""
+    def __init__(self, records=(), issues=(), total=None):
+        super().__init__(records)
+        self.issues = list(issues)
+        self.total = len(self) + len(self.issues) if total is None else total
+
+    def report(self):
+        unknown = sum(item["kind"] == "unknown" for item in self.issues)
+        return {"total": self.total, "accepted": len(self),
+                "rejected": len(self.issues) - unknown, "unknown": unknown,
+                "reasons": dict(Counter(item["code"] for item in self.issues))}
+
+
+def _source_rows(path, supplier, cfg, feed_key, parser):
     is_stock = feed_key == "stock" or (cfg["feeds"]["sources"][feed_key].get("type") == "stock")
-    if is_stock and parser == "paul-lange":
+    if parser == "northfinder":
+        from inventory_hub.adapters.northfinder_catalog import read_availability
+        for sku, raw in read_availability(path, cfg):
+            yield sku, raw, None, None, None
+    elif is_stock and parser == "paul-lange":
         for item in read_feed_items(path):
-            records.append(observation(_get_text(item, "ITEM_ID"), _get_text(item, "STOCK"),
-                                       _get_text(item, "STOCK_EXTERNAL"), _get_text(item, "DELIVERY")))
+            yield (_get_text(item, "ITEM_ID"), _get_text(item, "STOCK"),
+                   _get_text(item, "STOCK_EXTERNAL"), _get_text(item, "DELIVERY"), None)
     elif is_stock and parser == "sk-profi-bike":
         from inventory_hub.adapters.sk_profi_bike_catalog import read_stock
         for sku, raw in read_stock(path):
-            try:
-                number = Decimal(raw.replace(",", ".")) if raw is not None else None
-                negative = number is not None and number.is_finite() and number < 0
-            except InvalidOperation:
-                negative = False
-            row = observation(sku, None if negative else raw)
-            if negative:
-                # Negative supplier balances do not prove an orderable quantity,
-                # and must never become a fabricated zero or an absolute value.
-                row = Observation(row.sku, row.available, row.quantity, row.quantity_kind,
-                                  {**row.raw, "stock": raw, "warning": "negative_supplier_stock"})
-            records.append(row)
+            yield sku, raw, None, None, None
     else:
         for product, _raw in catalog.PARSERS[parser](path, supplier, cfg, feed_key):
-            if "duplicate_supplier_code" in product.import_blockers:
-                raise AvailabilityError("supplier_availability_duplicate_identity", 422)
             internal = product.supplier_stock_raw
             if internal is None:
                 internal = (str(product.supplier_stock_min) + "+" if product.supplier_stock_min is not None
@@ -129,14 +144,43 @@ def parse(path, supplier, cfg, feed_key, parser):
             external = product.supplier_stock_external_raw
             if external is None:
                 external = product.supplier_external_available if product.supplier_external_available is not None else product.supplier_stock_external
-            records.append(observation(product.code, internal, external, product.availability))
-    if not records or len(records) > 250000:
+            code = "supplier_availability_duplicate_identity" if "duplicate_supplier_code" in product.import_blockers else None
+            yield product.code, internal, external, product.availability, code
+
+
+def parse(path, supplier, cfg, feed_key, parser):
+    # Finish structural parsing before accepting anything. A broken XML/download is
+    # not a completed source; a bad quantity in an otherwise complete feed is local.
+    rows = []
+    counts = Counter()
+    for row in _source_rows(path, supplier, cfg, feed_key, parser):
+        rows.append(row)
+        if isinstance(row[0], str) and row[0]:
+            counts[row[0]] += 1
+        if len(rows) > 250000:
+            raise AvailabilityError("supplier_availability_empty_or_oversized", 422)
+    if not rows:
         raise AvailabilityError("supplier_availability_empty_or_oversized", 422)
-    if len({row.sku for row in records}) != len(records):
-        raise AvailabilityError("supplier_availability_duplicate_identity", 422)
-    if not any(row.available is not None for row in records):
-        raise AvailabilityError("supplier_availability_no_quantities", 422)
-    return records
+    records, issues = [], []
+    for position, (sku, internal, external, label, source_error) in enumerate(rows, 1):
+        code, kind = source_error, "rejected"
+        if isinstance(sku, str) and counts[sku] > 1:
+            code = "supplier_availability_duplicate_identity"
+        item = None
+        if not code:
+            try:
+                item = observation(sku, internal, external, label)
+                if item.available is None:
+                    code, kind = "supplier_availability_unknown_quantity", "unknown"
+            except AvailabilityError as error:
+                code = error.code
+        if code:
+            issues.append({"row": position, "sku": diagnostic_value(sku),
+                "stock": diagnostic_value(internal), "external_stock": diagnostic_value(external),
+                "code": code, "kind": kind})
+        else:
+            records.append(item)
+    return ParsedAvailability(records, issues, len(rows))
 
 
 def fetch(plan):

@@ -73,16 +73,20 @@ class SupplierFactsTests(unittest.TestCase):
             self.assertEqual((rows[0].sku, rows[0].quantity_kind), ("145008", "minimum"))
             path.write_text("<SHOP><SHOPITEM><ITEM_ID>A</ITEM_ID><STOCK>0</STOCK></SHOPITEM>"
                             "<SHOPITEM><ITEM_ID>A</ITEM_ID><STOCK>1</STOCK></SHOPITEM></SHOP>")
-            with self.assertRaises(AvailabilityError):
-                parse(path, "paul-lange", {"feeds": {"sources": {"stock": {}}}}, "stock", "paul-lange")
+            rows = parse(path, "paul-lange", {"feeds": {"sources": {"stock": {}}}}, "stock", "paul-lange")
+            self.assertEqual(rows.report()["rejected"], 2)
+            self.assertEqual(len(rows), 0)
 
     def test_empty_and_unknown_only_feeds_cannot_replace_last_success(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "stock.xml"
-            for content in ("<SHOP/>", "<SHOP><SHOPITEM><ITEM_ID>A</ITEM_ID></SHOPITEM></SHOP>"):
-                path.write_text(content)
-                with self.assertRaises(AvailabilityError):
-                    parse(path, "paul-lange", {"feeds": {"sources": {"stock": {}}}}, "stock", "paul-lange")
+            path.write_text("<SHOP/>")
+            with self.assertRaises(AvailabilityError):
+                parse(path, "paul-lange", {"feeds": {"sources": {"stock": {}}}}, "stock", "paul-lange")
+            path.write_text("<SHOP><SHOPITEM><ITEM_ID>A</ITEM_ID></SHOPITEM></SHOP>")
+            rows = parse(path, "paul-lange", {"feeds": {"sources": {"stock": {}}}}, "stock", "paul-lange")
+            self.assertEqual(rows.report()["unknown"], 1)
+            self.assertEqual(len(rows), 0)
         self.assertFalse(service.coverage_ok(99, 100, 100))
         self.assertTrue(service.coverage_ok(99, 100, 95))
         self.assertFalse(service.coverage_ok(0, 0, 1))
@@ -122,7 +126,7 @@ class SupplierRoutesTests(unittest.TestCase):
              patch.object(service, "configure", AsyncMock(return_value={"revision": 1})), \
              patch.object(service, "request_run", AsyncMock(return_value={"queued": True})), \
              patch.object(service, "source_observation", AsyncMock(return_value={"status": "not_loaded"})) as observation_read:
-            for method, url in (("GET", "/supplier-availability"), ("GET", "/supplier-availability/northfinder/observation?sku=103404-281-103"), ("PUT", "/supplier-availability/paul-lange"),
+            for method, url in (("GET", "/supplier-availability"), ("GET", "/supplier-availability/paul-lange/runs/1/failures"), ("GET", "/supplier-availability/northfinder/observation?sku=103404-281-103"), ("PUT", "/supplier-availability/paul-lange"),
                                 ("POST", "/supplier-availability/paul-lange/run")):
                 response = client.request(method, url, json={"expected_revision": 0})
                 self.assertEqual(response.status_code, 401)
