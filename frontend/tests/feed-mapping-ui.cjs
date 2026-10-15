@@ -24,6 +24,43 @@ const { FeedMappingPage } = require('../src/pages/FeedMappingPage.tsx');
 const access = require('../src/api/access.ts');
 const { emptyFeedDefinition } = require('../src/api/feedMapping.ts');
 const clone = value => structuredClone(value);
+const csv = require('../src/utils/categoryMappingCsv.ts');
+const csvFixture = {supplier:'fixture',feedKey:'products',shop:'biketrek',revision:2,
+  sources:[{source:'001',label:'Duše; "Špeciálne"\nModré',count:4},{source:'=supplier',label:'=SUM(A1)',count:1}],
+  categories:[{code:'01',name:'Duše',path:'Menu / Duše'},{code:'hidden',name:'Skryté',path:'Skryté',active:false},{code:'menu',name:'Menu',path:'Menu',assignable:false}]};
+const csvRules = [{source:'001',target_code:'01'},{source:'=supplier',target_code:'hidden'}];
+const csvText = csv.categoryMappingCsv(csvFixture,csvRules);
+assert(csvText.includes("'=supplier"), 'Spreadsheet formulas are escaped');
+assert.deepEqual(csv.importCategoryMappingCsv(csvText,csvFixture,[]).rules,csvRules, 'Quoted Unicode, newlines, formula-like identifiers and leading zeros round trip');
+assert(csv.shopCategoriesCsv(csvFixture).includes('false'), 'Inactive and nonassignable categories retain explicit flags');
+const simpleCsv = (rows,delimiter=';') => ['supplier;feed_key;shop;mapping_revision;source;target_code',...rows].map(row=>row.replaceAll(';',delimiter)).join('\n');
+const goodRow = 'fixture;products;biketrek;2;001;01';
+assert.deepEqual(csv.importCategoryMappingCsv(simpleCsv([goodRow],','),csvFixture,[]).rules,[csvRules[0]]);
+assert.deepEqual(csv.importCategoryMappingCsv(simpleCsv([goodRow],'\t'),csvFixture,[]).rules,[csvRules[0]]);
+assert.deepEqual(csv.importCategoryMappingCsv(simpleCsv(['fixture;products;biketrek;2;001;','fixture;products;biketrek;2;=supplier;01']),csvFixture,csvRules).rules,[csvRules[0],{source:'=supplier',target_code:'01'}], 'Blank rows preserve existing mappings');
+for(const [text,code] of [
+  [simpleCsv([goodRow.replace('fixture','other')]),'csvContext'],
+  [simpleCsv([goodRow.replace('biketrek','xtrek')]),'csvContext'],
+  [simpleCsv([goodRow.replace(';2;',';1;')]),'csvStale'],
+  [simpleCsv([goodRow,goodRow]),'csvDuplicate'],
+  [simpleCsv([goodRow.replace(';001;',';unknown;')]),'csvSource'],
+  [simpleCsv([goodRow.replace(/01$/,'menu')]),'csvTarget'],
+  [simpleCsv([goodRow.replace(/01$/,'gone')]),'csvTarget'],
+  [simpleCsv([goodRow.replace(/01$/,'')]),'csvEmpty'],
+  [simpleCsv([goodRow])+'\n"unterminated','csvMalformed'],
+  ['source;target_code\n001;01','csvHeaders'],
+  ['x'.repeat(csv.CATEGORY_CSV_MAX_BYTES+1),'csvTooLarge'],
+  [simpleCsv(Array(5001).fill(goodRow)),'csvTooManyRows'],
+]) assert.throws(()=>csv.importCategoryMappingCsv(text,csvFixture,csvRules),error=>error.code===code,code);
+assert.deepEqual(csvRules,[{source:'001',target_code:'01'},{source:'=supplier',target_code:'hidden'}], 'Rejected imports do not mutate existing rules');
+const manySources = Array.from({length:236},(_,i)=>({source:'source-'+i,label:'Kategória '+i,count:1}));
+assert.equal(csv.categoryMappingCsv({...csvFixture,sources:manySources},[]).trim().split('\n').length,237,'Export is independent of the 150-card display limit');
+const downloads=[], blobs=new Map();
+URL.createObjectURL = blob => {const url='blob:fixture-'+blobs.size;blobs.set(url,blob);return url;};
+URL.revokeObjectURL = () => {};
+const originalAnchorClick = dom.window.HTMLAnchorElement.prototype.click;
+dom.window.HTMLAnchorElement.prototype.click = function(){if(this.download)downloads.push({name:this.download,blob:blobs.get(this.href)});else originalAnchorClick.call(this);};
+let largeTargets = false;
 const fields = [
   { key: 'code', label: 'Code', type: 'text' },
   { key: 'name', label: 'Name', type: 'text' },
@@ -103,7 +140,7 @@ global.fetch = async (path, init = {}) => {
       { code: 'tubes', parent_code: 'components', names: { sk: 'Duše' }, active: true, assignable: true },
       { code: 'tires', parent_code: 'components', names: { sk: 'Plášte' }, active: true, assignable: true },
       { code: 'hidden', parent_code: 'components', names: { sk: 'Neaktívne' }, active: false, assignable: true },
-    ], parameters: [],
+    ...(largeTargets ? [{code:'other',parent_code:null,names:{sk:'Ďalšie kategórie'},assignable:true},...Array.from({length:1000},(_,i)=>({code:'target-'+i,parent_code:'other',names:{sk:'Cieľ '+i},assignable:true}))] : [])], parameters: [],
   };
   else throw new Error('Unexpected feed mapping request: ' + url.pathname);
   return { ok: status === 200, status, json: async () => data };
@@ -240,6 +277,54 @@ async function navigate(path) { await act(async () => { void router.navigate(pat
   assert.deepEqual(baseStored.definition.category_rules, []);
   assert(!button(f('apply')), 'Shop overlays do not expose shared catalog remap');
 
+  const manualCategories = [...document.querySelectorAll('details')].find(element => element.querySelector('summary')?.textContent === f('manualCategories'));
+  assert.equal(document.querySelectorAll('.fm-manual-category').length, 0, 'Closed advanced mapping does not mount a category tree for every saved rule');
+  await click(manualCategories.querySelector('summary'));
+  assert.equal(document.querySelectorAll('.fm-manual-category').length, 2);
+  assert.equal(document.querySelectorAll('.category-tree-list').length, 0, 'Closed per-row pickers mount no hidden options');
+  await click(manualCategories.querySelector('.fm-manual-category details summary'));
+  assert.equal(document.querySelectorAll('.category-tree-list').length, 1, 'Only the opened picker mounts its options');
+  assert(manualCategories.open, 'Opening a nested category picker does not close its editor');
+  await input(labelled(f('supplierCategoryRow', {row: 1})), 'edited-source');
+  await click(manualCategories.querySelector('summary'));
+  assert.equal(document.querySelectorAll('.fm-manual-category').length, 0);
+  await click(manualCategories.querySelector('summary'));
+  assert.equal(labelled(f('supplierCategoryRow', {row: 1})).value, 'edited-source', 'Collapsing controls preserves unsaved mapping values');
+  await input(labelled(f('supplierCategoryRow', {row: 1})), 'supplier-tubes');
+  await click(manualCategories.querySelector('summary'));
+
+  const beforeCsvWrites = calls.filter(call=>call.method==='PUT').length;
+  await input(byLabelText(f('searchSupplierCategories')), 'Duše');
+  await click(button(f('csvExportMapping')));
+  assert.equal(downloads.at(-1).name,'fixture-biketrek-category-mapping.csv');
+  const mappingExport = await downloads.at(-1).blob.text();
+  assert(mappingExport.includes('supplier-tubes') && mappingExport.includes('supplier-tires'),'Export includes filtered-out supplier categories');
+  await click(button(f('csvExportShop')));
+  const shopExport = await downloads.at(-1).blob.text();
+  assert(shopExport.includes('menu') && shopExport.includes('hidden'),'Shop export includes the complete tree and availability flags');
+  async function uploadCsv(text){await act(async()=>{
+    const upload=labelled(f('csvFile'));
+    Object.defineProperty(upload,'files',{value:[{size:Buffer.byteLength(text),text:async()=>text}],configurable:true});
+    upload.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await tick();
+  });}
+  const currentCsv = rows=>simpleCsv(rows.map(row=>'fixture;products;biketrek;'+shopStored.revision+';'+row));
+  await uploadCsv(currentCsv(['supplier-tubes;tubes','supplier-tires;gone']));
+  assert(document.querySelector('[role="alert"]').textContent.includes(f('csvTarget',{row:3})));
+  await click(button(f('csvExportMapping')));
+  assert.equal(await downloads.at(-1).blob.text(),mappingExport,'A bad later row rejects the whole import without losing draft edits');
+  await uploadCsv(currentCsv(['supplier-tubes;tubes','supplier-tires;tires']));
+  assert(document.body.textContent.includes(f('csvImported',{added:0,changed:2,unchanged:0,blank:0})));
+  assert.equal(calls.filter(call=>call.method==='PUT').length,beforeCsvWrites,'CSV validation and loading do not persist or publish');
+  await input(byLabelText(f('searchSupplierCategories')), '');
+  assert(sourceCategory('Komponenty / Duše').textContent.includes('Menu / Komponenty / Duše'),'Imported assignments appear in the graphical overview');
+  await click(button(f('save')));
+  assert.deepEqual(shopStored.definition.category_rules,[{source:'supplier-tubes',target_code:'tubes'},{source:'supplier-tires',target_code:'tires'}]);
+  await click(sourceCategory('Komponenty / Duše'));
+  await click(labelled(f('connectCategory',{name:'Menu / Komponenty / Neaktívne'})));
+  await drag(sourceCategory('Komponenty / Plášte'),labelled(f('connectCategory',{name:'Menu / Komponenty'})));
+  await click(button(f('save')));
+  assert.deepEqual(shopStored.definition.category_rules,categorySave.body.definition.category_rules,'Click and drag/drop continue to work after a CSV import');
+
   await tab('parameters');
   await input(labelled(f('parameterProfile')), 'tires');
   assert(!labelled(f('connectParameter', {name: 'Dĺžka ventilu'})), 'Category profiles narrow the available registry parameters');
@@ -308,7 +393,22 @@ async function navigate(path) { await act(async () => { void router.navigate(pat
   assert(document.body.textContent.includes('Nový produktový feed'));
   assert(!document.body.textContent.includes('Starý produktový feed'), 'Late supplier metadata cannot overwrite the current feed selector');
   assert.equal(count('/remap'), 1);
+  largeTargets=true;
+  shopStored.definition.category_rules=Array.from({length:236},(_,i)=>({source:'large-'+i,target_code:'tubes'}));
+  await navigate('/suppliers/fixture/feed-mapping');
+  await input(labelled(f('scope')),'biketrek');await act(tick);
+  assert.equal(document.querySelectorAll('.fm-manual-category').length,0);
+  assert(document.querySelectorAll('button').length<550,'236 saved rules and 1,000 target categories keep the ordinary graphical view bounded');
+  const largeManual=[...document.querySelectorAll('details')].find(element=>element.querySelector('summary')?.textContent===f('manualCategories'));
+  await click(largeManual.querySelector('summary'));
+  assert.equal(document.querySelectorAll('.fm-manual-category').length,236);
+  assert.equal(document.querySelectorAll('.category-tree-list').length,0,'Even an expanded advanced editor has no hidden per-row options');
+  await click(largeManual.querySelector('.fm-manual-category details summary'));
+  assert.equal(document.querySelectorAll('.category-tree-list').length,1);
+  assert(!document.querySelector('.category-tree-list').textContent.includes('Cieľ 999'),'Collapsed unrelated branches do not mount their 1,000 descendants');
+  await click(largeManual.querySelector('summary'));
+  assert.equal(document.querySelectorAll('.category-tree-list').length,0);
   await act(async () => root.unmount());
   router.dispose();
-  console.log('Feed mapping UI passed: authenticated automatic inspection, click/drop mapping, exact parameter pairs, parent/inactive categories with protected system menus, isolated scopes/preview/refresh, revision conflicts, upload, navigation and stale supplier responses.');
+  console.log('Feed mapping UI passed: CSV round trips and atomic validation, bounded large-rule rendering, authenticated automatic inspection, click/drop mapping, exact parameter pairs, parent/inactive categories with protected system menus, isolated scopes/preview/refresh, revision conflicts, upload, navigation and stale supplier responses.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
