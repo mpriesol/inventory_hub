@@ -53,7 +53,10 @@ export async function hubRequest<T>(path: string, body?: unknown, signal?: Abort
   });
   const data = await response.json();
   if (response.status === 401 && currentUser && started === revision) setHubUser(null);
-  if (!response.ok) throw new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
+  if (!response.ok) {
+    const error = new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
+    throw Object.assign(error, { status: response.status, knownUnapplied: data?.detail?.known_unapplied === true });
+  }
   return data;
 }
 

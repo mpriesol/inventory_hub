@@ -10,12 +10,14 @@ Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do U
 
 Pri prvom načítaní sa predvolí aktívny sklad označený na serveri `is_default` (Hlavný sklad). Poradie ani názov skladu nerozhodujú. Ručný výber iného skladu alebo **Všetky sklady** zostáva zachovaný aj pri opätovnom načítaní možností; prázdny sklad v API naďalej znamená súhrn všetkých skladov. Samotné predvolenie nič neukladá ani neaktivuje.
 
-1. Otvorte **Sklad** (starý odkaz `/products` vás sem presmeruje) a odomknite ho existujúcim operátorským tokenom.
+1. Po prihlásení otvorte **Sklad** (starý odkaz `/products` vás sem presmeruje). Staršie integračné použitie naďalej podporuje operátorský token.
 2. Nastavte hľadanie, značku, zalistovanie v e-shope a prípadne sklad. Potvrďte načítanie. Hľadanie prehľadáva SKU, názov, čiarové kódy a dodávateľské kódy; pri názvoch podporuje slovenskú a českú diakritiku.
 3. Spoločný sklad má jednu tabuľku. Stĺpce **BIKETREK** a **xTrek** zobrazujú prítomnosť a odkazy do obchodu aj administrácie. Kliknutím na SKU alebo názov otvoríte detail; vlastnosti e-shopov sú ďalšie voliteľné stĺpce.
 4. Počet produktov na stránku je 25, 50 alebo 100. Usporiadanie môže byť podľa lokálnej rodiny → farby → veľkosti, SKU alebo názvu. Veľkosti sa radia XS → S → M → L → XL → XXL; číselné veľkosti/SKU prirodzene, napríklad 2 pred 10. Zoradenie sa vykoná na serveri ešte pred stránkovaním.
 
 Kliknutie na SKU alebo názov otvorí detail v okne nad tabuľkou, bez straty filtrov, pozície alebo rozpracovaných buniek. Obsahuje parametre, obrázok, e-shopové odkazy, históriu úprav, skladové operácie a nákupné ceny. Pri načítaní a uložení je uvedený účinok **Hub · čítanie** alebo **Hub · zmena**. Obe akcie používajú iba uložené údaje; nevolajú Upgates. V detaile produktu je odkaz **História pohybov**, ktorý otvorí skladovú históriu s filtrom na presné SKU.
+
+Existujúcu kartu možno v detaile prepojiť s existujúcim produktom e-shopu. Rovnaká akcia nad označenými riadkami podporuje dávku najviac 100 kariet. Náhľad rozlišuje pripravené zhody, už existujúce väzby, nenájdené ciele a konflikty; zápis vyžaduje výslovný výber. Táto akcia nevytvára ďalšiu kartu ani produkt v e-shope a nemení fyzické zásoby. [Postup, identita a obnova po výpadku](product-links.md).
 
 Výber bez konkrétneho skladu zobrazuje katalóg. Množstvá sa v tomto režime nesčítavajú cez sklady. Umiestnenie a minimum možno meniť až po výslovnom výbere skladu. Zmena skladového filtra je pri rozpracovaných úpravách blokovaná; najprv ich uložte alebo zahoďte.
 

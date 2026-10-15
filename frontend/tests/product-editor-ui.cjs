@@ -217,6 +217,16 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost').includes('0.0000'), 'A known zero cost stays an exact decimal string');
+  assert(cannotUse('link-selected-products'), 'Linking requires explicit current-page selection');
+  await click('select-1'); await click('select-2');
+  const beforeLinkOpen = calls.length; await click('link-selected-products');
+  assert(element('product-links-row-1') && element('product-links-row-2') && !element('product-links-row-3'), 'Bulk linking includes only the explicitly selected cards');
+  assert.equal(calls.length, beforeLinkOpen, 'Opening linking does not run any shop request');
+  await click('product-links-close'); await click('select-1'); await click('select-2');
+  await click('detail-1'); await click('link-detail-product');
+  assert(element('product-links-row-1') && !element('product-links-row-2'), 'The detail action links one concrete card');
+  assert(!element('close-detail'), 'Only one modal focus trap stays open');
+  await click('product-links-close');
   await input('warehouse', 'other'); await click('load');
   assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('warehouse_code'), 'other', 'An explicit alternate warehouse is preserved');
   await input('warehouse', ''); await click('load');
@@ -280,6 +290,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(cellText(1, 'name'), 'Fixture product 1'); assert(cannotUse('save'));
   await edit(1, 'name', 'Staged name');
   assert.equal(required('row-1').getAttribute('data-dirty'), 'true'); assert.equal(cell(1, 'name').getAttribute('data-dirty'), 'true'); assert(!cell(1, 'brand').hasAttribute('data-dirty'), 'Row and exact modified cell are both marked');
+  assert(cannotUse('link-selected-products'), 'Unsaved edits block the linking workflow');
   assert.equal(cellText(1, 'name'), 'Staged name'); assert(!cannotUse('save')); assert.equal(saveCalls().length, 0);
   await key(cell(1, 'name'), 'F2'); await input('cell-editor', 'Cancelled replacement'); await key('cell-editor', 'Escape');
   assert.equal(cellText(1, 'name'), 'Staged name', 'Escape keeps a previously staged value');

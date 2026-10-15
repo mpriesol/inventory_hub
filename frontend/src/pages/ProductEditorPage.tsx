@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Columns, Search, Save, X, PanelRightOpen, Upload, Pencil } from 'lucide-react';
+import { Columns, Search, Save, X, PanelRightOpen, Upload, Pencil, Link2 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { ProductThumb } from '../components/product/ProductDisplay';
 import { FifoPanel } from '../components/product/FifoPanel';
 import { StockAdjustmentPanel } from '../components/product/StockAdjustmentPanel';
 import { ProductPublicationPanel } from '../components/product/ProductPublicationPanel';
+import { ProductShopLinksPanel } from '../components/product/ProductShopLinksPanel';
+import { pendingProductLink } from '../api/productLinks';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { defaultWarehouseCode } from '../utils/warehouses';
 import { EditorMode, getEditorProduct, getEditorProducts, getEditorSave, getProductEditorOptions, ProductEditorDetail,
@@ -60,6 +62,8 @@ export function ProductEditorPage() {
   const [detailId, setDetailId] = useState<number | null>(null), [detail, setDetail] = useState<ProductEditorDetail | null>(null);
   const [detailTab, setDetailTab] = useState<'product' | 'audit' | 'fifo' | 'adjustment'>('product'), [detailError, setDetailError] = useState('');
   const [publication, setPublication] = useState<{ shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[] } | null>(null);
+  const [linkingRows, setLinkingRows] = useState<ProductEditorRow[] | null>(null);
+  const linksChanged = useRef(false);
   const [refreshingAttributes, setRefreshingAttributes] = useState(false);
   const detailDialog = useRef<HTMLElement | null>(null), returnFocus = useRef<HTMLElement | null>(null);
   const detailGeneration = useRef(0), detailController = useRef<AbortController | null>(null);
@@ -75,7 +79,7 @@ export function ProductEditorPage() {
     resizing.current?.(); setCollapsedGroups(new Set());
     generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort();
     setOptions(null); setLoaded(null); replaceDrafts({}); setSelected(new Set()); setActive(null); setEditing(null); editingRef.current = null;
-    setDetailId(null); setDetail(null); setDetailError(''); setRefreshingAttributes(false); setPublication(null); setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
+    setDetailId(null); setDetail(null); setDetailError(''); setRefreshingAttributes(false); setPublication(null); setLinkingRows(null); linksChanged.current = false; setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
   }
   useEffect(() => { reset(); return () => { generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort(); }; }, [revision]);
   useEffect(() => { setPreferencesSaved(saveColumnPreferences(preferences)); }, [preferences]);
@@ -124,6 +128,10 @@ export function ProductEditorPage() {
     finally { if (current()) { busyRef.current = null; setBusy(null); } }
   }
   function closeDetail() { detailGeneration.current++; detailController.current?.abort(); setDetailId(null); setDetail(null); returnFocus.current?.focus(); }
+  function openLinks(rows: ProductEditorRow[]) {
+    if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current || rows.length > 100) return;
+    linksChanged.current = false; closeDetail(); setLinkingRows(rows.map(row => structuredClone(row)));
+  }
   useEffect(() => {
     if (!detailId) return;
     const listener = (event: KeyboardEvent) => {
@@ -347,6 +355,13 @@ export function ProductEditorPage() {
         {columns.find(column => column.key === bulkField)?.type === 'visibility' ? <select data-testid="bulk-value" value={bulkValue} disabled={locked || !!busy} onChange={event => setBulkValue(event.target.value)}><option value="">{t('productEditor.inherit')}</option><option value="true">{t('productEditor.visible')}</option><option value="false">{t('productEditor.hidden')}</option></select> : <input data-testid="bulk-value" aria-label={t('productEditor.bulkValue')} disabled={locked || !!busy} value={bulkValue} onChange={event => setBulkValue(event.target.value)} />}
         <Button data-testid="bulk-apply" variant="secondary" size="sm" disabled={locked || !!busy || !bulkField} onClick={bulk}>{t('productEditor.bulkApply')}</Button><button className="product-editor-text-button" onClick={() => setSelected(new Set())}>{t('productEditor.clearSelection')}</button></div>}
       <div className="product-editor-uploadbar"><span>{t('productEditor.uploadSelection', { count: selectedRows.length })}</span>{(['biketrek', 'xtrek'] as const).map(shop => <div key={shop} className="product-editor-scoped-action"><Button data-testid={`upload-${shop}`} variant="secondary" size="sm" icon={<Upload size={14} />} disabled={!selectedRows.length || dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount ? t('productEditor.saveBeforeUpload') : ''} onClick={() => setPublication({ shop, rows: selectedRows.map(row => structuredClone(row)) })}>{t('productEditor.uploadTo', { shop: shop === 'biketrek' ? 'BIKETREK' : 'xTrek' })}</Button><ActionScope effects={['upgates-write']} shop={shop} /></div>)}</div>
+      <div className="product-editor-uploadbar"><span>{t('productLinks.selectedPage', { count: selectedRows.length })}</span>
+        <Button data-testid="link-selected-products" variant="secondary" size="sm" icon={<Link2 size={14} />}
+          disabled={!selectedRows.length || selectedRows.length > 100 || dirtyCount > 0 || !!editing || locked || !!busy}
+          title={dirtyCount || editing ? t('productLinks.saveFirst') : t('productLinks.limit')} onClick={() => openLinks(selectedRows)}>{t('productLinks.openSelected')}</Button>
+        {pendingProductLink() && <Button data-testid="resume-product-links" variant="secondary" size="sm" disabled={dirtyCount > 0 || !!editing || locked || !!busy}
+          onClick={() => openLinks([])}>{t('productLinks.resume')}</Button>}
+      </div>
       <div className="product-editor-workspace"><div className="product-editor-table-area">
         {!data ? <div className="product-editor-empty">{t('productEditor.initialHelp')}</div> : <>
           <div className="product-editor-grid-scroll" data-testid="grid-scroll"><table role="grid" aria-label={t('productEditor.title')} style={{ width: 76 + columns.reduce((sum, column) => sum + widthOf(column.key), 0) }}>
@@ -387,6 +402,9 @@ export function ProductEditorPage() {
         <header><div><code>{selectedDetail.sku}</code><h2>{selectedDetail.common.name}</h2></div><button data-testid="close-detail" aria-label={t('productEditor.closeDetail')} onClick={closeDetail}><X size={20} /></button></header>
         <div className="product-editor-detail-tabs">{(['product', 'adjustment', 'fifo', 'audit'] as const).map(tab => <button key={tab} data-testid={`detail-tab-${tab}`} aria-selected={detailTab === tab} onClick={() => setDetailTab(tab)}>{t(`productEditor.tabs.${tab}`)}</button>)}</div>
         <div className="product-editor-history-link"><Link data-testid="movement-history" to={`/stock/movements?sku=${encodeURIComponent(selectedDetail.sku)}`}>{t('productEditor.movementHistory')}</Link><ActionScope effects={['hub-read']} /></div>
+        <div className="product-editor-history-link"><Button data-testid="link-detail-product" variant="secondary" size="sm" icon={<Link2 size={14} />}
+          disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
+          onClick={() => openLinks([selectedDetail])}>{t('productLinks.openSingle')}</Button></div>
         {detailTab === 'adjustment' ? <StockAdjustmentPanel productId={detailId} sku={selectedDetail.sku} warehouseCode={warehouse} onChanged={() => openDetail(selectedDetail, 'adjustment')} /> : detailTab === 'fifo' ? <FifoPanel productId={detailId} warehouseCode={warehouse} onChanged={() => { if (selectedDetail) openDetail(selectedDetail, 'fifo'); }} /> : detailTab === 'audit' ? <div className="product-editor-detail-body"><h3>{t('productEditor.auditTitle')}</h3>{!detail ? <p>{t('productEditor.loading')}</p> : !detail.audit.length ? <p>{t('productEditor.noAudit')}</p> : detail.audit.map(item => {
           const before = { ...selectedDetail, ...item.before }, after = { ...selectedDetail, ...item.after };
           const changes = editableFields.filter(({ column, scope }) => JSON.stringify(originalValue(before, column.key, scope)) !== JSON.stringify(originalValue(after, column.key, scope)));
@@ -400,6 +418,9 @@ export function ProductEditorPage() {
       </section></div>}
       </div>
       {publication && <ProductPublicationPanel shop={publication.shop} rows={publication.rows} onClose={() => { setPublication(null); load(loaded?.filters || filters); }} />}
+      {linkingRows && <ProductShopLinksPanel rows={linkingRows} onChanged={() => { linksChanged.current = true; }} onClose={() => {
+        setLinkingRows(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }
+      }} />}
     </>}
   </div>;
 }
