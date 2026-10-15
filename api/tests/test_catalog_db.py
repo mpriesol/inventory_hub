@@ -318,7 +318,8 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone((await catalog.catalog_page(db, "paul-lange", shop="other-shop")).items[0].product.shop_url)
 
     async def test_variant_links_use_parent_content_only_in_selected_shop(self):
-        self.write_feed(xml_item(extra="<ITEMGROUP_ID>GROUP1</ITEMGROUP_ID>"))
+        self.write_feed(xml_item(extra="<ITEMGROUP_ID>GROUP1</ITEMGROUP_ID>"),
+                        xml_item('A-002', extra="<ITEMGROUP_ID>GROUP1</ITEMGROUP_ID>", ean='00012346'))
         await self.refresh()
         async with self.sessions() as db:
             item = (await catalog.catalog_page(db, "paul-lange")).items[0].product
@@ -337,6 +338,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 for shop in shops:
                     row = (await catalog.catalog_page(db, "paul-lange", shop=shop.code)).items[0]
                     expected = f"https://{shop.code}.example.test/p/parent"
+                    self.assertEqual(len(row.variants), 2, 'Parent-link coverage uses a real variant family')
                     self.assertEqual(row.product.shop_url, expected)
                     self.assertEqual(row.variants[0].shop_url, expected)
                     detail = await catalog.catalog_detail(db, "paul-lange", item.id, shop=shop.code)
