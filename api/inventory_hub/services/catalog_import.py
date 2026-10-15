@@ -426,9 +426,9 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
             payload.pop("ean", None)
             payload.pop("code_supplier", None)
             payload["variants"] = []
-            for index, product in enumerate(products):
+            for product in products:
                 variant = _base(product, options, cfg, with_vat, sale_price_overrides.get(product.id))
-                variant.update(main_yn=index == 0, active_yn=True,
+                variant.update(main_yn=False, active_yn=True,
                                parameters=_parameters(product.variant_attributes, options.language))
                 if options.include_images and product.images:
                     variant["image"] = {"url": product.images[0]}

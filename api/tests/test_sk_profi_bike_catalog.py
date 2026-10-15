@@ -108,6 +108,16 @@ class SkProfiBikeCatalogTests(unittest.TestCase):
         self.assertEqual(zero.prices.retail_gross, 0)
         self.assertEqual(zero.supplier_stock, 0)
 
+    def test_single_option_with_size_and_colour_is_not_an_artificial_variant(self):
+        product, _ = self.parse(parent(option()))[0]
+        self.assertIsNone(product.group_code)
+        self.assertEqual(product.variant_attributes, [])
+        self.assertIn(('Veľkosť', 'M'), [(p.name, p.value) for p in product.parameters])
+        self.assertIn(('Farba', 'Blue'), [(p.name, p.value) for p in product.parameters])
+        item = build_item([product], ShopImportOptions(), CFG, True)
+        self.assertNotIn('variants', item.payload)
+        self.assertEqual(item.payload['code'], 'SKP-0001')
+
     def test_invalid_promo_stays_unknown_and_missing_vat_does_not_invent_tax(self):
         product, _ = self.parse(parent(option(extra="<voc_akcia>bad</voc_akcia>")))[0]
         self.assertIsNone(product.prices.purchase_net)

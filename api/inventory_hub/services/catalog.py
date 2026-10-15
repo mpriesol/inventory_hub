@@ -239,6 +239,8 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
                 MappingDefinition.model_validate(mapping.definition), mapping.revision, PARSERS.get(parser_name))
         else:
             records = await asyncio.to_thread(PARSERS[parser_name], path, supplier, cfg, feed_key)
+        from inventory_hub.services.catalog_variants import normalize_singleton_groups
+        normalize_singleton_groups([product for product, _ in records])
         # Order identity/source locks consistently with receiving and local
         # repair. Acquire only after the supplier download/parse has finished.
         from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
@@ -509,7 +511,26 @@ async def selected_products(db: AsyncSession, supplier: str, feed_key: str, ids:
     if len(rows) != len(set(ids)):
         raise CatalogError("catalog_items_missing", "Some selected products are no longer in this supplier feed", 409)
     by_id = {row.id: public_product(row, detail=True) for row in rows}
-    return [by_id[id] for id in dict.fromkeys(ids)]
+    return await normalize_stored_groups(db, [by_id[id] for id in dict.fromkeys(ids)])
+
+
+async def normalize_stored_groups(db, products):
+    """Also handle catalogs cached before singleton normalization was introduced."""
+    from inventory_hub.services.catalog_variants import normalize_singleton_groups
+    groups = {p.group_code for p in products if p.group_code and p.variant_relationship == 'explicit'}
+    if not groups:
+        return products
+    rows = (await db.execute(select(Supplier.code, SupplierFeed.code,
+        SupplierProduct.supplier_group_code, func.count(SupplierProduct.id))
+        .select_from(SupplierProduct)
+        .join(Supplier, Supplier.id == SupplierProduct.supplier_id)
+        .join(SupplierFeed, SupplierFeed.id == SupplierProduct.source_feed_id)
+        .where(Supplier.code.in_({p.supplier for p in products}),
+               SupplierFeed.code.in_({p.feed_key for p in products}),
+               SupplierProduct.supplier_group_code.in_(groups), SupplierProduct.is_active.is_(True),
+               SupplierProduct.attributes.has_key('catalog'))
+        .group_by(Supplier.code, SupplierFeed.code, SupplierProduct.supplier_group_code))).all()
+    return normalize_singleton_groups(products, {(supplier, feed, group): count for supplier, feed, group, count in rows})
 
 
 async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, include_variants: bool = True, shop: str | None = None) -> dict:

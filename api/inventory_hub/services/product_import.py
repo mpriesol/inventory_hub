@@ -252,6 +252,8 @@ async def public(db, draft):
     jobs = {j.id: {**ai_content.summary(j), 'staging': ai_job_import_status(j, draft, result)}
             for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)))).all()} if ids else {}
     for row in rows:
+        from inventory_hub.services.catalog import _http_url
+        row['source_url'] = _http_url((row.get('source') or {}).get('url'))
         row.pop('source', None)
         row.pop('ai_baseline', None)
         row.pop('ai_applied_snapshot', None)
@@ -333,8 +335,6 @@ def validate_rows(document):
         category = row['values']['category_code']
         try:
             row['categories'] = category_chain(document['categories'], category)
-            if category and any(c.get('parent_code') == category and c.get('assignable', True) for c in document['categories']):
-                row['errors'].append('category_must_be_leaf')
         except CatalogError as error:
             row['categories'] = []
             row['errors'].append(error.code)
@@ -560,6 +560,30 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
                               supplier=request.supplier, shop=request.shop,
                               status='source_pending' if request.supplier == 'sloger' else 'draft', document=document)
     db.add(draft)
+    await db.flush()
+    return await public(db, draft)
+
+
+async def refresh_categories(db, draft, request):
+    expect(draft, request.expected_revision)
+    assert_editable(draft)
+    document = deepcopy(draft.document)
+    shops = document.get('shops', [{'code': draft.shop, 'name': draft.shop}])
+    for shop in shops:
+        if shop.get('error'):
+            continue
+        expected = document.get('targets', {}).get(shop['code'], document.get('target') if shop['code'] == draft.shop else None)
+        if expected != catalog_import._target(catalog_import.shop_config(shop['code'])):
+            raise CatalogError('shop_target_changed', 'The target connection changed', 409)
+        options = await asyncio.to_thread(catalog_import.cached_import_options, shop['code'], refresh=True)
+        shop['categories'] = options['categories']
+        if shop['code'] == draft.shop:
+            document['categories'] = options['categories']
+    document['shops'] = shops
+    if document.get('automation', {}).get('version') == 1:
+        document['automation'] = {**document['automation'], 'paused': True, 'pause_reason': 'draft_edited'}
+    validate_rows(document)
+    changed(draft, document, 'Shop categories refreshed; selected categories and product cells preserved')
     await db.flush()
     return await public(db, draft)
 
@@ -856,7 +880,7 @@ async def preview(db, draft, request):
         validation = {**document, 'rows': rows, 'categories': categories}
         validate_rows(validation)
         if any(row['errors'] or not row['values']['category_code'] for row in rows):
-            raise CatalogError('import_invalid_rows', f'Every selected product needs a valid leaf category for {shop}', 422)
+            raise CatalogError('import_invalid_rows', f'Every selected product needs a valid product category for {shop}', 422)
         snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': rows, **source_deadline}
         options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': None})
         prepared = await catalog_import.create_preview(db, shop, ShopImportPreviewRequest(supplier=draft.supplier,

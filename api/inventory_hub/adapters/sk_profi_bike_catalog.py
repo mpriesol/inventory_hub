@@ -88,7 +88,8 @@ def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "product
         if not name or len(name) > 500 or not group or len(group) > 100:
             raise ValueError("Invalid SK Profi Bike product identity")
         axes = [(key, _get_text(parent, key)) for key in ("atribute_1", "atribute_2")]
-        grouped = len(options) > 1 or any(label for _, label in axes)
+        # A fixed colour/size is a product parameter, not evidence of a choice.
+        grouped = len(options) > 1
         context = etree.Element(parent.tag, parent.attrib)
         for child in parent:
             if child.tag != "options":

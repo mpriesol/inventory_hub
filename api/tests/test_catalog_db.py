@@ -124,6 +124,29 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len((await catalog.catalog_detail(db, "paul-lange", filtered.items[0].product.id))["variants"]), 2)
             self.assertEqual((await catalog.catalog_page(db, "paul-lange", grouped=False)).total, 2)
 
+    async def test_cached_singleton_group_is_flattened_but_one_selected_real_variant_is_preserved(self):
+        self.write_feed(xml_item(extra='<ITEMGROUP_ID>REAL</ITEMGROUP_ID>'),
+            xml_item('A-002', extra='<ITEMGROUP_ID>REAL</ITEMGROUP_ID>', ean='00012346'),
+            xml_item('A-003', extra='<ITEMGROUP_ID>SINGLE</ITEMGROUP_ID>', ean='00012347'))
+        await self.refresh()
+        async with self.sessions() as db:
+            rows = (await db.scalars(select(SupplierProduct).order_by(SupplierProduct.id))).all()
+            single = next(row for row in rows if row.supplier_sku == 'A-003')
+            self.assertIsNone(single.supplier_group_code, 'Fresh ingest normalizes a whole feed')
+            data = dict(single.attributes['catalog'])
+            data.update(group_code='SINGLE', group_name='Old group', variant_relationship='explicit',
+                        variant_attributes=[{'name': 'Veľkosť', 'value': 'M'}])
+            single.attributes = {**single.attributes, 'catalog': data}
+            single.supplier_group_code = 'SINGLE'
+            await db.flush()
+            normalized = (await catalog.selected_products(db, 'paul-lange', 'products', [single.id]))[0]
+            self.assertIsNone(normalized.group_code)
+            self.assertIn(('Veľkosť', 'M'), [(p.name, p.value) for p in normalized.parameters])
+            real = next(row for row in rows if row.supplier_sku == 'A-001')
+            selected = (await catalog.selected_products(db, 'paul-lange', 'products', [real.id]))[0]
+            self.assertEqual(selected.group_code, 'REAL', 'Filtered selection is not feed cardinality')
+            self.assertEqual(single.attributes['catalog']['group_code'], 'SINGLE', 'Reads do not rewrite stored source facts')
+
     async def test_northfinder_index_keeps_conflicting_eans_and_inherited_prices(self):
         path = config_io.supplier_path("northfinder")
         path.parent.mkdir(parents=True)

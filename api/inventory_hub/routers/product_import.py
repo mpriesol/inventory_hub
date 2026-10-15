@@ -70,6 +70,11 @@ async def patch(id: DraftId, request: DraftPatch, db: DB):
     return await mutate(db, id, request, service.patch_rows)
 
 
+@router.post('/{id}/categories-refresh')
+async def categories_refresh(id: DraftId, request: DraftRevision, db: DB):
+    return await mutate(db, id, request, service.refresh_categories)
+
+
 @router.post('/{id}/save')
 async def save(id: DraftId, request: DraftRevision, db: DB):
     return await mutate(db, id, request, service.save)

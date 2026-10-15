@@ -202,15 +202,28 @@ class ProductImportUnitTests(unittest.TestCase):
         self.assertEqual(item['values']['category_code'], 'LEAF')
         self.assertIn('Bezpečnosť', item['values']['description_html'])
 
-    def test_missing_prices_duplicate_identities_and_parent_category_block(self):
+    def test_missing_prices_and_duplicate_identities_still_block_parent_categories_are_allowed(self):
         rows = [row(sale_gross=None, category_code='ROOT'), row(2)]
         rows[1]['values']['eans'] = rows[0]['values']['eans']
         doc = document(rows)
         service.validate_rows(doc)
         self.assertIn('missing_price', rows[0]['errors'])
         self.assertIn('selection_identity_conflict', rows[1]['errors'])
-        self.assertIn('category_must_be_leaf', rows[0]['errors'])
+        self.assertNotIn('category_must_be_leaf', rows[0]['errors'])
         self.assertIsNone(rows[0]['values']['sale_gross'])
+
+    def test_inactive_parent_and_leaf_categories_can_be_saved_but_system_root_cannot(self):
+        for code in ('ROOT', 'LEAF'):
+            with self.subTest(code=code):
+                doc = document([row(category_code=code)])
+                for category in doc['categories']:
+                    category['active'] = False
+                service.validate_rows(doc)
+                self.assertEqual(doc['rows'][0]['errors'], [])
+                self.assertEqual(doc['rows'][0]['categories'][-1], {'code': code, 'main_yn': True})
+        doc = document([row(category_code='MENU')])
+        service.validate_rows(doc)
+        self.assertIn('category_not_assignable', doc['rows'][0]['errors'])
 
     def test_no_inventory_or_nondecimal_cells_accepted(self):
         good = row()['values']

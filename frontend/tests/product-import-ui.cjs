@@ -23,7 +23,7 @@ const { IMPORT_COLUMNS, pasteImportValues, stageImportValue } = require('../src/
 const clone = value => JSON.parse(JSON.stringify(value));
 const options = { language: 'sk', currency: 'EUR', pricelist: 'Default', category_code: null, pricing: 'configured', include_images: true, include_description: true, include_parameters: true };
 const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, { code: 'PARTS', parent_code: 'MENU', names: { sk: 'Komponenty' } }, { code: 'TUBES', parent_code: 'PARTS', names: { sk: 'Duše' } }];
-const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: [], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
+const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: ['https://images.example.test/item.jpg'], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
 const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false;
 global.fetch = async (path, init = {}) => {
@@ -42,6 +42,10 @@ global.fetch = async (path, init = {}) => {
     assert.equal(body.expected_revision, server.revision);
     for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
+  } else if (path.endsWith('/categories-refresh')) {
+    assert.equal(body.expected_revision, server.revision);
+    server.revision++;
+    server.categories.push({code:'SADDLES',parent_code:'PARTS',active:false,names:{sk:'Sedlá a návleky na sedlá'}},{code:'COVERS',parent_code:'SADDLES',active:false,names:{sk:'Návleky na sedlá'}});
   } else if (path.endsWith('/source-retry')) {
     assert.deepEqual(body, { expected_revision: server.revision });
     server.revision++; server.status = 'source_pending'; server.source_lookup = { ...server.source_lookup, state: 'queued', error: null, retryable: false, skippable: false };
@@ -94,6 +98,29 @@ async function render(entry) {
   assert.equal(calls.filter(call => call.path === '/api/product-imports' && call.method === 'POST').length, 1, 'StrictMode reuses the idempotent create request');
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3);
   assert.ok(document.body.textContent.includes('Rodina duší'));
+  // Preview and photos work before a Hub card exists, including in the category editor.
+  await click(label('Náhľad produktu: PL-1'));
+  assert.ok(document.querySelector('[role="dialog"]').textContent.includes('Duša 1'));
+  await click(label('Zväčšiť fotografiu'));
+  assert.ok(document.querySelector('.import-product-large-image'));
+  await key(document.querySelector('[role="dialog"]'), 'Escape');
+  assert.equal(document.querySelector('[role="dialog"]'), null);
+  await click(button('Načítať kategórie z e-shopov'));
+  assert.equal(calls.filter(call => call.path.endsWith('/categories-refresh')).length, 1);
+  for (const category of ['SADDLES', 'COVERS', 'TUBES']) {
+    await click(field(1, 'category_code').querySelector('button'));
+    assert.ok(document.querySelector('[role="dialog"] .import-product-summary'));
+    await click(label('Zväčšiť fotografiu'));
+    assert.ok(document.querySelector('[role="dialog"] .import-product-large-image'));
+    await change(label(i18n.t('ai.searchCategories')), category);
+    const choices = [...document.querySelectorAll('.category-tree-list button')];
+    const choice = choices.find(element => element.textContent.includes(category));
+    assert.ok(choice, 'Inactive parent and leaf must both be selectable');
+    await click(choice);
+    await click(button('Použiť zmenu'));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+  }
+  assert.ok(field(1, 'category_code').textContent.includes('Duše'));
   assert.equal(label('Import do BIKETREK: PL-1').checked, true);
   assert.equal(label('Import do xTrek: PL-1').checked, false);
   const beforeTargets = calls.length;

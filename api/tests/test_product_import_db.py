@@ -82,6 +82,28 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
             return response
 
+    async def test_category_refresh_preserves_manual_cells_and_reads_inactive_categories(self):
+        original = await self.create()
+        edited = await self.mutate(original, service.patch_rows, DraftPatch,
+            rows=[{'id': original['rows'][0]['id'], 'values': {'name': 'Manual name'}}])
+        old_get = self.client.get
+        def get(path, params=None):
+            if path == 'categories':
+                return {'categories': [
+                    {'code': 'K-TEST', 'descriptions': [{'language': 'sk', 'name': 'Test'}]},
+                    {'code': 'SADDLES', 'parent_code': 'K-TEST', 'active_yn': False,
+                     'descriptions': [{'language': 'sk', 'name': 'Návleky na sedlá'}]}]}
+            return old_get(path, params)
+        with patch.object(self.client, 'get', side_effect=get):
+            refreshed = await self.mutate(edited, service.refresh_categories)
+        self.assertEqual(refreshed['rows'][0]['values'], edited['rows'][0]['values'])
+        self.assertIn('name', refreshed['rows'][0]['manual_fields'])
+        self.assertFalse(next(c for c in refreshed['categories'] if c['code'] == 'SADDLES')['active'])
+        self.assertEqual(self.client.sent, [], 'Refreshing categories cannot publish products')
+        with self.assertRaises(catalog.CatalogError) as error:
+            await self.mutate(edited, service.refresh_categories)
+        self.assertEqual(error.exception.code, 'import_draft_changed')
+
     async def test_draft_snapshot_holds_supplier_mapping_lock_until_commit(self):
         async with self.sessions() as writer:
             result = await service.create(writer, self.request())
