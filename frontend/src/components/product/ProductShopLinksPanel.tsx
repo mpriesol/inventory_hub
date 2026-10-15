@@ -39,9 +39,12 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
   const selectedCards = rows.length ? rows.map(row => ({ id: row.id, sku: row.sku, name: row.common.name })) : recoveredScope;
   const sourceRows = batch?.rows || selectedCards.map(row => ({ product_id: row.id, sku: row.sku, name: row.name }));
   const ready = batch?.rows.filter(row => row.status === 'ready') || [];
+  const allAlreadyLinked = !!batch?.rows.length && batch.rows.every(row => row.status === 'already_linked');
+  const settled = batch?.status === 'completed' || (allAlreadyLinked && !frozen);
   const count = (status: ProductLinkRow['status']) => batch?.rows.filter(row => row.status === status).length || 0;
-  const scopeChanged = !!pending && (pending.request.shop_code !== shop ||
-    JSON.stringify([...pending.request.product_ids].sort((a, b) => a - b)) !== JSON.stringify(rows.map(row => row.id).sort((a, b) => a - b)));
+  const displayedIds = batch?.rows.map(row => row.product_id) || pending?.request.product_ids;
+  const scopeChanged = rows.length > 0 && !!displayedIds && ((pending?.request.shop_code !== undefined && pending.request.shop_code !== shop) ||
+    JSON.stringify([...displayedIds].sort((a, b) => a - b)) !== JSON.stringify(rows.map(row => row.id).sort((a, b) => a - b)));
   const text = (code: string) => t(`productLinks.errors.${code}`, { defaultValue: t('productLinks.failed') });
   const reason = (code: string) => t(`productLinks.reasons.${code}`, { defaultValue: t(`productLinks.errors.${code}`, { defaultValue: t('productLinks.reasonUnknown', { code }) }) });
 
@@ -52,8 +55,12 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
     setBatch(value); setShop(value.shop_code); setMissingPreview(false);
     if (!rows.length) setRecoveredScope(value.rows.map(row => ({ id: row.product_id, sku: row.sku, name: row.name })));
     setSelected(value.rows.filter(row => row.status === 'ready').map(row => row.product_id));
-    if (value.status === 'completed') {
-      try { forgetProductLink(value.id); } catch { /* The durable completed batch can be read again. */ }
+    // A read-only preview with nothing to link needs no apply. A prepared GET
+    // must still retain any earlier uncertain apply, even if all rows match.
+    const noChanges = value.status === 'prepared' && value.rows.length > 0 &&
+      value.rows.every(row => row.status === 'already_linked') && !pendingRef.current?.apply;
+    if (value.status === 'completed' || noChanges) {
+      try { forgetProductLink(value.id); } catch { /* The settled read-only result can be recovered again. */ }
       pendingRef.current = null; setPending(null); setUncertain(null); changedRef.current();
     } else {
       setUncertain(pendingRef.current?.apply ? 'apply' : null);
@@ -165,7 +172,7 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
       </div>}
       {batch && <>
         <div className="product-links-counts" aria-label={t('productLinks.summary')}>{statuses.map(status => <span key={status} data-testid={`product-links-count-${status}`}><strong>{count(status)}</strong> {t(`productLinks.status.${status}`)}</span>)}</div>
-        {batch.status === 'completed' && <p role="status" className="product-editor-alert" data-testid="product-links-completed">{t('productLinks.completed', { count: batch.result?.linked_product_ids.length || 0, shop: shopName })}</p>}
+        {settled && <p role="status" className="product-links-success" data-testid="product-links-completed">{t(allAlreadyLinked ? 'productLinks.allAlreadyLinked' : 'productLinks.completed', { count: batch.result?.linked_product_ids.length || 0, shop: shopName })}</p>}
       </>}
       <div className="product-links-table-scroll"><table className="product-editor-diff product-links-table"><thead><tr>
         <th><input data-testid="product-links-select-ready" type="checkbox" aria-label={t('productLinks.selectReady')}
@@ -175,18 +182,29 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
       </tr></thead><tbody>{sourceRows.map(row => {
         const checked = batch?.rows.find(item => item.product_id === row.product_id);
         const remote = checked?.remote;
+        const rawBarcodes = remote?.raw_barcodes ?? (remote?.eans.length ? remote.eans : undefined);
+        const invalidBarcodes = remote?.invalid_barcodes || [];
+        const warnings = checked?.warnings.filter(code =>
+          !(code === 'unverified_barcode' && invalidBarcodes.length > 0) &&
+          !(code === 'barcode_missing' && checked.local_eans !== undefined && remote?.raw_barcodes !== undefined)) || [];
         return <tr key={row.product_id} data-testid={`product-links-row-${row.product_id}`}>
           <td><input type="checkbox" data-testid={`product-links-select-${row.product_id}`} aria-label={t('productLinks.selectProduct', { sku: row.sku })}
             disabled={!!busy || frozen || checked?.status !== 'ready' || batch?.status !== 'prepared'} checked={selected.includes(row.product_id)}
             onChange={event => setSelected(previous => event.target.checked ? [...previous, row.product_id] : previous.filter(id => id !== row.product_id))} /></td>
-          <td><strong><code>{row.sku}</code></strong><div>{row.name}</div></td>
+          <td><strong><code>{row.sku}</code></strong><div>{row.name}</div>{checked && <dl>
+            <dt>{t('productLinks.hubEan')}</dt><dd data-testid={`product-links-hub-ean-${row.product_id}`}>
+              {checked.local_eans === undefined ? t('productLinks.barcodeNotRecorded') : checked.local_eans.join(', ') || t('productLinks.barcodeAbsent')}
+            </dd></dl>}</td>
           <td>{remote ? <><code>{remote.code}</code><div>{remote.name}</div><dl>
             <dt>{t('productLinks.parent')}</dt><dd><code>{remote.parent_code}</code></dd>
             <dt>{t(remote.is_variant ? 'productLinks.variantId' : 'productLinks.productId')}</dt><dd>{remote.external_id}</dd>
-            <dt>EAN</dt><dd>{remote.eans.join(', ') || '—'}</dd>
+            <dt>{t('productLinks.shopBarcode', { shop: shopName })}</dt><dd data-testid={`product-links-shop-barcode-${row.product_id}`}>
+              {rawBarcodes === undefined ? t('productLinks.barcodeNotRecorded') : rawBarcodes.join(', ') || t('productLinks.barcodeAbsent')}
+              {invalidBarcodes.map(value => <p key={value} className="product-links-barcode-warning">{t('productLinks.barcodeInvalid', { value })}</p>)}
+            </dd>
             {remote.attributes.map(item => <React.Fragment key={item.name}><dt>{item.name}</dt><dd>{item.value}</dd></React.Fragment>)}
           </dl></> : <span className="product-editor-muted">{t('productLinks.notChecked')}</span>}
-            {!frozen && batch?.status !== 'completed' && <details className="product-links-manual"><summary>{t('productLinks.exactTarget')}</summary>
+            {!frozen && !settled && <details className="product-links-manual"><summary>{t('productLinks.exactTarget')}</summary>
               <p>{t('productLinks.manualHelp')}</p>
               <label>{t('productLinks.parentInput')}<input data-testid={`product-links-parent-${row.product_id}`} maxLength={100} value={manual[row.product_id]?.parent || ''}
                 disabled={!!busy} onChange={event => changeManual(row.product_id, 'parent', event.target.value)} /></label>
@@ -197,13 +215,14 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
           <td>{checked?.match_by ? t(`productLinks.matchBy.${checked.match_by}`, { defaultValue: checked.match_by }) : '—'}</td>
           <td>{checked && <><strong>{t(`productLinks.status.${checked.status}`)}</strong>
             {checked.errors.map(code => <p key={code} className="product-editor-error">{reason(code)}</p>)}
-            {checked.warnings.map(code => <p key={code} className="product-editor-muted">{reason(code)}</p>)}</>}</td>
+            {warnings.map(code => <p key={code} className="product-editor-muted">{reason(code)}</p>)}</>}</td>
         </tr>;
       })}</tbody></table></div>
-      {!frozen && <div className="product-links-actions"><div className="product-editor-scoped-action">
+      {!frozen && <div className="product-links-actions">{settled && <Button data-testid="product-links-done" disabled={!!busy} onClick={onClose}>{t('productLinks.done')}</Button>}
+        {!(settled && allAlreadyLinked) && <div className="product-editor-scoped-action">
         <Button data-testid="product-links-preview" variant="secondary" disabled={!!busy || !selectedCards.length || selectedCards.length > 100} onClick={() => perform('preview')}>{t(batch ? 'productLinks.refreshPreview' : 'productLinks.preview')}</Button>
-        <ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></div>
-        {batch?.status === 'prepared' && <div className="product-editor-scoped-action"><Button data-testid="product-links-apply" disabled={!!busy || !selected.length} onClick={() => perform('apply')}>
+        <ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></div>}
+        {batch?.status === 'prepared' && ready.length > 0 && <div className="product-editor-scoped-action"><Button data-testid="product-links-apply" disabled={!!busy || !selected.length} onClick={() => perform('apply')}>
           {t('productLinks.apply', { count: selected.length })}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></div>}
       </div>}
       {busy && <p role="status">{t(`productLinks.busy.${busy}`)}</p>}

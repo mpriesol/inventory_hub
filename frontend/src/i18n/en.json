@@ -2178,7 +2178,7 @@
     "syncSettings": "Availability and stock transfers",
     "openShop": "Open in shop",
     "openAdmin": "Open in administration",
-    "linkUnavailable": "Link has not been stored yet",
+    "linkUnavailable": "The link is saved. Product navigation addresses are missing.",
     "uploadSelection": "Selected products: {{count}}",
     "uploadTo": "Upload to {{shop}}",
     "saveBeforeUpload": "Save or discard your pending changes first.",
@@ -2191,19 +2191,24 @@
     "refreshAttributes": "Read attributes from shop",
     "supplierInStock": "In stock",
     "supplierOutOfStock": "Unavailable",
-    "verifyAvailability": "Will verify",
+    "verifyAvailability": "Availability not confirmed",
     "staleSupplier": "Observation is not current",
     "supplierRules": "Supplier rules",
     "shopUnpublished": "Saved · unpublished",
     "shopPublished": "Publication verified",
     "supplierStatus": {
       "missing_link": "Supplier item link is missing",
-      "unavailable_source": "Availability source is inactive",
-      "missing_observation": "The linked code has no feed observation",
-      "stale": "The feed observation has expired",
-      "conflict": "Ambiguous supplier link – review required",
+      "unavailable_source": "The supplier or its link is inactive.",
+      "missing_observation": "The latest refresh has no record for this code.",
+      "stale": "The record has expired. Refresh availability.",
+      "conflict": "The card has an ambiguous supplier link.",
       "unknown": "Availability has not been verified yet",
-      "unknown_quantity": "The source has no known availability for this code"
+      "unknown_quantity": "The source has no known availability for this code",
+      "unconfigured": "An availability source has not been configured.",
+      "not_loaded": "The source is configured. Availability has not been loaded yet.",
+      "feed_mismatch": "The saved record comes from a different source. Load the current source.",
+      "configuration_error": "The source configuration needs attention.",
+      "fresh": "Current record"
     },
     "stockScope": "Stock tracking",
     "stockScopes": {
@@ -2218,7 +2223,27 @@
       "no_warehouse": "Select a warehouse"
     },
     "trackingHelp": "Active stock contains only items confirmed by a physical count or a new receipt. Old imports remain in history. For the first count select Unconfirmed items and open the detail → Quantity correction.",
-    "openingStock": "Batch opening stock"
+    "openingStock": "Batch opening stock",
+    "shopLinkMissing": "The storefront link is missing.",
+    "adminLinkMissing": "The administration link is missing.",
+    "refreshLinks": "Load links",
+    "loadingLinks": "Loading links…",
+    "refreshLinksHelp": "Reads product addresses from the shop and stores them in Hub.",
+    "linksLoaded": "Links loaded.",
+    "linksNotProvided": "Details loaded, but the shop did not provide all links.",
+    "eanMissing": "EAN has not been added.",
+    "manageSupplier": "Supplier and EAN",
+    "supplierActions": {
+      "configure": "Set up availability",
+      "refresh": "Load availability",
+      "check_source": "Check source",
+      "wait": "View progress",
+      "link": "Check supplier link"
+    },
+    "supplierRefresh": {
+      "queued": "Refresh is queued.",
+      "running": "Availability is being refreshed."
+    }
   },
   "actions": {
     "effects": {
@@ -2385,7 +2410,7 @@
     "unsaved": "Unsaved changes — save them or refresh settings first.",
     "saved": "Settings saved.",
     "save": "Save settings",
-    "refreshSupplier": "Refresh availability now",
+    "refreshSupplier": "Load availability",
     "supplierQueued": "Refresh queued. Reload the status to see the result.",
     "uncertain": "The response could not be confirmed. The change may have completed. Reload settings and status before another write; the request is never retried automatically.",
     "requestFailed": "The request could not be completed.",
@@ -2681,7 +2706,22 @@
     "outcomeNotApplied": "The change was not applied",
     "resolutionEvidence": "How the outcome was verified (8 to 1,000 characters)",
     "resolveDelta": "Save verified outcome",
-    "quantityChange": "Quantity change: {{quantity}}"
+    "quantityChange": "Quantity change: {{quantity}}",
+    "showAllSuppliers": "All suppliers",
+    "focusedSupplierHelp": "Availability settings and refresh for the selected supplier.",
+    "supplierNotFound": "The supplier was not found in settings.",
+    "selectedSku": "Linked supplier code",
+    "observationTitle": "Availability for this product",
+    "observationHelp": "Catalog data and current availability are loaded separately.",
+    "observedFeed": "Source of saved record",
+    "observedAt": "Record loaded",
+    "expiresAt": "Valid until",
+    "setupFirst": "Select a source and save the settings. Automatic refresh can remain off.",
+    "loadFirst": "Data has not been successfully loaded yet. Click Load availability.",
+    "refreshScopeHelp": "Loads availability for the entire supplier source. It does not change your stock or send data to shops.",
+    "configurationHelp": "Check the supplier configuration and selected source.",
+    "discardChanges": "Discard changes",
+    "leaveBlocked": "Save or discard changes before leaving. Check an uncertain result by reloading settings first."
   },
   "productPublication": {
     "intro": "Choose a saved product and fields. Review the proposed change first; the shop changes only after you confirm sending.",
@@ -3614,7 +3654,7 @@
       "product_links_preview_expired": "The preview has expired. Prepare a new preview.",
       "product_links_invalid_selection": "Select only verified matches from this preview.",
       "product_links_apply_selection_changed": "This operation already has a frozen selection. Read its saved result.",
-      "product_links_identity_changed": "The card identity or mapping has changed. Prepare a new preview.",
+      "product_links_identity_changed": "The product or its mapping has changed. Check the mapping before loading links.",
       "product_links_remote_changed": "The shop product has changed since the preview. Prepare a new preview.",
       "product_links_source_unavailable": "The shop could not be read. Try verification again later.",
       "product_links_rate_limited": "The shop API limit has been reached. Wait for capacity to become available.",
@@ -3631,7 +3671,8 @@
       "source_response_needs_review": "The shop returned a warning or incomplete response. The link was not confirmed.",
       "source_http_error": "The shop returned an error while reading the product.",
       "source_http_failed": "The shop returned an error while reading the product.",
-      "source_authentication_failed": "The shop denied access. Check the connection settings."
+      "source_authentication_failed": "The shop denied access. Check the connection settings.",
+      "product_links_mapping_missing": "The mapping no longer exists. Open product linking to check it."
     },
     "reasons": {
       "attributes_missing": "Variant attributes are unavailable in the shop response.",
@@ -3660,13 +3701,20 @@
       "mapping_identity_changed": "The shop product code or identifier has changed.",
       "unmapped_sku_collision": "Multiple cards have the same SKU ignoring letter case.",
       "assigned_product_changed": "The code and identifiers do not belong to the selected card."
-    }
+    },
+    "allAlreadyLinked": "All selected cards are already linked to {{shop}}.",
+    "done": "Done",
+    "hubEan": "Hub EAN",
+    "shopBarcode": "Barcode in {{shop}}",
+    "barcodeAbsent": "Not provided",
+    "barcodeInvalid": "{{value}} is not a valid EAN or UPC.",
+    "barcodeNotRecorded": "This older preview did not retain the value."
   },
   "supplierLinks": {
     "open": "Link a supplier product",
     "resume": "Resume supplier link",
     "title": "Supplier link for an existing stock card",
-    "intro": "Choose a specific item from the stored supplier catalog and check that it is the same product. Linking preserves the card’s SKU, name, prices and stock quantities.",
+    "intro": "Choose the supplier item and verify it is the same product. Linking preserves the SKU, name, prices and stock. You can optionally fill a missing EAN.",
     "card": "Existing Hub stock card",
     "supplier": "Supplier",
     "chooseSupplier": "Choose a supplier",
@@ -3751,9 +3799,12 @@
       "supplier_source_multiple_links": "This supplier item has ambiguous links.",
       "supplier_link_already_configured": "The card already has another source for this supplier. Its existing link will not be replaced.",
       "supplier_link_disabled": "The existing link is inactive or not orderable; those settings are preserved.",
-      "ean_conflict": "Known EAN values disagree.",
+      "ean_conflict": "The EAN already belongs to another stock card.",
       "manual_ean_conflict": "The EAN disagrees with the card’s manual barcode value.",
-      "brand_difference": "Brands differ; check the product."
+      "brand_difference": "Brands differ; check the product.",
+      "supplier_eans": "Add verified EANs from the selected supplier item",
+      "ean_present": "The card already has an EAN. Edit it in the card detail.",
+      "source_ean_missing": "The supplier item has no verified EAN."
     },
     "errors": {
       "hub_access_required": "Sign in to the Hub and recover the saved operation.",
@@ -3778,9 +3829,18 @@
       "supplier_prefix_missing": "The supplier has no configured product prefix.",
       "supplier_prefix_invalid": "The supplier prefix is invalid; check the supplier settings.",
       "supplier_prefix_conflict": "Supplier settings contain conflicting prefixes; resolve them first.",
-      "supplier_code_invalid": "The supplier code is invalid."
+      "supplier_code_invalid": "The supplier code is invalid.",
+      "supplier_card_links_ean_unavailable": "EAN cannot be added now. Refresh the preview and check the card and supplier item."
     },
-    "finishExisting": "Finish checking existing link"
+    "finishExisting": "Finish checking existing link",
+    "fillEans": "Add EAN from supplier",
+    "fillEansHelp": "After confirmation, only verified EANs for this item are copied into the empty card. Existing EANs are preserved.",
+    "reviewCurrent": "Review / add EAN",
+    "eansPlanned": "Add EAN: {{eans}}",
+    "eansCopied": "EAN added to the stock card.",
+    "confirmEans": "Confirm EAN addition",
+    "done": "Done",
+    "searchOther": "Find a different item"
   },
   "importIdentity": {
     "open": "Check existing stock cards",

@@ -2179,7 +2179,7 @@
     "syncSettings": "Dostupnosti a prenos zásob",
     "openShop": "Otvoriť v e-shope",
     "openAdmin": "Otvoriť v administrácii",
-    "linkUnavailable": "Odkaz zatiaľ nie je uložený",
+    "linkUnavailable": "Prepojenie je uložené. Chýbajú adresy na otvorenie produktu.",
     "uploadSelection": "Označené produkty: {{count}}",
     "uploadTo": "Upload do {{shop}}",
     "saveBeforeUpload": "Najprv uložte alebo zahoďte rozpracované úpravy.",
@@ -2192,19 +2192,24 @@
     "refreshAttributes": "Načítať parametre z e-shopu",
     "supplierInStock": "Skladom",
     "supplierOutOfStock": "Nedostupné",
-    "verifyAvailability": "overíme",
+    "verifyAvailability": "Dostupnosť nepotvrdená",
     "staleSupplier": "Údaj nie je aktuálny",
     "supplierRules": "Pravidlá dodávateľa",
     "shopUnpublished": "Uložené · neodoslané",
     "shopPublished": "Odoslanie overené",
     "supplierStatus": {
       "missing_link": "Chýba prepojenie na položku dodávateľa",
-      "unavailable_source": "Zdroj dostupnosti nie je aktívny",
-      "missing_observation": "Pre prepojený kód chýba údaj vo feede",
-      "stale": "Platnosť údaja z feedu vypršala",
-      "conflict": "Nejednoznačné prepojenie – treba kontrolu",
+      "unavailable_source": "Dodávateľ alebo jeho väzba nie je aktívna.",
+      "missing_observation": "V poslednom načítaní nie je údaj pre tento kód.",
+      "stale": "Údaj už nie je aktuálny. Načítajte dostupnosti znova.",
+      "conflict": "Karta má nejednoznačné dodávateľské prepojenie.",
       "unknown": "Dostupnosť zatiaľ nie je overená",
-      "unknown_quantity": "Zdroj neuvádza známu dostupnosť pre tento kód"
+      "unknown_quantity": "Zdroj neuvádza známu dostupnosť pre tento kód",
+      "unconfigured": "Zdroj dostupnosti ešte nie je nastavený.",
+      "not_loaded": "Zdroj je nastavený. Dostupnosti ešte neboli načítané.",
+      "feed_mismatch": "Uložený údaj pochádza z iného zdroja. Načítajte aktuálny.",
+      "configuration_error": "Nastavenie zdroja treba skontrolovať.",
+      "fresh": "Čerstvý údaj"
     },
     "stockScope": "Skladová evidencia",
     "stockScopes": {
@@ -2219,7 +2224,27 @@
       "no_warehouse": "Vyberte sklad"
     },
     "trackingHelp": "Aktívny sklad obsahuje iba položky potvrdené inventúrou alebo novým príjmom. Staré importy zostávajú v histórii. Pre prvé spočítanie vyberte Nepotvrdené položky a otvorte detail → Oprava množstva.",
-    "openingStock": "Hromadný počiatočný stav"
+    "openingStock": "Hromadný počiatočný stav",
+    "shopLinkMissing": "Chýba odkaz do e-shopu.",
+    "adminLinkMissing": "Chýba odkaz do administrácie.",
+    "refreshLinks": "Načítať odkazy",
+    "loadingLinks": "Načítavam odkazy…",
+    "refreshLinksHelp": "Načíta adresy produktu z e-shopu a uloží ich v Hube.",
+    "linksLoaded": "Odkazy boli načítané.",
+    "linksNotProvided": "Údaje boli načítané, ale e-shop neposkytol všetky odkazy.",
+    "eanMissing": "EAN nie je doplnený.",
+    "manageSupplier": "Dodávateľ a EAN",
+    "supplierActions": {
+      "configure": "Nastaviť dostupnosti",
+      "refresh": "Načítať dostupnosti",
+      "check_source": "Skontrolovať zdroj",
+      "wait": "Zobraziť priebeh",
+      "link": "Skontrolovať prepojenie"
+    },
+    "supplierRefresh": {
+      "queued": "Načítanie čaká na spustenie.",
+      "running": "Dostupnosti sa práve načítavajú."
+    }
   },
   "actions": {
     "effects": {
@@ -2386,7 +2411,7 @@
     "unsaved": "Neuložené zmeny — najprv ich ulož alebo obnov nastavenia.",
     "saved": "Nastavenia boli uložené.",
     "save": "Uložiť nastavenia",
-    "refreshSupplier": "Načítať dostupnosť teraz",
+    "refreshSupplier": "Načítať dostupnosti",
     "supplierQueued": "Načítanie je vo fronte. Obnov stav, aby si videl výsledok.",
     "uncertain": "Odpoveď sa nepodarilo potvrdiť. Zmena mohla prebehnúť. Obnov nastavenia a stav pred ďalším zápisom; požiadavku automaticky neopakujeme.",
     "requestFailed": "Požiadavku sa nepodarilo dokončiť.",
@@ -2682,7 +2707,22 @@
     "outcomeNotApplied": "Zmena nebola vykonaná",
     "resolutionEvidence": "Ako bol výsledok overený (8 až 1 000 znakov)",
     "resolveDelta": "Uložiť overený výsledok",
-    "quantityChange": "Zmena množstva: {{quantity}}"
+    "quantityChange": "Zmena množstva: {{quantity}}",
+    "showAllSuppliers": "Všetci dodávatelia",
+    "focusedSupplierHelp": "Nastavenia a načítanie dostupností pre vybraného dodávateľa.",
+    "supplierNotFound": "Dodávateľ sa v nastaveniach nenašiel.",
+    "selectedSku": "Prepojený kód dodávateľa",
+    "observationTitle": "Údaj pre tento produkt",
+    "observationHelp": "Katalógový údaj a aktuálna dostupnosť sa načítavajú samostatne.",
+    "observedFeed": "Zdroj uloženého údaja",
+    "observedAt": "Údaj načítaný",
+    "expiresAt": "Platnosť do",
+    "setupFirst": "Vyberte zdroj a uložte nastavenia. Automatické načítanie môže zostať vypnuté.",
+    "loadFirst": "Údaje zatiaľ neboli úspešne načítané. Kliknite na Načítať dostupnosti.",
+    "refreshScopeHelp": "Načítanie aktualizuje dostupnosti celého dodávateľského zdroja. Nemení vlastný sklad ani neposiela údaje do e-shopov.",
+    "configurationHelp": "Skontrolujte konfiguráciu dodávateľa a vybraný zdroj.",
+    "discardChanges": "Zahodiť zmeny",
+    "leaveBlocked": "Pred odchodom uložte alebo zahoďte zmeny. Nejasný výsledok najprv overte obnovením nastavení."
   },
   "productPublication": {
     "intro": "Vyberte uložený produkt a polia. Najprv sa načíta a ukáže zmena; e-shop sa zmení až po potvrdení odoslania.",
@@ -3616,7 +3656,7 @@
       "product_links_preview_expired": "Platnosť náhľadu vypršala. Pripravte nový náhľad.",
       "product_links_invalid_selection": "Vyberte iba overené zhody z tohto náhľadu.",
       "product_links_apply_selection_changed": "Operácia už má uložený pôvodný výber. Načítajte jej výsledok.",
-      "product_links_identity_changed": "Identita karty alebo prepojenie sa zmenili. Pripravte nový náhľad.",
+      "product_links_identity_changed": "Produkt alebo jeho prepojenie sa zmenilo. Skontrolujte párovanie pred načítaním odkazov.",
       "product_links_remote_changed": "Produkt v e-shope sa od náhľadu zmenil. Pripravte nový náhľad.",
       "product_links_source_unavailable": "E-shop sa nepodarilo načítať. Skúste overenie neskôr.",
       "product_links_rate_limited": "Dosiahol sa limit e-shopového API. Počkajte na obnovenie limitu.",
@@ -3633,7 +3673,8 @@
       "source_response_needs_review": "E-shop vrátil upozornenie alebo neúplnú odpoveď. Prepojenie sa nepotvrdilo.",
       "source_http_error": "E-shop vrátil chybu pri čítaní produktu.",
       "source_http_failed": "E-shop vrátil chybu pri čítaní produktu.",
-      "source_authentication_failed": "E-shop odmietol prístup. Skontrolujte nastavenia pripojenia."
+      "source_authentication_failed": "E-shop odmietol prístup. Skontrolujte nastavenia pripojenia.",
+      "product_links_mapping_missing": "Prepojenie sa už nenašlo. Otvorte párovanie produktu a skontrolujte ho."
     },
     "reasons": {
       "attributes_missing": "Parametre variantu nie sú v odpovedi e-shopu dostupné.",
@@ -3662,13 +3703,20 @@
       "mapping_identity_changed": "Kód alebo identifikátor e-shopového produktu sa zmenil.",
       "unmapped_sku_collision": "Viac kariet má rovnaký SKU bez ohľadu na veľkosť písmen.",
       "assigned_product_changed": "Kód a identifikátory nepatria vybranej karte."
-    }
+    },
+    "allAlreadyLinked": "Všetky vybrané karty sú už prepojené s {{shop}}.",
+    "done": "Hotovo",
+    "hubEan": "EAN v Hube",
+    "shopBarcode": "Čiarový kód v {{shop}}",
+    "barcodeAbsent": "Neuvedený",
+    "barcodeInvalid": "Hodnota {{value}} nie je platný EAN alebo UPC.",
+    "barcodeNotRecorded": "Hodnota nie je v tomto staršom náhľade uložená."
   },
   "supplierLinks": {
     "open": "Prepojiť s dodávateľom",
     "resume": "Obnoviť prepojenie s dodávateľom",
     "title": "Dodávateľská väzba skladovej karty",
-    "intro": "Vyberte konkrétnu položku z uloženého katalógu dodávateľa a overte, že ide o ten istý výrobok. Prepojenie zachová SKU, názov, ceny aj skladové množstvá karty.",
+    "intro": "Vyberte položku dodávateľa a overte, že ide o ten istý výrobok. Prepojenie zachová SKU, názov, ceny aj sklad. Voliteľne môžete doplniť chýbajúci EAN.",
     "card": "Existujúca skladová karta",
     "supplier": "Dodávateľ",
     "chooseSupplier": "Vyberte dodávateľa",
@@ -3753,9 +3801,12 @@
       "supplier_source_multiple_links": "Dodávateľská položka má nejednoznačné väzby.",
       "supplier_link_already_configured": "Karta už má pre tohto dodávateľa iný zdroj. Existujúca väzba sa neprepíše.",
       "supplier_link_disabled": "Existujúca väzba je vypnutá alebo nie je objednateľná; jej nastavenie zostáva zachované.",
-      "ean_conflict": "Známy EAN sa nezhoduje.",
+      "ean_conflict": "EAN už patrí inej skladovej karte.",
       "manual_ean_conflict": "EAN sa nezhoduje s ručne upraveným údajom karty.",
-      "brand_difference": "Značka sa líši; skontrolujte výrobok."
+      "brand_difference": "Značka sa líši; skontrolujte výrobok.",
+      "supplier_eans": "Doplniť overené EAN z vybranej dodávateľskej položky",
+      "ean_present": "Karta už má EAN. Úpravu urobte v detaile karty.",
+      "source_ean_missing": "Dodávateľská položka nemá overený EAN."
     },
     "errors": {
       "hub_access_required": "Prihláste sa do Hubu a obnovte uloženú operáciu.",
@@ -3780,9 +3831,18 @@
       "supplier_prefix_missing": "Dodávateľ nemá nastavený prefix produktov.",
       "supplier_prefix_invalid": "Prefix dodávateľa nie je platný; skontrolujte nastavenie dodávateľa.",
       "supplier_prefix_conflict": "Nastavenia dodávateľa obsahujú rozdielne prefixy; najprv vyriešte rozpor.",
-      "supplier_code_invalid": "Kód dodávateľa nie je platný."
+      "supplier_code_invalid": "Kód dodávateľa nie je platný.",
+      "supplier_card_links_ean_unavailable": "EAN teraz nemožno doplniť. Obnovte náhľad a skontrolujte kartu a dodávateľskú položku."
     },
-    "finishExisting": "Dokončiť kontrolu existujúcej väzby"
+    "finishExisting": "Dokončiť kontrolu existujúcej väzby",
+    "fillEans": "Doplniť EAN od dodávateľa",
+    "fillEansHelp": "Po potvrdení sa do prázdnej karty skopírujú iba overené EAN tejto položky. Existujúce EAN sa nemenia.",
+    "reviewCurrent": "Skontrolovať / doplniť EAN",
+    "eansPlanned": "Doplniť EAN: {{eans}}",
+    "eansCopied": "EAN bol doplnený do skladovej karty.",
+    "confirmEans": "Potvrdiť doplnenie EAN",
+    "done": "Hotovo",
+    "searchOther": "Vyhľadať inú položku"
   },
   "importIdentity": {
     "open": "Skontrolovať existujúce skladové karty",

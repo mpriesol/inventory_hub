@@ -87,6 +87,13 @@ global.fetch = async (path, init = {}) => {
     if (capacityMode === 'malformed') result = { shop_code: result.shop_code, probe: {}, quota: {} };
     return reply(result);
   }
+  if (url.pathname === '/api/supplier-availability/fixture/observation') {
+    assert.equal(init.method, 'GET'); assert.equal(url.searchParams.get('sku'), '103404-281-103');
+    return reply({ supplier: 'fixture', supplier_name: 'Fixture supplier', supplier_sku: '103404-281-103', source: 'fixture',
+      status: 'not_loaded', reason: 'supplier_availability_not_loaded', action: 'refresh', refresh_state: 'idle',
+      feed_key: 'stock', observation_feed_key: null, observed_at: null, expires_at: null, last_success_at: null,
+      last_error: null, availability_state: 'unknown', fresh: false, available: null, quantity: null, quantity_kind: 'unknown', label: 'overíme' });
+  }
   if (url.pathname === '/api/supplier-availability') { assert.equal(init.method, 'GET'); return reply({ suppliers: showSloger ? [supplier, sloger] : [supplier] }); }
   if (url.pathname === '/api/supplier-availability/sloger') {
     assert.equal(init.method, 'PUT'); assert.equal(body.expected_revision, sloger.revision);
@@ -347,6 +354,30 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   await act(async () => { finishOldRepair(); await tick(); });
   assert.equal(calls.length, countBeforeLock, 'Locking access stops cursor continuation after the current batch');
   assert.equal(dom.window.localStorage.length, 0); assert.equal(dom.window.sessionStorage.length, 0);
+  const beforeFocused = writes().length;
+  supplier = { ...supplier, revision: 1, enabled: false, manual_requested_at: null, last_success_at: null, status: 'not_loaded' };
+  await act(async () => {
+    unlockHub('synthetic-focused-token');
+    root.render(React.createElement(MemoryRouter, { key: 'focused', initialEntries: ['/settings/availability?supplier=fixture&sku=103404-281-103'] }, React.createElement(AvailabilitySyncPage)));
+    await tick(); await tick();
+  });
+  assert(required('supplier-fixture-card') && required('supplier-fixture-observation'));
+  assert(!element('supplier-sloger-card') && !element('sync-shop') && !element('probe-upgates-capacity'), 'Supplier link focuses only the relevant workflow');
+  assert(required('selected-supplier-sku').textContent.includes('103404-281-103'));
+  assert(required('supplier-fixture-observation').textContent.includes('103404-281-103'));
+  assert.equal(writes().length, beforeFocused, 'Supplier deep link only reads local setup and exact-SKU evidence');
+  assert.equal(required('supplier-fixture-enabled').checked, false);
+  await input('supplier-fixture-freshness', '22000');
+  assert(required('all-suppliers-blocked').disabled && !element('all-suppliers'), 'Changing focus cannot silently discard supplier edits');
+  await click('supplier-fixture-discard');
+  assert(required('all-suppliers') && !element('all-suppliers-blocked'));
+  assert.equal(writes().length, beforeFocused, 'Discarding local edits makes no request');
+  assert(!required('supplier-fixture-run').disabled, 'Explicit manual refresh remains available with automation off');
+  await click('supplier-fixture-run');
+  assert.equal(writes().length, beforeFocused + 1);
+  assert.equal(writes().at(-1).path, '/api/supplier-availability/fixture/run');
+  assert.equal(supplier.enabled, false, 'Manual refresh does not enable the scheduler');
+  await click('all-suppliers'); assert(element('sync-shop'), 'Operator can return to all settings');
   await act(async () => { root.unmount(); await tick(); });
   console.log('availability-sync-ui: supplier validation, CAS, inheritance, central authority, manual jobs, recovery, credentials and stale responses passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

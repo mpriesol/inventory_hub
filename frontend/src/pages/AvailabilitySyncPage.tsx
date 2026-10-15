@@ -5,7 +5,7 @@ import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { getUpgatesCapacity, UpgatesCapacity } from '../api/upgatesCapacity';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
-import { getSupplierAvailability, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
+import { getSupplierAvailability, getSupplierObservation, SupplierObservation, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
 import { getStockSyncOptions, getStockSyncRun, resolveStockSyncItem, runStockSync, saveStockSyncSettings, saveStockSyncWarehouse,
   STOCK_SYNC_FIELDS, StockSyncField, StockSyncOptions, StockSyncRunDetail, StockSyncValues, StockSyncResolution, StockSyncItem } from '../api/stockSync';
 import './OpeningStockPage.css';
@@ -30,7 +30,7 @@ function useOperation() {
     } }
     finally { if (current()) { running.current = false; setBusy(false); } }
   }
-  return { busy, error, uncertain, run, recovered: () => setUncertain(false) };
+  return { busy, error, uncertain, run, recovered: () => setUncertain(false), cancel: () => { generation.current++; abort.current?.abort(); running.current = false; setBusy(false); } };
 }
 
 function Feedback({ error, uncertain }: { error: string; uncertain: boolean }) {
@@ -39,7 +39,7 @@ function Feedback({ error, uncertain }: { error: string; uncertain: boolean }) {
     {error && <p role="alert" className="opening-stock-errors">{t(`availabilitySync.errors.${error}`, { defaultValue: t('availabilitySync.requestFailed') })} <code>{error}</code></p>}</>;
 }
 
-function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilitySettings; replace: (value: SupplierAvailabilitySettings) => void; onBusy: (supplier: string, busy: boolean) => void }) {
+function SupplierCard({ value, replace, onBusy, onLeaveBlocked, observation }: { value: SupplierAvailabilitySettings; replace: (value: SupplierAvailabilitySettings) => void; onBusy: (supplier: string, busy: boolean) => void; onLeaveBlocked: (supplier: string, blocked: boolean) => void; observation?: SupplierObservation | null }) {
   const { t, i18n } = useTranslation();
   const operation = useOperation();
   const manualOnly = value.manual_only === true || value.supplier === 'sloger';
@@ -54,7 +54,10 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
   const date = (stamp: string | null) => stamp ? new Date(stamp).toLocaleString(i18n.language) : '—';
   const stale = value.last_success_at ? Date.now() - new Date(value.last_success_at).getTime() > value.freshness_seconds * 1000 : true;
   const blocked = operation.busy || operation.uncertain;
+  useEffect(() => { onLeaveBlocked(value.supplier, dirty || blocked); return () => onLeaveBlocked(value.supplier, false); }, [dirty, blocked, value.supplier]);
+  const status = value.status || (value.revision === 0 ? 'unconfigured' : !value.last_success_at ? 'not_loaded' : stale ? 'stale' : 'fresh');
   const id = (suffix: string) => `supplier-${value.supplier}-${suffix}`;
+  function discard() { setEnabled(value.enabled); setFeed(value.feed_key); setInterval(String(value.interval_seconds)); setFreshness(String(value.freshness_seconds)); setCoverage(String(value.min_coverage_percent)); setSaved(false); }
   function save() {
     if (!valid || blocked) return;
     setSaved(false);
@@ -83,8 +86,21 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
     }, result => setLinkResult(result));
   }
   return <article className={`availability-supplier${dirty ? ' availability-dirty' : ''}`} data-testid={id('card')}>
-    <header><h3>{value.name}</h3><span className="opening-stock-badge">{t(`availabilitySync.${value.running ? 'running' : value.manual_requested_at || queued ? 'queued' : stale ? 'stale' : 'fresh'}`)}</span></header>
-    <p>{t('availabilitySync.supplierLabels', { available: value.availability?.orderable || 'do 5 dní', unknown: value.availability?.unknown || 'overíme' })}</p>
+    <header><h3>{value.name}</h3><span className="opening-stock-badge">{value.running || value.manual_requested_at || queued ? t(`availabilitySync.${value.running ? 'running' : 'queued'}`) : t(`productEditor.supplierStatus.${status}`, { defaultValue: t(`availabilitySync.${stale ? 'stale' : 'fresh'}`) })}</span></header>
+    {status === 'unconfigured' && <p data-testid={id('setup-help')}>{t('availabilitySync.setupFirst')}</p>}
+    {status === 'not_loaded' && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
+    {status === 'configuration_error' && <p role="alert">{t('availabilitySync.configurationHelp')}</p>}
+    {observation && <section data-testid={id('observation')}>
+      <h4>{t('availabilitySync.observationTitle')}</h4>
+      <p>{t('availabilitySync.selectedSku')}: <code>{observation.supplier_sku}</code></p>
+      <p>{observation.availability_state === 'available' ? observation.label : t(observation.availability_state === 'unavailable' ? 'productEditor.supplierOutOfStock' : 'productEditor.unknown')}{observation.fresh && observation.quantity !== null && <> · {observation.quantity}{observation.quantity_kind === 'minimum' ? '+' : ''}</>}</p>
+      <p>{t(`productEditor.supplierStatus.${observation.reason === 'supplier_quantity_unknown' ? 'unknown_quantity' : observation.status}`)}</p>
+      <dl className="availability-status"><div><dt>{t('availabilitySync.feed')}</dt><dd>{observation.feed_key || '—'}</dd></div>
+        {observation.observation_feed_key && observation.observation_feed_key !== observation.feed_key && <div><dt>{t('availabilitySync.observedFeed')}</dt><dd>{observation.observation_feed_key}</dd></div>}
+        <div><dt>{t('availabilitySync.observedAt')}</dt><dd>{date(observation.observed_at)}</dd></div>
+        <div><dt>{t('availabilitySync.expiresAt')}</dt><dd>{date(observation.expires_at)}</dd></div></dl>
+      <p>{t('availabilitySync.observationHelp')}</p>
+    </section>}
     <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>
     {manualOnly && <p data-testid={id('manual-help')}>{t('availabilitySync.manualB2bHelp')}</p>}
     <div className="availability-fields">
@@ -99,8 +115,8 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
       <p>{t('availabilitySync.b2bProgress', value.refresh_progress)}</p>
       {!!value.refresh_progress.failures.length && <details><summary>{t('availabilitySync.b2bFailures')}</summary>{value.refresh_progress.failures.map((item, index) => <p key={`${item.sku}-${index}`}><code>{item.sku}</code>: {t(`availabilitySync.errors.${item.code}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>)}</details>}
     </div>}
-    {value.last_error && <p className="opening-stock-errors" role="alert">{t('availabilitySync.lastError')}: {t(`availabilitySync.errors.${value.last_error}`, { defaultValue: value.last_error })}</p>}
-    {dirty && <p className="availability-change" role="status">{t('availabilitySync.unsaved')}</p>}
+    {value.last_error && <p className="opening-stock-errors" role="alert">{t('availabilitySync.lastError')}: {t(`availabilitySync.errors.${value.last_error}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>}
+    {dirty && <p className="availability-change" role="status">{t('availabilitySync.unsaved')} <Button data-testid={id('discard')} variant="secondary" disabled={blocked} onClick={discard}>{t('availabilitySync.discardChanges')}</Button></p>}
     {saved && !dirty && <p role="status" className="opening-stock-success">{t('availabilitySync.saved')}</p>}
     {queued && <p role="status">{t('availabilitySync.supplierQueued')}</p>}
     {linkResult && <div data-testid={id('link-result')} role="status"><p>{t(linkResult.complete ? 'availabilitySync.linksComplete' : operation.busy ? 'availabilitySync.linksProgress' : 'availabilitySync.linksIncomplete', linkResult)}</p>
@@ -109,21 +125,38 @@ function SupplierCard({ value, replace, onBusy }: { value: SupplierAvailabilityS
     </div>}
     <Feedback error={operation.error} uncertain={operation.uncertain} />
     <div className="availability-actions"><span className="action-control"><Button data-testid={id('save')} disabled={blocked || !valid || (!dirty && value.revision > 0)} onClick={save}>{t('availabilitySync.save')}</Button><ActionScope effects={!manualOnly && enabled ? ['hub-write', 'queued-supplier'] : ['hub-write']} calls={{ kind: 'variable' }} /></span>
-      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.running || !!value.manual_requested_at || queued} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => setQueued(true))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span>
+      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.configuration_error != null || !valid || value.running || !!value.manual_requested_at || queued} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => setQueued(true))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span>
       <span className="action-control"><Button data-testid={id('reconcile')} variant="secondary" disabled={blocked || dirty} onClick={repairLinks}>{t('availabilitySync.reconcileLinks')}</Button><ActionScope effects={['hub-write']} /></span></div>
+    <p className="text-sm">{t(manualOnly ? 'availabilitySync.manualB2bHelp' : 'availabilitySync.refreshScopeHelp')}</p>
     <p className="text-sm">{t('availabilitySync.linksHelp')}</p>
   </article>;
 }
 
-function SuppliersPanel() {
+function SuppliersPanel({ selectedSupplier, selectedSku }: { selectedSupplier: string; selectedSku: string }) {
   const { t } = useTranslation();
-  const operation = useOperation();
+  const operation = useOperation(), observationOperation = useOperation();
   const [suppliers, setSuppliers] = useState<SupplierAvailabilitySettings[] | null>(null), [writing, setWriting] = useState<Set<string>>(new Set());
+  const [observation, setObservation] = useState<SupplierObservation | null>(null);
+  const [leaveBlocked, setLeaveBlocked] = useState<Set<string>>(new Set());
+  function onLeaveBlocked(supplier: string, blocked: boolean) { setLeaveBlocked(previous => { const next = new Set(previous); blocked ? next.add(supplier) : next.delete(supplier); return next; }); }
   function onBusy(supplier: string, busy: boolean) { setWriting(previous => { const next = new Set(previous); busy ? next.add(supplier) : next.delete(supplier); return next; }); }
-  return <section className="opening-stock-panel"><div className="opening-stock-actions"><h2>{t('availabilitySync.suppliersTitle')}</h2><span className="action-control"><Button data-testid="load-suppliers" variant="secondary" disabled={operation.busy || writing.size > 0} onClick={() => operation.run(false, signal => getSupplierAvailability(signal), result => { setSuppliers(result.suppliers); operation.recovered(); })}>{t('availabilitySync.loadSuppliers')}</Button><ActionScope effects={['hub-read']} /></span></div>
-    <p>{t('availabilitySync.suppliersHelp')}</p><Feedback error={operation.error} uncertain={false} />
-    {suppliers?.length === 0 && <p>{t('availabilitySync.noSuppliers')}</p>}
-    <div className="availability-suppliers">{suppliers?.map(value => <SupplierCard key={value.supplier} value={value} replace={result => setSuppliers(previous => previous!.map(item => item.supplier === result.supplier ? result : item))} onBusy={onBusy} />)}</div>
+  function load() { operation.run(false, signal => getSupplierAvailability(signal), result => { setSuppliers(result.suppliers); operation.recovered(); }); }
+  useEffect(() => { if (selectedSupplier) load(); }, [selectedSupplier]);
+  useEffect(() => {
+    setObservation(null);
+    if (selectedSupplier && selectedSku && suppliers?.some(value => value.supplier === selectedSupplier)) {
+      observationOperation.run(false, signal => getSupplierObservation(selectedSupplier, selectedSku, signal), setObservation);
+    }
+    return () => observationOperation.cancel();
+  }, [selectedSupplier, selectedSku, suppliers]);
+  const visible = selectedSupplier ? suppliers?.filter(value => value.supplier === selectedSupplier) : suppliers;
+  return <section className="opening-stock-panel"><div className="opening-stock-actions"><h2>{t('availabilitySync.suppliersTitle')}</h2><span className="action-control"><Button data-testid="load-suppliers" variant="secondary" disabled={operation.busy || observationOperation.busy || writing.size > 0} onClick={load}>{t('availabilitySync.loadSuppliers')}</Button><ActionScope effects={['hub-read']} /></span></div>
+    <p>{t(selectedSupplier ? 'availabilitySync.focusedSupplierHelp' : 'availabilitySync.suppliersHelp')}</p>
+    {selectedSupplier && <p>{leaveBlocked.size > 0 ? <><Button data-testid="all-suppliers-blocked" variant="secondary" disabled>{t('availabilitySync.showAllSuppliers')}</Button> <span role="status">{t('availabilitySync.leaveBlocked')}</span></> : <Link data-testid="all-suppliers" to="/settings/availability">{t('availabilitySync.showAllSuppliers')}</Link>}</p>}
+    {selectedSku && <p data-testid="selected-supplier-sku">{t('availabilitySync.selectedSku')}: <code>{selectedSku}</code></p>}
+    <Feedback error={operation.error || observationOperation.error} uncertain={false} />
+    {visible?.length === 0 && <p>{t(selectedSupplier ? 'availabilitySync.supplierNotFound' : 'availabilitySync.noSuppliers')}</p>}
+    <div className="availability-suppliers">{visible?.map(value => <SupplierCard key={value.supplier} value={value} observation={value.supplier === selectedSupplier ? observation : null} replace={result => setSuppliers(previous => previous!.map(item => item.supplier === result.supplier ? result : item))} onBusy={onBusy} onLeaveBlocked={onLeaveBlocked} />)}</div>
   </section>;
 }
 
@@ -300,11 +333,13 @@ function CapacityPanel({ shop }: { shop: string }) {
 export function AvailabilitySyncPage() {
   const { t } = useTranslation();
   const [query] = useSearchParams();
+  const selectedSupplier = /^[a-zA-Z0-9_-]{1,50}$/.test(query.get('supplier') || '') ? query.get('supplier')! : '';
+  const selectedSku = selectedSupplier && /^[^\x00-\x1f\x7f]{1,100}$/.test(query.get('sku') || '') ? query.get('sku')! : '';
   const revision = useSyncExternalStore(subscribeAccess, accessRevision);
   const [token, setToken] = useState(''), [shop, setShop] = useState(query.get('shop') === 'xtrek' ? 'xtrek' : 'biketrek'), [stockBusy, setStockBusy] = useState(false);
   useEffect(() => { setToken(''); }, [revision]);
   return <div className="opening-stock availability-sync"><Link className="opening-stock-back" to="/settings">← {t('availabilitySync.back')}</Link><header><div><h1>{t('availabilitySync.title')}</h1><p>{t('availabilitySync.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" data-testid="lock-sync" onClick={() => unlockHub('')}>{t('availabilitySync.lock')}</Button>}</header>
     <p><Link to={`/settings/purchase-costs?shop=${shop}`}>{t('fifoCostSync.title')}</Link></p>
-    {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><p>{t('availabilitySync.tokenHelp')}</p><label>{t('availabilitySync.token')}<input data-testid="sync-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><Button data-testid="unlock-sync" type="submit" disabled={!token.trim()}>{t('availabilitySync.unlock')}</Button></form> : <React.Fragment key={revision}><SuppliersPanel /><section className="opening-stock-panel availability-shop-selector"><label>{t('availabilitySync.shop')}<select data-testid="sync-shop" value={shop} disabled={stockBusy} onChange={event => setShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label></section><CapacityPanel key={`capacity:${shop}`} shop={shop} /><StockPanel key={shop} shop={shop} onBusy={setStockBusy} /></React.Fragment>}
+    {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><p>{t('availabilitySync.tokenHelp')}</p><label>{t('availabilitySync.token')}<input data-testid="sync-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><Button data-testid="unlock-sync" type="submit" disabled={!token.trim()}>{t('availabilitySync.unlock')}</Button></form> : <React.Fragment key={revision}><SuppliersPanel key={`${selectedSupplier}:${selectedSku}`} selectedSupplier={selectedSupplier} selectedSku={selectedSku} />{!selectedSupplier && <><section className="opening-stock-panel availability-shop-selector"><label>{t('availabilitySync.shop')}<select data-testid="sync-shop" value={shop} disabled={stockBusy} onChange={event => setShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label></section><CapacityPanel key={`capacity:${shop}`} shop={shop} /><StockPanel key={shop} shop={shop} onBusy={setStockBusy} /></>}</React.Fragment>}
   </div>;
 }

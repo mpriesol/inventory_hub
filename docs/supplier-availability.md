@@ -16,6 +16,24 @@ Pri viacerých dodávateľoch sa použije prvý čerstvý dostupný zdroj podľa
 
 Čerstvý feed musí byť prepojený s konkrétnym skladovým produktom. Jednoznačné väzby sa dopĺňajú pri importe; pre už stiahnuté údaje slúži lokálne tlačidlo **Prepojiť dostupnosti** pri dodávateľovi. Nesťahuje feed ani nevolá Upgates. Tabuľka rozlišuje chýbajúcu väzbu, konflikt identity, chýbajúce pozorovanie a starý údaj. Podrobnosti vrátane uzamknutia prefixu a pravidla `PL-` + dodávateľský kód sú v [dodávateľskej identite](supplier-identity.md).
 
+V produktovej tabuľke sa **množstvo u dodávateľa** a **dodávateľská dostupnosť** opierajú o rovnaké pozorovanie. Potvrdená čerstvá nula sa zobrazuje ako nedostupnosť; chýbajúci alebo starý údaj ostáva nepotvrdený. Text „overíme“ je konzervatívny náhradný text pre publikáciu, nie informácia o prebiehajúcom načítaní. Skutočný beh a zaradenie do frontu majú samostatný stav. Vlastná zásoba sa do týchto dodávateľských stĺpcov nepripočítava.
+
+Odkaz pri produkte otvorí konkrétneho dodávateľa cez `/settings/availability?supplier=<code>&sku=<raw-supplier-sku>`. Stránka automaticky iba prečíta miestne nastavenia a dôkazy pre presný kód; nič nesťahuje od dodávateľa a nič neaktivuje. Ukáže zdroj, posledný úspech, čas pozorovania a jeho platnosť. Pri prvom nastavení treba vybrať skutočne nakonfigurovaný zdroj a uložiť ho; automatiku možno nechať vypnutú. Až explicitné **Načítať dostupnosti** zaradí bežný dodávateľský refresh. Pri feedových dodávateľoch sa načíta celý zvolený feed, nie iba otvorený produkt. Odkaz **Všetci dodávatelia** vráti úplnú obrazovku nastavení.
+
+Diagnostika rozlišuje tieto príčiny:
+
+| Stav | Význam a ďalší krok |
+| --- | --- |
+| `unconfigured` | Dostupnosti dodávateľa ešte nemajú uložené nastavenia; vybrať zdroj a uložiť. |
+| `not_loaded` | Zdroj je nastavený, ale nebol úspešne načítaný; spustiť ručné načítanie a skontrolovať prípadnú chybu. |
+| `missing_observation` | Zdroj už bol načítaný, no pre presný prepojený dodávateľský kód nie je uložené pozorovanie. Samotný stav nedokazuje neprítomnosť v najnovšom externom súbore. |
+| `feed_mismatch` | Uložený údaj pochádza z iného feedu než aktuálne zvoleného; skontrolovať zdroj a načítať ho. |
+| `configuration_error` | Konfigurácia alebo zvolený zdroj nie je použiteľný; opraviť konfiguráciu dodávateľa. |
+| `stale` | Pozorovanie existuje, ale vypršala jeho platnosť; načítať nové údaje. |
+| `unavailable_source` | Produkt, dodávateľ alebo väzba je vypnutá/neobjednateľná; skontrolovať existujúce prepojenie. |
+
+Kód v prepojení je raw dodávateľský kód. Napríklad Northfinder `103404-281-103` sa vyhľadáva spolu s identitou dodávateľa; prefix `NF-` ani odlišné Hub SKU nenahrádzajú tento kľúč. Katalógový snapshot množstva, jeho čas stiahnutia ani uloženie dodávateľskej väzby nevytvárajú čerstvé pozorovanie dostupnosti. Nová diagnostika nemení pravidlá publikácie, množstvo vo vlastnom sklade ani konfiguráciu automatiky.
+
 Ručné spustenie počas prebiehajúceho načítania pripraví jeden ďalší beh. Opakované kliknutia nevytvárajú paralelné sťahovania. Zmena konfigurácie počas sťahovania zneplatní rozpracovaný výsledok a vyžiada nový beh.
 
 ## Sloger: iba ručné B2B čítanie
@@ -39,6 +57,7 @@ API používa existujúci operator token a `Cache-Control: no-store`:
 | Metóda a cesta | Účel |
 | --- | --- |
 | `GET /supplier-availability` | Zoznam konfigurácií a prevádzkového stavu bez prihlasovacích údajov zdrojov |
+| `GET /supplier-availability/{supplier}/observation?sku=<raw>` | Miestna diagnostika presnej katalógovej položky: stav, raw kód, zdroj, časy a odporúčaný ďalší krok; bez downloadu alebo zápisov obchodných údajov |
 | `PUT /supplier-availability/{supplier}` | Uloženie s `expected_revision`; striktne validované `enabled`, `feed_key`, `interval_seconds`, `freshness_seconds`, `min_coverage_percent` |
 | `POST /supplier-availability/{supplier}/run` | Trvalé zaradenie ručného behu s `expected_revision`; odpoveď 202 |
 | `POST /supplier-availability/{supplier}/links/reconcile` | Lokálna dávka prepojenia existujúcich údajov; `after_product_id`, limit 1–500, konflikty a pokračovací kurzor |
@@ -53,7 +72,7 @@ SK Profi Bike používa `catalog_parser: "sk-profi-bike"`: plný produktový aj 
 
 `supplier_availability_observations` uchováva identitu `(supplier_id, supplier_sku)`, presnosť množstva, pozorovanie, expirácie a odkaz na `SupplierFeedRun`. `SupplierFeedItemRaw` archivuje iba potrebné skladové fakty. Katalógové názvy, ceny, obrázky a jeho snapshot/run ID sa pri tomto procese neprepíšu. Na identitu fyzického produktu sa používajú existujúce `ProductSupplySource` a ako záloha `Product.source_supplier_product_id`; žiadna podobnosť názvu ani globálne EAN párovanie.
 
-`await project(db, product_ids, at=None)` vracia dostupnosť pre každé požadované product ID. Platnosť vyhodnocuje pri každom čítaní. Pravidelný prenos zásob musí preto opakovane prejsť mapované položky aj bez nového feedu: samotné uplynutie platnosti môže zmeniť dodaciu dostupnosť. Skrátenie TTL platí okamžite, predĺženie neoživuje pôvodne expirované pozorovania. Množstvo dodávateľa sa nikdy nepripočíta k vlastnému.
+`await project(db, product_ids, at=None)` vracia dostupnosť pre každé požadované product ID. Polia `status`/`reason` rozlišujú príčinu, `availability_state` rozlišuje potvrdenú dostupnosť, nedostupnosť a neznámy stav. Kontext zahŕňa `supplier`, `supplier_name`, `supplier_sku`, `feed_key`, `observation_feed_key`, `last_success_at`, sanitizovaný `last_error`, `refresh_state` a `action`, keď sú známe. Medzi viacerými zdrojmi má prednosť čerstvá potvrdená dostupnosť, potom iné čerstvé pozorovanie, starý údaj a nakoniec diagnostika; v rovnakej skupine sa zachová primárny zdroj a priorita. Platnosť vyhodnocuje pri každom čítaní. Pravidelný prenos zásob musí preto opakovane prejsť mapované položky aj bez nového feedu: samotné uplynutie platnosti môže zmeniť dodaciu dostupnosť. Skrátenie TTL platí okamžite, predĺženie neoživuje pôvodne expirované pozorovania. Množstvo dodávateľa sa nikdy nepripočíta k vlastnému.
 
 Overenie: lokálne testy kontrolujú presnosť množstiev, odmietnutie neplatných hodnôt, expiráciu, minimálny stock XML a ochranu API. Databázové testy majú guard na izolovaný localhost `*_catalog_test` a overujú opakovateľnosť migrácie, atómové prijatie, zachovanie posledného úspechu, zmenu konfigurácie počas behu, front a zakázané väzby. Plný výsledok CI a nasadenie sa zaznamenávajú samostatne.
 

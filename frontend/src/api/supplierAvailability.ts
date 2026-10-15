@@ -1,11 +1,21 @@
 import { hubRequest } from './access';
 
+export type SupplierObservationStatus = 'unconfigured' | 'not_loaded' | 'missing_observation' | 'feed_mismatch' | 'configuration_error' | 'stale' | 'fresh' | 'unavailable_source' | 'missing_link' | 'conflict';
+export interface SupplierObservation {
+  available: boolean | null; fresh: boolean; quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown';
+  availability_state: 'available' | 'unavailable' | 'unknown'; label: string; source: string | null;
+  supplier: string; supplier_name: string; supplier_sku: string; status: SupplierObservationStatus; reason: string | null;
+  feed_key: string | null; observation_feed_key: string | null; observed_at: string | null; expires_at: string | null;
+  last_success_at: string | null; last_error: string | null; refresh_state: 'idle' | 'queued' | 'running';
+  action: 'configure' | 'refresh' | 'check_source' | 'wait' | 'link';
+}
 export interface SupplierAvailabilitySettings {
   supplier: string; name: string; feed_keys: string[]; feed_key: string;
   revision: number; enabled: boolean; interval_seconds: number; freshness_seconds: number;
   min_coverage_percent: number; last_started_at: string | null; last_success_at: string | null;
   next_run_at: string | null; last_error: string | null; manual_requested_at: string | null;
   last_item_count: number | null; running: boolean; availability: { orderable: string; unknown: string };
+  status?: SupplierObservationStatus; configuration_error?: string | null;
   manual_only?: boolean; source_kind?: 'feed' | 'b2b'; refresh_scope?: 'supplier_catalog' | 'hub_products';
   refresh_progress?: { total: number; processed: number; succeeded: number; failed: number; failures: { sku: string; code: string }[]; status: 'running' | 'completed' | 'failed' } | null;
 }
@@ -24,3 +34,6 @@ export const saveSupplierAvailability = (supplier: string, body: SupplierAvailab
 export const runSupplierAvailability = (supplier: string, expected_revision: number) => hubRequest<{ supplier: string; queued: boolean }>(`${base}/${encodeURIComponent(supplier)}/run`, { expected_revision });
 export const reconcileSupplierLinks = (supplier: string, after_product_id: number, signal?: AbortSignal) =>
   hubRequest<SupplierLinkReconciliation>(`${base}/${encodeURIComponent(supplier)}/links/reconcile`, { after_product_id, limit: 500 }, signal);
+
+export const getSupplierObservation = (supplier: string, sku: string, signal?: AbortSignal) =>
+  hubRequest<SupplierObservation>(`${base}/${encodeURIComponent(supplier)}/observation?${new URLSearchParams({ sku })}`, undefined, signal);

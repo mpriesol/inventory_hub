@@ -23,16 +23,32 @@ def now():
 
 
 def _feed_keys(cfg):
-    return [key for key, source in (cfg.get("feeds", {}).get("sources") or {}).items()
-            if re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", key) and isinstance(source, dict)
-            and (source.get("local_path") if source.get("mode", "remote") == "local" else (source.get("remote") or {}).get("url"))]
+    feeds = cfg.get("feeds") or {}
+    sources = feeds.get("sources") if isinstance(feeds, dict) else None
+    if not isinstance(sources, dict):
+        return []
+    result = []
+    for key, source in sources.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", key) or not isinstance(source, dict):
+            continue
+        remote = source.get("remote") or {}
+        location = source.get("local_path") if source.get("mode", "remote") == "local" else remote.get("url") if isinstance(remote, dict) else None
+        if isinstance(location, str) and location.strip():
+            result.append(key)
+    return result
+
+
+def _safe_error(value):
+    # Persisted workflow codes are safe; never expose legacy exception/URL text.
+    return value if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,99}", value) else (
+        "supplier_availability_source_unavailable" if value else None)
 
 
 def public(supplier, cfg, settings=None):
     manual_only = supplier == "sloger"
     keys = ["b2b"] if manual_only else _feed_keys(cfg)
     result = {"supplier": supplier, "name": cfg.get("name") or supplier,
-        "feed_keys": keys, "feed_key": settings.feed_key if settings else ("b2b" if manual_only else "stock" if "stock" in keys else "products"),
+        "feed_keys": keys, "feed_key": settings.feed_key if settings else ("b2b" if manual_only else "stock" if "stock" in keys else "products" if "products" in keys else next(iter(keys), "")),
         "revision": settings.revision if settings else 0, "enabled": bool(settings and settings.enabled and not manual_only),
         "manual_only": manual_only, "source_kind": "b2b" if manual_only else "feed",
         "refresh_scope": "hub_products" if manual_only else "supplier_catalog", "refresh_progress": None,
@@ -44,19 +60,30 @@ def public(supplier, cfg, settings=None):
         "running": bool(settings and settings.running_run_id)}
     for field in ("last_started_at", "last_success_at", "next_run_at", "last_error", "manual_requested_at"):
         result[field] = getattr(settings, field) if settings else None
+    result["last_error"] = _safe_error(result["last_error"])
+    result["status"] = ("unconfigured" if settings is None else "not_loaded" if not settings.last_success_at
+        else "stale" if now() >= settings.last_success_at + timedelta(seconds=settings.freshness_seconds) else "fresh")
+    result["configuration_error"] = None
+    if settings and settings.feed_key not in keys:
+        result.update(status="configuration_error", configuration_error="supplier_availability_source_missing")
     return result
 
 
 async def overview(db):
     rows = {code: value for code, value in (await db.execute(select(Supplier.code, SupplierAvailabilitySettings)
-            .join(SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == Supplier.id))).all()}
+            .outerjoin(SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == Supplier.id))).all()}
     directory = config_io.DATA_ROOT / "suppliers"
-    codes = sorted(path.parent.name for path in directory.glob("*/config.json")
-                   if re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", path.parent.name))
+    codes = sorted({code for code in rows if re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", code)} |
+                   {path.parent.name for path in directory.glob("*/config.json")
+                    if re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", path.parent.name)})
     result = []
     for code in codes:
-        cfg = config_io.load_supplier(code, write_back_on_load=False)
-        value = public(code, cfg, rows.get(code))
+        try:
+            cfg = catalog.supplier_config(code)
+            value = public(code, cfg, rows.get(code))
+        except (catalog.CatalogError, OSError, TypeError, ValueError):
+            value = public(code, {}, rows.get(code))
+            value.update(status="configuration_error", configuration_error="supplier_availability_source_missing")
         if code == "sloger" and rows.get(code):
             from inventory_hub.services.supplier_availability_b2b import latest_progress
             value["refresh_progress"] = await latest_progress(db, rows[code].supplier_id)
@@ -235,6 +262,7 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
     fresh = bool(observation and observation.observed_at <= at < expires)
     available = observation.available if fresh else None
     return {"available": available, "fresh": fresh, "label": label if available is True else "overíme",
+        "availability_state": "available" if available is True else "unavailable" if available is False else "unknown",
         "source": supplier, "quantity": str(observation.quantity) if fresh and observation.quantity is not None else None,
         "quantity_kind": observation.quantity_kind if fresh else "unknown",
         "observed_at": observation.observed_at.isoformat() if observation else None,
@@ -244,32 +272,86 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
             else "supplier_observation_expired" if observation else "supplier_observation_missing"}
 
 
-async def project(db, product_ids, at=None):
-    """Resolve active supply links by priority; expiry is evaluated on every read.
+def _source_projection(product, supplier, observation, settings, observed_feed_key, label, config_error, at):
+    """Separate identity, source setup and exact-SKU evidence without guessing stock."""
+    result = project_observation(None, "overíme", supplier.code, at)
+    refresh = "running" if settings and settings.running_run_id else "queued" if settings and settings.manual_requested_at else "idle"
+    result.update(supplier=supplier.code, supplier_name=supplier.name, supplier_sku=product.supplier_sku,
+        feed_key=settings.feed_key if settings else None, observation_feed_key=observed_feed_key,
+        last_success_at=settings.last_success_at.isoformat() if settings and settings.last_success_at else None,
+        last_error=_safe_error(settings.last_error) if settings else None, refresh_state=refresh,
+        observed_at=observation.observed_at.isoformat() if observation else None,
+        expires_at=observation.expires_at.isoformat() if observation else None)
+    def unavailable(status, reason, action):
+        result.update(status=status, reason=reason, action="wait" if action == "refresh" and refresh != "idle" else action)
+        if status == "unavailable_source":
+            result["source"] = None
+        return result
+    if not product.is_active or product.is_discontinued or not supplier.is_active:
+        return unavailable("unavailable_source", "supplier_source_disabled", "check_source")
+    if config_error:
+        return unavailable("configuration_error", config_error, "configure")
+    if not settings:
+        return unavailable("unconfigured", "supplier_availability_not_configured", "configure")
+    if observation and observed_feed_key != settings.feed_key:
+        return unavailable("feed_mismatch", "supplier_observation_feed_mismatch", "check_source")
+    if not settings.last_success_at and supplier.code != "sloger":
+        return unavailable("not_loaded", "supplier_availability_not_loaded", "refresh")
+    if not observation:
+        return unavailable("missing_observation", "supplier_observation_missing", "refresh")
+    result.update(project_observation(observation, label, supplier.code, at, settings.freshness_seconds))
+    result["action"] = "wait" if refresh != "idle" else "refresh"
+    return result
 
-Regular shop synchronization reprojects all mapped leaves each pass, so TTL expiry
-changes availability even when no newer feed has arrived. No data is turned into zero.
-"""
+
+def _source_label(supplier_code, settings):
+    try:
+        cfg = catalog.supplier_config(supplier_code)
+        label = normalize_supplier_availability((cfg.get("adapter_settings") or {}).get("availability"))["orderable"]
+        if settings and supplier_code != "sloger" and settings.feed_key not in _feed_keys(cfg):
+            return None, "supplier_availability_source_missing"
+        return label, None
+    except (catalog.CatalogError, OSError, TypeError, ValueError):
+        return None, "supplier_availability_source_missing"
+
+
+async def source_observation(db, supplier_code, sku, at=None):
+    """Read one exact catalog SKU and its independent availability evidence."""
+    row = (await db.execute(select(SupplierProduct, Supplier, SupplierAvailabilityObservation, SupplierAvailabilitySettings)
+        .join(Supplier, Supplier.id == SupplierProduct.supplier_id)
+        .outerjoin(SupplierAvailabilityObservation, (SupplierAvailabilityObservation.supplier_id == Supplier.id) &
+            (SupplierAvailabilityObservation.supplier_sku == SupplierProduct.supplier_sku))
+        .outerjoin(SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == Supplier.id)
+        .where(Supplier.code == supplier_code, SupplierProduct.supplier_sku == sku))).one_or_none()
+    if row is None:
+        raise AvailabilityError("supplier_availability_source_missing", 404)
+    product, supplier, observation, settings = row
+    feed_key = await db.scalar(select(SupplierFeed.code).where(SupplierFeed.id == observation.feed_id)) if observation else None
+    label, error = _source_label(supplier.code, settings)
+    return _source_projection(product, supplier, observation, settings, feed_key, label, error, at or now())
+
+
+async def project(db, product_ids, at=None):
+    """Project active links, retaining exact cause and evidence for operator review.
+
+    Existing publication fields keep their conservative behavior. Display state
+    distinguishes a confirmed zero from unknown; neither becomes physical stock.
+    """
     at = at or now()
     product_ids = list(dict.fromkeys(product_ids))
     result = {identifier: project_observation(None, "overíme", None, at) for identifier in product_ids}
     for value in result.values():
-        value.update(status="missing_link", reason="supplier_link_missing")
+        value.update(status="missing_link", reason="supplier_link_missing", action="link", refresh_state="idle")
     if not product_ids:
         return result
-    links = (await db.execute(select(ProductSupplySource.product_id, ProductSupplySource.supplier_product_id,
-                 ProductSupplySource.priority, ProductSupplySource.is_primary).where(
-                     ProductSupplySource.product_id.in_(product_ids), ProductSupplySource.is_active.is_(True),
-                     ProductSupplySource.orderable.is_(True)))).all()
-    candidates = [(link.product_id, link.supplier_product_id, link.priority, link.is_primary) for link in links]
-    # An explicitly disabled supply link must not be revived by the legacy fallback.
-    linked = set((await db.scalars(select(ProductSupplySource.product_id).where(
-        ProductSupplySource.product_id.in_(product_ids)))).all())
-    candidates.extend((product_id, source, 100, False) for product_id, source in
+    links = list(await db.scalars(select(ProductSupplySource).where(ProductSupplySource.product_id.in_(product_ids))))
+    candidates = [(link.product_id, link.supplier_product_id, link.priority, link.is_primary,
+                   link.is_active and link.orderable) for link in links]
+    # Explicitly disabled links must never be revived through a legacy pointer.
+    linked = {link.product_id for link in links}
+    candidates.extend((product_id, source, 100, False, True) for product_id, source in
         (await db.execute(select(Product.id, Product.source_supplier_product_id).where(
             Product.id.in_(product_ids), Product.source_supplier_product_id.is_not(None)))).all() if product_id not in linked)
-    for product_id in linked | {candidate[0] for candidate in candidates}:
-        result[product_id].update(status="unavailable_source", reason="supplier_source_disabled")
     ids = {row[1] for row in candidates}
     sources = {product.id: (product, supplier, observation, settings) for product, supplier, observation, settings in
         (await db.execute(select(SupplierProduct, Supplier, SupplierAvailabilityObservation, SupplierAvailabilitySettings)
@@ -277,30 +359,29 @@ changes availability even when no newer feed has arrived. No data is turned into
             .outerjoin(SupplierAvailabilityObservation, (SupplierAvailabilityObservation.supplier_id == Supplier.id) &
                 (SupplierAvailabilityObservation.supplier_sku == SupplierProduct.supplier_sku))
             .outerjoin(SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == Supplier.id)
-            .where(SupplierProduct.id.in_(ids), SupplierProduct.is_active.is_(True),
-                   SupplierProduct.is_discontinued.is_(False), Supplier.is_active.is_(True)))).all()}
+            .where(SupplierProduct.id.in_(ids)))).all()}
     feed_keys = dict((await db.execute(select(SupplierFeed.id, SupplierFeed.code).where(
         SupplierFeed.id.in_({o.feed_id for _, _, o, _ in sources.values() if o})))).all())
-    labels = {}
-    for product_id, source_id, _priority, _primary in sorted(candidates, key=lambda x: (x[0], not x[3], x[2], x[1])):
-        if source_id not in sources or result[product_id]["available"] is True:
+    labels, ranks = {}, {}
+    for product_id, source_id, _priority, _primary, enabled in sorted(candidates, key=lambda x: (x[0], not x[3], x[2], x[1])):
+        if source_id not in sources:
+            if product_id not in ranks:
+                result[product_id].update(status="unavailable_source", reason="supplier_source_disabled", action="link")
             continue
         product, supplier, observation, settings = sources[source_id]
-        if result[product_id]["status"] == "unavailable_source":
-            result[product_id].update(status="missing_observation", reason="supplier_observation_missing")
         if supplier.code not in labels:
-            try:
-                cfg = catalog.supplier_config(supplier.code)
-                labels[supplier.code] = normalize_supplier_availability((cfg.get("adapter_settings") or {}).get("availability"))["orderable"]
-            except (catalog.CatalogError, ValueError):
-                labels[supplier.code] = None
-        label = labels[supplier.code]
-        if (not settings or (not settings.last_success_at and supplier.code != "sloger") or not observation
-                or feed_keys.get(observation.feed_id) != settings.feed_key or not label):
-            continue
-        candidate = project_observation(observation, label, supplier.code, at, settings.freshness_seconds)
-        if result[product_id]["source"] is None or candidate["available"] is True:
-            result[product_id] = candidate
+            labels[supplier.code] = _source_label(supplier.code, settings)
+        label, error = labels[supplier.code]
+        candidate = _source_projection(product, supplier, observation, settings, feed_keys.get(observation.feed_id) if observation else None,
+                                       label, error, at)
+        if not enabled:
+            candidate.update(project_observation(None, "overíme", supplier.code, at))
+            candidate.update(status="unavailable_source", reason="supplier_source_disabled", action="check_source", source=None)
+        # Prefer usable evidence, then supplier priority. A lower-priority fresh
+        # available source may satisfy demand, but an expired one never can.
+        rank = 3 if candidate["available"] is True else 2 if candidate["fresh"] else 1 if candidate["status"] == "stale" else -1 if candidate["status"] == "unavailable_source" else 0
+        if rank > ranks.get(product_id, -2):
+            result[product_id], ranks[product_id] = candidate, rank
     from inventory_hub.services.supplier_links import missing_link_diagnostics
     diagnostics = await missing_link_diagnostics(db, [identifier for identifier, value in result.items()
         if value["status"] == "missing_link"])

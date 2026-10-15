@@ -13,10 +13,12 @@ import json
 import re
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
 from inventory_hub.services.product_identity import verified_barcodes
+from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.upgates import (
     UpgatesClient, UpgatesError, UpgatesParameterError, _retry_after_seconds,
     connection_fingerprint, product_title, variant_attributes,
@@ -85,6 +87,29 @@ def _nonfinite(_value):
     raise SourceError("source_nonfinite_json")
 
 
+def _url(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 2000 or any(ord(c) < 33 or ord(c) == 127 for c in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme in ('http', 'https') and parsed.hostname and not parsed.username and not parsed.password:
+            return value
+    except ValueError:
+        pass
+    return None
+
+
+def _navigation(parent: dict, item: dict) -> dict:
+    """Only URLs actually supplied by this parent/leaf, never guessed routes."""
+    def urls(value):
+        descriptions = value.get('descriptions')
+        descriptions = descriptions if isinstance(descriptions, list) else []
+        return [d.get('url') for d in descriptions if isinstance(d, dict) and d.get('language') == 'sk'] + [
+            d.get('url') for d in descriptions if isinstance(d, dict)] + [value.get('url')]
+    return {'shop_url': next((url for value in [*urls(item), *urls(parent)] if (url := _url(value))), None),
+            'shop_admin_url': _url(item.get('admin_url')) or _url(parent.get('admin_url'))}
+
+
 def _leaf(parent: dict, item: dict, *, variant: bool) -> dict:
     code, parent_code = _code(item.get("code")), _code(parent.get("code"))
     parent_id = _native_id(parent.get("product_id"))
@@ -97,13 +122,16 @@ def _leaf(parent: dict, item: dict, *, variant: bool) -> dict:
         _need(parent.get("variants_exists_yn") is False and parent.get("set_yn", False) is False
               and parent.get("variants") in (None, []), "source_product_kind_unknown")
     raw = item.get("ean")
-    raw = raw if isinstance(raw, list) else [raw] if raw else []
+    raw = raw if isinstance(raw, list) else [] if raw is None or raw == '' else [raw]
     _need(len(raw) <= 100 and all(isinstance(x, (str, int)) and not isinstance(x, bool) for x in raw),
           "source_ean_invalid")
     raw = [str(x) for x in raw if str(x).strip()]
     _need(all(len(x) <= 1000 for x in raw), "source_ean_invalid")
     eans = sorted(verified_barcodes(raw))
-    warnings = ["unverified_barcode"] if any(not verified_barcodes((x,)) for x in raw) else []
+    invalid = sorted({value for entry in raw for value, _kind in ProductIdentifierService.split_compound_ean(entry)
+                      if not verified_barcodes((value,))} |
+                     {entry for entry in raw if not ProductIdentifierService.split_compound_ean(entry)})
+    warnings = ["unverified_barcode"] if invalid else []
     try:
         attributes = variant_attributes(item, strict=True)
     except UpgatesParameterError:
@@ -115,7 +143,8 @@ def _leaf(parent: dict, item: dict, *, variant: bool) -> dict:
     _need(len(name) <= 2000, "source_name_invalid")
     return {"code": code, "parent_code": parent_code, "parent_id": parent_id,
             "is_variant": variant, "external_id": _native_id(item.get("variant_id")) if variant else parent_id,
-            "name": name, "eans": eans, "attributes": attributes, "warnings": warnings}
+            "name": name, "eans": eans, "raw_barcodes": raw, "invalid_barcodes": invalid,
+            "attributes": attributes, "warnings": warnings, **_navigation(parent, item)}
 
 
 def _key(leaf: dict) -> tuple:
@@ -201,12 +230,13 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
         # This switch omits variants; it does not filter out parent products.
         # Explicit parent/set flags below prevent a family from becoming stock.
         rows = reader.pages("/products", "products", {"codes": ";".join(codes), "variants_yn": "false"})
-        seen_parents = set()
+        seen_parents, parents = set(), {}
         for parent in rows:
             parent_code, parent_id = _code(parent.get("code")), _native_id(parent.get("product_id"))
             _need(parent_code.casefold() in folded, "source_filter_mismatch")
             _need((parent_code, parent_id) not in seen_parents, "source_duplicate_parent")
             seen_parents.add((parent_code, parent_id))
+            parents[(parent_code, parent_id)] = parent
             if parent_code not in wanted:
                 continue
             _need(type(parent.get("variants_exists_yn")) is bool, "source_product_kind_unknown")
@@ -219,7 +249,7 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
         # The documented flat endpoint already carries leaf EAN/parameters and
         # parent identity. Never pull an entire POS family to find one leaf.
         rows = reader.pages("/products/variants", "variants", {"variant_codes": ";".join(codes)})
-        seen_native = set()
+        seen_native, variant_items = set(), {}
         for item in rows:
             code = _code(item.get("code"))
             _need(code.casefold() in folded, "source_filter_mismatch")
@@ -233,7 +263,26 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
             _need(native not in seen_native, "source_duplicate_variant_id")
             seen_native.add(native)
             leaves[key] = leaf
+            variant_items[key] = item
             _need(len(leaves) <= MAX_LEAVES, "source_result_limit")
+        # Flat variants carry their exact parent identity, but not its display
+        # links/title. Fetch only those parents without their sibling payload.
+        missing = sorted({leaf['parent_code'] for leaf in leaves.values() if leaf['is_variant']
+                          and (leaf['parent_code'], leaf['parent_id']) not in parents})
+        for offset in range(0, len(missing), MAX_CODES):
+            batch = _codes(missing[offset:offset + MAX_CODES])
+            for parent in reader.pages('/products', 'products', {'codes': ';'.join(batch), 'variants_yn': 'false'}):
+                parent_code, parent_id = _code(parent.get('code')), _native_id(parent.get('product_id'))
+                _need(parent_code in batch, 'source_filter_mismatch')
+                _need((parent_code, parent_id) not in parents, 'source_duplicate_parent')
+                parents[(parent_code, parent_id)] = parent
+        for key, item in variant_items.items():
+            leaf = leaves[key]
+            parent = parents.get((leaf['parent_code'], leaf['parent_id']))
+            _need(parent is not None, 'source_parent_changed', 409)
+            _need(parent.get('variants_exists_yn') is True and parent.get('set_yn', False) is False,
+                  'source_product_kind_unknown')
+            leaves[key] = _leaf(parent, item, variant=True)
         return {"fingerprint": reader.fingerprint, "leaves": sorted(leaves.values(), key=_key), "requests": reader.requests}
     finally:
         reader.close()
@@ -242,6 +291,17 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
 async def discover(shop_code: str, codes: list[str], expected_fingerprint: str | None = None,
                    *, max_requests: int = MAX_REQUESTS) -> dict:
     return await asyncio.to_thread(_discover, shop_code, codes, expected_fingerprint, max_requests)
+
+
+async def current_fingerprint(shop_code: str) -> str:
+    """Read normal connection configuration without an API request or secret output."""
+    def read():
+        reader = _Reader(shop_code, None, 1)
+        try:
+            return reader.fingerprint
+        finally:
+            reader.close()
+    return await asyncio.to_thread(read)
 
 
 async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,

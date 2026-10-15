@@ -15,6 +15,8 @@ from inventory_hub.services.upgates_budget import AdmissionDenied
 BASE = "https://fixture.invalid/api/v2"
 FINGERPRINT = connection_fingerprint(BASE, "fixture-login")
 EAN = "8585047234448"
+SHOP_URL = "https://fixture.invalid/p/jacket"
+ADMIN_URL = "https://fixture.invalid/admin/products/7"
 
 
 def page(field, rows, *, number=1, pages=1, total=None):
@@ -29,6 +31,11 @@ def variant(code="LEAF-M", identifier=71):
 def family(*variants):
     return {"code": "PARENT", "product_id": 7, "variants_exists_yn": True,
             "descriptions": [{"language": "sk", "title": "Jacket"}], "variants": list(variants)}
+
+
+def parent_metadata(**changes):
+    return {**family(), "descriptions": [{"language": "sk", "title": "Jacket", "url": SHOP_URL}],
+            "admin_url": ADMIN_URL, **changes}
 
 
 def detailed(code="LEAF-M", identifier=71):
@@ -82,12 +89,12 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
 
     def discovery(self, *variants):
         details = [{**detailed(v["code"], v["variant_id"]), **v} for v in variants]
-        self.setup_client(page("products", []), page("variants", details))
+        self.setup_client(page("products", []), page("variants", details), page("products", [parent_metadata()]))
 
     async def test_exact_variant_filter_and_separate_documented_axes(self):
         self.discovery(variant())
         result = await source.discover("xtrek", ["LEAF-M"])
-        self.assertEqual(result["requests"], 2)
+        self.assertEqual(result["requests"], 3)
         self.assertEqual(result["fingerprint"], FINGERPRINT)
         self.assertEqual(len(result["leaves"]), 1)
         leaf = result["leaves"][0]
@@ -95,6 +102,8 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
                          ("LEAF-M", "PARENT", "71", "7"))
         self.assertEqual(leaf["attributes"], [{"name": "Farba", "value": "Modrá"}, {"name": "Veľkosť", "value": "M"}])
         self.assertEqual(leaf["warnings"], [])
+        self.assertEqual((leaf["name"], leaf["shop_url"], leaf["shop_admin_url"]),
+                         ("Jacket", SHOP_URL, ADMIN_URL))
         for url, kwargs in self.session.calls:
             self.assertTrue(url.startswith(BASE + "/products"))
             self.assertTrue(kwargs["verify"])
@@ -102,14 +111,15 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call[1]["params"] for call in self.session.calls], [
             {"codes": "LEAF-M", "variants_yn": "false", "page": 1, "current_page_items": 100},
             {"variant_codes": "LEAF-M", "page": 1, "current_page_items": 100},
+            {"codes": "PARENT", "variants_yn": "false", "page": 1, "current_page_items": 100},
         ])
-        self.assertTrue(self.session.calls[-1][0].endswith("/products/variants"))
+        self.assertTrue(self.session.calls[1][0].endswith("/products/variants"))
         self.assertTrue(self.session.closed and all(r.closed for r in self.responses))
         for field in ("price", "stock", "shop_price", "shop_stock", "api_key"):
             self.assertNotIn(field, leaf)
 
     async def test_missing_axes_are_unknown_without_parent_fallback(self):
-        self.setup_client(page("products", []), page("variants", [variant()]))
+        self.setup_client(page("products", []), page("variants", [variant()]), page("products", [parent_metadata()]))
         result = await source.discover("xtrek", ["LEAF-M"])
         self.assertEqual(result["leaves"][0]["attributes"], [])
         self.assertIn("variant_axes_unknown", result["leaves"][0]["warnings"])
@@ -124,7 +134,7 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_standalone_and_variant_native_id_namespaces_are_distinct(self):
         single = {"code": "LEAF-M", "product_id": 71, "ean": EAN, "stock": 99, "variants": [], "variants_exists_yn": False}
-        self.setup_client(page("products", [single]), page("variants", [detailed()]))
+        self.setup_client(page("products", [single]), page("variants", [detailed()]), page("products", [parent_metadata()]))
         result = await source.discover("xtrek", ["LEAF-M"])
         self.assertEqual(len(result["leaves"]), 2)
         self.assertEqual({(v["is_variant"], v["external_id"]) for v in result["leaves"]}, {(False, "71"), (True, "71")})
@@ -135,12 +145,13 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
             result = await source.discover("xtrek", ["PARENT"])
             self.assertEqual(result["leaves"], [])
 
-    async def test_hundred_variant_batch_uses_two_reads_not_per_product(self):
+    async def test_hundred_variant_batch_reads_parent_metadata_once_not_per_product(self):
         variants = [variant("SKU-"+str(i), i+1) for i in range(100)]
         details = [detailed(v["code"], v["variant_id"]) for v in variants]
-        self.setup_client(page("products", []), page("variants", details))
+        self.setup_client(page("products", []), page("variants", details), page("products", [parent_metadata()]))
         result = await source.discover("xtrek", [v["code"] for v in variants])
-        self.assertEqual((len(result["leaves"]), result["requests"]), (100, 2))
+        self.assertEqual((len(result["leaves"]), result["requests"]), (100, 3))
+        self.assertEqual(self.session.calls[-1][1]["params"]["codes"], "PARENT")
 
     async def test_empty_or_injected_filters_never_contact_shop(self):
         self.setup_client()
@@ -164,6 +175,13 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
             await source.discover("xtrek", ["LEAF-M"], max_requests=1)
         self.assertEqual(raised.exception.code, "source_request_limit")
         self.assertEqual(len(self.session.calls), 1)
+
+    async def test_parent_metadata_read_uses_the_same_request_allowance(self):
+        self.discovery(variant())
+        with self.assertRaises(source.SourceError) as raised:
+            await source.discover("xtrek", ["LEAF-M"], max_requests=2)
+        self.assertEqual(raised.exception.code, "source_request_limit")
+        self.assertEqual(len(self.session.calls), 2, "The metadata repair must not bypass the API admission allowance")
 
     async def test_filtered_response_cannot_silently_be_full_catalog(self):
         self.setup_client(page("products", [{"code": "OTHER", "product_id": 9, "variants": []}]))
@@ -254,13 +272,68 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
         self.discovery(variant())
         expected = (await source.discover("xtrek", ["LEAF-M"]))["leaves"]
         other = {**detailed(), "product_code": "OTHER", "product_id": 8, "variant_id": 81}
-        self.setup_client(page("products", []), page("variants", [detailed(), other]))
+        other_parent = parent_metadata(code="OTHER", product_id=8)
+        self.setup_client(page("products", []), page("variants", [detailed(), other]),
+                          page("products", [parent_metadata(), other_parent]))
         result = await source.verify("xtrek", expected, FINGERPRINT)
         self.assertEqual(result["leaves"], expected)
-        self.setup_client(page("products", []), page("variants", [other]))
+        self.setup_client(page("products", []), page("variants", [other]), page("products", [other_parent]))
         with self.assertRaises(source.SourceError) as raised:
             await source.verify("xtrek", expected, FINGERPRINT)
         self.assertEqual(raised.exception.code, "source_identity_changed")
+
+    async def test_parent_metadata_already_in_first_filtered_page_is_not_requested_twice(self):
+        self.setup_client(page("products", [parent_metadata()]), page("variants", [detailed()]))
+        result = await source.discover("xtrek", ["PARENT", "LEAF-M"])
+        self.assertEqual(result["requests"], 2)
+        self.assertEqual(len(result["leaves"]), 1, "A family parent is never a physical leaf")
+        self.assertEqual(result["leaves"][0]["shop_url"], SHOP_URL)
+
+    async def test_parent_metadata_must_belong_to_selected_native_parent(self):
+        for parent in (parent_metadata(product_id=99), parent_metadata(code="OTHER"),
+                       parent_metadata(variants_exists_yn=False)):
+            with self.subTest(parent=parent):
+                self.setup_client(page("products", []), page("variants", [detailed()]), page("products", [parent]))
+                with self.assertRaises(source.SourceError):
+                    await source.discover("xtrek", ["LEAF-M"])
+
+    async def test_missing_or_unsafe_urls_are_unknown_without_invented_admin_target(self):
+        for url in (None, "javascript:alert(1)", "/relative-product", "https://user:password@fixture.invalid/p/7",
+                    "https://fixture.invalid/\nunsafe"):
+            with self.subTest(url=url):
+                parent = parent_metadata(descriptions=[{"language": "sk", "title": "Jacket", "url": url}], admin_url=url)
+                self.setup_client(page("products", []), page("variants", [detailed()]), page("products", [parent]))
+                leaf = (await source.discover("xtrek", ["LEAF-M"]))["leaves"][0]
+                self.assertIsNone(leaf["shop_url"])
+                self.assertIsNone(leaf["shop_admin_url"])
+                self.assertEqual(leaf["parent_id"], "7", "Native parent ID alone does not invent a navigation URL")
+
+    async def test_explicit_verified_leaf_navigation_takes_precedence_over_parent_navigation(self):
+        leaf_url = "https://fixture.invalid/p/jacket?variant=71"
+        leaf_admin = "https://fixture.invalid/admin/products/7?variant=71"
+        self.discovery({**variant(), "descriptions": [{"language": "sk", "url": leaf_url}],
+                        "admin_url": leaf_admin})
+        leaf = (await source.discover("xtrek", ["LEAF-M"]))["leaves"][0]
+        self.assertEqual((leaf["shop_url"], leaf["shop_admin_url"]), (leaf_url, leaf_admin))
+
+    async def test_raw_invalid_barcodes_remain_visible_but_never_become_verified_identity(self):
+        raw = [" 8585047234448/legacy-note ", "8585047234449", "00000000"]
+        self.discovery({**variant(), "ean": raw})
+        leaf = (await source.discover("xtrek", ["LEAF-M"]))["leaves"][0]
+        self.assertEqual(leaf["raw_barcodes"], raw)
+        self.assertEqual(leaf["eans"], [EAN])
+        self.assertCountEqual(leaf["invalid_barcodes"], ["legacy-note", "8585047234449", "00000000"])
+        self.assertIn("unverified_barcode", leaf["warnings"])
+        self.discovery({**variant(), "ean": 0})
+        zero = (await source.discover("xtrek", ["LEAF-M"]))["leaves"][0]
+        self.assertEqual((zero["raw_barcodes"], zero["invalid_barcodes"], zero["eans"]), (["0"], ["0"], []))
+        self.assertIn("unverified_barcode", zero["warnings"])
+
+    async def test_current_connection_fingerprint_reads_configuration_without_contacting_shop(self):
+        self.setup_client()
+        self.assertEqual(await source.current_fingerprint("xtrek"), FINGERPRINT)
+        self.assertEqual(self.session.calls, [])
+        self.assertTrue(self.session.closed)
 
 
 if __name__ == "__main__":

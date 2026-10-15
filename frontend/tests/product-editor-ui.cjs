@@ -70,16 +70,35 @@ const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, {
   warehouses: [{ id: 8, code: 'other', name: 'Other fixture', is_default: false }, { id: 7, code: 'main', name: 'Main fixture', is_default: true }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
-let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave;
+let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave, linkRefreshMode = 'complete', detailMode = 'valid', resolveDetail;
 const saveCalls = () => calls.filter(call => call.path === '/api/product-editor/save');
 const rowForWarehouse = (row, warehouseCode) => ({ ...clone(row), warehouse: warehouseCode ? clone(row.warehouse) : null });
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(path.startsWith('/api/product-editor/'), 'The grid only calls its protected local editing API');
+  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options'].some(prefix => path.startsWith(prefix)), 'The grid calls only its protected editing and explicit linking APIs');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   assert(!path.includes('synthetic-'), 'Credentials never enter query strings');
   const url = new URL(path, dom.window.location.origin);
+  if (url.pathname === '/api/product-links/refresh') {
+    assert.equal(init.method, 'POST'); assert.deepEqual(body, { shop_code: 'xtrek', product_ids: [1] });
+    if (linkRefreshMode === 'error') return { ok: false, status: 409, json: async () => ({ detail: { code: 'product_links_identity_changed' } }) };
+    const shop = rows.get(1).shops.find(item => item.shop_code === 'xtrek');
+    if (linkRefreshMode === 'complete') {
+      shop.shop_url = 'https://xtrek.example.test/exact-variant'; shop.shop_admin_url = 'https://xtrek.example.test/admin/exact-variant';
+    }
+    return reply({ shop_code: 'xtrek', remote_requests: 1, rows: [{ product_id: 1, status: shop.shop_url && shop.shop_admin_url ? 'refreshed' : 'incomplete', shop_url: shop.shop_url, shop_admin_url: shop.shop_admin_url }] });
+  }
+  if (url.pathname === '/api/supplier-card-links/options') {
+    assert.equal(init.method, 'GET'); assert.equal(url.searchParams.get('product_id'), '1');
+    const row = rows.get(1);
+    return reply({ product: { id: row.id, sku: row.sku, name: row.common.name, eans: row.eans, attributes: row.attributes },
+      suppliers: [{ id: 8, code: 'fixture-supplier', name: 'Fixture supplier' }], current_links: [{
+        id: 81, supplier_id: 8, supplier_code: 'fixture-supplier', supplier_name: 'Fixture supplier', supplier_sku: 'SUP-1', shop_sku: 'SUP-1', name: row.common.name,
+        eans: ['8585047234448'], attributes: row.attributes, group_code: null, active: true, last_seen_at: null,
+        link_id: 18, is_active: true, orderable: true, is_primary: true, priority: 0,
+      }] });
+  }
   if (url.pathname.endsWith('/options')) return reply(editorOptions);
   if (url.pathname.endsWith('/products')) {
     assert.equal(init.method, 'GET');
@@ -124,6 +143,7 @@ global.fetch = async (path, init = {}) => {
   if (detailMatch) {
     assert.equal(init.method, 'GET');
     const row = rowForWarehouse(rows.get(Number(detailMatch[1])), url.searchParams.get('warehouse_code'));
+    if (detailMode === 'pending') return new Promise(resolve => { resolveDetail = () => resolve(reply({ ...row, audit: [] })); });
     const before = { common: { ...row.common, name: 'Audit previous name' }, variant: { ...row.variant, sale_price_gross: '109.90' },
       warehouse: clone(row.warehouse), shops: clone(row.shops), overrides: {}, snapshot_hash: hash(row.id, 1) };
     const after = { ...clone(before), common: { ...before.common, name: 'Audit current name' }, variant: { ...before.variant, sale_price_gross: '119.95' }, snapshot_hash: hash(row.id, 2) };
@@ -483,6 +503,52 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(required('header-name').style.width, '375px');
   assert.equal(required('header-brand').nextElementSibling, required('header-name'));
   assert(element('cell-1-ean') && !element('cell-1-size'), 'Visibility, width and order survive a new page instance');
+
+  // Repair is explicit and repaints both the table and the open detail without relinking.
+  const repairRow = rows.get(1), repairShop = repairRow.shops.find(item => item.shop_code === 'xtrek');
+  repairShop.shop_url = null; repairShop.shop_admin_url = null; repairRow.eans = [];
+  repairRow.supplier_availability = { ...repairRow.supplier_availability, available: null, fresh: false, quantity: null, availability_state: 'unknown', status: 'not_loaded', supplier: 'fixture-supplier', supplier_sku: 'SUP-1', action: 'refresh', refresh_state: 'idle' };
+  await click('load');
+  assert(cellText(1, 'xtrek').includes(t('mapped')) && cellText(1, 'xtrek').includes(t('linkUnavailable')));
+  assert.equal(required('supplier-settings-1').getAttribute('href'), '/settings/availability?supplier=fixture-supplier&sku=SUP-1');
+  assert(cellText(1, 'supplier_availability').includes(t('supplierStatus.not_loaded')));
+  assert(!cellText(1, 'supplier_availability').includes('overíme'), 'Unknown availability does not pretend that a refresh is running');
+  detailMode = 'pending'; await click('detail-1');
+  const oldDetailRequest = calls.at(-1), oldDetailResponse = resolveDetail; detailMode = 'valid';
+  assert(element('fill-supplier-eans'), 'An empty EAN has a direct supplier action');
+  const beforeRefresh = calls.length, beforeRepair = clone(repairRow);
+  await act(async () => { required('detail-refresh-links-1-xtrek').click(); required('detail-refresh-links-1-xtrek').click(); await tick(); });
+  assert.equal(calls.slice(beforeRefresh).filter(item => item.path === '/api/product-links/refresh').length, 1, 'Repeated clicks start one metadata refresh');
+  assert(oldDetailRequest.signal.aborted, 'Metadata refresh invalidates the older detail read');
+  await act(async () => { oldDetailResponse(); await tick(); });
+  assert.deepEqual(calls.slice(beforeRefresh).map(item => item.method), ['POST', 'GET']);
+  assert.equal(cell(1, 'xtrek').querySelector('a').href, 'https://xtrek.example.test/exact-variant');
+  assert(document.querySelector('[role="dialog"] a[href="https://xtrek.example.test/admin/exact-variant"]'), 'The open detail receives the refreshed links too');
+  assert(!element('detail-refresh-links-1-xtrek') && !element('grid-refresh-links-1-xtrek'));
+  assert.deepEqual(rows.get(1).stock, beforeRepair.stock); assert.deepEqual(rows.get(1).eans, []);
+  assert.deepEqual(rows.get(1).shops.map(item => item.effective), beforeRepair.shops.map(item => item.effective));
+
+  await click('close-detail'); repairShop.shop_url = null; repairShop.shop_admin_url = null; await click('load');
+  linkRefreshMode = 'incomplete'; await click('grid-refresh-links-1-xtrek');
+  assert(cellText(1, 'xtrek').includes(t('linksNotProvided')) && !cell(1, 'xtrek').querySelector('a'), 'A successful read without addresses does not claim repaired links');
+  linkRefreshMode = 'error'; await click('grid-refresh-links-1-xtrek');
+  assert(cellText(1, 'xtrek').includes(i18n.t('productLinks.errors.product_links_identity_changed')), 'Identity changes give a useful repair error');
+  await edit(1, 'name', 'Unsaved while links missing');
+  assert(cannotUse('grid-refresh-links-1-xtrek'), 'Metadata repair cannot replace a row while it has unsaved edits');
+  assert.equal(required('supplier-settings-1').getAttribute('aria-disabled'), 'true', 'Supplier settings cannot discard unsaved edits through internal navigation');
+  const blockedNavigation = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+  await act(async () => { required('supplier-settings-1').dispatchEvent(blockedNavigation); await tick(); });
+  assert(blockedNavigation.defaultPrevented, 'The disabled route prevents navigation');
+  await click('detail-1'); assert(cannotUse('fill-supplier-eans')); await click('discard-row-1'); await click('close-detail');
+
+  repairRow.supplier_availability = { ...repairRow.supplier_availability, fresh: true, available: false, quantity: '0', availability_state: 'unavailable', status: 'fresh', action: 'check_source' };
+  await click('load');
+  assert(cellText(1, 'supplier_quantity').includes('0') && cellText(1, 'supplier_availability').includes(t('supplierOutOfStock')), 'Fresh zero is clearly unavailable, not awaiting verification');
+  await click('detail-1'); const beforeEanFill = calls.length; await click('fill-supplier-eans');
+  assert(!element('close-detail') && document.querySelector('.supplier-links-panel'), 'EAN adoption opens one focused supplier dialog');
+  assert.equal(calls.slice(beforeEanFill).filter(item => item.method === 'POST').length, 0, 'Opening EAN adoption never writes or prepares an implicit apply');
+  assert(document.querySelector('[role="dialog"]').textContent.includes('8585047234448'), 'The existing supplier EAN is visible without searching the item again');
+  await click('supplier-links-close');
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
   const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
   assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);
