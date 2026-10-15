@@ -1,0 +1,25 @@
+.supplier-links-panel { width: min(1000px, calc(100vw - 32px)); max-width: 1000px; }
+.supplier-links-search, .supplier-links-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 16px 0; }
+.supplier-links-search label { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 180px; }
+.supplier-links-search input, .supplier-links-search select { width: 100%; border: 1px solid var(--border-color, #334155); border-radius: 3px; padding: 8px; background: var(--bg-input, #0f172a); color: inherit; }
+.supplier-links-candidates { display: grid; gap: 12px; }
+.supplier-links-candidate { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 12px; border: 1px solid var(--border-color, #334155); padding: 14px; border-radius: 4px; }
+.supplier-links-candidate input { margin-top: 5px; }
+.supplier-links-candidate:has(input:checked) { border-color: var(--accent-primary, #38bdf8); }
+.supplier-links-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.supplier-links-comparison > section { padding: 14px; border: 1px solid var(--border-color, #334155); border-radius: 4px; min-width: 0; }
+.identity-facts { overflow-wrap: anywhere; }
+.identity-facts dl { display: grid; grid-template-columns: minmax(60px, auto) 1fr; gap: 4px 12px; font-size: 13px; margin: 10px 0 0; }
+.identity-facts dt { color: var(--text-muted, #94a3b8); }
+.identity-facts dd { margin: 0; }
+.identity-match-reasons { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.identity-match-reasons span { font-size: 12px; border: 1px solid var(--border-color, #334155); padding: 3px 7px; border-radius: 3px; }
+.identity-review-row { border-top: 1px solid var(--border-color, #334155); padding: 20px 0; }
+.identity-review-row h3 { margin: 0 0 12px; }
+.identity-review-choice { display: flex; gap: 10px; align-items: start; border: 1px solid var(--border-color, #334155); padding: 12px; margin-top: 10px; border-radius: 4px; }
+.identity-review-choice input { margin-top: 5px; }
+.identity-review-choice:has(input:checked) { border-color: var(--accent-primary, #38bdf8); }
+.identity-review-choice.is-blocked { opacity: .75; }
+.identity-review-panel { width: min(1120px, calc(100vw - 32px)); max-width: 1120px; }
+.identity-review-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; }
+@media (max-width: 680px) { .supplier-links-comparison { grid-template-columns: 1fr; } }

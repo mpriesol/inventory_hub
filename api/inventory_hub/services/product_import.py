@@ -40,7 +40,8 @@ def money(value):
 
 def content_hash(document):
     return ai_content.digest([{'id': r['id'], 'values': r['values'],
-        **({'ai_policy': r['ai_policy']} if r.get('ai_policy') else {})} for r in document['rows']])
+        **({'ai_policy': r['ai_policy']} if r.get('ai_policy') else {}),
+        **({'identity_decision': r['identity_decision']} if r.get('identity_decision') else {})} for r in document['rows']])
 
 
 def applied_ai(job):
@@ -76,7 +77,13 @@ def changed(draft, document, note, *, dirty=True):
         document.pop('publications', None)
 
 
+def link_only(row):
+    return row.get('identity_link_only') or (row.get('identity_decision') or {}).get('action') == 'link'
+
+
 def row_targets(row, primary):
+    if link_only(row):
+        return []
     selected = row['values'].get('target_shops')
     return [primary] if selected is None else selected
 
@@ -211,7 +218,7 @@ def assert_editable(draft):
 
 
 async def assert_ai_applied(db, draft):
-    rows = [r for r in draft.document['rows'] if r['values']['ai_enabled']]
+    rows = [r for r in draft.document['rows'] if r['values']['ai_enabled'] and not link_only(r)]
     if not rows:
         return
     ids = {r.get('ai_job_id') for r in rows if r.get('ai_job_id')}
@@ -257,6 +264,9 @@ async def public(db, draft):
         row.pop('source', None)
         row.pop('ai_baseline', None)
         row.pop('ai_applied_snapshot', None)
+        if row.get('identity_decision'):
+            row['identity_decision'] = {key: row['identity_decision'][key] for key in ('action', 'product_id')
+                                        if key in row['identity_decision']}
         row['ai_job'] = jobs.get(row.pop('ai_job_id', None))
         outcomes = [item['status'] for item in (result or {}).get('items', []) if row['id'] in item['product_ids']]
         row['publication_status'] = next((status for status in ('uncertain', 'failed', 'invalid', 'pending', 'ready', 'created', 'exists')
@@ -267,6 +277,7 @@ async def public(db, draft):
             if row['id'] in item['product_ids'] and item['status'] in ('created', 'exists', 'failed', 'uncertain', 'pending')]
     publications = {shop: {'preview': preview, 'result': outcome, 'state': publication_state(outcome)}
         for shop, preview in publication_previews(draft).items() for outcome in [target_result(shop, preview)]}
+    from inventory_hub.services.product_import_identity import summary as identity_summary
     return {'id': draft.id, 'revision': draft.revision, 'status': draft.status, 'supplier': draft.supplier,
             'shop': draft.shop, 'feed_key': document['feed_key'], 'options': document['options'],
             'shops': document.get('shops', [{'code': draft.shop, 'name': draft.shop, 'categories': document['categories']}]),
@@ -276,7 +287,8 @@ async def public(db, draft):
             'updated_at': draft.updated_at,
             'publication_preview_retryable': bool(result) and source_preview_retryable(draft),
             'source_lookup': source_lookup_public(draft),
-            'receiving_origin': document.get('receiving_origin')}
+            'receiving_origin': document.get('receiving_origin'),
+            **({'identity_review_required': False, 'identity_review_count': 0} if result else await identity_summary(db, draft))}
 
 
 def source_lookup_public(draft):
@@ -311,11 +323,17 @@ def to_source(row):
 
 def validate_rows(document):
     rows = document['rows']
-    codes = Counter(r['values']['code'].casefold() for r in rows)
-    eans = Counter(e for r in rows for e in r['values']['eans'])
+    importing = [r for r in rows if not link_only(r)]
+    importing_ids = {r['id'] for r in importing}
+    codes = Counter(r['values']['code'].casefold() for r in importing)
+    eans = Counter(e for r in importing for e in r['values']['eans'])
     groups = defaultdict(list)
     options = ShopImportOptions.model_validate(document['options'])
     for row in rows:
+        if row['id'] not in importing_ids:
+            row['errors'] = []
+            row['warnings'] = sorted(set(row.get('warnings', [])) | {'existing_card_link_only'})
+            continue
         source = to_source(row)
         row['errors'] = list(source.import_blockers)
         row['warnings'] = list(source.warnings)
@@ -465,7 +483,8 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
     if receiving_rows is not None:
         products = await _receiving_sources(db, products, receiving_rows)
     else:
-        products = await catalog_import.canonical_products(db, products)
+        from inventory_hub.services.product_import_identity import canonical_for_review
+        products = await canonical_for_review(db, products)
     remote = await asyncio.to_thread(catalog_import.cached_import_options, request.shop)
     cfg = supplier_config(request.supplier)
     default_shop = cfg.get('default_shop') or ('biketrek' if request.supplier == 'sloger' else request.shop)
@@ -655,18 +674,28 @@ async def patch_rows(db, draft, request):
 async def save(db, draft, request):
     expect(draft, request.expected_revision)
     assert_editable(draft)
+    # The AI worker records handled domain failures in its outer transaction.
+    # Keep all card/link writes atomic even when that caller catches an error.
+    async with db.begin_nested():
+        return await _save(db, draft)
+
+
+async def _save(db, draft):
     document = deepcopy(draft.document)
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    from inventory_hub.services.product_import_identity import guard_and_link
+    linked = await guard_and_link(db, draft, document)
     validate_rows(document)
     # Basic receipt cards may precede merchandising. Unknown amounts stay NULL;
     # shop preview still applies every ordinary price/VAT/category validation.
     allowed_missing = {'missing_price', 'missing_vat'} if document.get('receiving_origin') else set()
     if any(set(r['errors']) - allowed_missing for r in document['rows']):
         raise CatalogError('import_invalid_rows', 'Resolve invalid rows before saving products', 422)
-    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-    sources = [to_source(r) for r in document['rows']]
+    importing = [row for row in document['rows'] if row['id'] not in linked]
+    sources = [to_source(r) for r in importing]
     products = await _receiving_sources(db, sources, {int(key): value for key, value in document['receiving_rows'].items()}) \
         if document.get('receiving_origin') else await catalog_import.canonical_products(db, sources)
-    for row, source in zip(document['rows'], products):
+    for row, source in zip(importing, products):
         row['values']['code'] = source.shop_code
         row['source'] = {**row['source'], 'canonical_parent_code': source.canonical_parent_code}
         row['group_key'] = parent_shop_code(source)
@@ -675,7 +704,12 @@ async def save(db, draft, request):
         raise CatalogError('local_identity_conflict', 'Local identifiers require reconciliation', 409)
     await catalog_import.claim_product_prefix(db, products)
     supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == draft.supplier))
-    for row, source in zip(document['rows'], products):
+    for row in document['rows']:
+        if row['id'] in linked:
+            product = await db.get(Product, linked[row['id']])
+            row['values']['code'] = product.sku
+            row['canonical_code'] = product.sku
+    for row, source in zip(importing, products):
         v = row['values']
         product_id = existing.get(row['id'])
         expected_id = row.get('hub_product_id') or row.get('expected_hub_product_id')
@@ -771,9 +805,11 @@ async def save(db, draft, request):
         from inventory_hub.services.receiving_products import bind_imported_products
         await bind_imported_products(db, draft, document)
     from inventory_hub.services.supplier_links import reconcile_supplier_links
-    links = await reconcile_supplier_links(db, draft.supplier, product_ids=[r['hub_product_id'] for r in document['rows']])
-    if links['conflicts']:
-        raise CatalogError('local_identity_conflict', 'Supplier source links require reconciliation', 409)
+    ordinary_ids = [r['hub_product_id'] for r in document['rows'] if r['id'] not in linked]
+    if ordinary_ids:
+        links = await reconcile_supplier_links(db, draft.supplier, product_ids=ordinary_ids)
+        if links['conflicts']:
+            raise CatalogError('local_identity_conflict', 'Supplier source links require reconciliation', 409)
     document['saved_hash'] = content_hash(document)
     changed(draft, document, 'Products saved in Hub; no shop writes', dirty=False)
     draft.status = 'saved'
@@ -969,7 +1005,7 @@ async def prepare_ai(db, draft, request):
     document = deepcopy(draft.document)
     groups = defaultdict(list)
     for row in document['rows']:
-        if row['values']['ai_enabled']:
+        if row['values']['ai_enabled'] and not link_only(row):
             groups[row['group_key']].append(row)
     if not groups:
         raise CatalogError('import_ai_selection_empty', 'Choose products for AI enrichment', 422)
@@ -1012,7 +1048,7 @@ async def prepare_ai(db, draft, request):
 async def start_ai(db, draft, request):
     expect(draft, request.expected_revision)
     assert_editable(draft)
-    ids = {r.get('ai_job_id') for r in draft.document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled']}
+    ids = {r.get('ai_job_id') for r in draft.document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled'] and not link_only(r)}
     jobs = (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).order_by(AiJob.id).with_for_update())).all()
     estimates = [job for job in jobs if job.status == 'estimate']
     if not estimates:
@@ -1112,7 +1148,7 @@ async def apply_ai(db, draft, request, *, job_ids=None):
     expect(draft, request.expected_revision)
     assert_editable(draft)
     document = deepcopy(draft.document)
-    ids = {r.get('ai_job_id') for r in document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled']}
+    ids = {r.get('ai_job_id') for r in document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled'] and not link_only(r)}
     if job_ids is not None:
         ids &= set(job_ids)
     jobs = {j.id: j for j in (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).with_for_update())).all()}
@@ -1128,7 +1164,7 @@ async def apply_ai(db, draft, request, *, job_ids=None):
             raise CatalogError('ai_validation_failed', '; '.join(checks['errors']), 422)
         previous_output = None
         applied_digest = job.context.get('staging_applied_digest')
-        bound_rows = [row for row in document['rows'] if row.get('ai_job_id') == job.id and row['values']['ai_enabled']]
+        bound_rows = [row for row in document['rows'] if row.get('ai_job_id') == job.id and row['values']['ai_enabled'] and not link_only(row)]
         if applied_digest and any((row.get('ai_policy') or {}).get('job_id') == job.id
                 and ((row.get('ai_applied_snapshot') or {}).get('job_id') != job.id
                      or (row.get('ai_applied_snapshot') or {}).get('content_digest') != applied_digest) for row in bound_rows):
@@ -1138,7 +1174,7 @@ async def apply_ai(db, draft, request, *, job_ids=None):
             if previous is not None:
                 previous_output = Content.model_validate(previous)
         for row in document['rows']:
-            if row.get('ai_job_id') == job.id and row['values']['ai_enabled']:
+            if row.get('ai_job_id') == job.id and row['values']['ai_enabled'] and not link_only(row):
                 merge_ai_values(row, output, job.context, previous_output=previous_output)
                 if job.context.get('staging_automation_version') == 1:
                     row['ai_policy'] = {'job_id': job.id, 'rules_version': job.context['rules_version'],
@@ -1165,7 +1201,7 @@ async def advance_ai(db, job):
     """
     draft = await get_draft(db, job.context['staging_id'], lock=True)
     automation = draft.document.get('automation', {})
-    linked = [r for r in draft.document['rows'] if r.get('ai_job_id') == job.id and r['values']['ai_enabled']]
+    linked = [r for r in draft.document['rows'] if r.get('ai_job_id') == job.id and r['values']['ai_enabled'] and not link_only(r)]
     enabled = (job.context.get('staging_automation_version') == 1 and automation.get('version') == 1
         and job.id in automation.get('job_ids', []) and not automation.get('paused') and linked)
     if not enabled or job.context.get('approval') not in ('human', 'policy'):
@@ -1193,6 +1229,11 @@ async def advance_ai(db, job):
            or current.context['resolved']['policy']['confirm_import'] for id in ids):
         return
     await assert_ai_applied(db, draft)
+    from inventory_hub.services.product_import_identity import summary as identity_summary
+    if (await identity_summary(db, draft))['identity_review_required']:
+        job.error = 'import_identity_review_required'
+        ai_content.event(job, 'import_blocked', 'Existing Hub product candidates need an explicit identity review')
+        return
     await save(db, draft, DraftRevision(expected_revision=draft.revision))
     if not any(row_targets(row, draft.shop) for row in draft.document['rows']):
         return

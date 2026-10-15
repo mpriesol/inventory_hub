@@ -118,6 +118,9 @@ jobs:
       - name: Check unified product import interactions
         run: node frontend/tests/product-import-ui.cjs
 
+      - name: Check import identity review interactions
+        run: node frontend/tests/product-import-identity-ui.cjs
+
       - name: Check AI content preparation and review
         run: node frontend/tests/ai-content-ui.cjs
 
@@ -155,6 +158,9 @@ jobs:
 
       - name: Existing product link interaction checks
         run: node frontend/tests/product-links-ui.cjs
+
+      - name: Supplier card link interaction checks
+        run: node frontend/tests/supplier-links-ui.cjs
 
       - name: FIFO inventory interactions
         run: node frontend/tests/fifo-ui.cjs

@@ -9,7 +9,9 @@ import { FifoPanel } from '../components/product/FifoPanel';
 import { StockAdjustmentPanel } from '../components/product/StockAdjustmentPanel';
 import { ProductPublicationPanel } from '../components/product/ProductPublicationPanel';
 import { ProductShopLinksPanel } from '../components/product/ProductShopLinksPanel';
+import { ProductSupplierLinksPanel } from '../components/product/ProductSupplierLinksPanel';
 import { pendingProductLink } from '../api/productLinks';
+import { pendingSupplierLink } from '../api/supplierCardLinks';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { defaultWarehouseCode } from '../utils/warehouses';
 import { EditorMode, getEditorProduct, getEditorProducts, getEditorSave, getProductEditorOptions, ProductEditorDetail,
@@ -63,6 +65,7 @@ export function ProductEditorPage() {
   const [detailTab, setDetailTab] = useState<'product' | 'audit' | 'fifo' | 'adjustment'>('product'), [detailError, setDetailError] = useState('');
   const [publication, setPublication] = useState<{ shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[] } | null>(null);
   const [linkingRows, setLinkingRows] = useState<ProductEditorRow[] | null>(null);
+  const [supplierLink, setSupplierLink] = useState<{ product?: ProductEditorRow } | null>(null);
   const linksChanged = useRef(false);
   const [refreshingAttributes, setRefreshingAttributes] = useState(false);
   const detailDialog = useRef<HTMLElement | null>(null), returnFocus = useRef<HTMLElement | null>(null);
@@ -79,7 +82,7 @@ export function ProductEditorPage() {
     resizing.current?.(); setCollapsedGroups(new Set());
     generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort();
     setOptions(null); setLoaded(null); replaceDrafts({}); setSelected(new Set()); setActive(null); setEditing(null); editingRef.current = null;
-    setDetailId(null); setDetail(null); setDetailError(''); setRefreshingAttributes(false); setPublication(null); setLinkingRows(null); linksChanged.current = false; setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
+    setDetailId(null); setDetail(null); setDetailError(''); setRefreshingAttributes(false); setPublication(null); setLinkingRows(null); setSupplierLink(null); linksChanged.current = false; setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
   }
   useEffect(() => { reset(); return () => { generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort(); }; }, [revision]);
   useEffect(() => { setPreferencesSaved(saveColumnPreferences(preferences)); }, [preferences]);
@@ -131,6 +134,10 @@ export function ProductEditorPage() {
   function openLinks(rows: ProductEditorRow[]) {
     if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current || rows.length > 100) return;
     linksChanged.current = false; closeDetail(); setLinkingRows(rows.map(row => structuredClone(row)));
+  }
+  function openSupplierLink(product?: ProductEditorRow) {
+    if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current) return;
+    linksChanged.current = false; closeDetail(); setSupplierLink({ product: product && structuredClone(product) });
   }
   useEffect(() => {
     if (!detailId) return;
@@ -361,6 +368,8 @@ export function ProductEditorPage() {
           title={dirtyCount || editing ? t('productLinks.saveFirst') : t('productLinks.limit')} onClick={() => openLinks(selectedRows)}>{t('productLinks.openSelected')}</Button>
         {pendingProductLink() && <Button data-testid="resume-product-links" variant="secondary" size="sm" disabled={dirtyCount > 0 || !!editing || locked || !!busy}
           onClick={() => openLinks([])}>{t('productLinks.resume')}</Button>}
+        {pendingSupplierLink() && <Button data-testid="resume-supplier-link" variant="secondary" size="sm" disabled={dirtyCount > 0 || !!editing || locked || !!busy}
+          onClick={() => openSupplierLink()}>{t('supplierLinks.resume')}</Button>}
       </div>
       <div className="product-editor-workspace"><div className="product-editor-table-area">
         {!data ? <div className="product-editor-empty">{t('productEditor.initialHelp')}</div> : <>
@@ -405,6 +414,9 @@ export function ProductEditorPage() {
         <div className="product-editor-history-link"><Button data-testid="link-detail-product" variant="secondary" size="sm" icon={<Link2 size={14} />}
           disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
           onClick={() => openLinks([selectedDetail])}>{t('productLinks.openSingle')}</Button></div>
+        <div className="product-editor-history-link"><Button data-testid="link-detail-supplier" variant="secondary" size="sm" icon={<Link2 size={14} />}
+          disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
+          onClick={() => openSupplierLink(selectedDetail)}>{t('supplierLinks.open')}</Button></div>
         {detailTab === 'adjustment' ? <StockAdjustmentPanel productId={detailId} sku={selectedDetail.sku} warehouseCode={warehouse} onChanged={() => openDetail(selectedDetail, 'adjustment')} /> : detailTab === 'fifo' ? <FifoPanel productId={detailId} warehouseCode={warehouse} onChanged={() => { if (selectedDetail) openDetail(selectedDetail, 'fifo'); }} /> : detailTab === 'audit' ? <div className="product-editor-detail-body"><h3>{t('productEditor.auditTitle')}</h3>{!detail ? <p>{t('productEditor.loading')}</p> : !detail.audit.length ? <p>{t('productEditor.noAudit')}</p> : detail.audit.map(item => {
           const before = { ...selectedDetail, ...item.before }, after = { ...selectedDetail, ...item.after };
           const changes = editableFields.filter(({ column, scope }) => JSON.stringify(originalValue(before, column.key, scope)) !== JSON.stringify(originalValue(after, column.key, scope)));
@@ -420,6 +432,9 @@ export function ProductEditorPage() {
       {publication && <ProductPublicationPanel shop={publication.shop} rows={publication.rows} onClose={() => { setPublication(null); load(loaded?.filters || filters); }} />}
       {linkingRows && <ProductShopLinksPanel rows={linkingRows} onChanged={() => { linksChanged.current = true; }} onClose={() => {
         setLinkingRows(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }
+      }} />}
+      {supplierLink && <ProductSupplierLinksPanel product={supplierLink.product} onChanged={() => { linksChanged.current = true; }} onClose={() => {
+        setSupplierLink(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }
       }} />}
     </>}
   </div>;

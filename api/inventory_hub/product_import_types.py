@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 from urllib.parse import urlsplit
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 from inventory_hub.catalog_types import CatalogParameter, ShopImportOptions
 from inventory_hub.product_editor_types import decimal_text, safe_text, VariantPatch
 
@@ -144,6 +144,30 @@ class DraftPatch(DraftRevision):
 
 class DraftAiRequest(DraftRevision):
     research: Literal["feed_only", "official"] = "official"
+
+
+class DraftIdentityChoice(StrictModel):
+    row_id: StrictInt = Field(gt=0)
+    action: Literal['link', 'create']
+    product_id: StrictInt | None = Field(default=None, gt=0)
+
+    @model_validator(mode='after')
+    def target_required(self):
+        if (self.action == 'link') != (self.product_id is not None):
+            raise ValueError('A link needs a selected product; creation must not select one')
+        return self
+
+
+class DraftIdentityDecisions(DraftRevision):
+    review_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    decisions: list[DraftIdentityChoice] = Field(min_length=1, max_length=500)
+
+    @field_validator('decisions')
+    @classmethod
+    def distinct_rows(cls, values):
+        if len({value.row_id for value in values}) != len(values):
+            raise ValueError('Duplicate decision row')
+        return values
 
 
 class DraftPublish(DraftRevision):

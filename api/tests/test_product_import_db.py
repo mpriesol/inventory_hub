@@ -20,8 +20,9 @@ from inventory_hub.ai_content_models import AiJob
 from inventory_hub.db_models import Product, ProductIdentifier, Supplier, IdentifierType
 from inventory_hub.db_models_ext import ShopProduct, ProductSupplySource
 from inventory_hub.product_import_models import ProductImportDraft
-from inventory_hub.product_import_types import DraftCreate, DraftPatch, DraftRevision, DraftAiRequest, DraftPublish
+from inventory_hub.product_import_types import DraftCreate, DraftPatch, DraftRevision, DraftAiRequest, DraftPublish, DraftIdentityDecisions
 from inventory_hub.services import product_import as service, catalog, catalog_import, ai_content_worker as worker
+from inventory_hub.services import product_import_identity
 from inventory_hub.settings import settings
 
 
@@ -81,6 +82,12 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             response = await fn(db, draft, request_type(expected_revision=result['revision'], **kwargs))
             await db.commit()
             return response
+
+    async def choose_existing(self, result, product_id):
+        review = await self.mutate(result, product_import_identity.review)
+        return await self.mutate(result, product_import_identity.decisions, DraftIdentityDecisions,
+            review_hash=review['review_hash'], decisions=[{'row_id': result['rows'][0]['id'],
+                'action': 'link', 'product_id': product_id}])
 
     async def test_category_refresh_preserves_manual_cells_and_reads_inactive_categories(self):
         original = await self.create()
@@ -191,6 +198,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(settings_row.enabled)
             self.assertIsNone(settings_row.manual_requested_at)
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        ready = await self.choose_existing(ready, existing_id)
         await self.mutate(ready, service.save)
         async with self.sessions() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
@@ -517,6 +525,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['rows'][0]['values']['code'], 'EXISTING-001')
         result = await self.mutate(result, service.patch_rows, DraftPatch,
             rows=[{'id': self.ids[0], 'values': {'target_shops': []}}])
+        result = await self.choose_existing(result, product_id)
         result = await self.mutate(result, service.save)
         async with self.sessions() as db:
             supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == 'paul-lange'))

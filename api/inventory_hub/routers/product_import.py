@@ -4,7 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
-from inventory_hub.product_import_types import DraftCreate, DraftPatch, DraftRevision, DraftAiRequest, DraftPublish
+from inventory_hub.product_import_types import DraftCreate, DraftPatch, DraftRevision, DraftAiRequest, DraftPublish, DraftIdentityDecisions
 from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services import product_import as service, catalog_import
 from inventory_hub.services.catalog import CatalogError
@@ -78,6 +78,18 @@ async def categories_refresh(id: DraftId, request: DraftRevision, db: DB):
 @router.post('/{id}/save')
 async def save(id: DraftId, request: DraftRevision, db: DB):
     return await mutate(db, id, request, service.save)
+
+
+@router.post('/{id}/identity-review')
+async def identity_review(id: DraftId, request: DraftRevision, db: DB):
+    from inventory_hub.services import product_import_identity
+    return await mutate(db, id, request, product_import_identity.review)
+
+
+@router.post('/{id}/identity-decisions')
+async def identity_decisions(id: DraftId, request: DraftIdentityDecisions, db: DB):
+    from inventory_hub.services import product_import_identity
+    return await mutate(db, id, request, product_import_identity.decisions)
 
 
 @router.post('/{id}/publish-preview')

@@ -25,6 +25,7 @@ export interface ProductImportRow {
   manual_fields: string[]; provenance: Partial<Record<ImportField, ImportProvenance>>;
   publication_status?: string | null; publication_links?: ProductImportLink[]; warnings: string[]; errors: string[]; hub_product_id: number | null; ai_job: AiJob | null;
   expected_hub_product_id?: number | null;
+  identity_decision?: { action: 'link' | 'create'; product_id?: number } | null;
   categories?: { code: string; main_yn: boolean }[];
   source_status?: 'pending' | 'completed' | 'failed' | 'skipped'; source_error?: string | null;
 }
@@ -37,6 +38,20 @@ export interface ProductImportDraft {
   publication_preview_retryable?: boolean;
   receiving_origin?: { kind: 'receiving'; supplier: string; session_id: string | number; invoice_no: string } | null;
   source_lookup?: { state: 'queued' | 'running' | 'failed' | 'completed' | 'skipped'; total: number; completed: number; failed: number; skipped: number; error: string | null; retryable: boolean; skippable: boolean } | null;
+  identity_review_required?: boolean; identity_review_count?: number;
+}
+export interface ImportIdentityDecision { row_id: number; action: 'link' | 'create'; product_id?: number }
+export interface ImportIdentityCandidate {
+  product_id: number; sku: string; name: string; brand: string | null; eans: string[];
+  attributes: { name: string; value: string }[]; is_active: boolean; reasons: string[]; warnings: string[];
+  can_link: boolean; errors: string[];
+}
+export interface ImportIdentityReview {
+  draft_id: string; revision: number; review_hash: string;
+  rows: { row_id: number; source: { sku: string; supplier_sku: string; name: string; eans: string[]; attributes: { name: string; value: string }[]; brand: string | null };
+    status: 'new' | 'review' | 'linked' | 'conflict' | 'saved'; matched_product_id: number | null;
+    can_create: boolean; candidates: ImportIdentityCandidate[]; truncated: boolean;
+    decision: Omit<ImportIdentityDecision, 'row_id'> | null; errors: string[] }[];
 }
 export interface ProductImportSummary { id: string; revision: number; status: string; publication_state?: string | null; supplier: string; shop: string; updated_at: string; rows_count: number }
 export interface ImportRowPatch { id: number; values: Partial<ImportValues> }
@@ -54,3 +69,6 @@ export const publishProductImport = (draft: ProductImportDraft, retry_failed = f
 export const prepareProductImportAi = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/ai`, { expected_revision: draft.revision, research: 'official' });
 export const startProductImportAi = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/ai-start`, { expected_revision: draft.revision });
 export const applyProductImportAi = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/ai-apply`, { expected_revision: draft.revision });
+export const reviewProductImportIdentity = (draft: ProductImportDraft) => hubRequest<ImportIdentityReview>(`${base}/${draft.id}/identity-review`, { expected_revision: draft.revision });
+export const decideProductImportIdentity = (draft: ProductImportDraft, review_hash: string, decisions: ImportIdentityDecision[]) =>
+  hubRequest<ProductImportDraft>(`${base}/${draft.id}/identity-decisions`, { expected_revision: draft.revision, review_hash, decisions });

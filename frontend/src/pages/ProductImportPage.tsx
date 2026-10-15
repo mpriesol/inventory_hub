@@ -10,6 +10,7 @@ import { Button } from '../components/ui/Button.new';
 import { ProductThumb } from '../components/product/ProductDisplay';
 import { ImportCellEditor } from '../components/product/ImportCellEditor';
 import { ImportProductPreview } from '../components/product/ImportProductPreview';
+import { ImportIdentityReviewPanel } from '../components/product/ImportIdentityReviewPanel';
 import { useUnsavedNavigationGuard } from '../hooks/useUnsavedNavigationGuard';
 import { categoryPath, effectiveImportValues, FAMILY_IMPORT_FIELDS, IMPORT_COLUMNS, ImportChanges, ImportColumn, ImportView, importValueText, parseImportValue, pasteImportValues, stageImportValue } from './productImportGrid';
 import './ProductImportPage.css';
@@ -20,6 +21,7 @@ const VIEWS: ImportView[] = ['basic', 'prices', 'content', 'categories', 'parame
 const DEFAULT_VISIBLE: ImportField[] = ['name', 'brand', 'eans', 'category_code', 'sale_gross', 'availability'];
 const PREFERENCES = 'product-import-columns-v1';
 const sourcePending = (draft: ProductImportDraft | null) => !!draft && (['source_pending', 'source_running', 'source_failed'].includes(draft.status) || !!draft.source_lookup && !['completed', 'skipped'].includes(draft.source_lookup.state));
+const linkOnly = (row: ProductImportRow) => row.identity_decision?.action === 'link';
 interface ColumnSettings { visible: ImportField[]; widths: Record<string, number> }
 function loadSettings(): ColumnSettings {
   try { const saved = JSON.parse(localStorage.getItem(PREFERENCES) || 'null'); if (Array.isArray(saved?.visible)) return { visible: saved.visible.filter((key: ImportField) => IMPORT_COLUMNS.some(column => column.key === key)), widths: saved.widths || {} }; } catch { /* Browser preferences are optional. */ }
@@ -56,6 +58,7 @@ export function ProductImportPage() {
   const [editor, setEditor] = useState<{ row: ProductImportRow; column: ImportColumn } | null>(null);
   const [modalDirty, setModalDirty] = useState(false);
   const [previewRow, setPreviewRow] = useState<ProductImportRow | null>(null);
+  const [identityReviewOpen, setIdentityReviewOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: number; key: ImportField; text: string } | null>(null);
   const editingRef = useRef(false); editingRef.current = !!editing || !!editor;
   const [active, setActive] = useState<{ id: number; key: ImportField } | null>(null);
@@ -71,33 +74,34 @@ export function ProductImportPage() {
   const dirty = Object.keys(changes).length;
   useUnsavedNavigationGuard(!!dirty || !!editing || modalDirty, c('discardChanges'));
   useEffect(() => { if (receiptDestination && !dirty && !editing && !modalDirty && !busy) navigate(receiptDestination); }, [receiptDestination, dirty, editing, modalDirty, busy, navigate]);
-  const errorText = (value: string) => t(`productImport.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) });
+  const errorText = (value: string) => t(`productImport.errors.${value}`, { defaultValue: t(`supplierLinks.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) }) });
   const rows = draft?.rows || [];
   const profileChanged = (row: ProductImportRow) => (effectiveImportValues(row, changes).ai_category_profile || 'auto') !== (row.values.ai_category_profile || 'auto');
-  const needsPreparation = (row: ProductImportRow) => profileChanged(row) || row.ai_job?.staging?.profile_matches === false || (row.ai_job?.status === 'completed' && row.ai_job.staging?.ai_applied === false);
+  const needsPreparation = (row: ProductImportRow) => !linkOnly(row) && (profileChanged(row) || row.ai_job?.staging?.profile_matches === false || (row.ai_job?.status === 'completed' && row.ai_job.staging?.ai_applied === false));
   const filteredRows = rows.filter(row => { const values = effectiveImportValues(row, changes); return `${values.code} ${values.name} ${values.eans.join(' ')} ${row.source_category || ''}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase()); });
   const shownRows = filteredRows.slice((page - 1) * 50, page * 50);
   const columns = IMPORT_COLUMNS.filter(column => view === 'all' || (view === 'basic' ? settings.visible.includes(column.key) : column.key === 'name' || column.view === view));
-  const jobs = [...new Map(rows.filter(row => row.ai_job).map(row => [row.ai_job!.id, row.ai_job!])).values()];
-  const actionableJobs = jobs.filter(job => rows.some(row => row.ai_job?.id === job.id && effectiveImportValues(row, changes).ai_enabled && !needsPreparation(row)));
+  const jobs = [...new Map(rows.filter(row => row.ai_job && !linkOnly(row)).map(row => [row.ai_job!.id, row.ai_job!])).values()];
+  const actionableJobs = jobs.filter(job => rows.some(row => !linkOnly(row) && row.ai_job?.id === job.id && effectiveImportValues(row, changes).ai_enabled && !needsPreparation(row)));
   const aiBusy = jobs.some(job => PROCESSING_AI.has(job.status));
   const sourceLocked = sourcePending(draft);
   const sourceBusy = draft?.source_lookup ? ['queued', 'running'].includes(draft.source_lookup.state) : ['source_pending', 'source_running'].includes(draft?.status || '');
   const publicationBusy = ['queued', 'running'].includes(draft?.publication_result?.status || '') || jobs.some(job => ['import_queued', 'importing'].includes(job.status));
   const publicationDone = draft?.publication_result?.status === 'completed' && draft.publication_result.items.length > 0 && draft.publication_result.items.every(item => ['created', 'exists'].includes(item.status));
   const deliveryState = draft?.publication_state || (publicationDone ? 'completed' : draft?.publication_result?.status);
-  const aiPending = rows.some(row => effectiveImportValues(row, changes).ai_enabled && (row.ai_job?.status !== 'completed' || needsPreparation(row)));
+  const aiPending = rows.some(row => !linkOnly(row) && effectiveImportValues(row, changes).ai_enabled && (row.ai_job?.status !== 'completed' || needsPreparation(row)));
   const locked = !!busy || sourceLocked || publicationBusy || !!draft?.publication_result;
-  const targetsFor = (row: ProductImportRow) => effectiveImportValues(row, changes).target_shops ?? [draft?.shop || 'biketrek'];
+  const targetsFor = (row: ProductImportRow) => linkOnly(row) ? [] : effectiveImportValues(row, changes).target_shops ?? [draft?.shop || 'biketrek'];
   const shopName = (code: string) => code === 'biketrek' ? 'BIKETREK' : code === 'xtrek' ? 'xTrek' : code;
   const targetShops = ['biketrek', 'xtrek'];
   const chosenShops = targetShops.filter(shop => rows.some(row => targetsFor(row).includes(shop)));
   const chosenShopNames = chosenShops.map(shopName).join(' + ');
-  const needsAiPreparation = rows.some(row => effectiveImportValues(row, changes).ai_enabled && (!row.ai_job || needsPreparation(row) || ['failed', 'rejected', 'cancelled'].includes(row.ai_job.status)));
+  const needsAiPreparation = rows.some(row => !linkOnly(row) && effectiveImportValues(row, changes).ai_enabled && (!row.ai_job || needsPreparation(row) || ['failed', 'rejected', 'cancelled'].includes(row.ai_job.status)));
   const canApplyAi = actionableJobs.some(job => APPLY_AI.has(job.status) && !job.checks?.errors?.length);
   const estimates = actionableJobs.filter(job => job.status === 'estimate');
   const estimate = estimates.reduce((sum, job) => sum + Number(job.estimate_usd || 0), 0);
-  const primaryDisabled = locked || aiBusy || !!editing || !!editor || (aiPending && !needsAiPreparation && !estimates.length && !canApplyAi);
+  const primaryDisabled = locked || aiBusy || !!editing || !!editor || (aiPending && !needsAiPreparation && !estimates.length && !canApplyAi) ||
+    (!!draft?.identity_review_required && !needsAiPreparation && !estimates.length && !canApplyAi);
   const primaryLabel = estimates.length && !needsAiPreparation ? c('startAI', { amount: estimate.toFixed(3) }) : canApplyAi && !needsAiPreparation ? c('acceptAndContinue') : chosenShops.length ? c('prepareImport') : c('prepareHub');
   const actual = jobs.reduce((sum, job) => sum + Number(job.actual_usd || 0), 0);
   const width = (column: ImportColumn) => Math.max(100, Math.min(600, Number(settings.widths[column.key]) || column.width || 150));
@@ -170,10 +174,10 @@ export function ProductImportPage() {
       if (canApplyAi) {
         value = await applyProductImportAi(value);
         accept(value);
-        if (value.rows.some(row => row.values.ai_enabled && (row.ai_job?.status !== 'completed' || row.ai_job?.staging?.ai_applied === false))) return value;
+        if (value.rows.some(row => !linkOnly(row) && row.values.ai_enabled && (row.ai_job?.status !== 'completed' || row.ai_job?.staging?.ai_applied === false))) return value;
       }
       if (value.status !== 'saved') { value = await saveProductImport(value); accept(value); }
-      if (value.rows.some(row => (row.values.target_shops ?? [value.shop]).length)) return previewProductImport(value);
+      if (value.rows.some(row => !linkOnly(row) && (row.values.target_shops ?? [value.shop]).length)) return previewProductImport(value);
       return value;
     });
   }
@@ -225,7 +229,7 @@ export function ProductImportPage() {
       generation.current++; replaceChanges(next); setError('');
     } catch (error) { setError((error as Error).message); }
   }
-  function toggleAI(enabled: boolean) { if (locked) return; let next = changesRef.current; for (const row of rows.filter(item => selected.has(item.id))) next = stageImportValue(rows, next, row, 'ai_enabled', enabled); generation.current++; replaceChanges(next); }
+  function toggleAI(enabled: boolean) { if (locked) return; let next = changesRef.current; for (const row of rows.filter(item => selected.has(item.id) && !linkOnly(item))) next = stageImportValue(rows, next, row, 'ai_enabled', enabled); generation.current++; replaceChanges(next); }
   async function goBack() {
     const origin = draft?.receiving_origin;
     if (!origin) { navigate(draft ? `/suppliers/${encodeURIComponent(draft.supplier)}/catalog` : '/suppliers'); return; }
@@ -282,16 +286,17 @@ export function ProductImportPage() {
             <tr data-row={row.id} className={Object.keys(changes[row.id] || {}).length ? 'import-row-dirty' : ''}>
               <td className="import-fixed import-select"><input type="checkbox" aria-label={c('selectRow', { code: values.code })} disabled={locked} checked={selected.has(row.id)} onChange={event => setSelected(old => { const next = new Set(old); event.target.checked ? next.add(row.id) : next.delete(row.id); return next; })} /></td>
               <td className="import-fixed import-code"><div><button type="button" aria-label={c('previewRow', { code: values.code })} onClick={() => setPreviewRow({ ...row, values })}><ProductThumb key={values.images[0]} url={catalogImageUrl(values.images[0])} name={values.name} size={36} /></button><span><button type="button" className="import-product-link" onClick={() => setPreviewRow({ ...row, values })}><code title={c('productPreview')}>{values.code}</code></button><small>{row.is_variant ? c('variant') : c('standalone')}</small></span></div></td>
-              <td className="import-ai-column"><input type="checkbox" aria-label={c('aiRow', { code: values.code })} disabled={locked || aiBusy} checked={values.ai_enabled} onChange={event => stage(row, 'ai_enabled', event.target.checked)} /><label className="import-ai-profile">{c('fields.ai_category_profile')}<select aria-label={c('profileRow', { code: values.code })} disabled={locked || aiBusy || !!profilesError} value={values.ai_category_profile || 'auto'} onChange={event => stage(row, 'ai_category_profile', event.target.value)}><option value="auto">{c('autoProfile')}</option>{values.ai_category_profile && values.ai_category_profile !== 'auto' && !profiles.some(profile => profile.id === values.ai_category_profile) && <option value={values.ai_category_profile}>{values.ai_category_profile}</option>}{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label></td>
+              <td className="import-ai-column"><input type="checkbox" aria-label={c('aiRow', { code: values.code })} disabled={locked || aiBusy || linkOnly(row)} checked={!linkOnly(row) && values.ai_enabled} onChange={event => stage(row, 'ai_enabled', event.target.checked)} /><label className="import-ai-profile">{c('fields.ai_category_profile')}<select aria-label={c('profileRow', { code: values.code })} disabled={locked || aiBusy || linkOnly(row) || !!profilesError} value={values.ai_category_profile || 'auto'} onChange={event => stage(row, 'ai_category_profile', event.target.value)}><option value="auto">{c('autoProfile')}</option>{values.ai_category_profile && values.ai_category_profile !== 'auto' && !profiles.some(profile => profile.id === values.ai_category_profile) && <option value={values.ai_category_profile}>{values.ai_category_profile}</option>}{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label></td>
               {targetShops.map(shop => {
                 const checked = targetsFor(row).includes(shop), target = draft.shops?.find(item => item.code === shop);
                 const available = draft.shops ? !!target && !target.error : shop === draft.shop;
                 const availableCategories = target?.categories || [];
                 const leaves = availableCategories.filter(category => category.assignable !== false);
                 return <td key={shop} className="import-target-column">
-                  <input type="checkbox" aria-label={c('targetRow', { shop: shopName(shop), code: values.code })} disabled={locked || aiBusy || (!available && !checked)} checked={checked}
+                  <input type="checkbox" aria-label={c('targetRow', { shop: shopName(shop), code: values.code })} disabled={locked || aiBusy || linkOnly(row) || (!available && !checked)} checked={checked}
                     onChange={event => stage(row, 'target_shops', event.target.checked ? [...targetsFor(row), shop] : targetsFor(row).filter(item => item !== shop))} />
-                  {!available && <p className="import-target-unavailable" title={target?.error ? errorText(target.error) : undefined}>{c('targetUnavailable')}</p>}
+                  {linkOnly(row) && <p className="import-muted">{t('importIdentity.linkOnlyShort')}</p>}
+                  {!available && !linkOnly(row) && <p className="import-target-unavailable" title={target?.error ? errorText(target.error) : undefined}>{c('targetUnavailable')}</p>}
                   {checked && available && shop !== draft.shop && <label className="import-target-category">{c('fields.category_code')}
                     <select aria-label={c('targetCategory', { shop: shopName(shop), code: values.code })} disabled={locked || aiBusy} value={values.target_category_codes?.[shop] || ''}
                       onChange={event => stage(row, 'target_category_codes', { ...values.target_category_codes, [shop]: event.target.value || null })}>
@@ -312,7 +317,7 @@ export function ProductImportPage() {
                   {column.key === 'category_code' && <small className="import-source-category">{c('sourceCategory')}: {row.source_category || '—'}{value ? ` · ${c('withAncestors')}` : ''}</small>}
                 </td>;
               })}
-              <td className="import-row-state">{row.source_status && <span className="import-status">{c(`sourceRowStates.${row.source_status}`)}</span>}{row.source_error && !row.errors.includes(row.source_error) && (row.source_status === 'skipped' ? <details><summary>{c('sourceSkippedDetails')}</summary><p>{errorText(row.source_error)}</p></details> : <p className="import-error">{errorText(row.source_error)}</p>)}{row.errors.map((issue, n) => <p key={n} className="import-error">{errorText(issue)}</p>)}{row.warnings.length > 0 && <details><summary>{c('warnings', { count: row.warnings.length })}</summary>{row.warnings.map((issue, n) => <p key={n}>{errorText(issue)}</p>)}</details>}{row.hub_product_id && <span className="import-status is-saved">{c('savedHub')}</span>}{row.publication_status && <span className={`import-status ${['created', 'exists'].includes(row.publication_status) ? 'is-saved' : ''}`}>{t(`catalog.itemStatus.${row.publication_status}`, {defaultValue:row.publication_status})}</span>}{row.ai_job && <div><span className="import-ai-state">AI · {needsPreparation(row) ? c('profileNeedsPreparation') : t(aiContentStatusKey(row.ai_job), { defaultValue: row.ai_job.status })}</span><Link to={`/ai-content?job=${encodeURIComponent(row.ai_job.id)}`}>{c('openAI')}</Link>{row.ai_job.staging?.automation_paused && <small>{t('ai.staging.automationPaused')}</small>}{row.ai_job.error && <small className="import-error">{errorText(row.ai_job.error)}</small>}{row.ai_job.checks?.errors?.map((issue, n) => <small key={n} className="import-error">{errorText(issue)}</small>)}</div>}</td>
+              <td className="import-row-state">{linkOnly(row) && <p className="import-notice" data-testid={`import-link-only-${row.id}`}>{t('importIdentity.linkOnlyTarget', { id: row.identity_decision?.product_id })}</p>}{row.source_status && <span className="import-status">{c(`sourceRowStates.${row.source_status}`)}</span>}{row.source_error && !row.errors.includes(row.source_error) && (row.source_status === 'skipped' ? <details><summary>{c('sourceSkippedDetails')}</summary><p>{errorText(row.source_error)}</p></details> : <p className="import-error">{errorText(row.source_error)}</p>)}{row.errors.map((issue, n) => <p key={n} className="import-error">{errorText(issue)}</p>)}{row.warnings.length > 0 && <details><summary>{c('warnings', { count: row.warnings.length })}</summary>{row.warnings.map((issue, n) => <p key={n}>{errorText(issue)}</p>)}</details>}{row.hub_product_id && <span className="import-status is-saved">{c('savedHub')}</span>}{row.publication_status && <span className={`import-status ${['created', 'exists'].includes(row.publication_status) ? 'is-saved' : ''}`}>{t(`catalog.itemStatus.${row.publication_status}`, {defaultValue:row.publication_status})}</span>}{row.ai_job && !linkOnly(row) && <div><span className="import-ai-state">AI · {needsPreparation(row) ? c('profileNeedsPreparation') : t(aiContentStatusKey(row.ai_job), { defaultValue: row.ai_job.status })}</span><Link to={`/ai-content?job=${encodeURIComponent(row.ai_job.id)}`}>{c('openAI')}</Link>{row.ai_job.staging?.automation_paused && <small>{t('ai.staging.automationPaused')}</small>}{row.ai_job.error && <small className="import-error">{errorText(row.ai_job.error)}</small>}{row.ai_job.checks?.errors?.map((issue, n) => <small key={n} className="import-error">{errorText(issue)}</small>)}</div>}</td>
             </tr>
           </React.Fragment>; })}
         </tbody></table></div>
@@ -320,10 +325,14 @@ export function ProductImportPage() {
         {!sourceLocked && !publicationDone && aiPending && <p className="import-notice">{c('aiPendingHelp')}</p>}
         {!draft.publication_result && <section className="import-panel import-save-panel">
           <div className="import-flow-heading"><div><h2><Save size={18} />{c('saveTitle')}</h2><p>{c('workflowHelp')}</p></div><span className="import-status">{chosenShopNames || c('hubOnly')}</span></div>
-          {rows.some(row => effectiveImportValues(row, changes).ai_enabled) && <p className="import-muted">{c('aiSourcesHelp')} <Link to="/settings/ai-content">{t('ai.modelSettings.title')}</Link></p>}
+          {rows.some(row => !linkOnly(row) && effectiveImportValues(row, changes).ai_enabled) && <p className="import-muted">{c('aiSourcesHelp')} <Link to="/settings/ai-content">{t('ai.modelSettings.title')}</Link></p>}
+          {draft.identity_review_required && <p className="import-notice" data-testid="import-identity-warning">{t('importIdentity.required', { count: draft.identity_review_count || 0 })}</p>}
+          <div className="import-actions"><Button data-testid="import-identity-review" variant="secondary" disabled={locked || aiBusy || !!dirty || !!editing || !!editor}
+            title={dirty ? t('importIdentity.saveDraftFirst') : ''} onClick={() => setIdentityReviewOpen(true)}>{t('importIdentity.open')}</Button>
+            {dirty > 0 && <small>{t('importIdentity.saveDraftFirst')}</small>}</div>
           <div className="import-actions">
             <Button icon={<Upload size={16} />} disabled={primaryDisabled} onClick={continueImport}>{primaryLabel}</Button>
-            <Button variant="secondary" disabled={locked || aiBusy || !!editing || !!editor} onClick={() => run('hubSaved', saveProductImport)}>{c('saveHub')}</Button>
+            <Button variant="secondary" disabled={locked || aiBusy || !!editing || !!editor || !!draft.identity_review_required} onClick={() => run('hubSaved', saveProductImport)}>{c('saveHub')}</Button>
             <Button variant="ghost" disabled={locked || !dirty || !!editing || !!editor} onClick={() => run('draftSaved', async value => value)}>{c('saveDraft', { count: dirty })}</Button>
           </div>
           {jobs.length > 0 && <p className="import-muted">{aiBusy ? c('aiRunning') : c('aiCost', { amount: actual.toFixed(3) })}{dirty && aiBusy ? ` · ${c('pollPaused')}` : ''}</p>}
@@ -334,6 +343,7 @@ export function ProductImportPage() {
           <div className="import-actions">{!draft.publication_result && <Button disabled={locked || aiPending || !!dirty || !previewPublishable || !!draft.publication?.errors.length || Date.now() >= Date.parse(draft.publication?.expires_at || '')} onClick={() => run('published', value => publishProductImport(value), false)}>{onlyExisting ? c('finishExisting') : c('publish', { count: readyItems.length, shop: chosenShopNames || shopName(draft.shop) })}</Button>}{draft.publication_preview_retryable === true && <Button data-testid="import-fresh-preview" variant="secondary" disabled={!!busy || sourceLocked || publicationBusy || !!dirty} onClick={() => run('previewRenewed', previewProductImport, false)}>{c('freshPreview')}</Button>}{draft.publication_result && draft.publication_preview_retryable !== true && !publicationBusy && (draft.publication_result.status === 'failed' || draft.publication_result.items.some(item => ['failed', 'uncertain'].includes(item.status))) && <Button variant="secondary" disabled={sourceLocked || !!busy || !!dirty} onClick={() => run('published', value => publishProductImport(value, true), false)}>{c('recover')}</Button>}</div>
         </section>}
         {editor && <ImportCellEditor key={`${editor.row.id}:${editor.column.key}`} column={editor.column} row={{ ...editor.row, values: effectiveImportValues(editor.row, changes) }} value={effectiveImportValues(editor.row, changes)[editor.column.key]} draft={draft} onDirtyChange={setModalDirty} onApply={value => { stage(editor.row, editor.column.key, value); setEditor(null); }} onClose={() => setEditor(null)} />}
+        {identityReviewOpen && <ImportIdentityReviewPanel draft={draft} onChanged={value => { accept(value); setNotice(''); }} onClose={() => setIdentityReviewOpen(false)} />}
       </>}
     </>}
   </div>;

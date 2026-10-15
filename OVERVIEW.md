@@ -10,6 +10,8 @@ Všetky prevádzkové API aj dokumenty vyžadujú prihlásenie; verejné sú iba
 
 ## Kde začať
 
+Existujúcu skladovú kartu možno ručne prepojiť s odlišným kódom dodávateľského katalógu cez náhľad a potvrdenie. Príprava nových kariet upozorňuje na zhodu EAN/kódov aj podobnosť názvu/SKU a umožňuje vybrať existujúcu kartu. Potvrdené prepojenie zachová SKU, obsah, zásoby a históriu. Implementácia, kontrola duplicít a aditívna migrácia 028 sú opísané v [dodávateľských väzbách kariet](docs/supplier-card-links.md); produkčné overenie konkrétnej väzby je samostatný krok.
+
 Príjem faktúry sa prepája s rovnakou prípravou produktov cez **Založiť skladové karty**. Položky rozlišujú existujúcu kartu, základnú kartu z príjmu, produkt iba vo feede, nenájdený produkt a nejasnú či neoverenú zhodu. Vlastný potvrdený sklad sa zobrazuje samostatne. Vybrané položky možno doplniť z feedu, ručne alebo voliteľne cez AI a vrátiť sa k tej istej príjemke so zachovanými množstvami. Uloženie kariet nemení zásoby ani faktúrové ceny; fyzický príjem zostáva samostatným potvrdením. [Postup a API](docs/receiving-identity.md), [spoločný editor](docs/product-imports.md).
 
 Príprava importu podporuje samostatné ciele **BIKETREK** a **xTrek** pri každom produkte, predvolený e-shop dodávateľa a uloženie iba do Hubu. Každý cieľ má vlastný náhľad a trvalý výsledok; úspešné alebo neisté odoslanie sa nenahrádza novou dávkou. AI v tejto príprave vždy pracuje s feedom a oficiálnymi zdrojmi. Existujúca overená identita si zachová SKU aj pri pridaní ďalšieho dodávateľa. Odkazy na produkt a administráciu pochádzajú z odpovede Upgates. Podrobnosti: [príprava importu](docs/product-imports.md), [dodávateľské vlastné pole](docs/upgates-supplier-metadata.md).
@@ -256,12 +258,14 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `024_upgates_api_budget.sql` | Spoločná evidencia API rozpočtu; bez aktivácie skladových zápisov alebo nákupu kvóty. |
 | `025_stock_native.sql` | Natívne objednávkové účinky s auditom a kontrolou pokrytia; nemení fyzickú skladovú históriu. |
 | `026_stock_delta.sql` | Rozdielový protokol, kontrolné body po údržbe a zmrazené podklady pokusov; bez prevzatia starého oprávnenia či automatickej aktivácie. |
+| `027_product_links.sql` | Trvalé náhľady a výsledky prepojenia existujúcich kariet s e-shopmi. |
+| `028_supplier_card_links.sql` | Trvalé náhľady a výsledky ručného priradenia dodávateľskej položky k existujúcej karte. |
 
-**Deployment spúšťa `005` až `026` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých dvadsaťdva upgrade SQL súborov balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Nové `024`–`026` sú aditívne a neaktivujú synchronizáciu.
+**Deployment spúšťa `005` až `028` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých dvadsaťštyri upgrade SQL súbory balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Nové `024`–`026` sú aditívne a neaktivujú synchronizáciu.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`026` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`028` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -298,7 +302,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` s aspoň jednou zmenou mimo `**/*.md` a `docs/**`, alebo ručne spustený workflow na `main`, zostaví API a frontend paralelne. Obrazy používajú oddelené cache `api` a `frontend`. Bežné nasadenie publikuje do GHCR tagy `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `026` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `028` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Workflow je serializovaný s vypnutým rušením rozbehnutého nasadenia. Zmeny iba Markdown súborov alebo `docs/**` produkčný workflow nespúšťajú, úplné PR kontroly však zostávajú. Ručné spustenie na `main` s `deploy=false` slúži na meranie zostavenia/cache: publikuje iba SHA tag, nemení produkčný tag `main` a nepripája sa na produkčný server. Predvolená hodnota je `deploy=true`.
