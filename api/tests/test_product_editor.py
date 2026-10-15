@@ -144,6 +144,7 @@ class ProductEditorQueryTests(IsolatedAsyncioTestCase):
         class Rows:
             def all(self): return []
             def mappings(self): return self
+            def __iter__(self): return iter(self.all())
         class DB:
             async def scalar(self, statement):
                 statement.compile(dialect=postgresql.dialect())
