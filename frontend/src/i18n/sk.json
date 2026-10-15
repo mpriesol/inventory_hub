@@ -3124,7 +3124,7 @@
     "seoFallback": "Doplniť chýbajúce SEO z názvu a popisu",
     "seoHelp": "Existujúce SEO z feedu zostane zachované. Dopĺňanie použije dostupné údaje bez volania AI.",
     "categoriesTitle": "Kategórie dodávateľa → kategórie e-shopu",
-    "categoriesHelp": "Vyberte najnižšiu kategóriu pre každú kategóriu dodávateľa. Pri importe sa doplnia aj nadradené produktové kategórie.",
+    "categoriesHelp": "Vyberte kategóriu pre každú kategóriu dodávateľa, podľa možnosti čo najpresnejšiu. Môžete použiť aj nadradenú alebo neaktívnu produktovú kategóriu; jej stav sa tým nemení. Pri importe sa doplnia aj nadradené produktové kategórie.",
     "chooseShop": "Vyberte cieľový e-shop v poli Platnosť mapovania. Každý e-shop má vlastný strom kategórií.",
     "addDetectedCategories": "Pridať kategórie zo vzorky",
     "addCategory": "Pridať kategóriu",

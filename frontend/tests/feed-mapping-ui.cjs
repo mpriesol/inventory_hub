@@ -223,19 +223,20 @@ async function navigate(path) { await act(async () => { void router.navigate(pat
   assert(![...labelled(f('newFieldTarget')).options].some(option => option.value === 'code'), 'Shop overlays cannot replace supplier identity');
   await tab('categories');
   const destinations = [...document.querySelectorAll('.fm-drop-target')];
-  assert.equal(destinations.length, 2, 'Only active leaf categories are offered as destinations');
-  assert(!destinations.some(element => element.querySelector('strong').textContent === 'Komponenty'));
-  assert(!destinations.some(element => element.textContent.includes('Neaktívne')));
+  assert.equal(destinations.length, 4, 'Parent and inactive product categories are offered; system menus remain excluded');
+  assert(!destinations.some(element => element.querySelector('strong').textContent === 'Menu'));
+  assert(destinations.some(element => element.querySelector('strong').textContent === 'Komponenty'));
+  assert(labelled(f('connectCategory', {name: 'Menu / Komponenty / Neaktívne'})).textContent.includes('neaktívna'));
   await click(sourceCategory('Komponenty / Duše'));
-  await click(labelled(f('connectCategory', {name: 'Menu / Komponenty / Duše'})));
-  await drag(sourceCategory('Komponenty / Plášte'), labelled(f('connectCategory', {name: 'Menu / Komponenty / Plášte'})));
+  await click(labelled(f('connectCategory', {name: 'Menu / Komponenty / Neaktívne'})));
+  await drag(sourceCategory('Komponenty / Plášte'), labelled(f('connectCategory', {name: 'Menu / Komponenty'})));
   await click(button(f('save')));
   const categorySave = calls.filter(call => call.method === 'PUT').at(-1);
   assert.equal(categorySave.body.shop, 'biketrek');
   assert.equal(categorySave.body.expected_revision, 1);
   assert.deepEqual(categorySave.body.definition.category_rules, [
-    { source: 'supplier-tubes', target_code: 'tubes' }, { source: 'supplier-tires', target_code: 'tires' },
-  ], 'Mappings save supplier codes with readable labels, through click and drag/drop');
+    { source: 'supplier-tubes', target_code: 'hidden' }, { source: 'supplier-tires', target_code: 'components' },
+  ], 'Mappings save supplier codes with readable labels, to inactive and parent categories through click and drag/drop');
   assert.deepEqual(baseStored.definition.category_rules, []);
   assert(!button(f('apply')), 'Shop overlays do not expose shared catalog remap');
 
@@ -309,5 +310,5 @@ async function navigate(path) { await act(async () => { void router.navigate(pat
   assert.equal(count('/remap'), 1);
   await act(async () => root.unmount());
   router.dispose();
-  console.log('Feed mapping UI passed: authenticated automatic inspection, click/drop mapping, exact parameter pairs, leaf categories, isolated scopes/preview/refresh, revision conflicts, upload, navigation and stale supplier responses.');
+  console.log('Feed mapping UI passed: authenticated automatic inspection, click/drop mapping, exact parameter pairs, parent/inactive categories with protected system menus, isolated scopes/preview/refresh, revision conflicts, upload, navigation and stale supplier responses.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
