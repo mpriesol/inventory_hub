@@ -1,6 +1,6 @@
 # Supplier products and shop import
 
-The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger and SK Profi Bike. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
+The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike and Schindler. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
 
 Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, browse or search, select individual items or groups, choose the target shop, and prepare an import preview. Empty search lists all items with pagination. The page remembers the target shop. Listing badges use mappings known to Hub; the preview verifies codes and EANs against the target shop.
 
@@ -119,6 +119,33 @@ Configure supplier `sk-profi-bike`, prefix `SKP-`, and a products source with `c
 Use the existing editable import draft: feed data first, optional AI enrichment, Hub save, then the selected shop preview/send. This supplier has no Sloger B2B dependency. The full listing XML can also serve as the availability source. The public simplified stock XML is supported separately, but its assortment can differ: missing SKUs stay unknown or expire, never become zero. Negative or malformed quantities are unknown. See [supplier availability](supplier-availability.md) and [SK Profi Bike invoices](receiving-identity.md#sk-profi-bike-pdf-invoices).
 
 Synthetic tests cover identities, prices, variants, images and stock. A private 2026-10-13 replay parsed 3,947 options in 1,688 sellable families from nine brands and built every family payload; 141 listing SKUs were absent from that day's simplified stock feed. These are snapshot findings, not fixed catalog-size assumptions. URLs containing access tokens and supplier documents must stay outside Git. No API ordering or automatic stock publication is enabled by this adapter.
+
+### Schindler listing and availability feed
+
+Configure supplier `schindler`, product prefix `SCH-`, default shop `biketrek`, and the supplied Slovak/EUR export as the remote `products` source. The parser is selected by supplier code, or explicitly with `catalog_parser: "schindler"`. Keep the private export URL in the supplier configuration, never in Git. No B2B password is required for downloading that URL. The export is a gzip attachment without HTTP `Content-Encoding`; the shared downloader detects its magic bytes, decompresses it once, and enforces the byte limit on both the compressed and expanded feed. Corrupt/truncated archives and oversized expansion fail before a completed snapshot is installed.
+
+The supplier's [official XML specification](https://docs.google.com/document/d/1z6LS21WxrFgPLSHOaALIfByLBI6oecjvRfoNWc5XZ6A) defines these fields:
+
+| Source | Hub meaning |
+| --- | --- |
+| `CODE` | Supplier SKU, preserving leading zeros; the new canonical code uses the configured `SCH-` prefix. `ITEM_ID` is not a SKU. |
+| `PRODUCTNAME`, `MANUFACTURER`, `EAN` | Product name, brand and EAN. A missing EAN stays unknown and warns. |
+| `DESCRIPTION`, `DESCRIPTION_SHORT` | Long HTML and short description; outgoing HTML uses the existing sanitizer. |
+| `IMGURL`, repeated `IMGURL_ALTERNATIVE`, `PARAM` | Images and named technical parameters. |
+| `CATEGORYTEXT` | Full supplier category path. Map it to the actual target shop's category code in **Mapovanie feedu**; no target code is inferred from a similar name. |
+| `PURCHASE_PRICE`, `VAT` | Purchase **including VAT**, with net purchase derived using Decimal and cent rounding. Feed VAT is required. |
+| `CUSTOMER_PRICE` | Retail **including VAT**, used by the existing configured-price import; the default coefficient is 1. |
+| `CATALOGUE_PRICE` | Separate manufacturer's reference price, retained in the raw source. It is not a purchase discount or an automatically created shop meta field. The existing importer uses `CUSTOMER_PRICE` as its retail/common price. |
+| `ITEMGROUP_ID`, `VARIANT` | Explicit family and option label. A family containing just one SKU becomes standalone with a fixed parameter. Similar names alone never create families. |
+| `YEAR`, `AVAILABILITY_DATE`, `DELIVERY_DATE` | Preserved source facts; an expected delivery date never proves stock. |
+
+Schindler's `WAREHOUSES` distinguishes `central`, `internal` and `external`. Central/internal quantities are aggregated as **the supplier's** immediately or shortly dispatchable stock; external stock remains separate. `IS_GREATER_THAN=true`, `VALUE=10` proves at least 11 whole pieces, not exactly 10. Aggregating any lower bound retains minimum semantics. If no warehouse detail exists, `STOCK_ITEM` supplies the declared quantity, including an explicit zero; missing values remain unknown. Unknown warehouse names or malformed counts reject that availability row rather than fabricate a quantity.
+
+The complete products feed can also serve as the regularly refreshed availability source. Its stock reader is independent of catalog name/price validation: valid observations survive other rejected/unknown/duplicate rows through the shared partial-feed report and expiry rules. A structurally broken XML/download still fails as a whole. This does not create receiving movements, initialize our physical stock, change FIFO costs or activate shop stock publication. Configure and verify a manual availability refresh before enabling its regular schedule.
+
+Use the normal catalog → editable import draft → Hub save → BIKETREK preview/send workflow. New listings remain hidden and marked for review. Existing identity matching and variant validation are unchanged; repeated/missing option labels block the affected preview until reviewed. No new database migration or dependency is required.
+
+Private snapshot verification on 15 October 2026 parsed 14,934 supplier SKUs, 236 category paths and 2,383 multi-SKU families; all 14,934 stock rows were readable. The snapshot had 4,193 missing EANs, 906 missing image sets, 130 retail-below-purchase warnings, 34 families with repeated option labels and one missing option label. Building all 6,825 family/standalone payloads produced 6,790 ready previews and 35 blocked previews for ambiguous/missing variant attributes. These are observations of one export, not catalog-size assumptions. The supplier's signed-in B2B page confirmed one gross/net purchase pair against the feed. Synthetic tests cover prices, leading-zero identities, grouping, hidden no-stock payloads, partial stock acceptance, external/minimum stock, gzip limits and damaged archives. Live category mappings, scheduled refresh and a remote trial import must be verified separately; local parsing alone does not prove them.
 
 ### Configuration and rollout
 

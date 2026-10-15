@@ -480,6 +480,8 @@ def parse_mapped(path, supplier, cfg, feed_key, definition, revision, native_par
 def native_record_paths(parser):
     if parser.__module__.endswith("paul_lange_catalog"):
         return ["SHOP/SHOPITEM", "SHOP/SHOPITEMS/SHOPITEM", "SHOPITEMS/SHOPITEM", "SHOPITEM"]
+    if parser.__module__.endswith("schindler_catalog"):
+        return ["SHOP/SHOPITEM"]
     if parser.__module__.endswith("northfinder_catalog"):
         return ["products/product", "root/product", "product"]
     if parser.__module__.endswith("sloger_catalog"):

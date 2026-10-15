@@ -1,4 +1,5 @@
 """Configured feed downloads, independent of supplier parsers and shop APIs."""
+import gzip
 import json
 import tempfile
 import unittest
@@ -74,3 +75,30 @@ class CatalogDownloadTests(unittest.TestCase):
                 with self.assertRaises(catalog.CatalogError):
                     catalog.download_catalog_source("northfinder", key)
                 factory.assert_not_called()
+
+    def test_gzip_attachment_without_content_encoding_is_unpacked_once(self):
+        raw = b'<SHOP><SHOPITEM><CODE>00123</CODE></SHOPITEM></SHOP>'
+        for body in (raw, gzip.compress(raw)):
+            with self.subTest(compressed=body != raw), patch.object(requests, "Session") as factory:
+                response = factory.return_value.__enter__.return_value.request.return_value.__enter__.return_value
+                response.status_code = 200
+                response.iter_content.return_value = [body[:2], body[2:]]
+                result = catalog.download_catalog_source("northfinder")
+                self.assertEqual((self.root / result["relpath"]).read_bytes(), raw)
+                self.assertEqual(result["size_bytes"], len(raw))
+        self.assertEqual(list(self.root.rglob("*.part")), [])
+
+    def test_expanded_limit_and_damaged_gzip_leave_no_completed_feed(self):
+        for body, code, limit in ((gzip.compress(b"x" * 10000), "feed_too_large", 200),
+                                  (gzip.compress(b"xml")[:-4], "feed_download_failed", 10000),
+                                  (b"\x1f\x8bnot-a-gzip", "feed_download_failed", 10000),
+                                  (gzip.compress(b""), "feed_empty", 10000)):
+            with self.subTest(code=code), patch.object(requests, "Session") as factory:
+                response = factory.return_value.__enter__.return_value.request.return_value.__enter__.return_value
+                response.status_code = 200
+                response.iter_content.return_value = [body]
+                with self.assertRaises(catalog.CatalogError) as caught:
+                    catalog._download("northfinder", self.cfg["feeds"]["sources"]["products"], "products", max_size_bytes=limit)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(list(self.root.rglob("*.part")), [])
+                self.assertEqual(list(self.root.rglob("*.xml")), [])

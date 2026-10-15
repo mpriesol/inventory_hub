@@ -25,6 +25,7 @@ from inventory_hub.adapters.paul_lange_catalog import parse_catalog
 from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_northfinder
 from inventory_hub.adapters.sloger_catalog import parse_catalog as parse_sloger
 from inventory_hub.adapters.sk_profi_bike_catalog import parse_catalog as parse_sk_profi_bike
+from inventory_hub.adapters.schindler_catalog import parse_catalog as parse_schindler
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -39,7 +40,7 @@ class CatalogError(Exception):
 
 
 PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger,
-           "sk-profi-bike": parse_sk_profi_bike}
+           "sk-profi-bike": parse_sk_profi_bike, "schindler": parse_schindler}
 
 
 def folded(value: str) -> str:
@@ -80,6 +81,7 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"catalog_{feed_key}_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{uuid4().hex[:8]}.xml"
     temporary = destination.with_suffix(".part")
+    unpacked = destination.with_suffix(".unpacked.part")
     limit = min(max_size_bytes, 100 * 1024 * 1024)
     started_monotonic = time.monotonic()
     try:
@@ -153,6 +155,26 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
                             output.write(chunk)
         if not temporary.stat().st_size:
             raise CatalogError("feed_empty", "The supplier returned an empty feed", 502)
+        with temporary.open("rb") as incoming:
+            compressed = incoming.read(2) == b"\x1f\x8b"
+        if compressed:
+            import gzip
+            import zlib
+            try:
+                size = 0
+                with gzip.open(temporary, "rb") as incoming, unpacked.open("wb") as output:
+                    while chunk := incoming.read(65536):
+                        size += len(chunk)
+                        if size > limit:
+                            raise CatalogError("feed_too_large", "Expanded feed exceeds the download size limit", 413)
+                        if max_elapsed_seconds is not None and time.monotonic() - started_monotonic > max_elapsed_seconds:
+                            raise CatalogError("feed_timeout", "The supplier exceeded the feed download deadline", 504)
+                        output.write(chunk)
+                if not size:
+                    raise CatalogError("feed_empty", "The supplier returned an empty feed", 502)
+                unpacked.replace(temporary)
+            except (gzip.BadGzipFile, EOFError, zlib.error):
+                raise CatalogError("feed_download_failed", "The supplier returned a damaged gzip feed", 502) from None
         temporary.replace(destination)
         return destination
     except requests.exceptions.SSLError:
@@ -166,6 +188,7 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
         raise CatalogError("feed_download_failed", "Could not download the configured supplier feed", 502) from None
     finally:
         temporary.unlink(missing_ok=True)
+        unpacked.unlink(missing_ok=True)
 
 
 def download_catalog_source(supplier: str, feed_key: str = "products") -> dict:
