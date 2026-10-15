@@ -316,7 +316,7 @@ async def _rows(db, shop, facts, choices):
         if not item['eans'] or not remote['eans']:
             row['warnings'].append('barcode_missing')
         manual_eans = verified_barcodes(item['manual_eans']) if item['manual_eans'] is not None else None
-        if manual_eans is not None and remote['eans'] and not set(manual_eans) & set(remote['eans']):
+        if manual_eans and remote['eans'] and not set(manual_eans) & set(remote['eans']):
             row['errors'].append('manual_barcode_conflict')
         if row['errors']:
             row['status'] = 'conflict'

@@ -152,6 +152,26 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
             extra_products=[SimpleNamespace(id=2, sku="UNRELATED", is_active=True)], extra_identifiers=[identifier])
         self.assertEqual(rows[0]["status"], "conflict")
 
+    async def test_cleared_editor_ean_is_unknown_but_foreign_barcode_owner_still_blocks(self):
+        facts = {**self.facts, "eans": [], "manual_eans": []}
+        owner = SimpleNamespace(id=2, sku="OTHER-PRODUCT", is_active=True)
+        identifier = SimpleNamespace(product_id=2, value=self.remote["eans"][0],
+                                     identifier_type=IdentifierType.ean, supplier_id=None)
+        for mode, code in (("shared_sku", facts["sku"]), ("manual", self.remote["code"])):
+            with self.subTest(mode=mode):
+                remote = {**self.remote, "code": code, "parent_code": code}
+                manual = {key: remote[key] for key in ("code", "parent_code", "is_variant")} if mode == "manual" else None
+                choice = service._choice(facts, [remote], manual=manual)
+                self.assertEqual(choice[1:], (mode, 1))
+                rows = await self.rows({1: facts}, {1: choice})
+                self.assertEqual(rows[0]["status"], "ready")
+                self.assertIn("barcode_missing", rows[0]["warnings"])
+                self.assertNotIn("manual_barcode_conflict", rows[0]["errors"])
+                rows = await self.rows({1: facts}, {1: choice},
+                                       extra_products=[owner], extra_identifiers=[identifier])
+                self.assertEqual(rows[0]["status"], "conflict")
+                self.assertIn("assigned_product_changed", rows[0]["errors"])
+
     async def test_translated_variant_axes_agree_but_size_or_manual_ean_conflict_blocks(self):
         facts = {**self.facts, "attributes": [{"name": "Farba", "value": "Čierna"}, {"name": "Veľkosť", "value": "M"}]}
         remote = {**self.remote, "is_variant": True, "parent_code": "FAMILY", "parent_id": "800",
