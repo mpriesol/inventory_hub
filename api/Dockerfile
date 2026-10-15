@@ -46,6 +46,7 @@ COPY infra/db-init/023_ai_content_settings.sql /app/inventory_hub/migrations/023
 COPY infra/db-init/024_upgates_api_budget.sql /app/inventory_hub/migrations/024_upgates_api_budget.sql
 COPY infra/db-init/025_stock_native.sql /app/inventory_hub/migrations/025_stock_native.sql
 COPY infra/db-init/026_stock_delta.sql /app/inventory_hub/migrations/026_stock_delta.sql
+COPY infra/db-init/027_product_links.sql /app/inventory_hub/migrations/027_product_links.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

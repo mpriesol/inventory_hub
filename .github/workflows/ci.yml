@@ -153,6 +153,9 @@ jobs:
       - name: Product editor interaction checks
         run: node frontend/tests/product-editor-ui.cjs
 
+      - name: Existing product link interaction checks
+        run: node frontend/tests/product-links-ui.cjs
+
       - name: FIFO inventory interactions
         run: node frontend/tests/fifo-ui.cjs
 

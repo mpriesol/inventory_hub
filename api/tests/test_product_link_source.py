@@ -1,0 +1,267 @@
+"""Fresh identity reads, without a live shop, database or catalog pull."""
+import copy
+import json
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+import requests
+
+from inventory_hub.services import product_link_source as source
+from inventory_hub.services.upgates import connection_fingerprint
+from inventory_hub.services.upgates_budget import AdmissionDenied
+
+
+BASE = "https://fixture.invalid/api/v2"
+FINGERPRINT = connection_fingerprint(BASE, "fixture-login")
+EAN = "8585047234448"
+
+
+def page(field, rows, *, number=1, pages=1, total=None):
+    return {field: rows, "current_page": number, "number_of_pages": pages,
+            "number_of_items": len(rows) if total is None else total}
+
+
+def variant(code="LEAF-M", identifier=71):
+    return {"code": code, "variant_id": identifier, "product_code": "PARENT", "product_id": 7, "ean": EAN}
+
+
+def family(*variants):
+    return {"code": "PARENT", "product_id": 7, "variants_exists_yn": True,
+            "descriptions": [{"language": "sk", "title": "Jacket"}], "variants": list(variants)}
+
+
+def detailed(code="LEAF-M", identifier=71):
+    return {**variant(code, identifier), "parameters_new": [
+        {"id": 1, "descriptions": [{"language": "sk", "name": "Farba"}],
+         "values": [{"id": 2, "descriptions": [{"language": "sk", "value": "Modrá"}]}]},
+        {"id": 3, "descriptions": [{"language": "sk", "name": "Veľkosť"}],
+         "values": [{"id": 4, "descriptions": [{"language": "sk", "value": "M"}]}]},
+    ]}
+
+
+class Response:
+    def __init__(self, data, status=200, headers=None):
+        self.body = data if isinstance(data, bytes) else json.dumps(data).encode()
+        self.status_code, self.headers, self.closed = status, headers or {}, False
+
+    def iter_content(self, size):
+        for offset in range(0, len(self.body), size):
+            yield self.body[offset:offset+size]
+
+    def close(self):
+        self.closed = True
+
+
+class Session:
+    auth = ("fixture-login", "fixture-key")
+
+    def __init__(self, replies):
+        self.replies, self.calls, self.closed = replies, [], False
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        reply = self.replies[len(self.calls)-1]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def close(self):
+        self.closed = True
+
+
+class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
+    def setup_client(self, *data):
+        replies = [r if isinstance(r, (Response, Exception)) else Response(r) for r in data]
+        self.session = Session(replies)
+        self.responses = replies
+        client = SimpleNamespace(base_url=BASE, session=self.session, log_dir=None)
+        patcher = patch.object(source.UpgatesClient, "from_shop", return_value=client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def discovery(self, *variants):
+        details = [{**detailed(v["code"], v["variant_id"]), **v} for v in variants]
+        self.setup_client(page("products", []), page("variants", details))
+
+    async def test_exact_variant_filter_and_separate_documented_axes(self):
+        self.discovery(variant())
+        result = await source.discover("xtrek", ["LEAF-M"])
+        self.assertEqual(result["requests"], 2)
+        self.assertEqual(result["fingerprint"], FINGERPRINT)
+        self.assertEqual(len(result["leaves"]), 1)
+        leaf = result["leaves"][0]
+        self.assertEqual((leaf["code"], leaf["parent_code"], leaf["external_id"], leaf["parent_id"]),
+                         ("LEAF-M", "PARENT", "71", "7"))
+        self.assertEqual(leaf["attributes"], [{"name": "Farba", "value": "Modrá"}, {"name": "Veľkosť", "value": "M"}])
+        self.assertEqual(leaf["warnings"], [])
+        for url, kwargs in self.session.calls:
+            self.assertTrue(url.startswith(BASE + "/products"))
+            self.assertTrue(kwargs["verify"])
+            self.assertFalse(kwargs["allow_redirects"])
+        self.assertEqual([call[1]["params"] for call in self.session.calls], [
+            {"codes": "LEAF-M", "variants_yn": "false", "page": 1, "current_page_items": 100},
+            {"variant_codes": "LEAF-M", "page": 1, "current_page_items": 100},
+        ])
+        self.assertTrue(self.session.calls[-1][0].endswith("/products/variants"))
+        self.assertTrue(self.session.closed and all(r.closed for r in self.responses))
+        for field in ("price", "stock", "shop_price", "shop_stock", "api_key"):
+            self.assertNotIn(field, leaf)
+
+    async def test_missing_axes_are_unknown_without_parent_fallback(self):
+        self.setup_client(page("products", []), page("variants", [variant()]))
+        result = await source.discover("xtrek", ["LEAF-M"])
+        self.assertEqual(result["leaves"][0]["attributes"], [])
+        self.assertIn("variant_axes_unknown", result["leaves"][0]["warnings"])
+
+    async def test_large_pos_parent_never_requires_siblings(self):
+        self.discovery(variant())
+        result = await source.discover("xtrek", ["LEAF-M"])
+        self.assertEqual(len(result["leaves"]), 1)
+        self.assertTrue(all(call[0].endswith("/products/variants") or call[1]["params"]["variants_yn"] == "false"
+                            for call in self.session.calls))
+        self.assertEqual(result["leaves"][0]["eans"], [EAN])
+
+    async def test_standalone_and_variant_native_id_namespaces_are_distinct(self):
+        single = {"code": "LEAF-M", "product_id": 71, "ean": EAN, "stock": 99, "variants": [], "variants_exists_yn": False}
+        self.setup_client(page("products", [single]), page("variants", [detailed()]))
+        result = await source.discover("xtrek", ["LEAF-M"])
+        self.assertEqual(len(result["leaves"]), 2)
+        self.assertEqual({(v["is_variant"], v["external_id"]) for v in result["leaves"]}, {(False, "71"), (True, "71")})
+
+    async def test_family_parent_never_becomes_leaf_even_when_variants_absent(self):
+        for parent in (family(), {"code": "PARENT", "product_id": 7, "variants_exists_yn": True}):
+            self.setup_client(page("products", [parent]), page("variants", []))
+            result = await source.discover("xtrek", ["PARENT"])
+            self.assertEqual(result["leaves"], [])
+
+    async def test_hundred_variant_batch_uses_two_reads_not_per_product(self):
+        variants = [variant("SKU-"+str(i), i+1) for i in range(100)]
+        details = [detailed(v["code"], v["variant_id"]) for v in variants]
+        self.setup_client(page("products", []), page("variants", details))
+        result = await source.discover("xtrek", [v["code"] for v in variants])
+        self.assertEqual((len(result["leaves"]), result["requests"]), (100, 2))
+
+    async def test_empty_or_injected_filters_never_contact_shop(self):
+        self.setup_client()
+        for codes in ([], ["X;Y"], ["X\n"], [" X"], ["X\x7f"], ["X"]*101):
+            with self.subTest(codes=codes), self.assertRaises(source.SourceError) as raised:
+                await source.discover("xtrek", codes)
+            self.assertEqual(raised.exception.code, "source_codes_invalid")
+        self.assertEqual(self.session.calls, [])
+
+    async def test_fingerprint_changed_before_network(self):
+        self.setup_client()
+        with self.assertRaises(source.SourceError) as raised:
+            await source.discover("xtrek", ["X"], "different")
+        self.assertEqual(raised.exception.code, "source_connection_changed")
+        self.assertEqual(self.session.calls, [])
+        self.assertTrue(self.session.closed)
+
+    async def test_request_allowance_includes_axes_reads(self):
+        self.discovery(variant())
+        with self.assertRaises(source.SourceError) as raised:
+            await source.discover("xtrek", ["LEAF-M"], max_requests=1)
+        self.assertEqual(raised.exception.code, "source_request_limit")
+        self.assertEqual(len(self.session.calls), 1)
+
+    async def test_filtered_response_cannot_silently_be_full_catalog(self):
+        self.setup_client(page("products", [{"code": "OTHER", "product_id": 9, "variants": []}]))
+        with self.assertRaises(source.SourceError) as raised:
+            await source.discover("xtrek", ["X"])
+        self.assertEqual(raised.exception.code, "source_filter_mismatch")
+
+    async def test_duplicate_leaf_or_reused_id_is_rejected(self):
+        for second, error in ((variant(), "source_duplicate_variant"),
+                              (variant("LEAF-S", 71), "source_duplicate_variant_id")):
+            with self.subTest(error=error):
+                self.discovery(variant(), second)
+                with self.assertRaises(source.SourceError) as raised:
+                    await source.discover("xtrek", ["LEAF-M", "LEAF-S"])
+                self.assertEqual(raised.exception.code, error)
+
+    async def test_native_parent_id_missing_and_invalid_axis_shapes_block(self):
+        for changes, code in (({"variant_id": None}, "source_native_id_invalid"),
+                              ({"product_id": None}, "source_native_id_invalid"),
+                              ({"product_code": None}, "source_code_invalid"),
+                              ({"parameters_new": "wrong"}, "source_parameters_invalid")):
+            with self.subTest(changes=changes):
+                self.setup_client(page("products", []), page("variants", [{**detailed(), **changes}]))
+                with self.assertRaises(source.SourceError) as raised:
+                    await source.discover("xtrek", ["LEAF-M"])
+                self.assertEqual(raised.exception.code, code)
+
+    async def test_standalone_requires_explicit_kind_and_excludes_sets(self):
+        for row, error in (({"code": "A", "product_id": 1}, "source_product_kind_unknown"),
+                            ({"code": "A", "product_id": 1, "variants_exists_yn": "false"}, "source_product_kind_unknown")):
+            self.setup_client(page("products", [row]))
+            with self.assertRaises(source.SourceError) as raised:
+                await source.discover("xtrek", ["A"])
+            self.assertEqual(raised.exception.code, error)
+        self.setup_client(page("products", [{"code": "A", "product_id": 1, "variants_exists_yn": False, "set_yn": True}]),
+                          page("variants", []))
+        self.assertEqual((await source.discover("xtrek", ["A"]))["leaves"], [])
+
+    async def test_pagination_consumes_all_filtered_pages_and_checks_totals(self):
+        a = {"code": "A", "product_id": 1, "variants_exists_yn": False}; b = {"code": "B", "product_id": 2, "variants_exists_yn": False}
+        self.setup_client(page("products", [a], pages=2, total=2),
+                          page("products", [b], number=2, pages=2, total=2), page("variants", []))
+        result = await source.discover("xtrek", ["A", "B"])
+        self.assertEqual(result["requests"], 3)
+        self.assertEqual([v["code"] for v in result["leaves"]], ["A", "B"])
+        self.setup_client(page("products", [a], total=2))
+        with self.assertRaises(source.SourceError) as raised:
+            await source.discover("xtrek", ["A"])
+        self.assertEqual(raised.exception.code, "source_pagination_incomplete")
+
+    async def test_malformed_json_and_bounded_body(self):
+        for body, code in ((b'{"products":[],"products":[]}', "source_duplicate_json_key"),
+                           (b'{"x":NaN}', "source_nonfinite_json"),
+                           (b'invalid', "source_json_invalid"),
+                           (b' '*(source.MAX_BYTES+1), "source_response_limit")):
+            self.setup_client(Response(body))
+            with self.subTest(code=code), self.assertRaises(source.SourceError) as raised:
+                await source.discover("xtrek", ["X"])
+            self.assertEqual(raised.exception.code, code)
+            self.assertTrue(self.responses[0].closed)
+
+    async def test_quota_auth_network_failures_are_sanitized_and_not_retried(self):
+        for reply, code, status, delay in ((Response({}, 429, {"Retry-After": "120"}), "source_rate_limited", 429, 120),
+                                           (Response({}, 401), "source_authentication_failed", 502, None),
+                                           (AdmissionDenied(60), "source_rate_limited", 429, 60),
+                                           (requests.ConnectionError("secret URL"), "source_unavailable", 502, None)):
+            self.setup_client(reply)
+            with self.subTest(code=code), self.assertRaises(source.SourceError) as raised:
+                await source.discover("xtrek", ["X"])
+            self.assertEqual((raised.exception.code, raised.exception.status, raised.exception.retry_after), (code, status, delay))
+            self.assertNotIn("secret", str(raised.exception))
+            self.assertEqual(len(self.session.calls), 1)
+
+    async def test_verify_checks_selected_kind_parent_and_native_id(self):
+        self.discovery(variant())
+        result = await source.discover("xtrek", ["LEAF-M"])
+        self.discovery(variant())
+        checked = await source.verify("xtrek", result["leaves"], FINGERPRINT)
+        self.assertEqual(checked["leaves"], result["leaves"])
+        for key, value in (("parent_id", "99"), ("parent_code", "OTHER"), ("external_id", "99"), ("is_variant", False)):
+            self.discovery(variant())
+            expected = copy.deepcopy(result["leaves"]); expected[0][key] = value
+            with self.subTest(key=key), self.assertRaises(source.SourceError) as raised:
+                await source.verify("xtrek", expected, FINGERPRINT)
+            self.assertEqual(raised.exception.code, "source_identity_changed")
+
+    async def test_manual_verify_ignores_other_parent_but_never_switches(self):
+        self.discovery(variant())
+        expected = (await source.discover("xtrek", ["LEAF-M"]))["leaves"]
+        other = {**detailed(), "product_code": "OTHER", "product_id": 8, "variant_id": 81}
+        self.setup_client(page("products", []), page("variants", [detailed(), other]))
+        result = await source.verify("xtrek", expected, FINGERPRINT)
+        self.assertEqual(result["leaves"], expected)
+        self.setup_client(page("products", []), page("variants", [other]))
+        with self.assertRaises(source.SourceError) as raised:
+            await source.verify("xtrek", expected, FINGERPRINT)
+        self.assertEqual(raised.exception.code, "source_identity_changed")
+
+
+if __name__ == "__main__":
+    unittest.main()

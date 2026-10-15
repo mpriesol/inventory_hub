@@ -32,6 +32,7 @@ MIGRATIONS = (
     "upgates_api_budget_migrate",     # 024
     "stock_native_migrate",           # 025
     "stock_delta_migrate",            # 026
+    "product_links_migrate",          # 027
 )
 
 

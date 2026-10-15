@@ -31,6 +31,7 @@ Use **BIKETREK** and **xTrek** in new documentation and user-facing copy. Keep e
 - `docs/order-automation.md`: operational settings, worker contracts, concurrency and recovery.
 - `docs/stock-publication.md`: controlled maintenance stock publication, persistent warehouse holds and ambiguous-write recovery.
 - `docs/product-editor.md`: unified stock/product spreadsheet, overrides, CAS, selected-field publication and recovery.
+- `docs/product-links.md`: explicit existing-card links to shop products, batch review and recovery.
 - `docs/supplier-availability.md`, `docs/stock-sync.md`, `docs/availability-sync.md`: supplier freshness, regular stock authority and operator controls.
 - `docs/stock-adjustments.md`: physical recounts through immutable corrective movements.
 - `docs/receiving-identity.md`: shared receiving/catalog identity, scanner request UUIDs, ambiguity and replay recovery.
@@ -128,6 +129,7 @@ node frontend/tests/order-collection-ui.cjs
 node frontend/tests/stock-settings-ui.cjs
 node frontend/tests/stock-publication-ui.cjs
 node frontend/tests/product-editor-ui.cjs
+node frontend/tests/product-links-ui.cjs
 node frontend/tests/fifo-ui.cjs
 node frontend/tests/receiving-scan-ui.cjs
 node frontend/tests/stock-history-ui.cjs
@@ -144,7 +146,7 @@ For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/
 
 For Docker-related changes, build locally when available. Do not use the production compose definition as a test environment. Validate SQL and migration order in an isolated database; applying a production migration must be covered by the task's authorization and rollback plan.
 
-The deployment runs `python -m inventory_hub.migrate` in one API container before restarting services. Its explicit `MIGRATIONS` tuple calls the twenty-two migration modules in order `005`–`026`, preserving each module's own transaction and advisory lock. It stops on the first failure; completed migrations remain committed and the API restart is not reached. All twenty-two upgrade SQL files are packaged in the image. `024_upgates_api_budget.sql`, `025_stock_native.sql` and `026_stock_delta.sql` add shared API admission, native-order evidence and delta checkpoints respectively; they do not activate stock writes. Adding another numbered SQL file does not automatically make it run on an existing production database: update the explicit runner, image packaging and verification together. Docker's initialization directory is not a general upgrade runner. Production workflows are serialized with cancellation disabled; never interrupt a migration to speed up another release. See `docs/ci-deployment.md` for timing and recovery.
+The deployment runs `python -m inventory_hub.migrate` in one API container before restarting services. Its explicit `MIGRATIONS` tuple calls the twenty-three migration modules in order `005`–`027`, preserving each module's own transaction and advisory lock. It stops on the first failure; completed migrations remain committed and the API restart is not reached. All twenty-three upgrade SQL files are packaged in the image. `024_upgates_api_budget.sql`, `025_stock_native.sql` and `026_stock_delta.sql` add shared API admission, native-order evidence and delta checkpoints respectively; they do not activate stock writes. `027_product_links.sql` adds durable previews and results for explicit links to existing shop products, without linking historical data automatically. Adding another numbered SQL file does not automatically make it run on an existing production database: update the explicit runner, image packaging and verification together. Docker's initialization directory is not a general upgrade runner. Production workflows are serialized with cancellation disabled; never interrupt a migration to speed up another release. See `docs/ci-deployment.md` for timing and recovery.
 
 Test schemas using current `StockMovement` or order ORM models need migration `007` too; collector/settings/processing tests also need `008` and `009`. Physical writer tests now also need `010`, since all balance writers check its persistent publication hold. The read-only order collector is opt-in per shop and must never call stock apply or populate the sync outbox. Its metadata is not a complete stock snapshot. The separate opt-in order processor may mutate the local ledger under an explicit per-shop mode and activation cutoff. It must not fabricate manual physical confirmations or publish shop stock. Warehouse settings pause automatic order processing only; they do not freeze manual receiving or other confirmed stock operations. Controlled publication uses a separate persistent hold that gates all local stock writers. `STOCK_PUBLICATION_WRITE_ENABLED` defaults to false and is never enabled by migration. Never retry an ambiguous stock PUT or release its hold merely because a read matches; follow the explicit resolution protocol in `docs/stock-publication.md`.
 
