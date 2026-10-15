@@ -12,6 +12,7 @@ from inventory_hub.ai_content_models import AiContentRevision
 from inventory_hub.catalog_types import ShopImportOptions
 from inventory_hub.product_import_types import DraftRevision
 from inventory_hub.services import ai_content, ai_content_worker as worker, catalog_import, product_import as service
+from inventory_hub.services import product_import_identity
 from inventory_hub.services.catalog import CatalogError
 
 
@@ -30,7 +31,7 @@ class DraftAutomationTests(unittest.IsolatedAsyncioTestCase):
                 'auto_publish_requested': not confirm}})
         return draft, job
 
-    async def advance(self, draft, job, *, items=None, existing=None, other_jobs=None):
+    async def advance(self, draft, job, *, items=None, existing=None, other_jobs=None, identity_review_required=False):
         jobs = [job, *(other_jobs or [])]
         async def scalars(statement):
             ids = next(v for v in statement.compile().params.values() if isinstance(v, list))
@@ -45,10 +46,21 @@ class DraftAutomationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(service, 'get_draft', AsyncMock(return_value=draft)), \
              patch.object(service, 'publication_result', return_value=existing), \
              patch.object(service, 'public', AsyncMock(return_value={})), \
+             patch.object(product_import_identity, 'summary', AsyncMock(return_value={
+                 'identity_review_required': identity_review_required, 'identity_review_count': int(identity_review_required)})), \
              patch.object(service, 'save', AsyncMock(side_effect=save)) as saved, \
              patch.object(service, 'preview', AsyncMock(side_effect=preview)) as prepared:
             await service.advance_ai(db, job)
         return saved, prepared
+
+    async def test_duplicate_review_blocks_automatic_hub_save_and_publication_but_keeps_ai_content(self):
+        draft, job = self.fixture()
+        saved, prepared = await self.advance(draft, job, identity_review_required=True)
+        saved.assert_not_awaited()
+        prepared.assert_not_awaited()
+        self.assertEqual((job.status, job.error), ('import_blocked', 'import_identity_review_required'))
+        self.assertTrue(service.applied_ai(job))
+        self.assertNotIn('staging_auto_publication', job.context)
 
     async def test_all_auto_applies_saves_and_authorizes_existing_importer_once(self):
         draft, job = self.fixture()

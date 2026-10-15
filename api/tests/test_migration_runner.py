@@ -18,6 +18,7 @@ class MigrationRunnerTests(unittest.TestCase):
             "product_publication", "stock_adjustment", "fifo_cost",
             "stock_tracking", "user_sessions", "product_feed_mapping",
             "product_import", "ai_content_settings", "upgates_api_budget", "stock_native", "stock_delta", "product_links",
+            "supplier_card_links",
         )
         calls = []
 
@@ -35,8 +36,8 @@ class MigrationRunnerTests(unittest.TestCase):
             (action, f"inventory_hub.{name}_migrate")
             for name in expected for action in ("import", "run")
         ])
-        self.assertIn("[migrations] done completed=23/23 elapsed_s=", output.getvalue())
-        self.assertEqual(output.getvalue().count("done module="), 23)
+        self.assertIn("[migrations] done completed=24/24 elapsed_s=", output.getvalue())
+        self.assertEqual(output.getvalue().count("done module="), 24)
 
     def test_migration_failure_stops_before_importing_the_next_upgrade(self):
         completed = Mock()
@@ -55,7 +56,7 @@ class MigrationRunnerTests(unittest.TestCase):
         self.assertEqual(load.call_count, 2)
         self.assertIn("failed module=opening_stock_migrate", stderr.getvalue())
         self.assertIn("error_type=RuntimeError", stderr.getvalue())
-        self.assertIn("failed completed=1/23 elapsed_s=", stderr.getvalue())
+        self.assertIn("failed completed=1/24 elapsed_s=", stderr.getvalue())
         self.assertNotIn("done completed=", stdout.getvalue())
         self.assertNotIn(str(failure), stdout.getvalue() + stderr.getvalue())
 
@@ -68,7 +69,7 @@ class MigrationRunnerTests(unittest.TestCase):
         self.assertEqual(result, 1)
         load.assert_called_once_with("inventory_hub.ai_content_migrate")
         self.assertIn("error_type=ImportError", stderr.getvalue())
-        self.assertIn("failed completed=0/23", stderr.getvalue())
+        self.assertIn("failed completed=0/24", stderr.getvalue())
         self.assertNotIn("private detail", stdout.getvalue() + stderr.getvalue())
 
     def test_timings_include_module_execution_and_total(self):

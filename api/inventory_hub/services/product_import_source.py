@@ -297,10 +297,11 @@ async def _fail(id, token, code):
 
 async def _complete(db, draft, document, *, skipped=False, error=None):
     from inventory_hub.services import product_import as imports
+    from inventory_hub.services.product_import_identity import canonical_for_review
     sources = [imports.to_source(row) for row in document['rows']]
     products = await imports._receiving_sources(db, sources,
         {int(key): value for key, value in document['receiving_rows'].items()}) if document.get('receiving_origin') \
-        else await catalog_import.canonical_products(db, sources)
+        else await canonical_for_review(db, sources)
     for row, product in zip(document['rows'], products):
         row['values']['code'] = product.shop_code
         row['canonical_code'] = product.shop_code

@@ -33,6 +33,7 @@ MIGRATIONS = (
     "stock_native_migrate",           # 025
     "stock_delta_migrate",            # 026
     "product_links_migrate",          # 027
+    "supplier_card_links_migrate",    # 028
 )
 
 

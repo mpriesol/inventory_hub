@@ -6,6 +6,8 @@ Invoice receiving also opens this same editor through **Založiť skladové kart
 
 ## Operator flow
 
+Before saving a new card, review existing-card suggestions by verified EAN, exact SKU or supplier identifier, and similar name/SKU. An explicit existing-card choice saves only the supplier association and preserves the card's identity, content, stock and shop mappings. Similarity can be dismissed with an explicit create-new decision; exact conflicts cannot. This check also runs inside the shared save used by AI automation. See [supplier-card linking](supplier-card-links.md) for the review, stale-data and recovery rules.
+
 The catalog starts with **Automaticky podľa mapovania dodávateľa**: each selected product receives its shop-specific supplier category mapping. The legacy supplier fallback (such as TEMP) is not submitted as a manual override. An intentional category choice in catalog options still overrides mapping for the whole selection; clearing it restores automatic mapping. Products without a mapping remain unassigned until a manual or AI category choice. Existing draft snapshots are not rewritten.
 
 1. Review the spreadsheet of selected items. Identity, names, manufacturer, images, descriptions, SEO, prices, VAT, availability text, leaf category, product parameters, variant attributes and custom fields are editable. Parent categories are calculated from the chosen leaf; system menu roots are excluded. Variant relationships originate only from explicit supplier groups.

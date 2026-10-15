@@ -104,7 +104,7 @@ async def _shop(db, shop_code):
     return row
 
 
-async def _facts(db, product_ids, *, lock=False):
+async def _facts(db, product_ids, *, lock=False, exclude_supplier_product_id=None):
     query = select(Product).where(Product.id.in_(product_ids)).order_by(Product.id)
     if lock:
         query = query.with_for_update(read=True)
@@ -135,7 +135,8 @@ async def _facts(db, product_ids, *, lock=False):
         .join(SupplierProduct, or_(SupplierProduct.id == Product.source_supplier_product_id,
             SupplierProduct.id.in_(select(ProductSupplySource.supplier_product_id)
                 .where(ProductSupplySource.product_id == Product.id, ProductSupplySource.is_active.is_(True)))))
-        .where(Product.id.in_(product_ids), SupplierProduct.is_active.is_(True)))).all()
+        .where(Product.id.in_(product_ids), SupplierProduct.is_active.is_(True),
+               SupplierProduct.id != exclude_supplier_product_id if exclude_supplier_product_id is not None else True))).all()
     for pid, values in supplier_attributes:
         if isinstance(values, list):
             fallback[pid].extend(variant_attributes({'parameters': values}))
@@ -144,9 +145,11 @@ async def _facts(db, product_ids, *, lock=False):
         .where(ProductEditorOverride.product_id.in_(product_ids)).execution_options(populate_existing=True))}
     result = {}
     for product in products:
-        override = overrides.get(product.id, {}).get('variant', {})
+        saved = overrides.get(product.id, {})
+        override = saved.get('variant', {})
+        display_name = saved.get('common', {}).get('name') or product.name
         attrs = override.get('attributes', attributes[product.id] or fallback[product.id])
-        result[product.id] = {'product_id': product.id, 'sku': product.sku, 'name': product.name,
+        result[product.id] = {'product_id': product.id, 'sku': product.sku, 'name': display_name,
             'is_active': product.is_active, 'eans': sorted(set(eans[product.id])),
             'attributes': attrs if isinstance(attrs, list) else attributes[product.id] or fallback[product.id],
             'manual_eans': override.get('eans') if isinstance(override.get('eans'), list) else None}
