@@ -429,6 +429,12 @@ async def inspect_source(db, supplier, feed_key, definition, sample_id=None):
     try:
         records, kind, record_path = await asyncio.to_thread(read_records, path, definition)
         result = await asyncio.to_thread(inspect_records, records, kind, record_path)
+        from inventory_hub.services import catalog
+        cfg = catalog.supplier_config(supplier)
+        _source, parser = catalog.source_config(supplier, cfg, feed_key, require_parser=False)
+        if parser == "cyklo-zitny" and kind == "xml" and native_source_path(definition, catalog.PARSERS[parser]):
+            from inventory_hub.adapters.cyklo_zitny_catalog import inspection_categories
+            result.update(await asyncio.to_thread(inspection_categories, path))
     except ValueError as error:
         raise _error("feed_inspection_invalid", str(error)) from None
     return {**result, "sample_id": sample_id}
@@ -478,6 +484,8 @@ def parse_mapped(path, supplier, cfg, feed_key, definition, revision, native_par
 
 
 def native_record_paths(parser):
+    if parser.__module__.endswith("cyklo_zitny_catalog"):
+        return ["export/items/item"]
     if parser.__module__.endswith("paul_lange_catalog"):
         return ["SHOP/SHOPITEM", "SHOP/SHOPITEMS/SHOPITEM", "SHOPITEMS/SHOPITEM", "SHOPITEM"]
     if parser.__module__.endswith("schindler_catalog"):

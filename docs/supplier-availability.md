@@ -96,3 +96,8 @@ docker compose exec -T api python -m inventory_hub.supplier_availability_diagnos
 ```
 
 Príkaz používa SQL transakciu iba na čítanie. Zobrazí nastavenie, posledné tri behy a samostatné podmienky prenosu do BIKETREK/xTrek. Úspešné opakované `scheduled` behy dokazujú dodávateľ → Hub. Podmienky e-shopu sú len kontrolou konfigurácie, nie dôkazom odoslania každého produktu: každý produkt potrebuje správnu väzbu, potvrdený vlastný sklad a platný východiskový stav delta prenosu. Nasadenie tejto opravy nemení `STOCK_SYNC_WRITE_ENABLED`, skladovú autoritu ani automatické objednávky. Bez aktuálnych produkčných dôkazov nemožno tvrdiť overený prenos Hub → e-shopy.
+
+
+## Cyklo Žitný
+
+Natívny parser `cyklo-zitny` načítava dostupnosti z kompletného zákazníckeho exportu verzie 3. Identita je `code`, množstvo `store_count`. Skrátený export má iba interné `id` a `delivery_date`; nemožno ho pripojiť ako zoznam dodávateľských SKU ani z neho vyrábať počty. Pre `stock` nastavte rovnaký kompletný URL ako pre katalóg. Skladový parser nezávisí od cien a názvov. Platné nuly sa prijímajú, chybné riadky majú bežnú diagnostiku a expiráciu; neprítomnosť položky nevytvára nulu. Konfigurácia ani automatika sa nezapínajú samotným nasadením parsera. Postup a cenové základy sú v [dodávateľskom katalógu](supplier-catalog.md#cyklo-zitny-customer-discount-export).

@@ -1,6 +1,6 @@
 # Supplier products and shop import
 
-The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike and Schindler. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
+The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike, Schindler and Cyklo Zitny. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
 
 Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, browse or search, select individual items or groups, choose the target shop, and prepare an import preview. Empty search lists all items with pagination. The page remembers the target shop. Listing badges use mappings known to Hub; the preview verifies codes and EANs against the target shop.
 
@@ -164,3 +164,28 @@ Reference contracts: [products](https://docs.upgates.com/api-reference/produkty)
 ### Fixed attributes and singleton families (15 October 2026)
 
 A complete feed family with only one actual SKU is normalized to a standalone item; fixed colour/size stays in its product parameters. The full-feed count, not the current selection count, determines this. Preparation also handles old cached singleton groups before canonical identity resolution, including receiving sources. Real families retain their explicit relationships and all exported variants have `main_yn=false`. SK Profi Bike's one-option records no longer become groups merely because `atribute_1`/`atribute_2` are named. Existing persisted drafts and shop products are not restructured automatically.
+
+
+### Cyklo Zitny customer-discount export
+
+Use supplier code `cyklo-zitny`, prefix `CZ-`, home shop `biketrek`, destination currency EUR and `adapter_settings.vat_rate: 23`. Select `catalog_parser: "cyklo-zitny"` (also selected by supplier code). Configure the privately supplied **complete customer-discount export, version 3**, as `products`. The same complete URL is recommended for `stock`; keep API keys in supplier configuration, never in Git. Downloading the export requires no B2B password.
+
+The XML has sibling `items type="categories"` and `items type="products"` containers. Inspection selects only products, including an explicit `export/items/item` record path. The native category picker resolves the dictionary and offers exactly the deepest complete source category selected for each product, with its actual code and readable hierarchy. Ties retain supplier order. Missing ancestors/cycles are not invented. Parallel category ID/text arrays are not zipped because legacy IDs can lack a text entry. Original arrays and descriptions remain in the source snapshot.
+
+| Source | Normalized value |
+| --- | --- |
+| `code` | Exact raw supplier SKU, including leading zeros and punctuation; `id` is not a SKU |
+| `ean` | Source EAN, retaining leading zeros |
+| `price_buy_novat_eur` | EUR acquisition price without VAT, after the customer discount in export 3 |
+| `price_moc_eur` | EUR recommended gross retail price under the default `preserve_gross` policy |
+| `store_count` | Supplier quantity, including explicit zero; never local physical stock |
+| `images/url` | Supplier images; only valid HTTP(S) URLs |
+| `description`, `description_full` | Short text and full description/HTML |
+
+The source also contains CZK columns and Czech VAT 21%. They remain raw evidence; they cannot be relabelled as EUR or as Slovak VAT. The configured destination VAT is explicit and required for derived prices. `preserve_gross` retains the supplied EUR gross MOC and recalculates its destination net base; acquisition net remains unchanged. Optional `adapter_settings.catalog.retail_vat_policy: "preserve_net"` instead multiplies `price_moc_novat_eur` by destination VAT. Example: purchase net 4.03 EUR and MOC gross 8.38 EUR at destination VAT 23% become purchase gross 4.96 and retail net 6.81. No live existing shop prices are changed by catalog refresh. Missing/invalid EUR columns never fall back to CZK or zero.
+
+There is no explicit family identifier or variant structure in this export. Items remain standalone regardless of similar names, internal IDs or repeated categories. Subsequent imports use ordinary duplicate checks, existing-card links and the hidden-product preview/send workflow.
+
+The abbreviated availability export contains internal `id` and `delivery_date`, without supplier SKU or quantity. It is deliberately refused as a quantity source. Use the complete customer-discount export for availability, optionally with hourly scheduling. This reuses independent stock parsing: malformed prices do not block valid stock rows; malformed quantities, duplicate identities and missing codes receive normal row diagnostics. Delivery code `0` never becomes a fabricated count of one, and code `3` is not interpreted as a three-day delivery promise. Missing products preserve their previous observation only until its original expiry.
+
+Local source analysis on 15 October 2026 found 2,671 products, 388 dictionary entries and 296 selected source categories; 1,781 rows had positive stock and 890 explicit zero. All 2,671 rows passed pure import-payload validation with a synthetic target category and all stock rows were accepted; 29 rows lacked EAN and 21 lacked images. These checks do not establish a saved production configuration, real shop category assignment or a completed remote import. No migration is added and deployment does not itself create/configure this supplier or enable stock authority.

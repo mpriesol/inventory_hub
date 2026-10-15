@@ -217,7 +217,13 @@ def _xml_records(data: bytes, path: str):
     if root.getroottree().docinfo.doctype:
         raise ValueError("XML DTD declarations are not supported")
     actual = path.strip("/")
-    if actual:
+    # Typed exports use identical item tags for the category dictionary and
+    # products. Keep automatic inspection and its literal-path round trip on
+    # the explicitly labelled product collection.
+    typed_products = root.findall("items[@type='products']") if root.tag == "export" else []
+    if len(typed_products) == 1 and actual in ("", "export/items/item"):
+        nodes, actual = list(typed_products[0]), "export/items/item"
+    elif actual:
         keys = path_parts(actual)
         if keys[0] == root.tag:
             keys = keys[1:]
