@@ -3123,7 +3123,7 @@
     "seoFallback": "Fill missing SEO from the name and description",
     "seoHelp": "Existing feed SEO is preserved. Missing values are derived from available data without calling AI.",
     "categoriesTitle": "Supplier categories → shop categories",
-    "categoriesHelp": "Choose the lowest category for each supplier category. Import also adds its parent product categories.",
+    "categoriesHelp": "Choose the most specific suitable category for each supplier category. Parent and inactive product categories are also available; mapping does not change their status. Import also adds the parent product categories.",
     "chooseShop": "Choose a target shop under Mapping scope. Each shop has its own category tree.",
     "addDetectedCategories": "Add categories from sample",
     "addCategory": "Add category",
