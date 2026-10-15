@@ -123,7 +123,11 @@ class ParsedAvailability(list):
 
 def _source_rows(path, supplier, cfg, feed_key, parser):
     is_stock = feed_key == "stock" or (cfg["feeds"]["sources"][feed_key].get("type") == "stock")
-    if parser == "northfinder":
+    if parser == "schindler":
+        from inventory_hub.adapters.schindler_catalog import read_stock
+        for sku, internal, external in read_stock(path):
+            yield sku, internal, external, None, None
+    elif parser == "northfinder":
         from inventory_hub.adapters.northfinder_catalog import read_availability
         for sku, raw in read_availability(path, cfg):
             yield sku, raw, None, None, None
