@@ -43,6 +43,14 @@ async def configure(supplier: SupplierCode, payload: SupplierAvailabilityInput, 
     return await _call(service.configure(db, supplier, payload))
 
 
+@router.get("/{supplier}/runs/{run_id}/failures")
+async def run_failures(supplier: SupplierCode, run_id: Annotated[int, Path(gt=0)],
+                       offset: Annotated[int, Query(ge=0)] = 0,
+                       limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                       db: AsyncSession = Depends(get_session)):
+    return await _call(service.run_failures(db, supplier, run_id, offset, limit))
+
+
 @router.post("/{supplier}/run", status_code=202)
 async def run(supplier: SupplierCode, payload: SupplierAvailabilityRunInput, db: AsyncSession = Depends(get_session)):
     return await _call(service.request_run(db, supplier, payload))

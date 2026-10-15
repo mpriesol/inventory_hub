@@ -31,6 +31,11 @@ async function input(id, value) {
     target.dispatchEvent(new dom.window.Event(target.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); await tick();
   });
 }
+const polls = new Map(); let nextPoll = 10000;
+const realTimeout = window.setTimeout.bind(window), realClear = window.clearTimeout.bind(window);
+window.setTimeout = (fn, delay, ...args) => { if (delay === 5000) { polls.set(++nextPoll, fn); return nextPoll; } return realTimeout(fn, delay, ...args); };
+window.clearTimeout = id => { if (!polls.delete(id)) realClear(id); };
+async function poll() { assert(polls.size, 'Pending refresh has a read-only status poll'); const [id, fn] = polls.entries().next().value; polls.delete(id); await act(async () => { fn(); await tick(); await tick(); }); }
 const clone = value => JSON.parse(JSON.stringify(value));
 const reply = value => ({ ok: true, json: async () => clone(value) });
 let supplier = { supplier: 'fixture', name: 'Fixture supplier', feed_keys: ['stock', 'products'], feed_key: 'stock', revision: 0, enabled: false,
@@ -87,12 +92,12 @@ global.fetch = async (path, init = {}) => {
     if (capacityMode === 'malformed') result = { shop_code: result.shop_code, probe: {}, quota: {} };
     return reply(result);
   }
-  if (url.pathname === '/api/supplier-availability/fixture/observation') {
-    assert.equal(init.method, 'GET'); assert.equal(url.searchParams.get('sku'), '103404-281-103');
-    return reply({ supplier: 'fixture', supplier_name: 'Fixture supplier', supplier_sku: '103404-281-103', source: 'fixture',
-      status: 'not_loaded', reason: 'supplier_availability_not_loaded', action: 'refresh', refresh_state: 'idle',
-      feed_key: 'stock', observation_feed_key: null, observed_at: null, expires_at: null, last_success_at: null,
-      last_error: null, availability_state: 'unknown', fresh: false, available: null, quantity: null, quantity_kind: 'unknown', label: 'overíme' });
+  if (url.pathname === '/api/supplier-availability/fixture/runs/72/failures') {
+    assert.equal(init.method, 'GET');
+    const offset = Number(url.searchParams.get('offset'));
+    return reply({ run_id: 72, total: 51, offset, limit: 50, items: Array.from({ length: offset ? 1 : 50 }, (_, index) => ({
+      row: offset + index + 1, sku: `FEED-${offset + index + 1}`, stock: '-1', external_stock: null,
+      kind: 'rejected', code: 'supplier_availability_invalid_quantity' })) });
   }
   if (url.pathname === '/api/supplier-availability') { assert.equal(init.method, 'GET'); return reply({ suppliers: showSloger ? [supplier, sloger] : [supplier] }); }
   if (url.pathname === '/api/supplier-availability/sloger') {
@@ -361,11 +366,11 @@ const writes = () => calls.filter(call => call.method !== 'GET');
     root.render(React.createElement(MemoryRouter, { key: 'focused', initialEntries: ['/settings/availability?supplier=fixture&sku=103404-281-103'] }, React.createElement(AvailabilitySyncPage)));
     await tick(); await tick();
   });
-  assert(required('supplier-fixture-card') && required('supplier-fixture-observation'));
+  assert(required('supplier-fixture-card'));
+  assert(!element('supplier-fixture-observation') && !element('selected-supplier-sku'));
   assert(!element('supplier-sloger-card') && !element('sync-shop') && !element('probe-upgates-capacity'), 'Supplier link focuses only the relevant workflow');
-  assert(required('selected-supplier-sku').textContent.includes('103404-281-103'));
-  assert(required('supplier-fixture-observation').textContent.includes('103404-281-103'));
-  assert.equal(writes().length, beforeFocused, 'Supplier deep link only reads local setup and exact-SKU evidence');
+  assert(!calls.some(call => call.path.includes('/observation')), 'Supplier settings never fetch a single product');
+  assert.equal(writes().length, beforeFocused, 'Supplier deep link only reads supplier-wide setup');
   assert.equal(required('supplier-fixture-enabled').checked, false);
   await input('supplier-fixture-freshness', '22000');
   assert(required('all-suppliers-blocked').disabled && !element('all-suppliers'), 'Changing focus cannot silently discard supplier edits');
@@ -377,6 +382,34 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   assert.equal(writes().length, beforeFocused + 1);
   assert.equal(writes().at(-1).path, '/api/supplier-availability/fixture/run');
   assert.equal(supplier.enabled, false, 'Manual refresh does not enable the scheduler');
+  await input('supplier-fixture-interval', '4800');
+  supplier = { ...supplier, manual_requested_at: null, last_success_at: '2026-10-15T12:00:00Z', status: 'fresh', latest_run: {
+    id: 72, feed_key: 'stock', status: 'partial', started_at: '2026-10-15T11:59:00Z', finished_at: '2026-10-15T12:00:00Z', error: null,
+    report: { total: 151, accepted: 100, rejected: 51, unknown: 0, reasons: { supplier_availability_invalid_quantity: 51 }, warnings: [] } } };
+  const beforePoll = writes().length;
+  await poll();
+  assert.equal(required('supplier-fixture-interval').value, '4800', 'Background completion preserves unsaved settings');
+  assert.equal(required('supplier-fixture-count-total').textContent, '151');
+  assert.equal(required('supplier-fixture-count-accepted').textContent, '100');
+  assert.equal(required('supplier-fixture-count-rejected').textContent, '51');
+  await click('supplier-fixture-failures');
+  assert(required('supplier-fixture-card').textContent.includes('FEED-1'));
+  assert(required('supplier-fixture-card').textContent.includes(i18n.t('availabilitySync.errors.supplier_availability_invalid_quantity')));
+  assert(required('supplier-fixture-failures-prev').disabled);
+  await click('supplier-fixture-failures-next');
+  assert(required('supplier-fixture-card').textContent.includes('FEED-51'));
+  assert(required('supplier-fixture-failures-next').disabled);
+  assert.equal(writes().length, beforePoll, 'Polling and paging the failures never mutate settings or retry the feed');
+  await click('supplier-fixture-discard');
+  supplier.manual_requested_at = '2026-10-15T12:00:00Z';
+  await click('load-suppliers');
+  await input('supplier-fixture-interval', '5400');
+  supplierSaveMode = 'pending'; await click('supplier-fixture-save');
+  await act(async () => { rejectSupplier(); await tick(); });
+  await poll();
+  assert(required('supplier-fixture-save').disabled && required('supplier-fixture-run').disabled, 'Status polling cannot resolve an uncertain write');
+  assert.equal(required('supplier-fixture-interval').value, '5400');
+  supplierSaveMode = 'ok'; supplier.manual_requested_at = null; await click('load-suppliers');
   await click('all-suppliers'); assert(element('sync-shop'), 'Operator can return to all settings');
   await act(async () => { root.unmount(); await tick(); });
   console.log('availability-sync-ui: supplier validation, CAS, inheritance, central authority, manual jobs, recovery, credentials and stale responses passed');

@@ -510,7 +510,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   repairRow.supplier_availability = { ...repairRow.supplier_availability, available: null, fresh: false, quantity: null, availability_state: 'unknown', status: 'not_loaded', supplier: 'fixture-supplier', supplier_sku: 'SUP-1', action: 'refresh', refresh_state: 'idle' };
   await click('load');
   assert(cellText(1, 'xtrek').includes(t('mapped')) && cellText(1, 'xtrek').includes(t('linkUnavailable')));
-  assert.equal(required('supplier-settings-1').getAttribute('href'), '/settings/availability?supplier=fixture-supplier&sku=SUP-1');
+  assert.equal(required('supplier-settings-1').getAttribute('href'), '/settings/availability?supplier=fixture-supplier');
   assert(cellText(1, 'supplier_availability').includes(t('supplierStatus.not_loaded')));
   assert(!cellText(1, 'supplier_availability').includes('overíme'), 'Unknown availability does not pretend that a refresh is running');
   detailMode = 'pending'; await click('detail-1');

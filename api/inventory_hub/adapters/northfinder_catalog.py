@@ -23,7 +23,7 @@ def _url(value: str) -> str | None:
     return http_url(value)
 
 
-def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "products") -> list[tuple[CatalogProduct, dict]]:
+def feed_tags(cfg: dict) -> dict:
     adapter = cfg.get("adapter_settings") or {}
     mapping = adapter.get("northfinder_feed") or {}
     tags = {key: mapping.get(key) or default for key, default in (
@@ -32,6 +32,31 @@ def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "product
         ("rrp_field", "recomended_retail_price"), ("rrp_sale_field", "recomended_retail_sale_price"))}
     if any(not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tag) for tag in tags.values()):
         raise ValueError("Invalid Northfinder field mapping")
+    return tags
+
+
+def read_availability(path: Path, cfg: dict):
+    """Read each physical leaf, without catalog price/name validation or deduplication."""
+    tags = feed_tags(cfg)
+    tree = etree.parse(str(path), etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False))
+    if tree.docinfo.doctype or tree.getroot().tag not in ("products", "root"):
+        raise ValueError("Expected Northfinder products XML without a DTD")
+    for parent in tree.getroot():
+        if not isinstance(parent.tag, str):
+            continue
+        if parent.tag != tags["item_tag"]:
+            raise ValueError("Unexpected Northfinder availability item")
+        container = parent.find("variants")
+        if container is not None and any(isinstance(child.tag, str) and child.tag != tags["variant_tag"] for child in container):
+            raise ValueError("Unexpected Northfinder availability variant")
+        variants = parent.findall("variants/" + tags["variant_tag"])
+        for leaf in variants or [parent]:
+            yield _get_text(leaf, tags["sku_field"]), _get_text(leaf, tags["qty_field"])
+
+
+def parse_catalog(path: Path, supplier: str, cfg: dict, feed_key: str = "products") -> list[tuple[CatalogProduct, dict]]:
+    adapter = cfg.get("adapter_settings") or {}
+    tags = feed_tags(cfg)
     prefix = get_supplier_prefix(cfg)
     vat = Decimal(str(adapter.get("vat", cfg.get("vat_rate", 23))))
     if not vat.is_finite() or not 0 <= vat <= 100:

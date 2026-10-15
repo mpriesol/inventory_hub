@@ -9,7 +9,15 @@ export interface SupplierObservation {
   last_success_at: string | null; last_error: string | null; refresh_state: 'idle' | 'queued' | 'running';
   action: 'configure' | 'refresh' | 'check_source' | 'wait' | 'link';
 }
+export interface SupplierFeedIssue { row: number; sku: string | null; stock: string | null; external_stock: string | null; code: string; kind: 'rejected' | 'unknown' }
+export interface SupplierFeedRun {
+  id: number; feed_key: string; status: 'running' | 'completed' | 'partial' | 'failed';
+  started_at: string; finished_at: string | null; error: string | null;
+  report: { total: number; accepted: number; rejected: number; unknown: number; reasons: Record<string, number>; warnings: string[] } | null;
+}
+export interface SupplierFeedFailures { run_id: number; total: number; offset: number; limit: number; items: SupplierFeedIssue[] }
 export interface SupplierAvailabilitySettings {
+  latest_run?: SupplierFeedRun | null;
   supplier: string; name: string; feed_keys: string[]; feed_key: string;
   revision: number; enabled: boolean; interval_seconds: number; freshness_seconds: number;
   min_coverage_percent: number; last_started_at: string | null; last_success_at: string | null;
@@ -37,3 +45,6 @@ export const reconcileSupplierLinks = (supplier: string, after_product_id: numbe
 
 export const getSupplierObservation = (supplier: string, sku: string, signal?: AbortSignal) =>
   hubRequest<SupplierObservation>(`${base}/${encodeURIComponent(supplier)}/observation?${new URLSearchParams({ sku })}`, undefined, signal);
+
+export const getSupplierFeedFailures = (supplier: string, runId: number, offset = 0, signal?: AbortSignal) =>
+  hubRequest<SupplierFeedFailures>(`${base}/${encodeURIComponent(supplier)}/runs/${runId}/failures?offset=${offset}&limit=50`, undefined, signal);

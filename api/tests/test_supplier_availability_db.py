@@ -21,7 +21,7 @@ from inventory_hub import config_io
 from inventory_hub.db_models import FeedRunStatus, IdentifierType, Product, ProductIdentifier, Supplier, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services import supplier_availability as service
-from inventory_hub.services import supplier_links
+from inventory_hub.services import supplier_links, catalog
 from inventory_hub.services import supplier_availability_b2b as b2b
 from inventory_hub.sloger_probe_types import SlogerObservation
 from inventory_hub.services.supplier_availability_source import AvailabilityError, observation
@@ -200,21 +200,113 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             stale = await service.project(db, self.products, plan["observed_at"] + timedelta(seconds=21600))
             self.assertIsNone(stale[self.products[0]]["available"])
 
-    async def test_shrunken_feed_and_failed_fetch_keep_last_success(self):
+    async def test_shrunken_feed_accepts_valid_rows_preserves_missing_and_warns(self):
         first = await self.accept()
         second = await self.start()
-        with self.assertRaises(AvailabilityError):
-            async with self.transaction() as db:
-                await service.accept_run(db, second, [observation("SUP-1", "0")])
         async with self.transaction() as db:
-            await service.fail_run(db, self.supplier_id, second["run_id"], "supplier_availability_incomplete_feed")
+            await service.accept_run(db, second, [observation("SUP-1", "0")])
         async with self.transaction() as db:
             row = await db.get(SupplierAvailabilitySettings, self.supplier_id)
-            self.assertEqual(row.last_success_at, first["observed_at"])
-            self.assertEqual(row.last_item_count, 2)
-            observation_row = await db.get(SupplierAvailabilityObservation, (self.supplier_id, "SUP-1"))
-            self.assertEqual(observation_row.run_id, first["run_id"])
-            self.assertTrue(observation_row.available)
+            self.assertEqual(row.last_success_at, second["observed_at"])
+            self.assertEqual(row.last_item_count, 2)  # Never lower the complete-feed baseline.
+            updated = await db.get(SupplierAvailabilityObservation, (self.supplier_id, "SUP-1"))
+            missing = await db.get(SupplierAvailabilityObservation, (self.supplier_id, "SUP-2"))
+            self.assertFalse(updated.available)
+            self.assertEqual(updated.run_id, second["run_id"])
+            self.assertEqual(missing.run_id, first["run_id"])
+            report = await service.latest_run(db, self.supplier_id, "stock")
+            self.assertEqual(report["status"], "partial")
+            self.assertEqual(report["report"]["warnings"], ["supplier_availability_incomplete_feed"])
+        third = await self.start()
+        async with self.transaction() as db:
+            await service.fail_run(db, self.supplier_id, third["run_id"], "supplier_availability_parse_failed")
+        async with self.transaction() as db:
+            self.assertEqual((await db.get(SupplierAvailabilitySettings, self.supplier_id)).last_success_at, second["observed_at"])
+
+    async def test_partial_report_pagination_preserves_rejected_expiry_and_all_invalid_run(self):
+        from inventory_hub.services.supplier_availability_source import ParsedAvailability
+        first = await self.accept()
+        issue = {"row": 1, "sku": "SUP-1", "stock": "-1", "external_stock": None,
+                 "code": "supplier_availability_invalid_quantity", "kind": "rejected"}
+        issues = [dict(issue, row=i+1) for i in range(51)]
+        second = await self.start()
+        async with self.transaction() as db:
+            # A valid SKU resembling the issue hash namespace must not collide.
+            await service.accept_run(db, second, ParsedAvailability([observation("issue:1", "2"), observation("SUP-2", "3")], issues))
+        async with self.transaction() as db:
+            old = await db.get(SupplierAvailabilityObservation, (self.supplier_id, "SUP-1"))
+            self.assertEqual(old.run_id, first["run_id"])
+            self.assertEqual(old.expires_at, first["observed_at"] + timedelta(seconds=21600))
+            projected = await service.project(db, self.products, old.expires_at)
+            self.assertIsNone(projected[self.products[0]]["available"])
+            report = await service.latest_run(db, self.supplier_id, "stock")
+            self.assertEqual((report["report"]["accepted"], report["report"]["rejected"]), (2, 51))
+            page = await service.run_failures(db, "paul-lange", second["run_id"], 50)
+            self.assertEqual((page["total"], len(page["items"]), page["items"][0]["row"]), (51, 1, 51))
+            with self.assertRaises(AvailabilityError):
+                await service.run_failures(db, "northfinder", second["run_id"])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierFeedItemRaw).where(SupplierFeedItemRaw.processed.is_(False))), 0)
+        third = await self.start()
+        async with self.transaction() as db:
+            await service.accept_run(db, third, ParsedAvailability([], [issue]))
+        async with self.transaction() as db:
+            row = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+            self.assertEqual(row.last_success_at, second["observed_at"])
+            self.assertEqual(row.last_error, "supplier_availability_no_usable_rows")
+            report = await service.latest_run(db, self.supplier_id, "stock")
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["report"]["accepted"], 0)
+            self.assertIsNone(row.running_run_id)
+            self.assertGreater(row.next_run_at, third["observed_at"])
+
+    async def test_northfinder_automatic_worker_repeats_partial_refresh_without_manual_queue(self):
+        from inventory_hub import database
+        from inventory_hub.services import supplier_availability_worker as worker
+        config = {"name": "Northfinder test", "feeds": {"sources": {"stock": {"mode": "local", "local_path": "stock.xml"}}}}
+        path = config_io.supplier_path("northfinder")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(config))
+        feed = Path(self.folder.name) / "stock.xml"
+        feed.write_text('<products><product><variants><variant><reference>A</reference><quantity>2</quantity></variant>'
+                        '<variant><reference>B</reference><quantity>-1</quantity></variant></variants></product></products>')
+        async with self.transaction() as db:
+            await service.configure(db, "northfinder", SupplierAvailabilityInput(expected_revision=0, feed_key="stock", enabled=True))
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == "northfinder"))
+            source = SupplierProduct(supplier_id=supplier_id, supplier_sku="A", name="Generic variant")
+            db.add(source)
+            await db.flush()
+            product = Product(sku="EXISTING-SKU", name="Existing product", source_supplier_product_id=source.id)
+            db.add(product)
+            await db.flush()
+            product_id = product.id
+        with patch.object(database, "_engine", self.engine), patch.object(worker, "get_session_context", self.transaction), \
+             patch.object(catalog, "_download", return_value=feed) as download:
+            self.assertTrue(await worker.cycle())
+            self.assertFalse(await worker.cycle())
+            self.assertEqual(download.call_count, 1)
+            async with self.transaction() as db:
+                row = await db.get(SupplierAvailabilitySettings, supplier_id)
+                self.assertIsNone(row.manual_requested_at)
+                self.assertIsNotNone(row.last_success_at)
+                self.assertGreater(row.next_run_at, row.last_success_at)
+                self.assertEqual((await service.latest_run(db, supplier_id, "stock"))["status"], "partial")
+                self.assertEqual((await service.project(db, [product_id]))[product_id]["availability_state"], "available")
+                row.next_run_at = service.now() - timedelta(seconds=1)
+            feed.write_text(feed.read_text().replace('<quantity>2</quantity>', '<quantity>0</quantity>'))
+            self.assertTrue(await worker.cycle())
+            self.assertEqual(download.call_count, 2)
+        async with self.transaction() as db:
+            projection = (await service.project(db, [product_id]))[product_id]
+            self.assertEqual((projection["quantity"], projection["availability_state"]), ("0.000", "unavailable"))
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_balances")), 0)
+        from inventory_hub.supplier_availability_diagnostics import snapshot
+        async with self.transaction() as db:
+            await db.execute(text("SET TRANSACTION READ ONLY"))
+            evidence = await snapshot(db, "northfinder", [])
+            self.assertTrue(evidence["read_only"])
+            self.assertEqual([run["trigger"] for run in evidence["recent_runs"]], ["scheduled", "scheduled"])
+            self.assertEqual(evidence["latest_run"]["report"]["accepted"], 1)
 
     async def test_settings_or_credentials_changed_during_download_discard_result(self):
         plan = await self.start()

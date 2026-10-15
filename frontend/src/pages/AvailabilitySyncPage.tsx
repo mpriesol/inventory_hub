@@ -5,7 +5,7 @@ import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { getUpgatesCapacity, UpgatesCapacity } from '../api/upgatesCapacity';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
-import { getSupplierAvailability, getSupplierObservation, SupplierObservation, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
+import { getSupplierAvailability, getSupplierFeedFailures, SupplierFeedRun, SupplierFeedFailures, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
 import { getStockSyncOptions, getStockSyncRun, resolveStockSyncItem, runStockSync, saveStockSyncSettings, saveStockSyncWarehouse,
   STOCK_SYNC_FIELDS, StockSyncField, StockSyncOptions, StockSyncRunDetail, StockSyncValues, StockSyncResolution, StockSyncItem } from '../api/stockSync';
 import './OpeningStockPage.css';
@@ -39,29 +39,66 @@ function Feedback({ error, uncertain }: { error: string; uncertain: boolean }) {
     {error && <p role="alert" className="opening-stock-errors">{t(`availabilitySync.errors.${error}`, { defaultValue: t('availabilitySync.requestFailed') })} <code>{error}</code></p>}</>;
 }
 
-function SupplierCard({ value, replace, onBusy, onLeaveBlocked, observation }: { value: SupplierAvailabilitySettings; replace: (value: SupplierAvailabilitySettings) => void; onBusy: (supplier: string, busy: boolean) => void; onLeaveBlocked: (supplier: string, blocked: boolean) => void; observation?: SupplierObservation | null }) {
+function SupplierRunResult({ supplier, run }: { supplier: string; run: SupplierFeedRun }) {
+  const { t, i18n } = useTranslation();
+  const operation = useOperation();
+  const [failures, setFailures] = useState<SupplierFeedFailures | null>(null), [opened, setOpened] = useState(false);
+  const report = run.report, issueCount = report ? report.rejected + report.unknown : 0;
+  function load(offset = 0) { operation.run(false, signal => getSupplierFeedFailures(supplier, run.id, offset, signal), setFailures); }
+  return <section className="availability-result" data-testid={`supplier-${supplier}-result`}>
+    <h4>{t('availabilitySync.resultTitle')}</h4>
+    <p>{t(`availabilitySync.runStatus.${run.status}`)} · {new Date(run.finished_at || run.started_at).toLocaleString(i18n.language)}</p>
+    {report && <>
+      <dl className="availability-status availability-counts">{(['total', 'accepted', 'rejected', 'unknown'] as const).map(key => <div key={key}><dt>{t(`availabilitySync.counts.${key}`)}</dt><dd data-testid={`supplier-${supplier}-count-${key}`}>{report[key]}</dd></div>)}</dl>
+      {report.warnings.map(code => <p key={code} className="opening-stock-notice">{t(`availabilitySync.errors.${code}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>)}
+      {issueCount > 0 && <>
+        <p>{t('availabilitySync.preservedRows')}</p>
+        <Button data-testid={`supplier-${supplier}-failures`} variant="secondary" disabled={operation.busy} onClick={() => { setOpened(!opened); if (!opened && !failures) load(); }}>{t(opened ? 'availabilitySync.hideFailures' : 'availabilitySync.showFailures', { count: issueCount })}</Button>
+        {opened && <div>
+          <Feedback error={operation.error} uncertain={false} />
+          {operation.error && <Button variant="secondary" onClick={() => load(failures?.offset || 0)}>{t('availabilitySync.reloadFailures')}</Button>}
+          {failures && <>
+            <ul className="availability-failures" data-testid={`supplier-${supplier}-failure-list`}>{failures.items.map(item => <li key={item.row}>
+              <strong>{item.sku || t('availabilitySync.noSku')}</strong> <small>{t('availabilitySync.sourceRow', { row: item.row })}</small>
+              <p>{t(`availabilitySync.errors.${item.code}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>
+              <small>{t('availabilitySync.rawQuantity')}: <code>{item.stock ?? '—'}</code>{item.external_stock != null && <> · {t('availabilitySync.externalQuantity')}: <code>{item.external_stock}</code></>}</small>
+            </li>)}</ul>
+            <div className="availability-actions"><Button data-testid={`supplier-${supplier}-failures-prev`} variant="secondary" disabled={operation.busy || failures.offset === 0} onClick={() => load(Math.max(0, failures.offset - failures.limit))}>{t('availabilitySync.previousPage')}</Button>
+              <span>{t('availabilitySync.failurePage', { from: failures.total ? failures.offset + 1 : 0, to: failures.offset + failures.items.length, total: failures.total })}</span>
+              <Button data-testid={`supplier-${supplier}-failures-next`} variant="secondary" disabled={operation.busy || failures.offset + failures.items.length >= failures.total} onClick={() => load(failures.offset + failures.limit)}>{t('availabilitySync.nextPage')}</Button></div>
+          </>}
+        </div>}
+      </>}
+    </>}
+  </section>;
+}
+
+function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }: { value: SupplierAvailabilitySettings; replace: (value: SupplierAvailabilitySettings) => void; onBusy: (supplier: string, busy: boolean) => void; onLeaveBlocked: (supplier: string, blocked: boolean) => void; refreshVersion: number }) {
   const { t, i18n } = useTranslation();
   const operation = useOperation();
   const manualOnly = value.manual_only === true || value.supplier === 'sloger';
+  const [baseline, setBaseline] = useState(value);
   const [enabled, setEnabled] = useState(value.enabled), [feed, setFeed] = useState(value.feed_key);
   const [interval, setInterval] = useState(String(value.interval_seconds)), [freshness, setFreshness] = useState(String(value.freshness_seconds)), [coverage, setCoverage] = useState(String(value.min_coverage_percent));
-  const [saved, setSaved] = useState(false), [queued, setQueued] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [linkResult, setLinkResult] = useState<{ scanned: number; linked: number; existing: number; skipped: number; conflicts: number; issues: SupplierLinkIssue[]; complete: boolean } | null>(null);
-  useEffect(() => { setEnabled(value.enabled); setFeed(value.feed_key); setInterval(String(value.interval_seconds)); setFreshness(String(value.freshness_seconds)); setCoverage(String(value.min_coverage_percent)); operation.recovered(); setQueued(false); }, [value]);
+  function resetForm(next: SupplierAvailabilitySettings) { setBaseline(next); setEnabled(next.enabled); setFeed(next.feed_key); setInterval(String(next.interval_seconds)); setFreshness(String(next.freshness_seconds)); setCoverage(String(next.min_coverage_percent)); operation.recovered(); }
+  useEffect(() => { resetForm(value); }, [refreshVersion]);
   useEffect(() => { onBusy(value.supplier, operation.busy); return () => onBusy(value.supplier, false); }, [operation.busy, value.supplier]);
-  const dirty = freshness !== String(value.freshness_seconds) || (!manualOnly && (enabled !== value.enabled || feed !== value.feed_key || interval !== String(value.interval_seconds) || coverage !== String(value.min_coverage_percent)));
+  const dirty = freshness !== String(baseline.freshness_seconds) || (!manualOnly && (enabled !== baseline.enabled || feed !== baseline.feed_key || interval !== String(baseline.interval_seconds) || coverage !== String(baseline.min_coverage_percent)));
   const valid = integer(freshness, 300, 2592000) && (manualOnly || (value.feed_keys.includes(feed) && integer(interval, 300, 604800) && Number(freshness) >= Number(interval) && integer(coverage, 1, 100)));
   const date = (stamp: string | null) => stamp ? new Date(stamp).toLocaleString(i18n.language) : '—';
   const stale = value.last_success_at ? Date.now() - new Date(value.last_success_at).getTime() > value.freshness_seconds * 1000 : true;
-  const blocked = operation.busy || operation.uncertain;
+  const configChanged = baseline.revision !== value.revision;
+  const blocked = operation.busy || operation.uncertain || configChanged;
   useEffect(() => { onLeaveBlocked(value.supplier, dirty || blocked); return () => onLeaveBlocked(value.supplier, false); }, [dirty, blocked, value.supplier]);
   const status = value.status || (value.revision === 0 ? 'unconfigured' : !value.last_success_at ? 'not_loaded' : stale ? 'stale' : 'fresh');
   const id = (suffix: string) => `supplier-${value.supplier}-${suffix}`;
-  function discard() { setEnabled(value.enabled); setFeed(value.feed_key); setInterval(String(value.interval_seconds)); setFreshness(String(value.freshness_seconds)); setCoverage(String(value.min_coverage_percent)); setSaved(false); }
+  function discard() { resetForm(value); setSaved(false); }
   function save() {
     if (!valid || blocked) return;
     setSaved(false);
-    operation.run(true, () => saveSupplierAvailability(value.supplier, { expected_revision: value.revision, enabled: manualOnly ? false : enabled, feed_key: manualOnly ? value.feed_key : feed, interval_seconds: manualOnly ? Math.min(value.interval_seconds, Number(freshness)) : Number(interval), freshness_seconds: Number(freshness), min_coverage_percent: manualOnly ? value.min_coverage_percent : Number(coverage) }), result => { replace(result); setSaved(true); });
+    operation.run(true, () => saveSupplierAvailability(value.supplier, { expected_revision: value.revision, enabled: manualOnly ? false : enabled, feed_key: manualOnly ? value.feed_key : feed, interval_seconds: manualOnly ? Math.min(value.interval_seconds, Number(freshness)) : Number(interval), freshness_seconds: Number(freshness), min_coverage_percent: manualOnly ? value.min_coverage_percent : Number(coverage) }), result => { resetForm(result); replace({ ...result, latest_run: result.feed_key === value.feed_key ? value.latest_run : null }); setSaved(true); });
   }
   function repairLinks() {
     if (blocked || dirty) return;
@@ -86,77 +123,68 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, observation }: {
     }, result => setLinkResult(result));
   }
   return <article className={`availability-supplier${dirty ? ' availability-dirty' : ''}`} data-testid={id('card')}>
-    <header><h3>{value.name}</h3><span className="opening-stock-badge">{value.running || value.manual_requested_at || queued ? t(`availabilitySync.${value.running ? 'running' : 'queued'}`) : t(`productEditor.supplierStatus.${status}`, { defaultValue: t(`availabilitySync.${stale ? 'stale' : 'fresh'}`) })}</span></header>
+    <header><h3>{value.name}</h3><span className="opening-stock-badge">{value.running || value.manual_requested_at ? t(`availabilitySync.${value.running ? 'running' : 'queued'}`) : t(`productEditor.supplierStatus.${status}`, { defaultValue: t(`availabilitySync.${stale ? 'stale' : 'fresh'}`) })}</span></header>
     {status === 'unconfigured' && <p data-testid={id('setup-help')}>{t('availabilitySync.setupFirst')}</p>}
-    {status === 'not_loaded' && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
+    {status === 'not_loaded' && !value.last_error && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
     {status === 'configuration_error' && <p role="alert">{t('availabilitySync.configurationHelp')}</p>}
-    {observation && <section data-testid={id('observation')}>
-      <h4>{t('availabilitySync.observationTitle')}</h4>
-      <p>{t('availabilitySync.selectedSku')}: <code>{observation.supplier_sku}</code></p>
-      <p>{observation.availability_state === 'available' ? observation.label : t(observation.availability_state === 'unavailable' ? 'productEditor.supplierOutOfStock' : 'productEditor.unknown')}{observation.fresh && observation.quantity !== null && <> · {observation.quantity}{observation.quantity_kind === 'minimum' ? '+' : ''}</>}</p>
-      <p>{t(`productEditor.supplierStatus.${observation.reason === 'supplier_quantity_unknown' ? 'unknown_quantity' : observation.status}`)}</p>
-      <dl className="availability-status"><div><dt>{t('availabilitySync.feed')}</dt><dd>{observation.feed_key || '—'}</dd></div>
-        {observation.observation_feed_key && observation.observation_feed_key !== observation.feed_key && <div><dt>{t('availabilitySync.observedFeed')}</dt><dd>{observation.observation_feed_key}</dd></div>}
-        <div><dt>{t('availabilitySync.observedAt')}</dt><dd>{date(observation.observed_at)}</dd></div>
-        <div><dt>{t('availabilitySync.expiresAt')}</dt><dd>{date(observation.expires_at)}</dd></div></dl>
-      <p>{t('availabilitySync.observationHelp')}</p>
-    </section>}
+    {!manualOnly && <p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { minutes: value.interval_seconds / 60 })}</p>}
+    {value.latest_run && <SupplierRunResult key={value.latest_run.id} supplier={value.supplier} run={value.latest_run} />}
     <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>
     {manualOnly && <p data-testid={id('manual-help')}>{t('availabilitySync.manualB2bHelp')}</p>}
     <div className="availability-fields">
-      {!manualOnly && <label>{t('availabilitySync.feed')}<select data-testid={id('feed')} value={feed} disabled={blocked} onChange={event => { setFeed(event.target.value); setSaved(false); }}>{value.feed_keys.length === 0 && <option value="">{t('availabilitySync.noFeeds')}</option>}{value.feed_keys.map(key => <option key={key} value={key}>{key}</option>)}</select></label>}
+      {!manualOnly && <label>{t('availabilitySync.feed')}<select data-testid={id('feed')} value={feed} disabled={blocked} onChange={event => { setFeed(event.target.value); setSaved(false); }}>{value.feed_keys.length === 0 && <option value="">{t('availabilitySync.noFeeds')}</option>}{value.feed_keys.map(key => <option key={key} value={key}>{t(`availabilitySync.feedNames.${key}`, { defaultValue: key })}</option>)}</select></label>}
       {!manualOnly && <label>{t('availabilitySync.interval')}<input data-testid={id('interval')} type="number" min="300" max="604800" step="1" value={interval} disabled={blocked} onChange={event => { setInterval(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.rangeSeconds', { min: 300, max: 604800 })}</small></label>}
+    </div><details className="availability-advanced"><summary>{t('availabilitySync.advancedSettings')}</summary><div className="availability-fields">
       <label>{t('availabilitySync.freshness')}<input data-testid={id('freshness')} type="number" min="300" max="2592000" step="1" value={freshness} disabled={blocked} onChange={event => { setFreshness(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.freshnessHelp')}</small></label>
       {!manualOnly && <label>{t('availabilitySync.coverage')}<input data-testid={id('coverage')} type="number" min="1" max="100" step="1" value={coverage} disabled={blocked} onChange={event => { setCoverage(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.coverageHelp')}</small></label>}
     </div>
+    </details>
     {!manualOnly && <label className="availability-check"><input data-testid={id('enabled')} type="checkbox" checked={enabled} disabled={blocked} onChange={event => { setEnabled(event.target.checked); setSaved(false); }} />{t('availabilitySync.supplierAuto')}</label>}
-    <dl className="availability-status"><div><dt>{t('availabilitySync.lastSuccess')}</dt><dd>{date(value.last_success_at)}</dd></div>{!manualOnly && <div><dt>{t('availabilitySync.nextRun')}</dt><dd>{value.enabled ? date(value.next_run_at) : t('availabilitySync.automaticOff')}</dd></div>}<div><dt>{t('availabilitySync.itemCount')}</dt><dd>{value.last_item_count ?? '—'}</dd></div></dl>
+    <dl className="availability-status"><div><dt>{t('availabilitySync.lastSuccess')}</dt><dd>{date(value.last_success_at)}</dd></div>{!manualOnly && <div><dt>{t('availabilitySync.nextRun')}</dt><dd>{value.enabled ? date(value.next_run_at) : t('availabilitySync.automaticOff')}</dd></div>}{manualOnly && <div><dt>{t('availabilitySync.itemCount')}</dt><dd>{value.last_item_count ?? '—'}</dd></div>}</dl>
     {value.refresh_progress && <div data-testid={id('refresh-progress')} role="status">
       <p>{t('availabilitySync.b2bProgress', value.refresh_progress)}</p>
       {!!value.refresh_progress.failures.length && <details><summary>{t('availabilitySync.b2bFailures')}</summary>{value.refresh_progress.failures.map((item, index) => <p key={`${item.sku}-${index}`}><code>{item.sku}</code>: {t(`availabilitySync.errors.${item.code}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>)}</details>}
     </div>}
     {value.last_error && <p className="opening-stock-errors" role="alert">{t('availabilitySync.lastError')}: {t(`availabilitySync.errors.${value.last_error}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>}
+    {configChanged && <p role="alert">{t('availabilitySync.configChanged')}</p>}
     {dirty && <p className="availability-change" role="status">{t('availabilitySync.unsaved')} <Button data-testid={id('discard')} variant="secondary" disabled={blocked} onClick={discard}>{t('availabilitySync.discardChanges')}</Button></p>}
     {saved && !dirty && <p role="status" className="opening-stock-success">{t('availabilitySync.saved')}</p>}
-    {queued && <p role="status">{t('availabilitySync.supplierQueued')}</p>}
     {linkResult && <div data-testid={id('link-result')} role="status"><p>{t(linkResult.complete ? 'availabilitySync.linksComplete' : operation.busy ? 'availabilitySync.linksProgress' : 'availabilitySync.linksIncomplete', linkResult)}</p>
       <p>{t('availabilitySync.linksCounts', linkResult)}</p>
       {linkResult.issues.length > 0 && <details><summary>{t('availabilitySync.linksIssues')}</summary><ul>{linkResult.issues.map((issue, index) => <li key={`${issue.product_id}-${index}`}><code>{issue.sku}</code>: {t(`availabilitySync.linkReasons.${issue.reason}`, { defaultValue: t('availabilitySync.linkNeedsReview') })}</li>)}</ul></details>}
     </div>}
     <Feedback error={operation.error} uncertain={operation.uncertain} />
     <div className="availability-actions"><span className="action-control"><Button data-testid={id('save')} disabled={blocked || !valid || (!dirty && value.revision > 0)} onClick={save}>{t('availabilitySync.save')}</Button><ActionScope effects={!manualOnly && enabled ? ['hub-write', 'queued-supplier'] : ['hub-write']} calls={{ kind: 'variable' }} /></span>
-      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.configuration_error != null || !valid || value.running || !!value.manual_requested_at || queued} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => setQueued(true))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span>
+      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.configuration_error != null || !valid || value.running || !!value.manual_requested_at} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => replace({ ...value, manual_requested_at: new Date().toISOString() }))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span>
       <span className="action-control"><Button data-testid={id('reconcile')} variant="secondary" disabled={blocked || dirty} onClick={repairLinks}>{t('availabilitySync.reconcileLinks')}</Button><ActionScope effects={['hub-write']} /></span></div>
     <p className="text-sm">{t(manualOnly ? 'availabilitySync.manualB2bHelp' : 'availabilitySync.refreshScopeHelp')}</p>
     <p className="text-sm">{t('availabilitySync.linksHelp')}</p>
   </article>;
 }
 
-function SuppliersPanel({ selectedSupplier, selectedSku }: { selectedSupplier: string; selectedSku: string }) {
+function SuppliersPanel({ selectedSupplier }: { selectedSupplier: string }) {
   const { t } = useTranslation();
-  const operation = useOperation(), observationOperation = useOperation();
+  const operation = useOperation();
   const [suppliers, setSuppliers] = useState<SupplierAvailabilitySettings[] | null>(null), [writing, setWriting] = useState<Set<string>>(new Set());
-  const [observation, setObservation] = useState<SupplierObservation | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [leaveBlocked, setLeaveBlocked] = useState<Set<string>>(new Set());
   function onLeaveBlocked(supplier: string, blocked: boolean) { setLeaveBlocked(previous => { const next = new Set(previous); blocked ? next.add(supplier) : next.delete(supplier); return next; }); }
-  function onBusy(supplier: string, busy: boolean) { setWriting(previous => { const next = new Set(previous); busy ? next.add(supplier) : next.delete(supplier); return next; }); }
-  function load() { operation.run(false, signal => getSupplierAvailability(signal), result => { setSuppliers(result.suppliers); operation.recovered(); }); }
+  function onBusy(supplier: string, busy: boolean) { if (busy) operation.cancel(); setWriting(previous => { const next = new Set(previous); busy ? next.add(supplier) : next.delete(supplier); return next; }); }
+  function load() { operation.run(false, signal => getSupplierAvailability(signal), result => { setSuppliers(result.suppliers); setRefreshVersion(v => v + 1); operation.recovered(); }); }
   useEffect(() => { if (selectedSupplier) load(); }, [selectedSupplier]);
+  const pending = suppliers?.some(value => value.running || value.manual_requested_at);
   useEffect(() => {
-    setObservation(null);
-    if (selectedSupplier && selectedSku && suppliers?.some(value => value.supplier === selectedSupplier)) {
-      observationOperation.run(false, signal => getSupplierObservation(selectedSupplier, selectedSku, signal), setObservation);
-    }
-    return () => observationOperation.cancel();
-  }, [selectedSupplier, selectedSku, suppliers]);
+    if (!pending || writing.size || operation.busy || operation.error) return;
+    const timer = window.setTimeout(() => operation.run(false, signal => getSupplierAvailability(signal), result => setSuppliers(result.suppliers)), 5000);
+    return () => window.clearTimeout(timer);
+  }, [pending, suppliers, writing.size, operation.busy, operation.error]);
   const visible = selectedSupplier ? suppliers?.filter(value => value.supplier === selectedSupplier) : suppliers;
-  return <section className="opening-stock-panel"><div className="opening-stock-actions"><h2>{t('availabilitySync.suppliersTitle')}</h2><span className="action-control"><Button data-testid="load-suppliers" variant="secondary" disabled={operation.busy || observationOperation.busy || writing.size > 0} onClick={load}>{t('availabilitySync.loadSuppliers')}</Button><ActionScope effects={['hub-read']} /></span></div>
+  return <section className="opening-stock-panel"><div className="opening-stock-actions"><h2>{t('availabilitySync.suppliersTitle')}</h2><span className="action-control"><Button data-testid="load-suppliers" variant="secondary" disabled={operation.busy || writing.size > 0} onClick={load}>{t('availabilitySync.loadSuppliers')}</Button><ActionScope effects={['hub-read']} /></span></div>
     <p>{t(selectedSupplier ? 'availabilitySync.focusedSupplierHelp' : 'availabilitySync.suppliersHelp')}</p>
     {selectedSupplier && <p>{leaveBlocked.size > 0 ? <><Button data-testid="all-suppliers-blocked" variant="secondary" disabled>{t('availabilitySync.showAllSuppliers')}</Button> <span role="status">{t('availabilitySync.leaveBlocked')}</span></> : <Link data-testid="all-suppliers" to="/settings/availability">{t('availabilitySync.showAllSuppliers')}</Link>}</p>}
-    {selectedSku && <p data-testid="selected-supplier-sku">{t('availabilitySync.selectedSku')}: <code>{selectedSku}</code></p>}
-    <Feedback error={operation.error || observationOperation.error} uncertain={false} />
+    <Feedback error={operation.error} uncertain={false} />
     {visible?.length === 0 && <p>{t(selectedSupplier ? 'availabilitySync.supplierNotFound' : 'availabilitySync.noSuppliers')}</p>}
-    <div className="availability-suppliers">{visible?.map(value => <SupplierCard key={value.supplier} value={value} observation={value.supplier === selectedSupplier ? observation : null} replace={result => setSuppliers(previous => previous!.map(item => item.supplier === result.supplier ? result : item))} onBusy={onBusy} onLeaveBlocked={onLeaveBlocked} />)}</div>
+    <div className="availability-suppliers">{visible?.map(value => <SupplierCard key={value.supplier} value={value} refreshVersion={refreshVersion} replace={result => setSuppliers(previous => previous!.map(item => item.supplier === result.supplier ? result : item))} onBusy={onBusy} onLeaveBlocked={onLeaveBlocked} />)}</div>
   </section>;
 }
 
@@ -334,12 +362,11 @@ export function AvailabilitySyncPage() {
   const { t } = useTranslation();
   const [query] = useSearchParams();
   const selectedSupplier = /^[a-zA-Z0-9_-]{1,50}$/.test(query.get('supplier') || '') ? query.get('supplier')! : '';
-  const selectedSku = selectedSupplier && /^[^\x00-\x1f\x7f]{1,100}$/.test(query.get('sku') || '') ? query.get('sku')! : '';
   const revision = useSyncExternalStore(subscribeAccess, accessRevision);
   const [token, setToken] = useState(''), [shop, setShop] = useState(query.get('shop') === 'xtrek' ? 'xtrek' : 'biketrek'), [stockBusy, setStockBusy] = useState(false);
   useEffect(() => { setToken(''); }, [revision]);
   return <div className="opening-stock availability-sync"><Link className="opening-stock-back" to="/settings">← {t('availabilitySync.back')}</Link><header><div><h1>{t('availabilitySync.title')}</h1><p>{t('availabilitySync.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" data-testid="lock-sync" onClick={() => unlockHub('')}>{t('availabilitySync.lock')}</Button>}</header>
     <p><Link to={`/settings/purchase-costs?shop=${shop}`}>{t('fifoCostSync.title')}</Link></p>
-    {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><p>{t('availabilitySync.tokenHelp')}</p><label>{t('availabilitySync.token')}<input data-testid="sync-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><Button data-testid="unlock-sync" type="submit" disabled={!token.trim()}>{t('availabilitySync.unlock')}</Button></form> : <React.Fragment key={revision}><SuppliersPanel key={`${selectedSupplier}:${selectedSku}`} selectedSupplier={selectedSupplier} selectedSku={selectedSku} />{!selectedSupplier && <><section className="opening-stock-panel availability-shop-selector"><label>{t('availabilitySync.shop')}<select data-testid="sync-shop" value={shop} disabled={stockBusy} onChange={event => setShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label></section><CapacityPanel key={`capacity:${shop}`} shop={shop} /><StockPanel key={shop} shop={shop} onBusy={setStockBusy} /></>}</React.Fragment>}
+    {!hubUnlocked() ? <form className="opening-stock-panel opening-stock-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><p>{t('availabilitySync.tokenHelp')}</p><label>{t('availabilitySync.token')}<input data-testid="sync-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><Button data-testid="unlock-sync" type="submit" disabled={!token.trim()}>{t('availabilitySync.unlock')}</Button></form> : <React.Fragment key={revision}><SuppliersPanel key={selectedSupplier} selectedSupplier={selectedSupplier} />{!selectedSupplier && <><section className="opening-stock-panel availability-shop-selector"><label>{t('availabilitySync.shop')}<select data-testid="sync-shop" value={shop} disabled={stockBusy} onChange={event => setShop(event.target.value)}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label></section><CapacityPanel key={`capacity:${shop}`} shop={shop} /><StockPanel key={shop} shop={shop} onBusy={setStockBusy} /></>}</React.Fragment>}
   </div>;
 }

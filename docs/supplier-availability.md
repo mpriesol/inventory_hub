@@ -18,7 +18,7 @@ Pri viacerých dodávateľoch sa použije prvý čerstvý dostupný zdroj podľa
 
 V produktovej tabuľke sa **množstvo u dodávateľa** a **dodávateľská dostupnosť** opierajú o rovnaké pozorovanie. Potvrdená čerstvá nula sa zobrazuje ako nedostupnosť; chýbajúci alebo starý údaj ostáva nepotvrdený. Text „overíme“ je konzervatívny náhradný text pre publikáciu, nie informácia o prebiehajúcom načítaní. Skutočný beh a zaradenie do frontu majú samostatný stav. Vlastná zásoba sa do týchto dodávateľských stĺpcov nepripočítava.
 
-Odkaz pri produkte otvorí konkrétneho dodávateľa cez `/settings/availability?supplier=<code>&sku=<raw-supplier-sku>`. Stránka automaticky iba prečíta miestne nastavenia a dôkazy pre presný kód; nič nesťahuje od dodávateľa a nič neaktivuje. Ukáže zdroj, posledný úspech, čas pozorovania a jeho platnosť. Pri prvom nastavení treba vybrať skutočne nakonfigurovaný zdroj a uložiť ho; automatiku možno nechať vypnutú. Až explicitné **Načítať dostupnosti** zaradí bežný dodávateľský refresh. Pri feedových dodávateľoch sa načíta celý zvolený feed, nie iba otvorený produkt. Odkaz **Všetci dodávatelia** vráti úplnú obrazovku nastavení.
+Odkaz pri produkte otvorí nastavenia dodávateľa cez `/settings/availability?supplier=<code>`. Nastavenia vždy patria celému dodávateľskému zdroju, neukazujú jeden produkt ani zoznam prepojených kódov. Staré odkazy s `sku` naďalej fungujú, ale tento parameter sa ignoruje. Presná produktová diagnostika zostáva na karte produktu. Stránka iba prečíta miestne nastavenia; nič sama neaktivuje. **Načítať dostupnosti** zaradí celý vybraný feed do fronty. Pri čakaní a načítaní sa stav každých päť sekúnd obnovuje čítaním z Hubu; formulárové úpravy ani neistý zápis sa tým nezahodia. **Všetci dodávatelia** vráti úplnú obrazovku nastavení.
 
 Diagnostika rozlišuje tieto príčiny:
 
@@ -56,7 +56,8 @@ API používa existujúci operator token a `Cache-Control: no-store`:
 
 | Metóda a cesta | Účel |
 | --- | --- |
-| `GET /supplier-availability` | Zoznam konfigurácií a prevádzkového stavu bez prihlasovacích údajov zdrojov |
+| `GET /supplier-availability` | Zoznam konfigurácií, prevádzkového stavu a `latest_run` so súhrnom posledného behu; bez prihlasovacích údajov zdrojov |
+| `GET /supplier-availability/{supplier}/runs/{run_id}/failures` | Stránkovaný zoznam preskočených riadkov konkrétneho dodávateľa; `offset`, `limit` 1–100 (predvolene 50), kód, pôvodná hodnota a dôvod |
 | `GET /supplier-availability/{supplier}/observation?sku=<raw>` | Miestna diagnostika presnej katalógovej položky: stav, raw kód, zdroj, časy a odporúčaný ďalší krok; bez downloadu alebo zápisov obchodných údajov |
 | `PUT /supplier-availability/{supplier}` | Uloženie s `expected_revision`; striktne validované `enabled`, `feed_key`, `interval_seconds`, `freshness_seconds`, `min_coverage_percent` |
 | `POST /supplier-availability/{supplier}/run` | Trvalé zaradenie ručného behu s `expected_revision`; odpoveď 202 |
@@ -64,11 +65,11 @@ API používa existujúci operator token a `Cache-Control: no-store`:
 
 Revizia 0 znamená ešte neuložené nastavenia. Interval a plánovanie sú v PostgreSQL `supplier_availability_settings`; prihlasovacie údaje, parser a texty dostupnosti ostávajú v existujúcom súborovom dodávateľskom configu. Každý beh zachová hash celého configu a jeho revíziu. Pred prijatím sa znovu overia. Do auditu sa neukladá URL ani autentizácia.
 
-Worker používa jeden PostgreSQL session advisory lock naprieč replikami. Krátka transakcia pripraví `SupplierFeedRun`, potom sa transakcia ukončí. Stiahnutie a parsovanie bežia mimo transakcie; druhá krátka transakcia atómovo prijme všetky pozorovania a audit. Ukončený či prerušený beh sa neopakuje pod rovnakým identifikátorom. Zostatkové `running` behy ďalší vlastník locku označí ako prerušené. Chyby obsahujú stabilné kódy, nikdy plnú výnimku s možnými tajnými URL.
+Worker používa jeden PostgreSQL session advisory lock naprieč replikami. Krátka transakcia pripraví `SupplierFeedRun`, potom sa transakcia ukončí. Stiahnutie a parsovanie bežia mimo transakcie; druhá krátka transakcia atómovo prijme platné pozorovania a audit všetkých preskočených položiek. Ukončený či prerušený beh sa neopakuje pod rovnakým identifikátorom. Zostatkové `running` behy ďalší vlastník locku označí ako prerušené. Chyby obsahujú stabilné kódy, nikdy plnú výnimku s možnými tajnými URL.
 
-Downloader je spoločný s katalógom, s limitom 100 MB a pri automatike aj kontrolou celkového času. Používajú sa existujúce listing parsery Paul Lange, Northfinder a SK Profi Bike; minimálny Paul Lange stock XML potrebuje iba `ITEM_ID` a `STOCK`/`STOCK_EXTERNAL`. Northfinder používa už podporovaný formát rodičov a variantov. Iný formát potrebuje explicitný parser. Nenačítava sa generický neoverený XML mapping.
+Downloader je spoločný s katalógom, s limitom 100 MB a pri automatike aj kontrolou celkového času. Používajú sa existujúce listing parsery Paul Lange, Northfinder a SK Profi Bike; minimálny Paul Lange stock XML potrebuje iba `ITEM_ID` a `STOCK`/`STOCK_EXTERNAL`. Northfinder používa samostatné čítanie dostupnosti zo všetkých fyzických variantov (alebo samostatných produktov) v podporovanom XML. Nevyžaduje ceny ani názov a rešpektuje nakonfigurované tagy; dostupnosť sa neodvodzuje zo súčtu rodiča. Iný formát potrebuje explicitný parser. Nenačítava sa generický neoverený XML mapping.
 
-SK Profi Bike používa `catalog_parser: "sk-profi-bike"`: plný produktový aj zjednodušený skladový XML číta `products/product/options/option/kod` a `sklad`. Anonymné položky bez kódu sa preskočia; duplicitné identity odmietne spoločná validácia. Záporné alebo neplatné množstvo zostáva neznáme. Neprítomnosť SKU nie je dôkazom nulovej zásoby. Pri overení 13. 10. 2026 skladový feed neobsahoval 141 položiek aktuálneho katalógu, preto možno pre úplné pokrytie zvoliť ako zdroj dostupnosti `products`. Ide iba o dodávateľské pozorovania; tento refresh neobnovuje katalógové ceny, nevytvára príjem a neposiela zásobu do e-shopu. Automatika sa zapína samostatne v existujúcom nastavení.
+SK Profi Bike používa `catalog_parser: "sk-profi-bike"`: plný produktový aj zjednodušený skladový XML číta `products/product/options/option/kod` a `sklad`. Anonymné položky bez kódu sa preskočia; duplicitné identity odmietne spoločná validácia po riadkoch. Záporné alebo neplatné množstvo je v prehľade preskočených riadkov; neprepíše posledné platné pozorovanie. Neprítomnosť SKU nie je dôkazom nulovej zásoby. Pri overení 13. 10. 2026 skladový feed neobsahoval 141 položiek aktuálneho katalógu, preto možno pre úplné pokrytie zvoliť ako zdroj dostupnosti `products`. Ide iba o dodávateľské pozorovania; tento refresh neobnovuje katalógové ceny, nevytvára príjem a neposiela zásobu do e-shopu. Automatika sa zapína samostatne v existujúcom nastavení.
 
 `supplier_availability_observations` uchováva identitu `(supplier_id, supplier_sku)`, presnosť množstva, pozorovanie, expirácie a odkaz na `SupplierFeedRun`. `SupplierFeedItemRaw` archivuje iba potrebné skladové fakty. Katalógové názvy, ceny, obrázky a jeho snapshot/run ID sa pri tomto procese neprepíšu. Na identitu fyzického produktu sa používajú existujúce `ProductSupplySource` a ako záloha `Product.source_supplier_product_id`; žiadna podobnosť názvu ani globálne EAN párovanie.
 
@@ -77,3 +78,21 @@ SK Profi Bike používa `catalog_parser: "sk-profi-bike"`: plný produktový aj 
 Overenie: lokálne testy kontrolujú presnosť množstiev, odmietnutie neplatných hodnôt, expiráciu, minimálny stock XML a ochranu API. Databázové testy majú guard na izolovaný localhost `*_catalog_test` a overujú opakovateľnosť migrácie, atómové prijatie, zachovanie posledného úspechu, zmenu konfigurácie počas behu, front a zakázané väzby. Plný výsledok CI a nasadenie sa zaznamenávajú samostatne.
 
 Migrácia je aditívna, nevkladá aktivačné nastavenia a nemení skladový denník. Pri problémoch vypnite automatiku; údaje ostávajú k dispozícii na kontrolu. Nepoužívajte spätný zásah do fyzických zásob ako opravu dodávateľského feedu.
+
+## Čiastočné prijatie a automatika
+
+Platný dokument sa spracuje po položkách. Súhrn obsahuje `total`, `accepted`, `rejected`, `unknown`, počty dôvodov a upozornenia. Chybný kód či množstvo sa preskočí; pri duplicitnom kóde sa preskočia všetky jeho výskyty, bez sčítania alebo výberu posledného riadka. Neznáme množstvo nie je nula. Preskočené alebo chýbajúce položky si ponechajú pôvodné pozorovanie aj pôvodnú expiráciu, ktorá sa nepredĺži. Po jej uplynutí dostupnosť ostáva neznáma. Platná nula sa prijíma.
+
+Pokles počtu položiek pod `min_coverage_percent` teraz vytvorí upozornenie, nezablokuje prijatie platných údajov. Základ porovnania sa pri takom poklese nezníži. Rozbitý XML, nedokončený download, zakázaná štruktúra, prázdny/prekročený zdroj alebo zmena konfigurácie počas načítania zostávajú dôvodom odmietnutia celého behu. Ak nie je použiteľná ani jedna položka, beh sa označí ako neúspešný, uloží podrobnosti a nezmení posledný úspech. Ďalší plánovaný termín sa posunie aj po zlyhaní, bez okamžitej slučky opakovaní.
+
+Súhrn je v existujúcom `SupplierFeedRun.error_details.availability_report`. Preskočené riadky sú terminálne auditné záznamy `SupplierFeedItemRaw`, nikdy front pre katalógový import. UI vracia iba ohraničené polia kódu/množstva/dôvodu, nie URL zdroja či prihlasovanie. Staršie behy bez súhrnu nevymýšľajú historické počty. Nová migrácia nie je potrebná.
+
+Worker sa spúšťa v životnom cykle API pri `USE_POSTGRES`. Zapnutý zdroj s uplynutým `next_run_at` prejde rovnakým parserom a prijatím ako ručný beh. Nové behy ukladajú `trigger: scheduled|manual`. Databázový test vykonáva dva automatické cykly Northfinder s chybným aj platným riadkom, overí posun termínu, nulové opakovanie pred termínom a aktualizáciu bežnej existujúcej produktovej karty. Nevytvára fyzický sklad ani nevolá Upgates.
+
+Produkčné dôkazy po nasadení možno prečítať bez zápisov a bez sťahovania feedu:
+
+```sh
+docker compose exec -T api python -m inventory_hub.supplier_availability_diagnostics northfinder
+```
+
+Príkaz používa SQL transakciu iba na čítanie. Zobrazí nastavenie, posledné tri behy a samostatné podmienky prenosu do BIKETREK/xTrek. Úspešné opakované `scheduled` behy dokazujú dodávateľ → Hub. Podmienky e-shopu sú len kontrolou konfigurácie, nie dôkazom odoslania každého produktu: každý produkt potrebuje správnu väzbu, potvrdený vlastný sklad a platný východiskový stav delta prenosu. Nasadenie tejto opravy nemení `STOCK_SYNC_WRITE_ENABLED`, skladovú autoritu ani automatické objednávky. Bez aktuálnych produkčných dôkazov nemožno tvrdiť overený prenos Hub → e-shopy.

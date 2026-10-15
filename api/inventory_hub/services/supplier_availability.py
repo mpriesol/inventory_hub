@@ -14,7 +14,7 @@ from inventory_hub.config_normalize import normalize_supplier_availability
 from inventory_hub.db_models import FeedRunStatus, Product, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services import catalog
-from inventory_hub.services.supplier_availability_source import AvailabilityError, configuration
+from inventory_hub.services.supplier_availability_source import AvailabilityError, ParsedAvailability, configuration
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
 
 
@@ -51,7 +51,7 @@ def public(supplier, cfg, settings=None):
         "feed_keys": keys, "feed_key": settings.feed_key if settings else ("b2b" if manual_only else "stock" if "stock" in keys else "products" if "products" in keys else next(iter(keys), "")),
         "revision": settings.revision if settings else 0, "enabled": bool(settings and settings.enabled and not manual_only),
         "manual_only": manual_only, "source_kind": "b2b" if manual_only else "feed",
-        "refresh_scope": "hub_products" if manual_only else "supplier_catalog", "refresh_progress": None,
+        "refresh_scope": "hub_products" if manual_only else "supplier_catalog", "refresh_progress": None, "latest_run": None,
         "interval_seconds": settings.interval_seconds if settings else 3600,
         "freshness_seconds": settings.freshness_seconds if settings else 21600,
         "min_coverage_percent": settings.min_coverage_percent if settings else 100,
@@ -87,8 +87,41 @@ async def overview(db):
         if code == "sloger" and rows.get(code):
             from inventory_hub.services.supplier_availability_b2b import latest_progress
             value["refresh_progress"] = await latest_progress(db, rows[code].supplier_id)
+        elif rows.get(code):
+            value["latest_run"] = await latest_run(db, rows[code].supplier_id, rows[code].feed_key)
         result.append(value)
     return {"suppliers": result}
+
+
+async def latest_run(db, supplier_id, feed_key):
+    run = await db.scalar(select(SupplierFeedRun).join(SupplierFeed, SupplierFeed.id == SupplierFeedRun.feed_id)
+        .where(SupplierFeed.supplier_id == supplier_id, SupplierFeed.code == feed_key,
+               SupplierFeedRun.error_details["workflow"].astext == "supplier_availability")
+        .order_by(SupplierFeedRun.id.desc()).limit(1))
+    if run is None:
+        return None
+    report = (run.error_details or {}).get("availability_report")
+    return {"id": run.id, "feed_key": feed_key, "status": ("partial" if run.status == FeedRunStatus.completed
+            and report and (report["rejected"] or report["unknown"] or report.get("warnings")) else run.status.value),
+        "started_at": run.started_at, "finished_at": run.finished_at,
+        "error": _safe_error(run.error_message), "report": report}
+
+
+async def run_failures(db, supplier, run_id, offset=0, limit=50):
+    run = await db.scalar(select(SupplierFeedRun).join(SupplierFeed, SupplierFeed.id == SupplierFeedRun.feed_id)
+        .join(Supplier, Supplier.id == SupplierFeed.supplier_id)
+        .where(Supplier.code == supplier, SupplierFeedRun.id == run_id,
+               SupplierFeedRun.error_details["workflow"].astext == "supplier_availability"))
+    if run is None:
+        raise AvailabilityError("supplier_availability_run_not_found", 404)
+    condition = (SupplierFeedItemRaw.run_id == run.id, SupplierFeedItemRaw.processing_error.is_not(None),
+                 SupplierFeedItemRaw.raw_data["workflow"].astext == "supplier_availability")
+    total = await db.scalar(select(func.count()).select_from(SupplierFeedItemRaw).where(*condition))
+    rows = (await db.scalars(select(SupplierFeedItemRaw).where(*condition)
+        .order_by(SupplierFeedItemRaw.id).offset(offset).limit(limit))).all()
+    return {"run_id": run.id, "total": total, "offset": offset, "limit": limit,
+            "items": [{key: row.raw_data.get(key) for key in ("row", "sku", "stock", "external_stock", "code", "kind")}
+                      for row in rows]}
 
 
 async def configure(db, supplier, payload):
@@ -154,7 +187,7 @@ async def start_run(db, supplier_id):
     feed = await catalog._feed(db, supplier.code, cfg, row.feed_key, create=True)
     number = (await db.scalar(select(func.max(SupplierFeedRun.run_number)).where(SupplierFeedRun.feed_id == feed.id)) or 0) + 1
     started = now()
-    details = {"workflow": "supplier_availability", "revision": row.revision,
+    details = {"workflow": "supplier_availability", "trigger": "manual" if row.manual_requested_at else "scheduled", "revision": row.revision,
                "configuration_hash": fingerprint}
     if supplier.code == "sloger":
         from inventory_hub.services.supplier_availability_b2b import scope_skus
@@ -200,11 +233,13 @@ async def accept_run(db, plan, records, source_bytes=0):
         raise AvailabilityError("supplier_availability_changed")
     if configuration(plan["supplier"], row.feed_key)[3] != plan["configuration_hash"]:
         raise AvailabilityError("supplier_availability_changed")
-    if not coverage_ok(len(records), row.last_item_count, row.min_coverage_percent):
-        raise AvailabilityError("supplier_availability_incomplete_feed", 422)
+    records = records if isinstance(records, ParsedAvailability) else ParsedAvailability(records)
+    covered = coverage_ok(records.total, row.last_item_count, row.min_coverage_percent)
+    report = {**records.report(), "warnings": [] if covered else ["supplier_availability_incomplete_feed"]}
     run = await db.get(SupplierFeedRun, plan["run_id"])
     if not run or run.status != FeedRunStatus.running:
         raise AvailabilityError("supplier_availability_changed")
+    run.error_details = {**(run.error_details or {}), "availability_report": report}
     observed = plan["observed_at"]
     expires = observed + timedelta(seconds=row.freshness_seconds)
     from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
@@ -223,20 +258,33 @@ async def accept_run(db, plan, records, source_bytes=0):
             set_={key: getattr(statement.excluded, key) for key in values[0] if key not in ("supplier_id", "supplier_sku")}))
         # Archive only stock facts and supplier identity, never downloaded URL credentials.
         await db.execute(insert(SupplierFeedItemRaw).values([{"feed_id": plan["feed_id"], "run_id": plan["run_id"],
-            "item_hash": hashlib.sha256(item.sku.encode()).hexdigest(),
+            "item_hash": hashlib.sha256(("sku:" + item.sku).encode()).hexdigest(),
             "raw_data": {"workflow": "supplier_availability", "supplier_sku": item.sku, **item.raw},
             "processed": True, "processed_at": now(), "fetched_at": observed,
             "supplier_product_id": products.get(item.sku)} for item in chunk]))
+    for start in range(0, len(records.issues), 500):
+        # Terminal audit rows, not pending catalog work. No failed row renews an observation.
+        await db.execute(insert(SupplierFeedItemRaw).values([{"feed_id": plan["feed_id"], "run_id": plan["run_id"],
+            "item_hash": hashlib.sha256(f"issue:{item['row']}".encode()).hexdigest(),
+            "raw_data": {"workflow": "supplier_availability", **item}, "processed": True,
+            "processing_error": item["code"], "processed_at": now(), "fetched_at": observed}
+            for item in records.issues[start:start + 500]]))
     completed = now()
-    run.status, run.finished_at, run.items_fetched = FeedRunStatus.completed, completed, len(records)
+    run.status, run.finished_at, run.items_fetched = FeedRunStatus.completed if records else FeedRunStatus.failed, completed, records.total
     run.items_updated, run.source_size_bytes = len(records), source_bytes
-    row.last_success_at, row.last_error, row.last_item_count = observed, None, len(records)
+    run.items_error = len(records.issues)
+    run.error_message = None if records else "supplier_availability_no_usable_rows"
+    row.last_error = run.error_message
+    if records:
+        row.last_success_at = observed
+        if covered:
+            row.last_item_count = records.total
     row.running_run_id = None
     if row.manual_requested_at is None:
         row.next_run_at = completed + timedelta(seconds=row.interval_seconds)
     await db.flush()
     from inventory_hub.services.supplier_links import reconcile_source_codes
-    reports = await reconcile_source_codes(db, plan["supplier"], [item.sku for item in records], plan["config"])
+    reports = await reconcile_source_codes(db, plan["supplier"], [item.sku for item in records], plan["config"]) if records else []
     run.error_details = {**(run.error_details or {}), "supplier_links": {
         "linked": sum(report["linked"] for report in reports),
         "conflicts": sum(len(report["conflicts"]) for report in reports)}}
