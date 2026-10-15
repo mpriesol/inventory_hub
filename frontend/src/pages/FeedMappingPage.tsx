@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ArrowRight, Check, Eye, GripVertical, Plus, RefreshCw, Save, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Download, Eye, GripVertical, Plus, RefreshCw, Save, Trash2, Upload } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { CategoryTree } from '../components/product/CategoryTree';
 import { useUnsavedNavigationGuard } from '../hooks/useUnsavedNavigationGuard';
@@ -12,6 +12,7 @@ import {
   FeedMappingConfig, FeedParameter, FeedParameterOptions, FeedPreview, FeedTransform,
   getFeedMapping, getFeedParameterOptions, inspectFeed, previewFeedMapping, saveFeedMapping, uploadFeedSample,
 } from '../api/feedMapping';
+import { CATEGORY_CSV_MAX_BYTES, CategoryCsvContext, CategoryCsvError, categoryMappingCsv, shopCategoriesCsv, importCategoryMappingCsv, downloadCategoryCsv } from '../utils/categoryMappingCsv';
 import './FeedMappingPage.css';
 
 const display = (value: unknown): string => value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
@@ -48,6 +49,7 @@ export function FeedMappingPage() {
   const [targetFilter, setTargetFilter] = useState('');
   const [unmappedOnly, setUnmappedOnly] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [manualCategoriesOpen, setManualCategoriesOpen] = useState(false);
   const [selectedField, setSelectedField] = useState('');
   const [newFieldTarget, setNewFieldTarget] = useState('name');
   const [selectedParameter, setSelectedParameter] = useState('');
@@ -56,6 +58,7 @@ export function FeedMappingPage() {
   const [parameterProfile, setParameterProfile] = useState('');
   const [automaticPreview, setAutomaticPreview] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const csvUploadRef = useRef<HTMLInputElement>(null);
   const previewRef = useRef<HTMLElement>(null);
   const generation = useRef(0);
   const contextEpoch = useRef(0);
@@ -201,6 +204,28 @@ export function FeedMappingPage() {
     change({ ...definition, category_rules: [...definition.category_rules.filter(rule => rule.source !== source), {source, target_code}] });
     setSelectedCategory(source);
   }
+  const csvContext: CategoryCsvContext = {
+    supplier, feedKey, shop, revision: config?.revision || 0, sources: sourceCategories,
+    categories: (targets?.categories || []).map(category => ({...category,
+      name: category.names[i18n.language] || category.names.sk || category.code, path: categoryPath(category.code)})),
+  };
+  const csvReady = !!shop && !!inspection && !!targets && !busy;
+  async function loadCategoryCsv(file: File) {
+    if (!csvReady) return;
+    await execute('categoryCsv', async current => {
+      try {
+        if (file.size > CATEGORY_CSV_MAX_BYTES) throw new CategoryCsvError('csvTooLarge');
+        const text = await file.text();
+        if (!current()) return;
+        const result = importCategoryMappingCsv(text, csvContext, definition.category_rules);
+        change({...definition, category_rules: result.rules});
+        setNotice(f('csvImported', result));
+      } catch (error) {
+        if (error instanceof CategoryCsvError) throw new Error(f(error.code, {row: error.row}));
+        throw error;
+      }
+    });
+  }
   const parameterKey = (parameter: FeedParameter) => JSON.stringify([parameter.source, parameter.name, parameter.param_name_path, parameter.param_value_path]);
   const selectedSourceParameter = sourceParameters.find(parameter => parameterKey(parameter) === selectedParameter);
   const parameterTargets = new Map<string, {name:string; origin:string; values?:string[]; required?:boolean; unit?:string}>();
@@ -277,9 +302,10 @@ export function FeedMappingPage() {
         </section>}
         {step==='categories' && <section className="fm-card"><h2>{f('categoriesTitle')}</h2><p>{f('categoriesHelp')}</p>{!shop && <div className="fm-alert"><p>{f('chooseShop')}</p><div className="fm-actions">{status?.shops.map(item=><Button key={item.code} variant="secondary" disabled={!!busy} onClick={()=>switchContext(()=>setShop(item.code),true)}>{item.name}</Button>)}</div></div>}
           {!categorySourceBound && <p className="fm-alert">{f('categorySourceRequired')} <button type="button" onClick={()=>{if(shop)switchContext(()=>{setShop('');setStep('fields');},true);else setStep('fields');}}>{f('connectCategoryField')}</button></p>}
+          {shop && <div className="fm-csv"><h3>{f('csvTitle')}</h3><p className="fm-hint">{f('csvHelp')}</p><div className="fm-actions"><Button variant="secondary" disabled={!csvReady} icon={<Download size={15}/>} onClick={()=>downloadCategoryCsv(`${supplier}-${shop}-category-mapping.csv`,categoryMappingCsv(csvContext,definition.category_rules))}>{f('csvExportMapping')}</Button><Button variant="secondary" disabled={!csvReady} icon={<Download size={15}/>} onClick={()=>downloadCategoryCsv(`${shop}-categories.csv`,shopCategoriesCsv(csvContext))}>{f('csvExportShop')}</Button><Button variant="secondary" disabled={!csvReady} loading={busy==='categoryCsv'} icon={<Upload size={15}/>} onClick={()=>csvUploadRef.current?.click()}>{f('csvImport')}</Button><input ref={csvUploadRef} type="file" accept=".csv,text/csv" aria-label={f('csvFile')} hidden onChange={event=>{const file=event.target.files?.[0];event.target.value='';if(file)void loadCategoryCsv(file);}}/></div></div>}
           <p className="fm-hint">{f('categoryConnectHelp')}</p><fieldset disabled={!!busy} className="fm-workbench"><div className="fm-pane"><div className="fm-pane-heading"><h3>{f('supplierCategory')}</h3><span>{sourceCategories.length}</span></div><label>{f('searchSupplierCategories')}<input type="search" value={categoryFilter} onChange={e=>setCategoryFilter(e.target.value)}/></label><label className="fm-checkbox fm-filter-check"><input type="checkbox" checked={unmappedOnly} onChange={e=>setUnmappedOnly(e.target.checked)}/>{f('onlyUnmapped')}</label><div className="fm-picker-list" aria-label={f('supplierCategory')}>{filteredCategories.slice(0,150).map(item=>{const mapped=categoryRule(item.source)?.target_code;return <div className="fm-source-item" key={item.source}><button type="button" className="fm-pick-card" aria-pressed={selectedCategory===item.source} draggable onDragStart={e=>startDrag(e,'category',item.source)} onClick={()=>setSelectedCategory(item.source)}><GripVertical size={15}/><span><strong>{item.label}</strong><small>{item.source!==item.label?item.source+' · ':''}{item.count?f('recordCount',{count:item.count}):f('supplierCategory')}</small><em className={mapped?'fm-mapped':''}>{mapped?<><Check size={12}/>{categoryPath(mapped)}</>:f('notMapped')}</em></span></button>{mapped && <button type="button" className="fm-icon-button" aria-label={f('removeCategoryMapping',{name:item.label})} onClick={()=>change({...definition,category_rules:definition.category_rules.filter(rule=>rule.source!==item.source)})}><Trash2 size={15}/></button>}</div>;})}{!filteredCategories.length && <p className="fm-empty">{inspection?f(sourceCategories.length?'noSearchResults':'noDetectedCategories'):f('previewNeedsSource')}</p>}{filteredCategories.length>150 && <p className="fm-hint">{f('narrowSearch',{count:filteredCategories.length})}</p>}</div></div>
             <div className="fm-pane"><div className="fm-pane-heading"><h3>{f('targetCategory')}</h3><span>{categoryTargets.length}</span></div><label>{f('searchTargetCategories')}<input type="search" value={targetFilter} disabled={!shop} onChange={e=>setTargetFilter(e.target.value)}/></label><p className="fm-selection">{selectedCategory?f('selectedSource',{name:sourceCategories.find(item=>item.source===selectedCategory)?.label || selectedCategory}):f('selectSupplierCategory')}</p><div className="fm-picker-list" aria-label={f('targetCategory')}>{categoryTargets.slice(0,150).map(category=><button type="button" className="fm-pick-card fm-drop-target" key={category.code} aria-label={f('connectCategory',{name:categoryPath(category.code)})} aria-pressed={!!selectedCategory && categoryRule(selectedCategory)?.target_code===category.code} onDragOver={e=>e.preventDefault()} onDrop={e=>{const source=dropValue(e,'category');if(source)mapCategory(source,category.code);}} onClick={()=>{if(selectedCategory)mapCategory(selectedCategory,category.code);}}><ArrowRight size={16}/><span><strong>{category.names[i18n.language] || category.names.sk || category.code}</strong><small>{categoryPath(category.code)}{category.active === false ? ` · ${t('ai.inactiveCategory')}` : ''}</small></span></button>)}{!categoryTargets.length && <p className="fm-empty">{shop?f('noSearchResults'):f('chooseShop')}</p>}{categoryTargets.length>150 && <p className="fm-hint">{f('narrowSearch',{count:categoryTargets.length})}</p>}</div></div></fieldset>
-          {shop && <details className="fm-advanced"><summary>{f('manualCategories')}</summary><fieldset disabled={!!busy}><Button variant="secondary" icon={<Plus size={15}/>} onClick={()=>change({...definition,category_rules:[...definition.category_rules,{source:'',target_code:''}]})}>{f('addCategory')}</Button>{definition.category_rules.map((rule,index)=><div className="fm-manual-category" key={index}><input aria-label={f('supplierCategoryRow',{row:index+1})} value={rule.source} onChange={e=>change({...definition,category_rules:definition.category_rules.map((item,i)=>i===index?{...item,source:e.target.value}:item)})}/><CategoryTree categories={assignableCategories} value={rule.target_code} language={i18n.language} onChange={target_code=>change({...definition,category_rules:definition.category_rules.map((item,i)=>i===index?{...item,target_code}:item)})}/><button type="button" className="fm-icon-button" aria-label={f('removeRow',{row:index+1})} onClick={()=>change({...definition,category_rules:definition.category_rules.filter((_,i)=>i!==index)})}><Trash2 size={15}/></button></div>)}</fieldset></details>}
+          {shop && <details className="fm-advanced" open={manualCategoriesOpen} onToggle={event=>{if(event.target===event.currentTarget)setManualCategoriesOpen(event.currentTarget.open);}}><summary>{f('manualCategories')}</summary>{manualCategoriesOpen && <fieldset disabled={!!busy}><Button variant="secondary" icon={<Plus size={15}/>} onClick={()=>change({...definition,category_rules:[...definition.category_rules,{source:'',target_code:''}]})}>{f('addCategory')}</Button>{definition.category_rules.map((rule,index)=><div className="fm-manual-category" key={index}><input aria-label={f('supplierCategoryRow',{row:index+1})} value={rule.source} onChange={e=>change({...definition,category_rules:definition.category_rules.map((item,i)=>i===index?{...item,source:e.target.value}:item)})}/><CategoryTree lazy categories={assignableCategories} value={rule.target_code} language={i18n.language} onChange={target_code=>change({...definition,category_rules:definition.category_rules.map((item,i)=>i===index?{...item,target_code}:item)})}/><button type="button" className="fm-icon-button" aria-label={f('removeRow',{row:index+1})} onClick={()=>change({...definition,category_rules:definition.category_rules.filter((_,i)=>i!==index)})}><Trash2 size={15}/></button></div>)}</fieldset>}</details>}
         </section>}
         {step==='fields' && <section className="fm-card"><h2>{f('fieldsTitle')}</h2><p>{nativeActive?f('nativeHelp'):f('genericHelp')}</p>{shop && <p className="fm-hint">{f('overlayHelp')}</p>}<p className="fm-hint">{f('fieldConnectHelp')}</p>{!shop && !nativeActive && !!categoryFieldSuggestions.length && <div className="fm-alert"><p>{f('detectedCategoryFields')}</p><Button variant="secondary" disabled={!!busy} onClick={connectCategoryFields}>{f('connectDetectedCategoryFields')}</Button><small>{categoryFieldSuggestions.map(item=>`${targetLabel(item.target)} ← ${item.source}`).join(' · ')}</small></div>}
           <fieldset disabled={!!busy}><div className="fm-workbench fm-field-workbench"><div className="fm-pane"><div className="fm-pane-heading"><h3>{f('sourceField')}</h3><span>{sourceFields.length}</span></div><label>{f('searchFields')}<input type="search" value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)}/></label><div className="fm-picker-list">{visibleFields.slice(0,150).map(field=><button type="button" className="fm-pick-card" key={field.path} aria-label={f('selectField',{name:field.path})} aria-pressed={selectedField===field.path} draggable onDragStart={e=>startDrag(e,'field',field.path)} onClick={()=>setSelectedField(field.path)}><GripVertical size={15}/><span><strong>{fieldLabel(field.path)}</strong><small className="fm-example">{field.examples.map(display).join(' · ') || f('empty')}</small><code>{field.path}</code></span></button>)}{!visibleFields.length && <p className="fm-empty">{f(inspection?'noSearchResults':'previewNeedsSource')}</p>}{visibleFields.length>150 && <p className="fm-hint">{f('narrowSearch',{count:visibleFields.length})}</p>}</div></div>
