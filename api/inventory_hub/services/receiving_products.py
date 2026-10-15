@@ -84,6 +84,8 @@ async def _catalog_candidates(db, session):
         by_sku[row.supplier_sku].append(source)
         for ean in verified_barcodes(source.eans):
             by_ean[ean].append(source)
+    from inventory_hub.services.catalog import normalize_stored_groups
+    await normalize_stored_groups(db, [source for sources in by_sku.values() for source in sources])
     return by_sku, by_ean, malformed
 
 

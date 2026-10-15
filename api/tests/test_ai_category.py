@@ -30,7 +30,7 @@ class AutomaticCategoryTests(unittest.TestCase):
     def test_only_leaf_candidates_and_nearest_profile_mapping(self):
         ctx = self.prepared()
         choices = ctx['classification_catalog']['choices']
-        self.assertEqual({c['code'] for c in choices}, {'ROAD','TUBES'})
+        self.assertEqual({c['code'] for c in choices}, {'ROAD','TUBES','OFF'})
         road = next(c for c in choices if c['code'] == 'ROAD')
         self.assertEqual(road['profile_ids'], ['tyres'])
         self.assertEqual(road['path'], 'Diely / Plášte / Cestné')
@@ -48,7 +48,7 @@ class AutomaticCategoryTests(unittest.TestCase):
 
     def test_explicit_branch_limits_automatic_selection(self):
         choices = ai_category.catalog(self.rows,self.book,'biketrek','sk','TYRES')['choices']
-        self.assertEqual([c['code'] for c in choices],['ROAD'])
+        self.assertEqual([c['code'] for c in choices],['ROAD','OFF'])
         with self.assertRaises(CatalogError): ai_category.catalog(self.rows,self.book,'biketrek','sk','UNKNOWN')
 
     def test_cycles_and_missing_ancestors_fail_before_paid_call(self):

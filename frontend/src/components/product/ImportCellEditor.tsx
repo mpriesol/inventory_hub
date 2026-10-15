@@ -5,6 +5,7 @@ import { ImportColumn, importValueText, parseImportValue, categoryPath, FAMILY_I
 import { ImportValue, ProductImportDraft, ProductImportRow } from '../../api/productImport';
 import { CategoryTree } from './CategoryTree';
 import { Button } from '../ui/Button.new';
+import { ImportProductSummary } from './ImportProductPreview';
 
 export function ImportCellEditor({ column, row, value, draft, onApply, onClose, onDirtyChange }: {
   column: ImportColumn; row: ProductImportRow; value: ImportValue; draft: ProductImportDraft;
@@ -27,7 +28,7 @@ export function ImportCellEditor({ column, row, value, draft, onApply, onClose, 
     function key(event: KeyboardEvent) {
       if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
       if (event.key !== 'Tab') return;
-      const elements = Array.from(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),summary') || []).filter(element => element.getClientRects().length);
+      const elements = Array.from(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),a[href],summary') || []).filter(element => element.getClientRects().length);
       const first = elements[0], last = elements[elements.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -35,7 +36,7 @@ export function ImportCellEditor({ column, row, value, draft, onApply, onClose, 
     document.addEventListener('keydown', key);
     return () => { document.body.style.overflow = overflow; document.removeEventListener('keydown', key); previous?.focus(); };
   }, []);
-  const categoryOptions = draft.categories.map(category => ({ ...category, assignable: category.assignable !== false && category.active !== false && !draft.categories.some(child => child.parent_code === category.code && child.assignable !== false) }));
+  const categoryOptions = draft.categories.map(category => ({ ...category, assignable: category.assignable !== false }));
   function apply() {
     try {
       if (column.type === 'category' && text && !categoryOptions.some(category => category.code === text && category.assignable)) throw new Error('invalidCategory');
@@ -46,6 +47,7 @@ export function ImportCellEditor({ column, row, value, draft, onApply, onClose, 
     <header><div><small>{row.values.code}</small><h2 id="import-cell-title">{c(`fields.${column.key}`)}</h2></div><Button variant="ghost" onClick={close} aria-label={c('close')}>×</Button></header>
     {row.is_variant && FAMILY_IMPORT_FIELDS.has(column.key) && <p className="import-notice">{c('familyField')}</p>}
     <div className="import-cell-editor-body">
+      {column.type === 'category' && <ImportProductSummary row={row} />}
       {column.type === 'category' ? <><CategoryTree categories={categoryOptions} value={text} language={i18n.language} onChange={setText} /><p>{categoryPath(draft.categories, text, i18n.language)}</p><p className="import-muted">{c('ancestorsHelp')}</p></> : <>
         {(column.type === 'pairs' || column.type === 'metadata') && <p className="import-muted">{c('pairsHelp')}</p>}
         {column.type === 'list' && <p className="import-muted">{c(column.key === 'eans' ? 'eansHelp' : 'imagesHelp')}</p>}

@@ -19,6 +19,7 @@ export interface ProductImportItem extends ImportItem { shop?: string; shop_url?
 export interface ProductImportPreview extends Omit<ImportPreview, 'items'> { items: ProductImportItem[] }
 export interface ProductImportResult extends Omit<ImportResult, 'items'> { items: ProductImportItem[] }
 export interface ProductImportRow {
+  source_url?: string | null;
   id: number; group_key: string; group_name?: string; is_variant: boolean; source_category: string | null;
   mapping_revision: number | null; mapping_provenance?: Record<string, unknown>; values: ImportValues;
   manual_fields: string[]; provenance: Partial<Record<ImportField, ImportProvenance>>;
@@ -43,6 +44,7 @@ const base = '/api/product-imports';
 export const listProductImports = (signal?: AbortSignal) => hubRequest<{ items: ProductImportSummary[] }>(base, undefined, signal);
 export const createProductImport = (selection: ProductImportSelection, request_id: string) => hubRequest<ProductImportDraft>(base, { ...selection, request_id });
 export const readProductImport = (id: string, signal?: AbortSignal) => hubRequest<ProductImportDraft>(`${base}/${encodeURIComponent(id)}`, undefined, signal);
+export const refreshProductImportCategories = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/categories-refresh`, { expected_revision: draft.revision });
 export const retryProductImportSource = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/source-retry`, { expected_revision: draft.revision });
 export const skipProductImportSource = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/source-skip`, { expected_revision: draft.revision });
 export const editProductImport = (draft: ProductImportDraft, rows: ImportRowPatch[]) => hubRequest<ProductImportDraft>(`${base}/${draft.id}`, { expected_revision: draft.revision, rows }, undefined, 'PUT');

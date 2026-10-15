@@ -133,3 +133,7 @@ Rollback: revert the feature commit and deploy through the usual approved PR flo
 Tests use synthetic fixtures and mocked Upgates responses. PostgreSQL integration tests require `CATALOG_TEST_DATABASE_URL` pointing to a dedicated localhost database ending in `_catalog_test`; CI supplies an ephemeral PostgreSQL 16 service. They never fall back to production settings. `node frontend/tests/catalog-ui.cjs` checks the actual React interactions in jsdom (a development-only dependency); it does not verify browser layout.
 
 Reference contracts: [products](https://docs.upgates.com/api-reference/produkty), [product lists](https://docs.upgates.com/api-reference/produkty-seznamy), [shop settings](https://docs.upgates.com/api-reference/nastaveni-eshopu), [custom fields](https://docs.upgates.com/api-reference/vlastni-pole).
+
+### Fixed attributes and singleton families (15 October 2026)
+
+A complete feed family with only one actual SKU is normalized to a standalone item; fixed colour/size stays in its product parameters. The full-feed count, not the current selection count, determines this. Preparation also handles old cached singleton groups before canonical identity resolution, including receiving sources. Real families retain their explicit relationships and all exported variants have `main_yn=false`. SK Profi Bike's one-option records no longer become groups merely because `atribute_1`/`atribute_2` are named. Existing persisted drafts and shop products are not restructured automatically.

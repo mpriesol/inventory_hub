@@ -3206,6 +3206,14 @@
     }
   },
   "productImport": {
+    "productPreview": "Product preview",
+    "previewRow": "Product preview: {{code}}",
+    "enlargeImage": "Enlarge image",
+    "supplierProduct": "Supplier product page",
+    "productDetails": "Product description and parameters",
+    "image": "Image",
+    "refreshCategories": "Refresh shop categories",
+    "categoriesRefreshed": "Categories refreshed. Selected placements were preserved.",
     "title": "Prepare products",
     "subtitle": "Choose AI and target shops per product. Edit data and see results in one table.",
     "backToReceiving": "Back to receiving invoice {{invoice}}",
@@ -3258,7 +3266,7 @@
     "imageCount": "Images: {{count}}",
     "sourceCategory": "Supplier",
     "withAncestors": "including parent categories",
-    "ancestorsHelp": "Select a leaf category. All product parent categories are added automatically.",
+    "ancestorsHelp": "Inactive and parent product categories can also be selected. Ancestors are added automatically.",
     "origin": {
       "invoice": "Invoice",
       "feed": "Feed",
@@ -3346,7 +3354,7 @@
       "invalidBoolean": "Use true/false or 1/0.",
       "invalidPairs": "Each line needs a name and value separated by a colon.",
       "duplicatePairs": "Parameter names must be unique.",
-      "invalidCategory": "Choose an active leaf category.",
+      "invalidCategory": "Choose a product category from the list.",
       "pasteBounds": "Paste a rectangular block within the visible rows and columns. Maximum 100 rows and 50 columns.",
       "pasteLocked": "The block includes a field that cannot be overwritten.",
       "familyConflict": "The block assigns different values to a shared field in one family. Use one shared value.",

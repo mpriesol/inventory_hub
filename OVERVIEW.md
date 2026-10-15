@@ -51,6 +51,8 @@ AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; norma
 
 HTML dlhého AI popisu už neblokujú bežné značky ani formátovacie atribúty. Zostáva kontrola aktívneho kódu a vložených dokumentov; uložený výsledok možno znovu overiť bez plateného generovania. Rozsah a postup obnovy sú v [AI dokumentácii](docs/ai-content.md).
 
+Príprava produktov (15. 10. 2026) umožňuje vybrať aj neaktívne a nadradené produktové kategórie, obnoviť ich strom bez straty úprav a otvoriť produkt/fotku priamo pri zaraďovaní. Jediné SKU s pevnou farbou či veľkosťou sa pripraví bez umelej varianty; skutočné varianty sa odosielajú bez hlavného variantu. Nové AI zadanie verzie 4 skracuje názvy a obmedzuje duplicitu parametrov v dlhom popise. Staré dávky a produkty sa spätne neprepisujú. Podrobnosti a hranice sú v [príprave importu](docs/product-imports.md) a [AI obsahu](docs/ai-content.md).
+
 ## Prevádzkový kontext
 
 - Repozitár: [mpriesol/inventory_hub](https://github.com/mpriesol/inventory_hub). Starý `OLD_inventory_hub` sa pri bežnej práci nepoužíva.

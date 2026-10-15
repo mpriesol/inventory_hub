@@ -3207,6 +3207,14 @@
     }
   },
   "productImport": {
+    "productPreview": "Náhľad produktu",
+    "previewRow": "Náhľad produktu: {{code}}",
+    "enlargeImage": "Zväčšiť fotografiu",
+    "supplierProduct": "Produkt u dodávateľa",
+    "productDetails": "Popis a parametre produktu",
+    "image": "Fotografia",
+    "refreshCategories": "Načítať kategórie z e-shopov",
+    "categoriesRefreshed": "Kategórie boli aktualizované. Vybrané zaradenia zostali zachované.",
     "title": "Príprava produktov",
     "subtitle": "Vyberte AI a cieľové e-shopy pri produktoch. Údaje aj výsledky zostávajú v jednej tabuľke.",
     "backToReceiving": "Späť na príjem faktúry {{invoice}}",
@@ -3260,7 +3268,7 @@
     "imageCount": "Obrázky: {{count}}",
     "sourceCategory": "Dodávateľ",
     "withAncestors": "vrátane nadradených kategórií",
-    "ancestorsHelp": "Vyberá sa koncová kategória. Všetky produktové nadradené kategórie sa doplnia automaticky.",
+    "ancestorsHelp": "Môžete vybrať aj neaktívnu alebo nadradenú produktovú kategóriu. Nadradené kategórie sa doplnia automaticky.",
     "origin": {
       "invoice": "Faktúra",
       "feed": "Feed",
@@ -3348,7 +3356,7 @@
       "invalidBoolean": "Použite true/false alebo 1/0.",
       "invalidPairs": "Každý riadok musí obsahovať názov a hodnotu oddelené dvojbodkou.",
       "duplicatePairs": "Názvy parametrov sa nesmú opakovať.",
-      "invalidCategory": "Vyberte aktívnu koncovú kategóriu.",
+      "invalidCategory": "Vyberte produktovú kategóriu z ponuky.",
       "pasteBounds": "Vkladaný blok musí byť obdĺžnik a zmestiť sa do zobrazených riadkov a stĺpcov. Najviac 100 riadkov a 50 stĺpcov.",
       "pasteLocked": "Blok obsahuje pole, ktoré sa nedá prepísať.",
       "familyConflict": "Vložený blok obsahuje rôzne hodnoty spoločného poľa jednej rodiny. Zadajte pre rodinu jednu spoločnú hodnotu.",
