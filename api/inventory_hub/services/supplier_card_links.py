@@ -1,12 +1,14 @@
-"""Explicit links to supplier offers; canonical cards and stock are untouched.
+"""Explicit supplier links, with optional reviewed filling of an empty barcode.
 
 Inspect/apply helpers participate in the caller's transaction. Public API
 operations persist a reviewed preview and its result for lost-response recovery.
-Only the selected supplier-scoped alias and selected source relation are added;
-the broad supplier reconciliation routine is deliberately not invoked.
+The selected supplier-scoped alias/source relation and explicitly reviewed EANs
+are written atomically; broad supplier reconciliation is not invoked.
 """
+from copy import deepcopy
 from datetime import timedelta
 import json
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
 from sqlalchemy import case, or_, select, text
@@ -14,6 +16,7 @@ from sqlalchemy import case, or_, select, text
 from inventory_hub import config_io
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource
+from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
 from inventory_hub.services import catalog, product_links
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes
@@ -102,7 +105,21 @@ def _policy(row):
     return result
 
 
-async def inspect_link(db, product_id, source_id, *, lock=False):
+async def _ean_adoption(db, facts, source, *, selected=False):
+    """Only fill a truly empty card, retaining exact verified leaf identifiers."""
+    existing = list(await db.scalars(select(ProductIdentifier.value).where(
+        ProductIdentifier.product_id == facts['product_id'],
+        ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES)).order_by(ProductIdentifier.id)))
+    eans = sorted(verified_barcodes(source['eans']))
+    reason = 'ean_present' if existing or facts['manual_eans'] else 'source_ean_missing' if not eans else None
+    if reason is None and await db.scalar(select(ProductIdentifier.id).where(
+            ProductIdentifier.value.in_(eans), ProductIdentifier.product_id != facts['product_id']).limit(1)):
+        reason = 'ean_conflict'
+    return {'available': reason is None, 'selected': selected, 'eans': eans, 'reason': reason,
+            '_existing': existing}
+
+
+async def inspect_link(db, product_id, source_id, *, lock=False, copy_supplier_eans=False):
     """No commits or writes; callers can freeze this hash in another workflow."""
     if lock:
         await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
@@ -173,6 +190,12 @@ async def inspect_link(db, product_id, source_id, *, lock=False):
     if link is not None and (not link.is_active or not link.orderable):
         warnings.append('supplier_link_disabled')
     planned = ([] if own_alias else ['supplier_alias']) + ([] if link is not None else ['supplier_source'])
+    adoption = await _ean_adoption(db, facts, source, selected=copy_supplier_eans)
+    if copy_supplier_eans:
+        if not adoption['available']:
+            errors.append('supplier_card_links_ean_unavailable')
+        else:
+            planned.append('supplier_eans')
     # Adding these exact relations must not itself invalidate integration replay.
     # Independent source policy, all existing opposing owners and actual identity
     # evidence remain frozen. Stock, availability and prices are not identity.
@@ -181,19 +204,57 @@ async def inspect_link(db, product_id, source_id, *, lock=False):
         'source_axes': source_axes, 'prefix': prefix, 'owners_other_than_target': sorted(owners - {product_id}),
         'other_source_ids': sorted(set(other_sources)), 'source_policy': policy,
         'source_import_blockers': sorted(source['import_blockers'])}
+    if copy_supplier_eans:
+        frozen['ean_adoption'] = adoption
     return {'preview_hash': digest(frozen), 'product': _public_product(facts), 'source': source,
         'link_status': 'conflict' if errors else 'ready' if planned else 'already_linked',
         'warnings': sorted(set(warnings)), 'errors': sorted(set(errors)),
-        'planned_changes': planned, 'identity': frozen}
+        'planned_changes': planned, 'identity': frozen,
+        'ean_adoption': {key: value for key, value in adoption.items() if not key.startswith('_')}}
 
 
-async def apply_link(db, product_id, source_id, *, expected_hash, actor=None):
+async def _record_ean_copy(db, inspected, request_id, actor):
+    """Reuse editor revision/audit records without calling its committing save API."""
+    product_id = inspected['product']['id']
+    eans = inspected['ean_adoption']['eans']
+    override = await db.scalar(select(ProductEditorOverride).where(ProductEditorOverride.product_id == product_id)
+                               .with_for_update().execution_options(populate_existing=True))
+    before = deepcopy(override.data if override else {})
+    after = deepcopy(before)
+    after.setdefault('variant', {})['eans'] = list(eans)
+    revision = override.revision + 1 if override else 1
+    audit_id = str(uuid5(NAMESPACE_URL, 'inventory-hub:supplier-eans:' + str(request_id)))
+    payload = {'operation': 'supplier_ean_copy', 'product_id': product_id,
+        'supplier_product_id': inspected['source']['id'], 'eans': eans, 'actor': actor or {'source': 'operator_token'}}
+    saved = ProductEditorSave(request_id=audit_id, input_hash=digest(payload), result={
+        'request_id': audit_id, 'status': 'completed', 'external_write_enabled': False,
+        'results': [{'product_id': product_id, 'status': 'saved', 'errors': []}], **payload})
+    db.add(saved)
+    await db.flush()
+    for index, value in enumerate(eans):
+        db.add(ProductIdentifier(product_id=product_id, value=value,
+            identifier_type=ProductIdentifierService.classify_barcode(value), is_primary=index == 0,
+            notes='Explicit verified EAN copy from supplier product ' + str(inspected['source']['id'])))
+    if override:
+        override.data, override.revision, override.updated_at = after, revision, now()
+    else:
+        db.add(ProductEditorOverride(product_id=product_id, revision=revision, data=after, updated_at=now()))
+    # Audit before/after are a field patch; the editor displays their EAN diff.
+    db.add(ProductEditorAudit(request_id=audit_id, product_id=product_id, revision=revision,
+        before_data={'eans': [], 'overrides': before},
+        after_data={'eans': list(eans), 'overrides': after, 'source': payload}))
+
+
+async def apply_link(db, product_id, source_id, *, expected_hash, actor=None,
+                     copy_supplier_eans=False, request_id=None):
     """Atomic within the caller's transaction, including import-draft saves."""
-    inspected = await inspect_link(db, product_id, source_id, lock=True)
+    inspected = await inspect_link(db, product_id, source_id, lock=True, copy_supplier_eans=copy_supplier_eans)
     if inspected['preview_hash'] != expected_hash:
         raise SupplierCardLinkError('supplier_card_links_identity_changed')
     if inspected['errors']:
         raise SupplierCardLinkError('supplier_card_links_identity_conflict')
+    if copy_supplier_eans and not request_id:
+        raise SupplierCardLinkError('supplier_card_links_invalid_request', 422)
     source = inspected['source']
     try:
         config_io.claim_supplier_prefix(source['supplier_code'], inspected['identity']['prefix'])
@@ -206,9 +267,12 @@ async def apply_link(db, product_id, source_id, *, expected_hash, actor=None):
             notes='Explicit supplier-card association; canonical SKU retained')
     if 'supplier_source' in changes:
         db.add(ProductSupplySource(product_id=product_id, supplier_product_id=source_id))
+    if 'supplier_eans' in changes:
+        await _record_ean_copy(db, inspected, request_id, actor)
     await db.flush()
     return {'status': 'linked' if changes else 'already_linked', 'product_id': product_id,
-            'supplier_product_id': source_id, 'changes': changes}
+            'supplier_product_id': source_id, 'changes': changes,
+            'copied_eans': inspected['ean_adoption']['eans'] if 'supplier_eans' in changes else []}
 
 
 def _existing_source(row, supplier):
@@ -296,9 +360,14 @@ async def candidates(db, payload):
 
 def public(row):
     inspected = row.document['inspection']
+    product = inspected['product']
+    if row.status == 'completed' and (row.result or {}).get('copied_eans'):
+        product = {**product, 'eans': row.result['copied_eans']}
     return {'id': row.id, 'status': row.status, 'preview_hash': row.preview_hash,
         'expires_at': row.expires_at.isoformat(), 'result': row.result,
-        **{key: inspected[key] for key in ('product', 'source', 'link_status', 'warnings', 'errors', 'planned_changes')}}
+        **{key: inspected[key] for key in ('source', 'link_status', 'warnings', 'errors', 'planned_changes')},
+        'product': product,
+        'ean_adoption': inspected.get('ean_adoption')}
 
 
 async def get(db, identifier):
@@ -309,14 +378,16 @@ async def get(db, identifier):
 
 
 async def preview(db, payload, *, actor=None):
-    request_hash = digest(payload.model_dump(mode='json'))
+    # Omitting the new default preserves retries of previews made by older clients.
+    request_hash = digest(payload.model_dump(mode='json', exclude_defaults=True))
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
     existing = await db.get(SupplierCardLinkPreview, str(payload.request_id), populate_existing=True)
     if existing is not None:
         if existing.request_hash != request_hash:
             raise SupplierCardLinkError('supplier_card_links_request_changed')
         return public(existing)
-    inspected = await inspect_link(db, payload.product_id, payload.supplier_product_id, lock=True)
+    inspected = await inspect_link(db, payload.product_id, payload.supplier_product_id, lock=True,
+                                   copy_supplier_eans=payload.copy_supplier_eans)
     at = now()
     document = {'inspection': inspected, 'created_by': actor or {'source': 'operator_token'}}
     row = SupplierCardLinkPreview(id=str(payload.request_id), product_id=payload.product_id,
@@ -352,7 +423,9 @@ async def apply(db, identifier, payload, *, actor=None):
         if now() >= row.expires_at:
             raise SupplierCardLinkError('supplier_card_links_preview_expired')
         result = await apply_link(db, row.product_id, row.supplier_product_id,
-            expected_hash=row.document['inspection']['preview_hash'], actor=actor)
+            expected_hash=row.document['inspection']['preview_hash'], actor=actor,
+            copy_supplier_eans=bool(row.document['inspection'].get('ean_adoption', {}).get('selected')),
+            request_id=row.id)
     except SupplierCardLinkError as error:
         # Domain errors are raised before relation writes. Other exceptions,
         # including an uncertain database commit, never promise known_unapplied.

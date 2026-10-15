@@ -5,15 +5,17 @@ frozen observations and local identity, then commits only the selected mappings
 and its recovery result in one transaction. No canonical or stock writer is used.
 """
 from collections import Counter, defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import unicodedata
 
 from sqlalchemy import or_, select, text
+from sqlalchemy.dialects.postgresql import insert
 
 from inventory_hub.db_models import Product, ProductIdentifier, Shop, SupplierProduct
-from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct
+from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.product_link_models import ProductLinkPreview
 from inventory_hub.services import product_link_source as source
@@ -280,6 +282,7 @@ async def _rows(db, shop, facts, choices):
     for pid, item in facts.items():
         remote, mode, count = choices[pid]
         row = {'product_id': pid, 'sku': item['sku'], 'name': item['name'], 'remote': remote,
+               'local_eans': sorted(verified_barcodes(item['manual_eans'] if item['manual_eans'] is not None else item['eans'])),
                'match_by': mode if remote else None, 'status': 'ready', 'warnings': [], 'errors': [],
                'local_hash': _facts_hash(item)}
         if not item['is_active']:
@@ -343,6 +346,104 @@ async def get(db, identifier):
     return public(row)
 
 
+def _metadata_key(remote):
+    return ('variant:' if remote['is_variant'] else 'product:') + remote['external_id']
+
+
+async def _cache_metadata(db, shop_id, leaves):
+    """Store scoped display observations without replacing a complete vault.
+
+    A newly created row has only this sidecar: it cannot impersonate a complete
+    family for the legacy export guard. Existing prices, stock, descriptions,
+    siblings and full-pull freshness remain untouched.
+    """
+    grouped = defaultdict(list)
+    for leaf in leaves:
+        grouped[leaf['parent_code']].append(leaf)
+    for parent_code in sorted(grouped):
+        await db.execute(insert(ShopProductContent).values(shop_id=shop_id, external_code=parent_code,
+            data={}, pulled_at=now()).on_conflict_do_nothing(
+                index_elements=[ShopProductContent.shop_id, ShopProductContent.external_code]))
+        row = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == shop_id,
+            ShopProductContent.external_code == parent_code).with_for_update().execution_options(populate_existing=True))
+        if not isinstance(row.data, dict):
+            raise LinkError('product_links_identity_changed')
+        data = deepcopy(row.data)
+        metadata = data.get('_hub_link_metadata')
+        metadata = metadata if isinstance(metadata, dict) else {}
+        for leaf in grouped[parent_code]:
+            # A full earlier observation can prove a parent was recreated.
+            if data.get('product_id') is not None and str(data['product_id']) != leaf['parent_id']:
+                raise LinkError('product_links_identity_changed')
+            previous = metadata.get(_metadata_key(leaf))
+            if isinstance(previous, dict) and previous.get('parent_id') != leaf['parent_id']:
+                raise LinkError('product_links_identity_changed')
+            metadata[_metadata_key(leaf)] = {**remote_identity(leaf), 'name': leaf['name'],
+                'shop_url': leaf.get('shop_url'), 'shop_admin_url': leaf.get('shop_admin_url'),
+                'observed_at': now().isoformat()}
+        data['_hub_link_metadata'] = metadata
+        row.data = data
+
+
+async def _refresh_mappings(db, shop_id, product_ids, *, lock=False):
+    query = select(ShopProduct).where(ShopProduct.shop_id == shop_id,
+        ShopProduct.product_id.in_(product_ids)).order_by(ShopProduct.product_id, ShopProduct.id)
+    if lock:
+        query = query.with_for_update()
+    rows = list(await db.scalars(query.execution_options(populate_existing=True)))
+    counts = Counter(row.product_id for row in rows)
+    if any(counts[pid] == 0 for pid in product_ids):
+        raise LinkError('product_links_mapping_missing', 404)
+    if any(counts[pid] != 1 for pid in product_ids) or any(not row.is_listed for row in rows):
+        raise LinkError('product_links_identity_changed')
+    try:
+        for row in rows:
+            exact_code(mapping_code(row))
+            exact_code(row.parent_code if row.is_variant else row.external_code)
+            source._native_id(row.external_id)
+    except (ValueError, TypeError, source.SourceError):
+        raise LinkError('product_links_identity_changed') from None
+    return {row.product_id: row for row in rows}
+
+
+async def refresh(db, payload):
+    """Read existing exact mappings and refresh display links only."""
+    shop = await _shop(db, payload.shop_code)
+    shop_id = shop.id
+    mappings = await _refresh_mappings(db, shop_id, payload.product_ids)
+    snapshots = {pid: _mapping(row) for pid, row in mappings.items()}
+    codes = sorted({mapping_code(row) for row in mappings.values()})
+    await db.commit()
+    fingerprint = await _source_call(source.current_fingerprint(payload.shop_code))
+    observed = await _source_call(source.discover(payload.shop_code, codes, fingerprint, max_requests=MAX_REQUESTS))
+    if observed['fingerprint'] != fingerprint:
+        raise LinkError('source_connection_changed')
+    leaves = _unique(observed['leaves'])
+    selected = {}
+    for pid, mapping in snapshots.items():
+        code = mapping['variant_code'] if mapping['is_variant'] else mapping['external_code']
+        parent_code = mapping['parent_code'] if mapping['is_variant'] else mapping['external_code']
+        matches = [leaf for leaf in leaves if leaf['code'] == code and leaf['is_variant'] == mapping['is_variant']
+                   and leaf['external_id'] == str(mapping['external_id']) and leaf['parent_code'] == parent_code]
+        if len(matches) != 1:
+            raise LinkError('product_links_identity_changed')
+        selected[pid] = matches[0]
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    shop = await _shop(db, payload.shop_code)
+    current = await _refresh_mappings(db, shop.id, payload.product_ids, lock=True)
+    if shop.id != shop_id or {pid: _mapping(row) for pid, row in current.items()} != snapshots:
+        raise LinkError('product_links_identity_changed')
+    if await _source_call(source.current_fingerprint(payload.shop_code)) != fingerprint:
+        raise LinkError('source_connection_changed')
+    await _cache_metadata(db, shop_id, selected.values())
+    result = {'shop_code': payload.shop_code, 'remote_requests': observed['requests'], 'rows': [
+        {'product_id': pid, 'status': 'refreshed' if leaf.get('shop_url') and leaf.get('shop_admin_url') else 'incomplete',
+         'shop_url': leaf.get('shop_url'), 'shop_admin_url': leaf.get('shop_admin_url')}
+        for pid, leaf in sorted(selected.items())]}
+    await db.commit()
+    return result
+
+
 async def preview(db, payload, *, actor=None):
     raw = payload.model_dump(mode='json')
     request_hash = digest(raw)
@@ -365,15 +466,17 @@ async def preview(db, payload, *, actor=None):
     observed = await _source_call(source.discover(payload.shop_code, codes, max_requests=MAX_REQUESTS))
     leaves = list(observed['leaves'])
     remaining = MAX_REQUESTS - observed['requests']
-    fallback = []
+    fallback, fallback_needs_parent = [], False
     for pid, item in facts.items():
         if pid in manual or any(leaf['code'] == item['sku'] for leaf in leaves):
             continue
         candidates_by_ean = _unique([leaf for leaf in cached if set(leaf['eans']) & set(item['eans'])])
         if len(candidates_by_ean) == 1:
             fallback.append(candidates_by_ean[0]['code'])
-    fallback_skipped = bool(fallback and remaining < 2)
-    if fallback and remaining >= 2:
+            fallback_needs_parent = fallback_needs_parent or candidates_by_ean[0]['is_variant']
+    minimum_fallback = 3 if fallback_needs_parent else 2
+    fallback_skipped = bool(fallback and remaining < minimum_fallback)
+    if fallback and remaining >= minimum_fallback:
         extra = await _source_call(source.discover(payload.shop_code, sorted(set(fallback)),
             expected_fingerprint=observed['fingerprint'], max_requests=remaining))
         leaves.extend(extra['leaves'])
@@ -501,6 +604,9 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     checked = await _rows(db, shop, facts, choices)
     if any(item['status'] not in ('ready', 'already_linked') for item in checked):
         raise LinkError('product_links_identity_changed')
+    if await _source_call(source.current_fingerprint(shop_code)) != fingerprint:
+        raise LinkError('source_connection_changed')
+    await _cache_metadata(db, shop.id, [item['remote'] for item in checked])
     linked, existing = [], []
     for item in checked:
         pid, remote = item['product_id'], item['remote']

@@ -2,7 +2,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 
 class LinkInput(BaseModel):
@@ -26,6 +26,7 @@ class SupplierCardLinkPreviewRequest(LinkInput):
     request_id: UUID
     product_id: StrictInt = Field(gt=0)
     supplier_product_id: StrictInt = Field(gt=0)
+    copy_supplier_eans: StrictBool = False
 
 
 class SupplierCardLinkApplyRequest(LinkInput):

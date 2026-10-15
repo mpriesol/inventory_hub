@@ -11,9 +11,10 @@ export interface ProductLinkPreviewBody {
 export interface ProductLinkRemote {
   code: string; parent_code: string; is_variant: boolean; external_id: string; parent_id: string | null;
   name: string; eans: string[]; attributes: { name: string; value: string }[];
+  raw_barcodes?: string[]; invalid_barcodes?: string[];
 }
 export interface ProductLinkRow {
-  product_id: number; sku: string; name: string;
+  product_id: number; sku: string; name: string; local_eans?: string[];
   status: 'ready' | 'already_linked' | 'not_found' | 'conflict'; match_by: string | null;
   remote: ProductLinkRemote | null; warnings: string[]; errors: string[];
 }
@@ -23,10 +24,16 @@ export interface ProductLinkBatch {
   result: null | { product_ids: number[]; linked_product_ids: number[]; already_linked_product_ids: number[] };
 }
 export interface ProductLinkApplyBody { preview_hash: string; product_ids: number[]; confirmed: true }
+export interface ProductLinkMetadataResult {
+  shop_code: ProductLinkShop; remote_requests: number;
+  rows: { product_id: number; status: 'refreshed' | 'incomplete'; shop_url: string | null; shop_admin_url: string | null }[];
+}
 const base = '/api/product-links';
 export const previewProductLinks = (body: ProductLinkPreviewBody) => hubRequest<ProductLinkBatch>(`${base}/preview`, body);
 export const applyProductLinks = (id: string, body: ProductLinkApplyBody) => hubRequest<ProductLinkBatch>(`${base}/${encodeURIComponent(id)}/apply`, body);
 export const readProductLinks = (id: string, signal?: AbortSignal) => hubRequest<ProductLinkBatch>(`${base}/${encodeURIComponent(id)}`, undefined, signal);
+export const refreshProductLinkMetadata = (shop_code: string, product_ids: number[]) =>
+  hubRequest<ProductLinkMetadataResult>(`${base}/refresh`, { shop_code, product_ids });
 
 // A single pending batch per tab. Store only its request/identity and chosen IDs,
 // never credentials, fetched product contents, prices or customer data.

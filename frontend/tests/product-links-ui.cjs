@@ -33,22 +33,31 @@ async function input(id, value) {
 }
 const rows = [1, 2, 3, 4].map(id => ({ id, sku: 'HUB-' + id, common: { name: 'Local card ' + id } }));
 const calls = [], batches = new Map();
-let previewMode = 'valid', applyMode = 'valid', releaseApply, changed = 0, closed = 0, root;
+let previewMode = 'valid', applyMode = 'valid', barcodeMode = 'verified', releaseApply, changed = 0, closed = 0, root;
 const response = value => ({ ok: true, status: 200, json: async () => clone(value) });
 const fail = (code, status, knownUnapplied = false) => ({ ok: false, status,
   json: async () => ({ detail: { code, known_unapplied: knownUnapplied } }) });
 function preview(body) {
   const manual = new Map((body.manual_matches || []).map(item => [item.product_id, item]));
+  const barcodeEvidence = {
+    verified: { eans: ['5901234123457'], raw_barcodes: ['5901234123457'], invalid_barcodes: [] },
+    invalid: { eans: [], raw_barcodes: ['858048234448'], invalid_barcodes: ['858048234448'] },
+    missing: { eans: [], raw_barcodes: [], invalid_barcodes: [] },
+    legacy_invalid: { eans: [] },
+  }[barcodeMode];
   return { id: body.request_id, shop_code: body.shop_code, status: 'prepared', preview_hash: 'a'.repeat(64),
     expires_at: '2099-01-01T00:00:00Z', result: null,
     rows: body.product_ids.map(id => ({ product_id: id, sku: 'HUB-' + id, name: 'Local card ' + id,
+      local_eans: barcodeMode === 'legacy_invalid' ? undefined : barcodeMode === 'invalid' ? ['8585047234448'] : [],
       status: manual.has(id) ? 'ready' : ({ 1: 'ready', 2: 'already_linked', 3: 'conflict', 4: 'not_found' })[id] || 'ready',
       match_by: manual.has(id) ? 'manual' : 'shared_sku',
       remote: id === 4 && !manual.has(id) ? null : { code: manual.get(id)?.code || 'HUB-' + id,
         parent_code: manual.get(id)?.parent_code || 'PARENT', is_variant: manual.get(id)?.is_variant ?? true,
         external_id: String(1000 + id), parent_id: '999', name: 'Shop card ' + id,
-        eans: ['5901234123457'], attributes: [] },
-      warnings: id === 1 ? ['variant_axes_unknown'] : [], errors: id === 3 ? ['identifier_conflict'] : [] })) };
+        ...barcodeEvidence, attributes: [] },
+      warnings: [...(id === 1 ? ['variant_axes_unknown'] : []),
+        ...(['invalid', 'legacy_invalid'].includes(barcodeMode) ? ['unverified_barcode', 'barcode_missing'] : [])],
+      errors: id === 3 ? ['identifier_conflict'] : [] })) };
 }
 function complete(batch, body) {
   batch.status = 'completed'; batch.result = { product_ids: body.product_ids,
@@ -98,6 +107,7 @@ function clearPending() { dom.window.sessionStorage.removeItem(PRODUCT_LINK_PEND
   await input('product-links-shop', 'xtrek'); await click('product-links-preview');
   assert.deepEqual(previews()[0].body.product_ids, [1, 2, 3, 4]); assert.equal(previews()[0].body.shop_code, 'xtrek');
   for (const status of ['ready', 'already_linked', 'conflict', 'not_found']) assert(required('product-links-count-' + status).textContent.startsWith('1'));
+  assert(!element('product-links-done'), 'A mixed batch still needs the selected new links to be confirmed');
   assert(!disabled('product-links-select-1'));
   for (const id of [2, 3, 4]) assert(disabled('product-links-select-' + id));
   assert(document.body.textContent.includes('1001') && document.body.textContent.includes('5901234123457'));
@@ -105,7 +115,63 @@ function clearPending() { dom.window.sessionStorage.removeItem(PRODUCT_LINK_PEND
   await click('product-links-select-1'); assert(disabled('product-links-apply')); await click('product-links-select-1');
   await click('product-links-apply'); assert.deepEqual(writes().at(-1).body.product_ids, [1]);
   assert(element('product-links-completed')); assert.equal(changed, 1); assert.equal(dom.window.sessionStorage.length, 0);
+  assert(!disabled('product-links-done'), 'A completed apply has an explicit finish action');
   await unmount();
+
+  const beforeAlready = writes().length;
+  await mount([rows[1]]); await click('product-links-preview');
+  assert(required('product-links-completed').textContent.includes(i18n.t('productLinks.allAlreadyLinked', { shop: 'BIKETREK' })));
+  assert(!element('product-links-apply') && !element('product-links-preview'));
+  assert.equal(dom.window.sessionStorage.length, 0, 'A no-op preview does not remain a pending operation');
+  await click('product-links-done'); assert.equal(closed, 1);
+  assert.equal(writes().length, beforeAlready, 'Already-linked cards do not need an apply request');
+  await unmount();
+
+  const legacyRequest = { request_id: crypto.randomUUID(), shop_code: 'xtrek', product_ids: [2] };
+  const legacyBatch = preview(legacyRequest); batches.set(legacyBatch.id, legacyBatch);
+  dom.window.sessionStorage.setItem(PRODUCT_LINK_PENDING_KEY, JSON.stringify({ version: 1, request: legacyRequest }));
+  const beforeRecovery = calls.length;
+  await mount([rows[3]]);
+  assert(element('product-links-done') && !element('product-links-recovery'));
+  assert(element('product-links-row-2') && !element('product-links-row-4'));
+  assert(document.body.textContent.includes(i18n.t('productLinks.recoveredScope')),
+    'Finishing a recovered no-op keeps its original card scope clear');
+  assert.equal(dom.window.sessionStorage.length, 0, 'A recovered legacy no-op preview is finished locally');
+  assert.equal(calls.length, beforeRecovery + 1); assert.equal(calls.at(-1).method, 'GET');
+  await unmount();
+
+  const uncertainAlready = { version: 1, request: legacyRequest,
+    apply: { preview_hash: legacyBatch.preview_hash, product_ids: [2], confirmed: true } };
+  dom.window.sessionStorage.setItem(PRODUCT_LINK_PENDING_KEY, JSON.stringify(uncertainAlready));
+  await mount([]);
+  assert(!element('product-links-done') && !element('product-links-completed'));
+  assert(element('product-links-recovery') && !disabled('product-links-retry-apply'));
+  assert(disabled('product-links-shop') && disabled('product-links-preview'));
+  assert.deepEqual(JSON.parse(dom.window.sessionStorage.getItem(PRODUCT_LINK_PENDING_KEY)), uncertainAlready,
+    'An all-already-linked prepared GET cannot settle a previously uncertain apply');
+  await unmount(); clearPending();
+
+  barcodeMode = 'invalid'; await mount([rows[0]]); await input('product-links-shop', 'xtrek'); await click('product-links-preview');
+  assert.equal(required('product-links-hub-ean-1').textContent, '8585047234448');
+  const invalidRemote = required('product-links-shop-barcode-1');
+  assert(invalidRemote.textContent.startsWith('858048234448'), 'The exact invalid shop barcode remains visible');
+  assert(invalidRemote.textContent.includes(i18n.t('productLinks.barcodeInvalid', { value: '858048234448' })));
+  assert(!invalidRemote.textContent.includes('8585047234448'), 'The Hub barcode is not substituted for the shop value');
+  assert(!document.body.textContent.includes(i18n.t('productLinks.reasons.barcode_missing')), 'Known invalid values do not get a misleading generic missing warning');
+  assert(!disabled('product-links-apply'), 'An invalid barcode warning does not disable an otherwise approved exact SKU match');
+  await unmount(); clearPending();
+
+  barcodeMode = 'missing'; await mount([rows[0]]); await click('product-links-preview');
+  assert.equal(required('product-links-shop-barcode-1').textContent, i18n.t('productLinks.barcodeAbsent'));
+  assert.equal(required('product-links-hub-ean-1').textContent, i18n.t('productLinks.barcodeAbsent'));
+  assert(!document.querySelector('.product-links-barcode-warning'), 'An absent value is not called invalid');
+  await unmount(); clearPending();
+
+  barcodeMode = 'legacy_invalid'; await mount([rows[0]]); await click('product-links-preview');
+  assert.equal(required('product-links-shop-barcode-1').textContent, i18n.t('productLinks.barcodeNotRecorded'));
+  assert(document.body.textContent.includes(i18n.t('productLinks.reasons.unverified_barcode')),
+    'An older stored result retains its warning without inventing or claiming an absent raw value');
+  await unmount(); clearPending(); barcodeMode = 'verified';
 
   await mount([rows[3]]); await input('product-links-parent-4', 'EXACT-PARENT'); await input('product-links-variant-4', 'EXACT-LEAF');
   await click('product-links-preview');
@@ -142,6 +208,8 @@ function clearPending() { dom.window.sessionStorage.removeItem(PRODUCT_LINK_PEND
   assert(stored && !stored.includes('synthetic-') && !stored.includes('Shop card') && !stored.includes('5901234123457'));
   await unmount(); await mount([rows[3]]);
   assert(element('product-links-completed') && element('product-links-row-1') && !element('product-links-row-4'));
+  assert(document.body.textContent.includes(i18n.t('productLinks.recoveredScope')),
+    'A recovered completed batch does not imply that the different current selection was linked');
   assert.equal(writes().length, writeCount, 'Reopening recovers the completed batch without repeating apply');
   assert.equal(calls.at(-1).path + '/apply', committedId); assert.equal(dom.window.sessionStorage.length, 0); await unmount();
 

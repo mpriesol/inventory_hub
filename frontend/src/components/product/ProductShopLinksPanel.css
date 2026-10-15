@@ -18,3 +18,5 @@
 .product-links-manual p { font-size: 12px; }
 .product-links-manual label { margin: 9px 0; }
 .product-links-actions { margin-top: 16px; }
+.product-links-success { margin: 16px 0; padding: 12px 16px; border: 1px solid var(--color-success, #22c55e); border-radius: 6px; }
+.product-links-barcode-warning { margin: 4px 0 0; color: var(--text-warning, #d99a26); }

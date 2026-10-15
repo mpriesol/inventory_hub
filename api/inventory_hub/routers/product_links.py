@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.product_link_types import (
-    ProductLinksApplyRequest, ProductLinksCandidatesRequest, ProductLinksPreviewRequest,
+    ProductLinksApplyRequest, ProductLinksCandidatesRequest, ProductLinksPreviewRequest, ProductLinksRefreshRequest,
 )
 from inventory_hub.services import product_links as service
 
@@ -64,6 +64,11 @@ async def preview(payload: ProductLinksPreviewRequest, request: Request, db: Asy
 @router.get('/{identifier}')
 async def get(identifier: UUID, db: AsyncSession = Depends(get_session)):
     return await call(service.get(db, str(identifier)))
+
+
+@router.post('/refresh')
+async def refresh(payload: ProductLinksRefreshRequest, db: AsyncSession = Depends(get_session)):
+    return await call(service.refresh(db, payload))
 
 
 @router.post('/{identifier}/apply')

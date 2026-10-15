@@ -60,6 +60,16 @@ class ProductLinksPreviewRequest(ProductLinksCandidatesRequest):
         return self
 
 
+class ProductLinksRefreshRequest(LinkInput):
+    shop_code: StrictStr = Field(pattern=r'^[a-z0-9][a-z0-9_-]{0,49}$')
+    product_ids: list[StrictInt] = Field(min_length=1, max_length=100)
+
+    @field_validator('product_ids')
+    @classmethod
+    def ids(cls, value):
+        return ProductLinksCandidatesRequest.ids(value)
+
+
 class ProductLinksApplyRequest(LinkInput):
     preview_hash: StrictStr = Field(pattern=r'^[0-9a-f]{64}$')
     product_ids: list[StrictInt] = Field(min_length=1, max_length=100)

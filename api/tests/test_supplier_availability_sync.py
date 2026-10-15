@@ -120,16 +120,24 @@ class SupplierRoutesTests(unittest.TestCase):
         with TestClient(app) as client, patch.object(settings, "AI_CONTENT_ACCESS_TOKEN", SecretStr(token)), \
              patch.object(service, "overview", AsyncMock(return_value={"suppliers": []})) as overview, \
              patch.object(service, "configure", AsyncMock(return_value={"revision": 1})), \
-             patch.object(service, "request_run", AsyncMock(return_value={"queued": True})):
-            for method, url in (("GET", "/supplier-availability"), ("PUT", "/supplier-availability/paul-lange"),
+             patch.object(service, "request_run", AsyncMock(return_value={"queued": True})), \
+             patch.object(service, "source_observation", AsyncMock(return_value={"status": "not_loaded"})) as observation_read:
+            for method, url in (("GET", "/supplier-availability"), ("GET", "/supplier-availability/northfinder/observation?sku=103404-281-103"), ("PUT", "/supplier-availability/paul-lange"),
                                 ("POST", "/supplier-availability/paul-lange/run")):
                 response = client.request(method, url, json={"expected_revision": 0})
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.headers["cache-control"], "no-store")
             self.assertEqual(db_calls, [])
             overview.assert_not_awaited()
+            observation_read.assert_not_awaited()
             headers = {"Authorization": "Bearer " + token}
             self.assertEqual(client.get("/supplier-availability", headers=headers).json(), {"suppliers": []})
+            response = client.get("/supplier-availability/northfinder/observation?sku=103404-281-103", headers=headers)
+            self.assertEqual(response.json(), {"status": "not_loaded"})
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            observation_read.assert_awaited_once()
+            self.assertEqual(observation_read.call_args.args[1:], ("northfinder", "103404-281-103"))
+            self.assertEqual(client.get("/supplier-availability/northfinder/observation?sku=bad%0Acode", headers=headers).status_code, 422)
             self.assertEqual(client.put("/supplier-availability/paul-lange", headers=headers,
                 json={"expected_revision": 0}).status_code, 200)
             self.assertEqual(client.post("/supplier-availability/paul-lange/run", headers=headers,

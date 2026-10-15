@@ -119,6 +119,11 @@
 .product-editor-presence strong { color: var(--color-text-secondary); font-size: 10px; font-weight: 500; }
 .product-editor-presence .is-mapped { color: var(--color-success); }
 .product-editor-presence a { width: fit-content; }
+.product-editor-presence a[aria-disabled=true] { opacity: .5; cursor: not-allowed; }
+.product-editor-inline-action { align-self: flex-start; padding: 2px 0; border: 0; background: none; color: var(--color-accent); text-align: left; text-decoration: underline; cursor: pointer; font: inherit; }
+.product-editor-inline-action:disabled { cursor: not-allowed; opacity: .5; }
+.product-editor-inline-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.product-editor-shop-navigation { margin-top: 3px; }
 .product-editor-product-link { color: var(--color-accent); text-align: left; white-space: normal; display: inline-flex; align-items: center; gap: 5px; }
 .product-editor-product-link:hover { text-decoration: underline; }
 .product-editor .is-row-dirty > td { border-bottom-color: var(--color-border-accent); background: color-mix(in srgb, var(--color-accent-subtle) 40%, var(--color-bg-secondary)); }

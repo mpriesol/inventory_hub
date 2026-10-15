@@ -21,6 +21,12 @@ Existujúcu kartu možno v detaile prepojiť s existujúcim produktom e-shopu. R
 
 Výber bez konkrétneho skladu zobrazuje katalóg. Množstvá sa v tomto režime nesčítavajú cez sklady. Umiestnenie a minimum možno meniť až po výslovnom výbere skladu. Zmena skladového filtra je pri rozpracovaných úpravách blokovaná; najprv ich uložte alebo zahoďte.
 
+### Chýbajúce odkazy a EAN
+
+**Prepojený** označuje uloženú identitu produktu e-shopu. Ak chýbajú adresy na otvorenie, v tabuľke aj detaile je **Načítať odkazy**. Akcia číta presný prepojený produkt z Upgates a uloží iba jeho pozorované navigačné údaje do Hubu; nemení ceny, sklad ani EAN. E-shopom neposkytnutá adresa zostane výslovne nedostupná. Najprv uložte alebo zahoďte rozpracované bunky. Už prepojené položky v párovacom náhľade možno ukončiť cez **Hotovo** bez opätovného pripájania.
+
+Pri prázdnom EAN v detaile použite **Doplniť EAN od dodávateľa**. Existujúca jednoznačná dodávateľská položka sa vyberie bez nového vyhľadávania; overte jej kód, variant a ponúkané EAN, potom pripravte náhľad a potvrďte doplnenie. Ak je zdrojov viac, vyberte správny. Preberajú sa len platné EAN/UPC do prázdnej karty, s kontrolou vlastníctva a auditom. Existujúce EAN sa neprepisujú. Neplatný čiarový kód e-shopu sa zobrazuje s vysvetlením a nepoužíva sa na automatické párovanie.
+
 ### Čo možno upravovať
 
 | Oblasť | Polia | Význam |
@@ -55,7 +61,7 @@ Zachytená cena e-shopu sa v detaile ukazuje oddelene s **neznámym daňovým z�
 
 ### Dodávateľ a odoslanie do e-shopov
 
-Stĺpce **U dodávateľa** a **Dodávateľská dostupnosť** ukazujú prijaté pozorovanie dodávateľa. `6+` znamená najmenej šesť kusov, potvrdené „skladom“ bez počtu nevymýšľa množstvo a neaktuálny údaj je výslovne označený. Tieto zásoby sa nepripočítavajú k fyzickému skladu. Odkaz **Pravidlá dodávateľa** otvorí intervaly, platnosť údajov a ručné spustenie synchronizácie.
+Stĺpce **U dodávateľa** a **Dodávateľská dostupnosť** ukazujú prijaté pozorovanie dodávateľa. `6+` znamená najmenej šesť kusov, potvrdené „skladom“ bez počtu nevymýšľa množstvo a neaktuálny údaj je výslovne označený. Tieto zásoby sa nepripočítavajú k fyzickému skladu. Pri chýbajúcej dostupnosti riadok vysvetlí príčinu a ponúkne **Nastaviť dostupnosti**, **Načítať dostupnosti** alebo **Skontrolovať zdroj**. Akcia otvorí nastavenie konkrétneho dodávateľa a jeho presného kódu. Nenastavený zdroj, ešte nenačítaný zdroj, chýbajúci záznam, zmenený zdroj a vypršaná platnosť sú odlišné stavy. Potvrdená nula má slovný stav **Nedostupné**, neznámy údaj **Dostupnosť nepotvrdená**. Text o prebiehajúcom načítaní sa zobrazuje len pri skutočnej fronte alebo behu. Navigácia do nastavení počas rozpracovaných úprav alebo neistého uloženia je blokovaná.
 
 Upload posiela iba zvolené polia konkrétneho fyzického riadka. Neodosiela súrodencov pod nadradeným produktom, skladové množstvá, rezervácie ani nákupné náklady. Pri viacerých označených riadkoch zvoľte produkt v okne a postupne skontrolujte jeho náhľad. Cena je **základná cenníková cena s DPH**, existujúce zľavy a akciové ceny zostávajú zachované a viditeľné v náhľade. Rozdielna alebo neznáma DPH/cenník sa nesmie obísť odhadom.
 

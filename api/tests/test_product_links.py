@@ -14,6 +14,7 @@ from inventory_hub.database import get_session
 from inventory_hub.db_models import IdentifierType
 from inventory_hub.product_link_types import (
     ProductLinkMatch, ProductLinksApplyRequest, ProductLinksCandidatesRequest, ProductLinksPreviewRequest,
+    ProductLinksRefreshRequest,
 )
 from inventory_hub.routers import product_links as routes
 from inventory_hub.services import product_links as service
@@ -36,10 +37,18 @@ class ProductLinksInputTests(unittest.TestCase):
                 ProductLinksPreviewRequest(**preview_body(product_ids=ids))
             with self.subTest(scope="apply", ids=ids), self.assertRaises(ValidationError):
                 ProductLinksApplyRequest(**apply_body(product_ids=ids))
+            with self.subTest(scope="refresh", ids=ids), self.assertRaises(ValidationError):
+                ProductLinksRefreshRequest(shop_code="xtrek", product_ids=ids)
         self.assertEqual(ProductLinksCandidatesRequest(shop_code="xtrek", product_ids=[1], query="exact-code").query,
                          "exact-code")
         with self.assertRaises(ValidationError):
             ProductLinksPreviewRequest(**preview_body(query="unreviewed search"))
+
+    def test_refresh_cannot_choose_new_identity_or_mutate_prices_or_stock(self):
+        for extra in ({"manual_matches": []}, {"external_id": "999"}, {"query": "OTHER"},
+                      {"shop_price": "1.00"}, {"shop_stock": 100}, {"create_missing": True}):
+            with self.subTest(extra=extra), self.assertRaises(ValidationError):
+                ProductLinksRefreshRequest(shop_code="xtrek", product_ids=[1], **extra)
 
     def test_manual_match_is_exact_and_cannot_inject_price_stock_or_new_product(self):
         valid = {"product_id": 1, "code": "0001-M", "parent_code": "0001", "is_variant": True}
@@ -115,6 +124,18 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
         choice = service._choice(self.facts, [remote], manual)
         rows = await self.rows({1: self.facts}, {1: choice})
         self.assertEqual(rows[0]["status"], "ready")
+        self.assertIn("barcode_missing", rows[0]["warnings"])
+
+    async def test_raw_invalid_barcode_evidence_is_visible_without_becoming_an_identity_match(self):
+        remote = {**self.remote, "eans": [], "raw_barcodes": ["5901234123458/legacy-note"],
+                  "invalid_barcodes": ["5901234123458", "legacy-note"], "warnings": ["unverified_barcode"]}
+        self.assertIsNone(service._choice(self.facts, [remote])[0])
+        manual = {key: remote[key] for key in ("code", "parent_code", "is_variant")}
+        rows = await self.rows({1: self.facts}, {1: service._choice(self.facts, [remote], manual)})
+        self.assertEqual(rows[0]["status"], "ready")
+        self.assertEqual(rows[0]["remote"]["raw_barcodes"], ["5901234123458/legacy-note"])
+        self.assertEqual(rows[0]["remote"]["eans"], [])
+        self.assertIn("unverified_barcode", rows[0]["warnings"])
         self.assertIn("barcode_missing", rows[0]["warnings"])
 
     async def test_cached_second_barcode_owner_blocks_automatic_choice_even_if_only_one_is_fresh(self):
@@ -276,6 +297,7 @@ class ProductLinksRouteTests(unittest.TestCase):
         self.requests = [
             ("POST", "/product-links/candidates", {"shop_code": "xtrek", "product_ids": [1]}, "candidates"),
             ("POST", "/product-links/preview", preview_body(), "preview"),
+            ("POST", "/product-links/refresh", {"shop_code": "xtrek", "product_ids": [1]}, "refresh"),
             ("GET", "/product-links/" + identifier, None, "get"),
             ("POST", "/product-links/" + identifier + "/apply", apply_body(), "apply"),
         ]

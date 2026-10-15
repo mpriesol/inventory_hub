@@ -1,7 +1,7 @@
 """Operator-only supplier scheduling and manual queue controls."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.access import operator_access
@@ -29,6 +29,13 @@ async def _call(operation):
 @router.get("")
 async def overview(db: AsyncSession = Depends(get_session)):
     return await _call(service.overview(db))
+
+
+@router.get("/{supplier}/observation")
+async def source_observation(supplier: SupplierCode,
+                             sku: Annotated[str, Query(min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]+$")],
+                             db: AsyncSession = Depends(get_session)):
+    return await _call(service.source_observation(db, supplier, sku))
 
 
 @router.put("/{supplier}")

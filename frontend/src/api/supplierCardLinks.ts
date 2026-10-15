@@ -10,13 +10,14 @@ export interface SupplierLinkOptions {
   product: IdentityCard; suppliers: { id: number; code: string; name: string }[];
   current_links: (SupplierLinkSource & { link_id: number; is_active: boolean; orderable: boolean; is_primary: boolean; priority: number })[];
 }
-export interface SupplierLinkPreviewRequest { request_id: string; product_id: number; supplier_product_id: number }
+export interface SupplierLinkPreviewRequest { request_id: string; product_id: number; supplier_product_id: number; copy_supplier_eans?: boolean }
 export interface SupplierLinkApplyRequest { preview_hash: string; confirmed: true }
 export interface SupplierLinkPreview {
   id: string; status: 'prepared' | 'completed'; preview_hash: string; expires_at: string;
   product: IdentityCard; source: SupplierLinkSource; link_status: 'ready' | 'already_linked' | 'conflict';
   warnings: string[]; errors: string[]; planned_changes: string[];
-  result: null | { status: 'linked' | 'already_linked'; product_id: number; supplier_product_id: number; changes: string[] };
+  ean_adoption?: null | { available: boolean; selected: boolean; eans: string[]; reason: string | null };
+  result: null | { status: 'linked' | 'already_linked'; product_id: number; supplier_product_id: number; changes: string[]; copied_eans?: string[] };
 }
 const base = '/api/supplier-card-links';
 export const supplierLinkOptions = (productId: number) => hubRequest<SupplierLinkOptions>(`${base}/options?product_id=${productId}`);
@@ -33,6 +34,7 @@ export function pendingSupplierLink(): PendingSupplierLink | null {
     const value = JSON.parse(window.sessionStorage.getItem(SUPPLIER_LINK_PENDING_KEY) || 'null');
     if (!value || value.version !== 1 || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value.request?.request_id) ||
         ![value.request.product_id, value.request.supplier_product_id].every(id => Number.isSafeInteger(id) && id > 0) ||
+        value.request.copy_supplier_eans !== undefined && typeof value.request.copy_supplier_eans !== 'boolean' ||
         value.apply && (!/^[0-9a-f]{64}$/.test(value.apply.preview_hash) || value.apply.confirmed !== true)) return null;
     return value;
   } catch { return null; }

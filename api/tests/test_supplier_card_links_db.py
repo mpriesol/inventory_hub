@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct
+from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
 from inventory_hub.services import supplier_card_links as service
 from inventory_hub.supplier_card_link_types import (
     SupplierCardLinkApplyRequest, SupplierCardLinkCandidatesRequest, SupplierCardLinkPreviewRequest,
@@ -268,6 +269,115 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             row = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == self.product_id))
             self.assertEqual((row.priority, row.orderable, row.is_active, row.pack_size, str(row.negotiated_price)),
                              (7, False, False, 4, '9.2500'))
+
+    async def ean_preview(self):
+        return await self.preview_request(SupplierCardLinkPreviewRequest(request_id=uuid4(),
+            product_id=self.product_id, supplier_product_id=self.source_id, copy_supplier_eans=True))
+
+    async def test_explicit_ean_copy_is_atomic_audited_and_preserves_manual_fields(self):
+        async with self.transaction() as db:
+            db.add(ProductEditorOverride(product_id=self.product_id, revision=4, data={
+                'common': {'name': 'Manual title'}, 'variant': {'eans': [], 'note': 'Keep this', 'sale_price_gross': '99.00'}}))
+        before = await self.snapshot()
+        preview = await self.ean_preview()
+        self.assertEqual(preview['ean_adoption']['eans'], [EAN])
+        self.assertIn('supplier_eans', preview['planned_changes'])
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM product_identifiers WHERE identifier_type='ean'")), 0)
+        completed = await self.apply_request(preview)
+        self.assertEqual(completed['result']['copied_eans'], [EAN])
+        self.assertEqual(completed['product']['eans'], [EAN])
+        self.assertEqual(await self.apply_request(preview), completed)
+        self.assertEqual(await self.snapshot(), before)
+        async with self.sessions() as db:
+            codes = list(await db.scalars(select(ProductIdentifier).where(
+                ProductIdentifier.product_id == self.product_id, ProductIdentifier.identifier_type == IdentifierType.ean)))
+            self.assertEqual([(row.value, row.is_primary) for row in codes], [(EAN, True)])
+            override = await db.get(ProductEditorOverride, self.product_id)
+            self.assertEqual(override.revision, 5)
+            self.assertEqual(override.data, {'common': {'name': 'Manual title'},
+                'variant': {'eans': [EAN], 'note': 'Keep this', 'sale_price_gross': '99.00'}})
+            audits = list(await db.scalars(select(ProductEditorAudit)))
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(audits[0].before_data['eans'], [])
+            self.assertEqual(audits[0].after_data['eans'], [EAN])
+            self.assertIsNotNone(await db.get(ProductEditorSave, audits[0].request_id))
+
+    async def test_already_linked_card_can_fill_ean_without_recreating_relations(self):
+        await self.apply(await self.inspect())
+        relations = await self.relations()
+        preview = await self.ean_preview()
+        self.assertEqual(preview['planned_changes'], ['supplier_eans'])
+        completed = await self.apply_request(preview)
+        self.assertEqual(completed['result']['copied_eans'], [EAN])
+        self.assertEqual(await self.relations(), relations)
+        async with self.sessions() as db:
+            self.assertEqual((await service.get(db, preview['id']))['product']['eans'], [EAN])
+
+    async def test_ean_copy_never_overwrites_even_unverified_existing_barcode(self):
+        async with self.transaction() as db:
+            db.add(ProductIdentifier(product_id=self.product_id, identifier_type=IdentifierType.unverified_barcode, value='1234'))
+        preview = await self.ean_preview()
+        self.assertFalse(preview['ean_adoption']['available'])
+        self.assertEqual(preview['ean_adoption']['reason'], 'ean_present')
+        self.assertIn('supplier_card_links_ean_unavailable', preview['errors'])
+        with self.assertRaises(service.LinkError):
+            await self.apply_request(preview)
+        self.assertEqual(await self.relations(), ([], []))
+        async with self.sessions() as db:
+            self.assertEqual(list(await db.scalars(select(ProductIdentifier.value))), ['1234'])
+
+    async def test_ean_copy_rejects_any_other_identifier_owner_and_nonempty_manual_ean(self):
+        async with self.transaction() as db:
+            other = Product(sku='OTHER-EAN-OWNER', name='Other card')
+            db.add(other); await db.flush()
+            db.add(ProductIdentifier(product_id=other.id, identifier_type=IdentifierType.custom, value=EAN))
+        preview = await self.ean_preview()
+        self.assertEqual(preview['ean_adoption']['reason'], 'ean_conflict')
+        self.assertEqual(await self.relations(), ([], []))
+        async with self.transaction() as db:
+            db.add(ProductEditorOverride(product_id=self.product_id, revision=1, data={'variant': {'eans': [OTHER_EAN]}}))
+        preview = await self.ean_preview()
+        self.assertEqual(preview['ean_adoption']['reason'], 'ean_present')
+
+    async def test_changed_source_before_ean_apply_fences_without_partial_alias_or_ean(self):
+        preview = await self.ean_preview()
+        async with self.transaction() as db:
+            source = await db.get(SupplierProduct, self.source_id)
+            source.ean = OTHER_EAN
+            attributes = deepcopy(source.attributes); attributes['catalog']['eans'] = [OTHER_EAN]
+            source.attributes = attributes
+        with self.assertRaises(service.LinkError) as failure:
+            await self.apply_request(preview)
+        self.assertTrue(failure.exception.known_unapplied)
+        self.assertEqual(await self.relations(), ([], []))
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM product_editor_audit')), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM product_identifiers')), 0)
+
+    async def test_ean_copy_rollback_removes_audit_ean_and_new_relations_together(self):
+        preview = await self.ean_preview()
+        actual = service._record_ean_copy
+        async def fail_after_copy(*args, **kwargs):
+            await actual(*args, **kwargs)
+            await args[0].flush()
+            raise RuntimeError('synthetic failure after EAN audit')
+        with patch.object(service, '_record_ean_copy', side_effect=fail_after_copy):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
+                await self.apply_request(preview)
+        self.assertEqual(await self.relations(), ([], []))
+        async with self.sessions() as db:
+            for table in ('product_identifiers', 'product_editor_overrides', 'product_editor_audit', 'product_editor_saves'):
+                self.assertEqual(await db.scalar(text('SELECT count(*) FROM ' + table)), 0)
+        self.assertEqual((await self.apply_request(preview))['result']['copied_eans'], [EAN])
+
+    async def test_concurrent_ean_confirmation_records_one_editor_revision(self):
+        preview = await self.ean_preview()
+        results = await asyncio.gather(self.apply_request(preview), self.apply_request(preview))
+        self.assertEqual(results[0], results[1])
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM product_editor_audit')), 1)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM product_identifiers WHERE identifier_type='ean'")), 1)
 
     async def test_exact_ean_offer_is_kept_ahead_of_large_fuzzy_name_pool(self):
         async with self.transaction() as db:

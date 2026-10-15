@@ -6,7 +6,11 @@ Implementované rozhranie umožňuje prepojiť existujúcu kartu Hubu s konkrét
 
 V **Sklade** otvorte detail karty a dodávateľské prepojenie. Vyberte dodávateľa, vyhľadajte jeho položku podľa kódu, EAN alebo názvu a pripravte náhľad. Porovnajte obe strany: kód, názov, EAN a parametre konkrétneho variantu. Potvrďte iba položku, ktorá patrí tej istej fyzickej skladovej karte.
 
-Uloženie pridá dodávateľský identifikátor v rozsahu zvoleného dodávateľa a väzbu na presnú katalógovú položku. Zachová interné ID, SKU, názov, EAN, skupinu, predajné ceny, sklad, FIFO a existujúce väzby na e-shopy. Používa už uložený katalóg; neobnovuje feed ani neposiela požiadavky do e-shopov. Dostupnosť dodávateľa sa naďalej vyhodnocuje oddelene podľa čerstvosti jej pozorovania.
+Uloženie pridá dodávateľský identifikátor v rozsahu zvoleného dodávateľa a väzbu na presnú katalógovú položku. Zachová interné ID, SKU, názov, skupinu, predajné ceny, sklad, FIFO a existujúce väzby na e-shopy. Používa už uložený katalóg; neobnovuje feed ani neposiela požiadavky do e-shopov. Dostupnosť dodávateľa sa naďalej vyhodnocuje oddelene podľa čerstvosti jej pozorovania.
+
+Ak karte chýba EAN, možno v tom istom náhľade výslovne zvoliť **Doplniť EAN od dodávateľa**. Náhľad ukáže presné overené kódy vybranej dodávateľskej položky. Potvrdenie ich doplní iba do prázdnej karty; existujúci EAN ani neoverený uložený čiarový kód neprepíše. Neplatné kódy sa nekopírujú a kód patriaci inej karte zápis zablokuje. Bez tejto voľby zostáva EAN zachovaný.
+
+To isté funguje aj pri už uloženom dodávateľskom prepojení: v detaile prázdneho EAN použite **Doplniť od dodávateľa**, alebo pri existujúcej väzbe **Skontrolovať / doplniť EAN**. Netreba znovu vyhľadávať rovnakú dodávateľskú položku. Doplnenie sa spolu s prepojením zapíše v jednej transakcii, zvýši revíziu editora a zostane v histórii zmien karty. Ostatné ručné úpravy sa zachovajú. Výslovné potvrdenie môže doplniť aj predtým ručne vyprázdnený EAN.
 
 Chýbajúci EAN alebo parameter je viditeľné upozornenie. Protichodný platný EAN, známa odlišná veľkosť/farba, neaktívny zdroj alebo vlastníctvo inej karty blokuje zápis. Existujúca iná väzba na toho istého dodávateľa sa týmto postupom neprepisuje. Podobný názov a podobné SKU pomáhajú nájsť kandidáta; samy nevytvárajú prepojenie.
 
@@ -21,6 +25,8 @@ Voľba existujúcej karty sa uloží do prípravy. Samotné dodávateľské prep
 ## Kontrakt a migrácia
 
 Chránené API `/api/supplier-card-links` poskytuje vyhľadanie kandidátov, náhľad, načítanie výsledku a výslovné potvrdenie. Náhľad uchováva presnú dvojicu interných ID a kontrolný súčet identity. Zápis znovu overuje dodávateľský zdroj, aktuálnu kartu a vlastníctvo pod spoločným `IDENTITY_WRITE_LOCK`. Kontroly používajú existujúci resolver produktových identifikátorov; nevzniká alternatívny spôsob automatického párovania.
+
+Požiadavka náhľadu prijíma voliteľné `copy_supplier_eans` (predvolene `false`). Voľba a overené kódy sú súčasťou uloženého náhľadu; potvrdenie ich nemôže nahradiť iným zoznamom. Odpoveď `ean_adoption` vysvetľuje dostupnosť a plánované kódy, výsledok `copied_eans` potvrdzuje skutočne doplnené kódy. Opakovanie dokončeného potvrdenia vráti pôvodný výsledok bez ďalšieho identifikátora alebo auditu. Táto voľba nepotrebuje novú SQL migráciu a neaktivuje skladovú publikáciu.
 
 Príprava importu má samostatné operácie `POST /api/product-imports/{id}/identity-review` a `POST /api/product-imports/{id}/identity-decisions`. Obidve používajú aktuálnu revíziu prípravy; rozhodnutie sa viaže na konkrétny skontrolovaný obsah. Uloženie kontrolu zopakuje v transakcii s produktovými zápismi.
 

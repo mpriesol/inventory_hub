@@ -52,6 +52,8 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         index = IdentityIndex(0, products, identifiers=[*own_eans, *identifiers, *aliases])
         with patch.object(service, '_product', AsyncMock(return_value=self.facts)), \
              patch.object(service, '_prefix', return_value='NF-'), \
+             patch.object(service, '_ean_adoption', AsyncMock(return_value={
+                 'available': True, 'selected': False, 'eans': [EAN], 'reason': None, '_existing': []})), \
              patch.object(service, 'load_identity_index', AsyncMock(return_value=index)):
             return await service.inspect_link(db, 1, 11)
 
@@ -133,6 +135,29 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((added.product_id, added.supplier_product_id), (1, 11))
         db.commit.assert_not_awaited()
 
+    async def test_ean_adoption_only_accepts_verified_source_values_and_empty_card(self):
+        db = AsyncMock(); db.scalars.return_value = []; db.scalar.return_value = None
+        result = await service._ean_adoption(db, self.facts, {'eans': [EAN, '1234', '0000000000000']}, selected=True)
+        self.assertEqual(result['eans'], [EAN])
+        self.assertTrue(result['available'])
+        self.assertTrue(result['selected'])
+        db.scalars.return_value = ['1234']
+        self.assertEqual((await service._ean_adoption(db, self.facts, {'eans': [EAN]}))['reason'], 'ean_present')
+        db.scalars.return_value = []; self.facts['manual_eans'] = [OTHER]
+        self.assertEqual((await service._ean_adoption(db, self.facts, {'eans': [EAN]}))['reason'], 'ean_present')
+        self.facts['manual_eans'] = []
+        self.assertTrue((await service._ean_adoption(db, self.facts, {'eans': [EAN]}))['available'])
+        db.scalar.return_value = 2
+        self.assertEqual((await service._ean_adoption(db, self.facts, {'eans': [EAN]}))['reason'], 'ean_conflict')
+
+    async def test_invalid_source_digits_cannot_be_copied(self):
+        db = AsyncMock(); db.scalars.return_value = []
+        result = await service._ean_adoption(db, self.facts, {'eans': ['1234', '8585047234449']}, selected=True)
+        self.assertFalse(result['available'])
+        self.assertEqual(result['reason'], 'source_ean_missing')
+        self.assertEqual(result['eans'], [])
+        db.scalar.assert_not_awaited()
+
 
 class SupplierCardRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -168,6 +193,18 @@ class SupplierCardRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['result'], self.row.result)
         apply_link.assert_not_awaited()
 
+    async def test_old_preview_request_replays_but_cannot_change_its_ean_choice(self):
+        original = {'request_id': self.row.id, 'product_id': 1, 'supplier_product_id': 11}
+        self.row.request_hash = service.digest(original)
+        self.db.get.return_value = self.row
+        with patch.object(service, 'inspect_link', AsyncMock()) as inspect_link:
+            result = await service.preview(self.db, SupplierCardLinkPreviewRequest(**original))
+            self.assertEqual(result['id'], self.row.id)
+            with self.assertRaises(service.LinkError) as changed:
+                await service.preview(self.db, SupplierCardLinkPreviewRequest(**original, copy_supplier_eans=True))
+        self.assertEqual(changed.exception.code, 'supplier_card_links_request_changed')
+        inspect_link.assert_not_awaited()
+
 
 class SupplierCardRoutesTests(unittest.TestCase):
     def setUp(self):
@@ -198,6 +235,10 @@ class SupplierCardRoutesTests(unittest.TestCase):
         for value in (1, 'true', False, None):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 SupplierCardLinkApplyRequest(preview_hash='a'*64, confirmed=value)
+        for value in (1, 'true', None):
+            with self.subTest(copy=value), self.assertRaises(ValidationError):
+                SupplierCardLinkPreviewRequest(**valid, copy_supplier_eans=value)
+        self.assertTrue(SupplierCardLinkPreviewRequest(**valid, copy_supplier_eans=True).copy_supplier_eans)
         response = self.client.post('/supplier-card-links/preview', json={**valid, 'secret': 'DO-NOT-ECHO'}, headers=self.headers)
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.headers['cache-control'], 'no-store')

@@ -95,8 +95,9 @@ async def options(db):
 # variants; its complete JSON and sibling images never leave PostgreSQL here.
 OBSERVED_SQL = """
 SELECT sp.id,
- substring(coalesce(jsonb_path_query_first(leaf.value, '$.descriptions[*] ? (@.language == "sk").title') #>> '{}',
-   jsonb_path_query_first(c.data, '$.descriptions[*] ? (@.language == "sk").title') #>> '{}'), 1, 500) AS name,
+ substring(CASE WHEN link.value IS NOT NULL THEN link.value->>'name' ELSE
+   coalesce(jsonb_path_query_first(leaf.value, '$.descriptions[*] ? (@.language == "sk").title') #>> '{}',
+   jsonb_path_query_first(c.data, '$.descriptions[*] ? (@.language == "sk").title') #>> '{}') END, 1, 500) AS name,
  CASE WHEN c.data->'active_yn' = 'false'::jsonb THEN false
       WHEN jsonb_typeof(coalesce(leaf.value->'active_yn', c.data->'active_yn')) = 'boolean'
       THEN (coalesce(leaf.value->'active_yn', c.data->'active_yn') #>> '{}')::boolean ELSE NULL END AS visible,
@@ -107,15 +108,22 @@ SELECT sp.id,
    c.data #>> '{images,0,url}'), 1, 2001) AS image_url,
  coalesce(nullif(nullif(leaf.value->'parameters_new', 'null'::jsonb), '[]'::jsonb),
    nullif(leaf.value->'parameters', 'null'::jsonb), '[]'::jsonb) AS parameters,
- substring(coalesce(jsonb_path_query_first(leaf.value, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
+ substring(CASE WHEN link.value IS NOT NULL THEN link.value->>'shop_url' ELSE
+   coalesce(jsonb_path_query_first(leaf.value, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
    jsonb_path_query_first(c.data, '$.descriptions[*] ? (@.language == "sk").url') #>> '{}',
-   c.data #>> '{descriptions,0,url}', c.data->>'url'), 1, 2001) AS shop_url,
- substring(coalesce(leaf.value->>'admin_url', c.data->>'admin_url'), 1, 2001) AS shop_admin_url
+   c.data #>> '{descriptions,0,url}', c.data->>'url') END, 1, 2001) AS shop_url,
+ substring(CASE WHEN link.value IS NOT NULL THEN link.value->>'shop_admin_url' ELSE
+   coalesce(leaf.value->>'admin_url', c.data->>'admin_url') END, 1, 2001) AS shop_admin_url
 FROM shop_products sp
 JOIN shop_product_content c ON c.shop_id = sp.shop_id
  AND c.external_code = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
 LEFT JOIN LATERAL (SELECT jsonb_path_query_first(c.data, '$.variants[*] ? (@.code == $code)',
  jsonb_build_object('code', sp.variant_code)) AS value) leaf ON sp.is_variant
+LEFT JOIN LATERAL (SELECT c.data->'_hub_link_metadata'->
+ ((CASE WHEN sp.is_variant THEN 'variant:' ELSE 'product:' END) || sp.external_id) AS value) link
+ ON link.value->>'external_id' = sp.external_id AND link.value->'is_variant' = to_jsonb(sp.is_variant)
+ AND link.value->>'code' = CASE WHEN sp.is_variant THEN sp.variant_code ELSE sp.external_code END
+ AND link.value->>'parent_code' = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
 WHERE sp.product_id = ANY(:ids)
 """
 

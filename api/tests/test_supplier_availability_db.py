@@ -1,6 +1,7 @@
 """Atomic supplier observations in a disposable PostgreSQL namespace only."""
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -101,6 +102,82 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             await service.accept_run(db, plan, records or [observation("SUP-1", "6+"), observation("SUP-2", "0")], 120)
         return plan
+
+    async def test_linked_source_without_first_run_is_not_reported_as_missing_sku(self):
+        async with self.transaction() as db:
+            value = (await service.project(db, self.products))[self.products[0]]
+            self.assertEqual((value["status"], value["action"]), ("not_loaded", "refresh"))
+            self.assertEqual((value["supplier"], value["supplier_sku"], value["feed_key"]), ("paul-lange", "SUP-1", "stock"))
+            self.assertIsNone(value["last_success_at"])
+            self.assertEqual(value["availability_state"], "unknown")
+
+    async def test_unconfigured_link_preserves_supplier_context(self):
+        async with self.transaction() as db:
+            await db.delete(await db.get(SupplierAvailabilitySettings, self.supplier_id))
+        async with self.transaction() as db:
+            value = (await service.project(db, self.products))[self.products[0]]
+            self.assertEqual((value["status"], value["action"]), ("unconfigured", "configure"))
+            self.assertEqual(value["supplier_sku"], "SUP-1")
+            self.assertIsNone(value["feed_key"])
+
+    async def test_successful_feed_missing_exact_sku_has_distinct_diagnostic(self):
+        plan = await self.accept([observation("SUP-2", "0")])
+        async with self.transaction() as db:
+            value = await service.source_observation(db, "paul-lange", "SUP-1")
+            self.assertEqual(value["status"], "missing_observation")
+            self.assertEqual(value["last_success_at"], plan["observed_at"].isoformat())
+            self.assertIsNone(value["observed_at"])
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_changing_selected_feed_reports_mismatch_instead_of_missing_sku(self):
+        plan = await self.accept()
+        async with self.transaction() as db:
+            await service.configure(db, "paul-lange", SupplierAvailabilityInput(expected_revision=1, feed_key="products"))
+        async with self.transaction() as db:
+            value = (await service.project(db, self.products))[self.products[0]]
+            self.assertEqual((value["status"], value["action"]), ("feed_mismatch", "check_source"))
+            self.assertEqual((value["feed_key"], value["observation_feed_key"]), ("products", "stock"))
+            self.assertEqual(value["observed_at"], plan["observed_at"].isoformat())
+            self.assertFalse(value["fresh"])
+            self.assertIsNone(value["quantity"])
+
+    async def test_raw_supplier_sku_drives_zero_quantity_without_catalog_or_hub_sku_fallback(self):
+        async with self.transaction() as db:
+            source = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku == "SUP-1"))
+            source.supplier_sku = "103404-281-103"
+            source.stock_qty = 99  # Old catalog snapshot is deliberately different.
+        plan = await self.accept([observation("103404-281-103", "0"), observation("SUP-2", "1")])
+        async with self.transaction() as db:
+            value = (await service.project(db, self.products, plan["observed_at"] + timedelta(seconds=1)))[self.products[0]]
+            self.assertEqual(value["availability_state"], "unavailable")
+            self.assertEqual(value["status"], "fresh")
+            self.assertEqual(Decimal(value["quantity"]), Decimal(0))
+            self.assertEqual(value["supplier_sku"], "103404-281-103")
+            self.assertFalse((await db.get(SupplierAvailabilitySettings, self.supplier_id)).enabled)
+            direct = await service.source_observation(db, "paul-lange", "103404-281-103", plan["observed_at"] + timedelta(seconds=1))
+            self.assertEqual(direct["availability_state"], "unavailable")
+            with self.assertRaises(AvailabilityError):
+                await service.source_observation(db, "paul-lange", "NF-103404-281-103")
+            with self.assertRaises(AvailabilityError):
+                await service.source_observation(db, "paul-lange", "LOCAL-1")
+
+    async def test_configuration_failure_is_not_misreported_as_missing_observation(self):
+        await self.accept()
+        with patch.object(service.catalog, "supplier_config", side_effect=service.catalog.CatalogError("supplier_not_found", "secret URL", 404)):
+            async with self.transaction() as db:
+                value = (await service.project(db, self.products))[self.products[0]]
+                self.assertEqual((value["status"], value["action"]), ("configuration_error", "configure"))
+                self.assertEqual(value["reason"], "supplier_availability_source_missing")
+                self.assertNotIn("secret", json.dumps(value))
+
+    async def test_queued_refresh_is_separate_from_availability_and_does_not_invent_quantity(self):
+        async with self.transaction() as db:
+            await service.request_run(db, "paul-lange", SupplierAvailabilityRunInput(expected_revision=1))
+        async with self.transaction() as db:
+            value = (await service.project(db, self.products))[self.products[0]]
+            self.assertEqual((value["status"], value["refresh_state"], value["action"]), ("not_loaded", "queued", "wait"))
+            self.assertIsNone(value["quantity"])
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
     async def test_manual_run_disabled_automation_accepts_only_supplier_facts(self):
         async with self.transaction() as db:

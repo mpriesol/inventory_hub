@@ -11,8 +11,8 @@ import { ActionScope } from '../ui/ActionScope';
 import { IdentityFacts } from './IdentityFacts';
 import './ProductSupplierLinksPanel.css';
 
-export function ProductSupplierLinksPanel({ product: initialProduct, onClose, onChanged }: {
-  product?: ProductEditorRow; onClose: () => void; onChanged: () => void;
+export function ProductSupplierLinksPanel({ product: initialProduct, fillEans = false, onClose, onChanged }: {
+  product?: ProductEditorRow; fillEans?: boolean; onClose: () => void; onChanged: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const c = (key: string, args: Record<string, unknown> = {}) => t(`supplierLinks.${key}`, args);
@@ -27,6 +27,7 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
   const [candidateWarnings, setCandidateWarnings] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(false), [selected, setSelected] = useState<SupplierLinkSource | null>(null);
   const [preview, setPreview] = useState<SupplierLinkPreview | null>(null);
+  const [copyEans, setCopyEans] = useState(false);
   const [pending, setPending] = useState<PendingSupplierLink | null>(() => pendingSupplierLink());
   const [uncertain, setUncertain] = useState<'preview' | 'apply' | null>(() => {
     const value = pendingSupplierLink(); return value ? value.apply ? 'apply' : 'preview' : null;
@@ -39,6 +40,7 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
   const remember = (value: PendingSupplierLink) => { rememberSupplierLink(value); pendingRef.current = value; setPending(value); };
   const accept = (value: SupplierLinkPreview) => {
     setPreview(value); setProduct(value.product); setSelected(value.source); setSupplier(value.source.supplier_code); setMissing(false);
+    setCopyEans(value.ean_adoption?.selected ?? pendingRef.current?.request.copy_supplier_eans ?? false);
     if (value.status === 'completed') {
       try { forgetSupplierLink(value.id); } catch { /* A completed operation remains readable. */ }
       pendingRef.current = null; setPending(null); setUncertain(null); changedRef.current();
@@ -50,7 +52,8 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
     if (kind === 'options' && !product || kind === 'search' && (!product || !supplier || frozen)) return;
     if (kind === 'preview' && !retry) {
       if (!product || !selected || frozen) return;
-      saved = { version: 1, request: { request_id: crypto.randomUUID(), product_id: product.id, supplier_product_id: selected.id } };
+      saved = { version: 1, request: { request_id: crypto.randomUUID(), product_id: product.id,
+        supplier_product_id: selected.id, ...(copyEans ? { copy_supplier_eans: true } : {}) } };
       try { remember(saved); } catch { setError('storage_unavailable'); return; }
       setPreview(null);
     }
@@ -68,11 +71,15 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
         const value = await supplierLinkOptions(product!.id);
         if (mounted.current && credential === accessRevision()) {
           setOptions(value); setProduct(value.product); setSupplier(previous => previous || value.suppliers[0]?.code || '');
+          const existing = value.current_links.filter(source => source.active && source.eans.length);
+          if (fillEans && !value.product.eans.length && existing.length === 1 && !preview && !pendingRef.current) {
+            setSelected(existing[0]); setSupplier(existing[0].supplier_code); setCopyEans(true);
+          }
         }
       } else if (kind === 'search') {
         const value = await supplierLinkCandidates(product!.id, supplier, query);
         if (mounted.current && credential === accessRevision()) {
-          setProduct(value.product); setCandidates(value.rows); setTruncated(value.truncated); setCandidateWarnings(value.warnings || []); setSelected(null); setPreview(null);
+          setProduct(value.product); setCandidates(value.rows); setTruncated(value.truncated); setCandidateWarnings(value.warnings || []); setSelected(null); setPreview(null); setCopyEans(false);
         }
       } else {
         const value = kind === 'preview' ? await previewSupplierLink(saved!.request)
@@ -117,9 +124,14 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
   // A recovered preview carries its actual card, even when Resume was opened
   // without a table selection or while another card was visible.
   useEffect(() => { if (product && !options && optionsAttempted.current !== product.id && !busy && !frozen) void perform('options'); }, [product?.id, options, busy, frozen]);
-  const resetSearch = () => { setCandidates(null); setCandidateWarnings([]); setTruncated(false); setSelected(null); setPreview(null); setError(''); };
+  const resetSearch = () => { setCandidates(null); setCandidateWarnings([]); setTruncated(false); setSelected(null); setPreview(null); setCopyEans(false); setError(''); };
+  const choose = (source: SupplierLinkSource, fill = fillEans) => {
+    setSelected(source); setSupplier(source.supplier_code); setPreview(null); setError('');
+    setCopyEans(fill && !product?.eans.length && !!source.eans.length);
+  };
+  const SearchSection = fillEans && selected ? 'details' : 'div';
   return <div className="product-editor-modal-backdrop"><section ref={dialog} className="product-editor-detail supplier-links-panel" role="dialog" aria-modal="true" aria-labelledby="supplier-links-title">
-    <header><div><h2 id="supplier-links-title">{c('title')}</h2><p className="product-editor-muted">{c('intro')}</p></div>
+    <header><div><h2 id="supplier-links-title">{c(fillEans ? 'fillEans' : 'title')}</h2><p className="product-editor-muted">{c('intro')}</p></div>
       <button type="button" data-testid="supplier-links-close" disabled={!!busy} onClick={onClose} aria-label={t('productEditor.closeDetail')}><X size={20} /></button></header>
     <div className="product-editor-detail-body">
       {product && <section><h3>{c('card')}</h3><IdentityFacts {...product} /></section>}
@@ -131,11 +143,14 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
           {uncertain === 'apply' && <Button data-testid="supplier-links-retry-apply" variant="secondary" disabled={!!busy} onClick={() => perform('apply', true)}>{c('retryApply')}</Button>}
           {uncertain === 'preview' && missing && <Button data-testid="supplier-links-retry-preview" variant="secondary" disabled={!!busy} onClick={() => perform('preview', true)}>{c('retryPreview')}</Button>}
         </div></div>}
-      {options && <details><summary>{c('currentLinks', { count: options.current_links.length })}</summary>
+      {options && <details open={fillEans || undefined}><summary>{c('currentLinks', { count: options.current_links.length })}</summary>
         {!options.current_links.length ? <p>{c('noLinks')}</p> : options.current_links.map(source => <p key={source.link_id}>
-          <strong>{source.supplier_name}</strong> · <code>{source.supplier_sku}</code> · {source.name} · {c(source.is_active ? 'active' : 'inactive')}</p>)}
+          <strong>{source.supplier_name}</strong> · <code>{source.supplier_sku}</code> · {source.name} · {c(source.is_active ? 'active' : 'inactive')}
+          {!frozen && preview?.status !== 'completed' && <Button data-testid={`supplier-links-current-${source.id}`} variant="secondary" size="sm"
+            disabled={!!busy || !source.active} onClick={() => choose(source, true)}>{c('reviewCurrent')}</Button>}</p>)}
       </details>}
-      {!frozen && preview?.status !== 'completed' && <>
+      {!frozen && preview?.status !== 'completed' && <SearchSection>
+        {fillEans && selected && <summary>{c('searchOther')}</summary>}
         <form className="supplier-links-search" onSubmit={event => { event.preventDefault(); void perform('search'); }}>
           <label>{c('supplier')}<select data-testid="supplier-links-supplier" value={supplier} disabled={!!busy || !options} onChange={event => { setSupplier(event.target.value); resetSearch(); }}>
             {!supplier && <option value="">{c('chooseSupplier')}</option>}{options?.suppliers.map(item => <option key={item.id} value={item.code}>{item.name}</option>)}
@@ -147,24 +162,34 @@ export function ProductSupplierLinksPanel({ product: initialProduct, onClose, on
         {candidates && !candidates.length && <p>{c('noCandidates')}</p>}
         <div className="supplier-links-candidates">{candidates?.map(source => <label className="supplier-links-candidate" key={source.id}>
           <input data-testid={`supplier-links-candidate-${source.id}`} type="radio" name="supplier-link-source" disabled={!!busy || !source.active} checked={selected?.id === source.id}
-            onChange={() => { setSelected(source); setPreview(null); }} /><div><IdentityFacts sku={source.shop_sku} supplierSku={source.supplier_sku} name={source.name} eans={source.eans} attributes={source.attributes} />
+            onChange={() => choose(source)} /><div><IdentityFacts sku={source.shop_sku} supplierSku={source.supplier_sku} name={source.name} eans={source.eans} attributes={source.attributes} />
             <div className="identity-match-reasons">{source.match_reasons?.map(reason => <span key={reason}>{message(reason)}</span>)}</div>
             {!source.active && <p>{c('inactive')}</p>}{source.last_seen_at && <small>{c('lastSeen')}: {new Date(source.last_seen_at).toLocaleString(i18n.language)}</small>}
             {source.warnings?.map(reason => <p className="product-editor-muted" key={reason}>{message(reason)}</p>)}
           </div></label>)}</div>
-      </>}
+      </SearchSection>}
+      {!frozen && preview?.status !== 'completed' && selected && (copyEans || !product?.eans.length && selected.eans.length > 0) && <section>
+        <label><input type="checkbox" data-testid="supplier-links-copy-eans" disabled={!!busy} checked={copyEans}
+          onChange={event => { setCopyEans(event.target.checked); setPreview(null); }} /> {c('fillEans')}</label>
+        <p><code>{selected.eans.join(', ')}</code></p><p className="product-editor-muted">{c('fillEansHelp')}</p>
+      </section>}
       {preview && <section data-testid="supplier-links-preview-result"><h3>{c(`status.${preview.status === 'completed' ? preview.result?.status || 'linked' : preview.link_status}`)}</h3>
         <div className="supplier-links-comparison"><section><h4>{c('card')}</h4><IdentityFacts {...preview.product} /></section>
           <section><h4>{preview.source.supplier_name}</h4><IdentityFacts sku={preview.source.shop_sku} supplierSku={preview.source.supplier_sku} name={preview.source.name} eans={preview.source.eans} attributes={preview.source.attributes} /></section></div>
         {preview.errors.map(reason => <p className="product-editor-error" key={reason}>{message(reason)}</p>)}
         {preview.warnings.map(reason => <p className="product-editor-alert" key={reason}>{message(reason)}</p>)}
+        {preview.ean_adoption?.selected && preview.ean_adoption.available && preview.status !== 'completed' &&
+          <p data-testid="supplier-links-eans-planned">{c('eansPlanned', { eans: preview.ean_adoption.eans.join(', ') })}</p>}
+        {preview.ean_adoption?.selected && preview.ean_adoption.reason && <p className="product-editor-error">{message(preview.ean_adoption.reason)}</p>}
         {preview.planned_changes.length > 0 && preview.status !== 'completed' && <div><h4>{c('changes')}</h4><ul>{preview.planned_changes.map(change => <li key={change}>{message(change)}</li>)}</ul></div>}
         {preview.status === 'completed' && <p role="status" className="product-editor-alert" data-testid="supplier-links-completed">{c('completed')}</p>}
+        {!!preview.result?.copied_eans?.length && <p role="status" data-testid="supplier-links-eans-copied">{c('eansCopied')} <code>{preview.result.copied_eans.join(', ')}</code></p>}
       </section>}
       {!frozen && preview?.status !== 'completed' && <div className="supplier-links-actions">
         <div className="product-editor-scoped-action"><Button data-testid="supplier-links-preview" variant="secondary" disabled={!!busy || !selected || !product} onClick={() => perform('preview')}>{c(preview ? 'refreshPreview' : 'preview')}</Button><ActionScope effects={['hub-read', 'hub-write']} /></div>
-        {preview && ['ready', 'already_linked'].includes(preview.link_status) && <div className="product-editor-scoped-action"><Button data-testid="supplier-links-apply" disabled={!!busy} onClick={() => perform('apply')}>{c(preview.link_status === 'already_linked' ? 'finishExisting' : 'apply')}</Button><ActionScope effects={['hub-write']} /></div>}
+        {preview && ['ready', 'already_linked'].includes(preview.link_status) && <div className="product-editor-scoped-action"><Button data-testid="supplier-links-apply" disabled={!!busy} onClick={() => perform('apply')}>{c(preview.ean_adoption?.selected ? 'confirmEans' : preview.link_status === 'already_linked' ? 'finishExisting' : 'apply')}</Button><ActionScope effects={['hub-write']} /></div>}
       </div>}
+      {preview?.status === 'completed' && <Button data-testid="supplier-links-done" disabled={!!busy} onClick={onClose}>{c('done')}</Button>}
       {busy && <p role="status">{c(`busy.${busy}`)}</p>}
     </div></section></div>;
 }
