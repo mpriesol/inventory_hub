@@ -29,7 +29,7 @@ from inventory_hub.services import order_processing as service
 from inventory_hub.services import order_stock as manual
 from inventory_hub.services import order_stock_source as source
 from inventory_hub.services import stock_settings
-from test_order_stock import ACTIONS, NOW, STATUSES, raw_line, raw_order, raw_page
+from test_order_stock import ACTIONS, NOW, STATUSES, PRODUCTION_ACTIONS, production_statuses, raw_line, raw_order, raw_page
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -63,6 +63,7 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             poolclass=NullPool, connect_args={"server_settings": {"search_path": self.schema}})
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, autoflush=False)
         self.raw_orders, self.source_reads = {}, []
+        self.statuses = copy.deepcopy(STATUSES)
         self.config = {"upgates_api_base_url": "https://processing-test.invalid/api/v2",
                        "upgates_login": "synthetic-reader", "upgates_api_key": "test-only-secret"}
         self.patchers = [patch.object(service, "now", return_value=NOW),
@@ -79,7 +80,7 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([warehouse, product])
             await db.flush()
             self.warehouse_id, self.product_id = warehouse.id, product.id
-            normalized = source._statuses(STATUSES)
+            normalized = source._statuses(self.statuses)
             db.add(OrderStockPolicy(shop_id=self.shops["biketrek"], warehouse_id=warehouse.id,
                 starts_at=POLICY_START, revision=1, status_actions=dict(ACTIONS), **normalized))
             fingerprint = collection.target_fingerprint("biketrek")
@@ -116,9 +117,9 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         def read(params):
             self.source_reads.append((shop_code, dict(params)))
             raw = self.raw_orders.get(params["order_numbers"])
-            return raw_page(copy.deepcopy(raw)) if raw else raw_page(), copy.deepcopy(STATUSES)
+            return raw_page(copy.deepcopy(raw)) if raw else raw_page(), copy.deepcopy(self.statuses)
         return SimpleNamespace(base_url=self.config["upgates_api_base_url"],
-            read_order_audit=read, read_order_statuses=lambda: copy.deepcopy(STATUSES),
+            read_order_audit=read, read_order_statuses=lambda: copy.deepcopy(self.statuses),
             session=SimpleNamespace(auth=(self.config["upgates_login"], "test-only-secret"), close=Mock()))
 
     def raw(self, *lines, **changes):
@@ -244,6 +245,26 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         before = await self.physical_snapshot()
         await self.process()
         self.assertEqual(await self.physical_snapshot(), before)
+
+    async def test_automatic_paid_pickup_and_store_status_cycle_never_duplicates_stock(self):
+        self.statuses = production_statuses()
+        async with self.transaction() as db:
+            policy = await db.get(OrderStockPolicy, self.shops["biketrek"])
+            normalized = source._statuses(self.statuses)
+            policy.statuses, policy.status_hash = normalized["statuses"], normalized["status_hash"]
+            policy.status_actions = dict(PRODUCTION_ACTIONS)
+        await self.seed("5")
+        raw = self.raw(raw_line(quantity="2"))
+        for minute, status_id in enumerate((1, 3, 18, 3, 19, 8, 9, 19)):
+            raw.update(status_id=status_id, last_update_time=(NOW - timedelta(minutes=10 - minute)).isoformat())
+            await self.process(raw)
+            state = await self.state()
+            issued = minute >= 4
+            self.assertEqual((state.balance.qty_on_hand, state.balance.qty_reserved),
+                             (D("3"), D("0")) if issued else (D("5"), D("2")))
+            self.assertEqual(len(state.movements), 1 if issued else 0)
+            self.assertEqual(state.jobs[0]["status"], "completed")
+        self.assertEqual(state.movements[0].total_cost, D("6"))
 
     async def test_manual_issue_wins_while_automatic_fetch_is_in_flight(self):
         await self.seed("5")

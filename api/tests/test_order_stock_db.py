@@ -25,7 +25,8 @@ from inventory_hub.order_stock_types import OrderStockApplyRequest, OrderStockCo
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services import order_stock as service
 from inventory_hub.services import order_stock_source as source
-from test_order_stock import ACTIONS, NOW, STATUSES, configure_body, preview_body, raw_line, raw_order, raw_page
+from test_order_stock import (ACTIONS, NOW, STATUSES, PRODUCTION_ACTIONS, configure_body,
+                             preview_body, production_statuses, raw_line, raw_order, raw_page)
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -252,6 +253,51 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.apply(preview)
         self.assertEqual((await self.balance("SKU-A"))[:2], (D("2"), D("1")))
         self.assertEqual(await self.movements(), [])
+
+    async def test_real_status_cycle_keeps_one_reservation_and_one_issue_in_each_shop(self):
+        self.statuses = production_statuses()
+        await self.seed("SKU-A", "10")
+        for shop in ("biketrek", "xtrek"):
+            options = await self.configure(shop_code=shop, actions=PRODUCTION_ACTIONS)
+            self.assertEqual(options["policy"]["status_actions"], PRODUCTION_ACTIONS)
+            raw = raw_order(raw_line(quantity="2"), order_number=f"CYCLE-{shop}")
+            starting = (await self.balance("SKU-A"))[0]
+            for status_id in (1, 3, 18, 3):
+                raw["status_id"] = status_id
+                await self.process(raw, shop)
+                self.assertEqual((await self.balance("SKU-A"))[:2], (starting, D("2")))
+            before = len(await self.movements())
+            for status_id in (19, 8, 9, 19):
+                raw["status_id"] = status_id
+                await self.process(raw, shop)
+                self.assertEqual((await self.balance("SKU-A"))[:2], (starting - 2, D("0")))
+                self.assertEqual(len(await self.movements()), before + 1)
+
+    async def test_paid_order_first_seen_reserves_and_cancel_releases_without_issue(self):
+        self.statuses = production_statuses()
+        await self.configure(actions=PRODUCTION_ACTIONS)
+        await self.seed("SKU-A", "3")
+        raw = raw_order(raw_line(quantity="2"), status_id=3, paid_date="2026-09-23")
+        await self.process(raw)
+        await self.process(raw)
+        self.assertEqual((await self.balance("SKU-A"))[:2], (D("3"), D("2")))
+        raw["status_id"] = 2
+        await self.process(raw)
+        self.assertEqual((await self.balance("SKU-A"))[:2], (D("3"), D("0")))
+        self.assertEqual(await self.movements(), [])
+
+    async def test_completed_custom_store_sale_can_issue_directly_with_physical_confirmation(self):
+        self.statuses = production_statuses()
+        await self.configure(actions=PRODUCTION_ACTIONS)
+        await self.seed("SKU-A", "3")
+        preview = await self.preview(raw_order(status_id=9, origin="cash-register"))
+        self.assertEqual(preview["action"], "issue")
+        with self.assertRaises(service.OrderStockError) as raised:
+            await self.apply(preview, physical=False)
+        self.assertEqual(raised.exception.code, "order_stock_physical_confirmation_required")
+        await self.apply(preview)
+        self.assertEqual((await self.balance("SKU-A"))[:2], (D("2"), D("0")))
+        self.assertEqual(len(await self.movements()), 1)
 
     async def test_fractional_piece_balances_block_reserve_and_issue_but_cancel_releases_old_hold(self):
         await self.seed("SKU-A", "2")

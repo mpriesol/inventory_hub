@@ -189,6 +189,7 @@ export function OrdersStockPage() {
         {options && <details className="order-stock-config" open={!options.policy || configDirty}>
           <summary>{t('orderStock.configTitle')}</summary>
           {options.policy ? <p>{t('orderStock.activeSince', { at: date(options.policy.starts_at), revision: options.policy.revision })}</p> : <p>{t('orderStock.cutoverHelp')}</p>}
+          <p>{t('orderStock.statusRulesHelp')}</p>
           <label>{t('orderStock.warehouse')}<select value={warehouse} disabled={locked || !!options.policy} onChange={event => changeConfig(event.target.value, statusActions)}><option value="">{t('orderStock.chooseWarehouse')}</option>
             {options.warehouses.map(item => <option key={item.id} value={item.code}>{item.name}</option>)}
           </select></label>
@@ -199,6 +200,9 @@ export function OrdersStockPage() {
             {options.statuses.map(status => <tr key={status.id}><td>{status.name} <small>#{status.id}</small></td><td><select aria-label={`${t('orderStock.statusAction')} ${status.id} ${status.name}`} value={statusActions[String(status.id)] || 'review'} disabled={locked} onChange={event => changeConfig(warehouse, { ...statusActions, [String(status.id)]: event.target.value as OrderStockAction })}>
               {actions.filter(action => (options.allowed_actions[String(status.id)] || ['review']).includes(action)).map(action => <option key={action} value={action}>{t(`orderStock.actions.${action}`)}</option>)}</select></td><td>{t(`orderStock.actions.${options.suggested_actions[String(status.id)] || 'review'}`)}</td></tr>)}
           </tbody></table></div>
+          {options.statuses.some(status => statusActions[String(status.id)] === 'issue') && <p role="status">{t('orderStock.issueStatusesHelp', {
+            statuses: options.statuses.filter(status => statusActions[String(status.id)] === 'issue').map(status => status.name).join(', '),
+          })}</p>}
           <div className="opening-stock-confirmations"><label><input type="checkbox" checked={configConfirmed} disabled={locked} onChange={event => setConfigConfirmed(event.target.checked)} />{t('orderStock.configConfirm')}</label>
             <span className="action-control"><Button disabled={!!busy || !!uncertain || !warehouse || !configConfirmed} onClick={configure}>{t(options.policy ? 'orderStock.saveConfig' : 'orderStock.activate')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></span></div>
         </details>}

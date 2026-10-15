@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import re
 import unicodedata
 
 from sqlalchemy import select, text
@@ -22,6 +23,7 @@ from inventory_hub.services.shop_warehouse_assignment import assignment_options,
 
 EXPIRY_MINUTES = 30
 RETURN_LABELS = {"reklamacia", "reklamovana", "vratena", "vratenie", "neprevzata", "nedorucena",
+                 "vrateny", "vratit", "nevyzdvihnuta", "neprebrata",
                  "returned", "return", "claim", "undelivered"}
 
 
@@ -45,26 +47,35 @@ def _label(value: str) -> str:
                              if not unicodedata.combining(c)).split())
 
 
+def is_return_status(status: dict) -> bool:
+    return bool(RETURN_LABELS.intersection(re.findall(r"[a-z]+", _label(status["name"]))))
+
+
 def _suggested(status: dict) -> str:
     label = _label(status["name"])
-    if label in RETURN_LABELS or status["type"] in ("PaymentFailed", "PaymentCanceled"):
+    if is_return_status(status) or status["type"] in ("PaymentFailed", "PaymentCanceled"):
         return "review"
     if status["type"] == "Canceled":
         return "cancel"
     if status["type"] == "Sent" or label in ("odoslana", "vyzdvihnuta"):
         return "issue"
-    if status["type"] == "Received":
+    if status["type"] in ("Received", "PaymentSuccessful"):
         return "reserve"
     return "review"
 
 
 def _allowed(status: dict) -> list[str]:
-    suggestion = _suggested(status)
-    if suggestion != "review":
-        return ["review", suggestion]
-    if status["type"] == "Custom" and _label(status["name"]) not in RETURN_LABELS:
-        return ["review", "reserve"]
-    return ["review"]
+    if is_return_status(status):
+        return ["review"]
+    # Custom handover/POS states are explicitly confirmed by their status ID.
+    # A name-based suggestion must not restrict the operator's chosen meaning.
+    return {
+        "Received": ["review", "reserve"],
+        "PaymentSuccessful": ["review", "reserve"],
+        "Canceled": ["review", "cancel"],
+        "Sent": ["review", "issue"],
+        "Custom": ["review", "reserve", "issue"],
+    }.get(status["type"], ["review"])
 
 
 async def _shop(db: AsyncSession, code: str, *, lock=False) -> Shop:
@@ -127,7 +138,7 @@ async def configure(db: AsyncSession, payload: OrderStockConfigureRequest) -> di
         raise OrderStockError("order_stock_invalid_status_actions", 422)
     for status in statuses["statuses"]:
         action = payload.status_actions[str(status["id"])]
-        if (_label(status["name"]) in RETURN_LABELS or status["type"] in ("PaymentFailed", "PaymentCanceled")) and action != "review":
+        if (is_return_status(status) or status["type"] in ("PaymentFailed", "PaymentCanceled")) and action != "review":
             raise OrderStockError("order_stock_return_requires_review", 422)
         if status["type"] == "Canceled" and action not in ("cancel", "review"):
             raise OrderStockError("order_stock_invalid_status_actions", 422)
@@ -174,11 +185,13 @@ def _action(policy: OrderStockPolicy, source: dict, status_hash: str, statuses: 
     status = next((row for row in statuses if row["id"] == source["status_id"]), None)
     if status is None:
         raise OrderStockError("order_stock_unknown_status")
-    if _label(status["name"]) in RETURN_LABELS:
+    if is_return_status(status):
         raise OrderStockError("order_stock_return_requires_review")
     action = policy.status_actions.get(str(source["status_id"]), "review")
     if action == "review":
         raise OrderStockError("order_stock_status_requires_review")
+    if action not in _allowed(status):
+        raise OrderStockError("order_stock_invalid_status_actions")
     # The configured received/reservation state still requires actual POS
     # payment and completion; a paid web order alone remains reserved.
     if (action == "reserve" and status["type"] == "Received" and source["origin"] == "cash-register"

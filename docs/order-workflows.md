@@ -27,6 +27,24 @@ Táto príručka opisuje pracovný postup. Zapnutie automatického spracovania p
 
 Sklad priradený potvrdenej objednávkovej politike zostáva pevný. Zmena e-shopu, SKU ani priradenia skladu nie je spôsob opravy už vydanej objednávky.
 
+### Pravidlá stavov objednávok
+
+Pravidlo sa ukladá ku konkrétnemu ID stavu v danom e-shope. Návrh podľa názvu je len pomôcka: pri novom stave je vybraná ručná kontrola, kým obsluha výslovne nezvolí a nepotvrdí operáciu.
+
+| Stav | Nastavenie |
+| --- | --- |
+| Prijatá | Rezervovať dostupnú zásobu. |
+| Platba úspešná / Objednávka zaplatená | Rezervovať dostupnú zásobu; samotná platba nepovoľuje výdaj. |
+| Pripravená na expedíciu alebo osobný odber | Pri vlastnom stave vybrať rezerváciu, pokiaľ tovar ešte nebol odovzdaný. |
+| Odoslaná | Výdaj až pri skutočnom odoslaní. |
+| Vyzdvihnutá na predajni / Predajňa / Kasa | Pri vlastnom stave vybrať výdaj. V BIKETREK vlastník potvrdil, že Predajňa / Kasa znamená zaplatený a fyzicky prevzatý tovar, nie rozpracovaný predaj. |
+| Stornovaná | Uvoľniť rezervácie; po výdaji sa fyzická vratka rieši samostatne. |
+| Reklamácia, návrat/neprevzatie zásielky, neúspešná alebo zrušená platba | Ručná kontrola. |
+
+Vlastné stavy umožňujú rezerváciu alebo výdaj bez požiadavky na presný názov. Pred uložením formulár vypíše všetky stavy s fyzickým výdajom a vyžaduje potvrdenie ich významu. Pravidlo podľa názvu neaktivuje. Automatické výdaje aj tak potrebujú osobitne povolený režim a aktivačný čas.
+
+Prechod Prijatá → Zaplatená zachová jednu rezerváciu. Prechod Odoslaná → Vyzdvihnutá pri rovnakom obsahu nevytvorí druhý výdaj. Zmena vydaných riadkov, storno po výdaji alebo vratka zostávajú na kontrolu; nemenia pôvodný výdaj.
+
 Podporované sú celé **kusy**. Metre, vážený tovar, prepočty balení a zložené sety vyžadujú osobitné riešenie. Obstarávacie náklady skladu sa vedú v EUR bez DPH; predajná cena sa nepoužíva namiesto nákupnej.
 
 ## Ručné spracovanie jednej objednávky

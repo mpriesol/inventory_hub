@@ -56,6 +56,51 @@ def raw_page(*orders):
     return {"current_page": 1, "number_of_pages": 1, "number_of_items": len(orders), "orders": list(orders)}
 
 
+def production_statuses():
+    import copy
+    value = copy.deepcopy(STATUSES)
+    value["order_statuses"][3]["descriptions"][0]["name"] = "Vyzdvihnutá na predajni ✉"
+    for identifier, kind, name in ((3, "PaymentSuccessful", "Platba úspešná"),
+                                   (9, "Custom", "Predajňa / Kasa"),
+                                   (18, "Custom", "Pripravená na expedíciu")):
+        value["order_statuses"].append({"id": identifier, "type": kind,
+                                       "descriptions": [{"language_id": "sk", "name": name}]})
+    return value
+
+
+PRODUCTION_ACTIONS = {**ACTIONS, "3": "reserve", "9": "issue", "18": "reserve"}
+
+
+class OrderStatusRulesTests(unittest.TestCase):
+    def test_payment_and_custom_handover_are_explicit_operations_independent_of_suggestion(self):
+        statuses = source._statuses(production_statuses())["statuses"]
+        paid = next(row for row in statuses if row["id"] == 3)
+        self.assertEqual(service._suggested(paid), "reserve")
+        self.assertNotIn("issue", service._allowed(paid), "Payment alone never authorizes issue")
+        policy = SimpleNamespace(starts_at=NOW, status_hash="a" * 64, status_actions=PRODUCTION_ACTIONS)
+        with patch.object(service, "now", return_value=NOW):
+            for status in statuses:
+                expected = PRODUCTION_ACTIONS[str(status["id"])]
+                self.assertIn(expected, service._allowed(status))
+                if expected == "review":
+                    continue
+                order = {"created_at": NOW.isoformat(), "status_id": status["id"],
+                         "origin": "eshop", "paid": True, "resolved": True}
+                self.assertEqual(service._action(policy, order, "a" * 64, statuses), expected)
+        for name in ("Predajňa / Kasa", "Vyzdvihnutá na predajni ✉", "Odovzdané zákazníkovi"):
+            status = {"name": name, "type": "Custom"}
+            self.assertEqual(service._suggested(status), "review")
+            self.assertIn("issue", service._allowed(status))
+
+    def test_returns_failed_payments_and_unknown_types_cannot_be_configured_as_issue(self):
+        for name, kind in (("Reklamácia ✉", "Custom"), ("Tovar bude vrátený", "Custom"),
+                           ("Nevyzdvihnutá / Neprebratá zásielka", "Custom"),
+                           ("Platba zlyhala", "PaymentFailed"), ("Platba zrušená", "PaymentCanceled"),
+                           ("Unknown", "FutureType")):
+            with self.subTest(name=name):
+                self.assertEqual(service._allowed({"name": name, "type": kind}), ["review"])
+
+
 class OrderStockInputTests(unittest.TestCase):
     def test_warehouse_assignment_cannot_activate_stock_or_forge_quantities(self):
         valid = {"shop_code": "biketrek", "warehouse_code": "main", "expected_assignment_hash": "a" * 64}

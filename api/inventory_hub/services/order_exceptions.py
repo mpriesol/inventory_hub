@@ -67,7 +67,7 @@ def _validate_source(job, entry, policy, config, fetched):
         raise ExceptionError("order_exception_source_changed")
     status = next((item for item in fetched["statuses"] if item["id"] == source["status_id"]), None)
     # Only an explicit review/cancellation of already-issued, unchanged lines.
-    if status is None or not (stock._label(status["name"]) in stock.RETURN_LABELS
+    if status is None or not (stock.is_return_status(status)
             or policy.status_actions.get(str(status["id"]), "review") in ("review", "cancel")):
         raise ExceptionError("order_exception_not_available")
     return status
