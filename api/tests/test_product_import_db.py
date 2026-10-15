@@ -540,7 +540,20 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             rows=[{'id': self.ids[0], 'values': {'target_shops': ['biketrek']}}])
         result = await self.mutate(result, service.save)
         result = await self.mutate(result, service.preview)
-        self.assertEqual(result['publication']['items'][0]['payload']['code'], 'EXISTING-001')
+        # An approved existing-card link remains link-only even if an old or
+        # direct client later sends merchandising targets for the draft row.
+        self.assertIsNone(result['publication'])
+        self.assertEqual(result['publications'], {})
+        self.assertEqual(result['rows'][0]['hub_product_id'], product_id)
+        self.assertEqual(result['rows'][0]['values']['target_shops'], [])
+        async with self.sessions() as db:
+            stored = await db.get(ProductImportDraft, result['id'])
+            self.assertEqual(stored.document['rows'][0]['values']['target_shops'], ['biketrek'])
+            original = await db.get(Product, product_id)
+            self.assertEqual((original.sku, original.name), ('EXISTING-001', 'Existing name'))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
         self.assertFalse([sent for sent in self.client.sent if sent[0] == 'products'])
 
     async def test_ai_reads_mapped_edited_facts_and_preserves_later_manual_work(self):
