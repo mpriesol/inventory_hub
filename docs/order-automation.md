@@ -64,6 +64,8 @@ Kontrolný bod sa posunie až po úplnom aktívnom aj zmazanom priechode. Už za
 
 ## Autorita a časové hranice
 
+`order_stock._allowed` oddeľuje povolené operácie od orientačného návrhu podľa názvu. `PaymentSuccessful` povoľuje rezerváciu, nikdy výdaj; `Custom` povoľuje výslovne potvrdenú rezerváciu alebo výdaj podľa ID stavu. Natívny `Received` zostáva rezerváciou s existujúcou osobitnou podmienkou plateného dokončeného pokladňového predaja. `Sent` povoľuje výdaj, `Canceled` uvoľnenie. Rozpoznané vratky/reklamácie aj v dlhších názvoch a neúspešné/zrušené platby zostávajú na kontrolu; rovnaké rozpoznanie používa aj uzavretie skladovej výnimky po výdaji. Neznáme systémové typy nezískajú oprávnenie. Uložená akcia sa overuje aj pri spracovaní. Nové možnosti nemenia existujúce mapovanie ani nezačínajú automatiku.
+
 | Režim | Automatické lokálne operácie |
 | --- | --- |
 | `manual` | Žiadne. Existujúci ručný postup zostáva dostupný. |

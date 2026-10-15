@@ -39,9 +39,11 @@ const secondary = { id: 8, code: 'secondary', name: 'Other warehouse', is_defaul
 let assignment = null, assignmentHash = 'c'.repeat(64), assignmentMode = 'ok';
 let policy = null;
 const options = shop => ({ shop: { id: shop === 'xtrek' ? 2 : 1, code: shop, name: shop }, warehouses: [secondary, warehouse], warehouse_assignment: assignment, assignment_hash: assignmentHash,
-  statuses: [{ id: 1, name: 'Prijatá', type: 'Received' }, { id: 8, name: 'Odoslaná', type: 'Sent' }, { id: 2, name: 'Storno', type: 'Canceled' }, { id: 12, name: 'V riešení', type: 'Custom' }],
-  status_hash: 'a'.repeat(64), policy, suggested_actions: { '1': 'reserve', '8': 'issue', '2': 'cancel', '12': 'review' },
-  allowed_actions: { '1': ['review', 'reserve'], '8': ['review', 'issue'], '2': ['review', 'cancel'], '12': ['review', 'reserve'] } });
+  statuses: [{ id: 1, name: 'Prijatá', type: 'Received' }, { id: 8, name: 'Odoslaná', type: 'Sent' }, { id: 2, name: 'Storno', type: 'Canceled' }, { id: 12, name: 'V riešení', type: 'Custom' },
+    { id: 3, name: 'Platba úspešná', type: 'PaymentSuccessful' }, { id: 9, name: 'Predajňa / Kasa', type: 'Custom' }, { id: 19, name: 'Vyzdvihnutá na predajni ✉', type: 'Custom' }],
+  status_hash: 'a'.repeat(64), policy, suggested_actions: { '1': 'reserve', '8': 'issue', '2': 'cancel', '12': 'review', '3': 'reserve', '9': 'review', '19': 'review' },
+  allowed_actions: { '1': ['review', 'reserve'], '8': ['review', 'issue'], '2': ['review', 'cancel'], '12': ['review', 'reserve', 'issue'],
+    '3': ['review', 'reserve'], '9': ['review', 'reserve', 'issue'], '19': ['review', 'reserve', 'issue'] } });
 let nextAction = 'reserve'; let planReady = true; let nextCount = 1;
 const makePreview = body => ({ id: body.request_id, preview_hash: 'b'.repeat(64), status: 'prepared', created_at: '2026-09-23T12:00:00Z', expires_at: '2100-01-01T00:00:00Z',
   shop_code: body.shop_code, warehouse, action: nextAction, order_revision: 0, policy_revision: 1,
@@ -107,11 +109,14 @@ const configurations = () => calls.filter(call => call.path.endsWith('/configure
   assert(button('preview').disabled);
   await click(button('loadOptions'));
   assert(calls.at(-1).path.endsWith('shop_code=xtrek'));
-  assert(['1', '8', '2', '12'].every(id => actionSelect(id).value === 'review'), 'Suggestions are visible but every new status defaults to review');
+  assert(['1', '8', '2', '12', '3', '9', '19'].every(id => actionSelect(id).value === 'review'), 'Suggestions are visible but every new status defaults to review');
   assert.deepEqual([...actionSelect('1').options].map(option => option.value), ['review', 'reserve'], 'Web received status cannot be configured as issue');
   assert.deepEqual([...actionSelect('8').options].map(option => option.value), ['review', 'issue']);
   assert.deepEqual([...actionSelect('2').options].map(option => option.value), ['review', 'cancel']);
-  assert.deepEqual([...actionSelect('12').options].map(option => option.value), ['review', 'reserve'], 'Custom working statuses can explicitly enable reservations');
+  assert.deepEqual([...actionSelect('12').options].map(option => option.value), ['review', 'reserve', 'issue'], 'Custom status meaning is explicitly chosen by the operator');
+  assert.deepEqual([...actionSelect('3').options].map(option => option.value), ['review', 'reserve'], 'Successful payment allows reservations, never issue');
+  assert(['9', '19'].every(id => [...actionSelect(id).options].some(option => option.value === 'issue')), 'Real store and pickup labels permit issue');
+  assert(document.body.textContent.includes(t('statusRulesHelp')));
   assert.equal(field('warehouse').value, 'main', 'Initial selection uses the flagged default, not the first warehouse');
   assert.equal(configurations().length, 0, 'Default selection does not configure or activate anything');
   await input(field('warehouse'), 'secondary'); await click(button('loadOptions'));
@@ -143,9 +148,14 @@ const configurations = () => calls.filter(call => call.path.endsWith('/configure
   await input(field('warehouse'), 'main'); await input(actionSelect('1'), 'reserve');
   await click(field('configConfirm')); await input(actionSelect('8'), 'issue');
   assert(!field('configConfirm').checked && button('activate').disabled, 'Any config edit clears its confirmation');
-  await input(actionSelect('2'), 'cancel'); await input(actionSelect('12'), 'reserve'); await click(field('configConfirm')); await click(button('activate'));
+  await input(actionSelect('2'), 'cancel'); await input(actionSelect('12'), 'reserve'); await input(actionSelect('3'), 'reserve');
+  await input(actionSelect('9'), 'issue'); await input(actionSelect('19'), 'issue');
+  assert(document.body.textContent.includes(i18n.t('orderStock.issueStatusesHelp', { statuses: 'Odoslaná, Predajňa / Kasa, Vyzdvihnutá na predajni ✉' })));
+  await click(field('configConfirm')); await click(button('activate'));
   assert.equal(configurations().length, 1); assert(field('warehouse').disabled, 'Activated warehouse is fixed');
   assert.equal(actionSelect('12').value, 'reserve', 'Allowed custom reservation mapping persists despite default review suggestion');
+  assert.equal(actionSelect('3').value, 'reserve'); assert.equal(actionSelect('9').value, 'issue'); assert.equal(actionSelect('19').value, 'issue');
+  assert.deepEqual(['3', '9', '19'].map(id => configurations()[0].body.status_actions[id]), ['reserve', 'issue', 'issue']);
   await click(button('preview'));
   assert.equal(applies().length, 0); assert(document.body.textContent.includes('Synthetic manual service'));
   assert(document.body.textContent.includes('3.0001 EUR') && document.body.textContent.includes('21.0007'));

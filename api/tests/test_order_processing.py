@@ -11,7 +11,7 @@ from inventory_hub.services import order_processing as service
 from inventory_hub.services import order_stock as stock
 from inventory_hub.services import order_stock_source as source
 from inventory_hub.services import order_processing_worker as worker
-from test_order_stock import ACTIONS, NOW, STATUSES, raw_order, raw_page
+from test_order_stock import ACTIONS, NOW, STATUSES, PRODUCTION_ACTIONS, production_statuses, raw_order, raw_page
 
 
 AUTOMATION_START = NOW - timedelta(days=2)
@@ -70,6 +70,22 @@ class ProcessingAuthorizationTests(unittest.TestCase):
             self.assertEqual(self.authorize(observation(**changes)), "reserve")
         self.assertEqual(self.authorize(observation(origin="cash-register", paid_date="2026-09-23",
                                                    resolved_yn=True)), "issue")
+
+    def test_custom_store_issue_still_requires_fulfillment_authority_and_its_cutover(self):
+        configured = policy()
+        normalized = source._statuses(production_statuses())
+        configured.status_actions = dict(PRODUCTION_ACTIONS)
+        configured.status_hash = normalized["status_hash"]
+        for status_id in (3, 9, 19):
+            fetched = {**observation(status_id=status_id), **normalized}
+            if status_id == 3:
+                self.assertEqual(self.authorize(fetched, configuration(mode="reserve", issue_starts_at=None), configured), "reserve")
+            else:
+                self.assertEqual(self.authorize(fetched, configured=configured), "issue")
+                for config in (configuration(mode="reserve"), configuration(issue_starts_at=None),
+                               configuration(issue_starts_at=NOW)):
+                    with self.subTest(status_id=status_id, config=config), self.assertRaises(service.ProcessingError):
+                        self.authorize(fetched, config, configured)
 
     def test_each_authority_cutover_uses_creation_date_instead_of_last_update(self):
         fetched = observation()
