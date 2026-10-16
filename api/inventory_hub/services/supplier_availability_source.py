@@ -33,7 +33,7 @@ def configuration(supplier, feed_key):
         raise AvailabilityError("supplier_availability_source_missing", 422)
     parser = source.get("catalog_parser") or (cfg.get("adapter_settings", {}).get("catalog") or {}).get("parser")
     parser = parser or (supplier if supplier in catalog.PARSERS else None)
-    if parser not in catalog.PARSERS:
+    if parser not in catalog.PARSERS or parser == "silvini":
         raise AvailabilityError("supplier_availability_parser_unavailable", 422)
     if source.get("mode", "remote") == "local":
         configured = bool(source.get("local_path"))
@@ -123,7 +123,9 @@ class ParsedAvailability(list):
 
 def _source_rows(path, supplier, cfg, feed_key, parser):
     is_stock = feed_key == "stock" or (cfg["feeds"]["sources"][feed_key].get("type") == "stock")
-    if parser == "cyklo-zitny":
+    if parser == "silvini":
+        raise AvailabilityError("supplier_availability_parser_unavailable", 422)
+    elif parser == "cyklo-zitny":
         from inventory_hub.adapters.cyklo_zitny_catalog import read_stock
         for sku, raw, error in read_stock(path):
             yield sku, raw, None, None, error

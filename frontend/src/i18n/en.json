@@ -438,6 +438,8 @@
       "missing_images": "No product image in feed.",
       "missing_ean": "No EAN in feed.",
       "missing_retail_price": "Recommended retail price is missing.",
+      "price_basis_unconfirmed": "The supplier's net or gross price basis has not been confirmed. Verify it with the supplier and complete the pricing configuration in Hub.",
+      "supplier_stock_unverified": "The listing feed does not establish current stock. Availability requires a working supplier stock feed.",
       "missing_price": "No valid selling price for the target shop's VAT mode.",
       "missing_vat": "VAT rate is missing.",
       "currency_mismatch": "Feed and target currencies differ. Currency conversion is not enabled.",

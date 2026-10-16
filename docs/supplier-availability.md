@@ -101,3 +101,7 @@ Príkaz používa SQL transakciu iba na čítanie. Zobrazí nastavenie, posledn�
 ## Cyklo Žitný
 
 Natívny parser `cyklo-zitny` načítava dostupnosti z kompletného zákazníckeho exportu verzie 3. Identita je `code`, množstvo `store_count`. Skrátený export má iba interné `id` a `delivery_date`; nemožno ho pripojiť ako zoznam dodávateľských SKU ani z neho vyrábať počty. Pre `stock` nastavte rovnaký kompletný URL ako pre katalóg. Skladový parser nezávisí od cien a názvov. Platné nuly sa prijímajú, chybné riadky majú bežnú diagnostiku a expiráciu; neprítomnosť položky nevytvára nulu. Konfigurácia ani automatika sa nezapínajú samotným nasadením parsera. Postup a cenové základy sú v [dodávateľskom katalógu](supplier-catalog.md#cyklo-zitny-customer-discount-export).
+
+## Silvini: skladový zdroj zatiaľ neoverený
+
+Katalóg používa samostatný natívny parser `silvini`. Nuly v zalistovacom feede sa nepreberajú ako dodávateľská dostupnosť. Poskytnutý update endpoint 16. 10. 2026 vracal iba `INFO` s požiadavkou obrátiť sa na obchodného zástupcu. Automatika zostáva nedostupná, kým nie sú sprístupnené skutočné aktualizačné dáta a overená ich štruktúra. Odpoveď `INFO` ani prázdny feed nie sú úspešným načítaním a nesmú meniť posledné prijaté pozorovania. [Katalóg a nastavenie cien](supplier-catalog.md#silvini-listing-update-feed-and-price-basis-pending-verification).

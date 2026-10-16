@@ -439,6 +439,8 @@
       "missing_images": "Feed neobsahuje obrázok.",
       "missing_ean": "Feed neobsahuje EAN.",
       "missing_retail_price": "Chýba odporúčaná cena.",
+      "price_basis_unconfirmed": "Zatiaľ nie je potvrdené, či sú ceny dodávateľa s DPH alebo bez DPH. Overte to u dodávateľa a doplňte cenové nastavenie v Hube.",
+      "supplier_stock_unverified": "Zalistovací feed nepreukazuje aktuálne zásoby. Na dostupnosti treba funkčný skladový feed dodávateľa.",
       "missing_price": "Chýba platná predajná cena pre nastavenie DPH cieľového e-shopu.",
       "missing_vat": "Chýba sadzba DPH.",
       "currency_mismatch": "Mena feedu sa líši od cieľového e-shopu. Automatický prepočet meny nie je zapnutý.",

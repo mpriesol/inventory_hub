@@ -435,6 +435,9 @@ async def inspect_source(db, supplier, feed_key, definition, sample_id=None):
         if parser == "cyklo-zitny" and kind == "xml" and native_source_path(definition, catalog.PARSERS[parser]):
             from inventory_hub.adapters.cyklo_zitny_catalog import inspection_categories
             result.update(await asyncio.to_thread(inspection_categories, path))
+        if parser == "silvini" and kind == "xml" and native_source_path(definition, catalog.PARSERS[parser]):
+            from inventory_hub.adapters.silvini_catalog import inspection_categories
+            result.update(await asyncio.to_thread(inspection_categories, path))
     except ValueError as error:
         raise _error("feed_inspection_invalid", str(error)) from None
     return {**result, "sample_id": sample_id}
@@ -488,7 +491,7 @@ def native_record_paths(parser):
         return ["export/items/item"]
     if parser.__module__.endswith("paul_lange_catalog"):
         return ["SHOP/SHOPITEM", "SHOP/SHOPITEMS/SHOPITEM", "SHOPITEMS/SHOPITEM", "SHOPITEM"]
-    if parser.__module__.endswith("schindler_catalog"):
+    if parser.__module__.endswith(("schindler_catalog", "silvini_catalog")):
         return ["SHOP/SHOPITEM"]
     if parser.__module__.endswith("northfinder_catalog"):
         return ["products/product", "root/product", "product"]
