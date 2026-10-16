@@ -105,3 +105,7 @@ Natívny parser `cyklo-zitny` načítava dostupnosti z kompletného zákaznícke
 ## Silvini: skladový zdroj zatiaľ neoverený
 
 Katalóg používa samostatný natívny parser `silvini`. Nuly v zalistovacom feede sa nepreberajú ako dodávateľská dostupnosť. Poskytnutý update endpoint 16. 10. 2026 vracal iba `INFO` s požiadavkou obrátiť sa na obchodného zástupcu. Automatika zostáva nedostupná, kým nie sú sprístupnené skutočné aktualizačné dáta a overená ich štruktúra. Odpoveď `INFO` ani prázdny feed nie sú úspešným načítaním a nesmú meniť posledné prijaté pozorovania. [Katalóg a nastavenie cien](supplier-catalog.md#silvini-listing-update-feed-and-price-basis-pending-verification).
+
+## Bike Brothers
+
+Parser `bike-brothers` používa samostatne nakonfigurovaný úplný API export. Pre `stock` možno použiť rovnaký export ako pre katalóg. Identita predajnej položky je presný text `kod`, množstvo je `stav_zasob`. Riadky, na ktoré odkazuje `mastergroup`, sú rodičia: ich agregované zásoby sa vylúčia a nesčítajú so zásobou variantov. Ceny, názvy a jazyk neovplyvňujú prijatie platného skladového riadka. `dostupnost_dny` nenahrádza množstvo a chýbajúce SKU ani množstvo nevytvára nulu. Neplatné riadky majú spoločnú diagnostiku čiastočného prijatia. Nejednoznačná štruktúra rodičov, duplicitné interné ID a cykly odmietnu celý zdroj. Konfigurácia a plánovanie sa zapínajú samostatne v Hube; táto zmena neaktivuje prenos zásob do e-shopov. [Katalóg, identita a jazyk](supplier-catalog.md#bike-brothers).

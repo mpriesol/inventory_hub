@@ -125,8 +125,11 @@ def _source_rows(path, supplier, cfg, feed_key, parser):
     is_stock = feed_key == "stock" or (cfg["feeds"]["sources"][feed_key].get("type") == "stock")
     if parser == "silvini":
         raise AvailabilityError("supplier_availability_parser_unavailable", 422)
-    elif parser == "cyklo-zitny":
-        from inventory_hub.adapters.cyklo_zitny_catalog import read_stock
+    elif parser in ("cyklo-zitny", "bike-brothers"):
+        if parser == "bike-brothers":
+            from inventory_hub.adapters.bike_brothers_catalog import read_stock
+        else:
+            from inventory_hub.adapters.cyklo_zitny_catalog import read_stock
         for sku, raw, error in read_stock(path):
             yield sku, raw, None, None, error
     elif parser == "schindler":

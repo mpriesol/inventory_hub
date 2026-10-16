@@ -28,6 +28,7 @@ from inventory_hub.adapters.sk_profi_bike_catalog import parse_catalog as parse_
 from inventory_hub.adapters.schindler_catalog import parse_catalog as parse_schindler
 from inventory_hub.adapters.cyklo_zitny_catalog import parse_catalog as parse_cyklo_zitny
 from inventory_hub.adapters.silvini_catalog import parse_catalog as parse_silvini
+from inventory_hub.adapters.bike_brothers_catalog import parse_catalog as parse_bike_brothers
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -43,7 +44,7 @@ class CatalogError(Exception):
 
 PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger,
            "sk-profi-bike": parse_sk_profi_bike, "schindler": parse_schindler, "cyklo-zitny": parse_cyklo_zitny,
-           "silvini": parse_silvini}
+           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers}
 
 
 def folded(value: str) -> str:
