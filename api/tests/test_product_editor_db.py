@@ -159,6 +159,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             result = await service.create_card(db, payload)
         row = result["results"][0]["row"]
         self.assertFalse(row["is_active"])
+        self.assertEqual(row["revision"], 1)
         self.assertFalse(row["supplier_linked"])
         self.assertFalse(row["stock"]["known"])
         async with self.sessions() as db:

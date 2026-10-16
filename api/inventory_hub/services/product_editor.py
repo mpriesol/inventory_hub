@@ -454,12 +454,14 @@ async def create_card(db, payload: ProductCardCreateRequest):
     product = Product(sku=payload.sku, name=payload.name, is_active=payload.is_active)
     db.add(product)
     await db.flush()
+    db.add(ProductEditorOverride(product_id=product.id, revision=1, data={}))
+    await db.flush()
     row = (await _rows(db, [product.id], None))[product.id]
     result = {"request_id": identifier, "status": "completed", "external_write_enabled": False,
               "results": [{"product_id": product.id, "status": "saved", "row": _public(row), "errors": []}]}
     db.add(ProductEditorSave(request_id=identifier, input_hash=digest, result=result))
     await db.flush()
-    db.add(ProductEditorAudit(request_id=identifier, product_id=product.id, revision=0,
+    db.add(ProductEditorAudit(request_id=identifier, product_id=product.id, revision=1,
                              before_data={}, after_data=_audit_values(row)))
     await db.commit()
     return result
