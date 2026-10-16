@@ -1,10 +1,11 @@
 import { EditorMode, ProductEditorChange, ProductEditorRow } from '../api/productEditor';
 
 export type EditorValue = string | boolean | string[] | { name: string; value: string }[] | null;
-export interface EditorColumn { key: string; editable?: boolean; type?: 'text' | 'money' | 'vat' | 'integer' | 'visibility' | 'attributes' | 'eans' | 'url'; warehouse?: boolean; modes?: 'common' | 'shop'; hidden?: boolean }
+export interface EditorColumn { key: string; editable?: boolean; type?: 'text' | 'money' | 'vat' | 'integer' | 'visibility' | 'activity' | 'attributes' | 'eans' | 'url'; warehouse?: boolean; modes?: 'common' | 'shop'; hidden?: boolean }
 export const EDITOR_COLUMNS: EditorColumn[] = [
   { key: 'sku', editable: true, type: 'text' }, { key: 'image_url', editable: true, type: 'url' },
   { key: 'name', editable: true, type: 'text' }, { key: 'brand', editable: true, type: 'text' },
+  { key: 'is_active', editable: true, type: 'activity' }, { key: 'supplier_linked' },
   { key: 'sale_price_gross', editable: true, type: 'money' },
   { key: 'biketrek' }, { key: 'xtrek' }, { key: 'supplier_quantity' }, { key: 'supplier_availability' },
   { key: 'location', editable: true, type: 'text', warehouse: true },
@@ -66,6 +67,7 @@ export function shopColumn(field: string) {
   return match ? { shop: match[1] as EditorMode, field: ({ name: 'name', price: 'sale_price_gross', visible: 'visible' } as Record<string, string>)[match[2]] } : null;
 }
 export function fieldPath(field: string, mode: EditorMode): string[] {
+  if (field === 'is_active') return ['is_active'];
   const shop = shopColumn(field);
   if (shop) return ['shops', shop.shop, shop.field];
   if (field.startsWith('shop_')) return ['shops', mode, ({ shop_name: 'name', shop_price: 'sale_price_gross', shop_visible: 'visible' } as Record<string, string>)[field]];
@@ -83,6 +85,7 @@ export function draftValue(draft: EditorDraft | undefined, field: string, mode: 
   return value;
 }
 export function originalValue(row: ProductEditorRow, field: string, mode: EditorMode): EditorValue {
+  if (field === 'is_active' || field === 'supplier_linked') return row[field];
   const shop = shopColumn(field);
   if (shop) return readPath(row.shops.find(item => item.shop_code === shop.shop)?.effective, [shop.field]) ?? null;
   if (field.startsWith('shop_')) return readPath(row.shops.find(item => item.shop_code === mode)?.effective, fieldPath(field, mode).slice(2)) ?? null;
@@ -106,6 +109,7 @@ export function editorValueText(value: EditorValue | undefined): string {
 }
 export function normalizeEditorValue(column: EditorColumn, raw: string): { value: EditorValue; error?: string } {
   const text = raw.trim();
+  if (column.type === 'activity') return text === 'true' ? { value: true } : text === 'false' ? { value: false } : { value: text, error: 'invalid_activity' };
   if ((column.type === 'eans' || column.type === 'attributes') && !text) return { value: [] };
   if (column.key === 'sku' && (!text || text.length > 100 || text.includes(';'))) return { value: text, error: 'invalid_sku' };
   if (!text || (column.type === 'visibility' && text === 'inherit')) return { value: null };

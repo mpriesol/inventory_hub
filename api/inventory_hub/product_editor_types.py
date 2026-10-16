@@ -173,6 +173,7 @@ class EditorRowPatch(EditorModel):
     product_id: StrictInt = Field(gt=0)
     expected_revision: StrictInt = Field(ge=0)
     snapshot_hash: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
+    is_active: StrictBool | None = None
     common: CommonPatch | None = None
     variant: VariantPatch | None = None
     warehouse: WarehousePatch | None = None
@@ -181,11 +182,28 @@ class EditorRowPatch(EditorModel):
     @model_validator(mode="after")
     def has_changes(self):
         patches = self.model_dump(exclude_unset=True, exclude={"product_id", "expected_revision", "snapshot_hash"})
-        if not any(value for value in patches.values()):
+        if not any(value is not None and value != {} for value in patches.values()):
             raise ValueError("No edits supplied")
         if self.shops and (len(self.shops) > 20 or any(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,49}", key) is None for key in self.shops)):
             raise ValueError("Invalid shop")
         return self
+
+
+class ProductCardCreateRequest(EditorModel):
+    request_id: UUID
+    sku: StrictStr
+    name: StrictStr
+    is_active: StrictBool = True
+
+    @field_validator("sku")
+    @classmethod
+    def sku_valid(cls, value):
+        return VariantPatch.sku_valid(value)
+
+    @field_validator("name")
+    @classmethod
+    def name_valid(cls, value):
+        return safe_text(value, maximum=500, blank=False).strip()
 
 
 class ProductEditorSaveRequest(EditorModel):

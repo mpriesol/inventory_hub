@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from inventory_hub.db_models import Product, ProductGroup, ProductIdentifier, Shop, Supplier, SupplierProduct, Warehouse
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent, StockBalance, StockMovement
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
-from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest
+from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 from inventory_hub.services.upgates import variant_attributes
@@ -154,6 +154,7 @@ def _make_row(facts, data, revision, warehouse, stock):
         shops.append({**shop, "overrides": overrides, "effective": effective, "published_fields": published,
                       "state": ("published" if desired <= set(published) else "saved_unpublished") if desired else "inherited"})
     return {"id": facts["id"], "sku": facts["sku"], "is_active": facts["is_active"], "group": facts["group"],
+            "supplier_linked": facts.get("supplier_linked", False),
             "attributes": variant["attributes"], "eans": facts["eans"], "supplier_codes": facts["supplier_codes"],
             "image_url": common["image_url"], "revision": revision,
             "snapshot_hash": _digest({"warehouse_code": warehouse["code"] if warehouse else None,
@@ -167,10 +168,21 @@ def _public(row):
     return {key: value for key, value in row.items() if not key.startswith("_")}
 
 
+def supplier_link_condition():
+    """An explicit binding (even paused), or the legacy source if none exists.
+
+    A supplier SKU identifier alone is not a binding. This is a card filter,
+    not an assertion that the supplier is currently orderable or in stock.
+    """
+    return or_(exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id)),
+               Product.source_supplier_product_id.is_not(None))
+
+
 async def _rows(db, ids, warehouse):
     if not ids:
         return {}
     products = (await db.execute(select(Product.id, Product.sku, Product.name, Product.brand, Product.is_active,
+        supplier_link_condition().label("supplier_linked"),
         ProductGroup.id.label("group_id"), ProductGroup.code.label("group_code"), ProductGroup.name.label("group_name"),
         func.substr(ProductGroup.main_image_url, 1, 2001).label("group_image"))
         .outerjoin(ProductGroup, Product.group_id == ProductGroup.id).where(Product.id.in_(ids)))).all()
@@ -253,7 +265,8 @@ async def _rows(db, ids, warehouse):
         minimum = (str(int(balance.min_quantity)) if balance.min_quantity == balance.min_quantity.to_integral_value()
                    else _decimal(balance.min_quantity)) if balance is not None else None
         facts = {"id": product.id, "sku": product.sku, "name": product.name, "brand": product.brand,
-            "is_active": product.is_active, "group": {"id": group.id, "code": group.code, "name": group.name} if group else None,
+            "is_active": product.is_active, "supplier_linked": product.supplier_linked,
+            "group": {"id": group.id, "code": group.code, "name": group.name} if group else None,
             "attributes": attributes[product.id] or fallback_attributes, "eans": [identifier.value for identifier, _ in identifiers[product.id]
                 if str(getattr(identifier.identifier_type, "value", identifier.identifier_type)) in ("ean", "upc", "unverified_barcode")],
             "supplier_codes": [{"supplier_code": supplier, "code": sku} for supplier, sku in sorted(codes, key=lambda item: (item[0] or "", item[1]))],
@@ -289,7 +302,9 @@ async def _rows(db, ids, warehouse):
     return result
 
 
-async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=None, page=1, page_size=50, sort="group_sku", direction="asc", stock_scope="all"):
+async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=None, page=1, page_size=50, sort="group_sku", direction="asc", stock_scope="all", activity="all", supplier_link="all"):
+    if activity not in ("all", "active", "inactive") or supplier_link not in ("all", "linked", "unlinked"):
+        raise EditorError("product_editor_invalid_request", 422)
     if stock_scope not in ("all", "confirmed", "unconfirmed", "in_stock"):
         raise EditorError("product_editor_invalid_request", 422)
     if page < 1 or page_size not in (25, 50, 100) or sort not in ("group_sku", "sku", "name") or direction not in ("asc", "desc"):
@@ -299,6 +314,11 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
     effective_brand = func.coalesce(ProductEditorOverride.data["common"]["brand"].astext, Product.brand)
     statement = select(Product.id).outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == Product.id)
     statement = statement.outerjoin(ProductGroup, ProductGroup.id == Product.group_id)
+    if activity != "all":
+        statement = statement.where(Product.is_active.is_(activity == "active"))
+    if supplier_link != "all":
+        linked = supplier_link_condition()
+        statement = statement.where(linked if supplier_link == "linked" else ~linked)
     if q:
         pattern = "%" + _fold(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         # Keep supplier-code matching independent of the outer product row.
@@ -414,7 +434,35 @@ def _apply_patch(data, patch, warehouse_code):
 
 
 def _audit_values(row):
-    return {key: deepcopy(row[key]) for key in ("sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
+    return {key: deepcopy(row[key]) for key in ("is_active", "sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
+
+
+async def create_card(db, payload: ProductCardCreateRequest):
+    """Create only a local identity, with replay protection and an audit receipt."""
+    identifier = str(payload.request_id)
+    digest = _digest({"operation": "create_card", **payload.model_dump(mode="json")})
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(_digest(["product-editor", identifier])[:15], 16)})
+    old = await db.get(ProductEditorSave, identifier)
+    if old:
+        if old.input_hash != digest:
+            raise EditorError("product_editor_request_reused")
+        return old.result
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    if (await db.scalar(select(Product.id).where(Product.sku == payload.sku))
+            or await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value == payload.sku))):
+        raise EditorError("product_editor_identity_conflict")
+    product = Product(sku=payload.sku, name=payload.name, is_active=payload.is_active)
+    db.add(product)
+    await db.flush()
+    row = (await _rows(db, [product.id], None))[product.id]
+    result = {"request_id": identifier, "status": "completed", "external_write_enabled": False,
+              "results": [{"product_id": product.id, "status": "saved", "row": _public(row), "errors": []}]}
+    db.add(ProductEditorSave(request_id=identifier, input_hash=digest, result=result))
+    await db.flush()
+    db.add(ProductEditorAudit(request_id=identifier, product_id=product.id, revision=0,
+                             before_data={}, after_data=_audit_values(row)))
+    await db.commit()
+    return result
 
 
 async def get_save(db, request_id):
@@ -466,7 +514,7 @@ async def save(db, payload: ProductEditorSaveRequest):
             patch = EditorRowPatch.model_validate(raw)
         except ValidationError as invalid:
             response = error("invalid", "product_editor_invalid_value")
-            allowed = {"product_id", "expected_revision", "snapshot_hash", "common", "variant", "warehouse", "shops",
+            allowed = {"product_id", "expected_revision", "snapshot_hash", "is_active", "common", "variant", "warehouse", "shops",
                        "name", "brand", "internal_note", "sale_price_gross", "vat_rate", "note", "location", "min_quantity", "visible", "image_url", "eans", "attributes", "sku", "value"} | shops
             response["errors"] = [{"code": "product_editor_invalid_value", **({"field": ".".join(item["loc"])}
                 if item["loc"] and all(isinstance(part, str) and part in allowed for part in item["loc"]) else {})}
@@ -490,14 +538,18 @@ async def save(db, payload: ProductEditorSaveRequest):
             results.append(error("invalid", "product_editor_shop_missing"))
             continue
         changed = _apply_patch(row["overrides"], patch, payload.warehouse_code)
+        activity_changed = patch.is_active is not None and patch.is_active != row["is_active"]
         identity_fields = patch.variant.model_fields_set & {"eans", "sku"} if patch.variant else set()
         identity_changed = bool(identity_fields and any(getattr(patch.variant, field) is not None
             and getattr(patch.variant, field) != row[field] for field in identity_fields))
-        if changed == row["overrides"] and not identity_changed:
+        if changed == row["overrides"] and not identity_changed and not activity_changed:
             results.append({"product_id": product_id, "status": "saved", "row": _public(row), "errors": []})
             continue
         try:
             async with db.begin_nested():
+                if activity_changed:
+                    product = await db.get(Product, product_id)
+                    product.is_active = patch.is_active
                 if identity_changed:
                     await _edit_identity(db, product_id, patch.variant, row)
                 override = await db.get(ProductEditorOverride, product_id)
@@ -508,6 +560,8 @@ async def save(db, payload: ProductEditorSaveRequest):
                 else:
                     override.revision, override.data, override.updated_at = revision, changed, now()
                 facts = deepcopy(row["_facts"])
+                if activity_changed:
+                    facts["is_active"] = patch.is_active
                 if identity_changed:
                     for field in identity_fields:
                         if getattr(patch.variant, field) is not None:

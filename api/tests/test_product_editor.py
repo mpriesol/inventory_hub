@@ -182,6 +182,7 @@ class ProductEditorProtectedRouteTests(TestCase):
     def requests(self):
         request_id = str(uuid4())
         return [("GET", "/product-editor/options", None, "options"),
+                ("POST", "/product-editor/products", {"request_id": request_id, "sku": "LOCAL-CARD", "name": "Local card", "is_active": False}, "create_card"),
                 ("GET", "/product-editor/products?warehouse_code=central&page_size=25&q=diel&sort=sku", None, "list_products"),
                 ("GET", "/product-editor/products/12?warehouse_code=central", None, "detail"),
                 ("POST", "/product-editor/save", save_body(request_id=request_id), "save"),
@@ -189,7 +190,7 @@ class ProductEditorProtectedRouteTests(TestCase):
 
     def operations(self, stack):
         return {name: stack.enter_context(patch.object(service, name, AsyncMock(return_value={"ok": name})))
-                for name in ("options", "list_products", "detail", "save", "get_save")}
+                for name in ("options", "list_products", "detail", "save", "get_save", "create_card")}
 
     def test_every_route_authenticates_before_database_business_or_upstream_calls(self):
         with ExitStack() as stack:
@@ -214,13 +215,16 @@ class ProductEditorProtectedRouteTests(TestCase):
                 self.assertEqual(response.json(), {"ok": name})
                 self.assertEqual(response.headers["cache-control"], "no-store")
             methods["list_products"].assert_awaited_once_with(self.db, q="diel", brand=None, shop_code=None,
-                warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc", stock_scope="all")
+                warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc", stock_scope="all", activity="all", supplier_link="all")
             methods["detail"].assert_awaited_once_with(self.db, 12, warehouse_code="central")
             self.assertIsInstance(methods["save"].await_args.args[1], ProductEditorSaveRequest)
 
     def test_invalid_top_level_requests_never_echo_values_or_reach_business_operations(self):
         secret = "PRIVATE-INPUT"
-        invalid = [("POST", "/product-editor/save", save_body(confirmed=1)),
+        invalid = [("GET", "/product-editor/products?activity=" + secret, None),
+                   ("GET", "/product-editor/products?supplier_link=" + secret, None),
+                   ("POST", "/product-editor/products", {"request_id": str(uuid4()), "sku": "LOCAL", "name": "Card", "is_active": "false"}),
+                   ("POST", "/product-editor/save", save_body(confirmed=1)),
                    ("POST", "/product-editor/save", save_body(extra=secret)),
                    ("POST", "/product-editor/save", save_body(request_id=secret)),
                    ("GET", "/product-editor/products?page_size=24", None),

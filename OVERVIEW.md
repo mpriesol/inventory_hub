@@ -366,3 +366,5 @@ Etapa `codex/supplier-prefix-availability` zjednocuje prefixy a dopĺňanie dod�
 
 AI content context v2 adds category reference-product snapshots (read-only Upgates preview followed by versioned rule publication), frozen high reasoning for new Luna jobs, usage reasoning-token details and bounded Paul Lange technical-table/document sources. See `docs/ai-content.md` for selection, snapshot compatibility and the remaining single-category-branch limit. No schema migration is required.
 AI zadanie verzie 3 zoskupuje parametre vzorových produktov do výstupnej schémy. Nové duše zlučujú iba opakované skupiny štyroch schválených rozmerových parent parametrov, bez nových hodnôt; ostatné konflikty a variantové kontroly zostávajú. Podrobnosti sú v `docs/ai-content.md`.
+
+Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej aktivitu a kombinovať filtre aktivity a existencie dodávateľskej väzby. Vytvorenie má UUID ochranu opakovania, zmena stavu revíziu a audit; operácie nezakladajú zásoby ani e-shopové produkty. Bez migrácie. [Postup a význam filtrov](docs/product-editor.md#karty-aktivita-a-dodávateľská-väzba).

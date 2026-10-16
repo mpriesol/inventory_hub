@@ -6,6 +6,16 @@ Sekcia **Sklad** je spoločná pracovná tabuľka všetkých evidovaných produk
 
 Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do Upgates.** Samostatné tlačidlá Upload do BIKETREK / xTrek otvoria výber polí, živý náhľad a výslovné odoslanie konkrétneho produktu. Označenie „uložené“ alebo API stav `saved_unpublished` znamená lokálne uloženú požadovanú hodnotu. Nie je to čakajúca synchronizácia ani potvrdenie zmeny e-shopu. Samostatné publikovanie vlastných zásob má iný postup v [stock-publication.md](stock-publication.md).
 
+### Karty, aktivita a dodávateľská väzba
+
+**Nová skladová karta** vytvorí samostatnú kartu z vlastného SKU, názvu a stavu **Aktívna / Neaktívna**. Nevytvára dodávateľský produkt, e-shopový produkt, skladové množstvo ani potvrdenie vlastných zásob. Existujúce SKU alebo identifikátor inej karty nemožno použiť. Po strate odpovede použite **Overiť / zopakovať vytvorenie**; formulár zachová identický požiadavkový UUID a údaje, takže opakovanie nevytvorí duplikát.
+
+V **Skladovej evidencii** zvoľte **Všetky produkty**, aby ste videli aj karty bez potvrdených zásob. Nezávislé filtre **Stav karty v Hube** a **Dodávateľská väzba** možno kombinovať a následne potvrdiť načítanie. Rovnako pomenované stĺpce zobrazujú stav na každom riadku; stav karty možno upraviť v bunke alebo hromadne nad vybranými riadkami a uložiť bežným postupom. Dodávateľ sa pripája cez existujúci náhľad a potvrdenie v detaile karty.
+
+Aktivita je lokálny stav `products.is_active`, nie viditeľnosť v e-shope ani potvrdenie vlastných zásob. Zmena aktivity zachová dodávateľské väzby a používa kontrolu revízie, snímky a audit. Filter väzby počíta existenciu záznamu `product_supply_sources` (aj pozastaveného), prípadne historický `source_supplier_product_id`; samotný alias dodávateľského SKU nestačí. Tento filter nevyjadruje dostupnosť tovaru ani oprávnenie na crawler: Sloger vyžaduje navyše aktívnu kartu, použiteľný aktívny zdroj a objednateľnú väzbu.
+
+API: `POST /api/product-editor/products` prijíma `request_id`, `sku`, `name`, `is_active`; lokálny výsledok a audit sa ukladajú atomicky. Zoznam prijíma `activity=all|active|inactive` a `supplier_link=all|linked|unlinked`; filtre platia pred počítaním a stránkovaním. Zmena stavu využíva existujúci `/save`. Bez novej migrácie a bez zmeny publikačných prepínačov. Implementácia je pokrytá syntetickými UI testami a databázovými testami vytvorenia, opakovania, konfliktov a kombinácií filtrov; produkčné dáta sa do testov nekopírujú.
+
 ### Načítanie a výber
 
 Pri prvom načítaní sa predvolí aktívny sklad označený na serveri `is_default` (Hlavný sklad). Poradie ani názov skladu nerozhodujú. Ručný výber iného skladu alebo **Všetky sklady** zostáva zachovaný aj pri opätovnom načítaní možností; prázdny sklad v API naďalej znamená súhrn všetkých skladov. Samotné predvolenie nič neukladá ani neaktivuje.

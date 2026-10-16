@@ -20,7 +20,7 @@ from inventory_hub.db_models import IdentifierType, MovementType, Product, Produ
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent, StockBalance, StockMovement
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
 from inventory_hub.fifo_models import FifoLayer, FifoState
-from inventory_hub.product_editor_types import ProductEditorSaveRequest
+from inventory_hub.product_editor_types import ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.services import product_editor as service
 from stock_tracking_fixture import confirmed_inventory
 
@@ -151,6 +151,75 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     for table in ("products", "product_groups", "product_identifiers", "product_variant_attributes",
                         "supplier_products", "product_supply_sources", "shop_products", "shop_product_content",
                         "stock_balances", "stock_movements", "reservations", "shop_order_items", "shop_sync_outbox")}
+
+    async def test_create_card_replay_conflict_and_no_stock_or_shop_side_effects(self):
+        before = await self.snapshot()
+        payload = ProductCardCreateRequest(request_id=uuid4(), sku="DEMO-LOCAL", name="Local demo", is_active=False)
+        async with self.sessions() as db:
+            result = await service.create_card(db, payload)
+        row = result["results"][0]["row"]
+        self.assertFalse(row["is_active"])
+        self.assertFalse(row["supplier_linked"])
+        self.assertFalse(row["stock"]["known"])
+        async with self.sessions() as db:
+            self.assertEqual(await service.create_card(db, payload), result)
+        for changed, code in ((payload.model_copy(update={"name": "Changed"}), "product_editor_request_reused"),
+                              (payload.model_copy(update={"request_id": uuid4()}), "product_editor_identity_conflict"),
+                              (payload.model_copy(update={"request_id": uuid4(), "sku": "5901234123457"}), "product_editor_identity_conflict")):
+            async with self.sessions() as db:
+                with self.assertRaises(service.EditorError) as error:
+                    await service.create_card(db, changed)
+                self.assertEqual(error.exception.code, code)
+        after = await self.snapshot()
+        self.assertEqual(len(after.pop("products")), len(before.pop("products")) + 1)
+        self.assertEqual(after, before)
+        async with self.sessions() as db:
+            audits = (await db.scalars(select(ProductEditorAudit).where(ProductEditorAudit.product_id == row["id"]))).all()
+            self.assertEqual(len(audits), 1)
+            self.assertFalse(audits[0].after_data["is_active"])
+
+    async def test_activity_change_retains_links_and_uses_revision_audit(self):
+        before = await self.snapshot()
+        row = await self.detail()
+        result = await self.save([self.change(row, is_active=False)])
+        changed = result["results"][0]["row"]
+        self.assertEqual(result["results"][0]["status"], "saved")
+        self.assertFalse(changed["is_active"])
+        self.assertTrue(changed["supplier_linked"])
+        self.assertEqual(changed["revision"], row["revision"] + 1)
+        conflict = await self.save([self.change(row, is_active=True)])
+        self.assertEqual(conflict["results"][0]["status"], "conflict")
+        after = await self.snapshot()
+        before.pop("products"); after.pop("products")
+        self.assertEqual(after, before)
+        self.assertFalse((await self.detail())["is_active"])
+
+    async def test_activity_and_supplier_binding_filters_combine_before_pagination(self):
+        async with self.transaction() as db:
+            source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="FILTER-SOURCE", name="Source")
+            db.add(source); await db.flush()
+            for active in (True, False):
+                for linked in (True, False):
+                    product = Product(sku=f"FILTER-{active}-{linked}", name="Filter", is_active=active)
+                    db.add(product); await db.flush()
+                    if linked:
+                        # A paused link still exists; this filter is not crawler eligibility.
+                        db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id, is_active=False))
+                    else:
+                        db.add(ProductIdentifier(product_id=product.id, identifier_type=IdentifierType.supplier_sku,
+                            supplier_id=self.supplier_id, value=f"ALIAS-{active}"))
+        for active in (True, False):
+            for linked in (True, False):
+                result = await self.listing(q="FILTER-", activity="active" if active else "inactive",
+                    supplier_link="linked" if linked else "unlinked", stock_scope="unconfirmed", warehouse_code="editor-central", page_size=25)
+                self.assertEqual(result["total"], 1)
+                self.assertEqual(result["items"][0]["sku"], f"FILTER-{active}-{linked}")
+                self.assertEqual(result["items"][0]["supplier_linked"], linked)
+        self.assertEqual((await self.listing(q="FILTER-", stock_scope="confirmed", warehouse_code="editor-central"))["total"], 0)
+        async with self.transaction() as db:
+            product = await db.get(Product, self.products["BIKE-2"])
+            await db.execute(text("DELETE FROM product_supply_sources WHERE product_id = :id"), {"id": product.id})
+        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="linked"))["total"], 1, "Legacy source remains a binding")
 
     async def test_lists_all_canonical_products_including_missing_stock_without_expanding_pos_parent(self):
         before = await self.snapshot()
