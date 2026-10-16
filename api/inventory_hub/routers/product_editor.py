@@ -8,7 +8,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
-from inventory_hub.product_editor_types import ProductEditorSaveRequest
+from inventory_hub.product_editor_types import ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.services import product_editor as service
 
 
@@ -52,11 +52,19 @@ async def products(q: Annotated[str, Query(max_length=200)] = "", brand: Annotat
     warehouse_code: WarehouseCode = None, page: Annotated[int, Query(ge=1, le=1000000)] = 1,
     page_size: Annotated[int, Query(ge=25, le=100)] = 50, sort: Literal["group_sku", "sku", "name"] = "group_sku",
     stock_scope: Literal["all", "confirmed", "unconfirmed", "in_stock"] = "all",
+    activity: Literal["all", "active", "inactive"] = "all",
+    supplier_link: Literal["all", "linked", "unlinked"] = "all",
     direction: Literal["asc", "desc"] = "asc", db: AsyncSession = Depends(get_session)):
     if page_size not in (25, 50, 100):
         raise HTTPException(422, detail={"code": "product_editor_invalid_request", "message": "product_editor_invalid_request"})
     return await _call(service.list_products(db, q=q, brand=brand, shop_code=shop_code, warehouse_code=warehouse_code,
-        page=page, page_size=page_size, sort=sort, direction=direction, stock_scope=stock_scope))
+        page=page, page_size=page_size, sort=sort, direction=direction, stock_scope=stock_scope,
+        activity=activity, supplier_link=supplier_link))
+
+
+@router.post("/products")
+async def create_product(payload: ProductCardCreateRequest, db: AsyncSession = Depends(get_session)):
+    return await _call(service.create_card(db, payload))
 
 
 @router.get("/products/{product_id}")

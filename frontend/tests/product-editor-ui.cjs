@@ -51,7 +51,7 @@ async function paste(id, value) {
 const clone = value => JSON.parse(JSON.stringify(value));
 const reply = value => ({ ok: true, json: async () => clone(value) });
 const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.toString(16).padStart(4, '0')}`.padEnd(64, 'a');
-const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
+const makeRow = id => ({ id, is_active: true, supplier_linked: true, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
   attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
   supplier_availability: { available: true, fresh: ![2, 3, 4, 5].includes(id), status: ({ 2: 'stale', 3: 'missing_link', 4: 'missing_observation', 5: 'conflict' })[id] || 'fresh', label: [2, 3, 4, 5].includes(id) ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
   supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
@@ -68,6 +68,7 @@ const makeRow = id => ({ id, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: '
 const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = makeRow(index + 1); return [row.id, row]; }));
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
   warehouses: [{ id: 8, code: 'other', name: 'Other fixture', is_default: false }, { id: 7, code: 'main', name: 'Main fixture', is_default: true }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
+let loseCreateResponse = true; const createdRequests = new Map();
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave, linkRefreshMode = 'complete', detailMode = 'valid', resolveDetail;
@@ -100,13 +101,27 @@ global.fetch = async (path, init = {}) => {
       }] });
   }
   if (url.pathname.endsWith('/options')) return reply(editorOptions);
+  if (url.pathname.endsWith('/products') && init.method === 'POST') {
+    assert.deepEqual(Object.keys(body).sort(), ['is_active', 'name', 'request_id', 'sku']);
+    if (createdRequests.has(body.request_id)) {
+      const old = createdRequests.get(body.request_id); assert.deepEqual(old.body, body); return reply(old.result);
+    }
+    const row = { ...makeRow(100), sku: body.sku, common: { name: body.name, brand: null, internal_note: '' }, is_active: body.is_active, supplier_linked: false };
+    rows.set(row.id, row);
+    const result = { request_id: body.request_id, results: [{ product_id: row.id, status: 'saved', row, errors: [] }] };
+    createdRequests.set(body.request_id, { body, result });
+    if (loseCreateResponse) { loseCreateResponse = false; throw new TypeError('Lost create response'); }
+    return reply(result);
+  }
   if (url.pathname.endsWith('/products')) {
     assert.equal(init.method, 'GET');
     const page = Number(url.searchParams.get('page')), pageSize = Number(url.searchParams.get('page_size'));
     assert([25, 50, 100].includes(pageSize));
     const warehouseCode = url.searchParams.get('warehouse_code');
     const query = (url.searchParams.get('q') || '').toLowerCase();
-    const ordered = [...rows.values()].filter(row => (!url.searchParams.get('brand') || row.common.brand === url.searchParams.get('brand')) &&
+    const ordered = [...rows.values()].filter(row =>
+      (!['active', 'inactive'].includes(url.searchParams.get('activity')) || row.is_active === (url.searchParams.get('activity') === 'active')) &&
+      (!['linked', 'unlinked'].includes(url.searchParams.get('supplier_link')) || row.supplier_linked === (url.searchParams.get('supplier_link') === 'linked')) && (!url.searchParams.get('brand') || row.common.brand === url.searchParams.get('brand')) &&
       (!query || [row.sku, row.common.name, ...row.eans, ...row.supplier_codes.map(value => value.code)].some(value => value.toLowerCase().includes(query))));
     const snapshot = { items: ordered.slice((page - 1) * pageSize, page * pageSize).map(row => rowForWarehouse(row, warehouseCode)),
       total: ordered.length, page, page_size: pageSize, warehouse: warehouseCode ? { code: warehouseCode, name: 'Main fixture' } : null,
@@ -168,6 +183,7 @@ global.fetch = async (path, init = {}) => {
         return { product_id: row.id, status: 'conflict', row: clone(changed), errors: [{ code: 'product_editor_changed' }] };
       }
       const changed = clone(row);
+      if ('is_active' in change) changed.is_active = change.is_active;
       for (const scope of ['common', 'variant']) if (change[scope]) {
         Object.assign(changed[scope], change[scope]); Object.assign(changed.overrides[scope], change[scope]);
       }
@@ -343,12 +359,12 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(cellText(1, 'sku'), 'SKU-1'); assert.equal(cellText(1, 'name'), beforeRejectedPaste, 'A rectangle touching identity cells is rejected atomically');
   await paste(cell(50, 'name'), 'Last row changed\nOverflow row');
   assert.equal(cellText(50, 'name'), 'Fixture product 50', 'A paste cannot overflow the displayed page');
-  await click('columns'); await click('column-brand');
+  await click('columns'); await click('column-brand'); await click('column-is_active'); await click('column-supplier_linked');
   assert(!element('cell-1-brand'));
   await paste(cell(1, 'name'), 'Visible columns only\t149.90');
   assert.equal(cellText(1, 'name'), 'Visible columns only');
   assert.equal(cellText(1, 'sale_price_gross'), '149.90', 'TSV advances across visible columns without silently inserting hidden columns');
-  await click('column-brand'); await click('columns');
+  await click('column-brand'); await click('column-is_active'); await click('column-supplier_linked'); await click('columns');
   assert.equal(cellText(1, 'brand'), 'Brand one', 'Hidden columns keep their earlier staged value');
   assert.equal(saveCalls().length, 0, 'Editing and pasting never save on their own');
   await click('discard'); assert.equal(cellText(1, 'name'), 'Fixture product 1'); assert(cannotUse('save'));
@@ -549,6 +565,26 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(calls.slice(beforeEanFill).filter(item => item.method === 'POST').length, 0, 'Opening EAN adoption never writes or prepares an implicit apply');
   assert(document.querySelector('[role="dialog"]').textContent.includes('8585047234448'), 'The existing supplier EAN is visible without searching the item again');
   await click('supplier-links-close');
+  // Card activity is local, retained with supplier links, and independently filterable.
+  const unchangedStock = clone(rows.get(1).stock), unchangedShops = clone(rows.get(1).shops);
+  await edit(1, 'is_active', 'false'); await click('save');
+  assert.equal(saveCalls().at(-1).body.changes[0].is_active, false);
+  assert.equal(rows.get(1).is_active, false); assert.equal(rows.get(1).supplier_linked, true);
+  assert.deepEqual(rows.get(1).stock, unchangedStock); assert.deepEqual(rows.get(1).shops, unchangedShops);
+  await input('activity-filter', 'inactive'); await input('supplier-link-filter', 'linked'); await click('load');
+  assert(cellText(1, 'is_active').includes(t('activityStates.inactive'))); assert(!element('cell-2-sku'));
+  await input('supplier-link-filter', 'unlinked'); await click('load'); assert(!element('cell-1-sku'));
+  await click('new-card'); await input('create-sku', 'DEMO-LOCAL'); await input('create-name', 'Local demo'); await input('create-activity', 'false');
+  await click('create-submit');
+  assert(required('create-sku').disabled, 'An uncertain create preserves its exact payload');
+  assert(required('create-submit').textContent.includes(t('retryCreate')));
+  await click('create-submit');
+  assert.equal(createdRequests.size, 1, 'Retry does not create another card');
+  assert(!element('create-sku')); assert.equal(required('stock-scope').value, 'all');
+  assert.equal(required('activity-filter').value, 'all'); assert.equal(required('supplier-link-filter').value, 'all');
+  assert.equal(cellText(100, 'sku'), 'DEMO-LOCAL');
+  assert.equal(cellText(100, 'is_active'), t('activityStates.inactive'));
+  assert.equal(cellText(100, 'supplier_linked'), t('linkStates.unlinked'));
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
   const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
   assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);

@@ -7,6 +7,7 @@ export interface ProductEditorOptions {
 }
 export interface ProductShopValues { name: string | null; sale_price_gross: string | null; visible: boolean | null }
 export interface ProductEditorRow {
+  is_active: boolean; supplier_linked: boolean;
   id: number; sku: string; group: { id: number; code: string; name: string } | null;
   attributes: { name: string; value: string }[]; eans: string[]; supplier_codes: { supplier_code: string; code: string }[]; image_url: string | null;
   supplier_availability?: {
@@ -29,12 +30,14 @@ export interface ProductEditorRow {
   overrides: { common?: Record<string, unknown>; variant?: Record<string, unknown>; warehouses?: Record<string, Record<string, unknown>>; shops?: Record<string, Record<string, unknown>> };
 }
 export interface ProductEditorFilters {
+  activity: 'all' | 'active' | 'inactive'; supplier_link: 'all' | 'linked' | 'unlinked';
   stock_scope: 'all' | 'confirmed' | 'unconfirmed' | 'in_stock';
   q: string; brand: string; shop_code: string; warehouse_code: string; page: number; page_size: number;
   sort: 'group_sku' | 'sku' | 'name'; direction: 'asc' | 'desc';
 }
 export interface ProductEditorPageData { items: ProductEditorRow[]; total: number; page: number; page_size: number; warehouse: { code: string; name: string } | null; currency: 'EUR'; price_basis: 'incl_vat' }
 export interface ProductEditorChange {
+  is_active?: boolean;
   product_id: number; expected_revision: number; snapshot_hash: string;
   common?: Partial<Record<'name' | 'brand' | 'internal_note' | 'image_url', string | null>>;
   variant?: Partial<Record<'sale_price_gross' | 'vat_rate' | 'note', string | null>> & { attributes?: { name: string; value: string }[] | null; eans?: string[] | null; sku?: string | null };
@@ -45,10 +48,12 @@ export interface ProductEditorSave {
   request_id: string; status: 'completed'; external_write_enabled: false;
   results: { product_id: number; status: 'saved' | 'conflict' | 'invalid' | 'missing'; row?: ProductEditorRow; errors: { code: string; field?: string }[] }[];
 }
-export type ProductEditorSnapshot = Pick<ProductEditorRow, 'common' | 'variant' | 'warehouse' | 'shops' | 'overrides'> & Partial<Pick<ProductEditorRow, 'sku' | 'eans' | 'attributes' | 'image_url'>>;
+export type ProductEditorSnapshot = Pick<ProductEditorRow, 'common' | 'variant' | 'warehouse' | 'shops' | 'overrides'> & Partial<Pick<ProductEditorRow, 'is_active' | 'sku' | 'eans' | 'attributes' | 'image_url'>>;
 export interface ProductEditorDetail extends ProductEditorRow { audit: { id: number; created_at: string; before: ProductEditorSnapshot; after: ProductEditorSnapshot }[] }
 export interface ProductEditorSaveBody { request_id: string; warehouse_code: string | null; confirmed: true; changes: ProductEditorChange[] }
 const base = '/api/product-editor';
+export interface ProductCardCreate { request_id: string; sku: string; name: string; is_active: boolean }
+export const createProductCard = (body: ProductCardCreate) => hubRequest<ProductEditorSave>(`${base}/products`, body);
 export const getProductEditorOptions = (signal?: AbortSignal) => hubRequest<ProductEditorOptions>(`${base}/options`, undefined, signal);
 export const getEditorProducts = (filters: ProductEditorFilters, signal?: AbortSignal) => {
   const params = new URLSearchParams(); Object.entries(filters).forEach(([key, value]) => { if (value !== '') params.set(key, String(value)); });

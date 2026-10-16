@@ -149,3 +149,7 @@
 .product-publication-resolution textarea { background: var(--color-bg-primary); color: var(--color-text-primary); border: 1px solid var(--color-border-subtle); padding: 10px; border-radius: 7px; min-height: 80px; }
 .product-publication-history { list-style: none; padding: 0; margin-top: 10px; }
 .product-publication-history button { color: var(--color-accent); text-align: left; padding: 6px 0; }
+
+.product-editor-create { padding: 1rem; border: 1px solid var(--color-border-subtle); margin: 1rem 0; display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.product-editor-create h2, .product-editor-create p { flex-basis: 100%; }
+.product-editor-create label { display: flex; flex-direction: column; gap: .3rem; }

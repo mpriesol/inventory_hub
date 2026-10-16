@@ -2119,7 +2119,9 @@
       "xtrek_visible": "xTrek · visibility",
       "supplier_quantity": "At supplier",
       "supplier_availability": "Supplier availability",
-      "tracking": "Stock tracking status"
+      "tracking": "Stock tracking status",
+      "is_active": "Hub card status",
+      "supplier_linked": "Supplier link"
     },
     "rowStates": {
       "dirty": "Unsaved changes",
@@ -2165,7 +2167,9 @@
       "product_editor_mapped_sku_rename": "A shop-linked SKU requires a coordinated identifier change before renaming.",
       "product_editor_identity_conflict": "Another product already uses this SKU or EAN.",
       "product_editor_attribute_refresh_unmapped": "This product has no exact shop variant mapping.",
-      "product_editor_attribute_refresh_empty": "The shop returned no attributes for this variant."
+      "product_editor_attribute_refresh_empty": "The shop returned no attributes for this variant.",
+      "invalid_activity": "Choose Active or Inactive.",
+      "create_uncertain": "Creation could not be confirmed. Retry the same request to recover its result without creating another card."
     },
     "savedValue": "Saved value",
     "browserPreferences": "Column widths, order and visibility are remembered in this browser. SKU stays first. Draft values are not stored in these preferences.",
@@ -2229,7 +2233,7 @@
       "unconfirmed": "Awaiting count / first receipt",
       "no_warehouse": "Select a warehouse"
     },
-    "trackingHelp": "Active stock contains only items confirmed by a physical count or a new receipt. Old imports remain in history. For the first count select Unconfirmed items and open the detail → Quantity correction.",
+    "trackingHelp": "Confirmed inventory shows only quantities confirmed by a stocktake or a new receipt. Active / Inactive is a separate card setting. For the first count, choose Unconfirmed items and open the detail → Correct quantity.",
     "openingStock": "Batch opening stock",
     "shopLinkMissing": "The storefront link is missing.",
     "adminLinkMissing": "The administration link is missing.",
@@ -2250,6 +2254,22 @@
     "supplierRefresh": {
       "queued": "Refresh is queued.",
       "running": "Availability is being refreshed."
+    },
+    "newCard": "New stock card",
+    "createCard": "Create card",
+    "cancelCreate": "Close",
+    "retryCreate": "Check / retry creation",
+    "newCardHelp": "Creates a local Hub card without a supplier link or shop publication. Physical stock stays unconfirmed; a supplier can be linked later.",
+    "activityHelp": "Hub card activity is separate from stock confirmation and shop visibility. An inactive card can retain supplier links; a link alone does not confirm availability or eligibility for a Sloger refresh.",
+    "activityStates": {
+      "all": "All states",
+      "active": "Active",
+      "inactive": "Inactive"
+    },
+    "linkStates": {
+      "all": "All links",
+      "linked": "With supplier link",
+      "unlinked": "Without supplier link"
     }
   },
   "actions": {

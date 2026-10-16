@@ -2120,7 +2120,9 @@
       "xtrek_visible": "xTrek · viditeľnosť",
       "supplier_quantity": "U dodávateľa",
       "supplier_availability": "Dodávateľská dostupnosť",
-      "tracking": "Stav skladovej evidencie"
+      "tracking": "Stav skladovej evidencie",
+      "is_active": "Stav karty v Hube",
+      "supplier_linked": "Dodávateľská väzba"
     },
     "rowStates": {
       "dirty": "Neuložené zmeny",
@@ -2166,7 +2168,9 @@
       "product_editor_mapped_sku_rename": "SKU prepojené s e-shopom nemožno premenovať bez koordinovanej zmeny identifikátorov.",
       "product_editor_identity_conflict": "Tento SKU alebo EAN už používa iný produkt.",
       "product_editor_attribute_refresh_unmapped": "Produkt nemá presné prepojenie na variant v e-shope.",
-      "product_editor_attribute_refresh_empty": "E-shop pre tento variant nevrátil parametre."
+      "product_editor_attribute_refresh_empty": "E-shop pre tento variant nevrátil parametre.",
+      "invalid_activity": "Vyberte Aktívna alebo Neaktívna.",
+      "create_uncertain": "Výsledok vytvorenia sa nepodarilo potvrdiť. Overte ho opakovaním tej istej požiadavky; ďalšia karta tým nevznikne."
     },
     "savedValue": "Uložené po úprave",
     "browserPreferences": "Šírky, poradie a viditeľnosť stĺpcov sa pamätajú v tomto prehliadači. SKU zostáva prvý. Rozpracované hodnoty sa neukladajú do nastavení.",
@@ -2230,7 +2234,7 @@
       "unconfirmed": "Čaká na inventúru / prvý príjem",
       "no_warehouse": "Vyberte sklad"
     },
-    "trackingHelp": "Aktívny sklad obsahuje iba položky potvrdené inventúrou alebo novým príjmom. Staré importy zostávajú v histórii. Pre prvé spočítanie vyberte Nepotvrdené položky a otvorte detail → Oprava množstva.",
+    "trackingHelp": "Filter Len potvrdené položky zobrazuje iba zásoby potvrdené inventúrou alebo novým príjmom. Stav Aktívna / Neaktívna je samostatná vlastnosť karty. Staré importy zostávajú v histórii. Pre prvé spočítanie vyberte Nepotvrdené položky a otvorte detail → Oprava množstva.",
     "openingStock": "Hromadný počiatočný stav",
     "shopLinkMissing": "Chýba odkaz do e-shopu.",
     "adminLinkMissing": "Chýba odkaz do administrácie.",
@@ -2251,6 +2255,22 @@
     "supplierRefresh": {
       "queued": "Načítanie čaká na spustenie.",
       "running": "Dostupnosti sa práve načítavajú."
+    },
+    "newCard": "Nová skladová karta",
+    "createCard": "Vytvoriť kartu",
+    "cancelCreate": "Zavrieť",
+    "retryCreate": "Overiť / zopakovať vytvorenie",
+    "newCardHelp": "Vytvorí kartu iba v Hube, bez dodávateľskej väzby a bez odoslania do e-shopov. Množstvo zostane nepotvrdené; dodávateľa môžete pripojiť neskôr.",
+    "activityHelp": "Stav karty v Hube je nezávislý od potvrdenia zásob a viditeľnosti v e-shopoch. Dodávateľská väzba môže existovať aj na neaktívnej karte; jej existencia sama nepotvrdzuje dostupnosť ani zaradenie do načítania Slogera.",
+    "activityStates": {
+      "all": "Všetky stavy",
+      "active": "Aktívna",
+      "inactive": "Neaktívna"
+    },
+    "linkStates": {
+      "all": "Všetky väzby",
+      "linked": "S dodávateľskou väzbou",
+      "unlinked": "Bez dodávateľskej väzby"
     }
   },
   "actions": {
