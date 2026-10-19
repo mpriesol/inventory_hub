@@ -115,7 +115,7 @@ export function ProductEditorPage() {
     setDetailId(null); setDetail(null); setDetailError(''); setRefreshingAttributes(false); setPublication(null); setLinkingRows(null); setSupplierLink(null); setLinkRefresh({}); setRefreshingShop(''); linksChanged.current = false; setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
   }
   useEffect(() => { const previous = priorAccess.current; priorAccess.current = { revision, unlocked: hubUnlocked() };
-    if (previous && previous.revision !== revision) { try { sessionStorage.removeItem(CONTEXT_KEY); } catch {} remembered.current = { filters: initialFilters }; warehouseInitialized.current = false; }
+    if (previous && previous.revision !== revision) { try { sessionStorage.removeItem(CONTEXT_KEY); } catch {} remembered.current = { filters: initialFilters }; }
     reset(); if (hubUnlocked() && (!previous || previous.revision === revision || !previous.unlocked)) void load(remembered.current.filters, true); return () => { generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort(); }; }, [revision]);
   useEffect(() => { setPreferencesSaved(saveColumnPreferences(preferences)); }, [preferences]);
   useEffect(() => () => { resizing.current?.(); }, []);
@@ -478,7 +478,7 @@ export function ProductEditorPage() {
           onClick={() => openSupplierLink()}>{t('supplierLinks.resume')}</Button>}
       </div>
       <div className="product-editor-workspace"><div className="product-editor-table-area">
-        {!data ? <div className="product-editor-empty">{t('productEditor.initialHelp')}</div> : <>
+        {!data ? <div className="product-editor-empty">{t(busy === 'load' ? 'productEditor.loading' : 'productEditor.initialHelp')}</div> : <>
           <div className="product-editor-grid-scroll" ref={scrollRef} onScroll={event => remember(event.currentTarget.scrollTop)} data-testid="grid-scroll"><table role="grid" aria-label={t('productEditor.title')} style={{ width: 76 + columns.reduce((sum, column) => sum + widthOf(column.key), 0) }}>
             <colgroup><col style={{ width: 34 }} />{columns.map(column => <col key={column.key} style={{ width: widthOf(column.key) }} />)}<col style={{ width: 42 }} /></colgroup>
             <thead><tr><th className="product-editor-select"><input data-testid="select-page" type="checkbox" aria-label={t('productEditor.selectPage')} checked={shownRows.length > 0 && shownRows.every(row => selected.has(row.id))} disabled={locked || !!busy || !shownRows.length} onChange={event => setSelected(new Set(event.target.checked ? shownRows.map(row => row.id) : []))} /></th>{columns.map(column => <th key={column.key} data-testid={`header-${column.key}`} style={{ width: widthOf(column.key) }} className={`product-editor-col-${column.key}`}><span className="product-editor-column-title">{t(`productEditor.fields.${column.key}`)}{editable(column) && <span className="product-editor-pencil" aria-hidden="true">✎</span>}</span>
