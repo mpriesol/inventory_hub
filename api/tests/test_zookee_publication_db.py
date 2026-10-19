@@ -132,7 +132,51 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(SupplierAvailabilityObservation(supplier_id=self.supplier_id,supplier_sku=self.sku,feed_id=feed.id,run_id=run.id,
                 available=False,quantity=0,quantity_kind='exact',raw={},observed_at=now,expires_at=now+timedelta(hours=1)))
             await db.commit()
-        with patch.object(service,'get_session_context',self.transaction):
+        async def read_batch(*args):
+            return {'BIKE-2':copy.deepcopy(self.remote)}
+        with patch.object(service,'get_session_context',self.transaction), patch.object(service,'read_batch',AsyncMock(side_effect=read_batch)):
             self.assertTrue(await service.cycle())
             self.assertFalse(await service.cycle())
         self.assertEqual(self.writer.await_count,1)
+
+    async def test_batch_send_never_repeats_uncertain(self):
+        async with self.sessions() as db:
+            first=await service._prepare_and_send(db,self.products['BIKE-2'],self.shops['biketrek'],
+                'editor-supplier',self.sku,999,self.policy,self.config,send=False)
+        # A replay through the batch service retains the same durable intent.
+        async def read_batch(*args): return {'BIKE-2':copy.deepcopy(self.remote)}
+        with patch.object(service,'read_batch',AsyncMock(side_effect=read_batch)):
+            self.writer.side_effect=source.source.SourceError('product_publication_write_unconfirmed',uncertain=True)
+            async with self.sessions() as db: await service.send_batch(db,[first])
+            async with self.sessions() as db:
+                self.assertEqual((await db.get(ProductEditorPublication,first)).state,'uncertain')
+                await service.send_batch(db,[first])
+            self.assertEqual(self.writer.await_count,1)
+
+    async def test_sibling_batch_has_one_write_and_individual_receipts(self):
+        async with self.sessions() as db:
+            first_source=await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id==self.supplier_id))
+            second=await db.get(Product,self.products['BIKE-10']);second.source_supplier_product_id=first_source.id
+            mapping=await db.scalar(select(ShopProduct).where(ShopProduct.product_id==second.id,ShopProduct.shop_id==self.shops['biketrek']))
+            mapping.external_id='23';await db.commit()
+        remotes={'BIKE-2':copy.deepcopy(self.remote),'BIKE-10':copy.deepcopy(self.remote)}
+        remotes['BIKE-10']['identity'].update(code='BIKE-10',variant_code='BIKE-10',variant_id=23)
+        remotes['BIKE-10']['leaf']['code']='BIKE-10'
+        ids=[]
+        for code in ('BIKE-2','BIKE-10'):
+            async with self.sessions() as db:
+                ids.append(await service._prepare_and_send(db,self.products[code],self.shops['biketrek'],
+                    'editor-supplier',self.sku,999,self.policy,self.config,remote=remotes[code],send=False))
+        async def read_batch(*args): return copy.deepcopy(remotes)
+        async def write_batch(shop,items,fingerprint):
+            self.assertEqual(len(items),2)
+            async with self.sessions() as check:
+                self.assertEqual({(await check.get(ProductEditorPublication,id)).state for id in ids},{'sending'})
+            for item in items: remotes[item['identity']['code']]['leaf']['availability']=item['availability']
+        with patch.object(service,'read_batch',AsyncMock(side_effect=read_batch)) as reader, patch.object(source,'write_availability_batch_once',AsyncMock(side_effect=write_batch)) as writer:
+            async with self.sessions() as db: await service.send_batch(db,ids)
+            writer.assert_awaited_once();self.assertEqual(reader.await_count,2)
+            async with self.sessions() as db:
+                self.assertEqual({(await db.get(ProductEditorPublication,id)).state for id in ids},{'completed'})
+                await service.send_batch(db,ids)
+            writer.assert_awaited_once();self.writer.assert_not_awaited()

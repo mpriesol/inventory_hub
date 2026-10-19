@@ -24,16 +24,22 @@ export function ZookeeCodeReconciliation() {
     if (running.current || !rows) return;
     running.current = true; controller.current = new AbortController(); setBusy(true); setError('');
     try {
-      for (const row of rows) {
-        if (!mounted.current) break;
-        if (results[row.product_id] === 'completed') continue;
-        if (!requestIds.current.has(row.product_id)) requestIds.current.set(row.product_id, crypto.randomUUID());
+      const pending = rows.filter(row => results[row.product_id] !== 'completed');
+      for (let start = 0; start < pending.length && mounted.current; start += 20) {
+        const selected = pending.slice(start, start + 20);
+        const commands = selected.map(row => {
+          if (!requestIds.current.has(row.product_id)) requestIds.current.set(row.product_id, crypto.randomUUID());
+          return { product_id: row.product_id, request_id: requestIds.current.get(row.product_id)! };
+        });
         try {
-          await hubRequest(`/api/supplier-availability/zookee/legacy-codes/${row.product_id}`, { request_id: requestIds.current.get(row.product_id) }, controller.current.signal);
-          if (mounted.current) setResults(previous => ({ ...previous, [row.product_id]: 'completed' }));
+          const value = await hubRequest<{ results: { product_id: number; status: string; error?: string }[] }>(
+            '/api/supplier-availability/zookee/legacy-code-batches', { rows: commands }, controller.current.signal);
+          if (mounted.current) setResults(previous => ({ ...previous, ...Object.fromEntries(value.results.map(result =>
+            [result.product_id, result.status === 'completed' ? 'completed' : result.error || 'failed'])) }));
         } catch (value) {
           const code = (value as { code?: string }).code || 'failed';
-          if (mounted.current) setResults(previous => ({ ...previous, [row.product_id]: code }));
+          if (mounted.current) setResults(previous => ({ ...previous, ...Object.fromEntries(selected.map(row => [row.product_id, code])) }));
+          break; // An unknown batch result needs explicit operator recovery.
         }
       }
     } finally { running.current = false; setBusy(false); }
