@@ -163,8 +163,14 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
         raise editor.EditorError('product_editor_changed')
     for mapping, _ in mappings:
         evidence = next(item for item in observed if item['mapping_id'] == mapping.id)
+        if publication.fingerprint(evidence['shop']) != evidence['fingerprint']:
+            raise editor.EditorError('product_publication_target_changed')
         if evidence['cached_identity'] and await cached_identity(db, mapping, old, new, lock=True) != evidence['cached_identity']:
             raise editor.EditorError('product_editor_changed')
+        if await db.scalar(select(ShopProduct.id).where(ShopProduct.shop_id == mapping.shop_id,
+                ShopProduct.product_id != product_id, ShopProduct.is_variant == mapping.is_variant,
+                ShopProduct.external_id == evidence['native_id']).limit(1)):
+            raise editor.EditorError('product_editor_identity_conflict')
     if (await db.scalar(select(Product.id).where(Product.sku == new,Product.id != product_id))
         or await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value.in_((old,new)),ProductIdentifier.product_id != product_id))):
         raise editor.EditorError('product_editor_identity_conflict')

@@ -154,6 +154,17 @@ class CodeReconciliationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             self.assertEqual((await db.get(Product, self.pid)).sku, 'TOPEAK-1')
 
+    async def test_recovered_id_already_linked_to_another_card_cannot_merge_identities(self):
+        await self.missing_id_fixture()
+        async with self.sessions() as db:
+            other = Product(sku='ANOTHER-CARD', name='Another card'); db.add(other); await db.flush()
+            db.add(ShopProduct(shop_id=self.shops['biketrek'], product_id=other.id, is_variant=True,
+                external_code='xTrek', parent_code='xTrek', variant_code='ANOTHER-CARD', external_id='22'))
+            await db.commit()
+        async with self.sessions() as db:
+            with self.assertRaisesRegex(service.editor.EditorError, 'product_editor_identity_conflict'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+
     async def test_all_shop_ids_verified_local_identity_audited_and_retry_is_read_only(self):
         request_id=uuid4()
         async with self.sessions() as db:
