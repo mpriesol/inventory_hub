@@ -41,6 +41,7 @@ global.fetch=async(path,options={})=>{
  await act(async()=>{button(i18n.t('suppliers.codeRename.apply')).click();await tick();});
  assert.equal(requests.length,2,'A known mismatch is not automatically retried');
  assert(document.body.textContent.includes(i18n.t('suppliers.codeRename.notVerified')));
+ assert.equal(document.querySelector('code')?.textContent,'code_rename_native_id_changed','The rejected identity is diagnosable');
  const original=JSON.parse(requests[1].options.body);
  await act(async()=>{button(i18n.t('suppliers.codeRename.apply')).click();await tick();});
  assert.deepEqual(JSON.parse(requests[2].options.body),original,'An explicit retry retains its operation UUID');
