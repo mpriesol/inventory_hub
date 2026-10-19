@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from sqlalchemy import select
 from inventory_hub import config_io
@@ -118,7 +119,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             result = await reconcile_supplier_links(db,'editor-supplier',product_ids=[self.products['BIKE-10']],match_catalog=True)
             self.assertEqual(result['linked'],0);self.assertEqual(result['existing'],1)
 
-    async def test_worker_scope_query_advances_once_per_fresh_observation(self):
+    async def test_worker_skips_unverified_links_without_poisoning_batch_and_resumes_after_repair(self):
         from inventory_hub.services import product_editor
         self.config['feeds'] = {'sources':{'stock':{'mode':'remote','remote':{'url':'https://supplier.example.test/stock.xml'}}}}
         config_io.supplier_path('editor-supplier').write_text(json.dumps(self.config))
@@ -131,13 +132,50 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(SupplierAvailabilitySettings(supplier_id=self.supplier_id,feed_key='stock',enabled=True,next_run_at=now+timedelta(hours=1),last_success_at=now))
             db.add(SupplierAvailabilityObservation(supplier_id=self.supplier_id,supplier_sku=self.sku,feed_id=feed.id,run_id=run.id,
                 available=False,quantity=0,quantity_kind='exact',raw={},observed_at=now,expires_at=now+timedelta(hours=1)))
+            # This sibling has supplier evidence but no verified shop ID yet.
+            second = await db.get(Product, self.products['BIKE-10']); second.source_supplier_product_id = second.source_supplier_product_id or (
+                await db.scalar(select(SupplierProduct.id).where(SupplierProduct.supplier_id == self.supplier_id)))
             await db.commit()
-        async def read_batch(*args):
-            return {'BIKE-2':copy.deepcopy(self.remote)}
+        requested = []
+        async def read_batch(shop, documents, fingerprint):
+            codes = [document['identity']['code'] for document in documents]; requested.extend(codes)
+            self.assertEqual(len(codes), 1, 'An unverified sibling must not enter the API batch')
+            remote = copy.deepcopy(self.remote); code = codes[0]
+            remote['identity'].update(code=code, variant_code=code, variant_id=22 if code == 'BIKE-2' else 23)
+            remote['leaf']['code'] = code
+            return {code:remote}
         with patch.object(service,'get_session_context',self.transaction), patch.object(service,'read_batch',AsyncMock(side_effect=read_batch)):
             self.assertTrue(await service.cycle())
             self.assertFalse(await service.cycle())
+            self.assertEqual(set(requested), {'BIKE-2'})
+            async with self.sessions() as db:
+                mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-10'],
+                    ShopProduct.shop_id == self.shops['biketrek']))
+                mapping.external_id = '23'; await db.commit()
+            self.assertTrue(await service.cycle(), 'Repair makes the same fresh observation eligible without a failed-attempt loop')
+            self.assertFalse(await service.cycle())
+            self.assertIn('BIKE-10', requested)
         self.assertEqual(self.writer.await_count,1)
+
+    async def test_overview_counts_current_card_outcomes_and_keeps_unresolved_write_visible(self):
+        from inventory_hub.services import supplier_availability
+        now = service.editor.now()
+        async with self.sessions() as db:
+            for product, state, minutes, shop, workflow in [
+                ('BIKE-2', 'rejected', 6, 'biketrek', service.WORKFLOW),
+                ('BIKE-2', 'completed', 5, 'biketrek', service.WORKFLOW),
+                ('BIKE-10', 'uncertain', 4, 'biketrek', service.WORKFLOW),
+                ('BIKE-10', 'rejected', 3, 'biketrek', service.WORKFLOW),
+                ('BIKE-2', 'rejected', 2, 'xtrek', service.WORKFLOW),
+                ('BIKE-2', 'rejected', 1, 'biketrek', 'other_workflow')]:
+                db.add(ProductEditorPublication(id=str(uuid4()), product_id=self.products[product], shop_id=self.shops[shop],
+                    state=state, created_at=now-timedelta(minutes=minutes),
+                    document={'workflow':workflow, 'supplier':'editor-supplier', 'shop_code':shop}))
+            await db.commit()
+        async with self.sessions() as db:
+            value = next(row for row in (await supplier_availability.overview(db))['suppliers'] if row['supplier']=='editor-supplier')
+            self.assertEqual(value['publication']['counts'], {'completed':1, 'uncertain':1})
+            self.assertEqual(len(list(await db.scalars(select(ProductEditorPublication)))), 6, 'History remains intact')
 
     async def test_batch_send_never_repeats_uncertain(self):
         async with self.sessions() as db:

@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import select, or_, exists, func, String, text
+from sqlalchemy import select, or_, exists, func, String, text, case
 
 from inventory_hub import config_io
 from inventory_hub.database import get_session_context
@@ -135,6 +135,8 @@ async def cycle():
                       (SupplierAvailabilityObservation.supplier_sku == SupplierProduct.supplier_sku))
                 .where(~attempted, ~fenced, Supplier.is_active.is_(True), func.upper(SupplierProduct.brand).in_(policy['brands']), Supplier.code == supplier, Shop.code == policy['shop_code'], Shop.is_active.is_(True),
                     ShopProduct.is_listed.is_(True), SupplierAvailabilitySettings.enabled.is_(True),
+                    ShopProduct.external_id.op('~')('^[1-9][0-9]{0,19}$'),
+                    case((ShopProduct.is_variant, ShopProduct.variant_code), else_=ShopProduct.external_code) == Product.sku,
                     SupplierAvailabilityObservation.expires_at > editor.now(), SupplierAvailabilityObservation.available.is_not(None),
                     SupplierProduct.is_active.is_(True), SupplierProduct.is_discontinued.is_(False))
                 .order_by(Product.id).limit(20))).all()

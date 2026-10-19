@@ -383,5 +383,6 @@ Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej akt
 - The same explicit reconciliation supports missing IDs on linked Topeak/Sensor BIKETREK cards under the configured Zookee matching policy, preserving unchanged codes such as `SEN-`, cached source content and stock history.
 
 - Scoped supplier availability and Zookee code reconciliation share bounded reads in batches of up to 20 leaves. Availability retains individual durable intents/fences and uses one availability-only envelope with complete native-ID acknowledgement/readback; batch reconciliation never writes to a shop. See [Zookee](docs/zookee.md).
+- Automatic supplier batches require verified native mappings and exact canonical leaf codes. Availability settings count current per-card results while retaining unresolved-write visibility and complete history.
 
 - Optional catalog image fallback fills missing supplier photographs from explicitly linked, identity-checked cached shop products in catalog list/detail and new preparations. Source images and raw snapshots remain intact; no API call, stock write or migration is required. See [Zookee](docs/zookee.md#missing-catalog-images).

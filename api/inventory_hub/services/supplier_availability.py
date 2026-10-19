@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, case
 from sqlalchemy.dialects.postgresql import insert
 
 from inventory_hub import config_io
@@ -92,10 +92,17 @@ async def overview(db):
             value["latest_run"] = await latest_run(db, rows[code].supplier_id, rows[code].feed_key)
         if value.get("publication"):
             from inventory_hub.product_editor_models import ProductEditorPublication
-            counts = (await db.execute(select(ProductEditorPublication.state, func.count())
+            # One current outcome per card/channel. An unresolved write keeps
+            # priority over later diagnostic rejections until explicitly settled.
+            latest = select(ProductEditorPublication.state, func.row_number().over(
+                partition_by=(ProductEditorPublication.product_id, ProductEditorPublication.shop_id),
+                order_by=(case((ProductEditorPublication.state.in_(("sending", "uncertain")), 0), else_=1),
+                          ProductEditorPublication.created_at.desc(), ProductEditorPublication.id.desc())).label("position"))\
                 .where(ProductEditorPublication.document["workflow"].astext == "supplier_availability",
-                       ProductEditorPublication.document["supplier"].astext == code)
-                .group_by(ProductEditorPublication.state))).all()
+                       ProductEditorPublication.document["supplier"].astext == code,
+                       ProductEditorPublication.document["shop_code"].astext == value["publication"]["shop_code"]).subquery()
+            counts = (await db.execute(select(latest.c.state, func.count()).where(latest.c.position == 1)
+                .group_by(latest.c.state))).all()
             value["publication"] = {**value["publication"], "counts":dict(counts)}
         result.append(value)
     return {"suppliers": result}
