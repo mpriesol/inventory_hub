@@ -59,7 +59,7 @@ async def barcode_set(db,product_id,override):
     return values
 
 
-async def reconcile_one(db,supplier,product_id,request_id):
+async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
     configured(supplier)
     identifier=str(UUID(str(request_id)))
     digest=editor._digest(['zookee-code-reconciliation',product_id])
@@ -87,7 +87,7 @@ async def reconcile_one(db,supplier,product_id,request_id):
     # Every channel must already be renamed. A partial administrative rename
     # produces no local write and cannot silently sever another shop's link.
     for item in observed:
-        remote=await transport.read_remote(item['shop'],item['target'],item['fingerprint'])
+        remote=await (remote_reader or transport.read_remote)(item['shop'],item['target'],item['fingerprint'])
         identity=remote['identity']; native=identity['variant_id'] if identity['variant_code'] else identity['product_id']
         if str(native) != item['native_id']: raise editor.EditorError('code_rename_native_id_changed')
         remote_eans=set(verified_barcodes((remote['leaf'].get('ean'),)))
@@ -151,3 +151,58 @@ async def reconcile_one(db,supplier,product_id,request_id):
         before_data={'sku':old},after_data={'sku':new,'operation':'verified_code_reconciliation','native_identities':observed}))
     await db.commit()
     return result
+
+
+async def reconcile_batch(db, supplier, rows):
+    """Batch identity reads through the existing bounded shop-link reader."""
+    from inventory_hub.services import product_link_source as reader
+    configured(supplier)
+    pending, results, codes = [], [], {}
+    for row in rows:
+        identifier = str(row.request_id)
+        previous = await db.get(ProductEditorSave, identifier)
+        if previous:
+            if previous.input_hash != editor._digest(['zookee-code-reconciliation', row.product_id]):
+                raise editor.EditorError('product_editor_request_reused')
+            results.append(previous.result)
+            continue
+        product, mappings, _ = await snapshot(db, row.product_id)
+        new = renamed(product.sku)
+        if new == product.sku:
+            results.append({'product_id': row.product_id, 'status': 'failed', 'error': 'code_rename_no_legacy_code'})
+            continue
+        pending.append(row)
+        for _, shop in mappings:
+            codes.setdefault(shop, set()).add(new)
+    await db.rollback()
+    observed, failures, fingerprints = {}, {}, {}
+    for shop, values in codes.items():
+        try:
+            fingerprint = publication.fingerprint(shop)
+            fingerprints[shop] = fingerprint
+            response = await reader.discover(shop, sorted(values), fingerprint)
+            observed[shop] = {leaf['code']: leaf for leaf in response['leaves']}
+        except (reader.SourceError, editor.EditorError) as error:
+            failures[shop] = error
+
+    async def from_batch(shop, target, fingerprint):
+        if fingerprints.get(shop) != fingerprint:
+            raise editor.EditorError('product_publication_target_changed')
+        if shop in failures:
+            raise editor.EditorError(failures[shop].code, failures[shop].status)
+        leaf = observed.get(shop, {}).get(target['code'])
+        if (not leaf or leaf['parent_code'] != target['parent_code']
+                or bool(leaf['is_variant']) != bool(target['variant_code'])):
+            raise editor.EditorError('code_rename_target_not_verified')
+        identity = {**target, 'product_id': int(leaf['parent_id']),
+                    'variant_id': int(leaf['external_id']) if leaf['is_variant'] else None}
+        return {'identity': identity, 'options': None, 'leaf': {'ean': ';'.join(leaf['eans'])}}
+
+    for row in pending:
+        try:
+            result = await reconcile_one(db, supplier, row.product_id, row.request_id, remote_reader=from_batch)
+        except (editor.EditorError, transport.source.SourceError, publication.CatalogError) as error:
+            await db.rollback()
+            result = {'product_id': row.product_id, 'status': 'failed', 'error': error.code}
+        results.append(result)
+    return {'results': results}

@@ -166,3 +166,61 @@ def _write(shop, identity, fingerprint, payload):
 
 async def write_once(shop, identity, fingerprint, payload):
     await asyncio.to_thread(_write, shop, identity, fingerprint, payload)
+
+
+def _availability_batch(items):
+    """One availability-only envelope, grouping variants by their real parent."""
+    if not 1 <= len(items) <= 20:
+        raise source.SourceError('supplier_availability_invalid_batch', 422)
+    products, identities = {}, []
+    for item in items:
+        identity = source._target(item['identity'], frozen=True)
+        label = item['availability']
+        if not isinstance(label, str) or not 0 < len(label) <= 100 or any(ord(c) < 32 for c in label):
+            raise source.SourceError('supplier_availability_invalid_batch', 422)
+        leaf = {'code': identity['code'], 'availability': label}
+        if identity['variant_code'] is None:
+            if identity['code'] in products:
+                raise source.SourceError('supplier_availability_invalid_batch', 422)
+            products[identity['code']] = leaf
+        else:
+            parent = products.setdefault(identity['parent_code'], {'code': identity['parent_code'], 'variants': []})
+            if 'variants' not in parent or any(v['code'] == leaf['code'] for v in parent['variants']):
+                raise source.SourceError('supplier_availability_invalid_batch', 422)
+            parent['variants'].append(leaf)
+        identities.append(identity)
+    return {'products': list(products.values())}, identities
+
+
+def _write_availability_batch(shop, items, fingerprint):
+    payload, identities = _availability_batch(items)
+    client = source._client(shop, fingerprint)
+    try:
+        result = source._request(client, 'put', 'products', payload=payload)
+        rows = result.get('products') if isinstance(result, dict) else None
+        if (not isinstance(rows, list) or len(rows) != len(payload['products'])
+                or any(not isinstance(row, dict) for row in rows)
+                or {r.get('code') for r in rows} != {r['code'] for r in payload['products']}):
+            raise source.SourceError('product_publication_write_unconfirmed', uncertain=True)
+        for identity in identities:
+            matches = [r for r in rows if r.get('code') == identity['parent_code']]
+            if len(matches) != 1:
+                raise source.SourceError('product_publication_write_unconfirmed', uncertain=True)
+            parent = deepcopy(matches[0])
+            if identity['variant_code'] is not None:
+                variants = parent.get('variants')
+                expected = next(p['variants'] for p in payload['products'] if p['code'] == identity['parent_code'])
+                if (not isinstance(variants, list) or len(variants) != len(expected)
+                        or any(not isinstance(v, dict) for v in variants)
+                        or {v.get('code') for v in variants} != {v['code'] for v in expected}):
+                    raise source.SourceError('product_publication_write_unconfirmed', uncertain=True)
+                parent['variants'] = [v for v in variants if v.get('code') == identity['code']]
+            if not source._acknowledged({**result, 'products': [parent]}, identity):
+                raise source.SourceError('product_publication_write_unconfirmed', uncertain=True)
+    finally:
+        client.session.close()
+
+
+async def write_availability_batch_once(shop, items, fingerprint):
+    # Caller commits all sending intents before this one possible side effect.
+    await asyncio.to_thread(_write_availability_batch, shop, items, fingerprint)

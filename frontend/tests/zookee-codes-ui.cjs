@@ -28,9 +28,9 @@ const requests=[];let fail=true;let done=false;
 global.fetch=async(path,options={})=>{
   requests.push({path,options});
   if(!options.method || options.method==='GET')return response({items:done?[]:[{product_id:12,old_code:'TOPEAK-1',new_code:'ZOO-1',name:'Synthetic item'}]});
-  assert.equal(options.method,'POST');assert.match(path,/^\/api\/supplier-availability\/zookee\/legacy-codes\/12$/);
+  assert.equal(options.method,'POST');assert.match(path,/^\/api\/supplier-availability\/zookee\/legacy-code-batches$/);
   if(fail){fail=false;return response({detail:{code:'code_rename_native_id_changed'}},409);}
-  done=true;return response({status:'completed'});
+  done=true;return response({results:[{product_id:12,status:'completed'}]});
 };
 (async()=>{
  await act(async()=>{root.render(React.createElement(ZookeeCodeReconciliation));await tick();});
@@ -47,6 +47,6 @@ global.fetch=async(path,options={})=>{
  assert(document.body.textContent.includes(i18n.t('suppliers.codeRename.results.completed')));
  await act(async()=>{button(i18n.t('suppliers.codeRename.apply')).click();await tick();});
  assert.equal(requests.length,3,'Completed local reconciliation is not resent');
- assert(requests.every(r=>r.path.startsWith('/api/supplier-availability/zookee/legacy-codes')),'The tool calls only the scoped Hub endpoints');
+ assert(requests.every(r=>r.path.startsWith('/api/supplier-availability/zookee/legacy-code')),'The tool calls only the scoped Hub endpoints');
  await act(async()=>{root.unmount();});console.log('Zookee code reconciliation UI: explicit review, exact scope, UUID retry and no automatic request passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

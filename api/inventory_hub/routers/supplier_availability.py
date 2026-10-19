@@ -66,7 +66,7 @@ async def reconcile_links(supplier: SupplierCode, payload: SupplierLinkReconcile
 
 # Narrow administrative reconciliation; never a shop-code write endpoint.
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from inventory_hub.access import admin_access
 from inventory_hub.services import zookee_code_reconciliation as code_service
 from inventory_hub.services.product_publication_source import source as code_transport
@@ -94,3 +94,23 @@ async def reconcile_legacy_code(supplier: SupplierCode, product_id: Annotated[in
         return await code_service.reconcile_one(db,supplier,product_id,payload.request_id)
     except (EditorError,code_transport.SourceError,CatalogError) as error:
         raise HTTPException(error.status,detail={"code":error.code}) from None
+
+
+class CodeReconcileRow(CodeReconcileInput):
+    product_id: StrictInt = Field(gt=0)
+
+
+class CodeReconcileBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rows: list[CodeReconcileRow] = Field(min_length=1, max_length=20)
+
+
+@router.post("/{supplier}/legacy-code-batches", dependencies=[Depends(admin_access)])
+async def reconcile_legacy_batch(supplier: SupplierCode, payload: CodeReconcileBatch,
+                                 db: AsyncSession = Depends(get_session)):
+    if len({row.product_id for row in payload.rows}) != len(payload.rows) or len({row.request_id for row in payload.rows}) != len(payload.rows):
+        raise HTTPException(422, detail={"code": "product_editor_invalid_request"})
+    try:
+        return await code_service.reconcile_batch(db, supplier, payload.rows)
+    except (EditorError, CatalogError) as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None

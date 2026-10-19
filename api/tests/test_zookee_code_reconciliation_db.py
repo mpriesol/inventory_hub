@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
+from types import SimpleNamespace
 from sqlalchemy import select, func
 from inventory_hub import config_io
 from inventory_hub.db_models import Product, IdentifierType, ProductIdentifier
@@ -94,3 +95,21 @@ class CodeReconciliationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Exception) as error:await service.reconcile_one(db,'zookee',self.pid,uuid4())
             self.assertEqual(error.exception.code,'merchandising_target_inflight')
         async with self.sessions() as db:self.assertEqual((await db.get(Product,self.pid)).sku,'TOPEAK-1')
+
+    async def test_batch_uses_one_bounded_read_per_shop_and_replays_without_reads(self):
+        from inventory_hub.services import product_link_source
+        rows=[SimpleNamespace(product_id=self.pid,request_id=uuid4())]
+        async def discover(shop,codes,fingerprint):
+            self.assertEqual(codes,['ZOO-1'])
+            return {'leaves':[{'code':'ZOO-1','parent_code':'xTrek' if shop=='biketrek' else 'REAL-FRAMES','parent_id':'11',
+                'external_id':'22' if shop=='biketrek' else '23','is_variant':True,'eans':['5901234123457']}]}
+        with patch.object(product_link_source,'discover',AsyncMock(side_effect=discover)) as reader:
+            async with self.sessions() as db: result=await service.reconcile_batch(db,'zookee',rows)
+            self.assertEqual(result['results'][0]['status'],'completed',result)
+            self.assertEqual(reader.await_count,2)
+            self.reader.assert_not_awaited()
+            async with self.sessions() as db:
+                again=await service.reconcile_batch(db,'zookee',rows)
+                self.assertEqual(again,result)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)),self.movement_count)
+            self.assertEqual(reader.await_count,2)
