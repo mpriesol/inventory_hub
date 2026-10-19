@@ -14,6 +14,12 @@ On 19 October 2026 the supplied snapshots contained 7,145 rich rows (7,130 with 
 
 The authoritative prefix is `adapter_settings.mapping.postprocess.product_code_prefix = "ZOO-"`. Existing canonical SKUs remain unchanged when another supplier is attached.
 
+### Missing catalog images
+
+Optional `adapter_settings.catalog_image_fallback` uses `{ "enabled": true, "shop_code": "biketrek", "brands": ["TOPEAK", "SENSOR"] }`. Catalog list/detail and new preparation selections fill only empty image lists from cached content of an explicitly linked stock card in that shop. The exact mapped code, native product/variant ID, parent identity, brand and compatible verified EANs must agree. Ambiguous native targets are skipped. Variant photographs take precedence; parent photographs are inherited only when the shop explicitly enables that behavior. Only HTTPS image URLs without embedded credentials are accepted.
+
+This read-only projection records shop/code/native ID/cache timestamp in mapping provenance and displays an image-source warning. It survives supplier refreshes through the existing shop cache and configuration, without rewriting supplier snapshots. It makes no Upgates request or product/stock write, does not replace supplier images, and does not make an incomplete stock-only record publishable.
+
 ## Invoice upload
 
 Use **Príjem → Nahrať faktúru pre príjem**, select Zookee and upload the original PDF with its single embedded `.isdoc`. `/suppliers/zookee/upload-invoice` validates the ISDOC supplier registration, document type, EUR currency, line identities, quantities, VAT, unit-cost precision and totals. Credit notes, scans without ISDOC, multiple attachments and unsupported/inconsistent invoices fail visibly.

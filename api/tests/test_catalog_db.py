@@ -86,6 +86,84 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
+    async def image_fallback_fixture(self, *, variant=False):
+        self.write_feed(xml_item(ean='5901234123457'))
+        await self.refresh()
+        cfg = config_io.load_supplier('paul-lange')
+        cfg['adapter_settings']['catalog_image_fallback'] = {'enabled': True, 'shop_code': 'biketrek', 'brands': ['TEST']}
+        config_io.supplier_path('paul-lange').write_text(json.dumps(cfg))
+        async with self.sessions() as db:
+            source = await db.scalar(select(SupplierProduct))
+            data = dict(source.attributes['catalog']); data['images'] = []; data['warnings'].append('missing_images')
+            source.attributes = {**source.attributes, 'catalog': data}; source.images = []
+            product = Product(sku='OLD-123', name='Linked product', brand='TEST', source_supplier_product_id=source.id)
+            shop = Shop(code='biketrek', name='Shop', platform='upgates')
+            db.add_all([product, shop]); await db.flush()
+            parent = 'PARENT' if variant else product.sku
+            leaf = {'code': product.sku, 'product_id': 11, 'ean': '5901234123457',
+                    'images': [{'url': 'https://images.example.test/exact.jpg'}]}
+            if variant: leaf['variant_id'] = 22
+            mapping = ShopProduct(shop_id=shop.id, product_id=product.id, external_code=parent,
+                parent_code=parent if variant else None, variant_code=product.sku if variant else None,
+                external_id='22' if variant else '11', is_variant=variant, is_listed=True)
+            cache = ShopProductContent(shop_id=shop.id, external_code=parent,
+                data={'code': parent, 'product_id': 11, 'images': [{'url': 'https://images.example.test/parent.jpg'}],
+                      'variants': [leaf]} if variant else leaf)
+            db.add_all([mapping, cache]); await db.commit()
+            return source.id, product.id, mapping.id, cache.id
+
+    async def test_missing_catalog_images_use_verified_shop_cache_in_all_read_paths_without_mutation(self):
+        source_id, _, _, _ = await self.image_fallback_fixture()
+        async with self.sessions() as db:
+            for product in [(await catalog.catalog_page(db, 'paul-lange')).items[0].product,
+                            (await catalog.catalog_detail(db, 'paul-lange', source_id))['product'],
+                            (await catalog.selected_products(db, 'paul-lange', 'products', [source_id]))[0]]:
+                self.assertEqual(product.images, ['https://images.example.test/exact.jpg'])
+                self.assertEqual(product.mapping_provenance['image_fallback']['native_id'], '11')
+                self.assertIn('images_from_linked_shop', product.warnings)
+                self.assertNotIn('missing_images', product.warnings)
+            raw = await db.get(SupplierProduct, source_id)
+            self.assertEqual(raw.attributes['catalog']['images'], [])
+            self.assertEqual(raw.images, [])
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        await self.refresh()
+        async with self.sessions() as db:
+            product = (await catalog.catalog_detail(db, 'paul-lange', source_id))['product']
+            self.assertEqual(product.images[0], 'https://images.example.com/A-001.jpg', 'Supplier images retain priority after refresh')
+
+    async def test_variant_fallback_rejects_stale_native_identity_and_does_not_guess_parent_images(self):
+        source_id, _, mapping_id, cache_id = await self.image_fallback_fixture(variant=True)
+        async with self.sessions() as db:
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images,
+                             ['https://images.example.test/exact.jpg'])
+            mapping = await db.get(ShopProduct, mapping_id); mapping.external_id = '99'; await db.commit()
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
+            mapping.external_id = '22'
+            cache = await db.get(ShopProductContent, cache_id)
+            value = dict(cache.data); value['variants'] = [{**value['variants'][0], 'images': []}]
+            cache.data = value; await db.commit()
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
+            cache.data = {**cache.data, 'add_images_into_variants_yn': True}; await db.commit()
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images,
+                             ['https://images.example.test/parent.jpg'])
+
+    async def test_image_fallback_requires_enabled_exact_binding_brand_and_unique_native_target(self):
+        source_id, product_id, _, _ = await self.image_fallback_fixture()
+        async with self.sessions() as db:
+            product = await db.get(Product, product_id); product.source_supplier_product_id = None; await db.commit()
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
+            product.source_supplier_product_id = source_id; product.brand = 'OTHER'; await db.commit()
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
+            product.brand = 'TEST'
+            second = Product(sku='OTHER-456', name='Ambiguous second listing', brand='TEST', source_supplier_product_id=source_id)
+            db.add(second); await db.flush()
+            shop = await db.scalar(select(Shop).where(Shop.code == 'biketrek'))
+            db.add(ShopProduct(shop_id=shop.id, product_id=second.id, external_id='33', external_code=second.sku))
+            db.add(ShopProductContent(shop_id=shop.id, external_code=second.sku, data={'code': second.sku, 'product_id': 33,
+                'images': [{'url': 'https://images.example.test/other.jpg'}]}))
+            await db.commit()
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
+
     async def test_refresh_is_atomic_keeps_ids_and_rejects_stale_selection(self):
         first = await self.refresh()
         async with self.sessions() as db:

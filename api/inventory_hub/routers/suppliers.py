@@ -564,7 +564,7 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
             raise ValueError("adapter_settings must be an object")
         normalize_supplier_availability(adapter.get("availability"))
         from inventory_hub.config_normalize import normalize_availability_publication
-        for key in ("availability_publication", "existing_card_matching"):
+        for key in ("availability_publication", "existing_card_matching", "catalog_image_fallback"):
             if key in adapter:
                 normalize_availability_publication(adapter[key])
     except ValueError as error:

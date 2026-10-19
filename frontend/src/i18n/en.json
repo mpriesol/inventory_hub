@@ -576,6 +576,7 @@
       "supplier_availability_changed": "Supplier availability settings changed or this preview uses older rules. Prepare a new preview.",
       "supplier_availability_invalid": "Check availability labels in supplier configuration; each field can contain at most 100 characters.",
       "stock_feed_only": "This item is only in the stock feed. A complete catalog record is required for publication.",
+      "images_from_linked_shop": "Missing images are supplied by the verified linked shop product.",
       "missing_purchase_price": "The feed does not provide an acquisition price."
     },
     "tab": {

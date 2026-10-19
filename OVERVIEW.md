@@ -381,3 +381,5 @@ Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej akt
 - Zookee's collapsed legacy-code reconciliation tool is implemented in code: after an administrative `TOPEAK-` → `ZOO-` rename it verifies all mapped shop native IDs through GETs, then atomically updates canonical code/mappings with an editor audit while retaining product IDs and the immutable ledger. It does not perform the remote rename or relax ordinary mapped-SKU editing. See [Zookee](docs/zookee.md).
 
 - Scoped supplier availability and Zookee code reconciliation share bounded reads in batches of up to 20 leaves. Availability retains individual durable intents/fences and uses one availability-only envelope with complete native-ID acknowledgement/readback; batch reconciliation never writes to a shop. See [Zookee](docs/zookee.md).
+
+- Optional catalog image fallback fills missing supplier photographs from explicitly linked, identity-checked cached shop products in catalog list/detail and new preparations. Source images and raw snapshots remain intact; no API call, stock write or migration is required. See [Zookee](docs/zookee.md#missing-catalog-images).
