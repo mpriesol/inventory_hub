@@ -299,7 +299,8 @@
       "help": "Availability labels for product imports and updates come from supplier configuration. Supplier stock does not increase our physical stock.",
       "orderable": "Item in stock at supplier",
       "unknown": "Unknown supplier availability",
-      "defaults": "Empty values use “do 5 dní” and “overíme”. Customers can also order items with unknown availability."
+      "defaults": "Empty values use “do 5 dní” and “overíme”. Customers can also order items with unknown availability.",
+      "unavailable": "Item unavailable from supplier"
     },
     "prefixHelp": "The SKU combines a unique prefix with the original supplier code. The prefix locks after its first use.",
     "prefixLocked": "The prefix is locked to preserve existing codes and links. JSON edits and restoring history cannot change it.",

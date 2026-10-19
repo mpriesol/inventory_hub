@@ -5,6 +5,10 @@ import unittest
 from decimal import Decimal as D
 from pathlib import Path
 from pypdf import PdfWriter
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from unittest.mock import patch
+from pydantic import SecretStr
 
 from inventory_hub.adapters import zookee_catalog as catalog, zookee_invoice as invoice
 from inventory_hub.adapters.sk_profi_bike_invoice import InvoiceParseError, InvoiceConflictError, save_receiving_invoice
@@ -121,3 +125,28 @@ class ZookeeCatalogTests(unittest.TestCase):
         self.assertEqual(desired_label('0', True, labels), 'do 5 dní')
         self.assertEqual(desired_label('0', False, labels), 'vypredané')
         self.assertIsNone(desired_label('0', None, labels))
+
+
+class ReceivingLookupRegistrationTests(unittest.TestCase):
+    def test_lookup_is_registered_on_the_running_router_and_requires_access(self):
+        from inventory_hub.routers import receiving_db
+        app = FastAPI(); app.include_router(receiving_db.router)
+        self.assertIn('/receiving/lookup', {route.path for route in app.routes})
+        from inventory_hub.settings import settings
+        with patch.object(settings, 'AI_CONTENT_ACCESS_TOKEN', SecretStr('synthetic-lookup-route-token-' + 'x'*32)), TestClient(app) as client:
+            response = client.get('/receiving/lookup', params={'code':'5901234123457'})
+        self.assertEqual(response.status_code,401)
+        self.assertEqual(response.headers.get('cache-control'),'no-store')
+
+
+class SupplierUnavailableLabelTests(unittest.TestCase):
+    def test_explicit_unavailable_is_separate_from_missing_evidence(self):
+        from inventory_hub.services.catalog_merchandising import apply_availability, availability_policy
+        from inventory_hub.catalog_types import CatalogProduct, CatalogPrices
+        cfg={'adapter_settings':{'availability':{'orderable':'do 5 dní','unavailable':'vypredané','unknown':'overíme'}}}
+        policy=availability_policy('zookee',cfg)
+        product=CatalogProduct(supplier='zookee',code='DEMO',shop_code='ZOO-DEMO',name='Synthetic',prices=CatalogPrices(currency='EUR'))
+        for status,expected in [(True,'do 5 dní'),(False,'vypredané'),(None,'overíme')]:
+            product.supplier_available=status; payload={}
+            apply_availability(payload,[product],policy)
+            self.assertEqual(payload['availability'],expected)

@@ -300,7 +300,8 @@
       "help": "Text dostupnosti pre import a aktualizáciu produktov sa berie z konfigurácie dodávateľa. Zásoba dodávateľa nezvyšuje náš fyzický sklad.",
       "orderable": "Tovar skladom u dodávateľa",
       "unknown": "Neznáma dostupnosť dodávateľa",
-      "defaults": "Prázdne hodnoty použijú „do 5 dní“ a „overíme“. Aj pri neznámej dostupnosti si zákazník môže tovar objednať."
+      "defaults": "Prázdne hodnoty použijú „do 5 dní“ a „overíme“. Aj pri neznámej dostupnosti si zákazník môže tovar objednať.",
+      "unavailable": "Tovar nedostupný u dodávateľa"
     },
     "prefixHelp": "SKU vznikne spojením jedinečného prefixu a pôvodného kódu dodávateľa. Po prvom použití sa prefix uzamkne.",
     "prefixLocked": "Prefix je uzamknutý, aby zostali zachované existujúce kódy a prepojenia. Zmeniť ho nemožno ani cez JSON alebo obnovenie histórie.",

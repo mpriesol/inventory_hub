@@ -669,14 +669,15 @@ async def prepare_receiving_products(supplier_code: str, session_id: int, reques
     return {"draft_id": result["draft_id"], "created": result["created"]}
 
 
-router.include_router(product_router)
-
 @product_router.get("/receiving/lookup")
 async def lookup_receiving_invoice(code: str = Query(min_length=1, max_length=100), db: AsyncSession = Depends(get_session)):
     if not code.strip() or any(ord(c) < 32 for c in code):
         raise HTTPException(422, detail="Invalid scan code")
     from inventory_hub.services.receiving_lookup import lookup
     return await lookup(db, code.strip())
+
+
+router.include_router(product_router)
 
 
 @router.post("/suppliers/{supplier_code}/receiving/sessions")
