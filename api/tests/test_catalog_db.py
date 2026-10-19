@@ -97,8 +97,8 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             data = dict(source.attributes['catalog']); data['images'] = []; data['warnings'].append('missing_images')
             source.attributes = {**source.attributes, 'catalog': data}; source.images = []
             product = Product(sku='OLD-123', name='Linked product', brand='TEST', source_supplier_product_id=source.id)
-            shop = Shop(code='biketrek', name='Shop', platform='upgates')
-            db.add_all([product, shop]); await db.flush()
+            shop = await db.scalar(select(Shop).where(Shop.code == 'biketrek'))
+            db.add(product); await db.flush()
             parent = 'PARENT' if variant else product.sku
             leaf = {'code': product.sku, 'product_id': 11, 'ean': '5901234123457',
                     'images': [{'url': 'https://images.example.test/exact.jpg'}]}
