@@ -6,10 +6,10 @@ already exist under the new codes before one local identity is changed.
 from copy import deepcopy
 from uuid import UUID
 import re
-from sqlalchemy import select, text
+from sqlalchemy import select, text, exists, or_, and_, func
 from inventory_hub import config_io
-from inventory_hub.db_models import Product, ProductIdentifier, IdentifierType, Shop
-from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
+from inventory_hub.db_models import Product, ProductIdentifier, IdentifierType, Shop, Supplier, SupplierProduct
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, ProductSupplySource
 from inventory_hub.product_editor_models import ProductEditorOverride, ProductEditorSave, ProductEditorAudit
 from inventory_hub.stock_sync_models import StockSyncItem
 from inventory_hub.stock_publication_models import StockPublicationItem
@@ -49,8 +49,33 @@ def signature(product,mappings,override):
 
 async def preview(db,supplier):
     configured(supplier)
-    products = list(await db.scalars(select(Product).where(Product.sku.startswith(OLD)).order_by(Product.id)))
+    products = list(await db.scalars(select(Product).where(or_(Product.sku.startswith(OLD), repair_filter(supplier))).order_by(Product.id)))
     return {'old_prefix':OLD,'new_prefix':NEW,'items':[{'product_id':p.id,'old_code':p.sku,'new_code':renamed(p.sku),'name':p.name} for p in products]}
+
+
+def repair_filter(supplier):
+    """Only existing, explicitly scoped Zookee BIKETREK links may repair IDs."""
+    cfg = config_io.load_supplier(supplier, write_back_on_load=False)
+    policy = (cfg.get('adapter_settings') or {}).get('existing_card_matching') or {}
+    brands = sorted(set(policy.get('brands') or []) & {'SENSOR', 'TOPEAK'})
+    if policy.get('enabled') is not True or policy.get('shop_code') != 'biketrek' or not brands:
+        return False
+    bindings = exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id,
+        ProductSupplySource.supplier_product_id == SupplierProduct.id, ProductSupplySource.is_active.is_(True))
+        .correlate(Product, SupplierProduct))
+    any_binding = exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id).correlate(Product))
+    linked = exists(select(SupplierProduct.id).join(Supplier, Supplier.id == SupplierProduct.supplier_id).where(
+        Supplier.code == supplier, Supplier.is_active.is_(True), SupplierProduct.is_active.is_(True),
+        SupplierProduct.is_discontinued.is_(False), func.upper(SupplierProduct.brand) == func.upper(Product.brand),
+        or_(bindings, and_(~any_binding, Product.source_supplier_product_id == SupplierProduct.id))).correlate(Product))
+    missing = exists(select(ShopProduct.id).join(Shop, Shop.id == ShopProduct.shop_id).where(
+        ShopProduct.product_id == Product.id, Shop.code == 'biketrek', Shop.is_active.is_(True),
+        ShopProduct.is_listed.is_(True), or_(ShopProduct.external_id.is_(None), ShopProduct.external_id == '')).correlate(Product))
+    return and_(func.upper(Product.brand).in_(brands), missing, linked)
+
+
+async def can_repair(db, supplier, product_id):
+    return bool(await db.scalar(select(Product.id).where(Product.id == product_id, repair_filter(supplier))))
 
 
 async def barcode_set(db,product_id,override):
@@ -117,7 +142,8 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
         return previous.result
     product,mappings,override=await snapshot(db,product_id)
     old=product.sku; new=renamed(old)
-    if old == new: raise editor.EditorError('code_rename_no_legacy_code')
+    if old == new and not await can_repair(db, supplier, product_id):
+        raise editor.EditorError('code_rename_no_legacy_code')
     if not mappings: raise editor.EditorError('code_rename_mapping_missing')
     frozen=signature(product,mappings,override)
     eans=await barcode_set(db,product_id,override)
@@ -132,7 +158,8 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
                 raise editor.EditorError('code_rename_barcode_conflict')
         elif not native_id(mapping.external_id):
             raise editor.EditorError('code_rename_native_id_missing')
-        parent=renamed(mapping.parent_code or mapping.external_code) if mapping.is_variant else new
+        parent=mapping.parent_code or mapping.external_code
+        parent=(renamed(parent) if old != new else parent) if mapping.is_variant else new
         target={'code':new,'variant_code':new if mapping.is_variant else None,'parent_code':parent}
         observed.append({'shop':shop,'mapping_id':mapping.id,'target':target,
                          'native_id':cached['native_id'] if cached else str(mapping.external_id), 'cached_identity': cached,
@@ -161,6 +188,8 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
     product,mappings,override=await snapshot(db,product_id)
     if signature(product,mappings,override) != frozen or await barcode_set(db,product_id,override) != eans:
         raise editor.EditorError('product_editor_changed')
+    if old == new and not await can_repair(db, supplier, product_id):
+        raise editor.EditorError('product_editor_changed')
     for mapping, _ in mappings:
         evidence = next(item for item in observed if item['mapping_id'] == mapping.id)
         if publication.fingerprint(evidence['shop']) != evidence['fingerprint']:
@@ -181,12 +210,14 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
         await require_target_available(db,shop,mapping.parent_code or mapping.external_code)
         await require_target_available(db,shop,renamed(mapping.parent_code or mapping.external_code))
     product.sku=new
-    if not await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.product_id == product_id,
+    if old != new and not await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.product_id == product_id,
         ProductIdentifier.identifier_type == IdentifierType.internal_sku,ProductIdentifier.value == old)):
         db.add(ProductIdentifier(product_id=product_id,identifier_type=IdentifierType.internal_sku,value=old,is_primary=False,
                                 notes='Previous canonical code; verified Zookee administrative rename'))
     for mapping,shop in mappings:
         mapping.external_id = next(item['native_id'] for item in observed if item['mapping_id'] == mapping.id)
+        if old == new:
+            continue
         old_parent=mapping.parent_code or mapping.external_code
         new_parent=renamed(old_parent)
         if mapping.is_variant:
@@ -218,7 +249,7 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
             'verified_shops':[item['shop'] for item in observed]}
     db.add(ProductEditorSave(request_id=identifier,input_hash=digest,result=result));await db.flush()
     db.add(ProductEditorAudit(request_id=identifier,product_id=product_id,revision=revision,
-        before_data={'sku':old},after_data={'sku':new,'operation':'verified_code_reconciliation','native_identities':observed}))
+        before_data={'sku':old},after_data={'sku':new,'operation':'verified_code_reconciliation' if old != new else 'verified_native_id_repair','native_identities':observed}))
     await db.commit()
     return result
 
@@ -238,7 +269,7 @@ async def reconcile_batch(db, supplier, rows):
             continue
         product, mappings, _ = await snapshot(db, row.product_id)
         new = renamed(product.sku)
-        if new == product.sku:
+        if new == product.sku and not await can_repair(db, supplier, row.product_id):
             results.append({'product_id': row.product_id, 'status': 'failed', 'error': 'code_rename_no_legacy_code'})
             continue
         try:

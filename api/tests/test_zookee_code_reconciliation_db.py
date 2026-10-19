@@ -11,8 +11,8 @@ from uuid import uuid4
 from types import SimpleNamespace
 from sqlalchemy import select, func
 from inventory_hub import config_io
-from inventory_hub.db_models import Product, IdentifierType, ProductIdentifier
-from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, StockMovement
+from inventory_hub.db_models import Product, IdentifierType, ProductIdentifier, Supplier, SupplierProduct
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, StockMovement, ProductSupplySource
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorPublication
 from inventory_hub.services import zookee_code_reconciliation as service
 import test_product_publication_db as fixture
@@ -48,7 +48,7 @@ class CodeReconciliationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def read(self,shop,target,fingerprint):
         return {'identity':{**target,'variant_id':22 if shop=='biketrek' else 23,'product_id':11},
-                'leaf':{'code':'ZOO-1','ean':'5901234123457'},'options':None}
+                'leaf':{'code':target['code'],'ean':'5901234123457'},'options':None}
 
     async def missing_id_fixture(self, *, variant=True):
         async with self.sessions() as db:
@@ -164,6 +164,60 @@ class CodeReconciliationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             with self.assertRaisesRegex(service.editor.EditorError, 'product_editor_identity_conflict'):
                 await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+
+    async def sensor_fixture(self):
+        await self.missing_id_fixture()
+        path = config_io.supplier_path('zookee'); cfg = json.loads(path.read_text())
+        cfg['adapter_settings']['existing_card_matching'] = {'enabled': True, 'shop_code': 'biketrek', 'brands': ['SENSOR', 'TOPEAK']}
+        path.write_text(json.dumps(cfg))
+        async with self.sessions() as db:
+            product = await db.get(Product, self.pid); product.sku = 'SEN-1'; product.brand = 'Sensor'
+            supplier = Supplier(code='zookee', name='Zookee'); db.add(supplier); await db.flush()
+            source = SupplierProduct(supplier_id=supplier.id, supplier_sku='SOURCE-1', name='Sensor source', brand='SENSOR')
+            db.add(source); await db.flush()
+            db.add(ProductSupplySource(product_id=self.pid, supplier_product_id=source.id))
+            for mapping in await db.scalars(select(ShopProduct).where(ShopProduct.product_id == self.pid)):
+                mapping.variant_code = 'SEN-1'
+            for cache in await db.scalars(select(ShopProductContent)):
+                cache.data = {**cache.data, 'variants': [{**cache.data['variants'][0], 'code': 'SEN-1'}]}
+            await db.commit()
+            return source.id
+
+    async def test_sensor_native_id_repair_keeps_codes_cache_and_ledger_and_replays_without_reads(self):
+        await self.sensor_fixture(); request = uuid4()
+        async with self.sessions() as db:
+            preview = await service.preview(db, 'zookee')
+            self.assertEqual([(r['old_code'], r['new_code']) for r in preview['items']], [('SEN-1', 'SEN-1')])
+            original = [copy.deepcopy(c.data) for c in await db.scalars(select(ShopProductContent).order_by(ShopProductContent.id))]
+            result = await service.reconcile_one(db, 'zookee', self.pid, request)
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Product, self.pid)).sku, 'SEN-1')
+            self.assertEqual([c.data for c in await db.scalars(select(ShopProductContent).order_by(ShopProductContent.id))], original)
+            self.assertEqual({m.external_id for m in await db.scalars(select(ShopProduct).where(ShopProduct.product_id == self.pid))}, {'22', '23'})
+            self.assertEqual((await db.scalar(select(ProductEditorAudit))).after_data['operation'], 'verified_native_id_repair')
+            self.assertEqual(await service.reconcile_one(db, 'zookee', self.pid, request), result)
+            self.assertEqual((await service.preview(db, 'zookee'))['items'], [])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), self.movement_count)
+        self.assertEqual(self.reader.await_count, 2)
+
+    async def test_sensor_repair_requires_active_zookee_binding_and_enabled_matching_scope(self):
+        source_id = await self.sensor_fixture()
+        async with self.sessions() as db:
+            binding = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.supplier_product_id == source_id))
+            binding.is_active = False; await db.commit()
+        async with self.sessions() as db:
+            self.assertEqual((await service.preview(db, 'zookee'))['items'], [])
+            with self.assertRaisesRegex(service.editor.EditorError, 'code_rename_no_legacy_code'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+            binding = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.supplier_product_id == source_id))
+            binding.is_active = True; await db.commit()
+        path = config_io.supplier_path('zookee'); cfg = json.loads(path.read_text())
+        cfg['adapter_settings']['existing_card_matching']['enabled'] = False; path.write_text(json.dumps(cfg))
+        async with self.sessions() as db:
+            self.assertEqual((await service.preview(db, 'zookee'))['items'], [])
+            with self.assertRaisesRegex(service.editor.EditorError, 'code_rename_no_legacy_code'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+        self.reader.assert_not_awaited()
 
     async def test_all_shop_ids_verified_local_identity_audited_and_retry_is_read_only(self):
         request_id=uuid4()

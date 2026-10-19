@@ -27,10 +27,11 @@ const response = (value, status = 200) => ({ ok: status < 400, status, statusTex
 const requests=[];let fail=true;let done=false;
 global.fetch=async(path,options={})=>{
   requests.push({path,options});
-  if(!options.method || options.method==='GET')return response({items:done?[]:[{product_id:12,old_code:'TOPEAK-1',new_code:'ZOO-1',name:'Synthetic item'}]});
+  if(!options.method || options.method==='GET')return response({items:done?[]:[{product_id:12,old_code:'TOPEAK-1',new_code:'ZOO-1',name:'Synthetic item'},
+    {product_id:13,old_code:'SEN-1',new_code:'SEN-1',name:'Synthetic Sensor item'}]});
   assert.equal(options.method,'POST');assert.match(path,/^\/api\/supplier-availability\/zookee\/legacy-code-batches$/);
   if(fail){fail=false;return response({detail:{code:'code_rename_native_id_changed'}},409);}
-  done=true;return response({results:[{product_id:12,status:'completed'}]});
+  done=true;return response({results:JSON.parse(options.body).rows.map(row=>({product_id:row.product_id,status:'completed'}))});
 };
 (async()=>{
  await act(async()=>{root.render(React.createElement(ZookeeCodeReconciliation));await tick();});
@@ -38,6 +39,7 @@ global.fetch=async(path,options={})=>{
  await act(async()=>{button(i18n.t('suppliers.codeRename.load')).click();await tick();});
  assert.equal(requests.length,1);
  assert(document.body.textContent.includes('TOPEAK-1 → ZOO-1'),'Exact old/new codes are reviewable');
+ assert(document.body.textContent.includes('SEN-1') && !document.body.textContent.includes('SEN-1 →'),'Unchanged Sensor codes are shown as repairs');
  await act(async()=>{button(i18n.t('suppliers.codeRename.apply')).click();await tick();});
  assert.equal(requests.length,2,'A known mismatch is not automatically retried');
  assert(document.body.textContent.includes(i18n.t('suppliers.codeRename.notVerified')));

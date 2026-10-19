@@ -310,9 +310,9 @@
     "defaultShopUnset": "No default",
     "defaultShopHelp": "This shop is preselected when preparing this supplier’s products. Each product can target the other shop, both shops or Hub only.",
     "codeRename": {
-      "title": "Reconcile legacy TOPEAK- → ZOO- codes",
-      "help": "First rename products and variants in shop administration. Hub then verifies the same native IDs in every linked shop and preserves cards and history. This operation does not rename shop products.",
-      "load": "Load legacy codes",
+      "title": "Reconcile Zookee codes and links",
+      "help": "First rename legacy TOPEAK- codes to ZOO- in shop administration. For linked Topeak and Sensor products, Hub can also restore missing native IDs by verifying the original cached card against the shop. Sensor codes and stock history are preserved.",
+      "load": "Load cards to reconcile",
       "apply": "Verify shops and reconcile Hub",
       "failed": "Could not load legacy codes.",
       "notVerified": "The shop change is not verified; the card is preserved.",
