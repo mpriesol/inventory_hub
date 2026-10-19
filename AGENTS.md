@@ -122,6 +122,7 @@ node frontend/tests/ai-content-ui.cjs
 node frontend/tests/accounts-ui.cjs
 node frontend/tests/upgates-import-ui.cjs
 node frontend/tests/supplier-config-ui.cjs
+node frontend/tests/zookee-codes-ui.cjs
 node frontend/tests/order-audit-ui.cjs
 node frontend/tests/opening-stock-ui.cjs
 node frontend/tests/order-stock-ui.cjs
