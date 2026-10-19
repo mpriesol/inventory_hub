@@ -32,7 +32,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.folder = tempfile.TemporaryDirectory()
         self.stack = ExitStack(); self.stack.enter_context(patch.object(config_io, 'DATA_ROOT', Path(self.folder.name)))
         self.policy = {'enabled':True,'shop_code':'biketrek','brands':['SENSOR','TOPEAK']}
-        self.config = {'adapter_settings': {'availability_publication':self.policy, 'availability':{'orderable':'do 5 dní','unavailable':'vypredané'}}}
+        self.config = {'adapter_settings': {'availability_publication':self.policy, 'availability':{'orderable':'do 5 dní','unavailable':'vypredané','unknown':'overíme'}}}
         p = config_io.supplier_path('editor-supplier'); p.parent.mkdir(parents=True); p.write_text(json.dumps(self.config))
         async with self.sessions() as db:
             source_row = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id))
@@ -68,7 +68,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exact_variant_availability_only_and_repeated_send(self):
         record = await self.prepare()
-        self.assertEqual(record.state, 'completed'); self.assertEqual(self.writer.await_count, 1)
+        self.assertEqual(record.state, 'completed', record.document); self.assertEqual(self.writer.await_count, 1)
         self.assertEqual(self.remote['leaf']['stock'], '0')
         async with self.sessions() as db:
             await publication.send(db, record.id)
@@ -77,7 +77,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_uncertain_write_keeps_original_fence(self):
         self.writer.side_effect = source.source.SourceError('product_publication_write_unconfirmed', uncertain=True)
         record = await self.prepare()
-        self.assertEqual(record.state, 'uncertain')
+        self.assertEqual(record.state, 'uncertain', record.document)
         async with self.sessions() as db:
             await publication.send(db, record.id)
         self.assertEqual(self.writer.await_count, 1)
@@ -149,7 +149,8 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.writer.side_effect=source.source.SourceError('product_publication_write_unconfirmed',uncertain=True)
             async with self.sessions() as db: await service.send_batch(db,[first])
             async with self.sessions() as db:
-                self.assertEqual((await db.get(ProductEditorPublication,first)).state,'uncertain')
+                record=await db.get(ProductEditorPublication,first)
+                self.assertEqual(record.state,'uncertain',record.document)
                 await service.send_batch(db,[first])
             self.assertEqual(self.writer.await_count,1)
 
@@ -175,6 +176,9 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for item in items: remotes[item['identity']['code']]['leaf']['availability']=item['availability']
         with patch.object(service,'read_batch',AsyncMock(side_effect=read_batch)) as reader, patch.object(source,'write_availability_batch_once',AsyncMock(side_effect=write_batch)) as writer:
             async with self.sessions() as db: await service.send_batch(db,ids)
+            async with self.sessions() as db:
+                self.assertEqual([(await db.get(ProductEditorPublication,id)).state for id in ids],['completed','completed'],
+                    [(await db.get(ProductEditorPublication,id)).document.get('error') for id in ids])
             writer.assert_awaited_once();self.assertEqual(reader.await_count,2)
             async with self.sessions() as db:
                 self.assertEqual({(await db.get(ProductEditorPublication,id)).state for id in ids},{'completed'})
