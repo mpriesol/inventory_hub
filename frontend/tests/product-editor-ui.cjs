@@ -22,7 +22,7 @@ let router;
 const renderEditor = () => { router = createMemoryRouter([{ path: '*', element: React.createElement(ProductEditorPage) }], { initialEntries: ['/products'] }); return React.createElement(RouterProvider, { router }); };
 const { ProductEditorPage } = require('../src/pages/ProductEditorPage.tsx');
 const { unlockHub } = require('../src/api/access.ts');
-const { COLUMN_PREFERENCES_KEY, EDITOR_COLUMNS, columnPreferences, loadColumnPreferences } = require('../src/pages/productEditorGrid.ts');
+const { COLUMN_PREFERENCES_KEY, EDITOR_COLUMNS, columnPreferences, loadColumnPreferences, sortEditorRows } = require('../src/pages/productEditorGrid.ts');
 let root = createRoot(document.getElementById('root'));
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const t = key => i18n.t(`productEditor.${key}`);
@@ -128,6 +128,7 @@ global.fetch = async (path, init = {}) => {
     const snapshot = { items: ordered.slice((page - 1) * pageSize, page * pageSize).map(row => rowForWarehouse(row, warehouseCode)),
       total: ordered.length, page, page_size: pageSize, warehouse: warehouseCode ? { code: warehouseCode, name: 'Main fixture' } : null,
       currency: 'EUR', price_basis: 'incl_vat' };
+    if (listMode === 'incomplete' && page === 2) snapshot.items.shift();
     if (listMode === 'pending') return new Promise(resolve => { resolveList = () => resolve(reply(snapshot)); });
     return reply(snapshot);
   }
@@ -255,6 +256,40 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost') === '0', 'Known zero cost remains distinct from unknown');
+  assert(!element('new-card'), 'Unused create action stays hidden');
+  assert(element('view-stock') && element('view-products') && element('view-shops'));
+  await click(cell(1, 'name').querySelector('.product-editor-cell-value'));
+  assert(element('cell-editor') && !element('close-detail'), 'Clicking the displayed name edits the cell instead of opening a modal');
+  await input('cell-editor', 'Unsaved clicked name'); await key('cell-editor', 'Escape');
+  assert.equal(cellText(1, 'name'), 'Fixture product 1');
+  const beforeSort = calls.length; await click('sort-sale_price_gross');
+  assert.equal(calls.length, beforeSort, 'Non-server columns sort only the loaded page');
+  assert.equal(required('header-sale_price_gross').getAttribute('aria-sort'), 'ascending');
+  assert(document.querySelector('.product-editor-local-sort').textContent.includes(t('sortedPage')));
+  await click('sort-sale_price_gross'); assert.equal(required('header-sale_price_gross').getAttribute('aria-sort'), 'descending');
+  await click(document.querySelector('.product-editor-local-sort button'));
+  const { getEditorProducts } = require('../src/api/productEditor.ts');
+  const filters = { q: '', brand: '', shop_code: '', warehouse_code: 'main', stock_scope: 'all', activity: 'all', supplier_link: 'all', page: 1, page_size: 500, sort: 'sku', direction: 'asc' };
+  for (let id = 52; id <= 620; id++) rows.set(id, makeRow(id));
+  const beforeLarge = calls.length;
+  let large = await getEditorProducts(filters);
+  assert.equal(large.items.length, 500); assert.equal(large.page_size, 500);
+  assert.deepEqual(large.items.map(row => row.id), Array.from({ length: 500 }, (_, i) => i + 1));
+  assert.equal(calls.length - beforeLarge, 5, 'A 500-row page uses five existing bounded GET requests');
+  large = await getEditorProducts({ ...filters, page: 2, page_size: 250 });
+  assert.deepEqual(large.items.map(row => row.id), Array.from({ length: 250 }, (_, i) => i + 251), '250-row pages align correctly across API page boundaries');
+  large = await getEditorProducts({ ...filters, page: 2 });
+  assert.deepEqual(large.items.map(row => row.id), Array.from({ length: 120 }, (_, i) => i + 501));
+  listMode = 'incomplete'; await assert.rejects(getEditorProducts(filters), /Incomplete product list/); listMode = 'valid';
+  for (let id = 52; id <= 620; id++) rows.delete(id);
+  await input('page-size', '500');
+  assert(element('cell-51-name') && cannotUse('next'), 'All matching products up to 500 can be displayed together');
+  await input('page-size', '50');
+  const cheap = { ...makeRow(1), variant: { sale_price_gross: '9.00' } };
+  const expensive = { ...makeRow(2), variant: { sale_price_gross: '100.00' } };
+  const unknown = { ...makeRow(3), variant: { sale_price_gross: null } };
+  assert.deepEqual(sortEditorRows([unknown, expensive, cheap], 'sale_price_gross', 'asc', 'sk').map(row => row.id), [1, 2, 3]);
+  assert.deepEqual(sortEditorRows([cheap, unknown, expensive], 'sale_price_gross', 'desc', 'sk').map(row => row.id), [2, 1, 3], 'Unknown prices remain unknown and last in either direction');
   assert(cannotUse('link-selected-products'), 'Linking requires explicit current-page selection');
   await click('select-1'); await click('select-2');
   const beforeLinkOpen = calls.length; await click('link-selected-products');
@@ -352,7 +387,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await key(cell(1, 'name'), 'ArrowRight'); assert.equal(focusedCell(), 'cell-1-brand');
   const originalCell = cell(1, 'name'), grid = originalCell.closest('table,[role="grid"]');
   assert(grid); const scrollContainer = grid.parentElement; scrollContainer.scrollTop = 147;
-  await click('open-1-name'); assert(document.querySelector('[role=dialog][aria-modal=true]'), 'Name opens the stock-style popup'); await click('detail-tab-audit');
+  await click('open-1-sku'); assert(document.querySelector('[role=dialog][aria-modal=true]'), 'SKU opens the stock-style popup'); await click('detail-tab-audit');
   assert.equal(required('movement-history').getAttribute('href'), '/stock/movements?sku=SKU-1');
   const audit = document.querySelector('.product-editor-audit');
   assert(audit && audit.textContent.includes('Audit previous name') && audit.textContent.includes('Audit current name'), 'Audit history shows the actual before and after names');
@@ -457,7 +492,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('page'), '2');
   assert(!element('cell-1-name') && element('cell-51-name'));
   assert(!required('select-page').checked, 'Changing pages clears the previous row selection');
-  await click('select-page'); await input('bulk-field', 'brand'); await input('bulk-value', 'Only current page'); await click('bulk-apply');
+  await click('select-page'); assert(!element('bulk-field'), 'Bulk editing is hidden by default'); await click('columns'); await input('bulk-field', 'brand'); await input('bulk-value', 'Only current page'); await click('bulk-apply'); await click('columns');
   await click('save');
   const pageChanges = saveCalls().at(-1).body.changes;
   assert.deepEqual(pageChanges.map(change => change.product_id).sort((a, b) => a - b), [1, 51], 'Existing hidden drafts are retained while bulk selection is limited to the current page');
@@ -495,13 +530,13 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.deepEqual(saveCalls().at(-1).body.changes[0].shops, { biketrek: { sale_price_gross: null } }, 'Clearing an existing shop price sends an explicit null override');
   assert.equal(cellText(1, 'biketrek_price'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(179.90), 'Cleared shop price inherits the desired common sale price, not the observed external price');
 
-  const beforeFilter = calls.length; await input('search', 'SUP-51'); await input('shop-filter', 'xtrek'); await input('page-size', '25');
+  const beforeFilter = calls.length; await input('search', 'SUP-51'); await input('shop-filter', 'xtrek');
   assert.equal(calls.length, beforeFilter, 'Filter edits are applied only by an explicit load');
   assert(element('filters-pending'), 'Pending filters cannot be mistaken for applied results');
-  await click('load'); let query = new URL(calls.at(-1).path, dom.window.location).searchParams;
+  await input('page-size', '25'); let query = new URL(calls.at(-1).path, dom.window.location).searchParams;
   assert.equal(query.get('q'), 'SUP-51'); assert.equal(query.get('shop_code'), 'xtrek'); assert.equal(query.get('page_size'), '25'); assert.equal(query.get('page'), '1');
   assert(element('cell-51-name') && !element('cell-1-name'));
-  await input('search', ''); await input('shop-filter', ''); await input('page-size', '100'); await click('load');
+  await input('search', ''); await input('shop-filter', ''); await input('page-size', '100');
   query = new URL(calls.at(-1).path, dom.window.location).searchParams; assert.equal(query.get('page_size'), '100');
   assert(element('cell-51-name') && element('cell-1-name') && cannotUse('next'));
 
@@ -600,17 +635,18 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await input('activity-filter', 'inactive'); await input('supplier-link-filter', 'linked'); await click('load');
   assert(cellText(1, 'is_active').includes(t('activityStates.inactive'))); assert(!element('cell-2-sku'));
   await input('supplier-link-filter', 'unlinked'); await click('load'); assert(!element('cell-1-sku'));
-  await click('new-card'); await input('create-sku', 'DEMO-LOCAL'); await input('create-name', 'Local demo'); await input('create-activity', 'false');
+  assert(!element('new-card'), 'The stock page does not expose the unused create-card action');
+  // Keep the existing create/retry regression on the retained form itself.
+  const { ProductCardCreateForm } = require('../src/components/product/ProductCardCreateForm.tsx');
+  let createdCard;
+  await act(async () => { root.render(React.createElement(ProductCardCreateForm, { onClose: () => {}, onCreated: row => { createdCard = row; } })); await tick(); });
+  await input('create-sku', 'DEMO-LOCAL'); await input('create-name', 'Local demo'); await input('create-activity', 'false');
   await click('create-submit');
   assert(required('create-sku').disabled, 'An uncertain create preserves its exact payload');
   assert(required('create-submit').textContent.includes(t('retryCreate')));
   await click('create-submit');
   assert.equal(createdRequests.size, 1, 'Retry does not create another card');
-  assert(!element('create-sku')); assert.equal(required('stock-scope').value, 'all');
-  assert.equal(required('activity-filter').value, 'all'); assert.equal(required('supplier-link-filter').value, 'all');
-  assert.equal(cellText(100, 'sku'), 'DEMO-LOCAL');
-  assert.equal(cellText(100, 'is_active'), t('activityStates.inactive'));
-  assert.equal(cellText(100, 'supplier_linked'), t('linkStates.unlinked'));
+  assert.equal(createdCard.sku, 'DEMO-LOCAL'); assert.equal(createdCard.is_active, false); assert.equal(createdCard.supplier_linked, false);
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
   const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
   assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);

@@ -2057,7 +2057,7 @@
     "noChanges": "No unsaved changes",
     "dirtyCount": "Products with drafts: {{count}}",
     "localOnly": "Save changes in the Hub first. Send them to a shop separately using Upload.",
-    "save": "Save edits in Hub",
+    "save": "Save in Hub",
     "discard": "Discard changes",
     "uncertain": "The save response was lost. Data may already be saved. Check this batch’s result first; your drafts are preserved.",
     "recover": "Check saved result",
@@ -2077,7 +2077,7 @@
     "warehouseDirty": "Save or discard drafts before changing warehouse.",
     "pageSize": "Rows per page",
     "range": "{{from}}–{{to}} of {{total}}",
-    "keyboardHelp": "Enter / F2: edit · Tab: next cell · Esc: cancel cell edit · arrows: move · Ctrl/Cmd + V: paste a table into visible editable cells. An empty value removes the override.",
+    "keyboardHelp": "Click, Enter or F2: edit a cell · Tab: next cell · Esc: cancel · arrows: move · Ctrl/Cmd + V: paste a table. SKU and the detail icon open the card. An empty value removes an override.",
     "inherit": "Inherit source",
     "visible": "Visible",
     "hidden": "Hidden",
@@ -2216,7 +2216,7 @@
     "openAdmin": "Open in administration",
     "linkUnavailable": "The link is saved. Product navigation addresses are missing.",
     "uploadSelection": "Selected products: {{count}}",
-    "uploadTo": "Upload to {{shop}}",
+    "uploadTo": "Send to {{shop}}",
     "saveBeforeUpload": "Save or discard your pending changes first.",
     "adjustStock": "Change the count with a recorded stock adjustment",
     "adjustCost": "Open purchase costs and stock operations",
@@ -2305,7 +2305,20 @@
       "shops": "Shops"
     },
     "filtersPending": "Filters changed. The table still shows the previous search results.",
-    "applyFilters": "Apply filters"
+    "applyFilters": "Apply filters",
+    "linkSelected": "Link to shop",
+    "tableOptions": "Table options",
+    "refreshList": "Refresh",
+    "bulkOptions": "Bulk edit selection",
+    "horizontalScroll": "Horizontal table scrolling",
+    "salesBasis": "EUR · selling price including VAT",
+    "costBasis": "EUR · purchase cost excluding VAT",
+    "sortAll": "Sort all matching products",
+    "sortPage": "Sort products on the loaded page",
+    "sortedPage": "This page is sorted",
+    "sortedResults": "All results are sorted",
+    "resetSort": "Clear sorting",
+    "allRows": "All ({{count}})"
   },
   "actions": {
     "effects": {

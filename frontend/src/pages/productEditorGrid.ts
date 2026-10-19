@@ -31,6 +31,27 @@ export const COLUMN_PRESETS: Record<string, string[]> = {
   shops: ['sku', 'image_url', 'name', 'biketrek', 'xtrek', 'biketrek_price', 'xtrek_price', 'state'],
 };
 
+/** Sort the loaded display page; null/unknown observations always remain last. */
+export function sortEditorRows(rows: ProductEditorRow[], field: string, direction: 'asc' | 'desc', language: string): ProductEditorRow[] {
+  const value = (row: ProductEditorRow): EditorValue | number | undefined => {
+    if (field === 'supplier_quantity') return row.supplier_availability?.fresh ? row.supplier_availability.quantity : null;
+    if (field === 'supplier_availability') return row.supplier_availability?.fresh ? row.supplier_availability.label : null;
+    if (field === 'biketrek' || field === 'xtrek') return row.shops.find(shop => shop.shop_code === field)?.mapped;
+    if (field === 'tracking') return row.stock.tracking_status || (row.stock.known ? 'confirmed' : 'unconfirmed');
+    if (field === 'state') return Object.values(row.overrides).some(scope => Object.keys(scope).length) ? 'saved' : 'source';
+    return originalValue(row, field, 'common');
+  };
+  const numeric = ['supplier_quantity', 'on_hand', 'reserved', 'quarantined', 'available', 'cost', 'total_value', 'min_quantity', 'vat_rate'].includes(field) || EDITOR_COLUMNS.find(column => column.key === field)?.type === 'money';
+  const collator = new Intl.Collator(language, { numeric: true, sensitivity: 'base' });
+  return [...rows].sort((a, b) => {
+    const left = value(a), right = value(b);
+    const missingLeft = left == null || left === '', missingRight = right == null || right === '';
+    if (missingLeft || missingRight) return Number(missingLeft) - Number(missingRight);
+    const comparison = numeric ? Number(left) - Number(right) : collator.compare(editorValueText(left as EditorValue), editorValueText(right as EditorValue));
+    return (direction === 'asc' ? comparison : -comparison) || collator.compare(a.sku, b.sku) || a.id - b.id;
+  });
+}
+
 export const COLUMN_PREFERENCES_KEY = 'product-editor-columns-v1';
 export const MIN_COLUMN_WIDTH = 80, MAX_COLUMN_WIDTH = 640;
 export interface ColumnPreferences { version: 1; order: string[]; visible: string[]; widths: Record<string, number> }

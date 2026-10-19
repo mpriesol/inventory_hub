@@ -2058,7 +2058,7 @@
     "noChanges": "Žiadne neuložené zmeny",
     "dirtyCount": "Rozpracované produkty: {{count}}",
     "localOnly": "Najprv uložte úpravy v Hube. Odoslanie do e-shopu spustíte samostatne cez Upload.",
-    "save": "Uložiť úpravy v Hube",
+    "save": "Uložiť v Hube",
     "discard": "Zahodiť zmeny",
     "uncertain": "Odpoveď na uloženie sa stratila. Údaje už môžu byť uložené. Najprv over výsledok tej istej dávky; zmeny zostávajú zachované.",
     "recover": "Overiť uloženie",
@@ -2078,7 +2078,7 @@
     "warehouseDirty": "Pred zmenou skladu ulož alebo zahoď rozpracované úpravy.",
     "pageSize": "Riadky na stránke",
     "range": "{{from}}–{{to}} z {{total}}",
-    "keyboardHelp": "Enter / F2: úprava · Tab: ďalšia bunka · Esc: zrušiť úpravu bunky · šípky: pohyb · Ctrl/Cmd + V: vložiť tabuľku do viditeľných upraviteľných buniek. Prázdna hodnota zruší vlastné nastavenie.",
+    "keyboardHelp": "Kliknutie, Enter alebo F2 upraví bunku. Tab: ďalšia bunka · Esc: zrušiť úpravu · šípky: pohyb · Ctrl/Cmd + V: vložiť tabuľku. SKU a ikona detailu otvoria kartu. Prázdna hodnota zruší vlastné nastavenie.",
     "inherit": "Preberať zdroj",
     "visible": "Viditeľný",
     "hidden": "Skrytý",
@@ -2217,7 +2217,7 @@
     "openAdmin": "Otvoriť v administrácii",
     "linkUnavailable": "Prepojenie je uložené. Chýbajú adresy na otvorenie produktu.",
     "uploadSelection": "Označené produkty: {{count}}",
-    "uploadTo": "Upload do {{shop}}",
+    "uploadTo": "Odoslať do {{shop}}",
     "saveBeforeUpload": "Najprv uložte alebo zahoďte rozpracované úpravy.",
     "adjustStock": "Upraviť množstvo s evidovanou skladovou korekciou",
     "adjustCost": "Otvoriť nákupné ceny a skladové operácie",
@@ -2306,7 +2306,20 @@
       "shops": "E-shopy"
     },
     "filtersPending": "Filtre boli zmenené. Tabuľka stále zobrazuje výsledky predchádzajúceho vyhľadávania.",
-    "applyFilters": "Použiť filtre"
+    "applyFilters": "Použiť filtre",
+    "linkSelected": "Prepojiť s e-shopom",
+    "tableOptions": "Možnosti tabuľky",
+    "refreshList": "Obnoviť",
+    "bulkOptions": "Hromadná úprava výberu",
+    "horizontalScroll": "Vodorovné posúvanie tabuľky",
+    "salesBasis": "EUR · predajná cena s DPH",
+    "costBasis": "EUR · nákupná cena bez DPH",
+    "sortAll": "Zoradiť všetky výsledky",
+    "sortPage": "Zoradiť produkty na načítanej stránke",
+    "sortedPage": "Zoradená táto stránka",
+    "sortedResults": "Zoradené všetky výsledky",
+    "resetSort": "Zrušiť zoradenie",
+    "allRows": "Všetky ({{count}})"
   },
   "actions": {
     "effects": {
