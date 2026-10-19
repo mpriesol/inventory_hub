@@ -33,7 +33,7 @@ const response = (value, status = 200) => ({ ok: status < 400, status, statusTex
 const calls = [], scans = [], scanSessions = [], quantityEdits = [], finalizations = [], applied = new Map();
 let navigation, currentLocation;
 function RouteControl() { navigation = useNavigate(); currentLocation = useLocation(); return null; }
-let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
+let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, chooseAmbiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
 let holdQuantity = false, resolveQuantity, loseQuantity = false, invalidQuantityResponse = null;
 let sessionStatus = 'in_progress', pauseMode = 'ok', extraLines = [], failProducts = false, failPrepare = false, failNote = false;
 const preparations = [], productRequests = [];
@@ -104,6 +104,7 @@ global.fetch = async (path, options = {}) => {
   assert(path.endsWith('/scan'), 'No stock mutation or finalization is triggered by scanning');
   const body = JSON.parse(options.body); scans.push(body); scanSessions.push(path.match(/sessions\/([^/]+)\/scan/)[1]);
   assert.match(body.request_id, /^[0-9a-f-]{36}$/i);
+  if (chooseAmbiguous && body.line_id === undefined) return response({ detail: { code: 'scan_line_ambiguous', line_ids: [41, 42] } }, 409);
   if (ambiguous) { ambiguous = false; return response({ detail: { code: 'scan_line_ambiguous' } }, 409); }
   let result = applied.get(body.request_id);
   if (!result) { received += body.qty; result = { request_id: body.request_id, replayed: false, line: line(), status: line().status, summary: summary() }; applied.set(body.request_id, result); }
@@ -404,6 +405,8 @@ async function mountReceipt(status = 'in_progress') {
   received = 20;
   await mountReceipt();
   await act(async () => { find('receiving-finalize').click(); await tick(); });
+  assert(find('receiving-finalize-incomplete'), 'A complete receipt also shows the impact before posting');
+  await act(async () => { find('receiving-finalize-incomplete').click(); await tick(); });
   assert.deepEqual(finalizations.at(-1), { force: false, received: 20 }, 'Fully received invoice uses normal finalization');
   assert.equal(find('receiving-finalize'), null, 'A successful finalization immediately switches the receipt to read-only');
   assert(find('receiving-session-status')); assert.equal(find('receiving-scan-code'), null);
@@ -538,6 +541,23 @@ async function mountReceipt(status = 'in_progress') {
     assert(requests.length > 0, `Actual page interactions exercise protected ${operation} requests`);
     assert(requests.every(request => request.method === 'POST' && request.headers['X-Hub-Request'] === '1' && request.credentials === 'same-origin'));
   }
+  failSummary = false;
+  received = 0; chooseAmbiguous = true;
+  extraLines = [{ ...line(), id: 42, unit_price: 17.25, title: 'Same code, different cost' }];
+  await mountReceipt();
+  await scan('DUPLICATE-WITH-CHOICE');
+  const ambiguousRequest = { ...scans.at(-1) };
+  assert(find('receiving-ambiguous'), 'Ambiguous scan stays queued for an explicit line choice');
+  assert.equal(received, 0);
+  assert(find('receiving-finalize').disabled, 'Unresolved line choice blocks posting');
+  lose = true;
+  await act(async () => { find('receiving-choose-line-41').click(); await tick(); });
+  assert.deepEqual(scans.at(-1), { ...ambiguousRequest, line_id: 41 }, 'Only a proven rejected scan gains a line selection');
+  assert(find('receiving-scan-retry'));
+  await act(async () => { find('receiving-scan-retry').click(); await tick(); });
+  assert.deepEqual(scans.at(-1), { ...ambiguousRequest, line_id: 41 }, 'Uncertain retry preserves the selected line and UUID');
+  assert.equal(received, 1, 'Replaying the selected line cannot double receive');
+  chooseAmbiguous = false; extraLines = [];
   await act(async () => { root.unmount(); });
   console.log('Receiving UI: scan UUID/retry/context protections, visible invoice items, manual quantity serialization/recovery, explicit historical closure, readonly receipts and pause reconciliation passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

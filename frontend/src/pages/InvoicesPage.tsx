@@ -500,7 +500,7 @@ export function InvoicesPage() {
             }}
           >
             <Upload size={16} />
-            Nahrať faktúru
+            {t('receiving.uploadArchive')}
           </button>
         </div>
       </div>
@@ -885,7 +885,7 @@ export function InvoicesPage() {
           >
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold" style={{ color: 'var(--color-text-primary)' }}>
-                Nahrať faktúru
+                {t('receiving.uploadArchive')}
               </h2>
               <button
                 onClick={() => setUploadModalOpen(false)}
@@ -922,6 +922,7 @@ export function InvoicesPage() {
                 <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
                   Dodávateľ *
                 </label>
+                <p>{t('receiving.archiveHelp')} <Link to={`/receiving${uploadSupplier ? `?supplier=${encodeURIComponent(uploadSupplier)}` : ''}`}>{t('receiving.goToReceipt')}</Link></p>
                 <select
                   value={uploadSupplier}
                   onChange={(e) => setUploadSupplier(e.target.value)}
@@ -1063,7 +1064,7 @@ export function InvoicesPage() {
                     color: 'var(--color-bg-primary)',
                   }}
                 >
-                  {uploading ? 'Nahrávam...' : 'Nahrať'}
+                  {uploading ? t('common.loading') : t('receiving.uploadArchive')}
                 </button>
               </div>
             </div>

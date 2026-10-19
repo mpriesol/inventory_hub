@@ -46,7 +46,8 @@
     "shops": "Obchody",
     "settings": "Nastavenia",
     "orderAudit": "Kontrola objednávok",
-    "stockHistory": "História pohybov"
+    "stockHistory": "História pohybov",
+    "productImport": "Príprava produktov"
   },
   "dashboard": {
     "title": "Prehľad skladu",
@@ -159,7 +160,22 @@
       "cancelled": "Príjem je zrušený. Údaje sú iba na čítanie; môžete sa vrátiť na zoznam.",
       "paused": "Príjem je pozastavený. Uložené množstvá sú zachované. Zvoľte Pokračovať v príjme, ak ho chcete znovu upravovať."
     },
-    "closedPendingScans": "Nepotvrdené skeny: {{count}}. Môžete overiť pôvodné operácie alebo sa vrátiť na zoznam; uložené skeny zostanú zachované."
+    "closedPendingScans": "Nepotvrdené skeny: {{count}}. Môžete overiť pôvodné operácie alebo sa vrátiť na zoznam; uložené skeny zostanú zachované.",
+    "unitCost": "Nákup / jednotku bez DPH",
+    "reviewReceipt": "Skontrolovať príjem",
+    "postReceipt": "Zaúčtovať príjem",
+    "receiptImpact": "Sklad: {{warehouse}}. Zaúčtuje sa {{count}} riadkov, spolu množstvo {{qty}} podľa jednotiek dokladu.",
+    "receiptValue": "Hodnota prijatého tovaru podľa uložených nákupných cien",
+    "receiptEffect": "Prijaté množstvá zvýšia fyzický sklad a vytvoria dohľadateľné skladové pohyby a FIFO vrstvy. Oprava po zaúčtovaní sa robí opravným pohybom. Produkty sa tým nepublikujú do e-shopu.",
+    "receiptOverage": "Riadky s množstvom navyše: {{count}}",
+    "finalizeFailed": "Príjem sa nepodarilo potvrdiť. Obnovte jeho stav a overte výsledok pred opakovaním.",
+    "chooseScanLine": "Vyberte faktúrový riadok",
+    "chooseScanLineHelp": "Kód {{code}} patrí viacerým riadkom. Tento sken ešte nezmenil množstvo. Vyberte riadok podľa produktu, množstva a nákupnej ceny.",
+    "cancelScan": "Zrušiť tento sken",
+    "uploadForReceipt": "Nahrať faktúru na príjem",
+    "uploadArchive": "Nahrať doklad do archívu",
+    "archiveHelp": "Archív uchová doklad; nevytvára príjemku ani skladové pohyby.",
+    "goToReceipt": "Prejsť na príjem tovaru"
   },
   "suppliers": {
     "title": "Dodávatelia",
@@ -778,8 +794,8 @@
       "ai_manufacturer_contact": "Marketingový text obsahuje kontaktný e-mail.",
       "ai_unregistered_parameter": "Parameter nie je v registri kategórie.",
       "ai_required_parameter": "Chýba povinný parameter",
-      "ai_parameter_scope": "Parameter má nesprávny rozsah",
-      "ai_parameter_value": "Nepovolená hodnota parametra",
+      "ai_parameter_scope": "Parameter je priradený nesprávnemu rozsahu. V parametroch zvoľte hlavný produkt alebo správny variant podľa registra",
+      "ai_parameter_value": "Hodnota nezodpovedá registru kategórie. V parametroch vyberte povolenú hodnotu a zachovajte význam zdroja",
       "ai_duplicate_parameter": "Duplicitný parameter",
       "ai_unverified_feed_evidence": "Citát nebol nájdený v podkladoch feedu.",
       "ai_unverified_official_evidence": "Zdroj nemá platnú HTTPS adresu alebo nebol zaznamenaný ako otvorený podklad.",
@@ -823,7 +839,10 @@
       "ai_category_uncertain": "AI nevie jednoznačne určiť kategóriu a profil. Skontroluj podklady alebo zvoľ kategóriu ručne.",
       "ai_category_candidates_missing": "V e-shope chýbajú vhodné aktívne koncové kategórie.",
       "ai_settings_changed": "Nastavenie medzičasom zmenil iný používateľ. Načítaj aktuálnu hodnotu a vyber model znova.",
-      "ai_model_unpriced": "Tento model nemá podporovaný cenník. Vyber niektorý z ponúkaných modelov."
+      "ai_model_unpriced": "Tento model nemá podporovaný cenník. Vyber niektorý z ponúkaných modelov.",
+      "ai_unregistered_variant_axis": "Zdrojová variantová os nemá jednoznačné priradenie v registri kategórie. Skontrolujte profil a mapovanie parametra",
+      "ai_parameter_mapping_conflict": "Nejednoznačné mapovanie parametrov. Dve zdrojové osi sa nesmú zlúčiť ani zameniť. Skontrolujte zdrojový a cieľový názov",
+      "ai_variant_identity_change": "Hodnota variantu sa líši od feedu. Obnovte presnú hodnotu pre dané SKU; opraviť možno názov parametra, nie identitu variantu"
     },
     "importSelectedReady": "Importovať označené pripravené",
     "selectJob": "Označiť úlohu",
@@ -969,7 +988,9 @@
       "needsParent": "Tento parameter patrí hlavnému produktu.",
       "needsVariant": "Pre tento parameter vyber konkrétny variant.",
       "invalidValue": "nepovolená hodnota",
-      "onePerLine": "Každá hodnota na samostatnom riadku"
+      "onePerLine": "Každá hodnota na samostatnom riadku",
+      "sourceName": "Zdrojová os z feedu",
+      "automaticName": "Automaticky podľa názvu"
     },
     "removeEvidence": "Odstrániť podklad",
     "removeEvidenceHelp": "Po odstránení podkladu odstráň aj tvrdenia v popise alebo parametroch, ktoré nemajú iný overený zdroj.",
@@ -1134,7 +1155,11 @@
       "accept": "Použiť tento vzor",
       "cancel": "Zavrieť náhľad",
       "limit": "Najskôr odoberte jeden z dvoch uložených vzorov."
-    }
+    },
+    "parameterDiagnostics": "Parametre vyžadujú opravu",
+    "parameterActual": "Aktuálna hodnota",
+    "parameterExpected": "Očakávaná hodnota",
+    "editParameter": "Prejsť na parameter"
   },
   "upgatesImport": {
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",
@@ -2271,7 +2296,17 @@
       "all": "Všetky väzby",
       "linked": "S dodávateľskou väzbou",
       "unlinked": "Bez dodávateľskej väzby"
-    }
+    },
+    "leaveChanges": "Máte neuložené úpravy alebo nedokončené uloženie. Odchodom ich môžete stratiť. Zostaňte a uložte ich alebo overte výsledok uloženia. Naozaj odísť?",
+    "viewPreset": "Pohľad",
+    "chooseView": "Vybrať pohľad…",
+    "presets": {
+      "stock": "Sklad",
+      "products": "Produkty a ceny",
+      "shops": "E-shopy"
+    },
+    "filtersPending": "Filtre boli zmenené. Tabuľka stále zobrazuje výsledky predchádzajúceho vyhľadávania.",
+    "applyFilters": "Použiť filtre"
   },
   "actions": {
     "effects": {
@@ -3557,7 +3592,7 @@
     "hubOnly": "Iba Hub",
     "adminLink": "Administrácia",
     "storefrontLink": "Produkt v e-shope",
-    "workflowHelp": "Pripraviť import spracuje označené AI, uloží produkty do Hubu a zobrazí náhľad pre vybrané e-shopy. Bez označeného e-shopu zostanú produkty iba v Hube.",
+    "workflowHelp": "Uloženie do Hubu, odoslanie do e-shopu a príjem na sklad sú samostatné operácie. Príprava s AI pokračuje podľa platných pravidiel.",
     "aiSourcesHelp": "AI vždy používa feed a oficiálne zdroje. Platia nastavené pravidlá kontroly nákladov, schvaľovania a potvrdenia importu.",
     "finishExisting": "Dokončiť prípravu - produkty už existujú",
     "targetUnavailable": "E-shop nie je pripravený. Skontrolujte jeho konfiguráciu a vytvorte novú prípravu.",
@@ -3584,7 +3619,24 @@
     "sourceSkippedProgress": "B2B načítané: {{completed}} / {{total}} · bez B2B: {{skipped}}",
     "sourceSkippedDetails": "Dôvod chýbajúcich B2B údajov",
     "sourceActionUncertain": "Výsledok operácie sa nepodarilo potvrdiť. Najprv obnov stav prípravy; operácia sa automaticky neopakuje.",
-    "freshPreview": "Pripraviť nový náhľad"
+    "freshPreview": "Pripraviť nový náhľad",
+    "processByRules": "Spracovať podľa pravidiel",
+    "recentHelp": "Najnovších 100 príprav zodpovedajúcich vyhľadávaniu. Rozpracované prípravy môžete bezpečne znovu otvoriť.",
+    "recentSearch": "Hľadať prípravu podľa názvu alebo SKU",
+    "recentTabs": {
+      "active": "Rozpracované",
+      "attention": "Vyžadujú pozornosť",
+      "completed": "Dokončené",
+      "all": "Všetky"
+    },
+    "selectionScope": "Označené: {{total}} · na tejto stránke: {{visible}} · mimo nej: {{hidden}}",
+    "bulkScope": "Rozsah hromadnej úpravy",
+    "visibleSelection": "Len označené na tejto stránke",
+    "wholeSelection": "Celý označený výber",
+    "familyScope": "Spoločné pole: zmena sa týka aj ostatných variantov vybraných rodín.",
+    "rowScope": "Hodnota sa zmení iba vo vybraných riadkoch. Zapnutie AI vždy platí pre celú variantovú rodinu.",
+    "automationScope": "Rozsah spracovania: všetkých {{count}} riadkov prípravy, cieľ: {{shops}}. Pravidlá môžu po AI automaticky uložiť karty a odoslať produkty do e-shopu bez ďalšieho potvrdenia. Označenie riadkov obmedzuje iba hromadné úpravy. Fyzická zásoba sa tým nemení.",
+    "manualScope": "Rozsah: všetkých {{count}} riadkov prípravy, cieľ: {{shops}}. Najprv sa uložia karty a pripraví náhľad. Odoslanie do e-shopu potvrdíte osobitne. Fyzická zásoba sa nemení."
   },
   "slogerProbe": {
     "signIn": "Prihlásiť sa do Hubu",
@@ -3970,5 +4022,19 @@
       "existing_card_link_only": "Voľba existujúcej karty uloží iba dodávateľskú väzbu pri následnom uložení do Hubu. Zachová jej SKU, názov, skupinu, ceny aj sklad a nezalistuje ju v e-shopoch."
     },
     "linkOnlyTarget": "Dodávateľská väzba ku karte Hubu #{{id}}"
+  },
+  "orderNavigation": {
+    "title": "Práca s objednávkami",
+    "inbox": "Prijaté objednávky",
+    "audit": "Kontrola prenosu",
+    "stock": "Rezervácie a výdaj"
+  },
+  "shopsOverview": {
+    "title": "E-shopy a prenosy údajov",
+    "help": "Každý prenos má vlastný smer, rozsah a pravidlá. Zvoľte e-shop a operáciu.",
+    "statusHelp": "Aktuálny stav, posledný výsledok a automatiku nájdete v detaile príslušného prenosu.",
+    "orders": "E-shop → Hub: objednávky a posledný príjem",
+    "availability": "Dodávateľ → Hub → e-shop: dostupnosť",
+    "stock": "Hub → e-shop: vlastná zásoba a výsledky odoslania"
   }
 }

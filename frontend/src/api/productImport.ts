@@ -53,10 +53,10 @@ export interface ImportIdentityReview {
     can_create: boolean; candidates: ImportIdentityCandidate[]; truncated: boolean;
     decision: Omit<ImportIdentityDecision, 'row_id'> | null; errors: string[] }[];
 }
-export interface ProductImportSummary { id: string; revision: number; status: string; publication_state?: string | null; supplier: string; shop: string; updated_at: string; rows_count: number }
+export interface ProductImportSummary { needs_attention?: boolean; title?: string; codes?: string[]; id: string; revision: number; status: string; publication_state?: string | null; supplier: string; shop: string; updated_at: string; rows_count: number }
 export interface ImportRowPatch { id: number; values: Partial<ImportValues> }
 const base = '/api/product-imports';
-export const listProductImports = (signal?: AbortSignal) => hubRequest<{ items: ProductImportSummary[] }>(base, undefined, signal);
+export const listProductImports = (signal?: AbortSignal, q = '') => hubRequest<{ items: ProductImportSummary[] }>(`${base}${q ? `?q=${encodeURIComponent(q)}` : ''}`, undefined, signal);
 export const createProductImport = (selection: ProductImportSelection, request_id: string) => hubRequest<ProductImportDraft>(base, { ...selection, request_id });
 export const readProductImport = (id: string, signal?: AbortSignal) => hubRequest<ProductImportDraft>(`${base}/${encodeURIComponent(id)}`, undefined, signal);
 export const refreshProductImportCategories = (draft: ProductImportDraft) => hubRequest<ProductImportDraft>(`${base}/${draft.id}/categories-refresh`, { expected_revision: draft.revision });

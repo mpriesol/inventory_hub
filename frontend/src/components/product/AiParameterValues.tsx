@@ -5,13 +5,14 @@ import { AiContent, AiParameter } from '../../api/aiContent';
 type Fact = { id: number; name: string; variant_attributes: { name: string; value: string }[] };
 type Value = AiContent['parameters'][number];
 
-function parameterScope(parameter: AiParameter, facts: Fact[]) {
-  return parameter.scope === 'choice' ? (facts.some(f => f.variant_attributes.some(a => a.name === parameter.name)) ? 'variant' : 'parent') : parameter.scope;
+const nameKey = (name: string) => name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
+function parameterScope(parameter: AiParameter, facts: Fact[], values: Value[] = []) {
+  return parameter.scope === 'choice' ? (facts.some(f => f.variant_attributes.some(a => nameKey(a.name) === nameKey(parameter.name) || values.some(v => v.name === parameter.name && v.source_name === a.name && v.product_id === f.id))) ? 'variant' : 'parent') : parameter.scope;
 }
 
 export function missingRequiredParameterValues(values: Value[], registry: AiParameter[], facts: Fact[]): Value[] {
   return registry.filter(parameter => parameter.required && parameter.approved !== false).flatMap(parameter =>
-    (parameterScope(parameter, facts) === 'parent' ? [null] : facts.map(fact => fact.id))
+    (parameterScope(parameter, facts, values) === 'parent' ? [null] : facts.map(fact => fact.id))
       .filter(id => !values.some(value => value.name === parameter.name && value.product_id === id && value.values.some(v => v.trim())))
       .map(product_id => ({ name: parameter.name, product_id, values: [] })));
 }
@@ -20,7 +21,7 @@ export function AiParameterValues({ values, registry, facts, disabled, onChange 
   values: Value[]; registry: AiParameter[]; facts: Fact[]; disabled: boolean; onChange: (values: Value[]) => void;
 }) {
   const { t } = useTranslation();
-  registry = registry.filter(p => p.approved !== false).map(p => ({...p, scope: parameterScope(p, facts)}));
+  registry = registry.filter(p => p.approved !== false).map(p => ({...p, scope: parameterScope(p, facts, values)}));
   const definitions = new Map(registry.map(parameter => [parameter.name, parameter]));
   const missing = missingRequiredParameterValues(values, registry, facts);
   const rows = [...values, ...missing.filter(slot => !values.some(value => value.name === slot.name && value.product_id === slot.product_id))];
@@ -36,12 +37,12 @@ export function AiParameterValues({ values, registry, facts, disabled, onChange 
       const invalidScope = definition && (definition.scope === 'parent' ? value.product_id !== null : !variant);
       const isMissing = missing.some(slot => slot.name === value.name && slot.product_id === value.product_id);
       const choices = [...new Set([...(definition?.values || []), ...value.values])];
-      return <tr key={index} className={isMissing ? 'ai-parameter-missing' : undefined}>
+      return <tr id={`ai-parameter-${index}`} tabIndex={-1} key={index} className={isMissing ? 'ai-parameter-missing' : undefined}>
         <td><select aria-label={`${t('ai.parameterEditor.name')} ${index + 1}`} disabled={disabled || isMissing} value={value.name} onChange={e => change(index, { name: e.target.value })}>
           <option value="">{t('ai.parameterEditor.choose')}</option>
           {value.name && !definition && <option value={value.name}>{value.name} · {t('ai.parameterEditor.unregistered')}</option>}
           {registry.map(parameter => <option key={parameter.name} value={parameter.name}>{parameter.name}{parameter.required ? ` · ${t('ai.required')}` : ''}</option>)}
-        </select>{isMissing && <small className="ai-parameter-missing-label">{t('ai.parameterEditor.missingValue')}</small>}{value.name && !definition && <small>{t('ai.parameterEditor.unknownHelp')}</small>}{definition?.instructions && <small>{definition.instructions}</small>}</td>
+        </select>{isMissing && <small className="ai-parameter-missing-label">{t('ai.parameterEditor.missingValue')}</small>}{value.name && !definition && <small>{t('ai.parameterEditor.unknownHelp')}</small>}{definition?.instructions && <small>{definition.instructions}</small>}{value.product_id !== null && <label><span>{t('ai.parameterEditor.sourceName')}</span><select aria-label={`${t('ai.parameterEditor.sourceName')} ${index + 1}`} disabled={disabled} value={value.source_name || ''} onChange={e => change(index, { source_name: e.target.value || null })}><option value="">{t('ai.parameterEditor.automaticName')}</option>{[...new Set(facts.find(f => f.id === value.product_id)?.variant_attributes.map(a => a.name) || [])].map(name => <option key={name}>{name}</option>)}</select></label>}</td>
         <td><select aria-label={`${t('ai.parameterScope')} ${index + 1}`} disabled={disabled || isMissing} value={value.product_id === null ? 'parent' : String(value.product_id)} onChange={e => change(index, { product_id: e.target.value === 'parent' ? null : Number(e.target.value) })}>
           <option value="parent" disabled={definition?.scope === 'variant'}>{t(definition?.scope === 'variant' ? 'ai.parameterEditor.chooseVariant' : 'ai.parent')}</option>
           {definition?.scope !== 'parent' && facts.map(fact => <option value={fact.id} key={fact.id}>{variantName(fact)}</option>)}

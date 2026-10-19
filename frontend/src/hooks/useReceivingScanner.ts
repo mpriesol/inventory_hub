@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { ApiResponseError } from '../api/client';
 import { scanCode, type ScanResult } from '../api/receiving';
 
-type Scan = { request_id: string; code: string; qty: number };
-type ScanContext = { key: string; queue: Scan[]; sending: boolean; stopped: boolean };
+type Scan = { request_id: string; code: string; qty: number; line_id?: number };
+type ScanContext = { key: string; queue: Scan[]; sending: boolean; stopped: boolean; ambiguous?: { code: string; line_ids: number[] } | null };
 const restore = (key: string): Scan[] => {
   try {
     const value = JSON.parse(sessionStorage.getItem(key) || '[]');
@@ -16,7 +17,7 @@ const persist = (context: ScanContext) => {
     else sessionStorage.removeItem(context.key);
   } catch { /* In-memory retry remains available. */ }
 };
-const snapshot = (context: ScanContext) => ({ context, pending: context.queue.length, busy: context.sending, uncertain: context.stopped });
+const snapshot = (context: ScanContext) => ({ context, pending: context.queue.length, busy: context.sending, uncertain: context.stopped && !context.ambiguous, ambiguous: context.ambiguous || null });
 
 /** One UUID per physical scan, sequential delivery, identical payload on retry. */
 export function useReceivingScanner(supplier: string, sessionId: string,
@@ -46,7 +47,7 @@ export function useReceivingScanner(supplier: string, sessionId: string,
         const command = context.queue[0];
         let acknowledged = false;
         try {
-          const result = await scanCode(supplier, sessionId, command.code, command.qty, command.request_id);
+          const result = await scanCode(supplier, sessionId, command.code, command.qty, command.request_id, command.line_id);
           acknowledged = true;
           if (!current(context)) return;
           await callbacks.current.accept(result, command.code);
@@ -55,6 +56,11 @@ export function useReceivingScanner(supplier: string, sessionId: string,
         } catch (error) {
           if (!current(context)) return;
           const message = error instanceof Error ? error.message : '';
+          const detail = error instanceof ApiResponseError ? error.detail as { code?: string; line_ids?: number[] } : null;
+          if (!acknowledged && error instanceof ApiResponseError && error.status === 409 && detail?.code === 'scan_line_ambiguous' && Array.isArray(detail.line_ids) && detail.line_ids.length > 1 && detail.line_ids.every(id => Number.isSafeInteger(id) && id > 0)) {
+            context.ambiguous = { code: command.code, line_ids: detail.line_ids };
+            context.stopped = true; reflect(context); break;
+          }
           // A known client rejection did not mutate the draft. A malformed 200,
           // unknown outcome or failed replay refresh retains the exact request.
           const rejected = !acknowledged && /^4\d\d\b/.test(message) && !/^(408|429)\b/.test(message);
@@ -74,10 +80,19 @@ export function useReceivingScanner(supplier: string, sessionId: string,
     persist(context); reflect(context); void drain();
   }
   function retry() {
-    if (context.sending || !context.queue.length || !current(context)) return;
+    if (context.sending || context.ambiguous || !context.queue.length || !current(context)) return;
     context.stopped = false; reflect(context); void drain();
   }
+  function resolveAmbiguity(lineId: number | null) {
+    if (!current(context) || context.sending || !context.ambiguous || !context.queue.length) return;
+    if (lineId !== null && !context.ambiguous.line_ids.includes(lineId)) return;
+    // 409 proves this command was rejected before any write. Only now may its
+    // payload gain the explicit line selection; unknown requests stay immutable.
+    if (lineId === null) context.queue.shift();
+    else context.queue[0] = { ...context.queue[0], line_id: lineId };
+    context.ambiguous = null; context.stopped = false; persist(context); reflect(context); void drain();
+  }
   const visible = view.context === context ? view : snapshot(context);
-  return { enqueue, retry, pending: visible.pending, busy: visible.busy, uncertain: visible.uncertain,
+  return { enqueue, retry, resolveAmbiguity, ambiguous: visible.ambiguous, pending: visible.pending, busy: visible.busy, uncertain: visible.uncertain,
     hasPending: () => context.queue.length > 0 };
 }

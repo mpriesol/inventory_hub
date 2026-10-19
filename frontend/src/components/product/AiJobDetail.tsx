@@ -1,3 +1,4 @@
+import { aiErrorText } from '../../utils/aiErrors';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AiContent, AiJob, aiRequest, aiContentStatusKey, aiJobNextKey, aiJobStatusKey } from '../../api/aiContent';
@@ -91,7 +92,12 @@ export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
     <p>{job.policy.show_cost_estimate !== false && <>{t('ai.estimate')}: {Number(job.estimate_usd).toFixed(3)} USD · </>}{t('ai.actualCost')}: {job.actual_usd == null ? '—' : `${Number(job.actual_usd).toFixed(4)} USD`}</p>
     {job.status === 'estimate' && <div className="ai-actions"><button disabled={busy} className="ai-primary" onClick={() => action('start')}>{t('ai.startProcessing')}</button><small>{t('ai.estimateHelp')}</small></div>}
     {job.error && <div className="ai-notice ai-error">{t(`ai.errors.${job.error}`, { defaultValue: job.error })}</div>}
-    {job.checks?.errors?.map(v => <div key={v} className="ai-notice ai-error">{t(`ai.errors.${v.split(':')[0]}`, { defaultValue: v })}{v.includes(':') ? ` · ${v.split(':').slice(1).join(':')}` : ''}</div>)}
+    {job.checks?.errors?.map(v => <div key={v} className="ai-notice ai-error">{aiErrorText(t, v)}</div>)}
+    {!!job.checks?.parameter_errors?.length && <details open><summary>{t('ai.parameterDiagnostics')}</summary>{job.checks.parameter_errors.map((issue, index) => <div className="ai-notice ai-error" key={index}>
+      <strong>{job.facts?.find(f => f.id === issue.product_id)?.name || (issue.product_id == null ? t('ai.parent') : issue.product_id)} · {issue.parameter}</strong>
+      <p>{t('ai.parameterActual')}: {issue.actual.join(' / ') || '—'} · {t('ai.parameterExpected')}: {issue.expected.join(' / ') || t('ai.parameterRegistry')}</p>
+      <button type="button" onClick={() => { const row = content?.parameters.findIndex(p => p.name === issue.parameter && p.product_id === issue.product_id); if (row !== undefined && row >= 0) { const target = document.getElementById(`ai-parameter-${row}`); target?.scrollIntoView({ block: 'center' }); target?.focus(); } }}>{t('ai.editParameter')}</button>
+    </div>)}</details>}
     {!dirty && !!job.checks?.manual_overrides?.length && <p className="ai-notice">{t('ai.manuallyAcceptedWarnings')}</p>}
     {!!job.checks?.warnings?.length && <h3>{t('ai.nonBlockingWarnings')}</h3>}
     {job.checks?.warnings?.map(v => <div key={v} className="ai-notice">{t(`ai.errors.${v}`, { defaultValue: v })}</div>)}

@@ -8,6 +8,9 @@ export interface ReceivingSession {
 }
 
 export interface ReceivingLine {
+  line_number?: number;
+  unit_price?: number | null;
+  received_value?: string | null;
   id?: number;
   ean: string;
   display_ean?: string;
@@ -39,6 +42,8 @@ export interface ReceivingSummary {
 export type ReceivingStatus = 'new' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
 
 export interface ReceivingSessionSummary {
+  warehouse?: { id: number; code: string; name: string };
+  currency?: string;
   invoice_no: string;
   status: ReceivingStatus;
   lines: ReceivingLine[];
@@ -123,12 +128,13 @@ export async function scanCode(
   session_id: string, 
   code: string, 
   qty: number = 1,
-  request_id: string = crypto.randomUUID()
+  request_id: string = crypto.randomUUID(),
+  line_id?: number
 ): Promise<ScanResult> {
   const result = await fetchJSON<unknown>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, qty, request_id })
+    body: JSON.stringify({ code, qty, request_id, ...(line_id === undefined ? {} : { line_id }) })
   });
   if (!object(result) || result.request_id !== request_id || typeof result.replayed !== 'boolean'
     || !['matched', 'partial', 'pending', 'overage', 'unexpected', 'unknown'].includes(String(result.status))

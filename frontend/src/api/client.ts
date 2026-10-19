@@ -93,6 +93,9 @@ export function installFetchTap(base = API_BASE) {
 // Install tap immediately on module import
 installFetchTap();
 
+export class ApiResponseError extends Error {
+  constructor(public status: number, public detail: unknown, message: string) { super(message); }
+}
 // Helper: fetch and parse JSON with good errors
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -102,7 +105,9 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   if (!res.ok) {
     // include response text (first 800 chars) for easier debugging
     const snippet = text ? ` — ${text.slice(0, 800)}` : "";
-    throw new Error(`${res.status} ${res.statusText}${snippet}`);
+    let detail: unknown;
+    try { detail = JSON.parse(text).detail; } catch { /* Non-JSON upstream error. */ }
+    throw new ApiResponseError(res.status, detail, `${res.status} ${res.statusText}${snippet}`);
   }
 
   if (ct.includes("application/json")) {

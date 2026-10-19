@@ -74,7 +74,7 @@ global.fetch = async (path, init = {}) => {
 };
 const button = text => [...document.querySelectorAll('button')].find(b => b.textContent === text);
 const parameterRows = () => [...document.querySelectorAll('select[aria-label^="Názov parametra "]')].map(select => select.closest('tr'));
-const parameterRow = (name, productId = null) => parameterRows().find(row => row.querySelector('select').value === name && row.querySelectorAll('select')[1].value === (productId === null ? 'parent' : String(productId)));
+const parameterRow = (name, productId = null) => parameterRows().find(row => row.querySelector('select').value === name && row.querySelector('td:nth-child(2) select').value === (productId === null ? 'parent' : String(productId)));
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 async function click(element) { assert(element, 'Element exists'); await act(async () => { element.click(); await tick(); }); }
 async function input(element, value) { await act(async () => { Object.getOwnPropertyDescriptor(element.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value').set.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })); await tick(); }); }
@@ -513,10 +513,10 @@ async function input(element, value) { await act(async () => { Object.getOwnProp
   const choiceRegistry = [{name:'Farba',scope:'choice',required:false,values:[],unit:'',instructions:''}];
   const singleFacts = [{id:1,name:'Single',variant_attributes:[]}];
   await act(async () => { root.render(React.createElement(AiParameterValues,{values:[{name:'Farba',product_id:null,values:['Red']}],registry:choiceRegistry,facts:singleFacts,disabled:false,onChange:()=>{}})); await tick(); });
-  assert.equal(parameterRow('Farba').querySelectorAll('select')[1].options.length,1,'Choice without source axis stays on parent');
-  const choiceFacts = [{id:1,name:'Variant',variant_attributes:[{name:'Farba',value:'Red'}]}];
+  assert.equal(parameterRow('Farba').querySelector('td:nth-child(2) select').options.length,1,'Choice without source axis stays on parent');
+  const choiceFacts = [{id:1,name:'Variant',variant_attributes:[{name:'FARBA',value:'Red'}]}];
   await act(async () => { root.render(React.createElement(AiParameterValues,{values:[{name:'Farba',product_id:1,values:['Red']}],registry:choiceRegistry,facts:choiceFacts,disabled:false,onChange:()=>{}})); await tick(); });
-  assert(parameterRow('Farba',1).querySelectorAll('select')[1].options[0].disabled,'Actual choice cannot move to parent');
+  assert(parameterRow('Farba',1).querySelector('td:nth-child(2) select').options[0].disabled,'Actual choice cannot move to parent');
   const linkedBook = {rules:[{...book.rules[0],id:'linked',scope:{...scope,shop:'biketrek'},category_profiles:['bikes'],name:'Bike source',instructions:'Complete bike rules'}],categories:[{...book.categories[0],id:'bikes',name:'Bicycles',registry_status:'mixed',parameters:[{...choiceRegistry[0],approved:false}]}]};
   await act(async () => { root.render(React.createElement(AiRuleEditor,{rules:{...rules,book:linkedBook},onReload:()=>{},onJob:()=>{}})); await tick(); });
   await click(button('Kategórie (1)'));

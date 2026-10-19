@@ -192,6 +192,14 @@ async function render(entry) {
   await click(label('Označiť PL-3'));
   await change(label('Pole hromadnej úpravy'), 'sale_gross');
   await change(label('Spoločná hodnota'), '12,50');
+  await change(label(i18n.t('productImport.search')), 'PL-1');
+  assert(document.body.textContent.includes('mimo nej: 1'), 'Filtered-out selection remains explicitly counted');
+  assert.equal(label(i18n.t('productImport.bulkScope')).value, 'visible', 'Bulk edits default to selected rows on the visible page');
+  await click(button('Použiť na označené'));
+  await change(label(i18n.t('productImport.search')), '');
+  await click(button('Ceny'));
+  assert(!field(2, 'sale_gross').textContent.includes('12.50'), 'Default visible scope leaves the hidden selected row untouched');
+  await change(label(i18n.t('productImport.bulkScope')), 'all');
   await click(button('Použiť na označené'));
   await click(button('Ceny'));
   assert.ok(field(1, 'sale_gross').textContent.includes('12.50'));
@@ -210,7 +218,7 @@ async function render(entry) {
   assert.equal(label('Vylepšiť pomocou AI: PL-2').checked, true);
   assert.equal(label('Vylepšiť pomocou AI: PL-3').checked, false);
   assert.equal(calls.some(call => call.path.endsWith('/ai') || call.path.endsWith('/ai-start')), false, 'AI checkbox and bulk selection do not charge or prepare until the primary action');
-  await click(button('Pripraviť import'));
+  await click(button('Spracovať podľa pravidiel'));
   assert.equal(calls.some(call => call.path.endsWith('/ai-start')), false, 'Estimate is separate from paid AI');
   await change(label('Pravidlá AI pre PL-1'),'general');
   assert.equal(button('Spustiť AI · odhad 0.040 USD'),undefined,'An edited profile cannot start a stale cost estimate');
@@ -296,6 +304,8 @@ async function render(entry) {
   assert(!button('Pripraviť import'),'Completed automatic publication does not offer another preview');
 
   await render('/product-import');
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  await click(button('Všetky'));
   assert.ok(document.querySelector('a[href="/product-import?draft=test-draft"]'), 'Saved drafts are discoverable without route state');
   await click(document.querySelector('a[href="/product-import?draft=test-draft"]'));
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3, 'Draft resumes from server via durable URL');

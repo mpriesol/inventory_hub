@@ -1,3 +1,4 @@
+import { aiErrorText } from '../utils/aiErrors';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -40,6 +41,9 @@ export function ProductImportPage() {
   const [draft, setDraft] = useState<ProductImportDraft | null>(null);
   const draftRef = useRef(draft); draftRef.current = draft;
   const [recent, setRecent] = useState<ProductImportSummary[]>([]);
+  const [recentQuery, setRecentQuery] = useState('');
+  const [recentTab, setRecentTab] = useState('active');
+  const [bulkScope, setBulkScope] = useState('visible');
   const [changes, setChanges] = useState<ImportChanges>({});
   const changesRef = useRef(changes); changesRef.current = changes;
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -74,12 +78,15 @@ export function ProductImportPage() {
   const dirty = Object.keys(changes).length;
   useUnsavedNavigationGuard(!!dirty || !!editing || modalDirty, c('discardChanges'));
   useEffect(() => { if (receiptDestination && !dirty && !editing && !modalDirty && !busy) navigate(receiptDestination); }, [receiptDestination, dirty, editing, modalDirty, busy, navigate]);
-  const errorText = (value: string) => t(`productImport.errors.${value}`, { defaultValue: t(`supplierLinks.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) }) });
+  const errorText = (value: string) => value.startsWith('ai_') ? aiErrorText(t, value) : t(`productImport.errors.${value}`, { defaultValue: t(`supplierLinks.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) }) });
   const rows = draft?.rows || [];
   const profileChanged = (row: ProductImportRow) => (effectiveImportValues(row, changes).ai_category_profile || 'auto') !== (row.values.ai_category_profile || 'auto');
   const needsPreparation = (row: ProductImportRow) => !linkOnly(row) && (profileChanged(row) || row.ai_job?.staging?.profile_matches === false || (row.ai_job?.status === 'completed' && row.ai_job.staging?.ai_applied === false));
   const filteredRows = rows.filter(row => { const values = effectiveImportValues(row, changes); return `${values.code} ${values.name} ${values.eans.join(' ')} ${row.source_category || ''}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase()); });
   const shownRows = filteredRows.slice((page - 1) * 50, page * 50);
+  const visibleSelected = shownRows.filter(row => selected.has(row.id));
+  const bulkIds = new Set((bulkScope === 'visible' ? visibleSelected : rows.filter(row => selected.has(row.id))).map(row => row.id));
+  const recentRows = recent.filter(item => recentTab === 'all' || (recentTab === 'completed' ? item.publication_state === 'completed' : recentTab === 'attention' ? item.needs_attention || ['failed', 'partial', 'unknown'].includes(item.publication_state || '') || item.status === 'source_failed' : item.publication_state !== 'completed'));
   const columns = IMPORT_COLUMNS.filter(column => view === 'all' || (view === 'basic' ? settings.visible.includes(column.key) : column.key === 'name' || column.view === view));
   const jobs = [...new Map(rows.filter(row => row.ai_job && !linkOnly(row)).map(row => [row.ai_job!.id, row.ai_job!])).values()];
   const actionableJobs = jobs.filter(job => rows.some(row => !linkOnly(row) && row.ai_job?.id === job.id && effectiveImportValues(row, changes).ai_enabled && !needsPreparation(row)));
@@ -102,7 +109,7 @@ export function ProductImportPage() {
   const estimate = estimates.reduce((sum, job) => sum + Number(job.estimate_usd || 0), 0);
   const primaryDisabled = locked || aiBusy || !!editing || !!editor || (aiPending && !needsAiPreparation && !estimates.length && !canApplyAi) ||
     (!!draft?.identity_review_required && !needsAiPreparation && !estimates.length && !canApplyAi);
-  const primaryLabel = estimates.length && !needsAiPreparation ? c('startAI', { amount: estimate.toFixed(3) }) : canApplyAi && !needsAiPreparation ? c('acceptAndContinue') : chosenShops.length ? c('prepareImport') : c('prepareHub');
+  const primaryLabel = estimates.length && !needsAiPreparation ? c('startAI', { amount: estimate.toFixed(3) }) : canApplyAi && !needsAiPreparation ? c('acceptAndContinue') : needsAiPreparation ? c('processByRules') : chosenShops.length ? c('prepareImport') : c('prepareHub');
   const actual = jobs.reduce((sum, job) => sum + Number(job.actual_usd || 0), 0);
   const width = (column: ImportColumn) => Math.max(100, Math.min(600, Number(settings.widths[column.key]) || column.width || 150));
   const cellEditable = (row: ProductImportRow, column: ImportColumn) => !locked && !((row.hub_product_id || row.expected_hub_product_id) && ['code', 'supplier_code', 'eans'].includes(column.key));
@@ -124,8 +131,9 @@ export function ProductImportPage() {
     let stopped = false;
     if (draftId && draftRef.current?.id === draftId) return;
     if (!draftId && !selection) {
-      listProductImports().then(value => { if (!stopped) setRecent(value.items); }).catch(value => { if (!stopped) setError(value.code || value.message); });
-      return () => { stopped = true; };
+      setDraft(null); draftRef.current = null; replaceChanges({}); setSelected(new Set()); setBusy('');
+      const timer = window.setTimeout(() => listProductImports(undefined, recentQuery).then(value => { if (!stopped) setRecent(value.items); }).catch(value => { if (!stopped) setError(value.code || value.message); }), recentQuery ? 250 : 0);
+      return () => { stopped = true; window.clearTimeout(timer); };
     }
     busyRef.current = true; setBusy('loading'); setError('');
     if (!draftId && !creating.current) creating.current = createProductImport(selection!, createId.current);
@@ -136,7 +144,7 @@ export function ProductImportPage() {
       if (!draftId) setQuery({ draft: value.id }, { replace: true });
     }).catch(value => { if (!stopped) { setError(value.code || value.message); creating.current = null; } }).finally(() => { if (!stopped) { busyRef.current = false; setBusy(''); } });
     return () => { stopped = true; };
-  }, [unlocked, draftId, selection, loadAttempt]);
+  }, [unlocked, draftId, selection, loadAttempt, recentQuery]);
   useEffect(() => {
     if (!unlocked || !draft || (!aiBusy && !publicationBusy && !sourceBusy)) return;
     const controller = new AbortController();
@@ -223,13 +231,13 @@ export function ProductImportPage() {
   function bulk() {
     const column: ImportColumn | undefined = bulkField === 'ai_category_profile' ? { key: 'ai_category_profile', type: 'text', view: 'categories' } : IMPORT_COLUMNS.find(item => item.key === bulkField); if (!column || locked || (bulkField === 'ai_category_profile' && aiBusy)) return;
     try {
-      if (rows.some(row => selected.has(row.id) && !cellEditable(row, column))) throw new Error('import_identity_saved');
+      if (rows.some(row => bulkIds.has(row.id) && !cellEditable(row, column))) throw new Error('import_identity_saved');
       const value = bulkField === 'ai_category_profile' ? bulkValue || 'auto' : parseImportValue(column, bulkValue); let next = changesRef.current;
-      for (const row of rows.filter(item => selected.has(item.id))) next = stageImportValue(rows, next, row, column.key, value);
+      for (const row of rows.filter(item => bulkIds.has(item.id))) next = stageImportValue(rows, next, row, column.key, value);
       generation.current++; replaceChanges(next); setError('');
     } catch (error) { setError((error as Error).message); }
   }
-  function toggleAI(enabled: boolean) { if (locked) return; let next = changesRef.current; for (const row of rows.filter(item => selected.has(item.id) && !linkOnly(item))) next = stageImportValue(rows, next, row, 'ai_enabled', enabled); generation.current++; replaceChanges(next); }
+  function toggleAI(enabled: boolean) { if (locked) return; let next = changesRef.current; for (const row of rows.filter(item => bulkIds.has(item.id) && !linkOnly(item))) next = stageImportValue(rows, next, row, 'ai_enabled', enabled); generation.current++; replaceChanges(next); }
   async function goBack() {
     const origin = draft?.receiving_origin;
     if (!origin) { navigate(draft ? `/suppliers/${encodeURIComponent(draft.supplier)}/catalog` : '/suppliers'); return; }
@@ -250,12 +258,12 @@ export function ProductImportPage() {
   const previewPublishable = previewItems.length > 0 && previewItems.every(item => ['ready', 'exists'].includes(item.status));
   return <div className="product-import">
     {previewRow && <ImportProductPreview row={previewRow} onClose={() => setPreviewRow(null)} />}
-    <header className="import-heading"><div><button className="import-back" data-testid="import-back" disabled={!!busy || (!!draft?.receiving_origin && (!!editing || !!editor))} onClick={goBack}><ArrowLeft size={16} />{draft?.receiving_origin ? c('backToReceiving', { invoice: draft.receiving_origin.invoice_no }) : c('back')}</button><h1>{c('title')}</h1><p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
+    <header className="import-heading"><div><button className="import-back" data-testid="import-back" disabled={!!busy || (!!draft?.receiving_origin && (!!editing || !!editor))} onClick={goBack}><ArrowLeft size={16} />{draft?.receiving_origin ? c('backToReceiving', { invoice: draft.receiving_origin.invoice_no }) : c('back')}</button><h1>{c('title')}</h1>{draft && <Link to="/product-import">{c('recent')}</Link>}<p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
     {!unlocked ? <div className="import-panel"><p>{c('loginRequired')}</p><Link to="/login">{t('accounts.login')}</Link></div> : <>
       {error && <div className="import-error import-panel" role="alert">{errorText(error)}{draft ? <Button variant="secondary" size="sm" disabled={!!busy} onClick={reload}>{c('reload')}</Button> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button>}{error.startsWith('sloger_credentials_') && <Link to="/suppliers?edit=sloger">{t('slogerProbe.settingsLink')}</Link>}</div>}
       {notice && !['continued', 'sourceRetried', 'sourceSkipped'].includes(notice) && !(notice === 'published' && !publicationBusy) && <div className="import-notice" role="status">{c(`notices.${notice}`)}</div>}
       {busy === 'loading' && <p role="status">{t('common.loading')}</p>}
-      {!draft && !busy && <div className="import-panel"><h2>{c('recent')}</h2>{!recent.length ? <p>{c('empty')}</p> : <div className="import-recent">{recent.map(item => <Link key={item.id} to={`?draft=${item.id}`}>{item.supplier} · {item.shop}<strong>{item.publication_state ? c(`delivery.${item.publication_state}`) : c(item.status === 'saved' ? 'savedHub' : 'draft')}</strong><span>{c('rowCount', { count: item.rows_count })} · {new Date(item.updated_at).toLocaleString()}</span></Link>)}</div>}</div>}
+      {!draft && !busy && <div className="import-panel"><h2>{c('recent')}</h2><p>{c('recentHelp')}</p><input aria-label={c('recentSearch')} placeholder={c('recentSearch')} value={recentQuery} maxLength={200} onChange={e => setRecentQuery(e.target.value)} /><div className="import-views">{['active', 'attention', 'completed', 'all'].map(tab => <button key={tab} aria-pressed={recentTab === tab} onClick={() => setRecentTab(tab)}>{c(`recentTabs.${tab}`)}</button>)}</div>{!recentRows.length ? <p>{c('empty')}</p> : <div className="import-recent">{recentRows.map(item => <Link key={item.id} to={`?draft=${item.id}`}><b>{item.title || item.codes?.join(', ') || c('title')}</b><small>{item.codes?.join(' · ')}</small>{item.supplier} · {item.shop}<strong>{item.publication_state ? c(`delivery.${item.publication_state}`) : c(item.status === 'saved' ? 'savedHub' : 'draft')}</strong><span>{c('rowCount', { count: item.rows_count })} · {new Date(item.updated_at).toLocaleString(i18n.language)}</span></Link>)}</div>}</div>}
       {draft && <>
         {draft.receiving_origin && <p className="import-notice" data-testid="import-receiving-help">{c('receivingHelp')}</p>}
         {(sourceLocked || draft.source_lookup?.state === 'skipped') && <section className="import-panel" data-testid="import-source-status" role="status">
@@ -274,11 +282,11 @@ export function ProductImportPage() {
         </section>}
         {profilesError && <p className="import-error" role="alert">{c('profilesLoadError')} <Button variant="ghost" size="sm" onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button></p>}
         {publicationDone && <div className="import-notice" role="status"><strong>{c('delivery.completed')}</strong><p>{c('completedHelp')}</p>{aiPending && <p>{c('completedWithoutAi')}</p>}<a href="#import-publication">{c('showResult')}</a></div>}
-        <div className="import-controls"><div className="import-views" role="tablist" aria-label={c('viewsLabel')}>{VIEWS.map(item => <button role="tab" aria-selected={view === item} key={item} onClick={() => { if (!editing) setView(item); }}>{c(`views.${item}`)}</button>)}</div><div className="import-control-tools"><input aria-label={c('search')} placeholder={c('search')} value={filter} onChange={event => setFilter(event.target.value)} /><Button variant="ghost" size="sm" icon={<Columns size={16} />} onClick={() => setShowColumns(!showColumns)}>{c('columns')}</Button><Button variant="ghost" size="sm" disabled={!!busy || !!editing} icon={<RefreshCw size={16} />} onClick={reload}>{c('refresh')}</Button><Button variant="ghost" size="sm" disabled={locked || aiBusy || !!editing || !!editor} onClick={() => run('categoriesRefreshed', refreshProductImportCategories)}>{c('refreshCategories')}</Button></div></div>
+        <div className="import-controls"><div className="import-views" role="tablist" aria-label={c('viewsLabel')}>{VIEWS.map(item => <button role="tab" aria-selected={view === item} key={item} onClick={() => { if (!editing) setView(item); }}>{c(`views.${item}`)}</button>)}</div><div className="import-control-tools"><input aria-label={c('search')} placeholder={c('search')} value={filter} onChange={event => { setFilter(event.target.value); setPage(1); setBulkScope('visible'); }} /><Button variant="ghost" size="sm" icon={<Columns size={16} />} onClick={() => setShowColumns(!showColumns)}>{c('columns')}</Button><Button variant="ghost" size="sm" disabled={!!busy || !!editing} icon={<RefreshCw size={16} />} onClick={reload}>{c('refresh')}</Button><Button variant="ghost" size="sm" disabled={locked || aiBusy || !!editing || !!editor} onClick={() => run('categoriesRefreshed', refreshProductImportCategories)}>{c('refreshCategories')}</Button></div></div>
         {showColumns && <div className="import-column-settings import-panel"><p>{c('columnsHelp')}</p>{IMPORT_COLUMNS.map(column => <label key={column.key}><input type="checkbox" checked={settings.visible.includes(column.key)} onChange={event => setSettings(old => ({ ...old, visible: event.target.checked ? [...old.visible, column.key] : old.visible.filter(key => key !== column.key) }))} />{c(`fields.${column.key}`)}<input type="number" min={100} max={600} step={10} aria-label={c('columnWidth', { field: c(`fields.${column.key}`) })} value={width(column)} onChange={event => setSettings(old => ({ ...old, widths: { ...old.widths, [column.key]: Math.max(100, Math.min(600, Number(event.target.value))) } }))} /></label>)}</div>}
-        <div className="import-bulk"><strong>{c('selected', { count: selected.size })}</strong><select aria-label={c('bulkField')} value={bulkField} disabled={locked} onChange={event => { setBulkField(event.target.value as ImportField); setBulkValue(''); }}>{IMPORT_COLUMNS.map(column => <option key={column.key} value={column.key}>{c(`fields.${column.key}`)}</option>)}<option value="ai_category_profile">{c('fields.ai_category_profile')}</option></select>
+        <div className="import-bulk"><strong>{c('selectionScope', { total: selected.size, visible: visibleSelected.length, hidden: selected.size - visibleSelected.length })}</strong><select aria-label={c('bulkScope')} value={bulkScope} onChange={e => setBulkScope(e.target.value)}><option value="visible">{c('visibleSelection')}</option><option value="all">{c('wholeSelection')}</option></select><small>{c(FAMILY_IMPORT_FIELDS.has(bulkField) ? 'familyScope' : 'rowScope')}</small><select aria-label={c('bulkField')} value={bulkField} disabled={locked} onChange={event => { setBulkField(event.target.value as ImportField); setBulkValue(''); }}>{IMPORT_COLUMNS.map(column => <option key={column.key} value={column.key}>{c(`fields.${column.key}`)}</option>)}<option value="ai_category_profile">{c('fields.ai_category_profile')}</option></select>
           {bulkField === 'ai_category_profile' ? <select aria-label={c('bulkValue')} value={bulkValue || 'auto'} disabled={locked || aiBusy || !!profilesError} onChange={event => setBulkValue(event.target.value)}><option value="auto">{c('autoProfile')}</option>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select> : bulkField === 'category_code' ? <select aria-label={c('bulkValue')} value={bulkValue} disabled={locked} onChange={event => setBulkValue(event.target.value)}><option value="">{c('noCategory')}</option>{leafCategories.map(category => <option key={category.code} value={category.code}>{categoryPath(categories, category.code, i18n.language)}{category.active === false ? ` · ${t('ai.inactiveCategory')}` : ''}</option>)}</select> : <input aria-label={c('bulkValue')} value={bulkValue} disabled={locked} onChange={event => setBulkValue(event.target.value)} placeholder={c('value')} />}
-          <Button variant="secondary" size="sm" disabled={locked || !selected.size || !!editing || (bulkField === 'ai_category_profile' && (aiBusy || !!profilesError))} onClick={bulk}>{c('bulkApply')}</Button><Button variant="ghost" size="sm" disabled={locked || !selected.size} onClick={() => toggleAI(true)}>{c('aiSelected')}</Button><Button variant="ghost" size="sm" disabled={locked || !selected.size} onClick={() => toggleAI(false)}>{c('aiNone')}</Button>
+          <Button variant="secondary" size="sm" disabled={locked || !bulkIds.size || !!editing || (bulkField === 'ai_category_profile' && (aiBusy || !!profilesError))} onClick={bulk}>{c('bulkApply')}</Button><Button variant="ghost" size="sm" disabled={locked || !bulkIds.size} onClick={() => toggleAI(true)}>{c('aiSelected')}</Button><Button variant="ghost" size="sm" disabled={locked || !bulkIds.size} onClick={() => toggleAI(false)}>{c('aiNone')}</Button>
         </div>
         <div className="import-grid-scroll"><table className="import-grid" role="grid" aria-label={c('table')}><thead><tr><th className="import-fixed import-select"><input type="checkbox" aria-label={c('selectPage')} disabled={locked} checked={!!shownRows.length && shownRows.every(row => selected.has(row.id))} onChange={event => setSelected(old => { const next = new Set(old); shownRows.forEach(row => event.target.checked ? next.add(row.id) : next.delete(row.id)); return next; })} /></th><th className="import-fixed import-code">{c('fields.code')}</th><th className="import-ai-column">AI</th>{targetShops.map(shop => <th className="import-target-column" key={shop}>{c('targetColumn', { shop: shopName(shop) })}<span title={c('familyField')} className="import-shared">◇</span></th>)}{columns.map(column => <th key={column.key} style={{ minWidth: width(column), width: width(column) }}>{c(`fields.${column.key}`)}{FAMILY_IMPORT_FIELDS.has(column.key) && <span title={c('familyField')} className="import-shared">◇</span>}</th>)}<th>{c('status')}</th></tr></thead><tbody>
           {shownRows.map((row, index) => { const values = effectiveImportValues(row, changes), first = row.is_variant && shownRows[index - 1]?.group_key !== row.group_key; return <React.Fragment key={row.id}>
@@ -324,7 +332,7 @@ export function ProductImportPage() {
         <div className="import-grid-footer"><p>{c('keyboardHelp')}</p><span>{c('rowCount', { count: filteredRows.length })}</span><Button variant="ghost" size="sm" disabled={page <= 1 || !!editing} onClick={() => setPage(page - 1)}>{t('common.back')}</Button><span>{page} / {Math.max(1, Math.ceil(filteredRows.length / 50))}</span><Button variant="ghost" size="sm" disabled={page * 50 >= filteredRows.length || !!editing} onClick={() => setPage(page + 1)}>{t('common.next')}</Button></div>
         {!sourceLocked && !publicationDone && aiPending && <p className="import-notice">{c('aiPendingHelp')}</p>}
         {!draft.publication_result && <section className="import-panel import-save-panel">
-          <div className="import-flow-heading"><div><h2><Save size={18} />{c('saveTitle')}</h2><p>{c('workflowHelp')}</p></div><span className="import-status">{chosenShopNames || c('hubOnly')}</span></div>
+          <div className="import-flow-heading"><div><h2><Save size={18} />{c('saveTitle')}</h2><p>{c('workflowHelp')}</p><p className="import-notice" data-testid="import-effects">{c(rows.some(row => effectiveImportValues(row, changes).ai_enabled) ? 'automationScope' : 'manualScope', { count: rows.length, shops: chosenShopNames || c('hubOnly') })} <Link to="/settings/ai-content">{t('ai.appliedRules')}</Link></p></div><span className="import-status">{chosenShopNames || c('hubOnly')}</span></div>
           {rows.some(row => !linkOnly(row) && effectiveImportValues(row, changes).ai_enabled) && <p className="import-muted">{c('aiSourcesHelp')} <Link to="/settings/ai-content">{t('ai.modelSettings.title')}</Link></p>}
           {draft.identity_review_required && <p className="import-notice" data-testid="import-identity-warning">{t('importIdentity.required', { count: draft.identity_review_count || 0 })}</p>}
           <div className="import-actions"><Button data-testid="import-identity-review" variant="secondary" disabled={locked || aiBusy || !!dirty || !!editing || !!editor}

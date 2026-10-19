@@ -7,6 +7,7 @@ from inventory_hub.ai_content_models import AiRuleState, AiRuleVersion
 from inventory_hub.ai_content_types import CategoryProfile, Policy, Rule, RuleBook, Scope
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.ai_rule_content import compile_instructions
+from inventory_hub.services.ai_parameter_mapping import name_key
 
 DEFAULT_POLICY = dict(review_required=True, active_after_import=False, show_cost_estimate=True, confirm_import=True)
 
@@ -61,7 +62,7 @@ def select_category_profile(book: RuleBook, shop: str, category_code: str | None
 def parameter_scope(definition: dict, facts: list[dict]) -> str:
     if definition.get("scope") != "choice":
         return definition.get("scope", "parent")
-    return "variant" if any(a["name"] == definition["name"] for p in facts
+    return "variant" if any(name_key(a["name"]) == name_key(definition["name"]) for p in facts
                             for a in p.get("variant_attributes", [])) else "parent"
 
 

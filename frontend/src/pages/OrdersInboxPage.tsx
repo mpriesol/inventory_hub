@@ -1,3 +1,4 @@
+import { OrderNavigation } from '../components/orders/OrderNavigation';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -103,7 +104,7 @@ export function OrdersInboxPage() {
   const date = (value: string | null | undefined) => value ? new Date(value).toLocaleString(i18n.language) : '—';
   const state = (value: string | null) => t(`orderCollection.stockStates.${value || 'none'}`, { defaultValue: t('orderCollection.stockStates.unknown') });
 
-  return <div className="opening-stock orders-inbox">
+  return <div className="opening-stock orders-inbox"><OrderNavigation shop={shop} />
     <Link className="opening-stock-back" to="/orders">← {t('orderCollection.back')}</Link>
     <header><div><h1>{t('orderCollection.title')}</h1><p>{t('orderCollection.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" onClick={() => { unlockHub(''); setError(''); }}>{t('orderCollection.lock')}</Button>}</header>
     <div className="opening-stock-notice">{t('orderCollection.scope')}</div>

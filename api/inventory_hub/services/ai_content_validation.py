@@ -16,6 +16,7 @@ from inventory_hub.ai_content_types import Content
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.services.ai_content_rules import parameter_scope
+from inventory_hub.services.ai_parameter_mapping import parameter_mapping
 
 ACTIVE_TAGS = {"script", "iframe", "frame", "frameset", "object", "embed", "applet",
                "svg", "math", "base", "meta", "link", "style"}
@@ -141,15 +142,20 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         warnings.append("ai_meta_description_length")
     ids = {int(p["id"]) for p in context["facts"]}
     category = context["resolved"].get("category") or {}
-    definitions = {p["name"]: {**p, "scope": parameter_scope(p, context["facts"])}
+    mapping, mapping_errors = parameter_mapping(content, context)
+    errors.extend(mapping_errors)
+    mapped_facts = [{**p, "variant_attributes": [{**a, "name": mapping.get(a["name"], a["name"])} for a in p.get("variant_attributes", [])]} for p in context["facts"]]
+    definitions = {p["name"]: {**p, "scope": parameter_scope(p, mapped_facts)}
                    for p in category.get("parameters", []) if p.get("approved", True)}
-    parameters = {}
+    parameters, parameter_errors = {}, []
     for value in content.parameters:
+        before_errors = len(errors)
         definition = definitions.get(value.name)
         if definition is None:
             errors.append("ai_unregistered_parameter:" + value.name)
+            parameter_errors.append({'parameter': value.name, 'product_id': value.product_id, 'actual': value.values, 'expected': list(definitions), 'code': 'ai_unregistered_parameter'})
             continue
-        key = (value.name, value.product_id)
+        key = (definition["name"], value.product_id)
         if key in parameters:
             errors.append("ai_duplicate_parameter:" + value.name)
         parameters[key] = value.values
@@ -157,13 +163,19 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
             errors.append("ai_parameter_scope:" + value.name)
         if definition["scope"] == "variant":
             source = next((p for p in context["facts"] if p["id"] == value.product_id), {})
-            existing = next((a["value"] for a in source.get("variant_attributes", []) if a["name"] == value.name), None)
+            if value.source_name and not any(a['name'] == value.source_name for a in source.get('variant_attributes', [])):
+                errors.append('ai_parameter_mapping_conflict:' + value.name)
+            existing = next((a["value"] for a in source.get("variant_attributes", []) if mapping.get(a["name"]) == definition["name"]), None)
             if existing is None or value.values != [existing]:
                 errors.append("ai_variant_identity_change:" + value.name)
         if definition["values"] and set(value.values) - set(definition["values"]):
             errors.append("ai_parameter_value:" + value.name)
         if any(not v.strip() or "<" in v for v in value.values):
             errors.append("ai_parameter_value:" + value.name)
+        for error in errors[before_errors:]:
+            parameter_errors.append({'parameter': value.name, 'product_id': value.product_id, 'actual': value.values,
+                'expected': [existing] if definition['scope'] == 'variant' and existing is not None else definition['values'],
+                'code': error.split(':')[0]})
     for definition in definitions.values():
         expected = ids if definition["scope"] == "variant" else [None]
         if definition["required"] and any((definition["name"], id) not in parameters for id in expected):
@@ -171,10 +183,10 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
     if definitions:
         for product in context["facts"]:
             for attribute in product.get("variant_attributes", []):
-                definition = definitions.get(attribute["name"])
+                definition = definitions.get(mapping.get(attribute["name"]))
                 if not definition or definition["scope"] != "variant":
                     errors.append("ai_unregistered_variant_axis:" + attribute["name"])
-                values = parameters.get((attribute["name"], product["id"]))
+                values = parameters.get((mapping.get(attribute["name"]), product["id"]))
                 if values is not None and values != [attribute["value"]]:
                     errors.append("ai_variant_identity_change:" + attribute["name"])
     feed_facts = {"feed:" + str(p["id"]): p for p in context["facts"]}
@@ -203,7 +215,7 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
     errors = [error for error in errors if error not in overrides]
     warnings.extend(overrides)
     return {"errors": sorted(set(errors)), "warnings": sorted(set(warnings)),
-            "evidence_errors": evidence_errors, "manual_overrides": overrides,
+            "parameter_mapping": mapping, "parameter_errors": parameter_errors, "evidence_errors": evidence_errors, "manual_overrides": overrides,
             "automatic_ready": not errors and not overrides and category.get("automatic_import_ready", True)}
 
 
@@ -225,8 +237,13 @@ def overlay(item, enrichment: dict, language: str):
         if safety:
             description["long_description"] += "<h2>Bezpečnostné informácie</h2>" + clean_description(safety)
         item.name = data.title
+        # Rename only validated source axes; original values, SKU and EAN remain.
+        for variant in payload.get("variants", []):
+            for parameter in variant.get("parameters", []):
+                for label in parameter.get("descriptions", []):
+                    label["name"] = enrichment.get("parameter_mapping", {}).get(label["name"], label["name"])
         # Parameters are optional in A+B. When a register exists, output is exclusive
-        # to that register; existing variant identity/choice axes are never rewritten.
+        # to that register; variant values and identity are never rewritten.
         if enrichment.get("registered_parameters"):
             parent = [p for p in data.parameters if p.product_id is None]
             payload["parameters"] = [{"descriptions": [{"language": language, "name": p.name}],

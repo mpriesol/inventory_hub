@@ -323,6 +323,7 @@ async def prepare_import(db, job):
         "supplier_name": ctx["resolved"].get("import_policy", {}).get("supplier_name") or {"paul-lange": "Paul Lange", "northfinder": "Northfinder"}.get(ctx["supplier"], ctx["supplier"]),
         "import_policy": ctx["resolved"].get("import_policy", {}),
         "safety": "\n".join(dict.fromkeys(p.safety_information for p in products if p.safety_information)),
+        "parameter_mapping": checks.get("parameter_mapping", {}) if ctx["use_ai"] else {},
         "registered_parameters": bool((ctx["resolved"].get("category") or {}).get("parameters"))}
     preview = await catalog_import.create_preview(db, ctx["shop"], ShopImportPreviewRequest(
         supplier=ctx["supplier"], feed_key=ctx["feed_key"], product_ids=ctx["product_ids"],
