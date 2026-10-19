@@ -153,3 +153,11 @@
 .product-editor-create { padding: 1rem; border: 1px solid var(--color-border-subtle); margin: 1rem 0; display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
 .product-editor-create h2, .product-editor-create p { flex-basis: 100%; }
 .product-editor-create label { display: flex; flex-direction: column; gap: .3rem; }
+
+/* Keep the first stock rows visible on ordinary notebook screens. */
+@media (min-width: 900px) {
+  .product-editor-heading { margin-bottom: 14px; }
+  .product-editor-toolbar { margin-bottom: 10px; gap: 12px; }
+  .product-editor-filters { gap: 8px 12px; margin-bottom: 10px; }
+  .product-editor-savebar { padding: 9px 12px; }
+}

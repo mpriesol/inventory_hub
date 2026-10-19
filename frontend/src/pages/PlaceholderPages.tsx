@@ -87,12 +87,18 @@ export function SuppliersPage() {
 }
 
 export function ShopsPage() {
-  return (
-    <PlaceholderPage
-      title="Shopy"
-      description="Pripojené e-shopy a synchronizácia"
-    />
-  );
+  const { t } = useTranslation();
+  return <div className="space-y-6"><h1 className="text-2xl font-semibold">{t('shopsOverview.title')}</h1><p>{t('shopsOverview.help')}</p>
+    <div className="grid md:grid-cols-2 gap-6">{['biketrek', 'xtrek'].map(shop => <section key={shop} className="rounded-xl border p-6 space-y-4" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      <h2 className="text-xl font-semibold">{shop === 'biketrek' ? 'BIKETREK' : 'xTrek'}</h2>
+      <p>{t('shopsOverview.statusHelp')}</p>
+      <Link className="block" to={`/orders/inbox?shop=${shop}`}>{t('shopsOverview.orders')}</Link>
+      <Link className="block" to={`/settings/availability?shop=${shop}`}>{t('shopsOverview.availability')}</Link>
+      <Link className="block" to={`/stock/publication?shop=${shop}`}>{t('shopsOverview.stock')}</Link>
+      <Link className="block" to="/product-import">{t('nav.productImport')}</Link>
+    </section>)}</div>
+    <Link to="/settings/stock">{t('stockSettings.title')}</Link>
+  </div>;
 }
 
 export function SettingsPage() {

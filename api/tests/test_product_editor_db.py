@@ -307,6 +307,15 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row["sku"] for row in (await self.listing(shop_code="biketrek"))["items"]},
                          {"BIKE-2", "BIKE-10", "PART-1"})
 
+    async def test_brand_alias_filter_includes_every_case_without_rewriting_products(self):
+        async with self.transaction() as db:
+            db.add(Product(sku='BRAND-ALIAS', name='Alias', brand=' SHIMANO '))
+        self.assertEqual({r['sku'] for r in (await self.listing(brand='shimano'))['items']}, {'PART-1', 'BRAND-ALIAS'})
+        async with self.transaction() as db:
+            options = await service.options(db)
+            self.assertEqual(sum(b.casefold() == 'shimano' for b in options['brands']), 1)
+            self.assertEqual(await db.scalar(select(Product.brand).where(Product.sku == 'BRAND-ALIAS')), ' SHIMANO ')
+
     async def test_natural_sku_sort_and_pagination_have_stable_nonoverlapping_pages(self):
         async with self.transaction() as db:
             db.add_all([Product(sku=f"PAGE-{number}", name="Page product") for number in range(1, 31)])

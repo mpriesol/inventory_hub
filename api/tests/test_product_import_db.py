@@ -89,6 +89,18 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             review_hash=review['review_hash'], decisions=[{'row_id': result['rows'][0]['id'],
                 'action': 'link', 'product_id': product_id}])
 
+    async def test_history_search_finds_name_and_sku_and_treats_wildcards_literally(self):
+        original = await self.create()
+        code = original['rows'][0]['values']['code']
+        name = original['rows'][0]['values']['name']
+        async with self.sessions() as db:
+            for query in (code.lower(), name[:8].lower()):
+                result = await service.history(db, query)
+                self.assertEqual([d['id'] for d in result['items']], [original['id']])
+                self.assertTrue(result['items'][0]['title'])
+                self.assertIn(code, result['items'][0]['codes'])
+            self.assertEqual((await service.history(db, '%_unlikely_literal'))['items'], [])
+
     async def test_category_refresh_preserves_manual_cells_and_reads_inactive_categories(self):
         original = await self.create()
         edited = await self.mutate(original, service.patch_rows, DraftPatch,

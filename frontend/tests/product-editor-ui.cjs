@@ -17,10 +17,12 @@ require.extensions['.css'] = () => {};
 const i18n = require('../src/i18n/index.ts').default;
 const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
-const { MemoryRouter } = require('react-router-dom');
+const { createMemoryRouter, RouterProvider } = require('react-router-dom');
+let router;
+const renderEditor = () => { router = createMemoryRouter([{ path: '*', element: React.createElement(ProductEditorPage) }], { initialEntries: ['/products'] }); return React.createElement(RouterProvider, { router }); };
 const { ProductEditorPage } = require('../src/pages/ProductEditorPage.tsx');
 const { unlockHub } = require('../src/api/access.ts');
-const { COLUMN_PREFERENCES_KEY, columnPreferences, loadColumnPreferences } = require('../src/pages/productEditorGrid.ts');
+const { COLUMN_PREFERENCES_KEY, EDITOR_COLUMNS, columnPreferences, loadColumnPreferences } = require('../src/pages/productEditorGrid.ts');
 let root = createRoot(document.getElementById('root'));
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const t = key => i18n.t(`productEditor.${key}`);
@@ -227,16 +229,16 @@ async function edit(id, field, value, commit = 'Enter') {
 const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]')?.getAttribute('data-testid');
 
 (async () => {
+  assert.deepEqual(columnPreferences().visible.slice(0, 6), ['sku', 'image_url', 'name', 'available', 'on_hand', 'reserved']);
+  dom.window.localStorage.setItem(COLUMN_PREFERENCES_KEY, JSON.stringify({ version: 1, order: EDITOR_COLUMNS.map(c => c.key), visible: EDITOR_COLUMNS.filter(c => !c.hidden).map(c => c.key), widths: {} }));
   unlockHub('');
-  await act(async () => { root.render(React.createElement(MemoryRouter, { initialEntries: ['/products'] }, React.createElement(ProductEditorPage))); await tick(); });
+  await act(async () => { root.render(renderEditor()); await tick(); });
   assert.equal(calls.length, 0, 'Mount never fetches protected product data');
   await input('unlock-token', 'synthetic-product-editor-token'); await click('unlock');
-  assert.equal(calls.length, 0, 'Entering the shared token does not load or save automatically');
-  await click('load');
-  assert.equal(calls.length, 2, 'First explicit load requests options and one product page');
+  assert.equal(calls.length, 2, 'Unlock loads options and the first page automatically');
   assert.equal(calls[0].path, '/api/product-editor/options');
   assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('page_size'), '50');
-  assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('stock_scope'), 'confirmed', 'Active inventory defaults to explicitly confirmed stocks');
+  assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('stock_scope'), 'all', 'All cards are discoverable by default, including unconfirmed stock');
   assert.equal(required('warehouse').value, 'main', 'The server-designated default is selected even when it is not first');
   assert.equal(new URL(calls[1].path, dom.window.location).searchParams.get('warehouse_code'), 'main');
   assert(!element('mode-common') && !element('mode-biketrek') && !element('mode-xtrek'), 'One unified grid replaces the three shop tabs');
@@ -252,7 +254,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(!cellText(3, 'supplier_quantity').includes('6'), 'An unresolved supplier link never exposes a quantity as current');
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
-  assert(cellText(1, 'cost').includes('0.0000'), 'A known zero cost stays an exact decimal string');
+  assert(cellText(1, 'cost') === '0', 'Known zero cost remains distinct from unknown');
   assert(cannotUse('link-selected-products'), 'Linking requires explicit current-page selection');
   await click('select-1'); await click('select-2');
   const beforeLinkOpen = calls.length; await click('link-selected-products');
@@ -304,7 +306,20 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await click('reset-columns');
   assert.equal(cellText(1, 'name'), 'Reordered name', 'Resetting presentation does not discard draft data');
   assert.equal(required('header-name').style.width, '265px');
-  assert.equal(required('header-name').nextElementSibling, required('header-brand'));
+  assert.equal(required('header-name').nextElementSibling, required('header-available'));
+  // Exercise the remaining spreadsheet cases using the user's saved broad view.
+  for (const column of EDITOR_COLUMNS) if (!column.hidden && !required(`column-${column.key}`).checked) await click(`column-${column.key}`);
+  for (const [index, column] of EDITOR_COLUMNS.entries()) {
+    if (index < 1) continue;
+    for (let step = 0; step < EDITOR_COLUMNS.length; step++) {
+      const before = [...document.querySelectorAll('.product-editor-column-setting')].findIndex(node => node.querySelector(`[data-testid="column-${column.key}"]`));
+      if (before <= index) break;
+      assert(!required(`column-up-${column.key}`).disabled, `Can move ${column.key} from ${before} to ${index}`);
+      await click(`column-up-${column.key}`);
+      const after = [...document.querySelectorAll('.product-editor-column-setting')].findIndex(node => node.querySelector(`[data-testid="column-${column.key}"]`));
+      assert(after < before, `${column.key} moved from ${before} to ${after}`);
+    }
+  }
   await click('columns'); await click('discard');
   assert.equal(calls.length, beforeColumnEdits, 'Column settings and clipboard edits do not call the server');
 
@@ -363,7 +378,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(!element('cell-1-brand'));
   await paste(cell(1, 'name'), 'Visible columns only\t149.90');
   assert.equal(cellText(1, 'name'), 'Visible columns only');
-  assert.equal(cellText(1, 'sale_price_gross'), '149.90', 'TSV advances across visible columns without silently inserting hidden columns');
+  assert.equal(cellText(1, 'sale_price_gross'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(149.90), 'TSV advances across visible columns without silently inserting hidden columns');
   await click('column-brand'); await click('column-is_active'); await click('column-supplier_linked'); await click('columns');
   assert.equal(cellText(1, 'brand'), 'Brand one', 'Hidden columns keep their earlier staged value');
   assert.equal(saveCalls().length, 0, 'Editing and pasting never save on their own');
@@ -374,17 +389,17 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(saveCalls().length, beforeInvalidSave, 'Invalid decimals cannot be submitted');
   assert(document.body.textContent.includes(t('errors.invalid_price')));
   await click('detail-1'); await click('discard-row-1'); await click('close-detail');
-  assert.equal(cellText(1, 'sale_price_gross'), '199.90'); assert(cannotUse('save'));
+  assert.equal(cellText(1, 'sale_price_gross'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(199.90)); assert(cannotUse('save'));
 
   await edit(1, 'sale_price_gross', '179,90');
-  assert.equal(cellText(1, 'sale_price_gross'), '179.90');
+  assert.equal(cellText(1, 'sale_price_gross'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(179.90));
   const beforeMode = calls.length; await click('columns');
   for (const field of ['biketrek_name', 'biketrek_price', 'biketrek_visible', 'xtrek_name']) await click(`column-${field}`);
   await click('columns'); assert.equal(calls.length, beforeMode, 'Revealing shop-specific columns is local');
   await edit(1, 'biketrek_name', 'BIKETREK desired name'); await edit(1, 'biketrek_price', '159.95'); await edit(1, 'biketrek_visible', 'false');
   assert(!cellText(1, 'xtrek_name').includes('BIKETREK desired name'), 'Shop drafts stay in separate columns/scopes');
   await edit(1, 'xtrek_name', 'xTrek desired name');
-  assert.equal(cellText(1, 'sale_price_gross'), '179.90', 'Shop edits preserve the common value');
+  assert.equal(cellText(1, 'sale_price_gross'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(179.90), 'Shop edits preserve the common value');
   await click('save');
   assert.deepEqual(saveCalls().at(-1).body.changes, [{ product_id: 1, expected_revision: 3, snapshot_hash: hash(1, 3),
     variant: { sale_price_gross: '179.90' }, shops: { biketrek: { name: 'BIKETREK desired name', sale_price_gross: '159.95', visible: false }, xtrek: { name: 'xTrek desired name' } } }]);
@@ -478,10 +493,11 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
 
   await edit(1, 'biketrek_price', ''); await click('save');
   assert.deepEqual(saveCalls().at(-1).body.changes[0].shops, { biketrek: { sale_price_gross: null } }, 'Clearing an existing shop price sends an explicit null override');
-  assert.equal(cellText(1, 'biketrek_price'), '179.90', 'Cleared shop price inherits the desired common sale price, not the observed external price');
+  assert.equal(cellText(1, 'biketrek_price'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(179.90), 'Cleared shop price inherits the desired common sale price, not the observed external price');
 
   const beforeFilter = calls.length; await input('search', 'SUP-51'); await input('shop-filter', 'xtrek'); await input('page-size', '25');
   assert.equal(calls.length, beforeFilter, 'Filter edits are applied only by an explicit load');
+  assert(element('filters-pending'), 'Pending filters cannot be mistaken for applied results');
   await click('load'); let query = new URL(calls.at(-1).path, dom.window.location).searchParams;
   assert.equal(query.get('q'), 'SUP-51'); assert.equal(query.get('shop_code'), 'xtrek'); assert.equal(query.get('page_size'), '25'); assert.equal(query.get('page'), '1');
   assert(element('cell-51-name') && !element('cell-1-name'));
@@ -498,7 +514,18 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   listMode = 'valid'; await click('load'); assert(element('cell-51-name') && !element('cell-1-name'));
   await input('search', ''); await click('load');
 
-  await edit(1, 'name', 'Secret unsaved draft'); listMode = 'pending'; await click('load');
+  window.confirm = () => false;
+  await key(cell(1, 'name'), 'Enter'); await input('cell-editor', 'Open unsaved cell');
+  await act(async () => { await router.navigate('/stock/movements'); await tick(); });
+  assert.equal(router.state.location.pathname, '/products', 'SPA navigation protects an open cell before Enter');
+  await key('cell-editor', 'Escape');
+  await edit(1, 'name', 'Secret unsaved draft');
+  await act(async () => { await router.navigate('/stock/movements'); await tick(); });
+  assert.equal(router.state.location.pathname, '/products', 'SPA navigation protects staged row edits');
+  const lockButton = [...document.querySelectorAll('button')].find(button => button.textContent === t('lock'));
+  await act(async () => { lockButton.click(); await tick(); });
+  assert(cellText(1, 'name').includes('Secret unsaved draft'), 'Cancelling lock retains the draft');
+  listMode = 'pending'; await click('load');
   const staleList = resolveList, staleRequest = calls.at(-1), beforeToken = calls.length;
   await act(async () => { unlockHub('synthetic-replacement-token'); await tick(); staleList(); await tick(); });
   assert(staleRequest.signal.aborted); assert.equal(calls.length, beforeToken, 'Credential changes do not reload protected data automatically');
@@ -513,9 +540,8 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await act(async () => { root.unmount(); await tick(); });
   root = createRoot(document.getElementById('root'));
   const beforeRemount = calls.length;
-  await act(async () => { root.render(React.createElement(MemoryRouter, null, React.createElement(ProductEditorPage))); await tick(); });
-  assert.equal(calls.length, beforeRemount, 'Restoring column preferences does not load protected rows');
-  await click('load');
+  await act(async () => { root.render(renderEditor()); await tick(); });
+  assert.equal(calls.length, beforeRemount + 2, 'Returning restores the list automatically');
   assert.equal(required('header-name').style.width, '375px');
   assert.equal(required('header-brand').nextElementSibling, required('header-name'));
   assert(element('cell-1-ean') && !element('cell-1-size'), 'Visibility, width and order survive a new page instance');
@@ -588,7 +614,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
   const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
   assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);
-  assert(sanitized.visible.includes('sku') && sanitized.visible.includes('name') && sanitized.visible.includes('biketrek') && !sanitized.visible.includes('constructor'), 'New default columns migrate into existing browser preferences'); assert.deepEqual(sanitized.widths, { sku: 80, name: 640 });
+  assert(sanitized.visible.includes('sku') && sanitized.visible.includes('name') && sanitized.visible.includes('available') && !sanitized.visible.includes('constructor'), 'New default columns migrate into existing browser preferences'); assert.deepEqual(sanitized.widths, { sku: 80, name: 640 });
   dom.window.localStorage.setItem(COLUMN_PREFERENCES_KEY, '{invalid-json');
   assert.deepEqual(loadColumnPreferences(), columnPreferences(), 'Corrupt browser data falls back to valid default columns');
   console.log('Product editor UI behavior checks passed');

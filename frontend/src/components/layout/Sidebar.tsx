@@ -31,6 +31,7 @@ const navigation: NavItem[] = [
   { id: 'invoices', nameKey: 'nav.invoices', href: '/invoices', icon: FileText, badge: null },
   { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: null },
   { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: null },
+  { id: 'product-import', nameKey: 'nav.productImport', href: '/product-import', icon: Package, badge: null },
   { id: 'stock-history', nameKey: 'nav.stockHistory', href: '/stock/movements', icon: ClipboardList, badge: null },
   { id: 'order-audit', nameKey: 'nav.orderAudit', href: '/orders', icon: ClipboardList, badge: null },
   { id: 'suppliers', nameKey: 'nav.suppliers', href: '/suppliers', icon: Factory, badge: null },

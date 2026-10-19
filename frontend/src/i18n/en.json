@@ -45,7 +45,8 @@
     "shops": "Shops",
     "settings": "Settings",
     "orderAudit": "Order audit",
-    "stockHistory": "Movement history"
+    "stockHistory": "Movement history",
+    "productImport": "Product preparation"
   },
   "dashboard": {
     "title": "Warehouse overview",
@@ -158,7 +159,22 @@
       "cancelled": "This receipt is cancelled and read-only. You can return to the list.",
       "paused": "This receipt is paused. Saved quantities are preserved. Choose Continue receiving to edit it again."
     },
-    "closedPendingScans": "Unconfirmed scans: {{count}}. You can check the original operations or return to the list; saved scans will be preserved."
+    "closedPendingScans": "Unconfirmed scans: {{count}}. You can check the original operations or return to the list; saved scans will be preserved.",
+    "unitCost": "Purchase / unit excl. VAT",
+    "reviewReceipt": "Review receipt",
+    "postReceipt": "Post receipt",
+    "receiptImpact": "Warehouse: {{warehouse}}. {{count}} lines will be posted, total quantity {{qty}} in document units.",
+    "receiptValue": "Received value using saved purchase prices",
+    "receiptEffect": "Received quantities increase physical stock and create traceable stock movements and FIFO layers. Later corrections use an adjustment movement. This does not publish products to a shop.",
+    "receiptOverage": "Lines with excess quantity: {{count}}",
+    "finalizeFailed": "Receipt confirmation failed. Refresh its status and check the result before retrying.",
+    "chooseScanLine": "Choose invoice line",
+    "chooseScanLineHelp": "Code {{code}} matches several lines. This scan has not changed quantities. Choose the line by product, quantity and purchase price.",
+    "cancelScan": "Cancel this scan",
+    "uploadForReceipt": "Upload invoice for receiving",
+    "uploadArchive": "Upload document to archive",
+    "archiveHelp": "The archive stores a document; it does not create a receipt or stock movements.",
+    "goToReceipt": "Go to receiving"
   },
   "suppliers": {
     "title": "Suppliers",
@@ -777,8 +793,8 @@
       "ai_manufacturer_contact": "Marketing text contains a contact email.",
       "ai_unregistered_parameter": "Parameter is not in the category registry.",
       "ai_required_parameter": "Missing required parameter",
-      "ai_parameter_scope": "Incorrect parameter scope",
-      "ai_parameter_value": "Unsupported parameter value",
+      "ai_parameter_scope": "The parameter has the wrong scope. Choose the parent or correct variant according to the registry",
+      "ai_parameter_value": "The value does not match the category registry. Choose an allowed value while preserving the source meaning",
       "ai_duplicate_parameter": "Duplicate parameter",
       "ai_unverified_feed_evidence": "The quotation was not found in the feed facts.",
       "ai_unverified_official_evidence": "The source is not a valid HTTPS URL or was not recorded as an opened source.",
@@ -822,7 +838,10 @@
       "ai_category_uncertain": "AI could not confidently select a category and profile. Check the source or select a category manually.",
       "ai_category_candidates_missing": "No suitable active leaf categories exist in this shop.",
       "ai_settings_changed": "Another user changed the setting. Load the current value and select the model again.",
-      "ai_model_unpriced": "This model has no supported price card. Choose one of the offered models."
+      "ai_model_unpriced": "This model has no supported price card. Choose one of the offered models.",
+      "ai_unregistered_variant_axis": "The source variant axis has no unambiguous category registry mapping. Check the profile and parameter mapping",
+      "ai_parameter_mapping_conflict": "Ambiguous parameter mapping. Source axes cannot be merged or swapped. Check source and target names",
+      "ai_variant_identity_change": "The variant value differs from the feed. Restore the exact value for this SKU; parameter names may be mapped but variant identity must remain intact"
     },
     "importSelectedReady": "Import selected ready jobs",
     "selectJob": "Select job",
@@ -968,7 +987,9 @@
       "needsParent": "This parameter belongs to the parent product.",
       "needsVariant": "Choose a specific variant for this parameter.",
       "invalidValue": "value not allowed",
-      "onePerLine": "One value per line"
+      "onePerLine": "One value per line",
+      "sourceName": "Source feed axis",
+      "automaticName": "Match name automatically"
     },
     "removeEvidence": "Remove evidence",
     "removeEvidenceHelp": "After removing evidence, also remove any claims in the description or parameters that have no other verified source.",
@@ -1133,7 +1154,11 @@
       "accept": "Use this example",
       "cancel": "Close preview",
       "limit": "Remove one of the two saved examples first."
-    }
+    },
+    "parameterDiagnostics": "Parameters requiring correction",
+    "parameterActual": "Current value",
+    "parameterExpected": "Expected value",
+    "editParameter": "Go to parameter"
   },
   "upgatesImport": {
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",
@@ -2270,7 +2295,17 @@
       "all": "All links",
       "linked": "With supplier link",
       "unlinked": "Without supplier link"
-    }
+    },
+    "leaveChanges": "You have unsaved changes or an unfinished save. Leaving may lose them. Stay to save or recover the result. Leave anyway?",
+    "viewPreset": "View",
+    "chooseView": "Choose view…",
+    "presets": {
+      "stock": "Stock",
+      "products": "Products and prices",
+      "shops": "Shops"
+    },
+    "filtersPending": "Filters changed. The table still shows the previous search results.",
+    "applyFilters": "Apply filters"
   },
   "actions": {
     "effects": {
@@ -3555,7 +3590,7 @@
     "hubOnly": "Hub only",
     "adminLink": "Administration",
     "storefrontLink": "View product",
-    "workflowHelp": "Prepare import processes selected AI, saves products to Hub and opens a preview for the selected shops. With no shop selected, products stay in Hub only.",
+    "workflowHelp": "Saving to Hub, sending to a shop and receiving stock are separate operations. AI preparation follows the effective rules.",
     "aiSourcesHelp": "AI always uses the feed and official sources. Configured cost review, approval and import confirmation rules still apply.",
     "finishExisting": "Finish preparation - products already exist",
     "targetUnavailable": "This shop is not ready. Check its configuration and create a new preparation.",
@@ -3582,7 +3617,24 @@
     "sourceSkippedProgress": "B2B loaded: {{completed}} / {{total}} · without B2B: {{skipped}}",
     "sourceSkippedDetails": "Reason for missing B2B facts",
     "sourceActionUncertain": "The outcome could not be confirmed. Reload the preparation state first; the operation is not repeated automatically.",
-    "freshPreview": "Prepare a fresh preview"
+    "freshPreview": "Prepare a fresh preview",
+    "processByRules": "Process using rules",
+    "recentHelp": "The latest 100 preparations matching your search. Saved preparations can be reopened.",
+    "recentSearch": "Find preparation by name or SKU",
+    "recentTabs": {
+      "active": "In progress",
+      "attention": "Needs attention",
+      "completed": "Completed",
+      "all": "All"
+    },
+    "selectionScope": "Selected: {{total}} · on this page: {{visible}} · elsewhere: {{hidden}}",
+    "bulkScope": "Bulk edit scope",
+    "visibleSelection": "Selected on this page only",
+    "wholeSelection": "Entire selection",
+    "familyScope": "Shared field: this also changes other variants in the selected families.",
+    "rowScope": "Only selected rows are changed. Enabling AI always applies to the entire variant family.",
+    "automationScope": "Processing scope: all {{count}} preparation rows; target: {{shops}}. Rules may automatically save cards and send products to the shop after AI, without another confirmation. Row selection only limits bulk edits. Physical stock is unchanged.",
+    "manualScope": "Scope: all {{count}} preparation rows; target: {{shops}}. Cards are saved and a preview prepared first. Shop publication is confirmed separately. Physical stock is unchanged."
   },
   "slogerProbe": {
     "signIn": "Sign in to Hub",
@@ -3968,5 +4020,19 @@
       "existing_card_link_only": "Choosing an existing card adds only its supplier link when you later save to Hub. Its SKU, name, group, prices and stock are preserved, and no shop listing is created."
     },
     "linkOnlyTarget": "Supplier link to Hub card #{{id}}"
+  },
+  "orderNavigation": {
+    "title": "Order workflows",
+    "inbox": "Received orders",
+    "audit": "Transfer audit",
+    "stock": "Reservations and issue"
+  },
+  "shopsOverview": {
+    "title": "Shops and data transfers",
+    "help": "Each transfer has its own direction, scope and rules. Choose a shop and operation.",
+    "statusHelp": "Current status, last result and automation settings are shown in each transfer detail.",
+    "orders": "Shop → Hub: orders and last collection",
+    "availability": "Supplier → Hub → shop: availability",
+    "stock": "Hub → shop: own stock and delivery results"
   }
 }

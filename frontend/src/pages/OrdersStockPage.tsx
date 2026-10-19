@@ -1,3 +1,4 @@
+import { OrderNavigation } from '../components/orders/OrderNavigation';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -171,7 +172,7 @@ export function OrdersStockPage() {
   }
   const expired = preview && new Date(preview.expires_at).getTime() <= Date.now();
 
-  return <div className="opening-stock order-stock">
+  return <div className="opening-stock order-stock"><OrderNavigation shop={shop} />
     <Link to="/orders" className="opening-stock-back">← {t('orderStock.back')}</Link>
     <header><div><h1>{t('orderStock.title')}</h1><p>{t('orderStock.subtitle')}</p></div>{hubUnlocked() && <Button variant="secondary" onClick={() => { unlockHub(''); setError(''); }}>{t('orderStock.lock')}</Button>}</header>
     <div className="opening-stock-notice">{t('orderStock.scope')}</div>

@@ -249,6 +249,7 @@ def _line_dict(line: ReceivingLine, prefix: str) -> Dict[str, Any]:
         "ordered_qty": float(line.ordered_qty),
         "received_qty": float(line.received_qty),
         "unit_price": float(line.unit_price) if line.unit_price is not None else None,
+        "received_value": str(line.unit_price * line.received_qty) if line.unit_price is not None else None,
         "status": line.status,
         "product_id": line.product_id,
         "match_method": line.match_method,
@@ -312,7 +313,7 @@ async def _get_session_for_supplier(
     stmt = (
         select(ReceivingSession)
         .options(selectinload(ReceivingSession.lines).selectinload(ReceivingLine.product))
-        .options(selectinload(ReceivingSession.supplier))
+        .options(selectinload(ReceivingSession.supplier), selectinload(ReceivingSession.warehouse))
         .where(ReceivingSession.id == session_id)
     )
     if lock:
@@ -878,6 +879,8 @@ async def get_session_summary(
         "session_id": session.id,
         "invoice_number": session.invoice_number,  # canonical
         "invoice_no": session.invoice_number,      # alias (frontend)
+        "currency": session.invoice_currency,
+        "warehouse": {"id": session.warehouse_id, "code": session.warehouse.code, "name": session.warehouse.name},
         "status": session.status.value,
         "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "summary": _summary_counts(session, unexpected),

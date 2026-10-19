@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle, 
   Upload, Download, ExternalLink, XCircle, CheckCircle, FileText
@@ -82,10 +83,12 @@ const TAB_LABELS: Record<FilterTab, string> = {
 };
 
 export function ReceivingPage() {
+  const { t } = useTranslation();
+  const [query] = useSearchParams();
   const navigate = useNavigate();
   const [selectedInvoice, setSelectedInvoice] = useState<string | null>(null);
   const [suppliers, setSuppliers] = useState<SupplierSummary[]>([]);
-  const [supplier, setSupplier] = useState('paul-lange');
+  const [supplier, setSupplier] = useState(query.get('supplier') || 'paul-lange');
   const [invoices, setInvoices] = useState<InvoiceDisplay[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -318,7 +321,7 @@ export function ReceivingPage() {
             disabled={uploading}
           >
             <Upload size={14} />
-            {uploading ? 'Nahrávam...' : 'Nahrať faktúru'}
+            {uploading ? t('common.loading') : t('receiving.uploadForReceipt')}
           </Button>
         </div>
       </div>

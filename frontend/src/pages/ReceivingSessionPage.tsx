@@ -26,6 +26,8 @@ import {
   type FinalizeResult,
 } from '../api/receiving';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
+import { formatNumber, sumDecimals } from '../utils/format';
+import { ApiResponseError } from '../api/client';
 import { API_BASE } from '../api/client';
 import { CatalogApiError } from '../api/catalog';
 
@@ -34,7 +36,7 @@ function getRawScm(line: ReceivingLine): string {
 }
 
 export function ReceivingSessionPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { invoiceId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -50,6 +52,7 @@ export function ReceivingSessionPage() {
   const receiptContext = useRef({ key: receiptKey, revision: 0 });
   if (receiptContext.current.key !== receiptKey) receiptContext.current = { key: receiptKey, revision: 0 };
   const [summaryReady, setSummaryReady] = useState(false);
+  const [receiptInfo, setReceiptInfo] = useState<{ currency?: string; warehouse?: { name: string; code: string } }>({});
   const [sessionState, setSessionState] = useState<{ key: string; status: ReceivingStatus } | null>(null);
   const sessionStatus = sessionState?.key === receiptKey ? sessionState.status : null;
   const canEdit = summaryReady && (sessionStatus === 'new' || sessionStatus === 'in_progress');
@@ -110,7 +113,7 @@ export function ReceivingSessionPage() {
     if (resultsTimer.current) clearTimeout(resultsTimer.current);
     setLines(state?.lines || []);
     setStats({ matched: 0, partial: 0, pending: state?.lines?.length || 0, overage: 0, unexpected: 0 });
-    setSummaryReady(false); setSessionState(null); setLastScan(null); setError(null); setEditingLine(null);
+    setSummaryReady(false); setReceiptInfo({}); setSessionState(null); setLastScan(null); setError(null); setEditingLine(null);
     setShowConfirm(false); setFinalizeResult(null); setShowCsvModal(false); setDoneItems({}); setShowLines(true);
     mutation.current = false; setSavingEdit(false); setQuantityNeedsRefresh(false);
     setProducts(null); setProductsError(false); setSelectedProducts(new Set()); setProductFilter('all'); setPreparingProducts(false);
@@ -127,7 +130,7 @@ export function ReceivingSessionPage() {
         return ['new', 'in_progress', 'paused'].includes(initial.status) ? getReceivingSummary(supplier, sessionId) : initial;
       }).then(data => {
         if (active && receiptContext.current === context && context.revision === revision) {
-          setLines(data.lines); setStats(data.summary); setSessionState({ key: receiptKey, status: data.status }); setSummaryReady(true);
+          setReceiptInfo(data); setLines(data.lines); setStats(data.summary); setSessionState({ key: receiptKey, status: data.status }); setSummaryReady(true);
         }
       }).catch(() => {
         if (active && receiptContext.current === context && context.revision === revision) {
@@ -240,9 +243,10 @@ export function ReceivingSessionPage() {
         resultsTimer.current = setTimeout(() => { if (receiptContext.current === context) setShowCsvModal(true); }, 2000);
       }
     } catch (error) {
-      setError(error instanceof Error && error.message.includes('stock_publication_warehouse_held')
-        ? t('stockPublication.errors.stock_publication_warehouse_held')
-        : 'Nepodarilo sa dokončiť príjem. Skúste to znova.');
+      const detail = error instanceof ApiResponseError ? error.detail : null;
+      const code = typeof detail === 'object' && detail ? (detail as { code?: string }).code : undefined;
+      const explanation = typeof detail === 'string' ? detail : typeof detail === 'object' && detail ? (detail as { message?: string }).message : undefined;
+      setError(code ? t(`stockPublication.errors.${code}`, { defaultValue: t(`fifo.errors.${code}`, { defaultValue: explanation || t('receiving.finalizeFailed') }) }) : explanation || t('receiving.finalizeFailed'));
       setFinalizing(false);
     } finally { mutation.current = false; }
   };
@@ -462,6 +466,11 @@ export function ReceivingSessionPage() {
       {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
       {sessionStatus === 'paused' && <Button data-testid="receiving-resume" disabled={pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
       {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t(inactive ? 'receiving.closedPendingScans' : 'actions.receiving.pending', { count: scanner.pending })}</p>}
+      {scanner.ambiguous && <section role="dialog" aria-modal="true" aria-label={t('receiving.chooseScanLine')} className="rounded-xl border p-4 space-y-3" data-testid="receiving-ambiguous">
+        <h2>{t('receiving.chooseScanLine')}</h2><p>{t('receiving.chooseScanLineHelp', { code: scanner.ambiguous.code })}</p>
+        {lines.filter(line => line.id !== undefined && scanner.ambiguous!.line_ids.includes(line.id)).map(line => <Button key={line.id} variant="secondary" data-testid={`receiving-choose-line-${line.id}`} onClick={() => { scanner.resolveAmbiguity(line.id!); inputRef.current?.focus(); }}>{line.line_number || line.id} · {line.title} · {line.received_qty}/{line.ordered_qty} · {formatNumber(line.unit_price, i18n.language, 4)} {receiptInfo.currency || ''}</Button>)}
+        <Button variant="ghost" onClick={() => { scanner.resolveAmbiguity(null); inputRef.current?.focus(); }}>{t('receiving.cancelScan')}</Button>
+      </section>}
       {scanner.uncertain && <Button data-testid="receiving-scan-retry" disabled={!summaryReady || scanner.busy} onClick={() => { setError(null); scanner.retry(); }}>{t('actions.receiving.retry')}</Button>}
 
       {/* Scan */}
@@ -580,7 +589,7 @@ export function ReceivingSessionPage() {
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>SKU</th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{t('receiving.ean')}</th>
                   <th className="text-left px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Názov</th>
-                  <th className="text-right px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Obj.</th>
+                  <th className="text-right px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Obj.</th><th className="text-right px-4 py-2 text-xs font-medium">{t('receiving.unitCost')} {receiptInfo.currency || ''}</th>
                   <th className="text-right px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Prij.</th>
                   <th className="text-center px-4 py-2 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>Hotovo</th>
                   <th className="px-4 py-2"></th>
@@ -628,7 +637,7 @@ export function ReceivingSessionPage() {
                           </button>}
                         </div>}
                       </td>
-                      <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>{line.ordered_qty}</td>
+                      <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>{line.ordered_qty}</td><td className="px-4 py-2 text-sm text-right">{line.unit_price == null ? t('productEditor.unknown') : formatNumber(line.unit_price, i18n.language, 4)}</td>
                       <td className="px-4 py-2 text-sm text-right font-medium" style={{ color: line.received_qty >= line.ordered_qty ? 'var(--color-success)' : line.received_qty > 0 ? 'var(--color-info)' : 'var(--color-text-primary)' }}>
                         <div className="flex items-center justify-end gap-2">
                           <span>{line.received_qty}</span>
@@ -670,7 +679,7 @@ export function ReceivingSessionPage() {
       {/* Edit modal */}
       {canEdit && editingLine && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }} onClick={() => setEditingLine(null)}>
-          <div className="rounded-xl border p-6 max-w-md w-full" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }} onClick={e => e.stopPropagation()}>
+          <div role="dialog" aria-modal="true" aria-label={t('receiving.reviewReceipt')} className="rounded-xl border p-6 max-w-md w-full" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }} onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}>Upraviť prijaté množstvo</h3>
             <div className="mt-4 p-3 rounded-lg" style={{ backgroundColor: 'var(--color-bg-primary)' }}>
               <div className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{editingLine.line.product_code || editingLine.line.scm}</div>
@@ -712,8 +721,8 @@ export function ReceivingSessionPage() {
         <Button variant="secondary" onClick={() => setShowLines(!showLines)}>
           <List size={16} /> {showLines ? 'Skryť položky' : 'Zobraziť položky'}
         </Button>
-        {canEdit && <Button data-testid="receiving-finalize" variant="success" onClick={() => stats.pending > 0 || stats.partial > 0 ? setShowConfirm(true) : doFinalize()} loading={finalizing} disabled={!sessionId || preparingProducts || loading || savingEdit || bulkLoading || finalizing || pausing}>
-          <Check size={16} /> {t(stats.pending > 0 || stats.partial > 0 ? 'receiving.finishIncomplete' : 'receiving.finish')}
+        {canEdit && <Button data-testid="receiving-finalize" variant="success" onClick={() => setShowConfirm(true)} loading={finalizing} disabled={!sessionId || preparingProducts || loading || savingEdit || bulkLoading || finalizing || pausing}>
+          <Check size={16} /> {t('receiving.reviewReceipt')}
         </Button>}
       </div>
 
@@ -726,7 +735,7 @@ export function ReceivingSessionPage() {
                 <AlertTriangle size={20} />
               </div>
               <div className="flex-1">
-                <h3 className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}>Potvrdiť dokončenie</h3>
+                <h3 className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text-primary)' }}>{t('receiving.reviewReceipt')}</h3><p>{t('receiving.receiptImpact', { warehouse: receiptInfo.warehouse?.name || products?.warehouse_id || '—', count: lines.filter(line => line.received_qty > 0).length, qty: formatNumber(lines.reduce((sum, line) => sum + line.received_qty, 0), i18n.language) })}</p><p>{t('receiving.receiptValue')}: <strong>{lines.some(line => line.received_qty > 0 && line.received_value == null) ? t('productEditor.unknown') : formatNumber(sumDecimals(lines.filter(line => line.received_qty > 0).map(line => line.received_value!)), i18n.language, 4)} {receiptInfo.currency || ''}</strong></p><p>{t('receiving.receiptEffect')}</p><p>{t('receiving.receiptOverage', { count: stats.overage })}</p>
                 <ul className="mt-3 space-y-1 text-sm">
                   {stats.pending > 0 && <li style={{ color: 'var(--color-text-tertiary)' }}>• <strong style={{ color: 'var(--color-text-primary)' }}>{stats.pending}</strong> položiek neprijatých</li>}
                   {stats.partial > 0 && <li style={{ color: 'var(--color-text-tertiary)' }}>• <strong style={{ color: 'var(--color-info)' }}>{stats.partial}</strong> položiek čiastočne prijatých</li>}
@@ -743,7 +752,7 @@ export function ReceivingSessionPage() {
             </div>
             <div className="flex flex-wrap justify-end gap-3 mt-6">
               <Button variant="secondary" onClick={() => setShowConfirm(false)}>Pokračovať v skenovaní</Button>
-              <span className="action-control"><Button data-testid="receiving-finalize-incomplete" variant="primary" disabled={preparingProducts || loading || finalizing || savingEdit || bulkLoading || pausing} onClick={() => doFinalize(true)}>{t('receiving.confirmFinishIncomplete')}</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
+              <span className="action-control"><Button data-testid="receiving-finalize-incomplete" variant="primary" disabled={preparingProducts || loading || finalizing || savingEdit || bulkLoading || pausing} onClick={() => doFinalize(stats.pending > 0 || stats.partial > 0)}>{t('receiving.postReceipt')}</Button><ActionScope effects={['hub-write']}>{t('actions.receiving.finalize')}</ActionScope></span>
             </div>
           </div>
         </div>

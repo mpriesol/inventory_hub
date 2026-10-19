@@ -87,7 +87,7 @@ async def options(db):
         .distinct().order_by(effective_brand))).all()
     return {"shops": [{"id": row.id, "code": row.code, "name": row.name} for row in shops],
             "warehouses": [{"id": row.id, "code": row.code, "name": row.name, "is_default": row.is_default} for row in warehouses],
-            "brands": brands, "page_sizes": [25, 50, 100], "currency": "EUR", "price_basis": "incl_vat",
+            "brands": sorted({brand.strip().lower(): brand.strip() for brand in reversed(brands) if brand.strip()}.values(), key=str.casefold), "page_sizes": [25, 50, 100], "currency": "EUR", "price_basis": "incl_vat",
             "external_write_enabled": False}
 
 
@@ -335,7 +335,7 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
         statement = statement.where(or_(_sql_fold(Product.sku).like(pattern, escape="\\"), _sql_fold(name).like(pattern, escape="\\"),
                                        identifier_match, supplier_match))
     if brand is not None:
-        statement = statement.where(effective_brand == brand)
+        statement = statement.where(func.lower(func.trim(effective_brand)) == brand.strip().lower())
     if shop_code:
         statement = statement.where(exists(select(ShopProduct.id).join(Shop, ShopProduct.shop_id == Shop.id)
             .where(ShopProduct.product_id == Product.id, Shop.code == shop_code, ShopProduct.is_listed.is_(True))))

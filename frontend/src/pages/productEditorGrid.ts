@@ -25,6 +25,12 @@ export const EDITOR_COLUMNS: EditorColumn[] = [
   ]),
 ];
 
+export const COLUMN_PRESETS: Record<string, string[]> = {
+  stock: ['sku', 'image_url', 'name', 'available', 'on_hand', 'reserved', 'location', 'tracking', 'supplier_quantity', 'supplier_availability', 'state'],
+  products: ['sku', 'image_url', 'name', 'brand', 'sale_price_gross', 'color', 'size', 'is_active', 'supplier_linked', 'state'],
+  shops: ['sku', 'image_url', 'name', 'biketrek', 'xtrek', 'biketrek_price', 'xtrek_price', 'state'],
+};
+
 export const COLUMN_PREFERENCES_KEY = 'product-editor-columns-v1';
 export const MIN_COLUMN_WIDTH = 80, MAX_COLUMN_WIDTH = 640;
 export interface ColumnPreferences { version: 1; order: string[]; visible: string[]; widths: Record<string, number> }
@@ -33,8 +39,8 @@ const defaultWidths: Record<string, number> = { sku: 165, name: 265, shop_name: 
 export const defaultColumnWidth = (key: string) => defaultWidths[key] || 135;
 export const clampColumnWidth = (value: number) => Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.round(value)));
 export function columnPreferences(value?: unknown): ColumnPreferences {
-  const defaults: ColumnPreferences = { version: 1, order: EDITOR_COLUMNS.map(column => column.key),
-    visible: EDITOR_COLUMNS.filter(column => !column.hidden).map(column => column.key), widths: {} };
+  const defaults: ColumnPreferences = { version: 1, order: [...COLUMN_PRESETS.stock, ...EDITOR_COLUMNS.map(c => c.key).filter(key => !COLUMN_PRESETS.stock.includes(key))],
+    visible: COLUMN_PRESETS.stock, widths: {} };
   if (!value || typeof value !== 'object' || (value as ColumnPreferences).version !== 1) return defaults;
   const saved = value as ColumnPreferences, allowed = new Set(defaults.order);
   const keys = (values: unknown) => Array.isArray(values) ? [...new Set(values.filter((key): key is string => typeof key === 'string' && allowed.has(key)))] : [];

@@ -137,3 +137,7 @@ Rozšírenie z 13. 10. 2026 dopĺňa testy predvoleného zoznamu, zobrazeného E
 
 
 `test_receiving_migration_db.py` začína na skutočnej schéme 001 + 002 pred prvým spustením 013. Overuje zachovanie existujúceho riadka a fingerprintu, funkčný pohľad vrátane dlhého EAN, jeho vlastníka a oprávnení, bezpečné opakovanie migrácie a rollback pri oboch druhoch neznámej závislosti. Nevyhodnocuje prázdnu databázu ako dôkaz zachovania historických dát.
+
+## Výber riadka a kontrola pred zaúčtovaním
+
+Pri `scan_line_ambiguous` klient ponechá sken vo fronte a ponúkne konkrétne faktúrové riadky s cenou a množstvom. Iba dokázané odmietnutie pred zápisom dovoľuje doplniť `line_id`; po neistom výsledku sa opakuje rovnaké UUID a celý payload. Kým výber nie je vyriešený, nemožno príjem zaúčtovať. Pred úplným aj čiastočným zaúčtovaním je súhrn skladu, množstva, hodnoty a dôsledkov; neznáma nákupná cena zostáva neznáma. Archív dokladov a nahratie faktúry na príjem majú odlišné názvy a prepojenie. [Súvislosti](ux-audit-followup.md).

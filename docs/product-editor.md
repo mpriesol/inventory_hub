@@ -188,3 +188,7 @@ Current limits include per-product common values rather than editable family rec
 ### Unified table verification (2026-09-24)
 
 The unified table is `/stock`; `/products` redirects and the duplicate navigation entry is removed. The product detail is a modal with the existing cost-layer workflow and the new guarded quantity-adjustment panel. Exact row/cell draft markers, images, shop links, independent shop override columns, array-valued attribute/EAN editing and safe image URL rejection have interaction coverage. Publication tests use synthetic APIs and cover preview-before-send, saved-revision targeting, explicit confirmation, lost-response recovery, no duplicate remote write and settlement resolution. Vite build and the product-editor interaction suite passed locally; this does not claim live Upgates delivery or browser layout verification.
+
+## UX úpravy vyhľadávania a tabuľky
+
+Odomknutá stránka načíta karty automaticky s rozsahom **Všetky produkty**. Nový pohľad **Sklad** ukazuje voľné, fyzické a rezervované množstvo hneď za názvom; **Produkty a ceny** a **E-shopy** sú dostupné v prepínači pohľadu. Zmenené filtre čakajú na **Použiť filtre** a sú jasne označené. Návrat v tej istej karte obnoví posledný aplikovaný filter, stránku, označenie a posun. Odchod cez navigáciu, reload aj ručné zamknutie chránia neuložené bunky a neisté uloženie. Filter značky zahrnie aj zápis s odlišnou veľkosťou písmen; zdrojový údaj nemení. Detaily a hranice: [UX nadväzujúce úpravy](ux-audit-followup.md).

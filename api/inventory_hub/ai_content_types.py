@@ -6,7 +6,7 @@ from html import unescape
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator, model_serializer
 
 from inventory_hub.catalog_types import ShopImportOptions
 
@@ -175,6 +175,15 @@ class ParameterValue(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     values: list[str] = Field(min_length=1, max_length=1000)
     product_id: int | None
+    source_name: str | None = Field(default=None, max_length=100,
+        description="Exact variant_attributes name from the feed when mapping to a differently named category parameter; otherwise null.")
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_digest(self, handler):
+        data = handler(self)
+        if self.source_name is None:
+            data.pop('source_name', None)
+        return data
 
 
 class CategorySelection(StrictModel):

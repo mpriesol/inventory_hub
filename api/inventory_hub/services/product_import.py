@@ -10,8 +10,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select, text, func, or_, String, cast
+from sqlalchemy.dialects.postgresql import insert, JSONPATH
 
 from inventory_hub.ai_content_models import AiContentRevision, AiJob
 from inventory_hub.ai_content_types import BatchRequest, Content, Policy, Target
@@ -296,10 +296,21 @@ def source_lookup_public(draft):
     return public_status(draft)
 
 
-async def history(db):
-    drafts = (await db.scalars(select(ProductImportDraft).order_by(ProductImportDraft.updated_at.desc()).limit(100))).all()
+async def history(db, q=''):
+    statement = select(ProductImportDraft)
+    if q.strip():
+        pattern = '%' + q.strip().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+        statement = statement.where(or_(*(func.jsonb_path_query_array(ProductImportDraft.document,
+            cast('$.rows[*].values.' + field, JSONPATH)).cast(String).ilike(pattern, escape='\\') for field in ('name', 'code', 'group_name'))))
+    drafts = (await db.scalars(statement.order_by(ProductImportDraft.updated_at.desc()).limit(100))).all()
+    attention = set((await db.scalars(select(AiJob.context['staging_id'].astext).where(
+        AiJob.context['staging_id'].astext.in_([d.id for d in drafts]),
+        AiJob.status.in_(['blocked', 'failed', 'review', 'import_failed', 'import_blocked'])))).all()) if drafts else set()
     return {'items': [{'id': d.id, 'revision': d.revision, 'status': d.status, 'supplier': d.supplier, 'shop': d.shop,
                        'publication_state': publication_state(publication_result(d)),
+                       'needs_attention': d.id in attention or d.status == 'source_failed' or any(r.get('errors') for r in d.document.get('rows', [])),
+                       'title': next((r['values'].get('group_name') or r['values'].get('name') or r['values'].get('code') for r in d.document.get('rows', [])), ''),
+                       'codes': [r['values'].get('code', '') for r in d.document.get('rows', [])][:3],
                        'updated_at': d.updated_at, 'rows_count': len(d.document.get('rows', []))} for d in drafts]}
 
 
@@ -1071,6 +1082,9 @@ def ai_proposed_values(row, output, context):
         'metadata': {**row['values']['metadata'], **{key: getattr(output, key) for key in ('h1_descriptor', 'future_name', 'h1_descr_suffix') if getattr(output, key)}}}
     registry = (context.get('resolved', {}).get('category') or {}).get('parameters', [])
     if registry:
+        from inventory_hub.services.ai_parameter_mapping import parameter_mapping, canonical_attributes
+        mapping, _ = parameter_mapping(output, context)
+        proposed['variant_attributes'] = canonical_attributes(baseline.get('variant_attributes', row['values']['variant_attributes']), mapping)
         allowed = {p['name'] for p in registry if p.get('approved', True)}
         generated = [{'name': p.name, 'value': value} for p in output.parameters if p.product_id is None for value in p.values]
         generated_names = {p['name'] for p in generated}
@@ -1116,7 +1130,7 @@ def merge_ai_values(row, output, context, *, previous_output=None):
     previous = previous_ai_values(row, context, previous_output)
     if row['values'].get('ai_category_profile', 'auto') != baseline.get('ai_category_profile', 'auto'):
         raise CatalogError('import_ai_identity_changed', 'The category rule profile changed; prepare a new AI job', 409)
-    if any(row['values'].get(key) != baseline.get(key) for key in ('code', 'supplier_code', 'eans', 'manufacturer_code', 'variant_attributes', 'brand')):
+    if any(row['values'].get(key) != baseline.get(key) and not (key == 'variant_attributes' and key in previous and row.get('provenance', {}).get(key) == 'ai' and row['values'].get(key) == previous[key]) for key in ('code', 'supplier_code', 'eans', 'manufacturer_code', 'variant_attributes', 'brand')):
         raise CatalogError('import_ai_identity_changed', 'Product identity or category changed; prepare a new AI job', 409)
     current_category = row['values'].get('category_code')
     unchanged_ai_category = (current_category and current_category == previous.get('category_code')

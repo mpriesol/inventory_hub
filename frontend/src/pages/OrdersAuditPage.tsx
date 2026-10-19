@@ -1,6 +1,7 @@
+import { OrderNavigation } from '../components/orders/OrderNavigation';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ClipboardList, Lock } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
@@ -15,7 +16,8 @@ export function OrdersAuditPage() {
   const revision = useSyncExternalStore(subscribeAccess, accessRevision);
   const unlocked = hubUnlocked();
   const [token, setToken] = useState('');
-  const [shop, setShop] = useState('biketrek');
+  const [query] = useSearchParams();
+  const [shop, setShop] = useState(query.get('shop') === 'xtrek' ? 'xtrek' : 'biketrek');
   const [days, setDays] = useState(30);
   const [loaded, setLoaded] = useState<{ audit: OrderAudit; revision: number } | null>(null);
   const result = loaded?.revision === revision ? loaded.audit : null;
@@ -70,7 +72,7 @@ export function OrdersAuditPage() {
     return Number.isNaN(parsed.getTime()) ? t('orderAudit.unknown') : parsed.toLocaleString(i18n.language);
   };
 
-  return <div className="orders-audit">
+  return <div className="orders-audit"><OrderNavigation shop={shop} />
     <header className="orders-audit-header">
       <div><h1><ClipboardList size={26} aria-hidden="true" />{t('orderAudit.title')}</h1><p>{t('orderAudit.subtitle')}</p></div>
       {unlocked && <Button variant="secondary" icon={<Lock size={16} />} onClick={() => { unlockHub(''); setToken(''); setError(''); }}>{t('orderAudit.lock')}</Button>}

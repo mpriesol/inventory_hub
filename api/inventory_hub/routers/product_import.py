@@ -1,6 +1,6 @@
 """Protected Hub-first import drafts, with separate explicit shop publication."""
 from typing import Annotated
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
@@ -23,8 +23,8 @@ async def call(operation):
 
 
 @router.get('')
-async def history(db: DB):
-    return await call(service.history(db))
+async def history(db: DB, q: str = Query(default='', max_length=200)):
+    return await call(service.history(db, q))
 
 
 @router.post('')
