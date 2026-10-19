@@ -39,3 +39,11 @@ To stop writes, disable `availability_publication.enabled` in supplier configura
 ## Verification
 
 Synthetic tests cover CZK/EUR separation, explicit families, stock-only identities, malformed/unknown stock, PDF attachment validation and duplicate upload. Receiving and publication database cases use isolated PostgreSQL in CI. UI interaction tests cover invoice selection, first-scan UUID handoff, remount recovery and closed-receipt review. No private feed URLs or customer documents are test fixtures.
+
+### Verified reconciliation after an administrative code rename
+
+A collapsed **Zosúladenie starých kódov TOPEAK- → ZOO-** tool in Zookee's general settings lists remaining old canonical codes. It performs no shop writes. After the administrative product/variant/parent rename, **Overiť v e-shopoch a zosúladiť Hub** reads every mapped new code and requires the same native product/variant ID and compatible barcode in every channel. A partial shop rename, conflicting code, missing native ID or unresolved publication rejects the local change.
+
+`GET /supplier-availability/zookee/legacy-codes` and admin-only `POST /supplier-availability/zookee/legacy-codes/{product_id}` are restricted to the configured `ZOO-` prefix and the old `TOPEAK-` namespace. POST takes one request UUID. A successful local transaction preserves the product ID, stock movements, balances, source links and historical orders; updates shop-code mappings/cached identity fields; retains the former code as an internal identifier; increments the editor revision and records an audit/result. Repeating a successful UUID does not repeat remote reads or writes. This is a narrow reconciliation exception; ordinary mapped-SKU editor renames remain blocked.
+
+The tool does not prove that an external administrative rename has happened until its GET verification succeeds. Do not report a migration as finished from the presence of the tool alone.

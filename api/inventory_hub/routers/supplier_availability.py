@@ -62,3 +62,35 @@ async def reconcile_links(supplier: SupplierCode, payload: SupplierLinkReconcile
     """Attach exact existing supplier identities using only local downloaded data."""
     return await _call(supplier_links.reconcile_supplier_links(
         db, supplier, after_product_id=payload.after_product_id, limit=payload.limit, match_catalog=True))
+
+
+# Narrow administrative reconciliation; never a shop-code write endpoint.
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict
+from inventory_hub.access import admin_access
+from inventory_hub.services import zookee_code_reconciliation as code_service
+from inventory_hub.services.product_publication_source import source as code_transport
+from inventory_hub.services.product_editor import EditorError
+from inventory_hub.services.catalog import CatalogError
+
+
+class CodeReconcileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+
+
+@router.get("/{supplier}/legacy-codes", dependencies=[Depends(admin_access)])
+async def legacy_codes(supplier: SupplierCode, db: AsyncSession = Depends(get_session)):
+    try:
+        return await code_service.preview(db,supplier)
+    except EditorError as error:
+        raise HTTPException(error.status,detail={"code":error.code}) from None
+
+
+@router.post("/{supplier}/legacy-codes/{product_id}", dependencies=[Depends(admin_access)])
+async def reconcile_legacy_code(supplier: SupplierCode, product_id: Annotated[int, Path(gt=0)], payload: CodeReconcileInput,
+                                db: AsyncSession = Depends(get_session)):
+    try:
+        return await code_service.reconcile_one(db,supplier,product_id,payload.request_id)
+    except (EditorError,code_transport.SourceError,CatalogError) as error:
+        raise HTTPException(error.status,detail={"code":error.code}) from None

@@ -131,7 +131,9 @@ jobs:
         run: node frontend/tests/upgates-import-ui.cjs
 
       - name: Check supplier availability configuration
-        run: node frontend/tests/supplier-config-ui.cjs
+        run: |
+          node frontend/tests/supplier-config-ui.cjs
+          node frontend/tests/zookee-codes-ui.cjs
 
       - name: Check read-only Sloger lookup and recovery
         run: node frontend/tests/sloger-probe-ui.cjs

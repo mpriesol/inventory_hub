@@ -377,3 +377,5 @@ Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej akt
 - Optional same-brand existing-shop supplier matching and scoped availability publication reuse shared identity, link and durable publication services. Availability-only payloads preserve own quantities; no central stock authority is activated. See [Zookee](docs/zookee.md).
 - Operational table routes use the available main-content width; the fixed 1280px wrapper remains for settings and other form pages. This change does not redesign tablet navigation.
 - No schema migration is required. Deployment, supplier configuration, exact live match counts and scheduled publication outcomes must be verified separately from code/fixture tests.
+
+- Zookee's collapsed legacy-code reconciliation tool is implemented in code: after an administrative `TOPEAK-` → `ZOO-` rename it verifies all mapped shop native IDs through GETs, then atomically updates canonical code/mappings with an editor audit while retaining product IDs and the immutable ledger. It does not perform the remote rename or relax ordinary mapped-SKU editing. See [Zookee](docs/zookee.md).

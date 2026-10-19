@@ -1,6 +1,7 @@
 // src/pages/SuppliersPage.tsx
 // Complete suppliers management page with editor, history, and validation
 
+import { ZookeeCodeReconciliation } from '../components/ZookeeCodeReconciliation';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -899,6 +900,8 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords, ide
           {t('suppliers.availability.defaults')}
         </p>
       </fieldset>
+
+      {config.code === 'zookee' && <ZookeeCodeReconciliation />}
 
       <div className="flex items-center gap-3 pt-4 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
         <button
