@@ -311,9 +311,9 @@
     "defaultShopUnset": "Bez predvoľby",
     "defaultShopHelp": "Tento e-shop sa predvolí pri príprave produktov dodávateľa. Pri každom produkte môžete vybrať aj druhý e-shop, oba alebo iba Hub.",
     "codeRename": {
-      "title": "Zosúladenie starých kódov TOPEAK- → ZOO-",
-      "help": "Najprv premenujte produkty aj varianty v administrácii e-shopov. Hub potom overí rovnaké interné ID vo všetkých prepojených e-shopoch a zachová skladové karty aj históriu. Táto operácia nemení kódy v e-shopoch.",
-      "load": "Načítať staré kódy",
+      "title": "Zosúladenie kódov a prepojení Zookee",
+      "help": "Staré kódy TOPEAK- najprv premenujte na ZOO- v administrácii e-shopov. Pri prepojených produktoch Topeak a Sensor Hub tiež opraví chýbajúce interné ID po porovnaní pôvodnej karty s e-shopom. Kódy Sensoru a skladová história zostanú zachované.",
+      "load": "Načítať karty na zosúladenie",
       "apply": "Overiť v e-shopoch a zosúladiť Hub",
       "failed": "Kódy sa nepodarilo načítať.",
       "notVerified": "Zmena v e-shope nie je overená; karta zostáva zachovaná.",
