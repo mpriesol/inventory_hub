@@ -55,9 +55,27 @@ const base = '/api/product-editor';
 export interface ProductCardCreate { request_id: string; sku: string; name: string; is_active: boolean }
 export const createProductCard = (body: ProductCardCreate) => hubRequest<ProductEditorSave>(`${base}/products`, body);
 export const getProductEditorOptions = (signal?: AbortSignal) => hubRequest<ProductEditorOptions>(`${base}/options`, undefined, signal);
-export const getEditorProducts = (filters: ProductEditorFilters, signal?: AbortSignal) => {
-  const params = new URLSearchParams(); Object.entries(filters).forEach(([key, value]) => { if (value !== '') params.set(key, String(value)); });
-  return hubRequest<ProductEditorPageData>(`${base}/products?${params}`, undefined, signal);
+export const getEditorProducts = async (filters: ProductEditorFilters, signal?: AbortSignal): Promise<ProductEditorPageData> => {
+  const readPage = (page: number, page_size: number) => {
+    const params = new URLSearchParams(); Object.entries({ ...filters, page, page_size }).forEach(([key, value]) => { if (value !== '') params.set(key, String(value)); });
+    return hubRequest<ProductEditorPageData>(`${base}/products?${params}`, undefined, signal);
+  };
+  if (filters.page_size <= 100) return readPage(filters.page, filters.page_size);
+  // The existing API accepts at most 100 rows. Assemble a bounded display page
+  // without changing save/publication limits or exposing partial results.
+  if (![250, 500].includes(filters.page_size)) throw new Error('Invalid display page size');
+  const offset = (filters.page - 1) * filters.page_size, firstPage = Math.floor(offset / 100) + 1;
+  const first = await readPage(firstPage, 100), items = [...first.items];
+  const count = Math.min(filters.page_size, Math.max(0, first.total - offset));
+  const pages = Math.ceil((offset % 100 + count) / 100);
+  for (let index = 1; index < pages; index++) {
+    const next = await readPage(firstPage + index, 100);
+    if (next.total !== first.total) throw new Error('Product list changed during loading');
+    items.push(...next.items);
+  }
+  const visible = items.slice(offset % 100, offset % 100 + count);
+  if (visible.length !== count || new Set(visible.map(row => row.id)).size !== count) throw new Error('Incomplete product list');
+  return { ...first, items: visible, page: filters.page, page_size: filters.page_size };
 };
 export const getEditorProduct = (id: number, warehouse: string, signal?: AbortSignal) => hubRequest<ProductEditorDetail>(`${base}/products/${id}${warehouse ? `?warehouse_code=${encodeURIComponent(warehouse)}` : ''}`, undefined, signal);
 export const saveEditorProducts = (body: ProductEditorSaveBody) => hubRequest<ProductEditorSave>(`${base}/save`, body);

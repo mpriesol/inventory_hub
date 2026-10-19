@@ -4,11 +4,11 @@
 
 Sekcia **Sklad** je spoločná pracovná tabuľka všetkých evidovaných produktov BIKETREK a xTrek vrátane položiek bez skladovej bilancie. Riadok predstavuje jeden fyzický produkt alebo variant s vlastným spoločným SKU. Pokladňový parent „xTrek“ neurčuje skupinu na hromadnú úpravu.
 
-Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do Upgates.** Samostatné tlačidlá Upload do BIKETREK / xTrek otvoria výber polí, živý náhľad a výslovné odoslanie konkrétneho produktu. Označenie „uložené“ alebo API stav `saved_unpublished` znamená lokálne uloženú požadovanú hodnotu. Nie je to čakajúca synchronizácia ani potvrdenie zmeny e-shopu. Samostatné publikovanie vlastných zásob má iný postup v [stock-publication.md](stock-publication.md).
+Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do Upgates.** Samostatné tlačidlá Odoslať do BIKETREK / xTrek otvoria výber polí, živý náhľad a výslovné odoslanie konkrétneho produktu. Označenie „uložené“ alebo API stav `saved_unpublished` znamená lokálne uloženú požadovanú hodnotu. Nie je to čakajúca synchronizácia ani potvrdenie zmeny e-shopu. Samostatné publikovanie vlastných zásob má iný postup v [stock-publication.md](stock-publication.md).
 
 ### Karty, aktivita a dodávateľská väzba
 
-**Nová skladová karta** vytvorí samostatnú kartu z vlastného SKU, názvu a stavu **Aktívna / Neaktívna**. Nevytvára dodávateľský produkt, e-shopový produkt, skladové množstvo ani potvrdenie vlastných zásob. Existujúce SKU alebo identifikátor inej karty nemožno použiť. Po strate odpovede použite **Overiť / zopakovať vytvorenie**; formulár zachová identický požiadavkový UUID a údaje, takže opakovanie nevytvorí duplikát.
+Formulár **Nová skladová karta** a jeho API zostávajú implementované, ale vstupné tlačidlo na stránke Sklad je dočasne skryté. Formulár vytvorí samostatnú kartu z vlastného SKU, názvu a stavu **Aktívna / Neaktívna**. Nevytvára dodávateľský produkt, e-shopový produkt, skladové množstvo ani potvrdenie vlastných zásob. Existujúce SKU alebo identifikátor inej karty nemožno použiť. Po strate odpovede použite **Overiť / zopakovať vytvorenie**; formulár zachová identický požiadavkový UUID a údaje, takže opakovanie nevytvorí duplikát.
 
 V **Skladovej evidencii** zvoľte **Všetky produkty**, aby ste videli aj karty bez potvrdených zásob. Nezávislé filtre **Stav karty v Hube** a **Dodávateľská väzba** možno kombinovať a následne potvrdiť načítanie. Rovnako pomenované stĺpce zobrazujú stav na každom riadku; stav karty možno upraviť v bunke alebo hromadne nad vybranými riadkami a uložiť bežným postupom. Dodávateľ sa pripája cez existujúci náhľad a potvrdenie v detaile karty.
 
@@ -22,10 +22,10 @@ Pri prvom načítaní sa predvolí aktívny sklad označený na serveri `is_defa
 
 1. Po prihlásení otvorte **Sklad** (starý odkaz `/products` vás sem presmeruje). Staršie integračné použitie naďalej podporuje operátorský token.
 2. Nastavte hľadanie, značku, zalistovanie v e-shope a prípadne sklad. Potvrďte načítanie. Hľadanie prehľadáva SKU, názov, čiarové kódy a dodávateľské kódy; pri názvoch podporuje slovenskú a českú diakritiku.
-3. Spoločný sklad má jednu tabuľku. Stĺpce **BIKETREK** a **xTrek** zobrazujú prítomnosť a odkazy do obchodu aj administrácie. Kliknutím na SKU alebo názov otvoríte detail; vlastnosti e-shopov sú ďalšie voliteľné stĺpce.
-4. Počet produktov na stránku je 25, 50 alebo 100. Usporiadanie môže byť podľa lokálnej rodiny → farby → veľkosti, SKU alebo názvu. Veľkosti sa radia XS → S → M → L → XL → XXL; číselné veľkosti/SKU prirodzene, napríklad 2 pred 10. Zoradenie sa vykoná na serveri ešte pred stránkovaním.
+3. Spoločný sklad má jednu tabuľku. Stĺpce **BIKETREK** a **xTrek** zobrazujú prítomnosť a odkazy do obchodu aj administrácie. Kliknutím na SKU alebo ikonu otvoríte detail; názov sa upravuje priamo v bunke; vlastnosti e-shopov sú ďalšie voliteľné stĺpce.
+4. Počet produktov na stránku je 25, 50, 100, 250 alebo 500; pri najviac 500 výsledkoch posledná voľba zobrazí **Všetky**. Zmena počtu riadkov rovno načíta aktuálne filtre. Usporiadanie môže byť podľa lokálnej rodiny → farby → veľkosti, SKU alebo názvu. Veľkosti sa radia XS → S → M → L → XL → XXL; číselné veľkosti/SKU prirodzene, napríklad 2 pred 10. Zoradenie sa vykoná na serveri ešte pred stránkovaním.
 
-Kliknutie na SKU alebo názov otvorí detail v okne nad tabuľkou, bez straty filtrov, pozície alebo rozpracovaných buniek. Obsahuje parametre, obrázok, e-shopové odkazy, históriu úprav, skladové operácie a nákupné ceny. Pri načítaní a uložení je uvedený účinok **Hub · čítanie** alebo **Hub · zmena**. Obe akcie používajú iba uložené údaje; nevolajú Upgates. V detaile produktu je odkaz **História pohybov**, ktorý otvorí skladovú históriu s filtrom na presné SKU.
+Kliknutie na SKU alebo ikonu detailu otvorí detail v okne nad tabuľkou, bez straty filtrov, pozície alebo rozpracovaných buniek. Obsahuje parametre, obrázok, e-shopové odkazy, históriu úprav, skladové operácie a nákupné ceny. Načítanie aj uloženie používajú iba uložené údaje; nevolajú Upgates. Technické štítky účinku sa v hlavnom paneli nezobrazujú. V detaile produktu je odkaz **História pohybov**, ktorý otvorí skladovú históriu s filtrom na presné SKU.
 
 Existujúcu kartu možno v detaile prepojiť s existujúcim produktom e-shopu. Rovnaká akcia nad označenými riadkami podporuje dávku najviac 100 kariet. Náhľad rozlišuje pripravené zhody, už existujúce väzby, nenájdené ciele a konflikty; zápis vyžaduje výslovný výber. Táto akcia nevytvára ďalšiu kartu ani produkt v e-shope a nemení fyzické zásoby. [Postup, identita a obnova po výpadku](product-links.md).
 
@@ -44,14 +44,14 @@ Pri prázdnom EAN v detaile použite **Doplniť EAN od dodávateľa**. Existujú
 | Spoločné | Názov, značka, interná poznámka, HTTPS URL obrázka | Ručné hodnoty konkrétneho fyzického riadka. Zmena názvu neprepisuje názov rodiny ani ostatné varianty. |
 | Variant | Základná predajná cena, sadzba DPH, poznámka, farba, veľkosť, parametre, čiarové kódy | Predajná cena je EUR s DPH. Sadzba DPH je samostatný ručný údaj; chýbajúca sadzba sa neodhaduje. |
 | Vybraný sklad | Umiestnenie, minimálne množstvo | Platí len pre zvolený sklad. Samotné uloženie nevytvorí skladovú bilanciu. |
-| BIKETREK / xTrek | Požadovaný názov, predajná cena, viditeľnosť | Samostatné ručné hodnoty e-shopu; vybrané polia možno odoslať cez Upload. |
+| BIKETREK / xTrek | Požadovaný názov, predajná cena, viditeľnosť | Samostatné ručné hodnoty e-shopu; vybrané polia možno odoslať cez samostatné odoslanie. |
 
 Niektoré polia, napríklad interná poznámka, DPH a poznámka variantu, sú predvolene skryté. Zapnete ich cez výber stĺpcov. Čiarové kódy sa upravujú priamo v evidencii identifikátorov; prázdny zoznam ich odstráni. Kolízia s iným produktom sa odmietne. SKU možno zmeniť len pred vytvorením prepojenia na e-shop, aby nevznikol iný tovar pod existujúcou vzdialenou identitou. Dodávateľské kódy sú zdrojové identifikátory; skladové množstvá a odvodené nákupné hodnoty používajú opravné skladové operácie, nie prepísanie histórie. Nákupná cena je odvodená zo skladu; jej zmena patrí do kontrolovaného [postupu nákupných cien](fifo.md).
 
 ### Stĺpce a produktové rodiny
 
-- Hranicu hlavičky potiahnite myšou. Na zameranej hranici fungujú šípky doľava/doprava po 10 px (Shift po 40 px), Home/End pre minimum/maximum a dvojklik pre predvolenú šírku. Šírku 80–640 px možno zadať aj číselne v ponuke **Stĺpce**.
-- V ponuke **Stĺpce** možno zapnúť/vypnúť polia a meniť ich poradie šípkami. SKU zostáva viditeľný ako prvý stĺpec. Obnovenie predvoleného nastavenia nemení rozpracované úpravy.
+- Hranicu hlavičky potiahnite myšou. Na zameranej hranici fungujú šípky doľava/doprava po 10 px (Shift po 40 px), Home/End pre minimum/maximum a dvojklik pre predvolenú šírku. Šírku 80–640 px možno zadať aj číselne v ponuke **Možnosti tabuľky**.
+- V ponuke **Možnosti tabuľky** možno zapnúť/vypnúť polia a meniť ich poradie šípkami. SKU zostáva viditeľný ako prvý stĺpec. Obnovenie predvoleného nastavenia nemení rozpracované úpravy.
 - Viditeľnosť, poradie a šírky sa pamätajú iba v konkrétnom prehliadači. Nejde o nastavenia používateľského účtu. Do tohto úložiska sa neukladajú tokeny, údaje produktov ani rozpracované hodnoty. Pri zablokovanom úložisku zostáva nastavenie funkčné pre otvorenú stránku.
 - Samostatné upraviteľné stĺpce **Farba** a **Veľkosť** používajú pomenované atribúty (slovenské, české a anglické názvy). Ostatné parametre s pôvodnými názvami zobrazí stĺpec **Parametre variantu**. Parametre sa načítajú z kanonických atribútov, uloženého konkrétneho variantu e-shopu alebo presného dodávateľského záznamu. Chýbajúce údaje sa nedopĺňajú odhadom; v detaile možno výslovne spustiť **Načítať parametre z e-shopu**. Táto akcia číta Upgates a aktualizuje lokálny import, do e-shopu nič nepíše. Rozpracované úpravy treba najprv uložiť alebo zahodiť. Cez výber stĺpcov sú dostupné aj EAN, dodávateľské kódy, prepojené e-shopy, karanténa a nákupná hodnota skladu.
 - Pri zoradení podľa rodín možno rozbaliť/zabaliť iba skutočnú lokálnu rodinu. Hlavička výslovne uvádza počet variantov **na tejto stránke**; rodina môže pokračovať na ďalšej stránke. Výber rodiny označí iba jej načítané varianty, nikdy vzdialeného pokladňového parenta ani nenačítané produkty.
@@ -192,3 +192,14 @@ The unified table is `/stock`; `/products` redirects and the duplicate navigatio
 ## UX úpravy vyhľadávania a tabuľky
 
 Odomknutá stránka načíta karty automaticky s rozsahom **Všetky produkty**. Nový pohľad **Sklad** ukazuje voľné, fyzické a rezervované množstvo hneď za názvom; **Produkty a ceny** a **E-shopy** sú dostupné v prepínači pohľadu. Zmenené filtre čakajú na **Použiť filtre** a sú jasne označené. Návrat v tej istej karte obnoví posledný aplikovaný filter, stránku, označenie a posun. Odchod cez navigáciu, reload aj ručné zamknutie chránia neuložené bunky a neisté uloženie. Filter značky zahrnie aj zápis s odlišnou veľkosťou písmen; zdrojový údaj nemení. Detaily a hranice: [UX nadväzujúce úpravy](ux-audit-followup.md).
+
+
+## Čisté ovládanie Skladu (19. 10. 2026)
+
+Frontend používa tri malé prepínače **Sklad / Produkty a ceny / E-shopy** a lokálnu ponuku **Možnosti tabuľky** pre stĺpce, šírky, poradie a klávesovú nápovedu. Hromadné vyplnenie je dostupné iba pri otvorení tejto ponuky a označenom výbere. Uloženie v Hube, odoslanie do oboch e-shopov a prepojenie sú v jednom paneli; trvalé výsledky a kontroly odosielania zostávajú v existujúcich dialógoch. Rozpracované zmeny stále blokujú odoslanie a prepojenie. Informácia o EUR/DPH je v hlavičkách cien a ich tooltipoch.
+
+Kliknutie na upraviteľný text bunky vrátane názvu spustí editovanie. Enter/F2 a vkladanie tabuľky zostávajú zachované. SKU otvára detail; namapované SKU a skladové množstvá si zachovávajú svoje ochrany. Nad tabuľkou je druhý vodorovný posuvník prepojený s existujúcim, takže netreba najprv prejsť na koniec tabuľky.
+
+Kliknutie na hlavičku SKU alebo názvu triedi celý filtrovaný výsledok existujúcim API. Ostatné hlavičky triedia **načítanú stránku**, s viditeľným označením rozsahu a možnosťou zrušiť triedenie. Pri zobrazení všetkých výsledkov do 500 položiek tak triedia celý výsledok. Neznáme ceny a množstvá zostávajú neznáme a posledné v oboch smeroch; číselné stĺpce sa neporovnávajú ako text. Lokálne triedenie dočasne vypne rodinné hlavičky, aby nesprávne nezoskupovalo preusporiadané varianty. Uložené hodnoty sa triedením nemenia.
+
+Serverový kontrakt stále povoľuje iba 25/50/100 riadkov a tri pôvodné zoradenia. Frontend zostaví väčšiu stránku najviac 500 položiek sekvenčnými GET požiadavkami po 100, vrátane správneho posunu pri stránke veľkosti 250. Čiastočné, duplicitné alebo počtom nezhodné výsledky sa nezobrazia ako úplná stránka. Zostáva limit 100 rozpracovaných kariet na jedno uloženie a 100 kariet na párovací náhľad. Backend, zásoby, cenové pravidlá, všeobecné rozloženie webu ani automatika sa touto úpravou nemenia.
