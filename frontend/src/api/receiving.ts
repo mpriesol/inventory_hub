@@ -41,6 +41,20 @@ export interface ReceivingSummary {
 
 export type ReceivingStatus = 'new' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
 
+export interface ReceivingInvoiceCandidate {
+  supplier: string;
+  supplier_name: string;
+  invoice_no: string;
+  session_id: string | null;
+  status: ReceivingStatus;
+  invoice_date: string | null;
+  lines: { id: number | null; title: string; sku: string; line_number: number | null; ordered_qty: string; received_qty: string }[];
+}
+export const lookupReceivingInvoice = (code: string) => hubRequest<{
+  code: string; candidates: ReceivingInvoiceCandidate[]; unreadable_invoices: number;
+}>(`${API_BASE}/receiving/lookup?code=${encodeURIComponent(code)}`);
+
+
 export interface ReceivingSessionSummary {
   warehouse?: { id: number; code: string; name: string };
   currency?: string;

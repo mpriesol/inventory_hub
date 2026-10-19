@@ -18,6 +18,7 @@ export interface SupplierFeedRun {
 export interface SupplierFeedFailures { run_id: number; total: number; offset: number; limit: number; items: SupplierFeedIssue[] }
 export interface SupplierAvailabilitySettings {
   latest_run?: SupplierFeedRun | null;
+  publication?: { enabled: boolean; shop_code: string; brands: string[]; counts?: Record<string, number> } | null;
   supplier: string; name: string; feed_keys: string[]; feed_key: string;
   revision: number; enabled: boolean; interval_seconds: number; freshness_seconds: number;
   min_coverage_percent: number; last_started_at: string | null; last_success_at: string | null;

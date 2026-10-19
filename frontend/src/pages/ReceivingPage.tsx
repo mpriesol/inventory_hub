@@ -8,7 +8,7 @@ import {
 import { Button } from '../components/ui/Button.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
 import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
-import { createReceivingSession, resumeReceiving, reopenInvoice, getActiveSession, getReceivingSummary } from '../api/receiving';
+import { createReceivingSession, resumeReceiving, reopenInvoice, getActiveSession, getReceivingSummary, lookupReceivingInvoice, type ReceivingInvoiceCandidate } from '../api/receiving';
 import { API_BASE } from '../api/client';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 
@@ -107,6 +107,52 @@ export function ReceivingPage() {
   // Upload state
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [scanCode, setScanCode] = useState('');
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanCandidates, setScanCandidates] = useState<ReceivingInvoiceCandidate[]>([]);
+  const [scanWarning, setScanWarning] = useState(false);
+  const scanLock = useRef(false);
+  const scanCommand = useRef<{ code: string; request_id: string } | null>(null);
+
+  const openScannedInvoice = async (candidate: ReceivingInvoiceCandidate) => {
+    const command = scanCommand.current;
+    if (!command) return;
+    setScanBusy(true);
+    try {
+      let sessionId = candidate.session_id;
+      if (!sessionId) {
+        const active = await getActiveSession(candidate.supplier, candidate.invoice_no);
+        sessionId = active.has_session && active.session ? active.session.session_id : null;
+        if (!sessionId) sessionId = (await createReceivingSession(candidate.supplier, candidate.invoice_no)).session_id;
+      }
+      let session = await getReceivingSummary(candidate.supplier, sessionId);
+      if (session.status === 'paused') { await resumeReceiving(candidate.supplier, sessionId); session = await getReceivingSummary(candidate.supplier, sessionId); }
+      const closed = session.status === 'completed' || session.status === 'cancelled';
+      navigate(`/receiving/${encodeURIComponent(candidate.invoice_no)}?supplier=${encodeURIComponent(candidate.supplier)}&session=${encodeURIComponent(sessionId)}`, {
+        state: { sessionId, supplier: candidate.supplier, lines: session.lines,
+          ...(closed ? { highlightLineIds: candidate.lines.map(line => line.id).filter(Boolean), closedScan: true }
+            : { entryScan: { ...command, qty: 1 } }) },
+      });
+    } catch (err: any) {
+      setError(err?.message || t('receiving.lookup.openFailed'));
+    } finally { setScanBusy(false); scanLock.current = false; }
+  };
+
+  const findScannedInvoice = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (scanLock.current || !scanCode.trim()) return;
+    scanLock.current = true; setScanBusy(true); setError(null); setScanCandidates([]); setScanWarning(false);
+    scanCommand.current = { code: scanCode.trim(), request_id: crypto.randomUUID() };
+    try {
+      const result = await lookupReceivingInvoice(scanCommand.current.code);
+      setScanWarning(result.unreadable_invoices > 0);
+      if (result.candidates.length === 1 && !result.unreadable_invoices) await openScannedInvoice(result.candidates[0]);
+      else if (result.candidates.length) setScanCandidates(result.candidates);
+      else setError(t('receiving.lookup.notFound'));
+    } catch (err: any) { setError(err?.message || t('receiving.lookup.failed')); }
+    finally { setScanBusy(false); scanLock.current = false; }
+  };
 
   // Load suppliers
   useEffect(() => {
@@ -310,7 +356,7 @@ export function ReceivingPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".csv,.xlsx,.xls"
+            accept=".csv,.xlsx,.xls,.pdf"
             onChange={handleUpload}
             className="hidden"
           />
@@ -325,6 +371,26 @@ export function ReceivingPage() {
           </Button>
         </div>
       </div>
+
+      <section className="rounded-xl border p-4 space-y-3" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
+        <form onSubmit={findScannedInvoice} className="flex flex-wrap items-end gap-3">
+          <label className="flex-1 min-w-48 text-sm">{t('receiving.lookup.label')}
+            <input autoFocus data-testid="receiving-invoice-scan" value={scanCode} maxLength={100} disabled={scanBusy}
+              onChange={e => { setScanCode(e.target.value); setScanCandidates([]); }} placeholder={t('receiving.lookup.placeholder')} className="w-full mt-1" />
+          </label>
+          <Button type="submit" disabled={scanBusy || !scanCode.trim()}>{scanBusy ? t('common.loading') : t('receiving.lookup.find')}</Button>
+        </form>
+        {scanWarning && <p role="status" className="text-sm">{t('receiving.lookup.incomplete')}</p>}
+        {scanCandidates.length > 0 && <div role="dialog" aria-label={t('receiving.lookup.choose')} className="space-y-2">
+          <p>{t('receiving.lookup.choose')}</p>
+          {scanCandidates.map(candidate => <Button key={`${candidate.supplier}:${candidate.invoice_no}`} variant="secondary" disabled={scanBusy}
+            onClick={() => { if (!scanLock.current) { scanLock.current = true; void openScannedInvoice(candidate); } }}>
+            {candidate.supplier_name} · {candidate.invoice_no} · {t(`receiving.lookup.status.${candidate.status}`)}
+            {candidate.invoice_date && ` · ${formatDate(candidate.invoice_date)}`} · {candidate.lines.map(line => `${line.sku} (${line.received_qty}/${line.ordered_qty})`).join(', ')}
+          </Button>)}
+          <Button variant="ghost" onClick={() => { setScanCandidates([]); scanCommand.current = null; }}>{t('common.cancel')}</Button>
+        </div>}
+      </section>
 
       {/* Success message */}
       {successMessage && (

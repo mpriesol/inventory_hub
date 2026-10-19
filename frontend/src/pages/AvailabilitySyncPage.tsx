@@ -127,6 +127,7 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
     {status === 'unconfigured' && <p data-testid={id('setup-help')}>{t('availabilitySync.setupFirst')}</p>}
     {status === 'not_loaded' && !value.last_error && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
     {status === 'configuration_error' && <p role="alert">{t('availabilitySync.configurationHelp')}</p>}
+    {value.publication?.enabled && <p data-testid={id('publication')}>{t('availabilitySync.scopedPublication', { shop: value.publication.shop_code, brands: value.publication.brands.join(', '), completed: value.publication.counts?.completed || 0, uncertain: value.publication.counts?.uncertain || 0, rejected: value.publication.counts?.rejected || 0 })}</p>}
     {!manualOnly && <p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { minutes: value.interval_seconds / 60 })}</p>}
     {value.latest_run && <SupplierRunResult key={value.latest_run.id} supplier={value.supplier} run={value.latest_run} />}
     <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>

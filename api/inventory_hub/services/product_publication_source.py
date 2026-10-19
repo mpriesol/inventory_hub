@@ -72,6 +72,10 @@ def money(value):
 def field_values(remote, fields, options):
     leaf = remote['leaf']
     values = {}
+    if 'availability' in fields:
+        if not isinstance(leaf.get('availability'), str):
+            raise source.SourceError('supplier_availability_publication_remote_unknown', 422)
+        values.update(availability=leaf['availability'], remote_stock=source._quantity(leaf.get('stock')))
     if 'name' in fields:
         values['name'] = next((r.get('title') for r in leaf.get('descriptions', []) if r.get('language') == 'sk'), None)
     if 'visible' in fields:

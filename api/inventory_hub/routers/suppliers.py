@@ -557,15 +557,18 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
         payload = config_patch(current_cfg, payload)
     except ConfigSecretError as error:
         raise HTTPException(422, detail=str(error)) from None
+    _validate_price_coefficients(payload)
     adapter = payload.get("adapter_settings", {})
     try:
         if not isinstance(adapter, dict):
             raise ValueError("adapter_settings must be an object")
         normalize_supplier_availability(adapter.get("availability"))
+        from inventory_hub.config_normalize import normalize_availability_publication
+        for key in ("availability_publication", "existing_card_matching"):
+            if key in adapter:
+                normalize_availability_publication(adapter[key])
     except ValueError as error:
         raise HTTPException(status_code=422, detail={"code": "supplier_availability_invalid", "message": str(error)}) from None
-    _validate_price_coefficients(payload)
-
     try:
         if current_cfg:
             _save_to_history(supplier, current_cfg)
@@ -697,14 +700,18 @@ async def upload_invoice(
             detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
         )
 
-    if supplier == "sk-profi-bike" and ext == ".pdf":
+    if supplier in ("sk-profi-bike", "zookee") and ext == ".pdf":
         from inventory_hub.adapters.sk_profi_bike_invoice import (
             InvoiceConflictError, InvoiceParseError, save_receiving_invoice,
         )
         try:
             content = await file.read(20 * 1024 * 1024 + 1)
+            kwargs = {}
+            if supplier == "zookee":
+                from inventory_hub.adapters.zookee_invoice import parse_invoice_pdf
+                kwargs["parser"] = parse_invoice_pdf
             return await asyncio.to_thread(
-                save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number,
+                save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number, **kwargs,
             )
         except InvoiceParseError as error:
             raise HTTPException(422, detail=str(error)) from None

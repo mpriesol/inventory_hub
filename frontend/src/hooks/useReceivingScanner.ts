@@ -74,9 +74,10 @@ export function useReceivingScanner(supplier: string, sessionId: string,
       context.sending = false; reflect(context);
     }
   }
-  function enqueue(code: string, qty: number) {
+  function enqueue(code: string, qty: number, requestId?: string) {
     if (!sessionId || !current(context) || !code.trim() || !Number.isFinite(qty) || qty <= 0) return;
-    context.queue.push({ request_id: crypto.randomUUID(), code: code.trim(), qty });
+    if (requestId && context.queue.some(command => command.request_id === requestId)) return;
+    context.queue.push({ request_id: requestId || crypto.randomUUID(), code: code.trim(), qty });
     persist(context); reflect(context); void drain();
   }
   function retry() {

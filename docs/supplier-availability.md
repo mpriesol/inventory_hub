@@ -109,3 +109,9 @@ Katalóg používa samostatný natívny parser `silvini`. Nuly v zalistovacom fe
 ## Bike Brothers
 
 Parser `bike-brothers` používa samostatne nakonfigurovaný úplný API export. Pre `stock` možno použiť rovnaký export ako pre katalóg. Identita predajnej položky je presný text `kod`, množstvo je `stav_zasob`. Riadky, na ktoré odkazuje `mastergroup`, sú rodičia: ich agregované zásoby sa vylúčia a nesčítajú so zásobou variantov. Ceny, názvy a jazyk neovplyvňujú prijatie platného skladového riadka. `dostupnost_dny` nenahrádza množstvo a chýbajúce SKU ani množstvo nevytvára nulu. Neplatné riadky majú spoločnú diagnostiku čiastočného prijatia. Nejednoznačná štruktúra rodičov, duplicitné interné ID a cykly odmietnu celý zdroj. Konfigurácia a plánovanie sa zapínajú samostatne v Hube; táto zmena neaktivuje prenos zásob do e-shopov. [Katalóg, identita a jazyk](supplier-catalog.md#bike-brothers).
+
+## Scoped supplier-to-shop labels
+
+[Zookee](zookee.md) introduces optional supplier/brand/shop `availability_publication` configuration. It uses the supplier worker and the existing durable editor publisher. It sends availability labels only, retains positive shop-stock priority and does not activate central stock authority. Unknown/stale source data does not create an unavailable label. Existing publication history/uncertain-write recovery applies. The configured scope and result totals appear on the availability settings screen.
+
+Optional `existing_card_matching` broadens only the explicitly requested manual supplier-link repair to same-brand listed products in one configured shop, using exact cached supplier codes/native leaf identity or unique verified barcodes. Automatic feed refresh keeps its prior narrow identity discovery. See the detailed matching, configuration and rollback rules in the supplier document.

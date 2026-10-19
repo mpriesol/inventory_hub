@@ -62,7 +62,7 @@ class SupplierLinkRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), result)
         self.assertEqual(response.headers["cache-control"], "no-store")
-        repair.assert_awaited_once_with(self.db, "paul-lange", after_product_id=40, limit=2)
+        repair.assert_awaited_once_with(self.db, "paul-lange", after_product_id=40, limit=2, match_catalog=True)
 
     def test_prefix_domain_failure_remains_explicit(self):
         with patch.object(supplier_links, "reconcile_supplier_links",

@@ -56,6 +56,7 @@ def public(supplier, cfg, settings=None):
         "freshness_seconds": settings.freshness_seconds if settings else 21600,
         "min_coverage_percent": settings.min_coverage_percent if settings else 100,
         "availability": normalize_supplier_availability((cfg.get("adapter_settings") or {}).get("availability")),
+        "publication": (cfg.get("adapter_settings") or {}).get("availability_publication"),
         "last_item_count": settings.last_item_count if settings else 0,
         "running": bool(settings and settings.running_run_id)}
     for field in ("last_started_at", "last_success_at", "next_run_at", "last_error", "manual_requested_at"):
@@ -89,6 +90,13 @@ async def overview(db):
             value["refresh_progress"] = await latest_progress(db, rows[code].supplier_id)
         elif rows.get(code):
             value["latest_run"] = await latest_run(db, rows[code].supplier_id, rows[code].feed_key)
+        if value.get("publication"):
+            from inventory_hub.product_editor_models import ProductEditorPublication
+            counts = (await db.execute(select(ProductEditorPublication.state, func.count())
+                .where(ProductEditorPublication.document["workflow"].astext == "supplier_availability",
+                       ProductEditorPublication.document["supplier"].astext == code)
+                .group_by(ProductEditorPublication.state))).all()
+            value["publication"] = {**value["publication"], "counts":dict(counts)}
         result.append(value)
     return {"suppliers": result}
 
