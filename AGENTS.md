@@ -134,6 +134,7 @@ node frontend/tests/supplier-links-ui.cjs
 node frontend/tests/product-import-identity-ui.cjs
 node frontend/tests/fifo-ui.cjs
 node frontend/tests/receiving-scan-ui.cjs
+node frontend/tests/receiving-lookup-ui.cjs
 node frontend/tests/stock-history-ui.cjs
 node frontend/tests/availability-sync-ui.cjs
 node frontend/tests/stock-adjustments-ui.cjs

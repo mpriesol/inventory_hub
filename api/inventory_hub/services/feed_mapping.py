@@ -441,6 +441,9 @@ async def inspect_source(db, supplier, feed_key, definition, sample_id=None):
         if parser == "bike-brothers" and kind == "xml" and native_source_path(definition, catalog.PARSERS[parser]):
             from inventory_hub.adapters.bike_brothers_catalog import inspection_categories
             result.update(await asyncio.to_thread(inspection_categories, path))
+        if parser == "zookee" and kind == "xml" and native_source_path(definition, catalog.PARSERS[parser]):
+            from inventory_hub.adapters.zookee_catalog import inspection_categories
+            result.update(await asyncio.to_thread(inspection_categories, path))
     except ValueError as error:
         raise _error("feed_inspection_invalid", str(error)) from None
     return {**result, "sample_id": sample_id}

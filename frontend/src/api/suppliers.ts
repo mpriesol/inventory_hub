@@ -109,6 +109,7 @@ export interface SupplierConfig {
     price_coefficients?: Record<string, number | string>;
     availability?: {
       orderable?: string | null;
+      unavailable?: string | null;
       unknown?: string | null;
     };
     mapping: {

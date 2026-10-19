@@ -384,7 +384,7 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
                       product_ids=[p.id for p in products], variants_count=len(products) if grouped else 0,
                       status="ready", warnings=sorted({w for p in products for w in p.warnings}))
     try:
-        blockers = sorted({error for p in products for error in p.import_blockers})
+        blockers = sorted({error for p in products for error in p.import_blockers} | ({"stock_feed_only"} if any("stock_feed_only" in p.warnings for p in products) else set()))
         if blockers:
             item.status, item.errors = "invalid", blockers
             return item

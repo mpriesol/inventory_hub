@@ -346,7 +346,7 @@ def validate_rows(document):
             row['warnings'] = sorted(set(row.get('warnings', [])) | {'existing_card_link_only'})
             continue
         source = to_source(row)
-        row['errors'] = list(source.import_blockers)
+        row['errors'] = list(source.import_blockers) + (['stock_feed_only'] if 'stock_feed_only' in source.warnings else [])
         row['warnings'] = list(source.warnings)
         if row['values']['manufacturer_code']:
             row['warnings'].append('manufacturer_code_source_only')

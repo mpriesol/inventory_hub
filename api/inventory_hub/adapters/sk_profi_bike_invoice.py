@@ -69,6 +69,7 @@ class InvoiceLine:
     vat: Decimal
     net: Decimal
     gross: Decimal
+    ean: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ class Invoice:
         writer = csv.writer(output, delimiter=";", lineterminator="\n")
         writer.writerow(["SCM", "TITLE", "QTY", "PRICE", "EAN"])
         for line in self.lines:
-            writer.writerow([line.sku, line.title, str(line.qty), str(line.price), ""])
+            writer.writerow([line.sku, line.title, str(line.qty), str(line.price), line.ean])
         return output.getvalue().encode("utf-8")
 
     def fingerprint(self) -> str:
@@ -99,6 +100,8 @@ class Invoice:
                  str(self.net), str(self.vat), str(self.gross),
                  [[line.number, line.sku, line.title, str(line.qty), str(line.price),
                    str(line.vat), str(line.net), str(line.gross)] for line in self.lines]]
+        if any(line.ean for line in self.lines):
+            facts.append([line.ean for line in self.lines])
         return hashlib.sha256(json.dumps(facts, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -266,9 +269,10 @@ def _write_atomic(path: Path, content: bytes) -> None:
         temp.unlink(missing_ok=True)
 
 
-def save_receiving_invoice(content: bytes, data_root: Path, supplier: str, override: str | None = None) -> dict:
+def save_receiving_invoice(content: bytes, data_root: Path, supplier: str, override: str | None = None, *, parser=None) -> dict:
     """Upload only: canonical CSV/index, never a receiving session or stock movement."""
-    invoice = parse_invoice_pdf(content)
+    parse = parser or parse_invoice_pdf
+    invoice = parse(content)
     if override and override.strip() not in (invoice.number, invoice.key):
         raise InvoiceParseError("Zadané číslo faktúry nesúhlasí s číslom v PDF.")
     root = data_root / "suppliers" / supplier / "invoices"
@@ -299,7 +303,7 @@ def save_receiving_invoice(content: bytes, data_root: Path, supplier: str, overr
             raise InvoiceConflictError("Položky existujúcej faktúry sa líšia; opakovaný príjem nebol vytvorený.")
         if raw.exists() and raw.read_bytes() != content:
             try:
-                same_invoice = parse_invoice_pdf(raw.read_bytes()).fingerprint() == fingerprint
+                same_invoice = parse(raw.read_bytes()).fingerprint() == fingerprint
             except InvoiceParseError:
                 same_invoice = False
             if not same_invoice:

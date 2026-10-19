@@ -868,7 +868,7 @@ function GeneralTab({ config, updateConfig, showPasswords, setShowPasswords, ide
           {t('suppliers.availability.help')}
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {(['orderable', 'unknown'] as const).map((key) => (
+          {(['orderable', ...(config.adapter_settings?.availability?.unavailable !== undefined ? ['unavailable' as const] : []), 'unknown'] as const).map((key) => (
             <div key={key}>
               <label htmlFor={`supplier-availability-${key}`} className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
                 {t(`suppliers.availability.${key}`)}

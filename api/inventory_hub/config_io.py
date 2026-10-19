@@ -6,7 +6,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 import fcntl
 import json, os
-from inventory_hub.config_normalize import normalize_supplier_availability
+from inventory_hub.config_normalize import normalize_supplier_availability, normalize_availability_publication
 from inventory_hub.supplier_prefix import (
     SupplierPrefixError, get_supplier_prefix, normalize_prefix_config, prefix_values,
 )
@@ -93,6 +93,9 @@ def _norm_supplier(cfg: Dict[str, Any]) -> Dict[str, Any]:
                              "token":"","header_name":"","insecure_all":False})
     adapter = cfg.setdefault("adapter_settings", {})
     adapter["availability"] = normalize_supplier_availability(adapter.get("availability"))
+    for key in ("availability_publication", "existing_card_matching"):
+        if key in adapter:
+            adapter[key] = normalize_availability_publication(adapter[key])
     mp = cfg.setdefault("adapter_settings", {}).setdefault("mapping", {}).setdefault("postprocess", {})
     return cfg
 

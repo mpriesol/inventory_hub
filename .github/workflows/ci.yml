@@ -166,7 +166,9 @@ jobs:
         run: node frontend/tests/fifo-ui.cjs
 
       - name: Receiving scanner replay and queue interactions
-        run: node frontend/tests/receiving-scan-ui.cjs
+        run: |
+          node frontend/tests/receiving-scan-ui.cjs
+          node frontend/tests/receiving-lookup-ui.cjs
 
       - name: Movement history and dashboard interactions
         run: node frontend/tests/stock-history-ui.cjs

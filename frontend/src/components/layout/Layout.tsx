@@ -1,8 +1,10 @@
 import React from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 
 export function Layout() {
+  const { pathname } = useLocation();
+  const wide = /^\/(stock|receiving|invoices|orders|product-import|suppliers)(?:\/|$)/.test(pathname);
   return (
     <div
       className="min-h-screen"
@@ -18,7 +20,7 @@ export function Layout() {
           padding: 'var(--spacing-6)',
         }}
       >
-        <div className="max-w-7xl mx-auto animate-fade-in">
+        <div className={`${wide ? 'w-full min-w-0' : 'max-w-7xl mx-auto'} animate-fade-in`}>
           <Outlet />
         </div>
       </main>

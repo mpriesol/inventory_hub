@@ -141,3 +141,9 @@ Rozšírenie z 13. 10. 2026 dopĺňa testy predvoleného zoznamu, zobrazeného E
 ## Výber riadka a kontrola pred zaúčtovaním
 
 Pri `scan_line_ambiguous` klient ponechá sken vo fronte a ponúkne konkrétne faktúrové riadky s cenou a množstvom. Iba dokázané odmietnutie pred zápisom dovoľuje doplniť `line_id`; po neistom výsledku sa opakuje rovnaké UUID a celý payload. Kým výber nie je vyriešený, nemožno príjem zaúčtovať. Pred úplným aj čiastočným zaúčtovaním je súhrn skladu, množstva, hodnoty a dôsledkov; neznáma nákupná cena zostáva neznáma. Archív dokladov a nahratie faktúry na príjem majú odlišné názvy a prepojenie. [Súvislosti](ux-audit-followup.md).
+
+## Find an invoice from the landing-page scanner
+
+`GET /receiving/lookup?code=...` is authenticated and read-only. It searches normalized receiving CSVs and database receipts across suppliers, including completed/cancelled sessions. It uses exact supplier/canonical codes and verified invoice, product or supplier barcodes; it does not finalize, reopen, create stock or guess from a title. CSV parsing reuses the receiving grammar and caches only unchanged files. Unreadable invoices are reported.
+
+A unique complete result opens the corresponding session; multiple results or an incomplete search require an explicit invoice choice. A new/active receipt receives one UUID-preserving initial scan through the existing persistent queue. Reload/remount cannot generate a second operation for that scan. A completed/cancelled receipt opens read-only with matching rows highlighted, without adding quantity. Paused receipts resume through the existing endpoint. All scan identity and line-ambiguity checks still run before changing received quantity.

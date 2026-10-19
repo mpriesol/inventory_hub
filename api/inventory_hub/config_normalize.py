@@ -1,6 +1,7 @@
 # inventory_hub/config_normalize.py
 from __future__ import annotations
 from copy import deepcopy
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
 from inventory_hub.supplier_prefix import normalize_prefix_config
@@ -41,7 +42,7 @@ def normalize_supplier_availability(value: Any = None) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("adapter_settings.availability must be an object")
     result = dict(value)
-    for key, default in SUPPLIER_AVAILABILITY_DEFAULTS.items():
+    for key, default in {**SUPPLIER_AVAILABILITY_DEFAULTS, **({"unavailable": "overíme"} if "unavailable" in value else {})}.items():
         label = value.get(key)
         if label is None or (isinstance(label, str) and not label.strip()):
             label = default
@@ -114,12 +115,25 @@ def _deep_set(d: Dict[str, Any], path: list[str], value):
         cur = cur[k]
     cur[path[-1]] = value
 
+def normalize_availability_publication(publication):
+    if (not isinstance(publication, dict) or set(publication) != {"enabled", "shop_code", "brands"}
+            or type(publication["enabled"]) is not bool or not isinstance(publication["shop_code"], str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,49}", publication["shop_code"])
+            or not isinstance(publication["brands"], list) or not 1 <= len(publication["brands"]) <= 50
+            or any(not isinstance(b, str) or not b.strip() or len(b) > 100 for b in publication["brands"])):
+        raise ValueError("Invalid supplier availability_publication: expected enabled, shop_code and explicit brands")
+    return {**publication, "brands": sorted({brand.strip().upper() for brand in publication["brands"]})}
+
+
 def normalize_supplier_config(raw_in: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Z ľubovoľného (aj legacy) vstupu spraví kanonickú štruktúru.
     Po prvom uložen í budú configs už len v kanonike.
     """
     raw = normalize_prefix_config(raw_in or {})
+    publication = (raw.get("adapter_settings") or {}).get("availability_publication")
+    if publication is not None:
+        raw["adapter_settings"]["availability_publication"] = normalize_availability_publication(publication)
     out = deepcopy(KANON_DEFAULT)
 
     # ---- FEEDS ----

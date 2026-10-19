@@ -175,7 +175,25 @@
     "uploadForReceipt": "Nahrať faktúru na príjem",
     "uploadArchive": "Nahrať doklad do archívu",
     "archiveHelp": "Archív uchová doklad; nevytvára príjemku ani skladové pohyby.",
-    "goToReceipt": "Prejsť na príjem tovaru"
+    "goToReceipt": "Prejsť na príjem tovaru",
+    "lookup": {
+      "label": "Naskenujte tovar a otvorte faktúru",
+      "placeholder": "EAN alebo kód produktu",
+      "find": "Nájsť faktúru",
+      "choose": "Vyberte faktúru pre tento sken",
+      "notFound": "Tovar sa nenašiel na žiadnej dostupnej faktúre. Nahrajte faktúru alebo skontrolujte kód.",
+      "failed": "Faktúry sa nepodarilo prehľadať. Skúste to znova.",
+      "openFailed": "Príjem sa nepodarilo otvoriť. Obnovte zoznam a skúste to znova.",
+      "incomplete": "Niektoré faktúry sa nepodarilo prečítať. Výsledky nemusia byť úplné.",
+      "closed": "Príjem je uzavretý. Naskenovaný tovar je označený na kontrolu; množstvo sa nezmenilo.",
+      "status": {
+        "new": "Nová",
+        "in_progress": "Prebieha",
+        "paused": "Pozastavená",
+        "completed": "Dokončená",
+        "cancelled": "Zrušená"
+      }
+    }
   },
   "suppliers": {
     "title": "Dodávatelia",
@@ -282,7 +300,8 @@
       "help": "Text dostupnosti pre import a aktualizáciu produktov sa berie z konfigurácie dodávateľa. Zásoba dodávateľa nezvyšuje náš fyzický sklad.",
       "orderable": "Tovar skladom u dodávateľa",
       "unknown": "Neznáma dostupnosť dodávateľa",
-      "defaults": "Prázdne hodnoty použijú „do 5 dní“ a „overíme“. Aj pri neznámej dostupnosti si zákazník môže tovar objednať."
+      "defaults": "Prázdne hodnoty použijú „do 5 dní“ a „overíme“. Aj pri neznámej dostupnosti si zákazník môže tovar objednať.",
+      "unavailable": "Tovar nedostupný u dodávateľa"
     },
     "prefixHelp": "SKU vznikne spojením jedinečného prefixu a pôvodného kódu dodávateľa. Po prvom použití sa prefix uzamkne.",
     "prefixLocked": "Prefix je uzamknutý, aby zostali zachované existujúce kódy a prepojenia. Zmeniť ho nemožno ani cez JSON alebo obnovenie histórie.",
@@ -544,7 +563,9 @@
       "ai_selection_invalid": "Vyber platné položky z tejto úlohy.",
       "ai_partial_evidence": "Pre zostávajúce produkty chýbajú podklady; priprav nový AI návrh.",
       "supplier_availability_changed": "Dostupnosť v konfigurácii dodávateľa sa zmenila alebo náhľad vznikol podľa starých pravidiel. Priprav nový náhľad.",
-      "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov."
+      "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov.",
+      "stock_feed_only": "Produkt je iba v skladovom feede. Na publikovanie chýba úplný katalógový záznam.",
+      "missing_purchase_price": "Nákupná cena vo feede nie je uvedená."
     },
     "tab": {
       "data": "Údaje a parametre",
@@ -2832,7 +2853,8 @@
       "stock": "Skladové dostupnosti",
       "products": "Produktový feed"
     },
-    "advancedSettings": "Rozšírené nastavenia"
+    "advancedSettings": "Rozšírené nastavenia",
+    "scopedPublication": "Dostupnosť → {{shop}} · {{brands}}. Overené: {{completed}}, na kontrolu: {{uncertain}}, odmietnuté: {{rejected}}."
   },
   "productPublication": {
     "intro": "Vyberte uložený produkt a polia. Najprv sa načíta a ukáže zmena; e-shop sa zmení až po potvrdení odoslania.",

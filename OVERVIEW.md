@@ -368,3 +368,12 @@ AI content context v2 adds category reference-product snapshots (read-only Upgat
 AI zadanie verzie 3 zoskupuje parametre vzorových produktov do výstupnej schémy. Nové duše zlučujú iba opakované skupiny štyroch schválených rozmerových parent parametrov, bez nových hodnôt; ostatné konflikty a variantové kontroly zostávajú. Podrobnosti sú v `docs/ai-content.md`.
 
 Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej aktivitu a kombinovať filtre aktivity a existencie dodávateľskej väzby. Vytvorenie má UUID ochranu opakovania, zmena stavu revíziu a audit; operácie nezakladajú zásoby ani e-shopové produkty. Bez migrácie. [Postup a význam filtrov](docs/product-editor.md#karty-aktivita-a-dodávateľská-väzba).
+
+### Zookee and scan-first receiving (implemented in code)
+
+- Native `zookee` rich-catalog and independent stock-feed readers preserve raw SKU, EAN and explicit variant axes. Stock-only identities remain usable for existing-card links but cannot publish an incomplete new product. Source CZK retail prices never become EUR purchase costs.
+- Original Zookee PDFs with embedded ISDOC use the shared durable invoice store and exact EUR line totals, including EANs. Upload is separate from physical receiving.
+- Authenticated `GET /receiving/lookup` discovers invoices from the receiving landing-page scan. Choices remain explicit; the initial scan keeps one UUID and closed receipts open for review without quantity changes.
+- Optional same-brand existing-shop supplier matching and scoped availability publication reuse shared identity, link and durable publication services. Availability-only payloads preserve own quantities; no central stock authority is activated. See [Zookee](docs/zookee.md).
+- Operational table routes use the available main-content width; the fixed 1280px wrapper remains for settings and other form pages. This change does not redesign tablet navigation.
+- No schema migration is required. Deployment, supplier configuration, exact live match counts and scheduled publication outcomes must be verified separately from code/fixture tests.

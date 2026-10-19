@@ -18,6 +18,10 @@ from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 async def require_target_available(db, shop_code, parent_code, *, publication_id=None, ai_job_id=None, fifo_publication_id=None, availability=False):
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     if availability:
+        if publication_id is None:
+            from inventory_hub.services.supplier_availability_publication import owns_target
+            if await owns_target(db, shop_code, parent_code):
+                raise CatalogError('supplier_availability_managed_by_supplier', 'Supplier synchronization owns availability for this product.', 409)
         owned = await db.scalar(select(StockSyncSettings.shop_id).join(Shop, Shop.id == StockSyncSettings.shop_id)
             .where(Shop.code == shop_code, StockSyncSettings.authorized.is_(True)).limit(1))
         pending_stock = await db.scalar(select(StockSyncItem.id).join(Shop, Shop.id == StockSyncItem.shop_id)
@@ -57,6 +61,9 @@ async def require_target_available(db, shop_code, parent_code, *, publication_id
 async def require_availability_authority_available(db, shop_code):
     """Claim stock ownership before any shop/warehouse locks; commit with settings."""
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    from inventory_hub.services.supplier_availability_publication import policies
+    if any(policy['shop_code'] == shop_code for _, policy, _ in policies()):
+        raise CatalogError('supplier_availability_publication_enabled', 'Disable supplier availability publication before assigning full stock authority.', 409)
     pending = await db.scalar(select(AiJob.id).where(
         AiJob.context["shop"].astext == shop_code,
         AiJob.context["update_preview"]["fields"].contains(["availability"]),

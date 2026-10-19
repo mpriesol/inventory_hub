@@ -60,7 +60,8 @@ def availability_policy(supplier, config=None):
         labels = normalize_supplier_availability((config or {}).get('adapter_settings', {}).get('availability'))
     except (ValueError, AttributeError) as error:
         raise CatalogError('supplier_availability_invalid', 'Check supplier availability configuration', 422) from error
-    return {'orderable': labels['orderable'], 'unknown': labels['unknown'], 'hide_zero_stock': False,
+    return {**({'unavailable': labels['unavailable']} if 'unavailable' in labels else {}),
+            'orderable': labels['orderable'], 'unknown': labels['unknown'], 'hide_zero_stock': False,
             'supplier_name': {'paul-lange': 'Paul Lange', 'northfinder': 'Northfinder'}.get(supplier, supplier)}
 
 
@@ -68,7 +69,8 @@ def apply_availability(payload, products, policy):
     def apply(obj, product):
         positive = (product.supplier_stock is not None and product.supplier_stock > 0) or bool(product.supplier_stock_min and product.supplier_stock_min > 0)
         orderable = positive or product.supplier_available is True or product.supplier_external_available is True
-        obj['availability'] = policy['orderable'] if orderable else policy['unknown']
+        unavailable = product.supplier_available is False and product.supplier_external_available is not True
+        obj['availability'] = policy['orderable'] if orderable else policy.get('unavailable', policy['unknown']) if unavailable else policy['unknown']
         # Unknown/zero supplier stock is orderable; visibility remains governed
         # by the separate import review/approval contract.
         obj['can_add_to_basket_yn'] = True

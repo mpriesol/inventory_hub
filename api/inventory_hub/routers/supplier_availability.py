@@ -61,4 +61,4 @@ async def reconcile_links(supplier: SupplierCode, payload: SupplierLinkReconcile
                           db: AsyncSession = Depends(get_session)):
     """Attach exact existing supplier identities using only local downloaded data."""
     return await _call(supplier_links.reconcile_supplier_links(
-        db, supplier, after_product_id=payload.after_product_id, limit=payload.limit))
+        db, supplier, after_product_id=payload.after_product_id, limit=payload.limit, match_catalog=True))

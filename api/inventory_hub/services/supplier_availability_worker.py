@@ -55,7 +55,8 @@ async def cycle():
                         plan = candidate
                         break
             if plan is None:
-                return False
+                from inventory_hub.services.supplier_availability_publication import cycle as publish_cycle
+                return await publish_cycle()
             try:
                 async with asyncio.timeout(360):
                     if plan["supplier"] == "sloger":

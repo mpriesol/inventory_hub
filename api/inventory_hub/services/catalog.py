@@ -29,6 +29,7 @@ from inventory_hub.adapters.schindler_catalog import parse_catalog as parse_schi
 from inventory_hub.adapters.cyklo_zitny_catalog import parse_catalog as parse_cyklo_zitny
 from inventory_hub.adapters.silvini_catalog import parse_catalog as parse_silvini
 from inventory_hub.adapters.bike_brothers_catalog import parse_catalog as parse_bike_brothers
+from inventory_hub.adapters.zookee_catalog import parse_catalog as parse_zookee
 from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -44,7 +45,7 @@ class CatalogError(Exception):
 
 PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger,
            "sk-profi-bike": parse_sk_profi_bike, "schindler": parse_schindler, "cyklo-zitny": parse_cyklo_zitny,
-           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers}
+           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers, "zookee": parse_zookee}
 
 
 def folded(value: str) -> str:
@@ -265,7 +266,12 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
             records = await asyncio.to_thread(feed_mapping.parse_mapped, path, supplier, cfg, feed_key,
                 MappingDefinition.model_validate(mapping.definition), mapping.revision, PARSERS.get(parser_name))
         else:
-            records = await asyncio.to_thread(PARSERS[parser_name], path, supplier, cfg, feed_key)
+            kwargs = {}
+            if parser_name == "zookee":
+                stock_source = (cfg.get("feeds", {}).get("sources") or {}).get("stock")
+                if stock_source and _source_configured(stock_source):
+                    kwargs["stock_path"] = await asyncio.to_thread(_download, supplier, stock_source, "stock")
+            records = await asyncio.to_thread(PARSERS[parser_name], path, supplier, cfg, feed_key, **kwargs)
         from inventory_hub.services.catalog_variants import normalize_singleton_groups
         normalize_singleton_groups([product for product, _ in records])
         # Order identity/source locks consistently with receiving and local

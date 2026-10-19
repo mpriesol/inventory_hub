@@ -165,8 +165,11 @@ async def send(db, identifier):
     if source_signature(current, document['shop_code']) != document['signature']:
         raise ERROR('product_editor_changed')
     from inventory_hub.services.merchandising_write_guard import require_target_available
+    if document.get('workflow') == 'supplier_availability':
+        from inventory_hub.services.supplier_availability_publication import validate
+        await validate(db, document, product_id)
     try:
-        await require_target_available(db, document['shop_code'], document['identity']['parent_code'], publication_id=record.id)
+        await require_target_available(db, document['shop_code'], document['identity']['parent_code'], publication_id=record.id, availability='availability' in document['fields'])
     except CatalogError as exc:
         raise ERROR('product_publication_inflight', exc.status) from None
     record.state, record.updated_at = 'sending', editor.now()

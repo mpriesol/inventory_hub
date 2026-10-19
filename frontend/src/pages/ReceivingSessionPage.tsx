@@ -43,7 +43,8 @@ export function ReceivingSessionPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[] } | null;
+  const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[];
+    entryScan?: { request_id: string; code: string; qty: number }; highlightLineIds?: number[]; closedScan?: boolean } | null;
   const query = new URLSearchParams(location.search);
   const sessionId = state?.sessionId || query.get('session') || '';
   const supplier = state?.supplier || query.get('supplier') || 'paul-lange';
@@ -212,6 +213,16 @@ export function ReceivingSessionPage() {
     }
   }, kind => setError(t(`actions.receiving.${kind}`)));
   const loading = scanner.busy || scanner.pending > 0;
+  const entryHandled = useRef<string | null>(null);
+  useEffect(() => {
+    const command = state?.entryScan;
+    if (!command || !canEdit || entryHandled.current === command.request_id) return;
+    entryHandled.current = command.request_id;
+    const key = `receiving-entry:${command.request_id}`;
+    try { if (sessionStorage.getItem(key)) return; } catch { /* UUID remains stable in history state. */ }
+    scanner.enqueue(command.code, command.qty, command.request_id);
+    try { sessionStorage.setItem(key, 'queued'); } catch { /* Existing queue retains in-memory retry. */ }
+  }, [canEdit, state?.entryScan?.request_id]);
   const handleScan = () => {
     const code = scanInput.current.trim();
     if (!code || !sessionId || !canEdit || mutation.current || finalizing || finalizeResult || pausing) return;
@@ -463,6 +474,7 @@ export function ReceivingSessionPage() {
       {error && <div className="p-4 rounded-lg border" style={{ backgroundColor: 'var(--color-error-subtle)', borderColor: 'var(--color-error)', color: 'var(--color-error)' }}>{error}</div>}
       {quantityNeedsRefresh && <Button data-testid="receiving-quantity-refresh" disabled={savingEdit} onClick={refreshQuantities}>{t('receiving.refreshQuantities')}</Button>}
 
+      {state?.closedScan && inactive && <p role="status">{t('receiving.lookup.closed')}</p>}
       {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
       {sessionStatus === 'paused' && <Button data-testid="receiving-resume" disabled={pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
       {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t(inactive ? 'receiving.closedPendingScans' : 'actions.receiving.pending', { count: scanner.pending })}</p>}
@@ -602,9 +614,9 @@ export function ReceivingSessionPage() {
                   const done    = isLineDone(line);
                   const partial = line.received_qty > 0 && line.received_qty < line.ordered_qty;
                   return (
-                    <tr key={idx} className="transition-colors" style={{ backgroundColor: 'transparent' }}
+                    <tr key={idx} data-testid={`receiving-line-${idx}`} className="transition-colors" style={{ backgroundColor: state?.highlightLineIds?.includes(line.id!) ? 'var(--color-accent-subtle)' : 'transparent' }}
                       onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)'; }}
-                      onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}>
+                      onMouseLeave={e => { e.currentTarget.style.backgroundColor = state?.highlightLineIds?.includes(line.id!) ? 'var(--color-accent-subtle)' : 'transparent'; }}>
                       <td className="px-2 py-2 text-center"><input type="checkbox" data-testid={`receiving-product-select-${idx}`} aria-label={t('receiving.products.selectLine', { name: line.title })}
                         checked={!!line.id && selectedProducts.has(line.id)} disabled={productActionsDisabled || !product?.can_prepare}
                         onChange={event => { if (line.id === undefined) return; const checked = event.target.checked; setSelectedProducts(previous => { const next = new Set(previous); if (checked) next.add(line.id!); else next.delete(line.id!); return next; }); }} /></td>

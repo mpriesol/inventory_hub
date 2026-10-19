@@ -29,7 +29,7 @@ def _prefix(supplier, cfg=None, *, claim=False):
         raise AvailabilityError(error.code, error.status) from None
 
 
-async def _inspect(db, supplier, products, prefix):
+async def _inspect(db, supplier, products, prefix, *, match_catalog=False):
     """Batch every candidate and conflicting evidence, including other owners."""
     ids = [product.id for product in products]
     codes = defaultdict(set)
@@ -48,6 +48,13 @@ async def _inspect(db, supplier, products, prefix):
         for product in products:
             if product.source_supplier_product_id == source_id:
                 codes[product.id].add(code)
+    matching_issues = {}
+    if match_catalog:
+        from inventory_hub.services.supplier_catalog_matching import suggestions
+        suggested_codes, matching_issues = await suggestions(db, supplier, products)
+        for product_id, code in suggested_codes.items():
+            if not codes[product_id]:
+                codes[product_id].add(code)
     all_codes = {code for values in codes.values() for code in values}
     sources = {source.supplier_sku: source for source in (await db.scalars(select(SupplierProduct).where(
         SupplierProduct.supplier_id == supplier.id, SupplierProduct.supplier_sku.in_(all_codes)))).all()}
@@ -101,10 +108,13 @@ async def _inspect(db, supplier, products, prefix):
         elif not supplier.is_active or (candidate["source"] is not None and
                 (not candidate["source"].is_active or candidate["source"].is_discontinued)):
             candidate["reason"] = "supplier_source_inactive"
+    for product in products:
+        if product.id in matching_issues and not codes[product.id]:
+            candidates.append({"product":product, "supplier_sku":None, "reason":matching_issues[product.id]})
     return candidates
 
 
-async def reconcile_supplier_links(db, supplier_code, *, after_product_id=0, limit=500, product_ids=None):
+async def reconcile_supplier_links(db, supplier_code, *, after_product_id=0, limit=500, product_ids=None, match_catalog=False):
     """One bounded idempotent local repair page; no downloads or stock writes."""
     if not 1 <= limit <= 500 or after_product_id < 0 or (product_ids is not None and len(product_ids) > 500):
         raise AvailabilityError("supplier_link_invalid_page", 422)
@@ -123,7 +133,7 @@ async def reconcile_supplier_links(db, supplier_code, *, after_product_id=0, lim
         "next_after_product_id": products[-1].id if products and more else None}
     if not products:
         return result
-    candidates = await _inspect(db, supplier, products, prefix)
+    candidates = await _inspect(db, supplier, products, prefix, match_catalog=match_catalog)
     claimed = False
     for candidate in candidates:
         product, code, reason = candidate["product"], candidate["supplier_sku"], candidate["reason"]
@@ -156,7 +166,7 @@ async def reconcile_supplier_links(db, supplier_code, *, after_product_id=0, lim
             .on_conflict_do_nothing(constraint="uq_supply_sources"))
         await db.execute(insert(ProductIdentifier).values(product_id=product.id, supplier_id=supplier.id,
             identifier_type=IdentifierType.supplier_sku, value=code, is_primary=False,
-            notes="Supplier link: exact canonical SKU or existing supplier identity")
+            notes="Supplier link: exact canonical/registered identity or configured shop code, brand and barcode checks")
             .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
                 index_where=text("identifier_type = 'supplier_sku'")))
         result["linked"] += 1
