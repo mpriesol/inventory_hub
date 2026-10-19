@@ -14,6 +14,12 @@ On 19 October 2026 the supplied snapshots contained 7,145 rich rows (7,130 with 
 
 The authoritative prefix is `adapter_settings.mapping.postprocess.product_code_prefix = "ZOO-"`. Existing canonical SKUs remain unchanged when another supplier is attached.
 
+### Missing catalog images
+
+Optional `adapter_settings.catalog_image_fallback` uses `{ "enabled": true, "shop_code": "biketrek", "brands": ["TOPEAK", "SENSOR"] }`. Catalog list/detail and new preparation selections fill only empty image lists from cached content of an explicitly linked stock card in that shop. The exact mapped code, native product/variant ID, parent identity, brand and compatible verified EANs must agree. Ambiguous native targets are skipped. Variant photographs take precedence; parent photographs are inherited only when the shop explicitly enables that behavior. Only HTTPS image URLs without embedded credentials are accepted.
+
+This read-only projection records shop/code/native ID/cache timestamp in mapping provenance and displays an image-source warning. It survives supplier refreshes through the existing shop cache and configuration, without rewriting supplier snapshots. It makes no Upgates request or product/stock write, does not replace supplier images, and does not make an incomplete stock-only record publishable.
+
 ## Invoice upload
 
 Use **Príjem → Nahrať faktúru pre príjem**, select Zookee and upload the original PDF with its single embedded `.isdoc`. `/suppliers/zookee/upload-invoice` validates the ISDOC supplier registration, document type, EUR currency, line identities, quantities, VAT, unit-cost precision and totals. Credit notes, scans without ISDOC, multiple attachments and unsupported/inconsistent invoices fail visibly.
@@ -43,6 +49,8 @@ Synthetic tests cover CZK/EUR separation, explicit families, stock-only identiti
 ### Verified reconciliation after an administrative code rename
 
 A collapsed **Zosúladenie starých kódov TOPEAK- → ZOO-** tool in Zookee's general settings lists remaining old canonical codes. It performs no shop writes. After the administrative product/variant/parent rename, **Overiť v e-shopoch a zosúladiť Hub** reads every mapped new code and requires the same native product/variant ID and compatible barcode in every channel. A partial shop rename, conflicting code, missing native ID or unresolved publication rejects the local change.
+
+For a legacy mapping whose native ID is empty, reconciliation can recover that ID from its exact original cached product/variant. It requires one cached parent and leaf, valid native IDs, compatible barcodes and the same IDs in the fresh shop response. Existing nonempty IDs are never replaced from the cache. Missing/ambiguous cache evidence is rejected before batch API reads; cached identity is locked and rechecked before committing. The audit records the recovery evidence. The UI also displays the stable failure code so an unverified rename can be diagnosed without exposing remote payloads or credentials.
 
 `GET /supplier-availability/zookee/legacy-codes` and admin-only `POST /supplier-availability/zookee/legacy-codes/{product_id}` are restricted to the configured `ZOO-` prefix and the old `TOPEAK-` namespace. POST takes one request UUID. The administrative UI uses `POST /supplier-availability/zookee/legacy-code-batches` with at most 20 distinct product IDs and UUIDs, sharing bounded existing-link reads per shop; every local change remains individually verified and atomic. Successful UUIDs replay without another API read. A successful local transaction preserves the product ID, stock movements, balances, source links and historical orders; updates shop-code mappings/cached identity fields; retains the former code as an internal identifier; increments the editor revision and records an audit/result. Repeating a successful UUID does not repeat remote reads or writes. This is a narrow reconciliation exception; ordinary mapped-SKU editor renames remain blocked.
 

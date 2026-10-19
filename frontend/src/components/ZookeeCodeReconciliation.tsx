@@ -51,7 +51,10 @@ export function ZookeeCodeReconciliation() {
     {error && <p role="alert">{error}</p>}
     {rows && <>
       <div className="max-h-64 overflow-auto"><table className="w-full text-sm"><tbody>{rows.map(row => <tr key={row.product_id}>
-        <td>{row.old_code} → {row.new_code}</td><td>{results[row.product_id] ? t(`suppliers.codeRename.results.${results[row.product_id]}`, { defaultValue: t('suppliers.codeRename.notVerified') }) : row.name}</td>
+        <td>{row.old_code} → {row.new_code}</td><td>{results[row.product_id] ? <>
+          {t(`suppliers.codeRename.results.${results[row.product_id]}`, { defaultValue: t('suppliers.codeRename.notVerified') })}
+          {results[row.product_id] !== 'completed' && <code className="block text-xs">{results[row.product_id]}</code>}
+        </> : row.name}</td>
       </tr>)}</tbody></table></div>
       <p role="status">{t('suppliers.codeRename.progress', { done: Object.values(results).filter(value => value === 'completed').length, total: rows.length })}</p>
       {rows.length > 0 && <Button disabled={busy} onClick={reconcile}>{busy ? t('common.loading') : t('suppliers.codeRename.apply')}</Button>}

@@ -5,6 +5,7 @@ already exist under the new codes before one local identity is changed.
 """
 from copy import deepcopy
 from uuid import UUID
+import re
 from sqlalchemy import select, text
 from inventory_hub import config_io
 from inventory_hub.db_models import Product, ProductIdentifier, IdentifierType, Shop
@@ -35,7 +36,8 @@ async def snapshot(db, product_id):
     if product is None:
         raise editor.EditorError('product_editor_product_missing',404)
     mappings = (await db.execute(select(ShopProduct,Shop.code).join(Shop,Shop.id == ShopProduct.shop_id)
-        .where(ShopProduct.product_id == product_id).order_by(ShopProduct.id))).all()
+        .where(ShopProduct.product_id == product_id).order_by(ShopProduct.id)
+        .execution_options(populate_existing=True))).all()
     override = await db.get(ProductEditorOverride,product_id,populate_existing=True)
     return product,mappings,override
 
@@ -59,6 +61,52 @@ async def barcode_set(db,product_id,override):
     return values
 
 
+def native_id(value):
+    value = str(value)
+    return value if re.fullmatch(r'[1-9][0-9]{0,19}', value) else None
+
+
+async def cached_identity(db, mapping, old, new, *, lock=False):
+    """Recover missing legacy IDs only from the exact original cached leaf.
+
+    Project identities in SQL: a POS parent can contain thousands of siblings.
+    Neither a matching EAN nor the freshly renamed remote code supplies an ID.
+    """
+    parent = mapping.parent_code or mapping.external_code
+    rows = (await db.execute(text("""
+        SELECT c.id, c.external_code, c.data->>'code' AS parent_code,
+          c.data->>'product_id' AS parent_id, c.data->'set_yn' AS is_set,
+          c.data->'variants_exists_yn' AS has_variants,
+          jsonb_array_length(CASE WHEN jsonb_typeof(c.data->'variants')='array'
+            THEN c.data->'variants' ELSE '[]'::jsonb END) AS variant_count,
+          CASE WHEN :variant THEN jsonb_array_length(v.matches) ELSE 1 END AS leaf_count,
+          leaf.value->>'code' AS leaf_code, leaf.value->>'product_id' AS leaf_parent_id,
+          leaf.value->>'variant_id' AS variant_id, leaf.value->>'ean' AS ean
+        FROM shop_product_content c
+        CROSS JOIN LATERAL (SELECT jsonb_path_query_array(c.data,
+          '$.variants[*] ? (@.code == $old || @.code == $new)',
+          jsonb_build_object('old', CAST(:old AS text), 'new', CAST(:new AS text))) AS matches) v
+        CROSS JOIN LATERAL (SELECT CASE WHEN :variant THEN v.matches->0 ELSE c.data END AS value) leaf
+        WHERE c.shop_id=:shop AND c.external_code IN (:parent, :new_parent)
+        """ + (' FOR SHARE OF c' if lock else '')), {'shop': mapping.shop_id, 'parent': parent, 'new_parent': renamed(parent),
+                 'old': old, 'new': new, 'variant': mapping.is_variant})).mappings().all()
+    if len(rows) != 1:
+        raise editor.EditorError('code_rename_cache_identity_missing' if not rows else 'code_rename_cache_conflict')
+    row = rows[0]
+    if (row['parent_code'] != row['external_code'] or not native_id(row['parent_id'])
+            or row['leaf_count'] != 1):
+        raise editor.EditorError('code_rename_cache_identity_missing')
+    if (row['leaf_code'] not in (old, new) or row['is_set'] is True
+            or (not mapping.is_variant and (row['variant_count'] or row['has_variants'] is True))
+            or (row['leaf_parent_id'] is not None and row['leaf_parent_id'] != row['parent_id'])):
+        raise editor.EditorError('code_rename_cache_conflict')
+    recovered = native_id(row['variant_id']) if mapping.is_variant else row['parent_id']
+    if not recovered:
+        raise editor.EditorError('code_rename_cache_identity_missing')
+    return {'cache_id': row['id'], 'parent_id': row['parent_id'], 'native_id': recovered,
+            'eans': sorted(verified_barcodes((row['ean'],)))}
+
+
 async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
     configured(supplier)
     identifier=str(UUID(str(request_id)))
@@ -72,17 +120,23 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
     if old == new: raise editor.EditorError('code_rename_no_legacy_code')
     if not mappings: raise editor.EditorError('code_rename_mapping_missing')
     frozen=signature(product,mappings,override)
+    eans=await barcode_set(db,product_id,override)
     observed=[]
     for mapping,shop in mappings:
-        if not mapping.external_id or not str(mapping.external_id).isdigit():
-            raise editor.EditorError('code_rename_native_id_missing')
         code=mapping.variant_code if mapping.is_variant else mapping.external_code
         if code not in (old,new): raise editor.EditorError('code_rename_mapping_changed')
+        cached = None
+        if mapping.external_id is None or mapping.external_id == '':
+            cached = await cached_identity(db, mapping, old, new)
+            if eans and cached['eans'] and not eans.intersection(cached['eans']):
+                raise editor.EditorError('code_rename_barcode_conflict')
+        elif not native_id(mapping.external_id):
+            raise editor.EditorError('code_rename_native_id_missing')
         parent=renamed(mapping.parent_code or mapping.external_code) if mapping.is_variant else new
         target={'code':new,'variant_code':new if mapping.is_variant else None,'parent_code':parent}
-        observed.append({'shop':shop,'mapping_id':mapping.id,'target':target,'native_id':str(mapping.external_id),
+        observed.append({'shop':shop,'mapping_id':mapping.id,'target':target,
+                         'native_id':cached['native_id'] if cached else str(mapping.external_id), 'cached_identity': cached,
                          'fingerprint':publication.fingerprint(shop),'shop_id':mapping.shop_id})
-    eans=await barcode_set(db,product_id,override)
     await db.rollback()
     # Every channel must already be renamed. A partial administrative rename
     # produces no local write and cannot silently sever another shop's link.
@@ -90,8 +144,13 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
         remote=await (remote_reader or transport.read_remote)(item['shop'],item['target'],item['fingerprint'])
         identity=remote['identity']; native=identity['variant_id'] if identity['variant_code'] else identity['product_id']
         if str(native) != item['native_id']: raise editor.EditorError('code_rename_native_id_changed')
+        if item['cached_identity'] and str(identity['product_id']) != item['cached_identity']['parent_id']:
+            raise editor.EditorError('code_rename_native_id_changed')
         remote_eans=set(verified_barcodes((remote['leaf'].get('ean'),)))
         if eans and remote_eans and not eans & remote_eans: raise editor.EditorError('code_rename_barcode_conflict')
+        cached_eans = set((item['cached_identity'] or {}).get('eans', []))
+        if cached_eans and remote_eans and not cached_eans.intersection(remote_eans):
+            raise editor.EditorError('code_rename_barcode_conflict')
         item['verified_identity']=identity
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':editor.IDENTITY_WRITE_LOCK})
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':int(editor._digest(identifier)[:15],16)})
@@ -102,6 +161,16 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
     product,mappings,override=await snapshot(db,product_id)
     if signature(product,mappings,override) != frozen or await barcode_set(db,product_id,override) != eans:
         raise editor.EditorError('product_editor_changed')
+    for mapping, _ in mappings:
+        evidence = next(item for item in observed if item['mapping_id'] == mapping.id)
+        if publication.fingerprint(evidence['shop']) != evidence['fingerprint']:
+            raise editor.EditorError('product_publication_target_changed')
+        if evidence['cached_identity'] and await cached_identity(db, mapping, old, new, lock=True) != evidence['cached_identity']:
+            raise editor.EditorError('product_editor_changed')
+        if await db.scalar(select(ShopProduct.id).where(ShopProduct.shop_id == mapping.shop_id,
+                ShopProduct.product_id != product_id, ShopProduct.is_variant == mapping.is_variant,
+                ShopProduct.external_id == evidence['native_id']).limit(1)):
+            raise editor.EditorError('product_editor_identity_conflict')
     if (await db.scalar(select(Product.id).where(Product.sku == new,Product.id != product_id))
         or await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value.in_((old,new)),ProductIdentifier.product_id != product_id))):
         raise editor.EditorError('product_editor_identity_conflict')
@@ -117,6 +186,7 @@ async def reconcile_one(db,supplier,product_id,request_id,*,remote_reader=None):
         db.add(ProductIdentifier(product_id=product_id,identifier_type=IdentifierType.internal_sku,value=old,is_primary=False,
                                 notes='Previous canonical code; verified Zookee administrative rename'))
     for mapping,shop in mappings:
+        mapping.external_id = next(item['native_id'] for item in observed if item['mapping_id'] == mapping.id)
         old_parent=mapping.parent_code or mapping.external_code
         new_parent=renamed(old_parent)
         if mapping.is_variant:
@@ -170,6 +240,17 @@ async def reconcile_batch(db, supplier, rows):
         new = renamed(product.sku)
         if new == product.sku:
             results.append({'product_id': row.product_id, 'status': 'failed', 'error': 'code_rename_no_legacy_code'})
+            continue
+        try:
+            if not mappings:
+                raise editor.EditorError('code_rename_mapping_missing')
+            for mapping, _ in mappings:
+                if mapping.external_id in (None, ''):
+                    await cached_identity(db, mapping, product.sku, new)
+                elif not native_id(mapping.external_id):
+                    raise editor.EditorError('code_rename_native_id_missing')
+        except editor.EditorError as error:
+            results.append({'product_id': row.product_id, 'status': 'failed', 'error': error.code})
             continue
         pending.append(row)
         for _, shop in mappings:

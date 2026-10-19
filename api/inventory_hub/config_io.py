@@ -93,7 +93,7 @@ def _norm_supplier(cfg: Dict[str, Any]) -> Dict[str, Any]:
                              "token":"","header_name":"","insecure_all":False})
     adapter = cfg.setdefault("adapter_settings", {})
     adapter["availability"] = normalize_supplier_availability(adapter.get("availability"))
-    for key in ("availability_publication", "existing_card_matching"):
+    for key in ("availability_publication", "existing_card_matching", "catalog_image_fallback"):
         if key in adapter:
             adapter[key] = normalize_availability_publication(adapter[key])
     mp = cfg.setdefault("adapter_settings", {}).setdefault("mapping", {}).setdefault("postprocess", {})

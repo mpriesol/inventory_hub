@@ -131,9 +131,10 @@ def normalize_supplier_config(raw_in: Optional[Dict[str, Any]]) -> Dict[str, Any
     Po prvom uložen í budú configs už len v kanonike.
     """
     raw = normalize_prefix_config(raw_in or {})
-    publication = (raw.get("adapter_settings") or {}).get("availability_publication")
-    if publication is not None:
-        raw["adapter_settings"]["availability_publication"] = normalize_availability_publication(publication)
+    for key in ("availability_publication", "catalog_image_fallback"):
+        policy = (raw.get("adapter_settings") or {}).get(key)
+        if policy is not None:
+            raw["adapter_settings"][key] = normalize_availability_publication(policy)
     out = deepcopy(KANON_DEFAULT)
 
     # ---- FEEDS ----

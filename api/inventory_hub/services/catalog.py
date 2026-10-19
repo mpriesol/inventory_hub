@@ -520,6 +520,8 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
                                 variants_count=len(products) if is_group else 0,
                                 matching_ids=group_ids, variants=products if is_group else []))
     await attach_shop_links(db, filters.get("shop"), [p for item in items for p in (item.variants or [item.product])])
+    from inventory_hub.services.catalog_shop_images import attach as attach_shop_images
+    await attach_shop_images(db, supplier, [p for item in items for p in (item.variants or [item.product])])
     return CatalogPage(supplier=supplier, feed_key=feed_key, run_id=feed.last_run_id if feed else None,
                        fetched_at=feed.last_run_at if feed else None, total=len(groups), total_items=len(matches),
                        page=page, page_size=page_size, pages=math.ceil(len(groups) / page_size),
@@ -544,6 +546,8 @@ async def selected_products(db: AsyncSession, supplier: str, feed_key: str, ids:
     if len(rows) != len(set(ids)):
         raise CatalogError("catalog_items_missing", "Some selected products are no longer in this supplier feed", 409)
     by_id = {row.id: public_product(row, detail=True) for row in rows}
+    from inventory_hub.services.catalog_shop_images import attach as attach_shop_images
+    await attach_shop_images(db, supplier, list(by_id.values()))
     return await normalize_stored_groups(db, [by_id[id] for id in dict.fromkeys(ids)])
 
 
@@ -587,6 +591,8 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
         item.shop_matches = index.matches(item)
         item.listed = item.listed or bool(item.shop_matches)
     await attach_shop_links(db, shop, [product, *variants])
+    from inventory_hub.services.catalog_shop_images import attach as attach_shop_images
+    await attach_shop_images(db, supplier, [product, *variants])
     raw = await db.scalar(select(SupplierFeedItemRaw.raw_data).where(
         SupplierFeedItemRaw.supplier_product_id == product_id, SupplierFeedItemRaw.run_id == row.last_seen_run_id))
     return {"product": product, "variants": variants, "source_fields": (raw or {}).get("fields", {}),

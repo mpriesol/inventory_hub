@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from sqlalchemy import select, func
 from inventory_hub import config_io
 from inventory_hub.db_models import Product, IdentifierType, ProductIdentifier
-from inventory_hub.db_models_ext import ShopProduct, StockMovement
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent, StockMovement
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorPublication
 from inventory_hub.services import zookee_code_reconciliation as service
 import test_product_publication_db as fixture
@@ -49,6 +49,121 @@ class CodeReconciliationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def read(self,shop,target,fingerprint):
         return {'identity':{**target,'variant_id':22 if shop=='biketrek' else 23,'product_id':11},
                 'leaf':{'code':'ZOO-1','ean':'5901234123457'},'options':None}
+
+    async def missing_id_fixture(self, *, variant=True):
+        async with self.sessions() as db:
+            for mapping in await db.scalars(select(ShopProduct).where(ShopProduct.product_id == self.pid)):
+                cache = await db.scalar(select(ShopProductContent).where(
+                    ShopProductContent.shop_id == mapping.shop_id,
+                    ShopProductContent.external_code == mapping.parent_code))
+                leaf = {'code': 'TOPEAK-1', 'product_id': 11, 'ean': '5901234123457'}
+                if variant:
+                    leaf['variant_id'] = int(mapping.external_id)
+                    cache.data = {'code': mapping.parent_code, 'product_id': 11, 'variants': [leaf]}
+                else:
+                    mapping.is_variant = False; mapping.parent_code = None; mapping.variant_code = None
+                    mapping.external_code = 'TOPEAK-1'; cache.external_code = 'TOPEAK-1'; cache.data = leaf
+                mapping.external_id = None
+            await db.commit()
+
+    async def test_missing_variant_ids_are_recovered_from_original_cache_and_audited_with_replay(self):
+        await self.missing_id_fixture()
+        request = uuid4()
+        async with self.sessions() as db:
+            result = await service.reconcile_one(db, 'zookee', self.pid, request)
+        async with self.sessions() as db:
+            mappings = list(await db.scalars(select(ShopProduct).where(ShopProduct.product_id == self.pid)))
+            self.assertEqual({m.external_id for m in mappings}, {'22', '23'})
+            self.assertEqual({m.variant_code for m in mappings}, {'ZOO-1'})
+            for cache in await db.scalars(select(ShopProductContent)):
+                self.assertEqual(cache.data['variants'][0]['code'], 'ZOO-1')
+            audit = await db.scalar(select(ProductEditorAudit))
+            self.assertTrue(all(item['cached_identity'] for item in audit.after_data['native_identities']))
+            self.assertEqual(await service.reconcile_one(db, 'zookee', self.pid, request), result)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), self.movement_count)
+        self.assertEqual(self.reader.await_count, 2)
+
+    async def test_standalone_cache_id_is_verified_before_mapping_and_code_are_restored(self):
+        await self.missing_id_fixture(variant=False)
+        async def standalone(*args):
+            result = await self.read(*args); result['identity']['variant_id'] = None; return result
+        self.reader.side_effect = standalone
+        async with self.sessions() as db:
+            await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+        async with self.sessions() as db:
+            for mapping in await db.scalars(select(ShopProduct).where(ShopProduct.product_id == self.pid)):
+                self.assertEqual((mapping.external_id, mapping.external_code), ('11', 'ZOO-1'))
+            for cache in await db.scalars(select(ShopProductContent)):
+                self.assertEqual((cache.external_code, cache.data['code']), ('ZOO-1', 'ZOO-1'))
+
+    async def test_missing_cache_ids_do_not_use_remote_id_or_consume_batch_requests(self):
+        async with self.sessions() as db:
+            for mapping in await db.scalars(select(ShopProduct).where(ShopProduct.product_id == self.pid)):
+                mapping.external_id = None
+            await db.commit()
+        from inventory_hub.services import product_link_source
+        with patch.object(product_link_source, 'discover', AsyncMock()) as discover:
+            async with self.sessions() as db:
+                result = await service.reconcile_batch(db, 'zookee', [SimpleNamespace(product_id=self.pid, request_id=uuid4())])
+            self.assertEqual(result['results'][0]['error'], 'code_rename_cache_identity_missing')
+            discover.assert_not_awaited(); self.reader.assert_not_awaited()
+
+    async def test_cached_id_must_match_remote_parent_and_variant_ids(self):
+        await self.missing_id_fixture()
+        async def wrong(*args):
+            result = await self.read(*args); result['identity']['product_id'] = 999; return result
+        self.reader.side_effect = wrong
+        async with self.sessions() as db:
+            with self.assertRaisesRegex(service.editor.EditorError, 'code_rename_native_id_changed'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Product, self.pid)).sku, 'TOPEAK-1')
+            self.assertTrue(all(m.external_id is None for m in await db.scalars(
+                select(ShopProduct).where(ShopProduct.product_id == self.pid))))
+
+    async def test_ambiguous_cached_leaf_and_barcode_conflicts_are_rejected_without_remote_reads(self):
+        await self.missing_id_fixture()
+        async with self.sessions() as db:
+            cache = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == self.shops['biketrek']))
+            original = copy.deepcopy(cache.data)
+            cache.data = {**original, 'variants': original['variants'] * 2}; await db.commit()
+        async with self.sessions() as db:
+            with self.assertRaisesRegex(service.editor.EditorError, 'code_rename_cache_identity_missing'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+        async with self.sessions() as db:
+            cache = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == self.shops['biketrek']))
+            cache.data = {**original, 'variants': [{**original['variants'][0], 'ean': '4006381333931'}]}; await db.commit()
+        async with self.sessions() as db:
+            with self.assertRaisesRegex(service.editor.EditorError, 'code_rename_barcode_conflict'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+        self.reader.assert_not_awaited()
+
+    async def test_cache_identity_change_during_remote_reads_rejects_restoration(self):
+        await self.missing_id_fixture()
+        async def changed(shop, *args):
+            if shop == 'biketrek':
+                async with self.sessions() as db:
+                    cache = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == self.shops[shop]))
+                    cache.data = {**cache.data, 'variants': [{**cache.data['variants'][0], 'variant_id': 999}]}
+                    await db.commit()
+            return await self.read(shop, *args)
+        self.reader.side_effect = changed
+        async with self.sessions() as db:
+            with self.assertRaisesRegex(service.editor.EditorError, 'product_editor_changed'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Product, self.pid)).sku, 'TOPEAK-1')
+
+    async def test_recovered_id_already_linked_to_another_card_cannot_merge_identities(self):
+        await self.missing_id_fixture()
+        async with self.sessions() as db:
+            other = Product(sku='ANOTHER-CARD', name='Another card'); db.add(other); await db.flush()
+            db.add(ShopProduct(shop_id=self.shops['biketrek'], product_id=other.id, is_variant=True,
+                external_code='xTrek', parent_code='xTrek', variant_code='ANOTHER-CARD', external_id='22'))
+            await db.commit()
+        async with self.sessions() as db:
+            with self.assertRaisesRegex(service.editor.EditorError, 'product_editor_identity_conflict'):
+                await service.reconcile_one(db, 'zookee', self.pid, uuid4())
 
     async def test_all_shop_ids_verified_local_identity_audited_and_retry_is_read_only(self):
         request_id=uuid4()

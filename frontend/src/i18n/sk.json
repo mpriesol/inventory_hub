@@ -577,6 +577,7 @@
       "supplier_availability_changed": "Dostupnosť v konfigurácii dodávateľa sa zmenila alebo náhľad vznikol podľa starých pravidiel. Priprav nový náhľad.",
       "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov.",
       "stock_feed_only": "Produkt je iba v skladovom feede. Na publikovanie chýba úplný katalógový záznam.",
+      "images_from_linked_shop": "Chýbajúce obrázky sú doplnené z overeného prepojeného e-shopu.",
       "missing_purchase_price": "Nákupná cena vo feede nie je uvedená."
     },
     "tab": {
