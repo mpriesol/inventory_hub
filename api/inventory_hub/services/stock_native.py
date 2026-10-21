@@ -137,6 +137,7 @@ async def _identities(db, shop_id, value, *, bind=False):
         # An audited code-only rename must not invalidate an immutable older
         # observation. Native leaf, mapping row and variant parent stay fixed.
         same_native = (alias_proof is not None and isinstance(stored, dict)
+                       and stored.get("code") in alias_proof["code_chain"]
                        and all(stored.get(key) == proof[key] for key in ("id", "external_id", "is_variant", "parent_code")))
         if (stored is not None and stored != proof and not same_native) or (not bind and stored is None):
             raise NativeError("stock_native_line_identity")

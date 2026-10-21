@@ -111,6 +111,7 @@ class AliasIndex:
             edges[old].append((new, audit.id, audit.revision, parent_id))
 
         code, audit_ids, seen, revision, parent_id = incoming.code, [], set(), -1, None
+        code_chain = [code]
         while code != current:
             if code in seen or len(audit_ids) >= 20 or len(edges[code]) != 1:
                 return conflict("order_sku_alias_unverified")
@@ -119,6 +120,7 @@ class AliasIndex:
             if next_revision <= revision or (parent_id is not None and parent_id != next_parent):
                 return conflict("order_sku_alias_unverified")
             audit_ids.append(audit_id)
+            code_chain.append(code)
             revision, parent_id = next_revision, next_parent
         # The historical code plus audited native leaf identifies the variant;
         # the order's option_set_id is a separate, preserved observation.
@@ -130,7 +132,7 @@ class AliasIndex:
             return conflict("order_sku_alias_native_conflict")
         proof = {"old_code": incoming.code, "current_code": current, "shop_id": index.shop_id,
                  "mapping_id": mapping.id, "is_variant": mapping.is_variant, "native_id": native_id,
-                 "parent_native_id": parent_id, "audit_ids": audit_ids,
+                 "parent_native_id": parent_id, "audit_ids": audit_ids, "code_chain": code_chain,
                  "target_fingerprint": self.target_fingerprint}
         return IdentityResolution("mapped", product_id, "verified_sku_alias", [product_id]), proof
 

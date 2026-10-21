@@ -87,6 +87,10 @@ class OrderSkuAliasDatabaseTests(unittest.IsolatedAsyncioTestCase):
         # The historical event is usable without rewriting its old mapping.
         async with self.sessions() as db:
             await stock_native._identities(db, self.shops["biketrek"], immutable_facts)
+            corrupt = copy.deepcopy(immutable_facts)
+            corrupt["lines"][0]["mapping"]["code"] = "UNRELATED"
+            with self.assertRaises(stock_native.NativeError):
+                await stock_native._identities(db, self.shops["biketrek"], corrupt)
         raw["status_id"] = 8
         preview = await self.preview(raw)
         source = preview["source"]["lines"][0]
