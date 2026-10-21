@@ -42,6 +42,8 @@ Use **BIKETREK** and **xTrek** in new documentation and user-facing copy. Keep e
 - `docs/ai-content.md`: AI preparation, review, selected-field updates, access configuration and recovery.
 - `docs/product-feed-mapping.md`: versioned supplier feed mapping, analysis and category rules.
 - `docs/product-imports.md`: durable editable import drafts, protected manual values and separate Hub/shop saves.
+- `docs/sku-policy.md`: verified brand namespaces, source-code evidence and shared card creation.
+- `docs/sku-migration.md`: read-only existing-SKU migration preview, native-ID checks, dependencies and pilot recovery.
 
 There are two data stores. PostgreSQL holds relational business data; the filesystem holds supplier/shop configuration and imported/generated files. Supplier-related changes may need both representations. Do not silently update only one side.
 

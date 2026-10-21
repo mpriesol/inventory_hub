@@ -91,14 +91,22 @@ class CatalogProduct(BaseModel):
     shop_active: bool | None = None
 
 
+class CatalogDisplayProduct(CatalogProduct):
+    """Live read-only projection, deliberately absent from import snapshots."""
+    hub_identity_status: Literal["assigned", "unassigned", "conflict"] = "unassigned"
+    hub_product_id: int | None = None
+    hub_sku: str | None = None
+    hub_identity_reasons: list[str] = Field(default_factory=list)
+
+
 class CatalogRow(BaseModel):
     """A standalone item or an explicit supplier group. IDs always identify items."""
     key: str
-    product: CatalogProduct
+    product: CatalogDisplayProduct
     is_group: bool = False
     variants_count: int = 0
     matching_ids: list[int] = Field(default_factory=list)
-    variants: list[CatalogProduct] = Field(default_factory=list)
+    variants: list[CatalogDisplayProduct] = Field(default_factory=list)
 
 
 class CatalogPage(BaseModel):

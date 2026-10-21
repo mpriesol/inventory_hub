@@ -11,6 +11,7 @@ import { ProductPublicationPanel } from '../components/product/ProductPublicatio
 import { ProductShopLinksPanel } from '../components/product/ProductShopLinksPanel';
 import { ProductSupplierLinksPanel } from '../components/product/ProductSupplierLinksPanel';
 import { ProductCardCreateForm } from '../components/product/ProductCardCreateForm';
+import { SkuMigrationPreviewDialog } from '../components/product/SkuMigrationPreviewDialog';
 import { pendingProductLink, refreshProductLinkMetadata } from '../api/productLinks';
 import { pendingSupplierLink } from '../api/supplierCardLinks';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
@@ -92,6 +93,7 @@ export function ProductEditorPage() {
   const [publication, setPublication] = useState<{ shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[] } | null>(null);
   const [linkingRows, setLinkingRows] = useState<ProductEditorRow[] | null>(null);
   const [supplierLink, setSupplierLink] = useState<{ product?: ProductEditorRow; fillEans?: boolean } | null>(null);
+  const [skuMigrationProduct, setSkuMigrationProduct] = useState<ProductEditorRow | null>(null);
   const [linkRefresh, setLinkRefresh] = useState<Record<string, { kind: 'info' | 'error'; message: string }>>({});
   const [refreshingShop, setRefreshingShop] = useState('');
   const linksChanged = useRef(false);
@@ -104,7 +106,7 @@ export function ProductEditorPage() {
   const locked = busy === 'save' || busy === 'recover' || uncertain;
   const filtersPending = !!loaded && JSON.stringify({ ...filters, page: 1 }) !== JSON.stringify({ ...loaded.filters, page: 1 });
   const selectedRows = filtersPending ? [] : shownRows.filter(row => selected.has(row.id));
-  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate, t('productEditor.leaveChanges'));
+  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate || !!skuMigrationProduct, t('productEditor.leaveChanges'));
   function remember(scroll = scrollRef.current?.scrollTop || 0) {
     if (loaded) try { sessionStorage.setItem(CONTEXT_KEY, JSON.stringify({ filters: loaded.filters, selected: [...selected], scroll })); } catch { /* Optional browser context. */ }
   }
@@ -113,6 +115,7 @@ export function ProductEditorPage() {
   function replaceDrafts(value: Drafts) { draftsRef.current = value; setDrafts(value); }
   function stage(value: Drafts) { if (Object.keys(value).length > 100) { setError('draft_limit'); return; } replaceDrafts(value); setSavedCount(0); }
   function reset() {
+    setSkuMigrationProduct(null);
     setShowCreate(false);
     resizing.current?.(); setCollapsedGroups(new Set());
     generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort();
@@ -545,6 +548,9 @@ export function ProductEditorPage() {
         <div className="product-editor-history-link"><Button data-testid="link-detail-supplier" variant="secondary" size="sm" icon={<Link2 size={14} />}
           disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
           onClick={() => openSupplierLink(selectedDetail)}>{t(selectedDetail.supplier_codes.length ? 'productEditor.manageSupplier' : 'supplierLinks.open')}</Button></div>
+        <div className="product-editor-history-link"><Button data-testid="sku-migration-open" variant="secondary" size="sm"
+          disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
+          onClick={() => { const product = structuredClone(selectedDetail); closeDetail(); setSkuMigrationProduct(product); }}>{t('skuMigration.title')}</Button><ActionScope effects={['hub-read']} /></div>
         {detailTab === 'adjustment' ? <StockAdjustmentPanel productId={detailId} sku={selectedDetail.sku} warehouseCode={warehouse} onChanged={() => openDetail(selectedDetail, 'adjustment')} /> : detailTab === 'fifo' ? <FifoPanel productId={detailId} warehouseCode={warehouse} onChanged={() => { if (selectedDetail) openDetail(selectedDetail, 'fifo'); }} /> : detailTab === 'audit' ? <div className="product-editor-detail-body"><h3>{t('productEditor.auditTitle')}</h3>{!detail ? <p>{t('productEditor.loading')}</p> : !detail.audit.length ? <p>{t('productEditor.noAudit')}</p> : detail.audit.map(item => {
           const before = { ...selectedDetail, ...item.before }, after = { ...selectedDetail, ...item.after };
           const changes = editableFields.filter(({ column, scope }) => JSON.stringify(originalValue(before, column.key, scope)) !== JSON.stringify(originalValue(after, column.key, scope)));
@@ -565,6 +571,7 @@ export function ProductEditorPage() {
       {supplierLink && <ProductSupplierLinksPanel product={supplierLink.product} fillEans={supplierLink.fillEans} onChanged={() => { linksChanged.current = true; }} onClose={() => {
         setSupplierLink(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }
       }} />}
+      {skuMigrationProduct && <SkuMigrationPreviewDialog product={skuMigrationProduct} onClose={() => setSkuMigrationProduct(null)} />}
     </>}
   </div>;
 }

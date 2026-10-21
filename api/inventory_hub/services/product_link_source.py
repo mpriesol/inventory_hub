@@ -221,11 +221,12 @@ class _Reader:
         return rows
 
 
-def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None, max_requests: int) -> dict:
+def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None, max_requests: int,
+              include_occupied: bool = False) -> dict:
     codes = _codes(codes)
     wanted, folded = set(codes), {code.casefold() for code in codes}
     reader = _Reader(shop_code, expected_fingerprint, max_requests)
-    leaves = {}
+    leaves, occupied = {}, []
     try:
         # This switch omits variants; it does not filter out parent products.
         # Explicit parent/set flags below prevent a family from becoming stock.
@@ -237,6 +238,15 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
             _need((parent_code, parent_id) not in seen_parents, "source_duplicate_parent")
             seen_parents.add((parent_code, parent_id))
             parents[(parent_code, parent_id)] = parent
+            if include_occupied:
+                # A non-stock parent or set still owns its code. Keep actual
+                # casing even when this response cannot be an exact leaf.
+                kind = ("set" if parent.get("set_yn") is True else
+                        "parent" if parent.get("variants_exists_yn") is True else
+                        "product" if parent.get("variants_exists_yn") is False
+                        and parent.get("set_yn", False) is False else "unknown")
+                occupied.append({"code": parent_code, "kind": kind, "native_id": parent_id,
+                                 "parent_id": parent_id, "parent_code": parent_code})
             if parent_code not in wanted:
                 continue
             _need(type(parent.get("variants_exists_yn")) is bool, "source_product_kind_unknown")
@@ -253,6 +263,10 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
         for item in rows:
             code = _code(item.get("code"))
             _need(code.casefold() in folded, "source_filter_mismatch")
+            if include_occupied:
+                occupied.append({"code": code, "kind": "variant", "native_id": _native_id(item.get("variant_id")),
+                                 "parent_id": _native_id(item.get("product_id")),
+                                 "parent_code": _code(item.get("product_code"))})
             if code not in wanted:
                 continue
             parent = {"code": item.get("product_code"), "product_id": item.get("product_id")}
@@ -283,7 +297,11 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
             _need(parent.get('variants_exists_yn') is True and parent.get('set_yn', False) is False,
                   'source_product_kind_unknown')
             leaves[key] = _leaf(parent, item, variant=True)
-        return {"fingerprint": reader.fingerprint, "leaves": sorted(leaves.values(), key=_key), "requests": reader.requests}
+        result = {"fingerprint": reader.fingerprint, "leaves": sorted(leaves.values(), key=_key), "requests": reader.requests}
+        if include_occupied:
+            result["occupied_codes"] = sorted(occupied, key=lambda row: (
+                row["code"], row["kind"], row["native_id"], row["parent_id"], row["parent_code"]))
+        return result
     finally:
         reader.close()
 
@@ -291,6 +309,18 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
 async def discover(shop_code: str, codes: list[str], expected_fingerprint: str | None = None,
                    *, max_requests: int = MAX_REQUESTS) -> dict:
     return await asyncio.to_thread(_discover, shop_code, codes, expected_fingerprint, max_requests)
+
+
+async def inspect_codes(shop_code: str, codes: list[str], expected_fingerprint: str | None = None,
+                        *, max_requests: int = MAX_REQUESTS) -> dict:
+    """Read explicit codes for migration review, including non-leaf occupancy.
+
+    The same bounded GETs provide exact physical leaves and every returned
+    casefold-matching product/parent/set/variant code. An empty leaf list alone
+    must never be interpreted as a free target code. No cache is refreshed and
+    no local business data or remote product is changed.
+    """
+    return await asyncio.to_thread(_discover, shop_code, codes, expected_fingerprint, max_requests, True)
 
 
 async def current_fingerprint(shop_code: str) -> str:

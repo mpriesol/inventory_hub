@@ -38,6 +38,9 @@ products[1].warnings = ['inherited_retail_price', 'retail_below_purchase'];
 products[2].warnings = ['duplicate_supplier_code'];
 products[2].import_blockers = ['duplicate_supplier_code'];
 Object.assign(products[0], { listed: true, shop_url: 'https://shop.example.test/p/prilba', shop_admin_url: 'https://admin.example.test/product/101', shop_active: false });
+Object.assign(products[0], { hub_identity_status: 'assigned', hub_product_id: 42, hub_sku: 'OLD-00042' });
+Object.assign(products[1], { hub_identity_status: 'unassigned' });
+Object.assign(products[2], { hub_identity_status: 'conflict' });
 const displayImages = ['/api/suppliers/paul-lange/catalog/images/ito5-S123.jpg', products[1].images[0]];
 const calls = [];
 let snapshot = 1;
@@ -107,6 +110,7 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   await settle(); await settle();
   assert.equal(document.getElementById('catalog-shop').value, 'biketrek', 'The supplier default takes precedence over a previously visited supplier’s shop');
   assert.equal(document.querySelectorAll('tbody tr').length, 1, 'Variants start collapsed');
+  assert.equal(document.querySelector('tbody').textContent.includes('OLD-00042'), false, 'A group header is not a physical stock card');
   assert.ok(document.body.textContent.includes('V e-shope 1 / 2 variantov'), 'The group status counts every variant');
   assert.ok(document.body.textContent.includes('Cena z hlavného produktu'), 'Collapsed groups show warnings from their variants');
   assert.ok(document.body.textContent.includes('MOC pod nákupnou cenou'));
@@ -116,6 +120,10 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(calls.some(c => c.path.endsWith('/refresh') || c.path.endsWith('/import')), false, 'Raw download does not index or import products');
   await click(document.querySelector('button[aria-expanded="false"][aria-label]'));
   assert.equal(document.querySelectorAll('tbody tr').length, 3, 'Expanding a parent shows both variants');
+  assert.ok(document.querySelector('.catalog-variant').textContent.includes('OLD-00042'), 'Show the verified current Hub SKU');
+  assert.ok(document.querySelector('.catalog-variant').textContent.includes('Kód dodávateľa: A-1'));
+  assert.equal(document.querySelector('.catalog-variant').textContent.includes('PL-A-1'), false, 'Never label a generated supplier prefix as an assigned SKU');
+  assert.ok(document.querySelectorAll('.catalog-variant')[1].textContent.includes('SKU nepridelené'));
   assert.deepEqual([...document.querySelectorAll('.catalog-variant img')].map(i => i.getAttribute('src')), displayImages);
   const shopLink = document.querySelector('.catalog-variant a.catalog-badge');
   assert.equal(shopLink.getAttribute('href'), products[0].shop_url);
@@ -125,6 +133,8 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(document.querySelector('[role="dialog"]'), null, 'Shop link must not open the row detail');
   assert.ok(document.body.textContent.includes('Produkt je v e-shope skrytý'));
   await click(button('Prilba M'));
+  assert.ok(document.querySelector('.catalog-detail-head').textContent.includes('SKU Hubu: OLD-00042'));
+  assert.equal(document.querySelector('.catalog-detail-head').textContent.includes('PL-A-1'), false);
   assert.equal(document.querySelector('.catalog-detail-head img').getAttribute('src'), displayImages[0], 'Detail uses the HTTPS origin for HTTP supplier photos');
   assert.equal(document.querySelector('.catalog-gallery img').getAttribute('src'), displayImages[0]);
   assert.equal(document.querySelector('.catalog-detail a[href="https://shop.example.test/p/prilba"]').target, '_blank');
@@ -134,6 +144,7 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(checkbox('Vybrať varianty: Prilba').indeterminate, true, 'Parent reflects partial selection');
   await click(button('Ďalej')); await settle();
   assert.ok(document.body.textContent.includes('Import blokovaný'));
+  assert.ok(document.body.textContent.includes('Nejednoznačná identita'));
   await click(checkbox('Vybrať produkt: Rukavice'));
   assert.ok(document.body.textContent.includes('Vybrané položky: 2'), 'Selection persists across pages');
   await click(button('Späť')); await settle();

@@ -145,6 +145,62 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
             result = await source.discover("xtrek", ["PARENT"])
             self.assertEqual(result["leaves"], [])
 
+    async def test_code_inspection_keeps_non_stock_parent_and_set_collisions(self):
+        parent = parent_metadata()
+        bundle = {"code": "TP-SET", "product_id": 8, "variants_exists_yn": False, "set_yn": True}
+        self.setup_client(page("products", [parent, bundle]), page("variants", []))
+        result = await source.inspect_codes("xtrek", ["PARENT", "TP-SET", "TP-FREE"])
+        self.assertEqual(result["leaves"], [])
+        self.assertEqual(result["occupied_codes"], [
+            {"code": "PARENT", "kind": "parent", "native_id": "7", "parent_id": "7", "parent_code": "PARENT"},
+            {"code": "TP-SET", "kind": "set", "native_id": "8", "parent_id": "8", "parent_code": "TP-SET"},
+        ])
+        self.assertEqual(result["requests"], 2, "Code occupancy uses the existing batched GETs")
+
+    async def test_code_inspection_retains_case_only_product_and_variant_occupancy(self):
+        single = {"code": "tp-Single", "product_id": 9, "variants_exists_yn": False}
+        self.setup_client(page("products", [single]), page("variants", [variant("tp-Leaf")]))
+        result = await source.inspect_codes("xtrek", ["TP-SINGLE", "TP-LEAF"])
+        self.assertEqual(result["leaves"], [], "Case-only matches are not silently promoted to exact leaves")
+        self.assertEqual(result["occupied_codes"], [
+            {"code": "tp-Leaf", "kind": "variant", "native_id": "71", "parent_id": "7", "parent_code": "PARENT"},
+            {"code": "tp-Single", "kind": "product", "native_id": "9", "parent_id": "9", "parent_code": "tp-Single"},
+        ])
+        self.assertEqual(result["requests"], 2)
+
+    async def test_code_inspection_preserves_exact_native_leaf_and_parent_evidence(self):
+        self.discovery(variant())
+        result = await source.inspect_codes("xtrek", ["LEAF-M", "TP-NEW"], FINGERPRINT)
+        self.assertEqual(result["occupied_codes"], [
+            {"code": "LEAF-M", "kind": "variant", "native_id": "71", "parent_id": "7", "parent_code": "PARENT"},
+        ])
+        leaf = result["leaves"][0]
+        self.assertEqual((leaf["external_id"], leaf["parent_id"], leaf["parent_code"], leaf["eans"]),
+                         ("71", "7", "PARENT", [EAN]))
+        self.assertEqual(result["requests"], 3)
+        self.assertEqual(self.session.calls[0][1]["params"]["codes"], "LEAF-M;TP-NEW")
+        self.assertEqual(self.session.calls[1][1]["params"]["variant_codes"], "LEAF-M;TP-NEW")
+
+    async def test_code_inspection_rejects_invalid_native_case_only_occupancy(self):
+        self.setup_client(page("products", []), page("variants", [variant("leaf-m", None)]))
+        with self.assertRaises(source.SourceError) as raised:
+            await source.inspect_codes("xtrek", ["LEAF-M"])
+        self.assertEqual(raised.exception.code, "source_native_id_invalid")
+
+    async def test_code_inspection_honors_request_allowance_and_quota_without_retry(self):
+        self.discovery(variant())
+        with self.assertRaises(source.SourceError) as raised:
+            await source.inspect_codes("xtrek", ["LEAF-M"], max_requests=2)
+        self.assertEqual(raised.exception.code, "source_request_limit")
+        self.assertEqual(len(self.session.calls), 2)
+        self.setup_client(Response({}, 429, {"Retry-After": "120"}))
+        with self.assertRaises(source.SourceError) as raised:
+            await source.inspect_codes("xtrek", ["LEAF-M"])
+        self.assertEqual((raised.exception.code, raised.exception.status, raised.exception.retry_after),
+                         ("source_rate_limited", 429, 120))
+        self.assertEqual(len(self.session.calls), 1)
+        self.assertTrue(self.session.closed)
+
     async def test_hundred_variant_batch_reads_parent_metadata_once_not_per_product(self):
         variants = [variant("SKU-"+str(i), i+1) for i in range(100)]
         details = [detailed(v["code"], v["variant_id"]) for v in variants]
