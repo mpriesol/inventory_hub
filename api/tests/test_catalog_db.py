@@ -17,7 +17,7 @@ from catalog_fixtures import FakeUpgates, northfinder_product, northfinder_varia
 from inventory_hub import config_io
 from inventory_hub.catalog_types import ShopImportPreviewRequest, CatalogProduct, CatalogPrices
 from inventory_hub.db_models import Product, Shop, Supplier, SupplierFeedRun, SupplierProduct, ProductIdentifier, IdentifierType
-from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
+from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent
 from inventory_hub.services import catalog, catalog_import
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -35,7 +35,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2]
-            for name in ("001_schema.sql", "004_shop_product_content.sql", "014_supplier_availability.sql", "021_product_feed_mapping.sql", "029_sku_policy.sql"):
+            for name in ("001_schema.sql", "004_shop_product_content.sql", "012_product_editor.sql", "014_supplier_availability.sql", "021_product_feed_mapping.sql", "029_sku_policy.sql"):
                 await connection.execute((root / "infra" / "db-init" / name).read_text())
         finally:
             await connection.close()
@@ -85,6 +85,69 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("<SHOPITEM>", detail["source_xml"])
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_catalog_shows_current_hub_sku_without_mutating_supplier_snapshot(self):
+        self.write_feed(xml_item(ean='5901234123457'))
+        await self.refresh()
+        async with self.sessions() as db:
+            source = await db.scalar(select(SupplierProduct))
+            snapshot = dict(source.attributes['catalog'])
+            card = Product(sku='OLD-00042', name='Current card', brand='TEST')
+            # A matching historical prefix proposal is not independent evidence.
+            db.add_all([card, Product(sku='PL-A-001', name='Unrelated old card', brand='TEST')])
+            await db.flush()
+            db.add(ProductIdentifier(product_id=card.id, supplier_id=source.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value=source.supplier_sku))
+            await db.commit()
+            page = await catalog.catalog_page(db, 'paul-lange')
+            detail = await catalog.catalog_detail(db, 'paul-lange', source.id)
+            for item in (page.items[0].product, detail['product']):
+                self.assertEqual((item.hub_identity_status, item.hub_product_id, item.hub_sku),
+                                 ('assigned', card.id, 'OLD-00042'))
+                self.assertEqual(item.shop_code, 'PL-A-001')
+            selected = (await catalog.selected_products(db, 'paul-lange', 'products', [source.id]))[0]
+            self.assertNotIn('hub_sku', selected.model_dump())
+            self.assertEqual(selected.shop_code, 'PL-A-001')
+            self.assertEqual(source.attributes['catalog'], snapshot)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+
+    async def test_catalog_binding_and_barcode_disagreement_never_display_an_assigned_sku(self):
+        self.write_feed(xml_item(ean='5901234123457'))
+        await self.refresh()
+        async with self.sessions() as db:
+            source = await db.scalar(select(SupplierProduct))
+            bound = Product(sku='OLD-42', name='Bound card', brand='TEST', source_supplier_product_id=source.id)
+            barcode_owner = Product(sku='OTHER-43', name='Other card', brand='TEST')
+            db.add_all([bound, barcode_owner]); await db.flush()
+            db.add(ProductIdentifier(product_id=barcode_owner.id, identifier_type=IdentifierType.ean, value='5901234123457'))
+            await db.commit()
+            item = (await catalog.catalog_detail(db, 'paul-lange', source.id))['product']
+            self.assertEqual(item.hub_identity_status, 'conflict')
+            self.assertIsNone(item.hub_sku)
+            self.assertIn('assigned_product_changed', item.hub_identity_reasons)
+
+    async def test_catalog_checks_bound_card_brand_axes_and_multiple_source_owners(self):
+        self.write_feed(xml_item())
+        await self.refresh()
+        async with self.sessions() as db:
+            source = await db.scalar(select(SupplierProduct))
+            data = dict(source.attributes['catalog'])
+            data['variant_attributes'] = [{'name': 'Size', 'value': 'M'}]
+            source.attributes = {**source.attributes, 'catalog': data}
+            card = Product(sku='OLD-42', name='Bound card', brand='OTHER')
+            db.add(card); await db.flush()
+            db.add(ProductSupplySource(product_id=card.id, supplier_product_id=source.id))
+            db.add(ProductVariantAttribute(product_id=card.id, attribute_name='Veľkosť', attribute_value='L'))
+            await db.commit()
+            item = (await catalog.catalog_detail(db, 'paul-lange', source.id))['product']
+            self.assertEqual(item.hub_identity_status, 'conflict')
+            self.assertCountEqual(item.hub_identity_reasons, ['sku_brand_conflict', 'variant_axes_conflict'])
+            other = Product(sku='OLD-43', name='Second owner', brand='TEST', source_supplier_product_id=source.id)
+            db.add(other); await db.commit()
+            item = (await catalog.catalog_page(db, 'paul-lange')).items[0].product
+            self.assertEqual(item.hub_identity_status, 'conflict')
+            self.assertIsNone(item.hub_product_id)
+            self.assertIn('supplier_source_multiple_owners', item.hub_identity_reasons)
 
     async def image_fallback_fixture(self, *, variant=False):
         self.write_feed(xml_item(ean='5901234123457'))

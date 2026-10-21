@@ -47,7 +47,12 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
           {warnings.includes('retail_below_purchase') && <span className="catalog-badge catalog-bad">{t('catalog.lowRetailPrice')}</span>}
         </div>
       </div></td>
-      <td><code>{group ? p.group_code : p.shop_code}</code><div className="catalog-muted">{group ? t('catalog.supplierGroup') : p.eans[0] || t('catalog.noEan')}</div></td>
+      <td>{group ? <><code>{p.group_code}</code><div className="catalog-muted">{t('catalog.supplierGroup')}</div></>
+        : <>{p.hub_identity_status === 'assigned' && p.hub_sku
+          ? <><code>{p.hub_sku}</code><div className="catalog-muted">{t('catalog.hubSku')}</div></>
+          : <div className="catalog-muted">{t(p.hub_identity_status === 'conflict' ? 'catalog.hubSkuConflict' : 'catalog.hubSkuUnassigned')}</div>}
+          <div className="catalog-muted">{t('catalog.supplierCode')}: <code>{p.code || '—'}</code></div>
+          <div className="catalog-muted">{p.eans[0] || t('catalog.noEan')}</div></>}</td>
       {showPrice && <td className="catalog-number">{group ? t('catalog.fromPrice', { price: formatPrice(row.variants.reduce((low, v) => Number(v.prices.retail_gross ?? Infinity) < Number(low.prices.retail_gross ?? Infinity) ? v : low, p)) }) : formatPrice(p)}</td>}
       {showAvailability && <td>{group ? '—' : <><span>{p.supplier_stock_raw ?? '—'}</span><div className="catalog-muted">{p.availability || ''}</div></>}</td>}
       <td>{!group && p.listed && p.shop_url ? <a className="catalog-badge catalog-good" href={p.shop_url} target="_blank" rel="noopener noreferrer" title={t('catalog.openShop')} onClick={e => e.stopPropagation()}>{label} ↗</a>

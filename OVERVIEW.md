@@ -2,6 +2,8 @@
 
 Nové skladové karty používajú spoločnú [politiku SKU a identity](docs/sku-policy.md): register dvojpísmenových skratiek značiek, doložený kód konkrétneho výrobku/variantu a rovnaké kontroly v katalógu, príjme aj ručnom založení. Existujúca jednoznačná karta sa používa znova; historické SKU sa tým nemení. Základnú kartu možno uložiť bez hotového e-shopového obsahu. Príjem množstiev a publikovanie zostávajú samostatné kroky. Migrácia **029** pridáva register a dôkazy identity bez prečíslovania či aktivácie skladu. Staršie opisy dodávateľského prefixu nižšie platia len pre historické väzby.
 
+Existujúce karty majú samostatný [náhľad prevodu SKU](docs/sku-migration.md) s kontrolou identity, kolízií, natívnych väzieb a závislostí. Voliteľné čerstvé overenie v e-shopoch používa iba GET. Náhľad neprečísluje produkty ani neukladá schválenie migrácie; chýbajúci postup premenovania v Upgates, reklamné identifikátory a otvorené objednávky zostávajú osobitnými podmienkami pilotu. Táto etapa nemá novú databázovú migráciu ani skladové zápisy.
+
 Prevádzkový kontext pre ďalší prechod: **BIKETREK** je produkčný Upgates, **xTrek** naďalej používa Atomer. Pripojenie prípravného xTrek Upgates sa nesmie považovať za zdroj všetkých živých predajov.
 
 Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Obsahuje aj oddelené plánované čítanie dodávateľských dostupností, pravidelný prenos zásob a potvrdené odoslanie vybraných produktových polí. Prevzatie skladovej autority zostáva výslovne zapínateľné; nasadenie kódu nie je ostrý pilot.
@@ -45,6 +47,7 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 | [Príprava importu](docs/product-imports.md) | Uložený editovateľný náhľad, voliteľné AI, uloženie do Hubu a samostatné odoslanie do e-shopu. |
 | [Prepojenie existujúcich kariet](docs/product-links.md) | Jednotlivé aj hromadné párovanie s existujúcimi produktmi e-shopov, náhľad, konflikty a obnova. |
 | [Spoločná identita a nové SKU](docs/sku-policy.md) | Register značiek, doložené variantové kódy a spoločné zakladanie kariet. |
+| [Prevod existujúcich SKU](docs/sku-migration.md) | Čítací náhľad pilotu, kontrola natívnych ID, závislosti, obnova indexov a návrat. |
 | [Dodávateľská identita](docs/supplier-identity.md) | Historické prefixy a doplnenie väzieb dostupností z už načítaných údajov. |
 | [Centrálny sklad](docs/central-stock.md) | Schválené obchodné pravidlá, prvý bezpečnostný balík a hranice ďalšej implementácie. |
 | [Objednávky — návod pre obsluhu](docs/order-workflows.md) | Prvé spustenie, nastavenia, ručná kontrola a riešenie výnimiek. |

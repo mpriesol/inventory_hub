@@ -71,7 +71,8 @@ const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = make
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
   warehouses: [{ id: 8, code: 'other', name: 'Other fixture', is_default: false }, { id: 7, code: 'main', name: 'Main fixture', is_default: true }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 let loseCreateResponse = true; const createdRequests = new Map();
-let skuPreviewMode = 'new';
+let skuPreviewMode = 'new', migrationMode = 'review', deferMigration = false, releaseMigration;
+const migrationResult = body => ({created_at:'2026-10-21T16:00:00Z',preview_hash:'synthetic-preview-hash',can_apply:false,required_checks:['migration_supported_upgates_rename'],items:[{product_id:body.items[0].product_id,name:'Fixture product 1',old_sku:'SKU-1',proposed_sku:'TP-'+body.items[0].sku_identity.source_code,status:migrationMode,reasons:migrationMode==='blocked'?['migration_remote_native_id_changed']:[],candidate_product_ids:migrationMode==='blocked'?[1,2]:[],identity:{...body.items[0].sku_identity,barcodes:['5901234123457'],source_hash:'synthetic-source'},aliases:[{type:'internal_sku',value:'OLD-001',supplier_id:null,origin:'product_identifiers'}],mappings:[{shop_code:'biketrek',mapping_id:9,is_variant:true,old_code:'SKU-1',proposed_code:'TP-'+body.items[0].sku_identity.source_code,native_id:'9812',parent_code:'PARENT-1',parent_native_id:'4823',remote_status:body.verify_remote?'verified':'not_checked',reasons:[],remote_identity:body.verify_remote?{variant_id:'9812'}:null,remote_hash:body.verify_remote?'synthetic-remote':null}],impacts:{counts:{stock_movements:3},stock_state:'confirmed',requires_review:[],unverified:['advertising_feed_ids_not_inspected'],refresh_required:['catalog_identity_index']},remote_verified:body.verify_remote}]});
 const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: [] }];
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
@@ -85,6 +86,13 @@ global.fetch = async (path, init = {}) => {
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   assert(!path.includes('synthetic-'), 'Credentials never enter query strings');
   const url = new URL(path, dom.window.location.origin);
+  if (url.pathname === '/api/sku-policy/migration-preview') {
+    assert.equal(init.method,'POST'); assert.equal(body.items.length,1); assert.equal(body.items[0].product_id,1);
+    assert.deepEqual(Object.keys(body).sort(),['items','verify_remote']);
+    const value=migrationResult(body);
+    if(deferMigration){deferMigration=false;return new Promise(resolve=>{releaseMigration=()=>resolve(reply(value));});}
+    return reply(value);
+  }
   if (url.pathname === '/api/sku-policy/brands') return reply({ brands: skuBrands });
   if (url.pathname === '/api/sku-policy/preview') {
     assert.equal(init.method, 'POST');
@@ -637,6 +645,51 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(calls.slice(beforeEanFill).filter(item => item.method === 'POST').length, 0, 'Opening EAN adoption never writes or prepares an implicit apply');
   assert(document.querySelector('[role="dialog"]').textContent.includes('8585047234448'), 'The existing supplier EAN is visible without searching the item again');
   await click('supplier-links-close');
+  // Migration preparation is read-only, including the reused identity controls.
+  const beforeMigration = calls.length, originalMigrationRow = clone(rows.get(1));
+  await click('detail-1'); await click('sku-migration-open');
+  assert(required('sku-migration-readonly').textContent.includes('nič neprečísluje'));
+  assert.equal(document.querySelectorAll('[role="dialog"]').length,1,'Only the migration dialog owns keyboard focus');
+  assert(required('sku-migration-local').disabled && required('sku-migration-remote').disabled);
+  assert(!element('sku-register-toggle'),'Read-only preview cannot create registry entries');
+  await input('sku-brand','Topeak'); await input('sku-source-code','0001410'); await input('sku-source-ref','Synthetic official variant evidence');
+  await click('sku-leaf-confirmed');
+  assert(!required('sku-migration-local').disabled);
+  await click('sku-migration-local');
+  const localMigration = calls.filter(call=>call.path==='/api/sku-policy/migration-preview').at(-1).body;
+  assert.equal(localMigration.verify_remote,false); assert.equal(localMigration.items[0].sku_identity.source_code,'0001410');
+  assert(required('sku-migration-result').textContent.includes('SKU-1') && required('sku-migration-result').textContent.includes('TP-0001410'));
+  assert(required('sku-migration-result').textContent.includes('9812') && required('sku-migration-result').textContent.includes('4823'),'Native variant and parent IDs are explicit');
+  assert(required('sku-migration-result').textContent.includes('OLD-001'),'Historical alias remains visible');
+  assert(!required('sku-migration-remote').disabled && element('sku-migration-download'));
+  await click('sku-migration-remote');
+  assert.equal(calls.filter(call=>call.path==='/api/sku-policy/migration-preview').at(-1).body.verify_remote,true,'Remote reads require a separate explicit action');
+  assert(required('sku-migration-result').textContent.includes(i18n.t('skuMigration.remoteVerified')));
+  let downloadedBlob, downloadName;
+  const oldCreateObjectURL=URL.createObjectURL, oldAnchorClick=dom.window.HTMLAnchorElement.prototype.click;
+  URL.createObjectURL=blob=>{downloadedBlob=blob;return 'blob:synthetic-migration-preview';};
+  dom.window.HTMLAnchorElement.prototype.click=function(){downloadName=this.download;};
+  await click('sku-migration-download');
+  URL.createObjectURL=oldCreateObjectURL;dom.window.HTMLAnchorElement.prototype.click=oldAnchorClick;
+  assert.equal(downloadName,'sku-migration-preview-1.json');
+  const exportedPreview=JSON.parse(await downloadedBlob.text());
+  assert.equal(exportedPreview.can_apply,false);assert.equal(exportedPreview.preview_hash,'synthetic-preview-hash');
+  assert.equal(exportedPreview.items[0].mappings[0].native_id,'9812');
+  assert.equal(exportedPreview.items[0].remote_verified,true,'Downloaded evidence includes the actual read result');
+  await input('sku-source-code','0001411');
+  assert.equal(element('sku-migration-result'),null,'Changing evidence invalidates the old preview');
+  assert(required('sku-migration-remote').disabled && required('sku-migration-local').disabled,'A changed variant requires fresh leaf confirmation and local preview');
+  await click('sku-leaf-confirmed'); migrationMode='blocked'; await click('sku-migration-local');
+  assert(required('sku-migration-result').textContent.includes(i18n.t('skuMigration.statuses.blocked')));
+  assert(required('sku-migration-result').textContent.includes('1, 2'));
+  const migrationCalls=calls.slice(beforeMigration);
+  assert(!migrationCalls.some(call=>call.method==='POST' && call.path!=='/api/sku-policy/migration-preview'),'Preview never saves proof, cards, aliases, stock or registry entries');
+  assert(!migrationCalls.some(call=>call.path==='/api/sku-policy/preview'),'Migration never calls the card-creation preview');
+  assert.deepEqual(rows.get(1),originalMigrationRow,'The existing card and its state remain unchanged');
+  deferMigration=true; await click('sku-migration-local'); await click('sku-migration-close');
+  await act(async()=>{releaseMigration();await tick();});
+  assert(!element('sku-migration-dialog') && !element('sku-migration-result'),'A late read cannot reopen the closed dialog');
+  migrationMode='review';
   // Card activity is local, retained with supplier links, and independently filterable.
   const unchangedStock = clone(rows.get(1).stock), unchangedShops = clone(rows.get(1).shops);
   await edit(1, 'is_active', 'false'); await click('save');

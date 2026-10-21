@@ -6,6 +6,7 @@ from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, SkuPreviewRequest
+from inventory_hub.sku_migration_types import SkuMigrationPreviewRequest
 from inventory_hub.services import sku_policy as service
 
 
@@ -51,3 +52,9 @@ async def preview(payload: SkuPreviewRequest, db: AsyncSession = Depends(get_ses
     return await _call(service.preview_sku(db, payload.sku_identity, barcodes=payload.barcodes,
         supplier_id=payload.supplier_id, supplier_sku=payload.supplier_sku,
         expected_product_id=payload.expected_product_id, sku=payload.sku))
+
+
+@router.post("/migration-preview")
+async def migration_preview(payload: SkuMigrationPreviewRequest, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import sku_migration
+    return await _call(sku_migration.preview(db, payload))

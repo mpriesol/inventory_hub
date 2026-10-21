@@ -2,6 +2,8 @@ export interface CatalogShopMatch { matched_by: 'code' | 'ean' | 'parent_code'; 
 export interface CatalogProduct {
   id: number; supplier: string; feed_key: string; run_id: number | null;
   code: string; shop_code: string; manufacturer_code: string | null; eans: string[];
+  hub_identity_status?: 'assigned' | 'unassigned' | 'conflict';
+  hub_product_id?: number | null; hub_sku?: string | null; hub_identity_reasons?: string[];
   name: string; brand: string | null; category: string | null; category_code: string | null;
   description: string; manufacturer_description: string; safety_information: string;
   images: string[]; url: string | null; parameters: { name: string; value: string }[];

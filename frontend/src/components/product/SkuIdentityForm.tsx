@@ -5,9 +5,10 @@ import { addSkuBrandAlias, createSkuBrand, getSkuBrands, previewSku, SkuBrand, S
 import { Button } from '../ui/Button.new';
 import './SkuIdentityForm.css';
 
-export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disabled = false, source }: {
+export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disabled = false, source, previewEnabled = true, allowRegistryWrites = true }: {
   value: SkuIdentityInput; onChange: (value: SkuIdentityInput) => void; onPreview: (value: SkuPreview | null) => void;
   context?: SkuPreviewContext; disabled?: boolean; source?: { supplierCode?: string; manufacturerCode?: string; groupCode?: string };
+  previewEnabled?: boolean; allowRegistryWrites?: boolean;
 }) {
   const { t } = useTranslation();
   const c = (key: string, vars: Record<string, unknown> = {}) => t(`skuPolicy.${key}`, vars);
@@ -31,7 +32,7 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
     const abort = new AbortController(), revision = accessRevision();
     setPreview(null); previewCallback.current(null); setChecking(false);
     const complete = !!(value.brand && value.source_code && value.source_ref);
-    if (disabled || (!complete && !context.barcodes?.length && !context.supplier_sku && !context.sku && !context.expected_product_id)) return () => abort.abort();
+    if (!previewEnabled || disabled || (!complete && !context.barcodes?.length && !context.supplier_sku && !context.sku && !context.expected_product_id)) return () => abort.abort();
     setChecking(true);
     const timer = window.setTimeout(() => {
       const current = payload.current;
@@ -40,12 +41,12 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
       }).catch(() => { if (!abort.signal.aborted && revision === accessRevision()) { setChecking(false); setError('previewUnavailable'); } });
     }, 250);
     return () => { abort.abort(); window.clearTimeout(timer); };
-  }, [signature, disabled, loadAttempt]);
+  }, [signature, disabled, loadAttempt, previewEnabled]);
   function change(patch: Partial<SkuIdentityInput>) {
     setError(''); onChange({ ...value, ...patch, ...(context.supplier_id ? { supplier_id: context.supplier_id } : {}) });
   }
   async function saveBrand() {
-    if (registerBusy) return;
+    if (registerBusy || !allowRegistryWrites) return;
     setRegisterBusy(true); setError('');
     try {
       const brand = aliasTarget ? await addSkuBrandAlias(Number(aliasTarget), value.brand, registerRef)
@@ -56,7 +57,7 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
   }
   const reasonText = (reason: string) => t(`skuPolicy.errors.${reason}`, { defaultValue: t('skuPolicy.errors.identity_conflict') });
   return <fieldset className="sku-identity-form" disabled={disabled || registerBusy}>
-    <legend>{c('title')}</legend><p>{c('help')}</p>
+    <legend>{c('title')}</legend><p>{previewEnabled ? c('help') : t('skuMigration.identityHelp')}</p>
     {source && <details className="sku-source"><summary>{c('sourceValues')}</summary><dl>
       <dt>{c('supplierCode')}</dt><dd>{source.supplierCode || '—'}</dd>
       <dt>{c('sourceManufacturer')}</dt><dd>{source.manufacturerCode || '—'}</dd>
@@ -70,15 +71,16 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
     </div>
     {value.code_kind !== 'manufacturer' && <p className="sku-exception">{c(`exceptions.${value.code_kind}`)}</p>}
     <label className="sku-leaf-confirm"><input data-testid="sku-leaf-confirmed" type="checkbox" checked={value.leaf_confirmed} onChange={event => change({ leaf_confirmed: event.target.checked })} /><span>{c('leafConfirmed')}</span></label>
-    {!!value.brand && !selectedBrand && <div className="sku-brand-register"><Button type="button" variant="ghost" size="sm" data-testid="sku-register-toggle" onClick={() => setRegister(!register)}>{c('registerBrand')}</Button>{register && <div>
+    {!!value.brand && !selectedBrand && allowRegistryWrites && <div className="sku-brand-register"><Button type="button" variant="ghost" size="sm" data-testid="sku-register-toggle" onClick={() => setRegister(!register)}>{c('registerBrand')}</Button>{register && <div>
       <p>{c('registerHelp')}</p><label>{c('aliasTarget')}<select data-testid="sku-alias-target" value={aliasTarget} onChange={event => setAliasTarget(event.target.value)}><option value="">{c('newBrand')}</option>{brands.map(brand => <option key={brand.id} value={brand.id}>{brand.name} · {brand.code}</option>)}</select></label>
       {!aliasTarget && <div className="sku-identity-grid"><label>{c('brandCode')}<input data-testid="sku-register-code" value={registerCode} maxLength={2} pattern="[A-Z]{2}" onChange={event => setRegisterCode(event.target.value.toUpperCase())} /></label><label>{c('brandKind')}<select value={registerKind} onChange={event => setRegisterKind(event.target.value as SkuBrand['kind'])}>{(['brand', 'service', 'unbranded'] as const).map(kind => <option key={kind} value={kind}>{c(`brandKinds.${kind}`)}</option>)}</select></label></div>}
       <label>{c('registryRef')}<input data-testid="sku-register-ref" value={registerRef} maxLength={1000} onChange={event => setRegisterRef(event.target.value)} /></label>
       <Button type="button" data-testid="sku-register-save" size="sm" disabled={!registerRef.trim() || (!aliasTarget && !/^[A-Z]{2}$/.test(registerCode))} onClick={saveBrand}>{c(aliasTarget ? 'saveAlias' : 'saveBrand')}</Button>
     </div>}</div>}
-    <div className={`sku-preview ${preview?.status || ''}`} aria-live="polite" data-testid="sku-preview">
+    {!!value.brand && !selectedBrand && !allowRegistryWrites && <p>{t('skuMigration.registryReadOnly')}</p>}
+    {previewEnabled && <div className={`sku-preview ${preview?.status || ''}`} aria-live="polite" data-testid="sku-preview">
       {checking ? <p>{c('checking')}</p> : preview ? <><strong>{c(`states.${preview.status}`)}</strong>{preview.sku && <code>{preview.sku}</code>}{preview.product_id && <p>{c('existingCard', { id: preview.product_id })}</p>}{preview.reasons.map(reason => <p key={reason}>{reasonText(reason)}</p>)}{!!preview.candidate_product_ids.length && preview.status === 'conflict' && <p>{c('candidates', { ids: preview.candidate_product_ids.join(', ') })}</p>}</> : <p>{c('completeFields')}</p>}
-    </div>
+    </div>}
     {error && <p role="alert">{t(`skuPolicy.errors.${error}`, { defaultValue: c('errors.registryUnavailable') })} {['registryUnavailable', 'previewUnavailable'].includes(error) && <Button type="button" variant="ghost" size="sm" onClick={() => setLoadAttempt(count => count + 1)}>{c('retry')}</Button>}</p>}
   </fieldset>;
 }

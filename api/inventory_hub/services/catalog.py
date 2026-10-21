@@ -30,7 +30,7 @@ from inventory_hub.adapters.cyklo_zitny_catalog import parse_catalog as parse_cy
 from inventory_hub.adapters.silvini_catalog import parse_catalog as parse_silvini
 from inventory_hub.adapters.bike_brothers_catalog import parse_catalog as parse_bike_brothers
 from inventory_hub.adapters.zookee_catalog import parse_catalog as parse_zookee
-from inventory_hub.catalog_types import CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
+from inventory_hub.catalog_types import CatalogDisplayProduct, CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
 from inventory_hub.services.catalog_identity import cached_identities, parent_shop_code
@@ -371,14 +371,15 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
         raise CatalogError(code, "The feed could not be indexed; the last successful catalog is unchanged", 422) from None
 
 
-def public_product(row: SupplierProduct, *, detail: bool = False, listed: bool = False) -> CatalogProduct:
+def public_product(row: SupplierProduct, *, detail: bool = False, listed: bool = False,
+                   display: bool = False) -> CatalogProduct:
     data = dict((row.attributes or {}).get("catalog") or {})
     data.update(id=row.id, listed=listed)
     if not detail:
         for key in ("description", "manufacturer_description", "safety_information", "parameters", "static_parameters",
                     "short_description", "seo_title", "seo_description", "seo_url", "raw_fields", "mapping_provenance", "metadata"):
             data.pop(key, None)
-    return CatalogProduct.model_validate(data)
+    return (CatalogDisplayProduct if display else CatalogProduct).model_validate(data)
 
 
 async def listed_codes(db: AsyncSession, shop_code: str | None) -> set[str]:
@@ -509,7 +510,8 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
     data = {p.id: p for p in (await db.scalars(select(SupplierProduct).where(SupplierProduct.id.in_(ids)))).all()} if ids else {}
     items = []
     for key, group_ids in selected:
-        products = [public_product(data[id], listed=(data[id].attributes["catalog"]["shop_code"].casefold() in known)) for id in group_ids]
+        products = [public_product(data[id], display=True,
+            listed=(data[id].attributes["catalog"]["shop_code"].casefold() in known)) for id in group_ids]
         for product in products:
             product.shop_matches = index.matches(product)
             product.listed = product.listed or bool(product.shop_matches)
@@ -519,6 +521,8 @@ async def catalog_page(db: AsyncSession, supplier: str, feed_key: str = "product
         items.append(CatalogRow(key=key, product=products[0], is_group=is_group,
                                 variants_count=len(products) if is_group else 0,
                                 matching_ids=group_ids, variants=products if is_group else []))
+    from inventory_hub.services.catalog_hub_identity import attach as attach_hub_identity
+    await attach_hub_identity(db, [p for item in items for p in (item.variants or [item.product])], data)
     await attach_shop_links(db, filters.get("shop"), [p for item in items for p in (item.variants or [item.product])])
     from inventory_hub.services.catalog_shop_images import attach as attach_shop_images
     await attach_shop_images(db, supplier, [p for item in items for p in (item.variants or [item.product])])
@@ -577,19 +581,24 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
     if row is None:
         raise CatalogError("catalog_product_missing", "Product was not found in this supplier catalog", 404)
     known = await listed_codes(db, shop)
-    product = public_product(row, detail=True, listed=row.attributes["catalog"]["shop_code"].casefold() in known)
+    product = public_product(row, detail=True, display=True, listed=row.attributes["catalog"]["shop_code"].casefold() in known)
     variants = []
+    sources = {row.id: row}
     if include_variants and row.supplier_group_code:
         siblings = (await db.scalars(select(SupplierProduct).where(
             SupplierProduct.source_feed_id == row.source_feed_id,
             SupplierProduct.supplier_group_code == row.supplier_group_code,
             SupplierProduct.is_active.is_(True)).order_by(SupplierProduct.supplier_sku))).all()
-        variants = [public_product(p, detail=True, listed=p.attributes["catalog"]["shop_code"].casefold() in known) for p in siblings]
+        sources.update((p.id, p) for p in siblings)
+        variants = [public_product(p, detail=True, display=True,
+            listed=p.attributes["catalog"]["shop_code"].casefold() in known) for p in siblings]
         variants.sort(key=variant_sort_key)
     index = await asyncio.to_thread(cached_identities, shop)
     for item in [product, *variants]:
         item.shop_matches = index.matches(item)
         item.listed = item.listed or bool(item.shop_matches)
+    from inventory_hub.services.catalog_hub_identity import attach as attach_hub_identity
+    await attach_hub_identity(db, [product, *variants], sources)
     await attach_shop_links(db, shop, [product, *variants])
     from inventory_hub.services.catalog_shop_images import attach as attach_shop_images
     await attach_shop_images(db, supplier, [product, *variants])

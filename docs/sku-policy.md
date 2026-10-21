@@ -129,6 +129,9 @@ nové karty cez staré cesty. Tabuľky ani potvrdenia požiadaviek nevymazávať
 
 ## Nasledujúca etapa
 
+Čítací náhľad konkrétnych kariet a podrobný postup pilotu sú implementované
+v [príprave prevodu SKU](sku-migration.md). Náhľad nie je vykonanie prečíslovania.
+
 Na existujúcich auditných podkladoch pripraviť malý pilot prečíslovania s čerstvou
 kontrolou natívnych ID Upgates, aliasov a indexov. Topeak duplicity a pokladňová
 skupina xTrek majú vlastné konflikty; história sa automaticky nezlučuje. Až potom
