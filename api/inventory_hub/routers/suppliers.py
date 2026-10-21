@@ -974,6 +974,20 @@ def refresh_supplier_feed(
     xml_path = xml_dir / f"{stem}_{ts}.xml"
     xml_path.write_bytes(resp.content)
 
+    if settings.USE_POSTGRES:
+        # Downloading source data is separate from allocating product identity.
+        # The old converter invents supplier-prefixed CODE values; new cards
+        # must pass through the durable product preparation and SKU policy.
+        cfg["last_feed_sync"] = datetime.now(timezone.utc).isoformat()
+        io_save_supplier(supplier, cfg)
+        return {
+            "ok": True, "supplier": supplier, "url_configured": True,
+            "xml_saved": xml_path.relative_to(sup_dir).as_posix(),
+            "csv_saved": None, "rows_converted": 0,
+            "code": "sku_preparation_required",
+            "message": "Feed je stiahnutý. Karty priprav v dodávateľskom katalógu s overeným spoločným SKU.",
+        }
+
     # Konvertuj → CSV
     adapter = cfg.get("adapter_settings", {})
     price_coeffs = adapter.get("price_coefficients", {})

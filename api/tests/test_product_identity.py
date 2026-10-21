@@ -6,6 +6,7 @@ from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier
 from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.routers.upgates_sync import _pull_families, _mark_resolved_duplicates
 from inventory_hub.services.product_identity import IdentityIndex, RemoteIdentity, load_identity_index, verified_barcodes
+from inventory_hub.services.identifiers import ProductIdentifierService
 
 
 EAN_A = "5901234123457"
@@ -153,6 +154,63 @@ class IdentityResolverTests(unittest.TestCase):
                          (EAN_A, EAN_B, "012345678905"))
         self.assertEqual(verified_barcodes(("0000000000000", "00000000")), ())
 
+    def test_registered_old_sku_resolves_without_renaming_or_inventing_aliases(self):
+        item = product(1, "TP-TBP-ML6B")
+        old = identifier(1, "ZOO-36379", IdentifierType.internal_sku)
+        index = IdentityIndex(0, [item], identifiers=[old])
+        result = index.resolve(RemoteIdentity(0, "ZOO-36379"))
+        self.assertEqual((result.status, result.product_id, result.matched_by), ("identified", 1, "internal_sku"))
+        self.assertEqual(item.sku, "TP-TBP-ML6B")
+        self.assertEqual(old.value, "ZOO-36379")
+        self.assertEqual(index.resolve(RemoteIdentity(0, "TOPEAK-36379")).status, "unresolved")
+        self.assertEqual(index.resolve(RemoteIdentity(0, "zoo-36379")).reasons, ["unmapped_sku_collision"])
+
+    def test_old_sku_collision_with_canonical_or_another_alias_blocks(self):
+        for canonical, second_alias in (("OLD", "OTHER"), ("SECOND", "OLD"), ("SECOND", "old")):
+            index = IdentityIndex(0, [product(1, "NEW"), product(2, canonical)], identifiers=[
+                identifier(1, "OLD", IdentifierType.internal_sku),
+                identifier(2, second_alias, IdentifierType.internal_sku)])
+            result = index.resolve(RemoteIdentity(0, "OLD"))
+            self.assertEqual(result.reasons, ["unmapped_sku_collision"])
+            self.assertEqual(result.candidate_product_ids, [1, 2])
+
+    def test_old_sku_cannot_override_supplier_barcode_or_shop_evidence(self):
+        identifiers = [identifier(1, "OLD", IdentifierType.internal_sku), identifier(1, EAN_A),
+                       identifier(2, EAN_B), identifier(2, "SUPPLIER", IdentifierType.supplier_sku, 7)]
+        index = IdentityIndex(0, [product(1, "NEW"), product(2, "OTHER")], identifiers=identifiers)
+        self.assertEqual(index.resolve(RemoteIdentity(0, "OLD", barcodes=(EAN_B,))).reasons, ["identifier_conflict"])
+        self.assertEqual(index.resolve(RemoteIdentity(0, "OLD", supplier_id=7, supplier_sku="SUPPLIER")).reasons,
+                         ["supplier_identifier_conflict"])
+        self.assertEqual(index.resolve(RemoteIdentity(0, "OLD", barcodes=(EAN_C,))).reasons, ["identifier_conflict"])
+        mapped = IdentityIndex(1, index.products.values(), [mapping(1, 1, "NEW")], identifiers)
+        self.assertEqual(mapped.resolve(RemoteIdentity(1, "OLD")).reasons, ["local_mapping_conflict"])
+
+    def test_gtin_representation_equivalence_preserves_raw_values(self):
+        upc, ean = "727670929720", "0727670929720"
+        for stored, incoming, kind in ((upc, ean, IdentifierType.upc), (ean, upc, IdentifierType.ean)):
+            raw = identifier(1, stored, kind)
+            index = IdentityIndex(0, [product(1, "ITEM")], identifiers=[raw])
+            for code in ("", "ITEM"):
+                result = index.resolve(RemoteIdentity(0, code, barcodes=(incoming,)))
+                self.assertEqual((result.status, result.product_id), ("identified", 1))
+            self.assertEqual(raw.value, stored)
+            self.assertEqual(index.product_barcodes[1], {stored})
+        self.assertEqual(ProductIdentifierService.gtin_key(upc), "00727670929720")
+        self.assertEqual(ProductIdentifierService.gtin_equivalents(upc), (upc, ean))
+        for raw in ("0001410", "727670929721", " 727670929720", "0000000000000", "MPN-001"):
+            self.assertIsNone(ProductIdentifierService.gtin_key(raw))
+
+    def test_equivalent_gtins_with_distinct_owners_conflict(self):
+        index = IdentityIndex(0, [product(1, "A"), product(2, "B")], identifiers=[
+            identifier(1, "727670929720", IdentifierType.upc), identifier(2, "0727670929720")])
+        result = index.resolve(RemoteIdentity(0, barcodes=("727670929720",)))
+        self.assertEqual(result.reasons, ["identifier_conflict"])
+        self.assertEqual(result.candidate_product_ids, [1, 2])
+
+    def test_unverified_manufacturer_codes_are_not_shared_identity(self):
+        index = IdentityIndex(0, [product(1, "A")], identifiers=[identifier(1, "MODEL-01", IdentifierType.manufacturer)])
+        self.assertEqual(index.resolve(RemoteIdentity(0, "MODEL-01")).status, "unresolved")
+
 
     def test_local_supplier_alias_cannot_override_the_shared_sku_or_barcode(self):
         index = IdentityIndex(0, [product(1, "SHARED"), product(2, "OTHER")], identifiers=[
@@ -258,6 +316,8 @@ class ReadOnlyIdentityDatabase:
             rows = [row for row in self.identifiers if row.identifier_type in kinds]
             if "value_1" in params:
                 rows = [row for row in rows if row.value in params["value_1"]]
+            elif "lower_1" in params:
+                rows = [row for row in rows if row.value.lower() in params["lower_1"]]
             elif "param_1" in params:
                 rows = [row for row in rows if (row.supplier_id, row.value) in params["param_1"]]
             else:
@@ -290,7 +350,7 @@ class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
         incoming = [RemoteIdentity(2, row.sku, True) for row in products]
         index = await load_identity_index(db, 2, incoming)
         self.assertTrue(all(index.resolve(row).matched_by == "shared_sku" for row in incoming))
-        self.assertLessEqual(len(db.queries), 8)
+        self.assertLessEqual(len(db.queries), 11)  # SKU, old SKU and stored barcodes, each in bounded batches.
         for query in db.queries:
             self.assertTrue(str(query).startswith("SELECT "))
             for value in query.compile().params.values():
@@ -312,3 +372,19 @@ class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(index.by_supplier_sku.get((8, "RAW")))
         self.assertTrue(all(query.column_descriptions[0]["entity"] is not ShopProduct for query in db.queries))
         self.assertTrue(all(str(query).startswith("SELECT ") for query in db.queries))
+
+    async def test_loader_finds_equivalent_raw_gtins_and_detects_existing_duplicates(self):
+        db = ReadOnlyIdentityDatabase(products=[product(1, "A"), product(2, "B")], identifiers=[
+            identifier(1, "727670929720", IdentifierType.upc), identifier(2, "0727670929720")])
+        incoming = RemoteIdentity(0, barcodes=("0727670929720",))
+        index = await load_identity_index(db, 0, [incoming], local=True)
+        self.assertEqual(index.resolve(incoming).candidate_product_ids, [1, 2])
+        self.assertEqual(index.resolve(incoming).reasons, ["identifier_conflict"])
+
+    async def test_loader_includes_alias_owner_and_its_conflicting_barcode(self):
+        db = ReadOnlyIdentityDatabase(products=[product(1, "NEW")], identifiers=[
+            identifier(1, "OLD", IdentifierType.internal_sku), identifier(1, EAN_A)])
+        incoming = RemoteIdentity(0, "OLD", barcodes=(EAN_B,))
+        index = await load_identity_index(db, 0, [incoming], local=True)
+        self.assertEqual(index.resolve(incoming).reasons, ["identifier_conflict"])
+        self.assertEqual(index.resolve(RemoteIdentity(0, "OLD")).matched_by, "internal_sku")

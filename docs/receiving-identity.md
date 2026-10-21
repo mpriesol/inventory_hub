@@ -1,5 +1,7 @@
 # Príjem: identita produktu a opakovanie skenov
 
+Pri chýbajúcej karte použite **Založiť skladové karty** a [spoločnú politiku identity/SKU](sku-policy.md). Zaúčtovanie príjemky už nezakladá novú kartu z dodávateľskej predpony: vráti konkrétny riadok vyžadujúci prípravu. Existujúce overené karty a ich historické kódy zostávajú použiteľné. Uloženie karty, prijaté množstvá a publikovanie sú oddelené; návrat z prípravy nemení faktúrové ceny ani prijaté kusy.
+
 Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity ani dokončenie príjmu nevolajú Upgates. Dokončenie príjmu zapíše pohyby a nákupné ceny do lokálneho skladu; samo nespúšťa publikovanie zásob do e-shopov.
 
 ## Pre obsluhu
@@ -115,7 +117,7 @@ Príjem podporuje pôvodné textové PDF SK Profi Bike cez `POST /suppliers/sk-p
 
 Voliteľný stĺpec `Zľava %` sa overí proti pôvodnej jednotkovej cene a čistému súčtu riadka. Do príjmu ide cena po zľave: fakturovaný čistý súčet delený množstvom, na štyri desatinné miesta. Rozpočítaná cena musí po vynásobení množstvom zachovať centový súčet riadka aj dokladu; nepodporovaná presnosť sa odmietne namiesto zmeny hodnoty príjmu. Výslovná 100 % zľava je známy nulový náklad, nie chýbajúca cena. Opakované SKU zostávajú samostatnými riadkami, pretože platená položka a bonus môžu mať rozdielnu cenu. DPH musí presne sedieť buď ako súčet zaokrúhlených daní riadkov, alebo ako zaokrúhlená daň zo základu za každú sadzbu; ľubovoľná centová tolerancia sa nepoužíva. Riadkové súčty, DPH aj celková fakturovaná suma sa vždy kontrolujú.
 
-Ukladá pôvodné PDF, kanonické CSV `SCM;TITLE;QTY;PRICE;EAN` a index pre existujúci príjem. `PRICE` je nákupná cena bez DPH; konfigurácia používa `unit_price_source: "ex"`. Faktúra bez EAN má prázdny EAN, nie vymyslený kód. Existujúci produkt sa páruje dodávateľským aliasom alebo overeným EAN; nový používa prefix `SKP-`. Skenovanie EAN vyžaduje už známu jednoznačnú identitu v Hube. Samotná prítomnosť produktu v katalógu ju nenahrádza.
+Ukladá pôvodné PDF, kanonické CSV `SCM;TITLE;QTY;PRICE;EAN` a index pre existujúci príjem. `PRICE` je nákupná cena bez DPH; konfigurácia používa `unit_price_source: "ex"`. Faktúra bez EAN má prázdny EAN, nie vymyslený kód. Existujúci produkt sa páruje dodávateľským aliasom alebo overeným EAN; nový vyžaduje prípravu karty s overeným kódom konkrétneho výrobku podľa politiky SKU. Skenovanie EAN vyžaduje už známu jednoznačnú identitu v Hube. Samotná prítomnosť produktu v katalógu ju nenahrádza.
 
 Opakované nahratie rovnakého dokladu zachová existujúci stav a nevytvorí duplikát. Zmenený obsah pod rovnakým číslom skončí konfliktom. Nahratie nevytvára skladový pohyb ani nepotvrdzuje fyzické prevzatie. Historický doklad použitý na overenie musí zostať neprijatý, kým obsluha nepotvrdí skutočný príjem.
 

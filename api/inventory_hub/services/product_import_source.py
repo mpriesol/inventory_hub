@@ -307,6 +307,7 @@ async def _complete(db, draft, document, *, skipped=False, error=None):
         row['canonical_code'] = product.shop_code
         row['group_key'] = parent_shop_code(product)
         row['source'] = product.model_dump(mode='json')
+    await imports.prepare_sku_rows(db, draft, document)
     imports.validate_rows(document)
     document['source_lookup'] = {'state': 'skipped' if skipped else 'completed', 'error': error}
     note = 'Continue with feed data for unread supplier products' if skipped else 'Supplier data ready for import preparation'

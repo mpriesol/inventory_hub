@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import UUID
 from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
+from inventory_hub.sku_policy_types import SkuIdentityInput
 
 
 class EditorModel(BaseModel):
@@ -191,9 +192,13 @@ class EditorRowPatch(EditorModel):
 
 class ProductCardCreateRequest(EditorModel):
     request_id: UUID
-    sku: StrictStr
-    name: StrictStr
+    sku: StrictStr | None = None
+    name: StrictStr = ""
     is_active: StrictBool = True
+    sku_identity: SkuIdentityInput | None = None
+    eans: list[StrictStr] = Field(default_factory=list, max_length=20)
+    supplier_id: StrictInt | None = Field(default=None, gt=0)
+    supplier_sku: StrictStr | None = None
 
     @field_validator("sku")
     @classmethod
@@ -203,7 +208,29 @@ class ProductCardCreateRequest(EditorModel):
     @field_validator("name")
     @classmethod
     def name_valid(cls, value):
-        return safe_text(value, maximum=500, blank=False).strip()
+        return safe_text(value, maximum=500).strip()
+
+    @field_validator("eans")
+    @classmethod
+    def eans_valid(cls, value):
+        from inventory_hub.services.product_identity import verified_barcodes
+        if len(value) != len(set(value)) or any(code not in verified_barcodes((code,)) for code in value):
+            raise ValueError("Only verified EAN or UPC values can identify a new card")
+        return value
+
+    @field_validator("supplier_sku")
+    @classmethod
+    def supplier_sku_valid(cls, value):
+        return VariantPatch.sku_valid(value)
+
+    @model_validator(mode="after")
+    def supplier_context_valid(self):
+        if self.supplier_sku and self.supplier_id is None:
+            raise ValueError("Supplier is required for a supplier code")
+        if (self.sku_identity and self.sku_identity.supplier_id is not None
+                and self.supplier_id != self.sku_identity.supplier_id):
+            raise ValueError("SKU evidence and supplier context must use the same supplier")
+        return self
 
 
 class ProductEditorSaveRequest(EditorModel):

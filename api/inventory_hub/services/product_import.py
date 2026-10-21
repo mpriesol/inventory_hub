@@ -279,6 +279,7 @@ async def public(db, draft):
         for shop, preview in publication_previews(draft).items() for outcome in [target_result(shop, preview)]}
     from inventory_hub.services.product_import_identity import summary as identity_summary
     return {'id': draft.id, 'revision': draft.revision, 'status': draft.status, 'supplier': draft.supplier,
+            'supplier_id': document.get('supplier_id'),
             'shop': draft.shop, 'feed_key': document['feed_key'], 'options': document['options'],
             'shops': document.get('shops', [{'code': draft.shop, 'name': draft.shop, 'categories': document['categories']}]),
             'default_shop': document.get('default_shop', draft.shop), 'publications': publications,
@@ -337,12 +338,14 @@ def validate_rows(document):
     importing = [r for r in rows if not link_only(r)]
     importing_ids = {r['id'] for r in importing}
     codes = Counter(r['values']['code'].casefold() for r in importing)
-    eans = Counter(e for r in importing for e in r['values']['eans'])
+    barcode_key = lambda value: ProductIdentifierService.gtin_key(value) or value
+    eans = Counter(e for r in importing for e in {barcode_key(value) for value in r['values']['eans']})
     groups = defaultdict(list)
     options = ShopImportOptions.model_validate(document['options'])
     for row in rows:
         if row['id'] not in importing_ids:
             row['errors'] = []
+            row['hub_errors'] = []
             row['warnings'] = sorted(set(row.get('warnings', [])) | {'existing_card_link_only'})
             continue
         source = to_source(row)
@@ -353,7 +356,7 @@ def validate_rows(document):
         from inventory_hub.services.ai_content_validation import has_active_html
         if any(has_active_html(row['values'][key]) for key in ('description_html', 'short_description')):
             row['errors'].append('ai_unsafe_html')
-        if codes[source.shop_code.casefold()] > 1 or any(eans[e] > 1 for e in source.eans):
+        if codes[source.shop_code.casefold()] > 1 or any(eans[barcode_key(e)] > 1 for e in source.eans):
             row['errors'].append('selection_identity_conflict')
         if source.prices.vat_percent is None:
             row['errors'].append('missing_vat')
@@ -386,6 +389,83 @@ def validate_rows(document):
             for row in family:
                 row['errors'].extend(item.errors)
                 row['errors'] = sorted(set(row['errors']))
+    for row in rows:
+        # A local card can precede prices, VAT and shop merchandising. Identity,
+        # unsafe content and contradictory source facts still block its save.
+        if link_only(row):
+            row['hub_errors'] = []
+            continue
+        merchandising = {'missing_price', 'missing_vat'}
+        if (row['values'].get('sku_identity') or {}).get('leaf_confirmed'):
+            # A documented concrete leaf can exist before variant presentation
+            # is complete. Duplicated supplier codes/EANs are never exempted.
+            merchandising |= {'stock_feed_only', 'variant_attributes_missing', 'variant_attributes_ambiguous'}
+        if all(row['values'].get(key) is None for key in ('purchase_net', 'retail_gross', 'sale_gross')):
+            merchandising.add('currency_mismatch')
+        row['hub_errors'] = sorted(set(row.get('errors', [])) - merchandising
+            | set((row.get('sku_preview') or {}).get('reasons', [])
+                if (row.get('sku_preview') or {}).get('status') in ('blocked', 'conflict') else []))
+
+
+async def prepare_sku_rows(db, draft, document):
+    """Preview the same allocation policy for feed and invoice preparations.
+
+    This is read-only. The save repeats it inside IDENTITY_WRITE_LOCK and keeps
+    the verified input in the immutable saved draft digest.
+    """
+    from inventory_hub.sku_policy_types import SkuIdentityInput
+    from inventory_hub.services.sku_policy import preview_sku, registered_brand_id, brand_key
+    supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == draft.supplier))
+    document['supplier_id'] = supplier_id
+    selected = [r for r in document['rows'] if not link_only(r)]
+    existing, conflicts = await catalog_import.local_identities(db, [to_source(r) for r in selected])
+    for row in selected:
+        values = row['values']
+        expected = row.get('hub_product_id') or row.get('expected_hub_product_id')
+        if row['id'] in conflicts:
+            row['sku_preview'] = {'status': 'conflict', 'reasons': ['local_identity_conflict']}
+            continue
+        product_id = existing.get(row['id'])
+        if expected and expected != product_id:
+            row['sku_preview'] = {'status': 'conflict', 'reasons': ['assigned_product_changed']}
+            continue
+        identity = values.get('sku_identity')
+        if identity:
+            item = SkuIdentityInput.model_validate(identity)
+            result = await preview_sku(db, item,
+                barcodes=values['eans'], supplier_id=supplier_id,
+                supplier_sku=values['supplier_code'], expected_product_id=expected)
+            if product_id and result['status'] == 'new':
+                # A legacy prefixed-code candidate is not an approved target.
+                # Retain its original code for the ordinary explicit review;
+                # do not hide it by replacing the candidate with a new SKU.
+                result = {**result, 'status': 'blocked', 'reasons': ['import_identity_review_required'],
+                          'candidate_product_ids': [product_id]}
+            elif product_id and result['status'] == 'existing' and result['product_id'] != product_id:
+                result = {**result, 'status': 'conflict', 'reasons': ['local_identity_conflict'],
+                          'candidate_product_ids': [product_id, result['product_id']]}
+            if values['brand'] and brand_key(values['brand']) != brand_key(item.brand):
+                source_brand = await registered_brand_id(db, values['brand'])
+                if source_brand is None or source_brand != result.get('brand_id'):
+                    result = {**result, 'status': 'conflict', 'reasons': ['sku_brand_conflict']}
+        elif product_id:
+            product = await db.get(Product, product_id)
+            result = {'status': 'existing', 'sku': product.sku, 'product_id': product_id,
+                      'reasons': [], 'candidate_product_ids': [product_id]}
+        else:
+            result = {'status': 'blocked', 'reasons': ['sku_identity_required'], 'candidate_product_ids': []}
+        row['sku_preview'] = result
+        if result['status'] in ('new', 'existing'):
+            # The supplier parent is a grouping code, not a physical SKU. Freeze
+            # it before changing the leaf so no prefix is guessed from the MPN.
+            if row['is_variant'] and not row['source'].get('canonical_parent_code'):
+                row['source'] = {**row['source'], 'canonical_parent_code': row['group_key']}
+            values['code'] = result['sku']
+            if identity and not values['brand']:
+                values['brand'] = item.brand
+            row['canonical_code'] = result['sku']
+            if not row['is_variant']:
+                row['group_key'] = result['sku']
 
 
 async def _receiving_sources(db, sources, receiving_rows):
@@ -589,6 +669,8 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
     draft = ProductImportDraft(id=request.request_id.hex, request_hash=fingerprint, revision=1,
                               supplier=request.supplier, shop=request.shop,
                               status='source_pending' if request.supplier == 'sloger' else 'draft', document=document)
+    await prepare_sku_rows(db, draft, document)
+    validate_rows(document)
     db.add(draft)
     await db.flush()
     return await public(db, draft)
@@ -628,23 +710,16 @@ async def patch_rows(db, draft, request):
     # Conflicting edits to a shared family field are rejected rather than choosing the last row.
     shared = {}
     replaced_ai = set()
-    from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
-    prefix = get_supplier_prefix(supplier_config(draft.supplier))
     for patch in request.rows:
         row = rows[patch.id]
         values = deepcopy(patch.values)
-        if 'supplier_code' in values and 'code' not in values:
-            if not isinstance(values['supplier_code'], str) or not values['supplier_code'].strip():
-                raise CatalogError('import_invalid_cells', 'Check the supplier code', 422)
-            values['code'] = canonical_supplier_sku(prefix, values['supplier_code'])
         try:
             parsed = ImportValues.model_validate({**row['values'], **values})
         except (ValidationError, ValueError):
             raise CatalogError('import_invalid_cells', 'Check the edited field values', 422) from None
-        unchanged_identity = parsed.code == row['values']['code'] and parsed.supplier_code == row['values']['supplier_code']
-        if parsed.code != canonical_supplier_sku(prefix, parsed.supplier_code) and not unchanged_identity:
-            raise CatalogError('import_code_prefix', 'The product code must use the configured supplier prefix', 422)
-        if (row.get('hub_product_id') or row.get('expected_hub_product_id')) and any(k in values for k in ('code', 'supplier_code', 'eans')):
+        if 'code' in values and parsed.code != row['values']['code']:
+            raise CatalogError('sku_identity_required', 'Use the verified product identity to propose its SKU', 422)
+        if (row.get('hub_product_id') or row.get('expected_hub_product_id')) and any(k in values for k in ('code', 'supplier_code', 'eans', 'sku_identity')):
             raise CatalogError('import_identity_saved', 'Edit saved product identifiers in the product editor', 409)
         if 'target_shops' in values:
             available = {shop['code'] for shop in document.get('shops', [{'code': draft.shop}]) if not shop.get('error')}
@@ -676,6 +751,7 @@ async def patch_rows(db, draft, request):
                 ai_content.event(job, 'cancelled', 'Category rule profile changed before provider call; prepare a new estimate')
     if document.get('automation', {}).get('version') == 1:
         document['automation'] = {**document['automation'], 'paused': True, 'pause_reason': 'draft_edited'}
+    await prepare_sku_rows(db, draft, document)
     validate_rows(document)
     changed(draft, document, 'Manual import cells edited')
     await db.flush()
@@ -694,13 +770,13 @@ async def save(db, draft, request):
 async def _save(db, draft):
     document = deepcopy(draft.document)
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    await prepare_sku_rows(db, draft, document)
     from inventory_hub.services.product_import_identity import guard_and_link
     linked = await guard_and_link(db, draft, document)
     validate_rows(document)
     # Basic receipt cards may precede merchandising. Unknown amounts stay NULL;
     # shop preview still applies every ordinary price/VAT/category validation.
-    allowed_missing = {'missing_price', 'missing_vat'} if document.get('receiving_origin') else set()
-    if any(set(r['errors']) - allowed_missing for r in document['rows']):
+    if any(r['hub_errors'] for r in document['rows']):
         raise CatalogError('import_invalid_rows', 'Resolve invalid rows before saving products', 422)
     importing = [row for row in document['rows'] if row['id'] not in linked]
     sources = [to_source(r) for r in importing]
@@ -713,13 +789,14 @@ async def _save(db, draft):
     existing, conflicts = await catalog_import.local_identities(db, products)
     if conflicts:
         raise CatalogError('local_identity_conflict', 'Local identifiers require reconciliation', 409)
-    await catalog_import.claim_product_prefix(db, products)
     supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == draft.supplier))
     for row in document['rows']:
         if row['id'] in linked:
             product = await db.get(Product, linked[row['id']])
             row['values']['code'] = product.sku
             row['canonical_code'] = product.sku
+            row['sku_preview'] = {'status': 'existing', 'sku': product.sku, 'product_id': product.id,
+                                  'reasons': [], 'candidate_product_ids': [product.id]}
     for row, source in zip(importing, products):
         v = row['values']
         product_id = existing.get(row['id'])
@@ -739,10 +816,12 @@ async def _save(db, draft):
             # Identity resolution has proved this additional supplier's alias.
             # Persist it even for Hub-only imports and existing shop listings;
             # supplier-link reconciliation must not depend on a later POST.
-            await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
-                identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
-                .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
-                    index_where=text("identifier_type = 'supplier_sku'")))
+            if source.code:
+                await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
+                    identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
+                    .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
+                        index_where=text("identifier_type = 'supplier_sku'")))
+            await record_row_identity(db, product, row)
             row['hub_product_id'] = product_id
             row['warnings'] = sorted(set(row['warnings']) | {'already_in_hub_unchanged'})
             continue
@@ -770,6 +849,7 @@ async def _save(db, draft):
             await db.flush()
             product_id = product.id
             row['created_in_draft'] = True
+        await record_row_identity(db, product, row)
         if product_id and (row.get('created_in_draft') or enrich):
             identifiers = ProductIdentifierService(db)
             registered = (await db.scalars(select(ProductIdentifier).where(ProductIdentifier.product_id == product_id,
@@ -781,10 +861,11 @@ async def _save(db, draft):
                     await identifiers.add_identifier(product_id, ean, is_primary=not has_primary)
                     known_barcodes.add(ean)
                     has_primary = True
-            await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
-                identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
-                .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
-                    index_where=text("identifier_type = 'supplier_sku'")))
+            if source.code:
+                await db.execute(insert(ProductIdentifier).values(product_id=product_id, supplier_id=supplier_id,
+                    identifier_type=IdentifierType.supplier_sku, value=source.code, is_primary=False)
+                    .on_conflict_do_nothing(index_elements=[ProductIdentifier.supplier_id, ProductIdentifier.value],
+                        index_where=text("identifier_type = 'supplier_sku'")))
             if not await db.scalar(select(ProductVariantAttribute.id).where(ProductVariantAttribute.product_id == product_id)):
                 for order, attribute in enumerate(source.variant_attributes):
                     db.add(ProductVariantAttribute(product_id=product_id, attribute_name=attribute.name,
@@ -826,6 +907,17 @@ async def _save(db, draft):
     draft.status = 'saved'
     await db.flush()
     return await public(db, draft)
+
+
+async def record_row_identity(db, product, row):
+    if row['values'].get('sku_identity'):
+        from inventory_hub.sku_policy_types import SkuIdentityInput
+        from inventory_hub.services.sku_policy import record_sku_identity, SkuPolicyError
+        try:
+            await record_sku_identity(db, product, SkuIdentityInput.model_validate(row['values']['sku_identity']),
+                                      actor='product-import')
+        except SkuPolicyError as error:
+            raise CatalogError(error.code, 'Review the verified identity before saving this product', error.status) from None
 
 
 def overlay_payload(item, rows, language, categories):

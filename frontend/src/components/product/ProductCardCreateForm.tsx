@@ -3,11 +3,15 @@ import { useTranslation } from 'react-i18next';
 import { createProductCard, ProductCardCreate, ProductEditorRow } from '../../api/productEditor';
 import { accessRevision } from '../../api/access';
 import { Button } from '../ui/Button.new';
+import { emptySkuIdentity, SkuPreview } from '../../api/skuPolicy';
+import { SkuIdentityForm } from './SkuIdentityForm';
 
 export function ProductCardCreateForm({ onCreated, onClose }: { onCreated: (row: ProductEditorRow) => void; onClose: () => void }) {
   const { t } = useTranslation();
-  const [sku, setSku] = useState(''), [name, setName] = useState(''), [active, setActive] = useState(true);
+  const [sku, setSku] = useState(''), [name, setName] = useState(''), [active, setActive] = useState(true), [ean, setEan] = useState('');
+  const [identity, setIdentity] = useState(emptySkuIdentity), [preview, setPreview] = useState<SkuPreview | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [errorReasons, setErrorReasons] = useState<string[]>([]), [errorCandidates, setErrorCandidates] = useState<number[]>([]), [checkRevision, setCheckRevision] = useState(0);
   const request = useRef<ProductCardCreate | null>(null), sending = useRef(false);
   const [uncertain, setUncertain] = useState(false);
   const mounted = useRef(true);
@@ -15,8 +19,10 @@ export function ProductCardCreateForm({ onCreated, onClose }: { onCreated: (row:
   async function submit() {
     const started = accessRevision();
     if (sending.current) return;
-    sending.current = true; setBusy(true); setError('');
-    request.current ||= { request_id: crypto.randomUUID(), sku: sku.trim(), name: name.trim(), is_active: active };
+    sending.current = true; setBusy(true); setError(''); setErrorReasons([]); setErrorCandidates([]);
+    if (!request.current && (!preview || !['new', 'existing'].includes(preview.status))) { sending.current = false; setBusy(false); return; }
+    request.current ||= { request_id: crypto.randomUUID(), ...(sku ? { sku } : {}), name: name.trim(), is_active: active,
+      eans: ean ? [ean] : [], ...(identity.brand && identity.source_code && identity.source_ref ? { sku_identity: identity } : {}) };
     try {
       const result = await createProductCard(request.current);
       if (!mounted.current || started !== accessRevision()) return;
@@ -25,19 +31,25 @@ export function ProductCardCreateForm({ onCreated, onClose }: { onCreated: (row:
       onCreated(row);
     } catch (value) {
       if (!mounted.current || started !== accessRevision()) return;
-      const code = (value as Error & { code?: string }).code;
-      if (['product_editor_identity_conflict', 'product_editor_invalid_request', 'product_editor_request_reused'].includes(code || '')) {
-        request.current = null; setUncertain(false); setError(code!);
+      const code = (value as Error & { code?: string }).code, status = (value as Error & { status?: number }).status;
+      if ((status && status >= 400 && status < 500) || ['product_editor_identity_conflict', 'product_editor_invalid_request', 'product_editor_request_reused'].includes(code || '')) {
+        request.current = null; setUncertain(false); setError(code || 'product_editor_invalid_request'); setCheckRevision(count => count + 1);
+        const detail = (value as { detail?: { reasons?: string[]; candidate_product_ids?: number[] } }).detail;
+        setErrorReasons(detail?.reasons || []); setErrorCandidates(detail?.candidate_product_ids || []);
       } else { setUncertain(true); setError('create_uncertain'); }
     } finally { sending.current = false; setBusy(false); }
   }
   return <form className="product-editor-create" aria-label={t('productEditor.newCard')} onSubmit={event => { event.preventDefault(); submit(); }}>
     <h2>{t('productEditor.newCard')}</h2><p>{t('productEditor.newCardHelp')}</p>
-    <label>{t('productEditor.fields.sku')}<input data-testid="create-sku" required maxLength={100} disabled={busy || uncertain} value={sku} onChange={event => setSku(event.target.value)} /></label>
-    <label>{t('productEditor.fields.name')}<input data-testid="create-name" required maxLength={500} disabled={busy || uncertain} value={name} onChange={event => setName(event.target.value)} /></label>
+    <label>{t('skuPolicy.existingSku')}<input data-testid="create-sku" maxLength={100} disabled={busy || uncertain} value={sku} onChange={event => setSku(event.target.value)} /></label>
+    <label>{t('skuPolicy.ean')}<input data-testid="create-ean" maxLength={14} disabled={busy || uncertain} value={ean} onChange={event => setEan(event.target.value)} /></label>
+    <label>{t('skuPolicy.newCardName')}<input data-testid="create-name" required={!uncertain && preview?.status !== 'existing'} maxLength={500} disabled={busy || uncertain} value={name} onChange={event => setName(event.target.value)} /></label>
     <label>{t('productEditor.fields.is_active')}<select data-testid="create-activity" disabled={busy || uncertain} value={String(active)} onChange={event => setActive(event.target.value === 'true')}><option value="true">{t('productEditor.activityStates.active')}</option><option value="false">{t('productEditor.activityStates.inactive')}</option></select></label>
-    {error && <p role="alert">{t(`productEditor.errors.${error}`, { defaultValue: t('productEditor.errors.request_failed') })}</p>}
-    <Button data-testid="create-submit" type="submit" disabled={busy || !sku.trim() || !name.trim()}>{t(uncertain ? 'productEditor.retryCreate' : 'productEditor.createCard')}</Button>
+    <SkuIdentityForm key={checkRevision} value={identity} onChange={setIdentity} onPreview={setPreview} context={{ barcodes: ean ? [ean] : [], sku }} disabled={busy || uncertain} />
+    {error && <p role="alert">{t(`productEditor.errors.${error}`, { defaultValue: t(`skuPolicy.errors.${error}`, { defaultValue: t('productEditor.errors.request_failed') }) })}</p>}
+    {errorReasons.map(reason => <p key={reason} role="alert">{t(`skuPolicy.errors.${reason}`, { defaultValue: t('skuPolicy.errors.identity_conflict') })}</p>)}
+    {!!errorCandidates.length && <p>{t('skuPolicy.candidates', { ids: errorCandidates.join(', ') })}</p>}
+    <Button data-testid="create-submit" type="submit" disabled={busy || (!uncertain && ((preview?.status !== 'existing' && !name.trim()) || !['new', 'existing'].includes(preview?.status || '')))}>{t(uncertain ? 'productEditor.retryCreate' : preview?.status === 'existing' ? 'skuPolicy.useExisting' : 'productEditor.createCard')}</Button>
     <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>{t('productEditor.cancelCreate')}</Button>
   </form>;
 }

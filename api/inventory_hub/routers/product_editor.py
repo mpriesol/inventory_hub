@@ -1,7 +1,7 @@
 """Operator-only local edits with safe validation and durable save recovery."""
 from typing import Annotated, Literal
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -38,7 +38,9 @@ async def _call(operation):
     try:
         return await operation
     except service.EditorError as error:
-        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
+        raise HTTPException(error.status, detail={"code": error.code, "message": error.code,
+            **({"reasons": error.reasons} if error.reasons else {}),
+            **({"candidate_product_ids": error.candidate_product_ids} if error.candidate_product_ids else {})}) from None
 
 
 @router.get("/options")
@@ -63,8 +65,10 @@ async def products(q: Annotated[str, Query(max_length=200)] = "", brand: Annotat
 
 
 @router.post("/products")
-async def create_product(payload: ProductCardCreateRequest, db: AsyncSession = Depends(get_session)):
-    return await _call(service.create_card(db, payload))
+async def create_product(payload: ProductCardCreateRequest, request: Request, db: AsyncSession = Depends(get_session)):
+    user = getattr(request.state, "hub_user", None)
+    actor = f"user:{user['id']}" if user and user.get("id") is not None else "operator-token"
+    return await _call(service.create_card(db, payload, actor=actor))
 
 
 @router.get("/products/{product_id}")

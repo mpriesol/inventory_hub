@@ -17,7 +17,8 @@ from inventory_hub.db_models import IdentifierType, MovementType, Product, Produ
 from inventory_hub.db_models_ext import ProductSupplySource, StockBalance, StockMovement
 from inventory_hub.fifo_models import FifoAllocation, FifoLayer
 from inventory_hub.routers import receiving_db as receiving
-from inventory_hub.services import stock_adjustments
+from inventory_hub.services import stock_adjustments, product_editor
+from inventory_hub.product_editor_types import ProductCardCreateRequest
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.stock_adjustment_types import StockAdjustmentApply, StockAdjustmentPreview
 
@@ -32,7 +33,9 @@ class SkpStockWorkflowDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2] / "infra/db-init"
-            await connection.execute((root / "017_stock_adjustments.sql").read_text())
+            for name in ("004_shop_product_content.sql", "012_product_editor.sql", "014_supplier_availability.sql",
+                         "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql"):
+                await connection.execute((root / name).read_text())
         finally:
             await connection.close()
         # Keep all filesystem effects in the receiving fixture's temporary root.
@@ -94,6 +97,19 @@ class SkpStockWorkflowDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prepared["lines"][0]["product_code"], "PL-existing-part")
         self.assertEqual((first["products_created"], first["movements_created"]), (0, 1))
 
+        # New products are prepared independently from confirming physical units.
+        # This fixture explicitly verifies the concrete manufacturer's label;
+        # the invoice's supplier code alone cannot allocate a shared SKU.
+        async with self.sessions() as db:
+            new_card = await product_editor.create_card(db, ProductCardCreateRequest(request_id=uuid4(),
+                name="Synthetic new part", supplier_id=self.skp_id, supplier_sku="new-part",
+                sku_identity={"brand": "Topeak", "source_code": "000-NEW-PART", "code_kind": "manufacturer",
+                    "source_ref": "Synthetic manufacturer specification for this sale unit", "leaf_confirmed": True}))
+        async with self.sessions() as db:
+            self.assertIsNone(await db.scalar(select(StockBalance.id).where(
+                StockBalance.product_id == new_card["results"][0]["product_id"])))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), 1)
+
         # SKP's PDF conversion intentionally has no fabricated EAN. Its next
         # invoice must still match that same product by the saved supplier SKU.
         invoice = Invoice("9/26/99999", date(2026, 1, 1), date(2026, 1, 15),
@@ -104,16 +120,16 @@ class SkpStockWorkflowDatabaseTests(unittest.IsolatedAsyncioTestCase):
         prepared, second = await self.receive_csv(invoice.key, invoice.csv_bytes())
         self.assertEqual([line["ean"] for line in prepared["lines"]], ["", ""])
         self.assertEqual([line["product_code"] for line in prepared["lines"]],
-                         ["PL-existing-part", "SKP-new-part"])
-        self.assertEqual((second["products_created"], second["movements_created"]), (1, 2))
+                         ["PL-existing-part", "TP-000-NEW-PART"])
+        self.assertEqual((second["products_created"], second["movements_created"]), (0, 2))
 
         async with self.sessions() as db:
             product = await db.get(Product, self.product_id)
             self.assertEqual((product.sku, product.supplier_id), ("PL-existing-part", self.supplier_id))
             self.assertIsNone(await db.scalar(select(Product.id).where(Product.sku == "SKP-shared-part")))
-            new_product = await db.scalar(select(Product).where(Product.sku == "SKP-new-part"))
-            self.assertEqual(new_product.supplier_id, self.skp_id)
-            self.assertTrue(new_product.validation_required)
+            new_product = await db.scalar(select(Product).where(Product.sku == "TP-000-NEW-PART"))
+            self.assertEqual(new_product.id, new_card["results"][0]["product_id"])
+            self.assertIsNone(await db.scalar(select(Product.id).where(Product.sku == "SKP-new-part")))
             self.assertEqual(await db.scalar(select(ProductIdentifier.product_id).where(
                 ProductIdentifier.value == "shared-part",
                 ProductIdentifier.supplier_id == self.skp_id,

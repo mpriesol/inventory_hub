@@ -36,11 +36,16 @@ def is_basic_card(product, *, has_shop=False, import_fields=None):
 
 def _barcode_owner(index, eans):
     """All barcodes must already independently identify one existing card."""
-    owners = [index.by_barcode.get(ean, set()) for ean in eans]
+    owners = [set().union(*(index.by_barcode.get(value, set())
+                           for value in ProductIdentifierService.gtin_equivalents(ean))) for ean in eans]
     if not owners or any(len(ids) != 1 for ids in owners):
         return None
     combined = set().union(*owners)
     return next(iter(combined)) if len(combined) == 1 else None
+
+
+def _barcode_keys(eans):
+    return {ProductIdentifierService.gtin_key(ean) for ean in eans}
 
 
 def _identity(session, line, prefix, source=None, *, expected=None):
@@ -102,22 +107,51 @@ async def _feed_verified(db, session, cfg):
                and by_code[key].last_run_id is not None for key in expected)
 
 
+async def _prepared_product_ids(db, session):
+    """Verified saved draft lineage also identifies invoice lines lacking codes."""
+    links = (session.session_data or {}).get('product_drafts') or {}
+    if not links:
+        return {}
+    drafts = list(await db.scalars(select(ProductImportDraft).where(ProductImportDraft.id.in_(set(links.values())))))
+    candidates = defaultdict(set)
+    for draft in drafts:
+        origin = (draft.document or {}).get('receiving_origin') or {}
+        if (draft.supplier != session.supplier.code or origin.get('supplier') != session.supplier.code
+                or origin.get('session_id') != session.id or origin.get('invoice_no') != session.invoice_number):
+            continue
+        lineage = draft.document.get('receiving_rows') or {}
+        for row in draft.document.get('rows', []):
+            product_id = row.get('hub_product_id')
+            if not product_id:
+                continue
+            context = lineage.get(str(row['id']), lineage.get(row['id'], {}))
+            for line_id in context.get('line_ids', []):
+                if links.get(str(line_id)) == draft.id:
+                    candidates[line_id].add(product_id)
+    return candidates
+
+
 async def inspect_products(db, session, prefix):
     """Return a read-only projection plus trusted source/product objects."""
     cfg = supplier_config(session.supplier.code)
     verified = await _feed_verified(db, session, cfg)
     by_sku, by_ean, malformed = await _catalog_candidates(db, session)
     verified = verified and not malformed
+    prepared_ids = await _prepared_product_ids(db, session)
+    def line_identity(line, source=None):
+        saved = prepared_ids.get(line.id, set())
+        expected = line.product_id or (next(iter(saved)) if len(saved) == 1 else None)
+        return _identity(session, line, prefix, source, expected=expected)
     candidates, identities = {}, []
     for line in session.lines:
         found = {p.id: p for p in by_sku[(line.supplier_sku or '').strip()]}
         for ean in verified_barcodes((line.ean,)):
             found.update((p.id, p) for p in by_ean[ean])
         candidates[line.id] = list(found.values())
-        identities.append(_identity(session, line, prefix))
+        identities.append(line_identity(line))
         if len(found) == 1:
             source = next(iter(found.values()))
-            identities.append(_identity(session, line, prefix, source))
+            identities.append(line_identity(line, source))
             identities.append(RemoteIdentity(0, source.shop_code, barcodes=tuple(source.eans),
                 supplier_id=session.supplier_id, supplier_sku=source.code))
     index = await load_identity_index(db, 0, identities, local=True)
@@ -137,18 +171,23 @@ async def inspect_products(db, session, prefix):
         if line.supplier_sku and eans:
             invoice_sku_eans[line.supplier_sku.strip()].append(eans)
     inconsistent_skus = {sku for sku, groups in invoice_sku_eans.items()
-                         if len(groups) > 1 and not set.intersection(*groups)
+                         if len(groups) > 1 and not set.intersection(*[_barcode_keys(group) for group in groups])
                          and _barcode_owner(index, set().union(*groups)) is None}
     for line in sorted(session.lines, key=lambda item: item.line_number):
         sources = candidates[line.id]
         source = sources[0] if len(sources) == 1 else None
         warnings = []
-        resolution = index.resolve(_identity(session, line, prefix, source))
+        resolution = index.resolve(line_identity(line, source))
         reasons = list(resolution.reasons)
         candidate_product_ids = set(resolution.candidate_product_ids)
         invoice_eans = set(verified_barcodes((line.ean,)))
         feed_eans = set(verified_barcodes(source.eans)) if source else set()
         conflict = len(sources) > 1 or resolution.status == 'conflict'
+        saved_ids = prepared_ids.get(line.id, set())
+        if len(saved_ids) > 1 or line.product_id and saved_ids and saved_ids != {line.product_id}:
+            conflict = True
+            reasons.append('assigned_product_changed')
+            candidate_product_ids.update(saved_ids)
         if (line.supplier_sku or '').strip() in inconsistent_skus:
             conflict = True
             reasons.append('invoice_sku_ean_conflict')
@@ -156,7 +195,7 @@ async def inspect_products(db, session, prefix):
         if len(sources) > 1:
             reasons.append('catalog_candidates_ambiguous')
             warnings.append('Viac produktov vo feede zodpovedá kódu alebo EAN. Skontrolujte zhodu.')
-        if (invoice_eans and feed_eans and not invoice_eans.intersection(feed_eans)
+        if (invoice_eans and feed_eans and not _barcode_keys(invoice_eans).intersection(_barcode_keys(feed_eans))
                 and _barcode_owner(index, invoice_eans | feed_eans) is None):
             conflict = True
             reasons.append('invoice_catalog_ean_conflict')
@@ -182,10 +221,9 @@ async def inspect_products(db, session, prefix):
             status = 'feed_only'
         else:
             status = 'not_found' if verified else 'feed_unverified'
-        code_available = bool((line.supplier_sku or '').strip() or source)
-        can_prepare = status in ('basic_card', 'feed_only', 'not_found', 'feed_unverified') and code_available
-        if not code_available and status != 'matched':
-            warnings.append('Chýba dodávateľský kód. Doplňte identifikáciu položky pred založením karty.')
+        can_prepare = status in ('basic_card', 'feed_only', 'not_found', 'feed_unverified')
+        if not (line.supplier_sku or '').strip() and not source and status != 'matched':
+            warnings.append('Chýba dodávateľský kód. V príprave overte značku a kód konkrétneho výrobku; kód sa nebude odhadovať.')
         if not verified:
             warnings.append('Feed sa nepodarilo overiť. Na prípravu možno použiť dostupné údaje z faktúry alebo posledného feedu.')
         eans = verified_barcodes((line.ean,)) or (tuple(sorted(index.product_barcodes.get(product.id, set()))) if product else ()) or tuple(source.eans if source else [])
@@ -212,7 +250,8 @@ def _preparation_key(line, product, source):
         return ('product', product.id)
     if source:
         return ('catalog', source.id)
-    return ('supplier_sku', (line.supplier_sku or '').strip())
+    sku = (line.supplier_sku or '').strip()
+    return ('supplier_sku', sku) if sku else ('invoice_line', line.id)
 
 
 def _invoice_source(session, line, prefix, product, source):
@@ -221,7 +260,7 @@ def _invoice_source(session, line, prefix, product, source):
         result.id = line.id
         return result
     sku = (line.supplier_sku or '').strip()
-    code = product.sku if product else canonical_supplier_sku(prefix, sku)
+    code = product.sku if product else canonical_supplier_sku(prefix, sku) if sku else ''
     purchase = line.unit_price
     if purchase is not None and (not purchase.is_finite() or purchase < 0):
         purchase = None

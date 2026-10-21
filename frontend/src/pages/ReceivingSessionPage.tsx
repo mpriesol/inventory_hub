@@ -66,6 +66,7 @@ export function ReceivingSessionPage() {
   const [lines,          setLines]          = useState<ReceivingLine[]>(state?.lines || []);
   const [finalizing,     setFinalizing]     = useState(false);
   const [error,          setError]          = useState<string | null>(null);
+  const [preparationLine, setPreparationLine] = useState<number | null>(null);
   const [showConfirm,    setShowConfirm]    = useState(false);
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null);
   const [showCsvModal,   setShowCsvModal]   = useState(false);
@@ -257,7 +258,11 @@ export function ReceivingSessionPage() {
       const detail = error instanceof ApiResponseError ? error.detail : null;
       const code = typeof detail === 'object' && detail ? (detail as { code?: string }).code : undefined;
       const explanation = typeof detail === 'string' ? detail : typeof detail === 'object' && detail ? (detail as { message?: string }).message : undefined;
-      setError(code ? t(`stockPublication.errors.${code}`, { defaultValue: t(`fifo.errors.${code}`, { defaultValue: explanation || t('receiving.finalizeFailed') }) }) : explanation || t('receiving.finalizeFailed'));
+      if (code === 'receiving_product_preparation_required') {
+        const lineId = (detail as { line_id?: number }).line_id;
+        setPreparationLine(typeof lineId === 'number' ? lineId : null);
+        setError(t('skuPolicy.receivingPreparation'));
+      } else setError(code ? t(`stockPublication.errors.${code}`, { defaultValue: t(`fifo.errors.${code}`, { defaultValue: explanation || t('receiving.finalizeFailed') }) }) : explanation || t('receiving.finalizeFailed'));
       setFinalizing(false);
     } finally { mutation.current = false; }
   };
@@ -472,6 +477,7 @@ export function ReceivingSessionPage() {
       </div>
 
       {error && <div className="p-4 rounded-lg border" style={{ backgroundColor: 'var(--color-error-subtle)', borderColor: 'var(--color-error)', color: 'var(--color-error)' }}>{error}</div>}
+      {error && preparationLine !== null && <Button data-testid="receiving-prepare-missing-card" disabled={productActionsDisabled} onClick={() => { const line = preparationLine; setPreparationLine(null); void prepareProducts([line]); }}>{t('skuPolicy.prepareMissingCard')}</Button>}
       {quantityNeedsRefresh && <Button data-testid="receiving-quantity-refresh" disabled={savingEdit} onClick={refreshQuantities}>{t('receiving.refreshQuantities')}</Button>}
 
       {state?.closedScan && inactive && <p role="status">{t('receiving.lookup.closed')}</p>}

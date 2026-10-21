@@ -16,6 +16,7 @@ from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, 
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.services import product_candidates as service
+from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -124,6 +125,20 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
         old = await self.candidates(service.CandidateQuery(key="old", name="Imported legacy saddle"))
         self.assertNotIn(self.product_a, [row["product_id"] for row in old["old"]["candidates"]])
 
+    async def test_upc_query_finds_equivalent_ean_as_exact_evidence(self):
+        async with self.transaction() as db:
+            db.add(ProductIdentifier(product_id=self.product_b, identifier_type=IdentifierType.ean,
+                                     value="0727670929720"))
+        before = await self.snapshot()
+        result = await self.candidates(service.CandidateQuery(key="upc", eans=("727670929720",)))
+        candidate = result["upc"]["candidates"][0]
+        self.assertEqual(candidate["product_id"], self.product_b)
+        self.assertIn("exact_ean", candidate["reasons"])
+        self.assertNotIn("ean_conflict", candidate["warnings"])
+        self.assertIn("0727670929720", candidate["eans"])
+        self.assertNotIn("727670929720", candidate["eans"])
+        self.assertEqual(await self.snapshot(), before)
+
     async def test_manual_empty_values_do_not_fall_back_to_imported_values(self):
         async with self.transaction() as db:
             override = await db.get(ProductEditorOverride, self.product_a)
@@ -160,9 +175,22 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
             service.CandidateQuery(key="bad-checksum", eans=("5901234123458",)),
             service.CandidateQuery(key="unverified", eans=("123456",)),
         )
-        self.assertEqual([row["product_id"] for row in result["zero"]["candidates"]], [self.product_a])
-        self.assertEqual(result["zero"]["candidates"][0]["eans"], [EAN_ZERO])
-        self.assertIn("exact_ean", result["zero"]["candidates"][0]["reasons"])
+        # The UPC is an equivalent representation of EAN_ZERO. Both existing
+        # owners must remain visible, without stripping either stored value or
+        # choosing one duplicate as authoritative.
+        candidates = {row["product_id"]: row for row in result["zero"]["candidates"]}
+        self.assertEqual(set(candidates), {self.product_a, self.product_b})
+        self.assertEqual(candidates[self.product_a]["eans"], [EAN_ZERO])
+        self.assertIn("123456789012", candidates[self.product_b]["eans"])
+        self.assertNotIn(EAN_ZERO, candidates[self.product_b]["eans"])
+        self.assertTrue(all("exact_ean" in row["reasons"] for row in candidates.values()))
+        async with self.sessions() as db:
+            await db.execute(text("SET TRANSACTION READ ONLY"))
+            incoming = RemoteIdentity(0, barcodes=(EAN_ZERO,))
+            index = await load_identity_index(db, 0, [incoming], local=True)
+            resolved = index.resolve(incoming)
+            self.assertEqual(resolved.reasons, ["identifier_conflict"])
+            self.assertEqual(set(resolved.candidate_product_ids), {self.product_a, self.product_b})
         for key in ("bad-checksum", "unverified"):
             self.assertFalse(any("exact_ean" in row["reasons"] for row in result[key]["candidates"]))
 

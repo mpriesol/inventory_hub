@@ -35,7 +35,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2]
-            for name in ("001_schema.sql", "004_shop_product_content.sql", "014_supplier_availability.sql", "021_product_feed_mapping.sql"):
+            for name in ("001_schema.sql", "004_shop_product_content.sql", "014_supplier_availability.sql", "021_product_feed_mapping.sql", "029_sku_policy.sql"):
                 await connection.execute((root / "infra" / "db-init" / name).read_text())
         finally:
             await connection.close()
@@ -369,6 +369,12 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
             page = await catalog.catalog_page(db, "paul-lange")
             id = page.items[0].product.id
+            with patch.object(catalog_import.UpgatesClient, "from_shop", return_value=client):
+                preview = await catalog_import.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[id], run_id=page.run_id))
+            self.assertEqual(preview.items[0].errors, ['sku_identity_required'])
+            source = (await catalog.selected_products(db, 'paul-lange', 'products', [id]))[0]
+            db.add(Product(sku=source.shop_code, name=source.name, brand=source.brand))
+            await db.flush()
             with patch.object(catalog_import.UpgatesClient, "from_shop", return_value=client):
                 preview = await catalog_import.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[id], run_id=page.run_id))
             self.assertEqual(preview.items[0].status, "ready")

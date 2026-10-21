@@ -34,6 +34,59 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_legacy_code_candidate_does_not_become_independent_sku_evidence(self):
+        from inventory_hub.services import sku_policy
+        item = row(sku_identity={'brand': 'TEST', 'source_code': 'LEAF-42',
+            'code_kind': 'manufacturer', 'source_ref': 'Package', 'leaf_confirmed': True})
+        doc = document([item])
+        draft = SimpleNamespace(supplier='paul-lange', document=doc)
+        db = SimpleNamespace(scalar=AsyncMock(return_value=17))
+        with patch.object(catalog_import, 'local_identities', AsyncMock(return_value=({1: 99}, set()))), \
+             patch.object(sku_policy, 'preview_sku', AsyncMock(return_value={'status': 'new',
+                'sku': 'TS-LEAF-42', 'brand_id': 1, 'reasons': []})) as preview:
+            asyncio.run(service.prepare_sku_rows(db, draft, doc))
+        self.assertIsNone(preview.call_args.kwargs['expected_product_id'])
+        self.assertEqual(item['values']['code'], 'PL-A-001')
+        self.assertEqual(item['sku_preview']['reasons'], ['import_identity_review_required'])
+
+    def test_gtin_representations_cannot_create_two_selected_cards(self):
+        rows = [row(1, eans=['727670929720']), row(2, eans=['0727670929720'])]
+        service.validate_rows(document(rows))
+        self.assertTrue(all('selection_identity_conflict' in item['hub_errors'] for item in rows))
+
+    def test_basic_card_and_publication_requirements_are_separate(self):
+        item = row(sale_gross=None, vat_percent=None, description_html='')
+        item['sku_preview'] = {'status': 'new', 'sku': 'TP-00042', 'reasons': []}
+        service.validate_rows(document([item]))
+        self.assertEqual(item['hub_errors'], [])
+        self.assertIn('missing_price', item['errors'])
+        self.assertIn('missing_vat', item['errors'])
+        item['sku_preview'] = {'status': 'blocked', 'reasons': ['sku_leaf_not_confirmed']}
+        service.validate_rows(document([item]))
+        self.assertIn('sku_leaf_not_confirmed', item['hub_errors'])
+
+    def test_leaf_evidence_is_part_of_frozen_saved_content(self):
+        item = row(sku_identity={'brand': 'Topeak', 'source_code': 'TBP-ML6B',
+            'code_kind': 'manufacturer', 'source_ref': 'Manufacturer package', 'leaf_confirmed': True})
+        original = service.content_hash(document([item]))
+        item['values']['sku_identity']['source_ref'] = 'Changed evidence'
+        self.assertNotEqual(service.content_hash(document([item])), original)
+
+    def test_verified_leaf_can_precede_variant_presentation_but_not_duplicate_evidence(self):
+        item = row(sale_gross=None, retail_gross=None, purchase_net=None, vat_percent=None, currency='CZK',
+            sku_identity={'brand': 'Topeak', 'source_code': 'LEAF-42', 'code_kind': 'manufacturer',
+                'source_ref': 'Variant label', 'leaf_confirmed': True})
+        item['source']['warnings'] = ['stock_feed_only']
+        item['source']['import_blockers'] = ['variant_attributes_missing']
+        item['sku_preview'] = {'status': 'new', 'reasons': []}
+        service.validate_rows(document([item]))
+        self.assertEqual(item['hub_errors'], [])
+        self.assertIn('stock_feed_only', item['errors'])
+        self.assertIn('variant_attributes_missing', item['errors'])
+        item['source']['import_blockers'].append('duplicate_supplier_ean')
+        service.validate_rows(document([item]))
+        self.assertIn('duplicate_supplier_ean', item['hub_errors'])
+
     def test_receiving_publication_rechecks_saved_identity_before_remote_write(self):
         staged = document()
         staged['receiving_origin'] = {'kind': 'receiving', 'session_id': 17}

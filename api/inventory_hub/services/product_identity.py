@@ -1,7 +1,8 @@
 """Read-only identity resolution shared by shop pulls, orders, catalog and receiving.
 
 BIKETREK and xTrek share exact canonical product/variant codes. Explicit shop
-mappings take precedence, then a unique exact SKU, then validated EAN/UPC.
+mappings take precedence, then a unique exact SKU or registered old SKU,
+then validated EAN/UPC (including equivalent GTIN representations).
 Conflicting evidence is reported; existing products and mappings never merge.
 """
 from __future__ import annotations
@@ -30,6 +31,11 @@ def verified_barcodes(values) -> tuple[str, ...]:
             if value.isascii() and value.strip("0") and kind in VERIFIED_BARCODE_TYPES and value not in result:
                 result.append(value)
     return tuple(result)
+
+
+def barcode_keys(values) -> set[str]:
+    """Comparison keys only; source and persisted barcode strings stay intact."""
+    return {ProductIdentifierService.gtin_key(value) for value in verified_barcodes(values)}
 
 
 @dataclass(frozen=True)
@@ -74,9 +80,14 @@ class IdentityIndex:
         self.by_barcode = defaultdict(set)
         self.product_barcodes = defaultdict(set)
         self.by_supplier_sku = defaultdict(set)
+        self.by_internal_sku = defaultdict(set)
+        self.exact_internal_sku = defaultdict(set)
         for mapping in mappings:
             self.add_mapping(mapping)
         for identifier in identifiers:
+            if identifier.identifier_type == IdentifierType.internal_sku:
+                self.by_internal_sku[identifier.value.casefold()].add(identifier.product_id)
+                self.exact_internal_sku[identifier.value].add(identifier.product_id)
             if identifier.identifier_type == IdentifierType.supplier_sku:
                 self.by_supplier_sku[(identifier.supplier_id, identifier.value)].add(identifier.product_id)
             if (identifier.identifier_type in VERIFIED_BARCODE_TYPES
@@ -104,14 +115,18 @@ class IdentityIndex:
             if identity.external_id and identity.is_variant is not None else []
         mappings = {row.id: row for row in [*codes, *remote_ids]}
         barcodes = set(verified_barcodes(identity.barcodes))
-        barcode_ids = set().union(*(self.by_barcode.get(value, set()) for value in barcodes))
+        barcode_ids = set().union(*(self.by_barcode.get(value, set()) for raw in barcodes
+                                   for value in ProductIdentifierService.gtin_equivalents(raw)))
+        incoming_barcode_keys = barcode_keys(barcodes)
         mapped_ids = {row.product_id for row in mappings.values()}
         sku_ids = self.by_sku.get(code.casefold(), set()) if code else set()
         exact_sku_ids = {product_id for product_id in sku_ids if self.products[product_id].sku == code}
+        alias_ids = self.by_internal_sku.get(code.casefold(), set()) if code else set()
+        exact_alias_ids = self.exact_internal_sku.get(code, set()) if code else set()
         supplier_ids = self.by_supplier_sku.get((identity.supplier_id, identity.supplier_sku.strip()), set()) \
             if identity.supplier_id and identity.supplier_sku.strip() else set()
         expected_ids = {identity.expected_product_id} if identity.expected_product_id is not None else set()
-        candidates = sorted(mapped_ids | barcode_ids | sku_ids | supplier_ids | expected_ids)
+        candidates = sorted(mapped_ids | barcode_ids | sku_ids | alias_ids | supplier_ids | expected_ids)
 
         def conflict(reason):
             return IdentityResolution("conflict", candidate_product_ids=candidates, reasons=[reason])
@@ -120,7 +135,7 @@ class IdentityIndex:
             return conflict("assigned_product_missing")
         if len(supplier_ids) > 1:
             return conflict("supplier_identifier_conflict")
-        evidence = [ids for ids in (mapped_ids, barcode_ids, sku_ids, supplier_ids, expected_ids) if ids]
+        evidence = [ids for ids in (mapped_ids, barcode_ids, sku_ids, alias_ids, supplier_ids, expected_ids) if ids]
         if (supplier_ids or expected_ids) and len(set().union(*evidence)) > 1:
             return conflict("assigned_product_changed" if expected_ids else "supplier_identifier_conflict")
         # SQLAlchemy applies the active=True default at INSERT, so an
@@ -132,7 +147,7 @@ class IdentityIndex:
             return conflict("ambiguous_shop_mapping")
         if len(barcode_ids) > 1:
             return conflict("identifier_conflict")
-        if len(sku_ids) > 1:
+        if len(sku_ids | alias_ids) > 1 or alias_ids != exact_alias_ids:
             return conflict("unmapped_sku_collision")
         if mappings:
             mapping = next(iter(mappings.values()))
@@ -140,26 +155,26 @@ class IdentityIndex:
                     or code and mapping_code(mapping) != code
                     or identity.external_id and mapping.external_id not in (None, "", "None", identity.external_id)):
                 return conflict("mapping_identity_changed")
-            if sku_ids and sku_ids != {mapping.product_id}:
+            if (sku_ids | alias_ids) and (sku_ids | alias_ids) != {mapping.product_id}:
                 return conflict("mapping_identifier_conflict")
             if barcode_ids and barcode_ids != {mapping.product_id}:
                 return conflict("mapping_identifier_conflict")
             stored_barcodes = self.product_barcodes.get(mapping.product_id, set())
-            if barcodes and stored_barcodes and not barcodes.intersection(stored_barcodes):
+            if barcodes and stored_barcodes and not incoming_barcode_keys.intersection(barcode_keys(stored_barcodes)):
                 return conflict("mapping_identifier_conflict")
             return IdentityResolution("mapped", mapping.product_id, "shop_mapping", [mapping.product_id])
-        if sku_ids:
+        if sku_ids or alias_ids:
             if exact_sku_ids != sku_ids:
                 return conflict("unmapped_sku_collision")
-            product_id = next(iter(exact_sku_ids))
+            product_id = next(iter(exact_sku_ids or exact_alias_ids))
             if barcode_ids and barcode_ids != {product_id}:
                 return conflict("identifier_conflict")
             stored_barcodes = self.product_barcodes.get(product_id, set())
-            if barcodes and stored_barcodes and not barcodes.intersection(stored_barcodes):
+            if barcodes and stored_barcodes and not incoming_barcode_keys.intersection(barcode_keys(stored_barcodes)):
                 return conflict("identifier_conflict")
             if self.by_product.get(product_id):
                 return conflict("local_mapping_conflict")
-            return IdentityResolution("identified", product_id, "shared_sku", [product_id])
+            return IdentityResolution("identified", product_id, "shared_sku" if sku_ids else "internal_sku", [product_id])
         if barcode_ids:
             product_id = next(iter(barcode_ids))
             if self.by_product.get(product_id):
@@ -169,7 +184,7 @@ class IdentityIndex:
         if local_ids:
             product_id = next(iter(local_ids))
             stored_barcodes = self.product_barcodes.get(product_id, set())
-            if barcodes and stored_barcodes and not barcodes.intersection(stored_barcodes):
+            if barcodes and stored_barcodes and not incoming_barcode_keys.intersection(barcode_keys(stored_barcodes)):
                 return conflict("identifier_conflict")
             return IdentityResolution("identified", product_id,
                 "supplier_sku" if supplier_ids else "assigned_product", [product_id])
@@ -188,7 +203,8 @@ async def load_identity_index(
         raise ValueError("All identities must belong to the requested shop")
     mappings = [] if local else list((await db.execute(select(ShopProduct).where(ShopProduct.shop_id == shop_id))).scalars())
     codes = sorted({identity.code.strip().lower() for identity in identities if identity.code.strip()})
-    values = sorted({value for identity in identities for value in verified_barcodes(identity.barcodes)})
+    values = sorted({value for identity in identities for raw in verified_barcodes(identity.barcodes)
+                     for value in ProductIdentifierService.gtin_equivalents(raw)})
     identifiers = []
     products = {}
     for start in range(0, len(values), 500):
@@ -206,6 +222,11 @@ async def load_identity_index(
         ))
         identifiers.extend(rows.scalars())
     for start in range(0, len(codes), 500):
+        rows = await db.execute(select(ProductIdentifier).where(
+            ProductIdentifier.identifier_type == IdentifierType.internal_sku,
+            func.lower(ProductIdentifier.value).in_(codes[start:start + 500]),
+        ))
+        identifiers.extend(rows.scalars())
         rows = await db.execute(select(Product).where(func.lower(Product.sku).in_(codes[start:start + 500])))
         products.update((row.id, row) for row in rows.scalars())
     assigned_ids = {identity.expected_product_id for identity in identities if identity.expected_product_id is not None}

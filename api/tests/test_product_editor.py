@@ -13,7 +13,7 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy.dialects import postgresql
 
 from inventory_hub.database import get_session
-from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest
+from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.routers import product_editor as routes
 from inventory_hub.services import product_editor as service
 from inventory_hub.services.upgates import UpgatesClient
@@ -38,6 +38,21 @@ def facts():
 
 
 class ProductEditorInputTests(TestCase):
+    def test_manual_identity_preserves_source_strings_and_requires_supplier_scope(self):
+        body = {"request_id": str(uuid4()), "name": "Simple local card", "supplier_id": 4,
+            "supplier_sku": "000123", "eans": ["5901234123457"],
+            "sku_identity": {"brand": "Topeak", "source_code": "000-UNIT", "code_kind": "manufacturer",
+                "source_ref": "Manufacturer label", "leaf_confirmed": True}}
+        item = ProductCardCreateRequest(**body)
+        self.assertIsNone(item.sku)
+        self.assertEqual(item.supplier_sku, "000123")
+        self.assertEqual(item.sku_identity.source_code, "000-UNIT")
+        for changed in ({"supplier_id": None}, {"supplier_sku": 123}, {"eans": ["12345"]},
+                        {"sku_identity": {**body["sku_identity"], "source_code": 123}},
+                        {"sku_identity": {**body["sku_identity"], "supplier_id": 8}}):
+            with self.subTest(changed=changed), self.assertRaises(ValidationError):
+                ProductCardCreateRequest(**{**body, **changed})
+
     def test_money_vat_and_minimum_are_explicit_decimal_strings_without_guessing(self):
         item = EditorRowPatch(**patch_body(variant={"sale_price_gross": "12.3", "vat_rate": None},
             warehouse={"min_quantity": "0"}, shops={"xtrek": {"sale_price_gross": "0", "visible": False}}))

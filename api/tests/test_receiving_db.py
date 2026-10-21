@@ -419,7 +419,8 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as error:
             await self.finalize(session_id, force=True)
         self.assertEqual(error.exception.status_code, 409)
-        self.assertIn("missing supplier SKU", str(error.exception.detail))
+        self.assertEqual(error.exception.detail["code"], "receiving_product_preparation_required")
+        self.assertEqual(error.exception.detail["action"], "prepare_products")
         self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
         async with self.sessions() as db:
             self.assertIsNone(await db.scalar(select(Product).where(Product.sku == "TEST-EAN-4006381333931")))
@@ -436,6 +437,23 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(await db.scalar(select(ProductSupplySource).where(
                 ProductSupplySource.supplier_product_id == source.id, ProductSupplySource.product_id == self.product_id)))
             self.assertEqual((await db.get(Product, self.product_id)).sku, "RECEIPT-A")
+
+    async def test_unknown_supplier_code_requires_prepared_card_before_any_stock_write(self):
+        session_id = await self.make_session([
+            {"product_id": self.product_id, "received_qty": D("2"), "unit_price": D("5")},
+            {"supplier_sku": "000124", "received_qty": D("2"), "unit_price": D("7")},
+        ])
+        with self.assertRaises(HTTPException) as error:
+            await self.finalize(session_id)
+        self.assertEqual(error.exception.detail["code"], "receiving_product_preparation_required")
+        self.assertEqual(error.exception.detail["line_number"], 2)
+        self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
+        async with self.sessions() as db:
+            self.assertIsNone(await db.scalar(select(Product.id).where(Product.sku == "TEST-000124")))
+            lines = list(await db.scalars(select(ReceivingLine).where(ReceivingLine.session_id == session_id)))
+            self.assertEqual([line.received_qty for line in lines], [D("2"), D("2")])
+            self.assertEqual([line.unit_price for line in lines], [D("5"), D("7")])
+        self.index.assert_not_called()
 
     async def test_zero_quantity_does_not_create_product_balance_or_movement(self):
         session_id = await self.make_session([{"received_qty": D("0"), "unit_price": None}])
@@ -472,6 +490,10 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
             supplier_id = supplier.id
         ean = "4006381333931"
+        async with self.sessions() as db:
+            # Card creation is a distinct reviewed step before receiving.
+            await ProductIdentifierService(db).add_identifier(self.product_id, ean)
+            await db.commit()
         first_id = await self.make_session([{"supplier_sku": "new-a", "ean": ean, "received_qty": D("2"), "unit_price": D("5")}])
         second_id = await self.make_session([{"supplier_sku": "new-b", "ean": ean, "received_qty": D("2"), "unit_price": D("5")}], supplier_id)
         # Different supplier aliases for the same unique verified barcode reuse
@@ -479,14 +501,13 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(receiving, "_product_code_prefix", side_effect=lambda code: "OTHER-" if code == "receipt-other" else "TEST-"):
             results = await asyncio.wait_for(asyncio.gather(
                 self.finalize(first_id), self.finalize(second_id, "receipt-other")), 10)
-        self.assertEqual(sum(result["products_created"] for result in results), 1)
+        self.assertEqual(sum(result["products_created"] for result in results), 0)
         async with self.sessions() as db:
-            products = (await db.execute(select(Product).where(Product.sku.in_(("TEST-new-a", "OTHER-new-b"))))).scalars().all()
-            self.assertEqual(len(products), 1)
-            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == products[0].id))
+            self.assertIsNone(await db.scalar(select(Product.id).where(Product.sku.in_(("TEST-new-a", "OTHER-new-b")))))
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
             self.assertEqual(balance.qty_on_hand, D("4"))
             self.assertEqual(await db.scalar(select(func.count()).select_from(ProductIdentifier).where(
-                ProductIdentifier.product_id == products[0].id,
+                ProductIdentifier.product_id == self.product_id,
                 ProductIdentifier.identifier_type == IdentifierType.supplier_sku)), 2)
 
     async def scan(self, session_id, request):
@@ -660,14 +681,14 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_compound_ean_receipt_matches_each_barcode_and_creates_individual_identifiers(self):
         eans = ("5901234123457", "4006381333931")
-        session_id = await self.make_session([{"supplier_sku": "compound", "ean": "/".join(eans), "unit_price": D("5")}])
+        session_id = await self.make_session([{"product_id": self.product_id,
+            "supplier_sku": "compound", "ean": "/".join(eans), "unit_price": D("5")}])
         for ean in eans:
             await self.scan(session_id, receiving.ScanRequest(code=ean, request_id=uuid4()))
         result = await self.finalize(session_id)
-        self.assertEqual(result["products_created"], 1)
+        self.assertEqual(result["products_created"], 0)
         async with self.sessions() as db:
-            product = await db.scalar(select(Product).where(Product.sku == "TEST-compound"))
-            values = await ProductIdentifierService(db).get_all_barcodes(product.id)
+            values = await ProductIdentifierService(db).get_all_barcodes(self.product_id)
             self.assertEqual(set(values), set(eans))
 
     async def test_unverified_barcode_lookup_never_selects_first_owner(self):

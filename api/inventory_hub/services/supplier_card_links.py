@@ -11,7 +11,7 @@ import json
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import case, or_, select, text
+from sqlalchemy import case, func, or_, select, text
 
 from inventory_hub import config_io
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier, SupplierProduct
@@ -19,7 +19,7 @@ from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
 from inventory_hub.services import catalog, product_links
 from inventory_hub.services.identifiers import ProductIdentifierService
-from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes
+from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, barcode_keys, load_identity_index, verified_barcodes
 from inventory_hub.supplier_card_link_models import SupplierCardLinkPreview
 from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 
@@ -64,7 +64,7 @@ def _source(row, supplier, prefix):
         raise SupplierCardLinkError('supplier_card_links_source_identity_changed')
     record_eans = sorted(verified_barcodes((row.ean,)))
     catalog_eans = sorted(verified_barcodes(parsed.eans))
-    if record_eans and catalog_eans and not set(record_eans) & set(catalog_eans):
+    if record_eans and catalog_eans and not barcode_keys(record_eans) & barcode_keys(catalog_eans):
         raise SupplierCardLinkError('supplier_card_links_source_ean_conflict')
     raw = [row.ean, *parsed.eans]
     warnings = ['unverified_barcode'] if any(value and not verified_barcodes((value,)) for value in raw) else []
@@ -73,7 +73,8 @@ def _source(row, supplier, prefix):
     attrs = [item.model_dump() for item in parsed.variant_attributes]
     return {'id': row.id, 'supplier_id': supplier.id, 'supplier_code': supplier.code,
         'supplier_name': supplier.name, 'supplier_sku': row.supplier_sku, 'shop_sku': code,
-        'name': parsed.name or row.name, 'eans': sorted(set(record_eans + catalog_eans)),
+        'name': parsed.name or row.name, 'brand': parsed.brand or getattr(row, 'brand', None),
+        'eans': sorted(set(record_eans + catalog_eans)),
         'attributes': attrs, 'group_code': parsed.group_code,
         'active': bool(supplier.is_active and row.is_active and not row.is_discontinued),
         'last_seen_at': (parsed.fetched_at or row.last_seen_at).isoformat() if parsed.fetched_at or row.last_seen_at else None,
@@ -111,9 +112,10 @@ async def _ean_adoption(db, facts, source, *, selected=False):
         ProductIdentifier.product_id == facts['product_id'],
         ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES)).order_by(ProductIdentifier.id)))
     eans = sorted(verified_barcodes(source['eans']))
+    comparable_eans = sorted({value for raw in eans for value in ProductIdentifierService.gtin_equivalents(raw)})
     reason = 'ean_present' if existing or facts['manual_eans'] else 'source_ean_missing' if not eans else None
     if reason is None and await db.scalar(select(ProductIdentifier.id).where(
-            ProductIdentifier.value.in_(eans), ProductIdentifier.product_id != facts['product_id']).limit(1)):
+            ProductIdentifier.value.in_(comparable_eans), ProductIdentifier.product_id != facts['product_id']).limit(1)):
         reason = 'ean_conflict'
     return {'available': reason is None, 'selected': selected, 'eans': eans, 'reason': reason,
             '_existing': existing}
@@ -176,8 +178,20 @@ async def inspect_link(db, product_id, source_id, *, lock=False, copy_supplier_e
     except product_links.LinkError:
         local_axes, source_axes = {}, {}
         errors.append('variant_axes_ambiguous')
+    local_brand = None
+    if source['brand']:
+        local_brand = await db.scalar(select(func.coalesce(
+            ProductEditorOverride.data['common']['brand'].astext, Product.brand))
+            .select_from(Product).outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == Product.id)
+            .where(Product.id == product_id))
+        if local_brand:
+            from inventory_hub.services.sku_policy import brand_key, registered_brand_id
+            if brand_key(local_brand) != brand_key(source['brand']):
+                left, right = await registered_brand_id(db, local_brand), await registered_brand_id(db, source['brand'])
+                if left is None or left != right:
+                    errors.append('sku_brand_conflict')
     manual_eans = verified_barcodes(facts['manual_eans']) if facts['manual_eans'] is not None else ()
-    if manual_eans and source['eans'] and not set(manual_eans) & set(source['eans']):
+    if manual_eans and source['eans'] and not barcode_keys(manual_eans) & barcode_keys(source['eans']):
         errors.append('manual_barcode_conflict')
     if not facts['eans'] or not source['eans']:
         warnings.append('barcode_missing')
@@ -201,7 +215,8 @@ async def inspect_link(db, product_id, source_id, *, lock=False, copy_supplier_e
     # evidence remain frozen. Stock, availability and prices are not identity.
     frozen = {'product_hash': product_links._facts_hash(facts), 'source': {
         key: source[key] for key in ('id', 'supplier_id', 'supplier_code', 'supplier_sku', 'shop_sku', 'eans', 'group_code', 'active')},
-        'source_axes': source_axes, 'prefix': prefix, 'owners_other_than_target': sorted(owners - {product_id}),
+        'source_axes': source_axes, 'brands': {'product': local_brand, 'source': source['brand']},
+        'prefix': prefix, 'owners_other_than_target': sorted(owners - {product_id}),
         'other_source_ids': sorted(set(other_sources)), 'source_policy': policy,
         'source_import_blockers': sorted(source['import_blockers'])}
     if copy_supplier_eans:
@@ -321,7 +336,8 @@ async def candidates(db, payload):
             coalesce(supplier_products.ean,''), '[/,;[:space:]]+') code
             WHERE code=ANY(CAST(:candidate_eans AS text[])))""")
         conditions.append(ean_match)
-    params = {'candidate_eans': facts['eans']}
+    params = {'candidate_eans': sorted({value for raw in facts['eans']
+                                     for value in ProductIdentifierService.gtin_equivalents(raw)})}
     if payload.query:
         value = payload.query[len(prefix):] if payload.query.startswith(prefix) else payload.query
         conditions = [SupplierProduct.supplier_sku.ilike('%' + value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%', escape='\\'),
@@ -346,7 +362,7 @@ async def candidates(db, payload):
             reasons.append('supplier_sku')
         if item['shop_sku'] == facts['sku'] or item['supplier_sku'] == facts['sku']:
             reasons.append('exact_sku')
-        if set(item['eans']) & set(facts['eans']):
+        if barcode_keys(item['eans']) & barcode_keys(facts['eans']):
             reasons.append('exact_ean')
         if not reasons:
             reasons.append('search' if payload.query else 'name')

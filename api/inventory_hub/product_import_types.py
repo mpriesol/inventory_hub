@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 from inventory_hub.catalog_types import CatalogParameter, ShopImportOptions
 from inventory_hub.product_editor_types import decimal_text, safe_text, VariantPatch
+from inventory_hub.sku_policy_types import SkuIdentityInput
 
 
 class StrictModel(BaseModel):
@@ -13,12 +14,15 @@ class StrictModel(BaseModel):
 
 
 class ImportValues(StrictModel):
-    code: str = Field(min_length=1, max_length=100)
-    supplier_code: str = Field(min_length=1, max_length=100)
+    code: str = Field(default="", max_length=100)
+    supplier_code: str = Field(default="", max_length=100)
     name: str = Field(min_length=1, max_length=500)
     group_name: str = Field(default="", max_length=500)
     brand: str = Field(default="", max_length=100)
     manufacturer_code: str = Field(default="", max_length=100)
+    # Feed fields are claims. Only an explicitly reviewed leaf identity can
+    # allocate a new shared SKU; the source snapshot remains unchanged.
+    sku_identity: SkuIdentityInput | None = None
     eans: list[str] = Field(default_factory=list, max_length=20)
     images: list[str] = Field(default_factory=list, max_length=100)
     description_html: str = Field(default="", max_length=100000)
@@ -72,7 +76,7 @@ class ImportValues(StrictModel):
     @field_validator("code", "supplier_code")
     @classmethod
     def codes(cls, value):
-        return VariantPatch.sku_valid(value)
+        return VariantPatch.sku_valid(value) if value else ""
 
     @field_validator("name")
     @classmethod

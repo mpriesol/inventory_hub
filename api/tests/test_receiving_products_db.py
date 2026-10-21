@@ -19,9 +19,10 @@ from inventory_hub.db_models import FeedRunStatus, IdentifierType, Product, Prod
 from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.product_import_models import ProductImportDraft
-from inventory_hub.product_import_types import DraftRevision
+from inventory_hub.product_import_types import DraftRevision, DraftPatch
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services import catalog_import, product_import
+from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services import receiving_products as service
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.stock_tracking_models import StockTracking
@@ -55,6 +56,15 @@ class InvoiceSourceTests(unittest.TestCase):
         self.assertIsNone(source.supplier_stock)
         self.assertIsNone(source.availability)
 
+    def test_invoice_without_supplier_code_keeps_blank_proposal_and_distinct_line_identity(self):
+        session = SimpleNamespace(id=8, supplier=SimpleNamespace(code='test'), invoice_currency='EUR', invoice_number='F-1')
+        first = SimpleNamespace(id=4, supplier_sku=None, description='First item', ean='', unit_price=None, vat_rate=None)
+        second = SimpleNamespace(id=5, supplier_sku=None, description='Second item', ean='', unit_price=None, vat_rate=None)
+        source = service._invoice_source(session, first, 'TEST-', None, None)
+        self.assertEqual(source.code, '')
+        self.assertEqual(source.shop_code, '')
+        self.assertNotEqual(service._preparation_key(first, None, None), service._preparation_key(second, None, None))
+
 
 @unittest.skipUnless(fixture.TEST_URL, 'Set CATALOG_TEST_DATABASE_URL to an isolated localhost *_catalog_test DB')
 class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -68,7 +78,7 @@ class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             raw = await connection.get_raw_connection()
             root = Path(__file__).resolve().parents[2] / 'infra/db-init'
             for name in ('004_shop_product_content.sql', '005_ai_content.sql', '012_product_editor.sql',
-                         '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql'):
+                         '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql', '029_sku_policy.sql'):
                 await raw.driver_connection.execute((root / name).read_text())
         path = config_io.shop_path('biketrek')
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +131,15 @@ class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def save(self, draft_id):
         async with self.sessions() as db:
             draft = await product_import.get_draft(db, draft_id, lock=True)
+            # This synthetic fixture explicitly establishes that its source code
+            # is a manufacturer leaf code; real invoice fields never imply it.
+            patches = [{"id": row["id"], "values": {"brand": "Topeak", "sku_identity": {
+                "brand": "Topeak", "source_code": row["values"]["supplier_code"],
+                "code_kind": "manufacturer", "source_ref": "Synthetic fixture manufacturer leaf specification",
+                "leaf_confirmed": True}}}
+                for row in draft.document["rows"] if not row.get("hub_product_id") and not row["values"].get("sku_identity")]
+            if patches:
+                await product_import.patch_rows(db, draft, DraftPatch(expected_revision=draft.revision, rows=patches))
             result = await product_import.save(db, draft, DraftRevision(expected_revision=draft.revision))
             await db.commit()
             return result
@@ -172,6 +191,51 @@ class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             feed.is_active = False
             await db.commit()
         self.assertFalse((await self.inspect(session_id))['feed_verified'])
+
+    async def test_missing_supplier_codes_prepare_separately_and_require_explicit_identity_before_save(self):
+        session_id = await self.make_session([{'description': 'First unnamed identity'}, {'description': 'Second unnamed identity'}])
+        report = await self.inspect(session_id)
+        self.assertTrue(all(item['can_prepare'] for item in report['items']))
+        prepared = await self.prepare(session_id, [item['line_id'] for item in report['items']])
+        async with self.sessions() as db:
+            draft = await product_import.get_draft(db, prepared['draft_id'], lock=True)
+            self.assertEqual(len(draft.document['rows']), 2)
+            self.assertTrue(all(row['values']['supplier_code'] == '' for row in draft.document['rows']))
+            self.assertTrue(all(not row['values'].get('sku_identity') for row in draft.document['rows']))
+            with self.assertRaises(CatalogError) as error:
+                await product_import.save(db, draft, DraftRevision(expected_revision=draft.revision))
+            self.assertEqual(error.exception.code, 'import_invalid_rows')
+            await db.rollback()
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), 0)
+
+    async def test_saved_draft_lineage_reconciles_code_less_invoice_without_inventing_supplier_alias(self):
+        session_id = await self.make_session([{'description': 'Label checked by operator',
+            'ordered_qty': D(1), 'received_qty': D(1), 'unit_price': D('4.1234')}])
+        line_id = (await self.inspect(session_id))['items'][0]['line_id']
+        prepared = await self.prepare(session_id, [line_id])
+        async with self.sessions() as db:
+            draft = await product_import.get_draft(db, prepared['draft_id'], lock=True)
+            await product_import.patch_rows(db, draft, DraftPatch(expected_revision=draft.revision, rows=[{
+                'id': draft.document['rows'][0]['id'], 'values': {'brand': 'Topeak', 'sku_identity': {
+                    'brand': 'Topeak', 'source_code': '000-LABEL', 'code_kind': 'manufacturer',
+                    'source_ref': 'Synthetic concrete unit label checked after invoice import', 'leaf_confirmed': True}}}]))
+            saved = await product_import.save(db, draft, DraftRevision(expected_revision=draft.revision))
+            await db.commit()
+        product_id = saved['rows'][0]['hub_product_id']
+        report = await self.inspect(session_id, reconcile=True)
+        self.assertEqual(report['items'][0]['product_id'], product_id)
+        async with self.sessions() as db:
+            line = await db.get(ReceivingLine, line_id)
+            self.assertIsNone(line.supplier_sku)
+            self.assertEqual(line.unit_price, D('4.1234'))
+            self.assertIsNone(await db.scalar(select(ProductIdentifier.id).where(
+                ProductIdentifier.product_id == product_id, ProductIdentifier.identifier_type == IdentifierType.supplier_sku)))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), 0)
+        result = await self.finalize(session_id)
+        self.assertEqual(result['movements_created'], 1)
+        self.assertEqual(result, await self.finalize(session_id))
 
     async def test_repeated_invoice_rows_share_card_and_resume_without_changing_prices_or_stock(self):
         catalog_id = await self.feed_item('repeat', '5901234123457')
@@ -295,7 +359,7 @@ class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finalized['movements_created'], 1)
         async with self.sessions() as db:
             product = await db.get(Product, product_id)
-            self.assertEqual(product.sku, 'TEST-feed-code')
+            self.assertEqual(product.sku, 'TP-feed-code')
             aliases = set((await db.scalars(select(ProductIdentifier.value).where(
                 ProductIdentifier.product_id == product_id, ProductIdentifier.identifier_type == IdentifierType.supplier_sku))).all())
             self.assertEqual(aliases, {'feed-code', 'invoice-code'})

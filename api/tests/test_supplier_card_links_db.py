@@ -41,7 +41,7 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for name in ('001_schema.sql', '004_shop_product_content.sql', '012_product_editor.sql',
-                         '028_supplier_card_links.sql', '028_supplier_card_links.sql'):
+                         '028_supplier_card_links.sql', '028_supplier_card_links.sql', '029_sku_policy.sql'):
                 await connection.execute((root / name).read_text())
         finally:
             await connection.close()
@@ -134,6 +134,34 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM product_identifiers WHERE identifier_type='ean'")), 0)
         await self.apply(preview)
         self.assertEqual(await self.relations(), (aliases, links))
+
+    async def test_brand_change_after_preview_blocks_without_writing_links(self):
+        preview = await self.inspect()
+        async with self.transaction() as db:
+            source = await db.get(SupplierProduct, self.source_id)
+            source.brand = 'Topeak'
+            source.attributes = {**source.attributes, 'catalog': {**source.attributes['catalog'], 'brand': 'Topeak'}}
+        current = await self.inspect()
+        self.assertIn('sku_brand_conflict', current['errors'])
+        with self.assertRaises(service.LinkError):
+            await self.apply(preview)
+        self.assertEqual(await self.relations(), ([], []))
+
+    async def test_upc_and_ean_equivalence_keeps_raw_values_and_stock_unchanged(self):
+        async with self.transaction() as db:
+            source = await db.get(SupplierProduct, self.source_id)
+            source.ean = '727670929720'
+            source.attributes = {**source.attributes, 'catalog': {**source.attributes['catalog'], 'eans': ['0727670929720']}}
+            db.add(ProductIdentifier(product_id=self.product_id, identifier_type=IdentifierType.ean, value='0727670929720'))
+        before = await self.snapshot()
+        preview = await self.inspect()
+        self.assertEqual(preview['errors'], [])
+        await self.apply(preview)
+        self.assertEqual(await self.snapshot(), before)
+        async with self.sessions() as db:
+            values = (await db.scalars(select(ProductIdentifier.value).where(
+                ProductIdentifier.identifier_type.in_((IdentifierType.ean, IdentifierType.upc))))).all()
+            self.assertEqual(values, ['0727670929720'])
 
     async def test_nonempty_conflicting_barcode_cannot_be_overridden_by_explicit_choice(self):
         async with self.transaction() as db:

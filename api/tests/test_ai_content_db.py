@@ -84,6 +84,29 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
             return jobs
 
+    async def saved_hub_card(self):
+        """Ordinary AI publishes content for an independently reviewed identity."""
+        from inventory_hub.db_models import Product, ProductIdentifier, IdentifierType, Supplier
+        from inventory_hub.services.sku_policy import create_brand, preview_sku, record_sku_identity
+        from inventory_hub.sku_policy_types import BrandCreate, SkuIdentityInput
+        async with self.sessions() as db:
+            source = (await catalog.selected_products(db, 'paul-lange', 'products', [self.id]))[0]
+            await create_brand(db, BrandCreate(name='TEST', code='TS',
+                source_ref='Synthetic manufacturer register'))
+            proof = SkuIdentityInput(brand='TEST', source_code=source.manufacturer_code,
+                code_kind='manufacturer', source_ref='Synthetic leaf manufacturer specification', leaf_confirmed=True)
+            proposed = await preview_sku(db, proof)
+            self.assertEqual(proposed['status'], 'new')
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == 'paul-lange'))
+            product = Product(sku=proposed['sku'], name=source.name, brand=source.brand,
+                supplier_id=supplier_id, source_supplier_product_id=source.id)
+            db.add(product)
+            await db.flush()
+            await record_sku_identity(db, product, proof, actor='test-fixture')
+            db.add(ProductIdentifier(product_id=product.id, supplier_id=supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value=source.code))
+            await db.commit()
+
     async def test_model_setting_changes_only_new_jobs_and_request_replay_keeps_original(self):
         request = self.request()
         original = (await self.create(request))[0]
@@ -160,6 +183,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {'type':'output_text', 'text':json.dumps(selection)}]}]}
 
     async def test_automatic_category_uses_registry_and_imports_all_product_ancestors(self):
+        await self.saved_hub_card()
         classification = await self.automatic_category_fixture()
         self.generate.side_effect = [classification, self.response]
         id = (await self.create(self.request(category_profiles={self.id:'auto'})))[0]['id']
@@ -251,6 +275,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.clients["biketrek"].sent)
 
     async def test_human_review_does_not_import_until_confirmed(self):
+        await self.saved_hub_card()
         id = (await self.create())[0]["id"]
         await self.act(id, "start"); await worker.cycle()
         job = await self.job(id)
@@ -272,6 +297,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
     async def test_two_shops_auto_policy_keeps_independent_results(self):
+        await self.saved_hub_card()
         policy = {"review_required": False, "active_after_import": True, "show_cost_estimate": False, "confirm_import": False}
         jobs = await self.create(self.request(targets=[{"shop": s, "policy": policy} for s in ("biketrek", "xtrek")]))
         self.clients["xtrek"].accept = False
@@ -284,6 +310,21 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.generate.await_count, 2)
         await worker.cycle()
         self.assertEqual(len([p for p, _ in self.clients["biketrek"].sent if p == "products"]), 1)
+
+    async def test_ordinary_ai_cannot_allocate_a_card_from_a_supplier_prefix(self):
+        policy = {'review_required': False, 'active_after_import': True,
+                  'show_cost_estimate': False, 'confirm_import': False}
+        job_id = (await self.create(self.request(targets=[{'shop': 'biketrek', 'policy': policy}])))[0]['id']
+        for _ in range(4):
+            await worker.cycle()
+        job = await self.job(job_id)
+        self.assertEqual(job.status, 'import_blocked')
+        self.assertFalse(self.clients['biketrek'].sent)
+        preview = catalog_import._load_job(catalog_import._path('biketrek', job.preview_id))['preview']
+        self.assertIn('sku_identity_required', preview['items'][0]['errors'])
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM products')), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
 
     async def test_saved_legacy_source_can_be_rechecked_without_generation_or_import(self):
         id = (await self.create())[0]["id"]
@@ -369,6 +410,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.clients["biketrek"].sent)
 
     async def test_manual_approval_prepares_and_imports_with_retained_source_warnings(self):
+        await self.saved_hub_card()
         id = (await self.create())[0]['id']
         output = content(missing_facts=['Rozpor v dĺžke ventilu'], evidence=[
             {'claim': 'Údaj z feedu', 'source': f'feed:{self.id}', 'quote': 'Nenájdený citát'},

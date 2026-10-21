@@ -35,7 +35,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await catalog_db.CatalogDatabaseTests.asyncSetUp(self)
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
-            for name in ('005_ai_content.sql', '012_product_editor.sql', '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql'):
+            for name in ('005_ai_content.sql', '012_product_editor.sql', '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql', '029_sku_policy.sql'):
                 sql = (Path(__file__).resolve().parents[2] / 'infra/db-init' / name).read_text()
                 await raw.driver_connection.execute(sql)
                 if name == '022_product_import_drafts.sql':
@@ -70,11 +70,35 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         return DraftCreate(request_id=uuid4(), supplier='paul-lange', shop='biketrek',
             product_ids=[self.ids[0]], options={'category_code':'K-TEST'}, **changes)
 
-    async def create(self, request=None):
+    async def create(self, request=None, *, approve_identity=True):
         async with self.sessions() as db:
             result = await service.create(db, request or self.request())
             await db.commit()
+        return await self.approve_fixture_identity(result) if approve_identity else result
+
+    async def approve_fixture_identity(self, result):
+        """Explicit synthetic operator evidence, never trust the feed field name."""
+        if (result.get('source_lookup') or {}).get('state') not in (None, 'completed', 'skipped'):
             return result
+        from inventory_hub.services.sku_policy import create_brand, registered_brand_id
+        from inventory_hub.sku_policy_types import BrandCreate
+        from inventory_hub.sku_policy_models import SkuBrand
+        rows = []
+        async with self.sessions() as db:
+            for row in result['rows']:
+                if row.get('hub_product_id') or row['values'].get('sku_identity') or (row.get('sku_preview') or {}).get('status') == 'existing':
+                    continue
+                values = row['values']
+                name = values['brand'] or 'TEST'
+                if not await registered_brand_id(db, name):
+                    codes = set((await db.scalars(select(SkuBrand.code))).all())
+                    code = 'PL' if name == 'TEST' else next('Z' + c for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if 'Z' + c not in codes)
+                    await create_brand(db, BrandCreate(name=name, code=code, source_ref='Synthetic test manufacturer register'))
+                rows.append({'id': row['id'], 'values': {'brand': name, 'sku_identity': {
+                    'brand': name, 'source_code': values['manufacturer_code'] or values['supplier_code'],
+                    'code_kind': 'manufacturer', 'source_ref': 'Synthetic fixture leaf-code specification', 'leaf_confirmed': True}}})
+            await db.commit()
+        return await self.mutate(result, service.patch_rows, DraftPatch, rows=rows) if rows else result
 
     async def mutate(self, result, fn, request_type=DraftRevision, **kwargs):
         async with self.sessions() as db:
@@ -85,6 +109,8 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def choose_existing(self, result, product_id):
         review = await self.mutate(result, product_import_identity.review)
+        if review['rows'][0]['status'] == 'linked' and review['rows'][0]['matched_product_id'] == product_id:
+            return result
         return await self.mutate(result, product_import_identity.decisions, DraftIdentityDecisions,
             review_hash=review['review_hash'], decisions=[{'row_id': result['rows'][0]['id'],
                 'action': 'link', 'product_id': product_id}])
@@ -100,6 +126,39 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result['items'][0]['title'])
                 self.assertIn(code, result['items'][0]['codes'])
             self.assertEqual((await service.history(db, '%_unlikely_literal'))['items'], [])
+
+    async def test_feed_manufacturer_field_alone_cannot_allocate_a_new_card(self):
+        draft = await self.create(approve_identity=False)
+        self.assertTrue(draft['rows'][0]['values']['manufacturer_code'])
+        self.assertIn('sku_identity_required', draft['rows'][0]['hub_errors'])
+        with self.assertRaises(catalog.CatalogError) as blocked:
+            await self.mutate(draft, service.save)
+        self.assertEqual(blocked.exception.code, 'import_invalid_rows')
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        self.assertEqual(self.client.sent, [])
+
+    async def test_reviewed_leaf_code_preserves_zeros_and_saves_card_before_merchandising(self):
+        from inventory_hub.sku_policy_models import ProductSkuIdentity
+        draft = await self.create()
+        identity = {**draft['rows'][0]['values']['sku_identity'], 'source_code': '00042-M'}
+        draft = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{
+            'id': self.ids[0], 'values': {'sku_identity': identity, 'description_html': '',
+                'sale_gross': None, 'retail_gross': None, 'vat_percent': None, 'target_shops': []}}])
+        self.assertEqual(draft['rows'][0]['values']['code'], 'PL-00042-M')
+        self.assertEqual(draft['rows'][0]['hub_errors'], [])
+        saved = await self.mutate(draft, service.save)
+        async with self.sessions() as db:
+            card = await db.get(Product, saved['rows'][0]['hub_product_id'])
+            self.assertEqual(card.sku, 'PL-00042-M')
+            proof = await db.scalar(select(ProductSkuIdentity).where(ProductSkuIdentity.product_id == card.id))
+            self.assertEqual(proof.source_code, '00042-M')
+            self.assertEqual(proof.source_ref, identity['source_ref'])
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_balances')), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
+        self.assertEqual(self.client.sent, [])
 
     async def test_category_refresh_preserves_manual_cells_and_reads_inactive_categories(self):
         original = await self.create()
@@ -284,13 +343,14 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(skipped['source_lookup']['skipped'], 1)
         self.assertEqual(skipped['rows'][0]['source_error'], 'sloger_b2b_unavailable')
         self.assertIn('sloger_b2b_feed_fallback', skipped['rows'][0]['warnings'])
+        skipped = await self.approve_fixture_identity(skipped)
         edited = await self.mutate(skipped, service.patch_rows, DraftPatch,
             rows=[{'id': selected.ids[0], 'values': {'name': 'Feed product after unavailable B2B'}}])
         saved = await self.mutate(edited, service.save)
         previewed = await self.mutate(saved, service.preview)
         payload = previewed['publication']['items'][0]['payload']
         self.assertEqual(payload['descriptions'][0]['title'], 'Feed product after unavailable B2B')
-        self.assertEqual(payload['code'], 'SLG-FEED-ONLY')
+        self.assertEqual(payload['code'], saved['rows'][0]['values']['code'])
         self.assertEqual(payload['availability'], 'overíme')
         self.assertNotIn('price_purchase', payload['prices'][0])
         self.assertEqual(previewed['rows'][0]['values']['sale_gross'], '24.60')
@@ -305,9 +365,15 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_publication_uses_edited_snapshot_after_feed_refresh(self):
         result = await self.create()
+        from inventory_hub.services.sku_policy import create_brand
+        from inventory_hub.sku_policy_types import BrandCreate
+        async with self.sessions() as db:
+            await create_brand(db, BrandCreate(name='Nová značka', code='NZ', source_ref='Synthetic corrected brand evidence'))
+            await db.commit()
+        corrected_identity = {**result['rows'][0]['values']['sku_identity'], 'brand': 'Nová značka'}
         result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{'id':self.ids[0], 'values': {
             'name':'Môj názov', 'description_html':'<p>Ručný popis</p>', 'seo_title':'Moje SEO',
-            'seo_description':'Presný popis z tabuľky', 'brand':'Nová značka', 'sale_gross':'89.99',
+            'seo_description':'Presný popis z tabuľky', 'brand':'Nová značka', 'sku_identity': corrected_identity, 'sale_gross':'89.99',
             'images':['https://images.example.com/edited.jpg'], 'parameters':[{'name':'Farba','value':'modrá'}]}}])
         result = await self.mutate(result, service.save)
         self.write_feed(xml_item(name='Updated supplier name'))
@@ -360,7 +426,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 receiving_origin={'kind': 'receiving', 'supplier': 'paul-lange', 'session_id': 123, 'invoice_no': 'TEST-INVOICE'},
                 receiving_rows=lineage)
             await db.commit()
-        return result
+        return await self.approve_fixture_identity(result)
 
     async def test_invoice_only_draft_uses_frozen_facts_without_catalog_fk_and_can_prepare_ai(self):
         from inventory_hub.catalog_types import CatalogProduct, CatalogPrices
@@ -552,12 +618,13 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             rows=[{'id': self.ids[0], 'values': {'target_shops': ['biketrek']}}])
         result = await self.mutate(result, service.save)
         result = await self.mutate(result, service.preview)
-        # An approved existing-card link remains link-only even if an old or
-        # direct client later sends merchandising targets for the draft row.
-        self.assertIsNone(result['publication'])
-        self.assertEqual(result['publications'], {})
+        # An automatic exact-identity reuse can later prepare a separately
+        # selected shop listing. Preview still does not publish or rewrite Hub.
+        self.assertIsNotNone(result['publication'])
+        self.assertEqual(result['publication']['items'][0]['payload']['code'], 'EXISTING-001')
+        self.assertEqual(result['publication']['items'][0]['status'], 'ready')
         self.assertEqual(result['rows'][0]['hub_product_id'], product_id)
-        self.assertEqual(result['rows'][0]['values']['target_shops'], [])
+        self.assertEqual(result['rows'][0]['values']['target_shops'], ['biketrek'])
         async with self.sessions() as db:
             stored = await db.get(ProductImportDraft, result['id'])
             self.assertEqual(stored.document['rows'][0]['values']['target_shops'], ['biketrek'])

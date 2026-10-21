@@ -49,6 +49,14 @@ class CandidateRankingTests(unittest.TestCase):
         self.assertEqual(result['warnings'], [])
         self.assertEqual(service.verified_barcodes(('012345678905', '12345678905')), ('012345678905',))
 
+    def test_equivalent_gtins_do_not_warn_and_original_values_remain_visible(self):
+        query = service.CandidateQuery('row', eans=('727670929720',))
+        item = card(eans=['0727670929720'], manual_eans=['0727670929720'])
+        result = service._rank(query, {1: item}, {1: {'exact_ean'}}, 5, False)['candidates'][0]
+        self.assertEqual(result['warnings'], [])
+        self.assertEqual(result['eans'], ['0727670929720'])
+        self.assertEqual(result['manual_eans'], ['0727670929720'])
+
     def test_axis_aliases_share_the_definitive_link_normalizer(self):
         query = service.CandidateQuery('row', attributes=(('Farba', 'modrá'), ('Veľkosť', 'm')))
         matching = card(attributes=[{'name': 'Color', 'value': 'blue'}, {'name': 'Size', 'value': 'M'}])
@@ -120,6 +128,13 @@ class CandidateSearchTests(unittest.IsolatedAsyncioTestCase):
         result = await service.find_candidates(db, [service.CandidateQuery('row', eans=('1234', '00000000'), name='M')])
         self.assertEqual(result, {'row': {'candidates': [], 'truncated': False}})
         self.assertEqual(db.statements, [])
+
+    async def test_gtin_exact_query_includes_both_upc_and_ean_representations(self):
+        db = ReadSession()
+        with patch.object(service, '_load_cards', AsyncMock(return_value={})):
+            await service.find_candidates(db, [service.CandidateQuery('row', eans=('727670929720',))])
+        values = db.statements[0].compile(dialect=postgresql.dialect()).params['value_1']
+        self.assertEqual(set(values), {'727670929720', '0727670929720'})
 
     async def test_invalid_or_oversized_input_fails_before_database_access(self):
         invalid = ([service.CandidateQuery('same'), service.CandidateQuery('same')],

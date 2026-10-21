@@ -1,4 +1,5 @@
 import { hubRequest } from './access';
+import { SkuIdentityInput } from './skuPolicy';
 
 export type EditorMode = 'common' | 'biketrek' | 'xtrek';
 export interface ProductEditorOptions {
@@ -45,6 +46,7 @@ export interface ProductEditorChange {
   shops?: Record<string, Partial<ProductShopValues>>;
 }
 export interface ProductEditorSave {
+  created?: boolean; reused?: boolean;
   request_id: string; status: 'completed'; external_write_enabled: false;
   results: { product_id: number; status: 'saved' | 'conflict' | 'invalid' | 'missing'; row?: ProductEditorRow; errors: { code: string; field?: string }[] }[];
 }
@@ -52,7 +54,7 @@ export type ProductEditorSnapshot = Pick<ProductEditorRow, 'common' | 'variant' 
 export interface ProductEditorDetail extends ProductEditorRow { audit: { id: number; created_at: string; before: ProductEditorSnapshot; after: ProductEditorSnapshot }[] }
 export interface ProductEditorSaveBody { request_id: string; warehouse_code: string | null; confirmed: true; changes: ProductEditorChange[] }
 const base = '/api/product-editor';
-export interface ProductCardCreate { request_id: string; sku: string; name: string; is_active: boolean }
+export interface ProductCardCreate { request_id: string; sku?: string; name: string; is_active: boolean; sku_identity?: SkuIdentityInput; eans?: string[]; supplier_id?: number; supplier_sku?: string }
 export const createProductCard = (body: ProductCardCreate) => hubRequest<ProductEditorSave>(`${base}/products`, body);
 export const getProductEditorOptions = (signal?: AbortSignal) => hubRequest<ProductEditorOptions>(`${base}/options`, undefined, signal);
 export const getEditorProducts = async (filters: ProductEditorFilters, signal?: AbortSignal): Promise<ProductEditorPageData> => {

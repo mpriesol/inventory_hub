@@ -10,7 +10,8 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute
 from inventory_hub.product_editor_models import ProductEditorOverride
-from inventory_hub.services.product_identity import VERIFIED_BARCODE_TYPES, verified_barcodes
+from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.product_identity import VERIFIED_BARCODE_TYPES, barcode_keys, verified_barcodes
 from inventory_hub.services.product_links import axes, LinkError
 
 
@@ -119,7 +120,7 @@ async def _load_cards(db, ids):
 
 
 def _rank(query, cards, exact, limit, truncated, normalized=None):
-    incoming = set(verified_barcodes(query.eans))
+    incoming = barcode_keys(query.eans)
     code, name = _sku(query.sku), _name(query.name)
     prefix, tokens = _fuzzy_terms(query)
     normalized = normalized or {pid: (_sku(card['sku']), _name(card['name'])) for pid, card in cards.items()}
@@ -145,9 +146,9 @@ def _rank(query, cards, exact, limit, truncated, normalized=None):
         warnings = []
         if card['is_active'] is False:
             warnings.append('inactive_product')
-        if incoming and card['eans'] and not incoming.intersection(card['eans']):
+        if incoming and card['eans'] and not incoming.intersection(barcode_keys(card['eans'])):
             warnings.append('ean_conflict')
-        if incoming and card['manual_eans'] and not incoming.intersection(card['manual_eans']):
+        if incoming and card['manual_eans'] and not incoming.intersection(barcode_keys(card['manual_eans'])):
             warnings.append('manual_ean_conflict')
         if query.brand and card['brand'] and _fold(query.brand) != _fold(card['brand']):
             warnings.append('brand_difference')
@@ -187,8 +188,9 @@ async def _find_candidates(db, queries, limit):
     exact = {query.key: defaultdict(set) for query in queries}
     barcode_queries, sku_queries, supplier_queries = defaultdict(list), defaultdict(list), defaultdict(list)
     for query in queries:
-        for value in verified_barcodes(query.eans):
-            barcode_queries[value].append(query.key)
+        for raw in verified_barcodes(query.eans):
+            for value in ProductIdentifierService.gtin_equivalents(raw):
+                barcode_queries[value].append(query.key)
         if query.sku:
             sku_queries[query.sku].append(query.key)
         if query.supplier_id and query.supplier_sku:

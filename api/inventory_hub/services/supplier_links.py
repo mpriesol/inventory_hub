@@ -209,6 +209,95 @@ async def reconcile_source_codes(db, supplier_code, raw_codes, cfg=None):
     return reports
 
 
+async def bind_explicit_supplier_source(db, product_id, supplier_id, supplier_sku, *, barcodes=(), brand=None, actor="manual-card"):
+    """Attach a reviewed supplier code without interpreting a legacy SKU prefix.
+
+    The caller owns the identity lock. A manual/no-feed source is a supplier
+    relationship, never a stock observation or a second physical product. Existing
+    source policies and raw catalog values remain unchanged.
+    """
+    from inventory_hub.services.identifiers import ProductIdentifierService
+    from inventory_hub.services.product_identity import verified_barcodes
+
+    supplier = await db.get(Supplier, supplier_id)
+    product = await db.get(Product, product_id)
+    if supplier is None or not supplier.is_active or product is None:
+        raise AvailabilityError("supplier_source_inactive", 409)
+    source = await db.scalar(select(SupplierProduct).where(
+        SupplierProduct.supplier_id == supplier_id, SupplierProduct.supplier_sku == supplier_sku))
+    source_eans = ()
+    if source is not None:
+        catalog = (source.attributes or {}).get("catalog") or {}
+        source_eans = verified_barcodes((source.ean or "", *(catalog.get("eans") or [])))
+        owners = set(await db.scalars(select(ProductSupplySource.product_id).where(
+            ProductSupplySource.supplier_product_id == source.id)))
+        owners.update(await db.scalars(select(Product.id).where(Product.source_supplier_product_id == source.id)))
+        if owners - {product_id}:
+            raise AvailabilityError("supplier_source_multiple_products", 409)
+        if not source.is_active or source.is_discontinued:
+            raise AvailabilityError("supplier_source_inactive", 409)
+        from inventory_hub.product_editor_models import ProductEditorOverride
+        from inventory_hub.services.sku_policy import brand_key, registered_brand_id
+        from inventory_hub.services import product_links
+        override = await db.get(ProductEditorOverride, product_id)
+        local_brand = ((override.data if override else {}).get("common") or {}).get("brand") or product.brand or brand
+        source_brands = [value for value in (source.brand, catalog.get("brand")) if value]
+        if local_brand:
+            local_brand_id = await registered_brand_id(db, local_brand)
+            for source_brand in source_brands:
+                if brand_key(local_brand) != brand_key(source_brand) and (
+                        local_brand_id is None or await registered_brand_id(db, source_brand) != local_brand_id):
+                    raise AvailabilityError("sku_brand_conflict", 409)
+        if catalog.get("variant_attributes"):
+            facts = (await product_links._facts(db, [product_id], exclude_supplier_product_id=source.id))[product_id]
+            try:
+                local_axes = product_links.axes(facts["attributes"])
+                source_axes = product_links.axes(catalog["variant_attributes"])
+            except product_links.LinkError:
+                raise AvailabilityError("variant_axes_ambiguous", 409) from None
+            if any(local_axes[key] != source_axes[key] for key in local_axes.keys() & source_axes.keys()):
+                raise AvailabilityError("variant_axes_conflict", 409)
+    other_sources = select(ProductSupplySource.supplier_product_id).join(SupplierProduct,
+        SupplierProduct.id == ProductSupplySource.supplier_product_id).where(
+            ProductSupplySource.product_id == product_id, SupplierProduct.supplier_id == supplier_id)
+    if source is not None:
+        other_sources = other_sources.where(ProductSupplySource.supplier_product_id != source.id)
+    if await db.scalar(other_sources):
+        raise AvailabilityError("supplier_link_already_configured", 409)
+    if product.source_supplier_product_id and (source is None or product.source_supplier_product_id != source.id):
+        legacy_supplier = await db.scalar(select(SupplierProduct.supplier_id).where(
+            SupplierProduct.id == product.source_supplier_product_id))
+        if legacy_supplier == supplier_id:
+            raise AvailabilityError("supplier_link_already_configured", 409)
+    supplied = verified_barcodes(barcodes)
+    supplied_keys = {ProductIdentifierService.gtin_key(value) for value in supplied}
+    source_keys = {ProductIdentifierService.gtin_key(value) for value in source_eans}
+    if supplied and source_eans and not supplied_keys & source_keys:
+        raise AvailabilityError("supplier_card_links_source_ean_conflict", 409)
+    identity = RemoteIdentity(0, "", barcodes=tuple(dict.fromkeys((*supplied, *source_eans))),
+        supplier_id=supplier_id, supplier_sku=supplier_sku, expected_product_id=product_id)
+    result = (await load_identity_index(db, 0, [identity], local=True)).resolve(identity)
+    if result.status == "conflict" or result.product_id != product_id:
+        raise AvailabilityError("supplier_card_links_identity_conflict", 409)
+    if source is None:
+        source = SupplierProduct(supplier_id=supplier_id, supplier_sku=supplier_sku, name=product.name,
+            attributes={"supplier_identity": {"source": "manual_card", "actor": actor}})
+        db.add(source)
+        await db.flush()
+    alias = await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.product_id == product_id,
+        ProductIdentifier.supplier_id == supplier_id, ProductIdentifier.value == supplier_sku,
+        ProductIdentifier.identifier_type == IdentifierType.supplier_sku))
+    if alias is None:
+        await ProductIdentifierService(db).add_identifier(product_id, supplier_sku, IdentifierType.supplier_sku,
+            supplier_id=supplier_id, notes="Reviewed card creation: explicit supplier code; canonical SKU retained")
+    link = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == product_id,
+        ProductSupplySource.supplier_product_id == source.id))
+    if link is None:
+        db.add(ProductSupplySource(product_id=product_id, supplier_product_id=source.id))
+    await db.flush()
+    return {"product_id": product_id, "supplier_product_id": source.id, "created_link": link is None}
+
+
 async def reconcile_product_links(db, product_ids):
     """After shop pull, consider configured suppliers for these products only."""
     if not product_ids:

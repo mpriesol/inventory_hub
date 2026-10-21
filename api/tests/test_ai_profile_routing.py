@@ -171,6 +171,7 @@ class ProfileRoutingTests(unittest.IsolatedAsyncioTestCase):
         db = SimpleNamespace(flush=AsyncMock(), scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [old])))
         request = DraftPatch(expected_revision=2, rows=[{'id': 1, 'values': {'ai_category_profile': 'inner_tubes'}}])
         with patch.object(product_import, 'publication_result', return_value=None), \
+             patch.object(product_import, 'prepare_sku_rows', AsyncMock()), \
              patch.object(product_import, 'supplier_config', return_value={'product_code_prefix': 'PL-'}), \
              patch('inventory_hub.supplier_prefix.get_supplier_prefix', return_value='PL-'), \
              patch.object(product_import, 'public', AsyncMock(return_value={})):

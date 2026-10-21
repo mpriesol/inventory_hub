@@ -34,6 +34,7 @@ MIGRATIONS = (
     "stock_delta_migrate",            # 026
     "product_links_migrate",          # 027
     "supplier_card_links_migrate",    # 028
+    "sku_policy_migrate",             # 029
 )
 
 

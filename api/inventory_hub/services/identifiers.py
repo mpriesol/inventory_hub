@@ -97,6 +97,29 @@ class ProductIdentifierService:
         
         # Default to custom
         return IdentifierType.custom
+
+    @classmethod
+    def gtin_key(cls, code: str) -> Optional[str]:
+        """Comparable GTIN representation, never a replacement for the raw value.
+
+        Padding is valid only for checksum-validated GTIN-8/12/13. In
+        particular, supplier codes, MPNs and unverified scans keep their exact
+        identity even when they happen to contain only digits.
+        """
+        if (not isinstance(code, str) or not code.isascii() or not code.isdigit() or not code.strip("0")
+                or cls.classify_barcode(code) not in (IdentifierType.ean, IdentifierType.upc)):
+            return None
+        return code.zfill(14)
+
+    @classmethod
+    def gtin_equivalents(cls, code: str) -> tuple[str, ...]:
+        """Supported raw barcode representations of one validated GTIN."""
+        key = cls.gtin_key(code)
+        if key is None:
+            return ()
+        return tuple(value for size in (8, 12, 13)
+                     if not key[:-size].strip("0")
+                     and cls.gtin_key(value := key[-size:]) == key)
     
     @classmethod
     def split_compound_ean(cls, ean_string: str) -> List[Tuple[str, IdentifierType]]:
@@ -284,7 +307,7 @@ class ProductIdentifierService:
             select(Product)
             .join(ProductIdentifier)
             .where(
-                ProductIdentifier.value == code,
+                ProductIdentifier.value.in_(self.gtin_equivalents(code) or (code,)),
                 ProductIdentifier.identifier_type.in_(self.BARCODE_TYPES),
                 Product.is_active == True,
             )

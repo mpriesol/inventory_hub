@@ -190,6 +190,8 @@ if settings.USE_POSTGRES:
     app.include_router(product_editor_router)
     app.include_router(product_links_router)
     app.include_router(supplier_card_links_router)
+    from inventory_hub.routers.sku_policy import router as sku_policy_router
+    app.include_router(sku_policy_router)
     from inventory_hub.routers.opening_stock import router as opening_stock_router
     app.include_router(opening_stock_router)
     from inventory_hub.routers.upgates_sync import router as upgates_sync_router
@@ -301,6 +303,8 @@ def prepare_run(payload: RunPrepareIn):
       - invoice_relpath: napr. "suppliers/paul-lange/invoices/csv/2025/10/F2025060682.csv"
       - upgates_csv_override: voliteľná absolútna PATH na shop export CSV (inak použije shops/{shop}/latest.csv)
     """
+    from inventory_hub.services.legacy_import_guard import require_legacy_import_mode
+    require_legacy_import_mode()
     if payload.supplier_ref not in SUPPLIERS:
         raise HTTPException(404, detail=f"Unknown supplier '{payload.supplier_ref}'")
 
