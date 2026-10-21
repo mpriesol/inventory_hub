@@ -2,11 +2,11 @@
 
 ## Pre obsluhu
 
-Každý fyzický produkt alebo variant má vlastné nemenné interné ID. Spoločné SKU sa používa v Hube, BIKETREK aj xTrek. Pri novom produkte vzniká spojením prefixu dodávateľa a jeho kódu konkrétneho variantu: napríklad `PL-` + `001234` = `PL-001234`. Úvodné nuly sa zachovávajú. Pokladňový produkt xTrek v BIKETREK nemení identitu svojich variantov.
+Každý fyzický produkt alebo variant má vlastné nemenné interné ID. Spoločné SKU sa používa v Hube, BIKETREK aj xTrek. Nové SKU sa prideľuje podľa [registra značiek a doloženého kódu konkrétneho výrobku](sku-policy.md), napríklad `TP-` + overený MPN. Dodávateľské prefixy opísané nižšie sa zachovávajú pre historické kódy a väzby. Úvodné nuly sa zachovávajú. Pokladňový produkt xTrek v BIKETREK nemení identitu svojich variantov.
 
 Dodávateľský kód sa uchováva samostatne. Ak sa ten istý preukázateľne zhodný produkt neskôr nakúpi od iného dodávateľa, zostáva jeden produkt so svojím pôvodným SKU a ďalšou dodávateľskou väzbou. Príjmy si zachovávajú vlastné nákupné ceny. Samotný prefix neznamená výhradného dodávateľa navždy.
 
-### Nastavenie a uzamknutie prefixu
+### Historické nastavenie a uzamknutie prefixu
 
 - Prefixy musia byť medzi dodávateľmi jedinečné aj bez ohľadu na veľkosť písmen. Jeden nesmie byť začiatkom druhého, napríklad `PL-` a `PL-A-`, pretože by mohli vytvoriť rovnaké výsledné SKU.
 - Nový dodávateľ môže upraviť prefix pred jeho prvým použitím na trvalú identitu. Pri prvom použití sa prefix uzamkne.
@@ -56,7 +56,7 @@ Odstránenie konfigurácie dodávateľa neuvoľní jeho rezervovaný prefix. Reg
 
 `claim_supplier_prefix(supplier, expected_prefix)` sa volá pred trvalým použitím prefixu. Overí aktuálny config, jedinečnosť a zhodu s pripraveným prefixom. Zlyhanie nesmie pokračovať so záložným alebo prázdnym prefixom. Chybný register sa nesmie automaticky nahradiť prázdnym; zápis identity musí zostať blokovaný.
 
-### Výslovná rotácia prefixu pre nové produkty
+### Výslovná rotácia historického dodávateľského priestoru
 
 Chránený `POST /api/suppliers/{supplier}/prefix-rotation` prijíma
 `{"expected_prefix":"SL-","new_prefix":"SLG-"}`. Vyžaduje bežný operátorský
@@ -69,7 +69,8 @@ istého dodávateľa, aby odlišné dodávateľské kódy nevytvorili totožné 
 
 Rotácia mení iba konfiguračný prefix a jeho register. Nemení databázu, existujúce
 produkty, dodávateľské aliasy, fyzický sklad ani produkty BIKETREK či xTrek.
-Po obnove katalógu nové prípravy odvodia návrhy nových kódov z nového prefixu;
+Po obnove katalógu sa môže zmeniť dodávateľský návrh starého kódu; ten nie je
+oprávnením vytvoriť novú kartu. Nová karta prechádza spoločnou politikou SKU;
 už preukázaná identita si zachová pôvodné kanonické SKU. Existujúci importovaný
 produkt sa tým neprečísluje. Staré pripravené operácie naďalej podliehajú
 kontrole aktuálneho prefixu.
@@ -109,6 +110,6 @@ Prefix, normalizované dodávateľské dáta a zápis väzby sa znova kontroluj�
 
 ### Nasadenie a overenie
 
-Táto etapa nepotrebuje novú SQL migráciu. Potrebuje existujúce schémy identity, katalógu a dodávateľských pozorovaní. Nasadenie nezapína plánovanie ani zápisy zásob/cien do e-shopov.
+Historické dopĺňanie dodávateľských väzieb nepotrebovalo novú SQL migráciu. Nová politika SKU pridáva migráciu 029; pozri [aktuálne pravidlá](sku-policy.md). Potrebuje existujúce schémy identity, katalógu a dodávateľských pozorovaní. Nasadenie nezapína plánovanie ani zápisy zásob/cien do e-shopov.
 
 Regresie musia pokryť existujúci skladový produkt načítaný z e-shopu, samotný minimálny skladový feed, nový príjem, viac dodávateľov, úvodné nuly, opakovanie dávky, konfliktné EAN/kódy/vlastníkov, zakázané väzby a zachovanie histórie. Zámok konfigurácie sa overuje aj pri obnove, starých aliasoch a súbežnom použití. Plné databázové scenáre sa spúšťajú iba v izolovanom localhost `*_catalog_test`; výsledok CI a nasadenia sa zaznamenáva oddelene.

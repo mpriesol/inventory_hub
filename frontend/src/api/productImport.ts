@@ -1,9 +1,11 @@
 import { hubRequest } from './access';
 import { AiJob } from './aiContent';
 import { ImportItem, ImportOptions, ImportPreview, ImportResult, TargetOptions } from './catalog';
+import { SkuIdentityInput, SkuPreview } from './skuPolicy';
 
 export interface ProductImportSelection { supplier: string; feed_key: string; run_id: number | null; product_ids: number[]; shop: string; options: ImportOptions }
 export interface ImportValues {
+  sku_identity?: SkuIdentityInput | null;
   code: string; supplier_code: string; group_name: string; name: string; brand: string; manufacturer_code: string;
   eans: string[]; images: string[]; description_html: string; short_description: string;
   seo_title: string; seo_description: string; seo_url: string; category_code: string | null;
@@ -19,6 +21,7 @@ export interface ProductImportItem extends ImportItem { shop?: string; shop_url?
 export interface ProductImportPreview extends Omit<ImportPreview, 'items'> { items: ProductImportItem[] }
 export interface ProductImportResult extends Omit<ImportResult, 'items'> { items: ProductImportItem[] }
 export interface ProductImportRow {
+  sku_preview?: SkuPreview | null; hub_errors?: string[];
   source_url?: string | null;
   id: number; group_key: string; group_name?: string; is_variant: boolean; source_category: string | null;
   mapping_revision: number | null; mapping_provenance?: Record<string, unknown>; values: ImportValues;
@@ -30,6 +33,7 @@ export interface ProductImportRow {
   source_status?: 'pending' | 'completed' | 'failed' | 'skipped'; source_error?: string | null;
 }
 export interface ProductImportDraft {
+  supplier_id?: number;
   id: string; revision: number; status: string; supplier: string; shop: string; feed_key: string;
   created_at?: string; updated_at?: string; options: ImportOptions; categories: TargetOptions['categories'];
   default_shop?: string; shops?: { code: string; name: string; categories: TargetOptions['categories']; error?: string }[];

@@ -71,6 +71,8 @@ const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = make
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
   warehouses: [{ id: 8, code: 'other', name: 'Other fixture', is_default: false }, { id: 7, code: 'main', name: 'Main fixture', is_default: true }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 let loseCreateResponse = true; const createdRequests = new Map();
+let skuPreviewMode = 'new';
+const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: [] }];
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave, linkRefreshMode = 'complete', detailMode = 'valid', resolveDetail;
@@ -79,10 +81,19 @@ const rowForWarehouse = (row, warehouseCode) => ({ ...clone(row), warehouse: war
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options'].some(prefix => path.startsWith(prefix)), 'The grid calls only its protected editing and explicit linking APIs');
+  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options', '/api/sku-policy/'].some(prefix => path.startsWith(prefix)), 'The grid calls only its protected editing and explicit linking APIs');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   assert(!path.includes('synthetic-'), 'Credentials never enter query strings');
   const url = new URL(path, dom.window.location.origin);
+  if (url.pathname === '/api/sku-policy/brands') return reply({ brands: skuBrands });
+  if (url.pathname === '/api/sku-policy/preview') {
+    assert.equal(init.method, 'POST');
+    const item = body.sku_identity;
+    if (skuPreviewMode === 'existing') return reply({status:'existing',sku:'OLD-001',product_id:51,brand_id:null,reasons:[],candidate_product_ids:[51]});
+    if (skuPreviewMode === 'conflict') return reply({status:'conflict',sku:null,product_id:null,brand_id:null,reasons:['supplier_identifier_conflict'],candidate_product_ids:[1,2]});
+    if (!item) return reply({status:'blocked',sku:null,product_id:null,brand_id:null,reasons:['sku_identity_required'],candidate_product_ids:[]});
+    return reply({status:item.leaf_confirmed?'new':'blocked',sku:'TP-'+item.source_code,product_id:null,brand_id:1,reasons:item.leaf_confirmed?[]:['sku_leaf_not_confirmed'],candidate_product_ids:[]});
+  }
   if (url.pathname === '/api/product-links/refresh') {
     assert.equal(init.method, 'POST'); assert.deepEqual(body, { shop_code: 'xtrek', product_ids: [1] });
     if (linkRefreshMode === 'error') return { ok: false, status: 409, json: async () => ({ detail: { code: 'product_links_identity_changed' } }) };
@@ -104,11 +115,11 @@ global.fetch = async (path, init = {}) => {
   }
   if (url.pathname.endsWith('/options')) return reply(editorOptions);
   if (url.pathname.endsWith('/products') && init.method === 'POST') {
-    assert.deepEqual(Object.keys(body).sort(), ['is_active', 'name', 'request_id', 'sku']);
+    assert(!('qty' in body) && !('stock' in body) && !('description' in body), 'Basic card save does not include physical stock or shop content');
     if (createdRequests.has(body.request_id)) {
       const old = createdRequests.get(body.request_id); assert.deepEqual(old.body, body); return reply(old.result);
     }
-    const row = { ...makeRow(100), sku: body.sku, common: { name: body.name, brand: null, internal_note: '' }, is_active: body.is_active, supplier_linked: false };
+    const row = skuPreviewMode === 'existing' ? { ...makeRow(51), sku: 'OLD-001' } : { ...makeRow(100), sku: `TP-${body.sku_identity.source_code}`, common: { name: body.name, brand: null, internal_note: '' }, is_active: body.is_active, supplier_linked: false };
     rows.set(row.id, row);
     const result = { request_id: body.request_id, results: [{ product_id: row.id, status: 'saved', row, errors: [] }] };
     createdRequests.set(body.request_id, { body, result });
@@ -256,7 +267,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
   assert(cellText(1, 'cost') === '0', 'Known zero cost remains distinct from unknown');
-  assert(!element('new-card'), 'Unused create action stays hidden');
+  assert(element('new-card'), 'Unified card preparation is available from stock');
   assert(element('view-stock') && element('view-products') && element('view-shops'));
   await click(cell(1, 'name').querySelector('.product-editor-cell-value'));
   assert(element('cell-editor') && !element('close-detail'), 'Clicking the displayed name edits the cell instead of opening a modal');
@@ -635,18 +646,40 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await input('activity-filter', 'inactive'); await input('supplier-link-filter', 'linked'); await click('load');
   assert(cellText(1, 'is_active').includes(t('activityStates.inactive'))); assert(!element('cell-2-sku'));
   await input('supplier-link-filter', 'unlinked'); await click('load'); assert(!element('cell-1-sku'));
-  assert(!element('new-card'), 'The stock page does not expose the unused create-card action');
-  // Keep the existing create/retry regression on the retained form itself.
+  assert(element('new-card'), 'The stock page exposes the unified local card action');
+  // New cards require verified concrete identity; retries preserve the exact request.
   const { ProductCardCreateForm } = require('../src/components/product/ProductCardCreateForm.tsx');
   let createdCard;
   await act(async () => { root.render(React.createElement(ProductCardCreateForm, { onClose: () => {}, onCreated: row => { createdCard = row; } })); await tick(); });
-  await input('create-sku', 'DEMO-LOCAL'); await input('create-name', 'Local demo'); await input('create-activity', 'false');
+  await input('create-name', 'Local demo'); await input('create-activity', 'false');
+  assert(required('create-submit').disabled, 'An arbitrary card name cannot allocate a supplier-prefix SKU');
+  await input('sku-brand', 'Topeak'); await input('sku-source-code', '0001410'); await input('sku-source-ref', 'Synthetic manufacturer specification / exact pack');
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  assert(required('create-submit').disabled, 'A source field is not automatically verified as a leaf MPN');
+  await click('sku-leaf-confirmed'); await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  assert(required('sku-preview').textContent.includes('TP-0001410'), 'The preview preserves leading zeros');
   await click('create-submit');
   assert(required('create-sku').disabled, 'An uncertain create preserves its exact payload');
   assert(required('create-submit').textContent.includes(t('retryCreate')));
   await click('create-submit');
   assert.equal(createdRequests.size, 1, 'Retry does not create another card');
-  assert.equal(createdCard.sku, 'DEMO-LOCAL'); assert.equal(createdCard.is_active, false); assert.equal(createdCard.supplier_linked, false);
+  assert.equal(createdCard.sku, 'TP-0001410'); assert.equal(createdCard.is_active, false); assert.equal(createdCard.supplier_linked, false);
+  const newRequest = [...createdRequests.values()][0].body;
+  assert.equal(newRequest.sku_identity.source_code, '0001410'); assert.equal(newRequest.sku_identity.leaf_confirmed, true);
+  assert(!('sku' in newRequest), 'The server allocates new SKU from evidence');
+  skuPreviewMode = 'existing';
+  await act(async () => { root.render(React.createElement(ProductCardCreateForm, {key:'existing',onClose:()=>{},onCreated:row=>{createdCard=row;}})); await tick(); });
+  await input('create-name', 'Lookup name'); await input('create-ean', '5901234123457');
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  assert(required('create-submit').textContent.includes(i18n.t('skuPolicy.useExisting')));
+  assert.equal(calls.filter(call => call.path.endsWith('/sku-policy/preview')).at(-1).body.sku_identity, null, 'Existing-card lookup does not invent an MPN');
+  await click('create-submit'); assert.equal(createdCard.id,51); assert.equal(createdCard.sku,'OLD-001');
+  skuPreviewMode = 'conflict';
+  await act(async () => { root.render(React.createElement(ProductCardCreateForm, {key:'conflict',onClose:()=>{},onCreated:()=>{throw Error('Conflict cannot save');}})); await tick(); });
+  await input('create-name', 'Conflict'); await input('create-ean', '5901234123457');
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  assert(required('create-submit').disabled); assert(required('sku-preview').textContent.includes('1, 2'));
+  assert(required('sku-preview').textContent.includes(i18n.t('skuPolicy.errors.supplier_identifier_conflict')));
   await act(async () => { root.unmount(); await tick(); }); unlockHub('');
   const sanitized = columnPreferences({ version: 1, order: ['evil', 'brand', 'brand'], visible: ['name', 'constructor', 'name'], widths: { name: 10000, sku: -1, brand: '100', evil: 120 }, token: 'private' });
   assert.equal(sanitized.order[0], 'sku'); assert.equal(new Set(sanitized.order).size, sanitized.order.length);

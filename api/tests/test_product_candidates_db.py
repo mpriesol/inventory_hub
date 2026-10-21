@@ -124,6 +124,20 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
         old = await self.candidates(service.CandidateQuery(key="old", name="Imported legacy saddle"))
         self.assertNotIn(self.product_a, [row["product_id"] for row in old["old"]["candidates"]])
 
+    async def test_upc_query_finds_equivalent_ean_as_exact_evidence(self):
+        async with self.transaction() as db:
+            db.add(ProductIdentifier(product_id=self.product_b, identifier_type=IdentifierType.ean,
+                                     value="0727670929720"))
+        before = await self.snapshot()
+        result = await self.candidates(service.CandidateQuery(key="upc", eans=("727670929720",)))
+        candidate = result["upc"]["candidates"][0]
+        self.assertEqual(candidate["product_id"], self.product_b)
+        self.assertIn("exact_ean", candidate["reasons"])
+        self.assertNotIn("ean_conflict", candidate["warnings"])
+        self.assertIn("0727670929720", candidate["eans"])
+        self.assertNotIn("727670929720", candidate["eans"])
+        self.assertEqual(await self.snapshot(), before)
+
     async def test_manual_empty_values_do_not_fall_back_to_imported_values(self):
         async with self.transaction() as db:
             override = await db.get(ProductEditorOverride, self.product_a)

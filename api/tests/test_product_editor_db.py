@@ -45,7 +45,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((self.sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "004_shop_product_content.sql", "007_order_stock.sql",
-                             "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql"):
+                             "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
         finally:
             await connection.close()
@@ -154,19 +154,22 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_card_replay_conflict_and_no_stock_or_shop_side_effects(self):
         before = await self.snapshot()
-        payload = ProductCardCreateRequest(request_id=uuid4(), sku="DEMO-LOCAL", name="Local demo", is_active=False)
+        payload = ProductCardCreateRequest(request_id=uuid4(), name="Local demo", is_active=False,
+            sku_identity={"brand": "Topeak", "source_code": "000-DEMO", "code_kind": "manufacturer",
+                "source_ref": "Synthetic manufacturer label for this concrete unit", "leaf_confirmed": True})
         async with self.sessions() as db:
             result = await service.create_card(db, payload)
         row = result["results"][0]["row"]
         self.assertFalse(row["is_active"])
+        self.assertEqual(row["sku"], "TP-000-DEMO")
+        self.assertTrue(result["created"])
         self.assertEqual(row["revision"], 1)
         self.assertFalse(row["supplier_linked"])
         self.assertFalse(row["stock"]["known"])
         async with self.sessions() as db:
             self.assertEqual(await service.create_card(db, payload), result)
         for changed, code in ((payload.model_copy(update={"name": "Changed"}), "product_editor_request_reused"),
-                              (payload.model_copy(update={"request_id": uuid4()}), "product_editor_identity_conflict"),
-                              (payload.model_copy(update={"request_id": uuid4(), "sku": "5901234123457"}), "product_editor_identity_conflict")):
+                              (payload.model_copy(update={"request_id": uuid4()}), "sku_identity_conflict")):
             async with self.sessions() as db:
                 with self.assertRaises(service.EditorError) as error:
                     await service.create_card(db, changed)
@@ -178,6 +181,92 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             audits = (await db.scalars(select(ProductEditorAudit).where(ProductEditorAudit.product_id == row["id"]))).all()
             self.assertEqual(len(audits), 1)
             self.assertFalse(audits[0].after_data["is_active"])
+
+    async def test_unreviewed_manual_sku_cannot_create_a_card(self):
+        before = await self.snapshot()
+        async with self.sessions() as db:
+            with self.assertRaises(service.EditorError) as error:
+                await service.create_card(db, ProductCardCreateRequest(request_id=uuid4(),
+                    sku="OLD-000123", name="Unreviewed identity"))
+        self.assertEqual(error.exception.code, "sku_identity_required")
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_manual_lookup_reuses_legacy_card_without_renaming_or_overwriting_it(self):
+        before = await self.snapshot()
+        async with self.sessions() as db:
+            result = await service.create_card(db, ProductCardCreateRequest(request_id=uuid4(),
+                sku="BIKE-2", is_active=False))
+        self.assertFalse(result["created"])
+        row = result["results"][0]["row"]
+        self.assertEqual(row["id"], self.products["BIKE-2"])
+        self.assertEqual(row["sku"], "BIKE-2")
+        self.assertEqual(row["common"]["name"], "Žltá vidlica 2")
+        self.assertTrue(row["is_active"])
+        self.assertEqual(row["revision"], 1)
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_manual_creation_reuses_verified_identity_and_adds_second_supplier_without_feed(self):
+        from inventory_hub.sku_policy_models import ProductSkuIdentity
+        identity = {"brand": "Topeak", "source_code": "000-UNIT", "code_kind": "manufacturer",
+            "source_ref": "Synthetic manufacturer leaf code on label", "leaf_confirmed": True}
+        async with self.sessions() as db:
+            first = await service.create_card(db, ProductCardCreateRequest(request_id=uuid4(), name="Original name",
+                sku_identity=identity, eans=["4006381333931"], supplier_id=self.supplier_id, supplier_sku="001-A"))
+        product_id = first["results"][0]["product_id"]
+        async with self.transaction() as db:
+            other = Supplier(code="manual-no-feed", name="Supplier without filesystem feed configuration")
+            db.add(other)
+            await db.flush()
+            other_id = other.id
+        async with self.sessions() as db:
+            second = await service.create_card(db, ProductCardCreateRequest(request_id=uuid4(), name="Do not overwrite",
+                is_active=False, sku_identity=identity, supplier_id=other_id, supplier_sku="0007"))
+        self.assertTrue(second["reused"])
+        self.assertEqual(second["results"][0]["product_id"], product_id)
+        row = second["results"][0]["row"]
+        self.assertEqual(row["sku"], "TP-000-UNIT")
+        self.assertTrue(row["is_active"])
+        self.assertEqual(row["common"]["name"], "Original name")
+        self.assertFalse(row["stock"]["known"])
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource).where(
+                ProductSupplySource.product_id == product_id)), 2)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSkuIdentity).where(
+                ProductSkuIdentity.product_id == product_id)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement).where(
+                StockMovement.product_id == product_id)), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct).where(
+                ShopProduct.product_id == product_id)), 0)
+        rename = await self.save([self.change(row, variant={"sku": "TP-ARBITRARY"})])
+        self.assertEqual(rename["results"][0]["errors"][0]["code"], "sku_registered_rename_blocked")
+
+    async def test_manual_identity_contradicting_existing_ean_cannot_steal_supplier_source(self):
+        before = await self.snapshot()
+        async with self.sessions() as db:
+            with self.assertRaises(service.EditorError) as error:
+                await service.create_card(db, ProductCardCreateRequest(request_id=uuid4(), name="Conflicting card",
+                    sku_identity={"brand": "Topeak", "source_code": "OTHER-LEAF", "code_kind": "manufacturer",
+                        "source_ref": "Synthetic manufacturer label", "leaf_confirmed": True},
+                    eans=["5901234123457"], supplier_id=self.supplier_id, supplier_sku="ALTERNATIVE-222"))
+        self.assertEqual(error.exception.code, "sku_identity_conflict")
+        self.assertIn("sku_brand_conflict", error.exception.reasons)
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_manual_supplier_binding_rejects_contradictory_brand_or_variant_even_with_same_ean(self):
+        for code, brand, axes, reason in (
+                ("BRAND-CONFLICT", "Shimano", [], "sku_brand_conflict"),
+                ("SIZE-CONFLICT", "Trek", [{"name": "Veľkosť", "value": "3"}], "variant_axes_conflict")):
+            async with self.transaction() as db:
+                db.add(SupplierProduct(supplier_id=self.supplier_id, supplier_sku=code,
+                    name="Contradictory supplier facts", brand=brand, ean="5901234123457",
+                    attributes={"catalog": {"brand": brand, "variant_attributes": axes}}))
+            before = await self.snapshot()
+            async with self.sessions() as db:
+                with self.assertRaises(service.EditorError) as error:
+                    await service.create_card(db, ProductCardCreateRequest(request_id=uuid4(), name="Existing card",
+                        sku="BIKE-2", supplier_id=self.supplier_id, supplier_sku=code, eans=["5901234123457"]))
+            self.assertEqual(error.exception.code, reason)
+            self.assertEqual(await self.snapshot(), before)
 
     async def test_activity_change_retains_links_and_uses_revision_audit(self):
         before = await self.snapshot()

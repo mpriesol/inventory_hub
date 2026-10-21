@@ -40,9 +40,9 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.supplier = SimpleNamespace(id=5, code='northfinder', name='Northfinder', is_active=True)
         self.source = source()
 
-    async def inspect(self, *, identifiers=(), aliases=(), links=(), legacy_owners=(), other_sources=()):
+    async def inspect(self, *, identifiers=(), aliases=(), links=(), legacy_owners=(), other_sources=(), local_brand=None):
         db = AsyncMock()
-        db.scalar.side_effect = [self.source, None]
+        db.scalar.side_effect = [self.source, None, local_brand]
         db.get.return_value = self.supplier
         db.scalars.side_effect = [list(aliases), list(links), list(legacy_owners), list(other_sources)]
         products = [SimpleNamespace(id=1, sku=self.facts['sku'], is_active=True),
@@ -79,6 +79,26 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.inspect())['errors'], [])
         self.facts['attributes'][1]['value'] = 'L'
         self.assertIn('variant_axes_conflict', (await self.inspect())['errors'])
+
+    async def test_equivalent_gtins_accept_source_record_catalog_and_manual_evidence(self):
+        self.source.ean = '727670929720'
+        self.source.attributes['catalog']['eans'] = ['0727670929720']
+        self.facts['eans'] = self.facts['manual_eans'] = ['727670929720']
+        result = await self.inspect()
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['source']['eans'], ['0727670929720', '727670929720'])
+
+    async def test_brand_conflict_blocks_and_registered_aliases_agree(self):
+        from inventory_hub.services import sku_policy
+        self.source.attributes['catalog']['brand'] = 'BBB Cycling'
+        with patch.object(sku_policy, 'registered_brand_id', AsyncMock(side_effect=[1, 2])):
+            self.assertIn('sku_brand_conflict', (await self.inspect(local_brand='Topeak'))['errors'])
+        with patch.object(sku_policy, 'registered_brand_id', AsyncMock(side_effect=[7, 7])):
+            result = await self.inspect(local_brand='BBB')
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['identity']['brands'], {'product': 'BBB', 'source': 'BBB Cycling'})
+        unknown = await self.inspect()
+        self.assertEqual(unknown['errors'], [], 'Missing brand alone is not contradictory evidence')
 
     async def test_alias_source_and_legacy_owners_cannot_be_overridden(self):
         alias = SimpleNamespace(product_id=2, identifier_type=IdentifierType.supplier_sku,

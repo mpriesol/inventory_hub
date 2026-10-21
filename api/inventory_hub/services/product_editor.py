@@ -20,7 +20,7 @@ from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttri
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
 from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.fifo_models import FifoLayer, FifoState
-from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index
 from inventory_hub.services.upgates import variant_attributes
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.catalog import _http_url
@@ -31,8 +31,9 @@ from inventory_hub.stock_tracking_models import StockTracking
 
 
 class EditorError(Exception):
-    def __init__(self, code, status=409):
+    def __init__(self, code, status=409, *, reasons=(), candidate_product_ids=()):
         self.code, self.status = code, status
+        self.reasons, self.candidate_product_ids = list(reasons), list(candidate_product_ids)
         super().__init__(code)
 
 
@@ -437,8 +438,11 @@ def _audit_values(row):
     return {key: deepcopy(row[key]) for key in ("is_active", "sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
 
 
-async def create_card(db, payload: ProductCardCreateRequest):
-    """Create only a local identity, with replay protection and an audit receipt."""
+async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-card"):
+    """Resolve first; create only a reviewed local identity, never stock or a listing."""
+    from inventory_hub.services.sku_policy import preview_sku, record_sku_identity, SkuPolicyError
+    from inventory_hub.services.supplier_links import bind_explicit_supplier_source
+    from inventory_hub.services.supplier_availability_source import AvailabilityError
     identifier = str(payload.request_id)
     digest = _digest({"operation": "create_card", **payload.model_dump(mode="json")})
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(_digest(["product-editor", identifier])[:15], 16)})
@@ -448,21 +452,80 @@ async def create_card(db, payload: ProductCardCreateRequest):
             raise EditorError("product_editor_request_reused")
         return old.result
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
-    if (await db.scalar(select(Product.id).where(Product.sku == payload.sku))
-            or await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value == payload.sku))):
-        raise EditorError("product_editor_identity_conflict")
-    product = Product(sku=payload.sku, name=payload.name, is_active=payload.is_active)
-    db.add(product)
-    await db.flush()
-    db.add(ProductEditorOverride(product_id=product.id, revision=1, data={}))
+    if payload.sku_identity is not None:
+        resolution = await preview_sku(db, payload.sku_identity, barcodes=payload.eans,
+            supplier_id=payload.supplier_id, supplier_sku=payload.supplier_sku or "")
+        if resolution["status"] not in ("new", "existing"):
+            raise EditorError("sku_identity_required" if resolution["status"] == "blocked" else "sku_identity_conflict",
+                reasons=resolution["reasons"], candidate_product_ids=resolution["candidate_product_ids"])
+        product_id, sku = resolution.get("product_id"), resolution.get("sku")
+        if payload.sku is not None and payload.sku != sku:
+            raise EditorError("sku_proposal_changed", reasons=["sku_proposal_changed"])
+    else:
+        identity = RemoteIdentity(0, payload.sku or "", barcodes=tuple(payload.eans),
+            supplier_id=payload.supplier_id, supplier_sku=payload.supplier_sku or "")
+        index = await load_identity_index(db, 0, [identity], local=True)
+        resolution = index.resolve(identity)
+        if resolution.status == "conflict":
+            raise EditorError("product_editor_identity_conflict", reasons=resolution.reasons,
+                candidate_product_ids=resolution.candidate_product_ids)
+        product_id = resolution.product_id
+        if product_id is None:
+            raise EditorError("sku_identity_required", reasons=["sku_identity_required"])
+        sku = index.products[product_id].sku
+    created = product_id is None
+    product = await db.get(Product, product_id) if product_id is not None else None
+    before = (await _rows(db, [product_id], None))[product_id] if product_id is not None else None
+    if created:
+        if not payload.name:
+            raise EditorError("product_editor_name_required", 422)
+        product = Product(sku=sku, name=payload.name, brand=payload.sku_identity.brand,
+            is_active=True, created_from_source="manual:sku-policy")
+        db.add(product)
+        await db.flush()
+        db.add(ProductEditorOverride(product_id=product.id, revision=1, data={}))
+    try:
+        if payload.sku_identity is not None:
+            await record_sku_identity(db, product, payload.sku_identity, actor=actor)
+        identifier_service = ProductIdentifierService(db)
+        primary_set = bool(await identifier_service.get_primary_barcode(product.id))
+        for ean in payload.eans:
+            kind = identifier_service.classify_barcode(ean)
+            if not await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.product_id == product.id,
+                    ProductIdentifier.value == ean, ProductIdentifier.identifier_type == kind)):
+                await identifier_service.add_identifier(product.id, ean, kind, is_primary=not primary_set,
+                    notes="Reviewed manual card identity")
+                primary_set = True
+        if payload.supplier_id is not None and payload.supplier_sku:
+            await bind_explicit_supplier_source(db, product.id, payload.supplier_id, payload.supplier_sku,
+                barcodes=payload.eans, brand=payload.sku_identity.brand if payload.sku_identity else None, actor=actor)
+    except SkuPolicyError as error:
+        raise EditorError(error.code, error.status, reasons=error.reasons,
+            candidate_product_ids=error.candidate_product_ids) from None
+    except AvailabilityError as error:
+        raise EditorError(error.code, error.status, reasons=[error.code]) from None
+    except IntegrityError:
+        raise EditorError("product_editor_identity_conflict") from None
+    if created:
+        product.is_active = payload.is_active
+    else:
+        # A reused card can gain identifiers/source proof; invalidate open editor
+        # revisions and retain a valid audit revision even for an imported card.
+        override = await db.get(ProductEditorOverride, product.id)
+        if override is None:
+            db.add(ProductEditorOverride(product_id=product.id, revision=1, data={}))
+        else:
+            override.revision += 1
+            override.updated_at = now()
     await db.flush()
     row = (await _rows(db, [product.id], None))[product.id]
     result = {"request_id": identifier, "status": "completed", "external_write_enabled": False,
+              "created": created, "reused": not created,
               "results": [{"product_id": product.id, "status": "saved", "row": _public(row), "errors": []}]}
     db.add(ProductEditorSave(request_id=identifier, input_hash=digest, result=result))
     await db.flush()
-    db.add(ProductEditorAudit(request_id=identifier, product_id=product.id, revision=1,
-                             before_data={}, after_data=_audit_values(row)))
+    db.add(ProductEditorAudit(request_id=identifier, product_id=product.id, revision=row["revision"],
+                             before_data=_audit_values(before) if before else {}, after_data=_audit_values(row)))
     await db.commit()
     return result
 
@@ -589,6 +652,9 @@ async def _edit_identity(db, product_id, patch, row):
     if patch.sku is not None and patch.sku != row["sku"]:
         if any(shop.get("mapping") for shop in row["shops"]):
             raise EditorError("product_editor_mapped_sku_rename")
+        from inventory_hub.sku_policy_models import ProductSkuIdentity
+        if await db.scalar(select(ProductSkuIdentity.id).where(ProductSkuIdentity.product_id == product_id)):
+            raise EditorError("sku_registered_rename_blocked")
         if (await db.scalar(select(Product.id).where(Product.sku == patch.sku, Product.id != product_id))
                 or await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.value == patch.sku, ProductIdentifier.product_id != product_id))):
             raise EditorError("product_editor_identity_conflict")

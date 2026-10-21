@@ -265,8 +265,8 @@ def apply_definition(product: CatalogProduct | None, raw: dict, definition: Mapp
                     raise ValueError("Supplier availability needs an explicit boolean value")
                 value = boolean in ("true", "1", "yes", "ano", "áno")
             else:
-                if target == "code" and not isinstance(value, str):
-                    raise ValueError("Supplier SKU must be textual to preserve leading zeroes")
+                if target in ("code", "manufacturer_code", "group_code") and not isinstance(value, str):
+                    raise ValueError(f"{target} must be textual to preserve leading zeroes")
                 value = str(value)
             if target.startswith("prices."):
                 data["prices"][target.split(".", 1)[1]] = value

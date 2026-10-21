@@ -1,0 +1,20 @@
+.sku-identity-form { width: 100%; border: 1px solid var(--color-border-subtle, #dce3e7); padding: 16px; margin: 12px 0; border-radius: 8px; min-width: 0; }
+.sku-identity-form legend { font-weight: 600; padding: 0 6px; }
+.sku-identity-form p { font-size: 12px; line-height: 1.6; margin: 6px 0 12px; }
+.sku-identity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.sku-identity-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; margin: 8px 0; }
+.sku-identity-form input:not([type=checkbox]), .sku-identity-form select { width: 100%; min-width: 0; border: 1px solid var(--color-border-subtle, #dce3e7); border-radius: 5px; padding: 9px; background: var(--color-bg-primary, #fff); color: inherit; }
+.sku-identity-form small { color: var(--color-text-secondary, #64748b); font-size: 11px; }
+.sku-identity-form .sku-leaf-confirm { flex-direction: row; align-items: flex-start; gap: 9px; line-height: 1.5; margin: 14px 0; }
+.sku-leaf-confirm input { margin-top: 2px; flex: none; }
+.sku-preview { padding: 12px; background: var(--color-bg-secondary, #f8fafc); border-radius: 6px; }
+.sku-preview code { display: block; font-size: 17px; padding: 8px 0; overflow-wrap: anywhere; }
+.sku-preview p:last-child { margin-bottom: 0; }
+.sku-preview.conflict, .sku-preview.blocked, .sku-identity-form [role=alert] { color: var(--color-error, #ad2929); }
+.sku-source { font-size: 12px; margin: 10px 0; }
+.sku-source summary { cursor: pointer; }
+.sku-source dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 10px; }
+.sku-source dd { margin: 0; font-family: var(--font-mono, monospace); overflow-wrap: anywhere; }
+.sku-brand-register { border-top: 1px solid var(--color-border-subtle, #dce3e7); padding: 8px 0; }
+.sku-exception { color: var(--color-text-secondary, #64748b); }
+@media(max-width:600px) { .sku-identity-grid { grid-template-columns: 1fr; } .sku-identity-form { padding: 12px; } }

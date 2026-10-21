@@ -10,6 +10,7 @@ import { StockAdjustmentPanel } from '../components/product/StockAdjustmentPanel
 import { ProductPublicationPanel } from '../components/product/ProductPublicationPanel';
 import { ProductShopLinksPanel } from '../components/product/ProductShopLinksPanel';
 import { ProductSupplierLinksPanel } from '../components/product/ProductSupplierLinksPanel';
+import { ProductCardCreateForm } from '../components/product/ProductCardCreateForm';
 import { pendingProductLink, refreshProductLinkMetadata } from '../api/productLinks';
 import { pendingSupplierLink } from '../api/supplierCardLinks';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
@@ -71,6 +72,7 @@ export function ProductEditorPage() {
   const pageGroups = new Map<number, ProductEditorRow[]>();
   if (grouped) for (const row of data?.items || []) if (row.group) pageGroups.set(row.group.id, [...(pageGroups.get(row.group.id) || []), row]);
   const [showColumns, setShowColumns] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
   const [drafts, setDrafts] = useState<Drafts>({});
   const draftsRef = useRef<Drafts>({});
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -102,7 +104,7 @@ export function ProductEditorPage() {
   const locked = busy === 'save' || busy === 'recover' || uncertain;
   const filtersPending = !!loaded && JSON.stringify({ ...filters, page: 1 }) !== JSON.stringify({ ...loaded.filters, page: 1 });
   const selectedRows = filtersPending ? [] : shownRows.filter(row => selected.has(row.id));
-  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain, t('productEditor.leaveChanges'));
+  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate, t('productEditor.leaveChanges'));
   function remember(scroll = scrollRef.current?.scrollTop || 0) {
     if (loaded) try { sessionStorage.setItem(CONTEXT_KEY, JSON.stringify({ filters: loaded.filters, selected: [...selected], scroll })); } catch { /* Optional browser context. */ }
   }
@@ -111,6 +113,7 @@ export function ProductEditorPage() {
   function replaceDrafts(value: Drafts) { draftsRef.current = value; setDrafts(value); }
   function stage(value: Drafts) { if (Object.keys(value).length > 100) { setError('draft_limit'); return; } replaceDrafts(value); setSavedCount(0); }
   function reset() {
+    setShowCreate(false);
     resizing.current?.(); setCollapsedGroups(new Set());
     generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort();
     setLocalSort(null); setOptions(null); setLoaded(null); replaceDrafts({}); setSelected(new Set()); setActive(null); setEditing(null); editingRef.current = null;
@@ -453,9 +456,11 @@ export function ProductEditorPage() {
     <header className="product-editor-heading"><div><h1>{t('productEditor.title')}</h1></div><div className="product-editor-heading-actions"><Link to="/settings/availability">{t('productEditor.syncSettings')}</Link><Link to="/stock/movements">{t('productEditor.movementHistory')}</Link>{hubUnlocked() && <Button variant="ghost" size="sm" onClick={() => { if (!(dirtyCount || editing || uncertain) || window.confirm(t('productEditor.leaveChanges'))) unlockHub(''); }}>{t('productEditor.lock')}</Button>}</div></header>
     {!hubUnlocked() ? <form className="product-editor-unlock" onSubmit={event => { event.preventDefault(); if (token.trim()) unlockHub(token.trim()); }}><label>{t('productEditor.token')}<input data-testid="unlock-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label><p>{t('productEditor.tokenHelp')}</p><Button data-testid="unlock" type="submit" disabled={!token.trim()}>{t('productEditor.unlock')}</Button></form> : <>
       <div className="product-editor-toolbar">
+        <Button data-testid="new-card" variant="secondary" size="sm" disabled={locked || !!busy || !!dirtyCount || !!editing || showCreate} onClick={() => setShowCreate(true)}>{t('productEditor.newCard')}</Button>
         <div className="product-editor-views" role="group" aria-label={t('productEditor.viewPreset')}>{Object.keys(COLUMN_PRESETS).map(name => <button key={name} type="button" data-testid={`view-${name}`} aria-pressed={JSON.stringify(preferences.visible) === JSON.stringify(COLUMN_PRESETS[name])} disabled={locked || !!busy} onClick={() => applyPreset(name)}>{t(`productEditor.presets.${name}`)}</button>)}</div>
         <Button data-testid="columns" variant="ghost" size="sm" icon={<Columns size={15} />} disabled={locked || !!busy} aria-expanded={showColumns} aria-controls="product-editor-options" onClick={() => { finishEdit(); setShowColumns(value => !value); }}>{t('productEditor.tableOptions')}</Button>
       </div>
+      {showCreate && <ProductCardCreateForm onClose={() => setShowCreate(false)} onCreated={row => { setShowCreate(false); void load({ ...initialFilters, q: row.sku, warehouse_code: filters.warehouse_code }); }} />}
       {showColumns && <div id="product-editor-options" className="product-editor-columns"><p>{t(preferencesSaved ? 'productEditor.browserPreferences' : 'productEditor.preferencesUnavailable')}</p>
         <div className="product-editor-column-list">{availableColumns.map((column, index) => <div className="product-editor-column-setting" key={column.key}>
           <label><input data-testid={`column-${column.key}`} type="checkbox" checked={preferences.visible.includes(column.key)} disabled={column.key === 'sku' || locked || !!busy} onChange={event => { finishEdit(); setActive(null); const checked = event.target.checked; setPreferences(previous => ({ ...previous, visible: checked ? [...previous.visible, column.key] : previous.visible.filter(key => key !== column.key) })); }} />{t(`productEditor.fields.${column.key}`)}</label>

@@ -113,7 +113,11 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         patch.object(imports, "get_session_context", dummy_session).start()
         patch.object(imports, "selected_products", AsyncMock(return_value=[product()])).start()
         self.supplier_config = patch.object(imports, "supplier_config", return_value={}).start()
-        patch.object(imports, "local_identities", AsyncMock(return_value=({}, set()))).start()
+        patch.object(imports, "local_identities", AsyncMock(side_effect=lambda db, rows: ({p.id: p.id + 100 for p in rows}, set()))).start()
+        patch.object(imports, 'canonical_products', AsyncMock(side_effect=lambda db, rows: rows)).start()
+        # Publication fixtures represent cards already saved in Hub. Separate
+        # tests below exercise the missing-card fence before any product POST.
+        patch.object(imports, "canonical_codes", AsyncMock(side_effect=lambda db, rows: {p.id: p.shop_code for p in rows})).start()
         patch("inventory_hub.services.catalog.attach_shop_links", AsyncMock()).start()
         self.register = patch.object(imports, "register_created", AsyncMock()).start()
         self.id = "a" * 32
@@ -203,21 +207,19 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent["prices"][0]["pricelists"][0]["price_original"], 119.99)
         self.assertEqual(sent["prices"][0]["price_common"], 123)
 
-    async def test_supplier_prefix_is_locked_before_remote_product_create(self):
-        from inventory_hub.supplier_prefix import SupplierPrefixError
+    async def test_supplier_prefix_changes_do_not_rename_a_saved_hub_card(self):
         original = self.client.post
         attempted = []
 
         def post(endpoint, payload):
             if endpoint == "products":
-                with self.assertRaises(SupplierPrefixError) as error:
-                    config_io.save_supplier("paul-lange", {"product_code_prefix": "OTHER-"})
-                attempted.append(error.exception.code)
+                config_io.save_supplier("paul-lange", {"product_code_prefix": "OTHER-"})
+                attempted.append('unchanged Hub identity')
             return original(endpoint, payload)
 
         with patch.object(self.client, "post", side_effect=post):
             await self.run_import()
-        self.assertEqual(attempted, ["supplier_prefix_locked"])
+        self.assertEqual(attempted, ["unchanged Hub identity"])
         self.assertEqual(self.client.sent[0][1]["products"][0]["code"], "PL-A-001")
 
     async def test_readback_links_survive_result_journal_and_replay(self):
@@ -257,10 +259,10 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(preview.items[0].payload["active_yn"])
         self.assertEqual(self.client.sent, [])
 
-    async def test_changed_unused_prefix_rejects_prepared_codes_before_post(self):
-        config_io.save_supplier("paul-lange", {"product_code_prefix": "OTHER-"})
-        result = await self.run_import()
-        self.assertEqual(result["items"][0]["errors"], ["supplier_prefix_changed"])
+    async def test_unsaved_hub_identity_rejects_prepared_codes_before_post(self):
+        with patch.object(imports, 'canonical_codes', AsyncMock(return_value={})):
+            result = await self.run_import()
+        self.assertEqual(result["items"][0]["errors"], ["sku_identity_required"])
         self.assertEqual(self.client.sent, [])
 
     async def test_config_availability_overrides_ai_rules_and_preserves_metadata_review_flags(self):

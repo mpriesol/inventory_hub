@@ -81,13 +81,14 @@ class ImportIdentityDatabaseTests(unittest.IsolatedAsyncioTestCase):
     refresh = fixture.ProductImportDatabaseTests.refresh
     request = fixture.ProductImportDatabaseTests.request
     create = fixture.ProductImportDatabaseTests.create
+    approve_fixture_identity = fixture.ProductImportDatabaseTests.approve_fixture_identity
     mutate = fixture.ProductImportDatabaseTests.mutate
 
     async def existing(self, *, exact=True, name=None):
         async with self.sessions() as db:
             source = (await fixture.catalog.selected_products(db, 'paul-lange', 'products', [self.ids[0]]))[0]
             product = Product(sku=source.shop_code if exact else 'ORIGINAL-SKU',
-                              name=name or source.name, brand='Original brand')
+                              name=name or source.name, brand=source.brand)
             db.add(product)
             await db.flush()
             db.add(ProductEditorOverride(product_id=product.id, revision=3,
@@ -195,7 +196,7 @@ class ImportIdentityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         draft = await self.create(DraftCreate(request_id=uuid4(), supplier='paul-lange', shop='biketrek',
             product_ids=self.ids[:2], options={'category_code': 'K-TEST'}))
         draft = await self.mutate(draft, imports.patch_rows, DraftPatch,
-            rows=[{'id': self.ids[1], 'values': {'sale_gross': None}}])
+            rows=[{'id': self.ids[1], 'values': {'description_html': '<script>alert(1)</script>'}}])
         chosen = await self.choose(draft, [{'row_id': self.ids[0], 'action': 'link', 'product_id': pid},
                                          {'row_id': self.ids[1], 'action': 'create'}])
         before = await self.business()

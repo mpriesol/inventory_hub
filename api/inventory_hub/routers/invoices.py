@@ -481,6 +481,8 @@ def run_prepare(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not invoice_path.is_relative_to(expected_root.resolve()) or invoice_path.suffix.lower() != ".csv":
         raise HTTPException(400, detail="Choose a CSV invoice from this supplier")
     document_path(settings.INVENTORY_DATA_ROOT, f"shops/{shop}/latest.csv")
+    from inventory_hub.services.legacy_import_guard import require_legacy_import_mode
+    require_legacy_import_mode()
     inv_stem = filename_component(invoice_path.stem)
     relpath = invoice_path.relative_to(_supplier_root(supplier)).as_posix()
     received_overrides = _load_received_items(supplier, inv_stem)

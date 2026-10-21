@@ -557,6 +557,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     for item in items:
         if any(id in conflicts for id in item.product_ids):
             item.status, item.errors = "invalid", ["local_identity_conflict"]
+        elif item.status == 'ready' and any(id not in local for id in item.product_ids):
+            item.status, item.errors = 'invalid', ['sku_identity_required']
     from inventory_hub.services.catalog import attach_shop_links
     listed = [p.model_copy(update={"listed": True, "shop_matches": index.matches(p)})
               for p in products if lines[p.id].existing]
@@ -636,7 +638,7 @@ async def canonical_products(db: AsyncSession, products: list[CatalogProduct]) -
         local = by_id.get(identities.get(source.id))
         parent = next(iter(parents.get((source.supplier, source.group_code), [])), None)
         output.append(source.model_copy(update={"shop_code": local.sku if local else source.shop_code,
-                                                 "canonical_parent_code": parent}))
+                                                 "canonical_parent_code": parent or source.canonical_parent_code}))
     return output
 
 
@@ -652,21 +654,16 @@ async def canonical_codes(db: AsyncSession, products: list[CatalogProduct]) -> d
 
 
 async def claim_product_prefix(db: AsyncSession, products: list[CatalogProduct]) -> None:
-    _claim_product_prefix(products, await canonical_codes(db, products))
+    """Keep the old call site, but publish only an already allocated Hub card.
 
-
-def _claim_product_prefix(products: list[CatalogProduct], existing_codes: dict[int, str] | None = None) -> None:
-    """Freeze the exact prepared identity before any product POST or local write."""
-    from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
-    try:
-        for supplier in {product.supplier for product in products}:
-            prefix = get_supplier_prefix(config_io.load_supplier(supplier, write_back_on_load=False))
-            if any(product.supplier == supplier and product.shop_code != (existing_codes or {}).get(product.id, canonical_supplier_sku(prefix, product.code))
-                   for product in products):
-                raise CatalogError("supplier_prefix_changed", "Supplier SKU changed since the import was prepared", 409)
-            config_io.claim_supplier_prefix(supplier, prefix)
-    except SupplierPrefixError as error:
-        raise CatalogError(error.code, str(error), error.status) from None
+    Supplier prefixes are historical lookup hints, never an allocation policy.
+    This guard also fences unsent legacy publication preparations.
+    """
+    existing_codes = await canonical_codes(db, products)
+    if any(product.id not in existing_codes for product in products):
+        raise CatalogError('sku_identity_required', 'Prepare and save the verified product identity in Hub before publishing', 409)
+    if any(product.shop_code != existing_codes[product.id] for product in products):
+        raise CatalogError('local_identity_conflict', 'The saved Hub SKU changed after publication preparation', 409)
 
 
 async def register_created(db: AsyncSession, shop: str, item: dict, sources: dict[int, CatalogProduct], remote: dict, *, staging=None) -> None:
@@ -677,6 +674,8 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
     existing, conflicts = await local_identities(db, products)
     if conflicts:
         raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)
+    if any(source.id not in existing for source in products):
+        raise CatalogError('sku_identity_required', 'A shop response cannot allocate a new Hub identity; reconcile the saved card', 409)
     if staging:
         saved_ids = {int(key): value for key, value in staging.get('saved_product_ids', {}).items()}
         if not saved_ids:
@@ -702,18 +701,6 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
     remote_variants = {v.get("code"): v for v in remote.get("variants", [])}
     for source in products:
         product_id = existing.get(source.id)
-        if product_id is None:
-            product = Product(sku=source.shop_code, supplier_id=supplier_id, name=source.name,
-                              brand=source.brand, group_id=group_id, validation_required=True,
-                              validation_reason="Supplier catalog import; review before publishing",
-                              created_from_source="supplier_catalog", source_supplier_product_id=source.id,
-                              supplier_feed_data=source.model_dump(mode="json"), supplier_feed_synced_at=source.fetched_at)
-            db.add(product)
-            await db.flush()
-            product_id = product.id
-            identifiers = ProductIdentifierService(db)
-            for i, ean in enumerate(source.eans):
-                await identifiers.add_identifier(product_id, ean, is_primary=i == 0)
         mapping = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == shop_id, ShopProduct.product_id == product_id))
         if mapping is not None and (mapping.variant_code or mapping.external_code) not in (None, source.shop_code):
             raise CatalogError("local_mapping_conflict", "The local product is already linked to another shop code", 409)

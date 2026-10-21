@@ -1,5 +1,7 @@
 # Unified supplier product import
 
+New cards now require the shared [brand/SKU policy](sku-policy.md), including a registered brand, documented concrete leaf code and explicit verification. Feed manufacturer-code fields are candidates only. Conflict-free established identity is reused; an existing SKU is retained. Supplier prefix proposals no longer authorize new cards. Local Hub save permits missing selling price/VAT and unfinished shop content for every preparation origin; publication retains its own completeness checks.
+
 Implemented in code: one durable, editable preparation for AI and ordinary feed imports. Open **Dodávatelia → Produkty dodávateľa**, select explicit products and the target shop, then open **Náhľad importu**. The supplier feed mapping is applied first. This preparation does not create shop products.
 
 Invoice receiving also opens this same editor through **Založiť skladové karty** or **Doplniť údaje karty**. The server resolves selected invoice lines, freezes their actual catalog sources where available, and otherwise creates an invoice-based working source. It does not fabricate a supplier feed offer. The draft retains its receiving origin and return link, with one preparation row per product and separate mappings to all original receipt lines. See [receiving workflow](receiving-identity.md).
@@ -54,7 +56,7 @@ SEO title and description use explicit feed mappings when available, with plain 
 
 Receiving sources use the representative receiving-line ID as their draft-local row ID, while retaining the real catalog product ID separately. These IDs must never be interpreted as supplier-product foreign keys. Invoice-only sources have no catalog foreign key, no invented variant relationship and no asserted supplier stock. AI and publication use the same frozen source mechanism as ordinary drafts. Invoice acquisition prices and received quantities remain exclusively on the original receiving lines; merchandising edits and AI cannot replace them. Reconciliation after returning to the receipt uses the session/identity lock order and never adds received quantities.
 
-A receiving-origin Hub save may retain missing selling price or VAT for a basic local card. Those missing values remain explicit and still block shop publication. Other validation and identity conflicts remain blocking. Source lookup for Sloger and the existing explicit continuation after a B2B error also apply when the preparation began from a receipt.
+A Hub save from any preparation origin may retain missing selling price or VAT for a basic local card. Those missing values remain explicit and still block shop publication. Other validation and identity conflicts remain blocking. Source lookup for Sloger and the existing explicit continuation after a B2B error also apply when the preparation began from a receipt.
 
 Migration `022_product_import_drafts.sql` adds the replay-safe `product_import_drafts` table. Its JSON document retains the full frozen source, mapping revision/provenance, typed cell values, manual field markers, category tree, linked AI jobs, saved product IDs and explicit publication preview. New source refreshes do not replace an existing draft snapshot. A new mapping after ingest can require an explicit catalog remap before preparing another draft, as documented in the feed mapping workflow.
 

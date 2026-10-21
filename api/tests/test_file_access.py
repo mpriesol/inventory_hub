@@ -200,7 +200,8 @@ class PrivateFileTests(unittest.TestCase):
                 with self.subTest(change=change), self.assertRaises(HTTPException):
                     invoices.run_prepare({**defaults, **change})
             adapter.assert_not_called()
-            self.assertTrue(invoices.run_prepare(defaults)["ok"])
+            with patch.object(settings, "USE_POSTGRES", False):
+                self.assertTrue(invoices.run_prepare(defaults)["ok"])
             self.assertEqual(adapter.call_args.args[3], "invoices/csv/INV.csv")
 
 

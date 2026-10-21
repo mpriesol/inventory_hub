@@ -179,6 +179,7 @@ class ProductImportSourceWorkerTests(unittest.IsolatedAsyncioTestCase):
             return {value.sku: value.observed_at + timedelta(hours=6) for value in observations}
         self.patches = [patch.object(source, 'get_session_context', sessions),
             patch.object(product_import, 'get_draft', AsyncMock(return_value=item)),
+            patch.object(product_import, 'prepare_sku_rows', AsyncMock()),
             patch.object(catalog_import, 'canonical_products', AsyncMock(side_effect=lambda db, products: products)),
             patch.object(source, 'supplier_config', return_value={'adapter_settings': {'availability': {'orderable': 'do 2-4 dní', 'unknown': 'overíme'}}}),
             patch('inventory_hub.services.supplier_availability.record_sloger_import', side_effect=record)]

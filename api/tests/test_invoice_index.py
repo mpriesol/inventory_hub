@@ -21,6 +21,9 @@ class InvoiceIndexTests(unittest.TestCase):
         for target in (config_io, suppliers):
             self.enterContext(patch.object(target, "DATA_ROOT", self.root))
         self.enterContext(patch.object(settings, "INVENTORY_DATA_ROOT", self.root))
+        # This suite preserves the historical JSON index workflow. PostgreSQL
+        # card preparation is covered separately and refuses the old generator.
+        self.enterContext(patch.object(settings, "USE_POSTGRES", False))
         self.supplier = "test-supplier"
         self.number = "TEST-INVOICE"
         self.invoice_id = f"{self.supplier}:{self.number}"

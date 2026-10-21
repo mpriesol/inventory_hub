@@ -40,8 +40,7 @@ from inventory_hub.services import fifo
 from inventory_hub.services import stock_tracking
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
-from inventory_hub.config_io import claim_supplier_prefix
-from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
+from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
 from inventory_hub.routers.receiving import _update_invoice_status
 from inventory_hub.access import operator_access
 from inventory_hub.routers.product_editor import NoStoreRoute
@@ -387,34 +386,16 @@ async def _ensure_product_for_line(
     """
     ean = (line.ean or "").strip()
     sku_raw = (line.supplier_sku or "").strip()
-    if sku_raw:
-        try:
-            claim_supplier_prefix(supplier.code, prefix)
-        except SupplierPrefixError as error:
-            raise HTTPException(error.status, detail={"code": error.code, "message": str(error)}) from None
     product, matched_by = await _resolve_line(db, supplier, line, prefix)
     created = False
     if product is None:
-        if not sku_raw:
-            return None, False, "missing supplier SKU for new product"
-        product_sku = canonical_supplier_sku(prefix, sku_raw)
-        # Revalidate the final canonical code before creating a new product.
-        identity = RemoteIdentity(0, product_sku, barcodes=(ean,))
-        index = await load_identity_index(db, 0, [identity], local=True)
-        resolution = index.resolve(identity)
-        if resolution.status == "conflict":
-            raise _identity_error(line, resolution)
-        product = index.products.get(resolution.product_id)
-        if product is None:
-            product = Product(
-                sku=product_sku, supplier_id=supplier.id,
-                name=(line.description or product_sku)[:500],
-                created_from_source=f"invoice:{invoice_no}", validation_required=True,
-                validation_reason="auto-created from receiving finalize",
-            )
-            db.add(product)
-            await db.flush()
-            created = True
+        raise HTTPException(409, detail={
+            "code": "receiving_product_preparation_required",
+            "message": (f"Riadok {line.line_number}: najprv použite Založiť skladové karty "
+                        "a overte značku a kód konkrétneho výrobku alebo variantu. "
+                        "Potom sa vráťte do tejto príjemky; prijaté množstvá zostávajú zachované."),
+            "line_id": line.id, "line_number": line.line_number, "action": "prepare_products",
+        })
     line.match_method = "auto_created" if created else matched_by or "shared_sku"
 
     # Split compound EANs, preserving leading zeros and per-type uniqueness.

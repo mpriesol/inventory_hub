@@ -55,7 +55,7 @@ export async function hubRequest<T>(path: string, body?: unknown, signal?: Abort
   if (response.status === 401 && currentUser && started === revision) setHubUser(null);
   if (!response.ok) {
     const error = new CatalogApiError(data?.detail?.code || 'request_failed', typeof data?.detail?.message === 'string' ? data.detail.message : JSON.stringify(data?.detail || response.status));
-    throw Object.assign(error, { status: response.status, knownUnapplied: data?.detail?.known_unapplied === true });
+    throw Object.assign(error, { status: response.status, knownUnapplied: data?.detail?.known_unapplied === true, detail: data?.detail });
   }
   return data;
 }

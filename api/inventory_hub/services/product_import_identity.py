@@ -10,8 +10,8 @@ from sqlalchemy import select
 
 from inventory_hub.db_models import IdentifierType, ProductIdentifier, Supplier
 from inventory_hub.services.catalog import CatalogError
-from inventory_hub.services.product_candidates import CandidateQuery, find_candidates
-from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index, verified_barcodes
+from inventory_hub.services.product_candidates import CandidateQuery, find_candidates, _load_cards
+from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index, verified_barcodes, barcode_keys
 from inventory_hub.services.product_links import axes, digest, LinkError
 
 
@@ -22,7 +22,8 @@ def source_id(row, document):
 def _source(row):
     values = row['values']
     return {'sku': values['code'], 'supplier_sku': values['supplier_code'], 'name': values['name'],
-            'eans': list(values['eans']), 'attributes': deepcopy(values['variant_attributes']), 'brand': values['brand']}
+            'eans': list(values['eans']), 'attributes': deepcopy(values['variant_attributes']), 'brand': values['brand'],
+            'sku_identity': deepcopy(values.get('sku_identity'))}
 
 
 def _identity(source, supplier_id, expected=None):
@@ -41,7 +42,7 @@ def _candidate_errors(index, source, supplier_id, candidate):
         errors.append('variant_axes_ambiguous')
     manual = verified_barcodes(candidate.get('manual_eans'))
     incoming_barcodes = verified_barcodes(source['eans'])
-    if manual and incoming_barcodes and not set(manual) & set(incoming_barcodes):
+    if manual and incoming_barcodes and not barcode_keys(manual) & barcode_keys(incoming_barcodes):
         errors.append('manual_barcode_conflict')
     return errors
 
@@ -57,11 +58,12 @@ async def canonical_for_review(db, products):
         return products
 
 
-async def build(db, draft, *, summary_only=False):
+async def build(db, draft, *, summary_only=False, document=None):
     supplier = await db.scalar(select(Supplier).where(Supplier.code == draft.supplier))
     if supplier is None:
         raise CatalogError('supplier_not_found', 'Supplier was not found', 404)
-    raw_rows = draft.document['rows']
+    current = document if document is not None else draft.document
+    raw_rows = current['rows']
     sources = {row['id']: _source(row) for row in raw_rows}
     queries = [CandidateQuery(str(row['id']), sku=sources[row['id']]['sku'],
         eans=tuple(sources[row['id']]['eans']), supplier_id=supplier.id,
@@ -77,6 +79,10 @@ async def build(db, draft, *, summary_only=False):
         identities.extend(_identity(sources[row['id']], supplier.id, candidate['product_id'])
             for candidate in found.get(str(row['id']), {}).get('candidates', []))
     index = await load_identity_index(db, 0, identities, local=True)
+    # Resolver targets need full current facts even when absent from a bounded
+    # name suggestion list, or when a saved/receipt row skipped that search.
+    matched_ids = {index.resolve(value).product_id for value in identities[:len(raw_rows)]}
+    matched_cards = await _load_cards(db, matched_ids - {None})
     rows, internal = [], {}
     for raw, identity in zip(raw_rows, identities[:len(raw_rows)]):
         source = sources[raw['id']]
@@ -86,21 +92,40 @@ async def build(db, draft, *, summary_only=False):
         expected = raw.get('hub_product_id') or raw.get('expected_hub_product_id')
         candidates = []
         search = found.get(str(raw['id']), {'candidates': [], 'truncated': False})
-        for item in search['candidates']:
+        suggested = list(search['candidates'])
+        if matched in matched_cards and not any(item['product_id'] == matched for item in suggested):
+            suggested.append({**matched_cards[matched], 'reasons': [resolution.matched_by], 'warnings': []})
+        for item in suggested:
             candidate = deepcopy(item)
             failures = _candidate_errors(index, source, supplier.id, candidate)
+            if source['brand'] and candidate.get('brand'):
+                from inventory_hub.services.sku_policy import registered_brand_id, brand_key
+                if brand_key(source['brand']) != brand_key(candidate['brand']):
+                    left = await registered_brand_id(db, source['brand'])
+                    right = await registered_brand_id(db, candidate['brand'])
+                    if left is None or left != right:
+                        failures.append('sku_brand_conflict')
             candidate['errors'] = sorted(set(failures))
             candidate['can_link'] = not candidate['errors']
             candidates.append(candidate)
         known = bool(matched and (index.by_supplier_sku.get((supplier.id, source['supplier_sku'])) == {matched}
             or any(c['product_id'] == matched and 'supplier_sku' in c['reasons'] for c in candidates)))
+        # A corroborated exact barcode/approved MPN can reuse a card without a
+        # name-choice dialog. Contradictory variant evidence remains a conflict.
+        matched_candidate = next((c for c in candidates if c['product_id'] == matched), None)
+        if matched_candidate and matched_candidate['errors']:
+            errors.extend(matched_candidate['errors'])
+        automatic = bool(matched and not errors and matched_candidate
+            and barcode_keys(source['eans']) & barcode_keys(matched_candidate.get('eans', [])))
+        policy_match = (raw.get('sku_preview') or {}).get('status') == 'existing' and bool(source['sku_identity'])
+        automatic = automatic or bool(policy_match and matched and not errors)
         status = 'conflict' if errors else 'saved' if raw.get('hub_product_id') else 'linked' if expected or known \
-            else 'review' if candidates or matched or search['truncated'] else 'new'
+            or automatic else 'review' if candidates or matched or search['truncated'] else 'new'
         exact_candidate = any(set(candidate['reasons']) & {'exact_ean', 'exact_sku', 'supplier_sku'} for candidate in candidates)
         row = {'row_id': raw['id'], 'source': source, 'status': status, 'matched_product_id': matched,
             'can_create': not errors and matched is None and not expected and not exact_candidate,
             'candidates': candidates, 'truncated': search['truncated'], 'decision': None, 'errors': sorted(set(errors))}
-        state_hash = digest({'row': row, 'source_id': source_id(raw, draft.document)})
+        state_hash = digest({'row': row, 'source_id': source_id(raw, current)})
         decision = raw.get('identity_decision')
         if decision and (decision.get('state_hash') == state_hash or
                          (summary_only and decision.get('source_hash') == digest(source) and not errors)):
@@ -192,7 +217,7 @@ async def _inspect_choice(db, draft, source, product_id, catalog_id):
     if actual['supplier_code'] != draft.supplier or actual['supplier_sku'] != source['supplier_sku']:
         errors.append('import_identity_source_changed')
     incoming_barcodes = verified_barcodes(source['eans'])
-    if incoming_barcodes and actual['eans'] and not set(incoming_barcodes) & set(actual['eans']):
+    if incoming_barcodes and actual['eans'] and not barcode_keys(incoming_barcodes) & barcode_keys(actual['eans']):
         errors.append('import_identity_source_changed')
     try:
         incoming, current = axes(source['attributes']), axes(actual['attributes'])
@@ -207,7 +232,7 @@ async def _inspect_choice(db, draft, source, product_id, catalog_id):
 
 async def guard_and_link(db, draft, document):
     """Caller holds draft lock then IDENTITY_WRITE_LOCK; never commits here."""
-    review, _ = await build(db, draft)
+    review, _ = await build(db, draft, document=document)
     if any(required(row) for row in review['rows']):
         raise CatalogError('import_identity_review_required', 'Review possible existing Hub products before saving', 409)
     by_id = {row['id']: row for row in document['rows']}
@@ -218,9 +243,11 @@ async def guard_and_link(db, draft, document):
         if raw.get('hub_product_id') and raw.get('identity_link_only'):
             linked[raw['id']] = raw['hub_product_id']
             continue
-        if not choice or choice['action'] != 'link':
+        automatic = row['status'] == 'linked' and row['matched_product_id'] and not raw.get('hub_product_id') \
+            and not raw.get('expected_hub_product_id')
+        if not automatic and (not choice or choice['action'] != 'link'):
             continue
-        pid = choice['product_id']
+        pid = row['matched_product_id'] if automatic else choice['product_id']
         candidate = next((c for c in row['candidates'] if c['product_id'] == pid and c['can_link']), None)
         if candidate is None:
             raise CatalogError('import_identity_review_required', 'The selected existing product needs a new review', 409)
@@ -228,7 +255,9 @@ async def guard_and_link(db, draft, document):
         if catalog_id is not None:
             from inventory_hub.services.supplier_card_links import apply_link, SupplierCardLinkError
             try:
-                await apply_link(db, pid, catalog_id, expected_hash=raw['identity_decision']['link_hash'])
+                expected_hash = (await _inspect_choice(db, draft, row['source'], pid, catalog_id))['preview_hash'] \
+                    if automatic else raw['identity_decision']['link_hash']
+                await apply_link(db, pid, catalog_id, expected_hash=expected_hash)
             except SupplierCardLinkError as error:
                 raise CatalogError(error.code, 'Supplier identity changed; review this link again', error.status) from None
         else:
@@ -243,6 +272,9 @@ async def guard_and_link(db, draft, document):
                 db.add(ProductIdentifier(product_id=pid, supplier_id=supplier_id,
                     identifier_type=IdentifierType.supplier_sku, value=row['source']['supplier_sku'], is_primary=False))
                 await db.flush()
+        if automatic:
+            raw['warnings'] = sorted(set(raw.get('warnings', [])) | {'existing_card_reused'})
+            continue
         raw['hub_product_id'], raw['created_in_draft'], raw['identity_link_only'] = pid, False, True
         raw['warnings'] = sorted(set(raw.get('warnings', [])) | {'existing_card_link_only'})
         linked[raw['id']] = pid

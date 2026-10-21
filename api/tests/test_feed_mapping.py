@@ -98,6 +98,15 @@ class FeedMappingTests(unittest.TestCase):
         self.assertEqual(mapped.prices.purchase_net, 10)
         self.assertIn("missing_vat", mapped.warnings)
 
+    def test_manufacturer_and_parent_codes_are_lossless_text_not_numbers(self):
+        for field in ("manufacturer_code", "group_code"):
+            definition = MappingDefinition.model_validate({"bindings": [{"target": field, "source": "value"}]})
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "textual"):
+                    mapping.apply_definition(product(), {"value": 123}, definition, "paul-lange", "products", CFG)
+                result = mapping.apply_definition(product(), {"value": "00123"}, definition, "paul-lange", "products", CFG)
+                self.assertEqual(getattr(result, field), "00123")
+
     def test_shop_mapping_categories_are_shop_specific_and_preserve_raw_source(self):
         definition = MappingDefinition.model_validate({"category_rules": [{"source": "Tubes", "target_code": "leaf-10"}],
             "bindings": [{"target": "seo_title", "source": "title", "transforms": [{"op": "suffix", "value": " | BIKETREK"}]}]})

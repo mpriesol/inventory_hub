@@ -36,11 +36,16 @@ def is_basic_card(product, *, has_shop=False, import_fields=None):
 
 def _barcode_owner(index, eans):
     """All barcodes must already independently identify one existing card."""
-    owners = [index.by_barcode.get(ean, set()) for ean in eans]
+    owners = [set().union(*(index.by_barcode.get(value, set())
+                           for value in ProductIdentifierService.gtin_equivalents(ean))) for ean in eans]
     if not owners or any(len(ids) != 1 for ids in owners):
         return None
     combined = set().union(*owners)
     return next(iter(combined)) if len(combined) == 1 else None
+
+
+def _barcode_keys(eans):
+    return {ProductIdentifierService.gtin_key(ean) for ean in eans}
 
 
 def _identity(session, line, prefix, source=None, *, expected=None):
@@ -137,7 +142,7 @@ async def inspect_products(db, session, prefix):
         if line.supplier_sku and eans:
             invoice_sku_eans[line.supplier_sku.strip()].append(eans)
     inconsistent_skus = {sku for sku, groups in invoice_sku_eans.items()
-                         if len(groups) > 1 and not set.intersection(*groups)
+                         if len(groups) > 1 and not set.intersection(*[_barcode_keys(group) for group in groups])
                          and _barcode_owner(index, set().union(*groups)) is None}
     for line in sorted(session.lines, key=lambda item: item.line_number):
         sources = candidates[line.id]
@@ -156,7 +161,7 @@ async def inspect_products(db, session, prefix):
         if len(sources) > 1:
             reasons.append('catalog_candidates_ambiguous')
             warnings.append('Viac produktov vo feede zodpovedá kódu alebo EAN. Skontrolujte zhodu.')
-        if (invoice_eans and feed_eans and not invoice_eans.intersection(feed_eans)
+        if (invoice_eans and feed_eans and not _barcode_keys(invoice_eans).intersection(_barcode_keys(feed_eans))
                 and _barcode_owner(index, invoice_eans | feed_eans) is None):
             conflict = True
             reasons.append('invoice_catalog_ean_conflict')
@@ -182,10 +187,9 @@ async def inspect_products(db, session, prefix):
             status = 'feed_only'
         else:
             status = 'not_found' if verified else 'feed_unverified'
-        code_available = bool((line.supplier_sku or '').strip() or source)
-        can_prepare = status in ('basic_card', 'feed_only', 'not_found', 'feed_unverified') and code_available
-        if not code_available and status != 'matched':
-            warnings.append('Chýba dodávateľský kód. Doplňte identifikáciu položky pred založením karty.')
+        can_prepare = status in ('basic_card', 'feed_only', 'not_found', 'feed_unverified')
+        if not (line.supplier_sku or '').strip() and not source and status != 'matched':
+            warnings.append('Chýba dodávateľský kód. V príprave overte značku a kód konkrétneho výrobku; kód sa nebude odhadovať.')
         if not verified:
             warnings.append('Feed sa nepodarilo overiť. Na prípravu možno použiť dostupné údaje z faktúry alebo posledného feedu.')
         eans = verified_barcodes((line.ean,)) or (tuple(sorted(index.product_barcodes.get(product.id, set()))) if product else ()) or tuple(source.eans if source else [])
@@ -212,7 +216,8 @@ def _preparation_key(line, product, source):
         return ('product', product.id)
     if source:
         return ('catalog', source.id)
-    return ('supplier_sku', (line.supplier_sku or '').strip())
+    sku = (line.supplier_sku or '').strip()
+    return ('supplier_sku', sku) if sku else ('invoice_line', line.id)
 
 
 def _invoice_source(session, line, prefix, product, source):
@@ -221,7 +226,7 @@ def _invoice_source(session, line, prefix, product, source):
         result.id = line.id
         return result
     sku = (line.supplier_sku or '').strip()
-    code = product.sku if product else canonical_supplier_sku(prefix, sku)
+    code = product.sku if product else canonical_supplier_sku(prefix, sku) if sku else ''
     purchase = line.unit_price
     if purchase is not None and (not purchase.is_finite() or purchase < 0):
         purchase = None
