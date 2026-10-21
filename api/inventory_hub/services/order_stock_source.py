@@ -15,10 +15,11 @@ from uuid import UUID
 
 from inventory_hub.db_models import Shop
 from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index, verified_barcodes
+from inventory_hub.services import order_sku_aliases
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connection_fingerprint
 
 
-IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons"}
+IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons", "sku_alias_proof"}
 
 
 class SourceError(Exception):
@@ -232,9 +233,11 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
     identities = [RemoteIdentity(shop_id=shop.id, code=line["code"],
                   barcodes=(line["ean"],) if line["ean"] else ()) for line in lines]
     index = await load_identity_index(db, shop.id, identities)
+    aliases = await order_sku_aliases.load(db, shop, index, lines)
     result = []
-    for line, identity in zip(lines, identities):
+    for line in lines:
         reasons, product_id, sku, matched_by = [], None, None, None
+        alias_proof = None
         if line["identity_invalid"]:
             classification, reasons = "conflict", ["invalid_identity"]
         elif line["kind"] == "discount":
@@ -244,7 +247,7 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
         elif not (line["code"] or line["ean"] or line["has_native_identity"]):
             classification, reasons = "manual", ["manual_outside_stock"]
         else:
-            resolved = index.resolve(identity)
+            resolved, alias_proof = aliases.resolve(line)
             classification, product_id, matched_by = resolved.status, resolved.product_id, resolved.matched_by
             reasons = list(resolved.reasons)
             if not line["code"]:
@@ -255,7 +258,8 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
             classification = "conflict"
             reasons.append("invalid_quantity")
         result.append({**line, "classification": classification, "product_id": product_id, "sku": sku,
-                       "matched_by": matched_by, "reasons": sorted(set(reasons))})
+                       "matched_by": matched_by, "reasons": sorted(set(reasons)),
+                       **({"sku_alias_proof": alias_proof} if alias_proof else {})})
     return result
 
 

@@ -98,6 +98,11 @@ Hlavička v inboxe nie je skladový podklad. Spracovateľ musí načítať úpln
 
 Riadky sa znovu párujú spoločným resolverom. Jednoznačné kanálové mapovanie alebo presné spoločné SKU môže pokryť aj pokladňový variant pod iným rodičom. Konfliktné/neznáme kódované riadky blokujú celú operáciu. Manuálne riadky bez skladovej identity a zľavy sa vylúčia viditeľne; nesmú sa vytvoriť náhradné produkty.
 
+Objednávkový čítač navyše povoľuje presný historický alias iba s úplným auditom
+overeného premenovania pre rovnaký shop, pripojenie, mapovanie a natívnu
+identitu. Rovnaký postup sa používa v ručnom náhľade aj procesore; nemení
+časové hranice automatizácie ani režim skladu. Viac v [prevode SKU](sku-migration.md).
+
 Nedostatok zásoby nie je dôvod na záporný sklad ani čiastočný výdaj. Objednávka môže dostať čiastočnú rezerváciu s nekrytou časťou; výdaj musí pokryť všetky jej skladované riadky. Rezervácie iných objednávok zostávajú zachované.
 
 Nový príjem môže zmeniť výsledok bez zmeny zdrojového hashu objednávky. Automatika preto musí kontrolovať čakajúce a nekryté objednávky aj po nezmenenom načítaní hlavičky. Rovnaký čas hlavičky tiež nedokazuje nezmenené riadky; slúži na objavenie kandidátov, nie na trvalé potlačenie úplného čítania.

@@ -66,8 +66,9 @@ nerozširujeme na značkové SKU ani ho nespúšťame na zostávajúci historick
    zostáva neoverené; pri prečíslovaní sa nepotvrdzuje nula ani nový príjem.
 4. Zmapovať otvorené objednávky, pokladňové riadky a staré SKU v rozpracovaných
    príjemkách/prípravách. Starý alias pri vyhľadávaní karty sám nedokazuje,
-   že objednávkový resolver prijme starý kód proti novému mapovaniu. Pred
-   realizáciou doplniť a otestovať tento prechod vrátane idempotencie výdaja.
+   že objednávkový resolver prijme starý kód proti novému mapovaniu. Implementované
+   podmienky a stále otvorené hranice prechodu sú nižšie. Pred realizáciou
+   preveriť konkrétne objednávky, nie iba počet lokálnych riadkov.
 5. Na dohodnutý okamih zastaviť dotknuté súbežné produktové importy/publikácie.
    Každý sending/uncertain záznam najprv vyriešiť jeho pôvodným postupom.
    Zachovať denníky a UUID. Neposielať starú pripravenú dávku s už zmeneným SKU.
@@ -116,8 +117,142 @@ Tento náhľad vykonanie migrácie nenahrádza. Inicializácia fyzického skladu
 zapnutie autority sú ďalšie samostatné kroky. xTrek na Atomeri sa nepovažuje za
 pokrytý iba tým, že existuje prípravné pripojenie Upgates.
 
-Zdroje kontraktu overené 21. 10. 2026:
+## Objednávky so starým SKU (implementované v kóde)
+
+Objednávkový resolver má osobitný čítací prechod. Spoločný resolver produktov,
+pullov, katalógu a príjmu zostáva prísny: všeobecný alias nie je povolenie zmeniť
+existujúce shopové mapovanie.
+
+Prechod prijme starý objednávkový kód iba pri splnení všetkých podmienok:
+
+- presný registrovaný `internal_sku` patrí jednej aktívnej karte bez kolízie
+  aktuálneho SKU, aliasov, EAN/UPC alebo iného shopového mapovania;
+- aktuálne zalistované mapovanie daného e-shopu vedie na rovnaké Hub ID a jeho
+  kód sa rovná aktuálnemu kanonickému SKU;
+- `ProductEditorAudit` obsahuje úplný `verified_code_reconciliation` prechod
+  od starého po aktuálny kód, pri viacerých premenovaniach v jednoznačnom
+  rastúcom poradí revízií. Každý krok má rovnaké shop ID, mapping ID, natívnu
+  identitu a fingerprint aktuálneho API pripojenia;
+- natívne produktové ID v objednávke súhlasí s overeným produktom/rodičom.
+  Samostatná karta nemá `option_set_id`; variant ho musí mať. **`option_set_id`
+  sa neporovnáva s `variant_id` a nevyhlasuje sa za ten istý identifikátor**.
+  Konkrétny variant identifikuje presný auditovaný alias a nezmenené natívne
+  variantové ID v mapovaní, nie odvodená farba/veľkosť;
+- rodič variantu zostáva nezmenený. Pokladňová skupina xTrek sa týmto prechodom
+  automaticky nepokrýva.
+
+Výsledok má `matched_by=verified_sku_alias` a odvodený `sku_alias_proof` s ID
+auditov, mapovaním a natívnymi ID. `/orders/stock` ukáže starý kód → aktuálne SKU
+alebo konkrétnu chýbajúcu identitu/dôkaz. Pri každom náhľade a potvrdení sa dôkaz
+znovu načíta; uložená projekcia ho nesmie podsunúť. Chýbajúca história alebo
+natívne údaje zostávajú blokované. Objednávka sa neprepisuje v Upgates.
+
+Natívne skladové podklady dokážu po rovnakom overení použiť pôvodné nemenné
+pozorovanie s pôvodným textom kódu. Nezmenené musia byť mapping ID, druh karty,
+natívne ID a rodič. Staré udalosti sa neprepisujú; nové pozorovanie je nová
+udalosť. Opakovanie výdaja zostáva idempotentné a už vydaná objednávka sa
+nevydá druhýkrát. Zmena množstva alebo identity vydanej objednávky zostáva
+blokovaná pôvodným obsahovým zámkom.
+
+Pôvodný `OrderStockPolicy.starts_at`, hranice automatizácie a požiadavka
+fyzického potvrdenia sa nemenia. Objednávky spred začiatku evidencie sa týmto
+mechanizmom spätne nezaúčtujú. Čítací audit objednávok zostáva konzervatívny;
+prijateľnosť pre sklad sa kontroluje čerstvým náhľadom `/orders/stock`.
+
+Existujúci TOPEAK → ZOO nástroj vytvára tento overený audit. Všeobecný zápis
+nového značkového SKU a jeho následné lokálne zosúladenie **zatiaľ nie je
+implementované**. Budúca implementácia musí vytvoriť tento istý kontrolovaný
+audit až po čerstvom overení všetkých natívnych ID a atomickom uložení aliasu
+a mapovaní. Ručne dopísaná poznámka k aliasu nie je náhradou. Táto etapa ho
+nevyrába pre plánované premenovanie ani nesprístupňuje migračné `apply`.
+
+## Overiteľná serverová záloha pred pilotom
+
+`scripts/backup_inventory.py` je pripravený nástroj pre administrátora na
+produkčnom hostiteľovi. Nie je automatický deploy krok ani vzdialený endpoint.
+Nezastavuje služby a neobnovuje produkčnú DB. Pred spustením treba overiť
+aktuálne Compose súbory, umiestnenia dát, dostatok miesta pre archív aj dočasnú
+DB a údržbové okno. GitHub prístup nie je serverový prístup.
+
+1. Pozastaviť dotknuté externé importy/publikácie, všetkých Hub writerov a
+   naplánované deploye. Zaznamenať predchádzajúce nastavenia. Administrátor
+   zastaví API a prípadné samostatné workery; PostgreSQL zostane dostupný.
+   Samotné nastavenie `manual` alebo skladová publikačná blokácia nezastaví
+   všetky produktové/príjmové/filesystem zápisy. E-shopové objednávky vzniknuté
+   počas okna treba následne zozbierať a zosúladiť; nemení sa začiatok evidencie.
+2. Na hostiteľovi uložiť presnú skontrolovanú verziu skriptu z nasadeného
+   commitu. Nasledujúce cesty sú referenčné; overiť ich oproti serveru:
+
+   ```bash
+   python3 /protected-tools/backup_inventory.py \
+     --compose-dir /opt/inventory-hub \
+     --compose-file docker-compose.yml \
+     --compose-file docker-compose.ai-content.yml \
+     --data-dir /opt/inventory-data \
+     --output-root /opt/inventory-backups \
+     --writers-paused
+   ```
+
+3. Nástroj odmietne bežiace API a výstup vnorený do zálohovaných dát. Vytvorí
+   adresár `0700` a súbory `0600`: konzistentný custom-format `pg_dump`, archív
+   aplikačných dát vrátane cache/indexov/importných denníkov, archív nasadzovacej
+   konfigurácie a samostatný archív pripojeného supplier secrets volume.
+4. Overí SHA-256/veľkosť archívov a celý dump obnoví s `--exit-on-error` a
+   `--single-transaction` do nového náhodne pomenovaného PostgreSQL kontajnera
+   z rovnakého lokálneho image ID. Kontajner má `--network none`, žiadne
+   produkčné volumes ani publikované porty a po kontrole sa odstráni. Overia
+   sa aj počty základných skladových/FIFO/objednávkových tabuliek.
+5. Iba úspešný `manifest.json` s `status=verified` a `restore_verified=true`
+   dokazuje túto kontrolnú obnovu. Zlyhanie ponechá stav `incomplete` a pilot
+   sa nezačne. Archívy obsahujú prístupy a zákaznícke dáta: neposielať ich do
+   chatu ani GitHubu; uchovať aj druhú chránenú kópiu. Na kontrolu postupu stačí
+   sanitizovaný manifest, nikdy hodnoty tajomstiev.
+6. Po zachovaní zálohy administrátor obnoví služby overeným prevádzkovým
+   postupom a pôvodné nastavenia. Zálohovací skript ich sám nespúšťa ani
+   nemení skladovú autoritu. Prerušená záloha potrebuje kontrolu a novú snímku,
+   nie pokračovanie pilotu s čiastočnými súbormi.
+
+Testovaná kontrolná obnova DB nie je kompletný nácvik obnovy celého servera:
+permissions, deploy konfigurácia, externé uložené kópie a filesystem/secret
+archívy vyžadujú administrátorskú kontrolu pred pilotom. Celkový bod obnovy
+je konzistentný len pri skutočne pozastavených všetkých writeroch; príznak
+`--writers-paused` je výslovné potvrdenie obsluhy, nie automatická detekcia.
+
+Pri návrate po neúspešnom premenovaní sa uprednostní kontrolovaná oprava
+identity vpred alebo spätné premenovanie pri zachovaní ID. Úplná obnova DB
+nie je bežný rollback SKU: mohla by stratiť novšie príjmy a objednávky. Vyžaduje
+osobitné rozhodnutie, zastavenie všetkých writerov a zosúladenie všetkých zmien
+po snímke. Tento skript takú obnovu produkcie vôbec neponúka.
+
+## Poradie malého pilotu
+
+Najprv samostatný produkt s overeným MPN a natívnym ID; až po úspechu jeden
+variant s nezmeneným rodičom. Kolízne karty a POS xTrek ostávajú mimo dávky.
+Pre každú kartu uchovať súkromný protokol pred/po a splniť tieto kroky:
+
+1. Čerstvý migračný náhľad, voľný cieľový kód, rovnaké native ID, MPN, EAN a
+   variantové parametre. Potvrdený serverový backup a osobitné povolenie zápisu.
+2. Zoznam otvorených objednávok/košíkov pred aj po hranici evidencie, nemenných
+   UUID a už zaúčtovaných rezervácií/výdajov. Skontrolovať staré kódy aj aliasy;
+   historické objednávky nesmú byť odoslané do nového skladu automaticky.
+3. Podporované administratívne premenovanie existujúcej karty a implementované
+   následné lokálne zosúladenie s auditom. Ak druhý krok ešte nie je dostupný,
+   nezačínať prvý. Nenahrádzať ho SQL editom či importom nového `CODE`.
+4. Porovnať identitu, množstvá, rezervácie, karanténu, FIFO, pohyby a doklady.
+   Po prečíslovaní zatiaľ očakávať presne nulovú zmenu skladových hodnôt.
+5. Obnoviť všetky tri vyššie uvedené pohľady a zneplatniť staré pracovné
+   náhľady; neisté/úspešné denníky sa nemenia. Overiť obe SKU v Hube a príjme
+   a čerstvý náhľad starej objednávky. Reálny výdaj potvrdzovať až pri odovzdaní.
+6. Porovnať presné `ITEM_ID`/`G:ID`, URL a rodičovské skupiny vo všetkých
+   aktívnych reklamných feedech aj konverziách. Snímka administrácie BIKETREK
+   dodaná 22. 10. 2026 ukazuje pri Heureke formát **ID**; je to dôkaz nastavenia
+   jedného doplnku, nie automatické overenie aktuálnych hodnôt feedu či Google/Meta.
+7. Až po uzavretí prvého protokolu pokračovať variantom. Nastavenia zásob
+   ponechať pôvodné; počiatočné naskladnenie a skladová autorita sú samostatné.
+
+Zdroje kontraktu opätovne overené 22. 10. 2026:
 - https://docs.upgates.com/api-reference/produkty
 - https://docs.upgates.com/api-reference/produkty-seznamy
 - https://www.upgates.cz/a/varianty
 - https://www.upgates.cz/a/propojeni-na-srovnavace-zbozi
+- https://docs.upgates.com/api-reference/objednavky

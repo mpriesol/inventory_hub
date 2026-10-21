@@ -37,7 +37,8 @@ export interface OrderStockResult {
 export interface OrderStockPreview {
   id: string; preview_hash: string; status: 'prepared' | 'completed'; created_at: string; expires_at: string;
   shop_code: string; warehouse: { id: number; code: string; name: string };
-  source: { order_number: string; uuid: string; created_at: string; updated_at: string; origin: string; status_id: number; paid: boolean; resolved: boolean; lines: { line_key: string; code: string; title: string; sku?: string | null; product_id?: number | null }[] };
+  source: { order_number: string; uuid: string; created_at: string; updated_at: string; origin: string; status_id: number; paid: boolean; resolved: boolean; lines: { line_key: string; code: string; title: string; sku?: string | null; product_id?: number | null; reasons?: string[];
+    sku_alias_proof?: { old_code: string; current_code: string; shop_id: number; mapping_id: number; is_variant: boolean; native_id: string; parent_native_id: string; audit_ids: number[]; target_fingerprint: string } }[] };
   action: 'reserve' | 'cancel' | 'issue' | 'noop'; order_revision: number; policy_revision: number;
   plan: { ready: boolean; errors: OrderStockError[]; lines: OrderStockLine[]; effects: OrderStockEffect[]; excluded_lines: OrderStockExcluded[] };
   result: OrderStockResult | null;
