@@ -43,13 +43,13 @@ export function ProductCardCreateForm({ onCreated, onClose }: { onCreated: (row:
     <h2>{t('productEditor.newCard')}</h2><p>{t('productEditor.newCardHelp')}</p>
     <label>{t('skuPolicy.existingSku')}<input data-testid="create-sku" maxLength={100} disabled={busy || uncertain} value={sku} onChange={event => setSku(event.target.value)} /></label>
     <label>{t('skuPolicy.ean')}<input data-testid="create-ean" maxLength={14} disabled={busy || uncertain} value={ean} onChange={event => setEan(event.target.value)} /></label>
-    <label>{t('productEditor.fields.name')}<input data-testid="create-name" required maxLength={500} disabled={busy || uncertain} value={name} onChange={event => setName(event.target.value)} /></label>
+    <label>{t('skuPolicy.newCardName')}<input data-testid="create-name" required={!uncertain && preview?.status !== 'existing'} maxLength={500} disabled={busy || uncertain} value={name} onChange={event => setName(event.target.value)} /></label>
     <label>{t('productEditor.fields.is_active')}<select data-testid="create-activity" disabled={busy || uncertain} value={String(active)} onChange={event => setActive(event.target.value === 'true')}><option value="true">{t('productEditor.activityStates.active')}</option><option value="false">{t('productEditor.activityStates.inactive')}</option></select></label>
     <SkuIdentityForm key={checkRevision} value={identity} onChange={setIdentity} onPreview={setPreview} context={{ barcodes: ean ? [ean] : [], sku }} disabled={busy || uncertain} />
     {error && <p role="alert">{t(`productEditor.errors.${error}`, { defaultValue: t(`skuPolicy.errors.${error}`, { defaultValue: t('productEditor.errors.request_failed') }) })}</p>}
     {errorReasons.map(reason => <p key={reason} role="alert">{t(`skuPolicy.errors.${reason}`, { defaultValue: t('skuPolicy.errors.identity_conflict') })}</p>)}
     {!!errorCandidates.length && <p>{t('skuPolicy.candidates', { ids: errorCandidates.join(', ') })}</p>}
-    <Button data-testid="create-submit" type="submit" disabled={busy || !name.trim() || (!uncertain && !['new', 'existing'].includes(preview?.status || ''))}>{t(uncertain ? 'productEditor.retryCreate' : preview?.status === 'existing' ? 'skuPolicy.useExisting' : 'productEditor.createCard')}</Button>
+    <Button data-testid="create-submit" type="submit" disabled={busy || (!uncertain && ((preview?.status !== 'existing' && !name.trim()) || !['new', 'existing'].includes(preview?.status || '')))}>{t(uncertain ? 'productEditor.retryCreate' : preview?.status === 'existing' ? 'skuPolicy.useExisting' : 'productEditor.createCard')}</Button>
     <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>{t('productEditor.cancelCreate')}</Button>
   </form>;
 }

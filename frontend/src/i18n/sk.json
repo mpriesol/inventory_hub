@@ -4012,7 +4012,8 @@
       "supplier_prefix_invalid": "Prefix dodávateľa nie je platný; skontrolujte nastavenie dodávateľa.",
       "supplier_prefix_conflict": "Nastavenia dodávateľa obsahujú rozdielne prefixy; najprv vyriešte rozpor.",
       "supplier_code_invalid": "Kód dodávateľa nie je platný.",
-      "supplier_card_links_ean_unavailable": "EAN teraz nemožno doplniť. Obnovte náhľad a skontrolujte kartu a dodávateľskú položku."
+      "supplier_card_links_ean_unavailable": "EAN teraz nemožno doplniť. Obnovte náhľad a skontrolujte kartu a dodávateľskú položku.",
+      "sku_brand_conflict": "Nájdená karta má inú alebo nerozpoznanú značku. Overte značku a prípadný alias v registri."
     },
     "finishExisting": "Dokončiť kontrolu existujúcej väzby",
     "fillEans": "Doplniť EAN od dodávateľa",
@@ -4179,7 +4180,9 @@
       "supplier_source_inactive": "Dodávateľská položka je neaktívna. Skontrolujte aktuálny katalóg.",
       "supplier_source_multiple_products": "Dodávateľská položka je spojená s viacerými kartami. Opravte konflikt v prepojeniach.",
       "supplier_card_links_source_ean_conflict": "EAN dodávateľskej položky odporuje karte. Overte variant a balenie.",
-      "supplier_card_links_identity_conflict": "Dodávateľská väzba odporuje identite karty. Otvorte kontrolu dodávateľských prepojení."
-    }
+      "supplier_card_links_identity_conflict": "Dodávateľská väzba odporuje identite karty. Otvorte kontrolu dodávateľských prepojení.",
+      "product_editor_name_required": "Nová karta potrebuje názov výrobku."
+    },
+    "newCardName": "Názov pre novú kartu"
   }
 }

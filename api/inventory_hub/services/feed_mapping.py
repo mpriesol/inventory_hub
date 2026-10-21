@@ -166,6 +166,8 @@ def _binding_values(raw: dict, binding):
         values = binding.default if isinstance(binding.default, list) else [binding.default]
     if len(values) == 1 and isinstance(values[0], list):
         values = values[0]
+    if binding.target in ("code", "manufacturer_code", "group_code", "eans") and any(not isinstance(value, str) for value in values):
+        raise ValueError(f"{binding.target} must be textual before transformations to preserve leading zeroes")
     for transform in binding.transforms:
         op, arg = transform.op, transform.value or ""
         if op == "join":

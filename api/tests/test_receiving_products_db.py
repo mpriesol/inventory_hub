@@ -22,6 +22,7 @@ from inventory_hub.product_import_models import ProductImportDraft
 from inventory_hub.product_import_types import DraftRevision, DraftPatch
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services import catalog_import, product_import
+from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services import receiving_products as service
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.stock_tracking_models import StockTracking
@@ -201,13 +202,40 @@ class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(draft.document['rows']), 2)
             self.assertTrue(all(row['values']['supplier_code'] == '' for row in draft.document['rows']))
             self.assertTrue(all(not row['values'].get('sku_identity') for row in draft.document['rows']))
-            with self.assertRaises(Exception) as error:
+            with self.assertRaises(CatalogError) as error:
                 await product_import.save(db, draft, DraftRevision(expected_revision=draft.revision))
-            self.assertIn(getattr(error.exception, 'code', ''), ('sku_identity_required', 'import_invalid_cells', 'import_validation_required'))
+            self.assertEqual(error.exception.code, 'import_invalid_rows')
             await db.rollback()
         async with self.sessions() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
             self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), 0)
+
+    async def test_saved_draft_lineage_reconciles_code_less_invoice_without_inventing_supplier_alias(self):
+        session_id = await self.make_session([{'description': 'Label checked by operator',
+            'ordered_qty': D(1), 'received_qty': D(1), 'unit_price': D('4.1234')}])
+        line_id = (await self.inspect(session_id))['items'][0]['line_id']
+        prepared = await self.prepare(session_id, [line_id])
+        async with self.sessions() as db:
+            draft = await product_import.get_draft(db, prepared['draft_id'], lock=True)
+            await product_import.patch_rows(db, draft, DraftPatch(expected_revision=draft.revision, rows=[{
+                'id': draft.document['rows'][0]['id'], 'values': {'brand': 'Topeak', 'sku_identity': {
+                    'brand': 'Topeak', 'source_code': '000-LABEL', 'code_kind': 'manufacturer',
+                    'source_ref': 'Synthetic concrete unit label checked after invoice import', 'leaf_confirmed': True}}}]))
+            saved = await product_import.save(db, draft, DraftRevision(expected_revision=draft.revision))
+            await db.commit()
+        product_id = saved['rows'][0]['hub_product_id']
+        report = await self.inspect(session_id, reconcile=True)
+        self.assertEqual(report['items'][0]['product_id'], product_id)
+        async with self.sessions() as db:
+            line = await db.get(ReceivingLine, line_id)
+            self.assertIsNone(line.supplier_sku)
+            self.assertEqual(line.unit_price, D('4.1234'))
+            self.assertIsNone(await db.scalar(select(ProductIdentifier.id).where(
+                ProductIdentifier.product_id == product_id, ProductIdentifier.identifier_type == IdentifierType.supplier_sku)))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), 0)
+        result = await self.finalize(session_id)
+        self.assertEqual(result['movements_created'], 1)
+        self.assertEqual(result, await self.finalize(session_id))
 
     async def test_repeated_invoice_rows_share_card_and_resume_without_changing_prices_or_stock(self):
         catalog_id = await self.feed_item('repeat', '5901234123457')

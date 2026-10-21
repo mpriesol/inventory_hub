@@ -107,22 +107,51 @@ async def _feed_verified(db, session, cfg):
                and by_code[key].last_run_id is not None for key in expected)
 
 
+async def _prepared_product_ids(db, session):
+    """Verified saved draft lineage also identifies invoice lines lacking codes."""
+    links = (session.session_data or {}).get('product_drafts') or {}
+    if not links:
+        return {}
+    drafts = list(await db.scalars(select(ProductImportDraft).where(ProductImportDraft.id.in_(set(links.values())))))
+    candidates = defaultdict(set)
+    for draft in drafts:
+        origin = (draft.document or {}).get('receiving_origin') or {}
+        if (draft.supplier != session.supplier.code or origin.get('supplier') != session.supplier.code
+                or origin.get('session_id') != session.id or origin.get('invoice_no') != session.invoice_number):
+            continue
+        lineage = draft.document.get('receiving_rows') or {}
+        for row in draft.document.get('rows', []):
+            product_id = row.get('hub_product_id')
+            if not product_id:
+                continue
+            context = lineage.get(str(row['id']), lineage.get(row['id'], {}))
+            for line_id in context.get('line_ids', []):
+                if links.get(str(line_id)) == draft.id:
+                    candidates[line_id].add(product_id)
+    return candidates
+
+
 async def inspect_products(db, session, prefix):
     """Return a read-only projection plus trusted source/product objects."""
     cfg = supplier_config(session.supplier.code)
     verified = await _feed_verified(db, session, cfg)
     by_sku, by_ean, malformed = await _catalog_candidates(db, session)
     verified = verified and not malformed
+    prepared_ids = await _prepared_product_ids(db, session)
+    def line_identity(line, source=None):
+        saved = prepared_ids.get(line.id, set())
+        expected = line.product_id or (next(iter(saved)) if len(saved) == 1 else None)
+        return _identity(session, line, prefix, source, expected=expected)
     candidates, identities = {}, []
     for line in session.lines:
         found = {p.id: p for p in by_sku[(line.supplier_sku or '').strip()]}
         for ean in verified_barcodes((line.ean,)):
             found.update((p.id, p) for p in by_ean[ean])
         candidates[line.id] = list(found.values())
-        identities.append(_identity(session, line, prefix))
+        identities.append(line_identity(line))
         if len(found) == 1:
             source = next(iter(found.values()))
-            identities.append(_identity(session, line, prefix, source))
+            identities.append(line_identity(line, source))
             identities.append(RemoteIdentity(0, source.shop_code, barcodes=tuple(source.eans),
                 supplier_id=session.supplier_id, supplier_sku=source.code))
     index = await load_identity_index(db, 0, identities, local=True)
@@ -148,12 +177,17 @@ async def inspect_products(db, session, prefix):
         sources = candidates[line.id]
         source = sources[0] if len(sources) == 1 else None
         warnings = []
-        resolution = index.resolve(_identity(session, line, prefix, source))
+        resolution = index.resolve(line_identity(line, source))
         reasons = list(resolution.reasons)
         candidate_product_ids = set(resolution.candidate_product_ids)
         invoice_eans = set(verified_barcodes((line.ean,)))
         feed_eans = set(verified_barcodes(source.eans)) if source else set()
         conflict = len(sources) > 1 or resolution.status == 'conflict'
+        saved_ids = prepared_ids.get(line.id, set())
+        if len(saved_ids) > 1 or line.product_id and saved_ids and saved_ids != {line.product_id}:
+            conflict = True
+            reasons.append('assigned_product_changed')
+            candidate_product_ids.update(saved_ids)
         if (line.supplier_sku or '').strip() in inconsistent_skus:
             conflict = True
             reasons.append('invoice_sku_ean_conflict')

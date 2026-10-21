@@ -104,6 +104,10 @@ class FeedMappingTests(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, "textual"):
                     mapping.apply_definition(product(), {"value": 123}, definition, "paul-lange", "products", CFG)
+                transformed = MappingDefinition.model_validate({"bindings": [{"target": field, "source": "value",
+                    "transforms": [{"op": "prefix", "value": "M-"}]}]})
+                with self.assertRaisesRegex(ValueError, "before transformations"):
+                    mapping.apply_definition(product(), {"value": 123}, transformed, "paul-lange", "products", CFG)
                 result = mapping.apply_definition(product(), {"value": "00123"}, definition, "paul-lange", "products", CFG)
                 self.assertEqual(getattr(result, field), "00123")
 

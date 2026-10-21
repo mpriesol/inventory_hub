@@ -4010,7 +4010,8 @@
       "supplier_prefix_invalid": "The supplier prefix is invalid; check the supplier settings.",
       "supplier_prefix_conflict": "Supplier settings contain conflicting prefixes; resolve them first.",
       "supplier_code_invalid": "The supplier code is invalid.",
-      "supplier_card_links_ean_unavailable": "EAN cannot be added now. Refresh the preview and check the card and supplier item."
+      "supplier_card_links_ean_unavailable": "EAN cannot be added now. Refresh the preview and check the card and supplier item.",
+      "sku_brand_conflict": "The matched card has another or unrecognized brand. Verify the brand and any registry alias."
     },
     "finishExisting": "Finish checking existing link",
     "fillEans": "Add EAN from supplier",
@@ -4177,7 +4178,9 @@
       "supplier_source_inactive": "The supplier item is inactive. Check the current catalog.",
       "supplier_source_multiple_products": "The supplier item is linked to multiple cards. Resolve the conflicting links.",
       "supplier_card_links_source_ean_conflict": "The supplier item EAN conflicts with the card. Verify variant and pack.",
-      "supplier_card_links_identity_conflict": "The supplier link conflicts with the card identity. Open supplier link review."
-    }
+      "supplier_card_links_identity_conflict": "The supplier link conflicts with the card identity. Open supplier link review.",
+      "product_editor_name_required": "A new card needs a product name."
+    },
+    "newCardName": "Name for a new card"
   }
 }

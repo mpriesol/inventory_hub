@@ -669,7 +669,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(!('sku' in newRequest), 'The server allocates new SKU from evidence');
   skuPreviewMode = 'existing';
   await act(async () => { root.render(React.createElement(ProductCardCreateForm, {key:'existing',onClose:()=>{},onCreated:row=>{createdCard=row;}})); await tick(); });
-  await input('create-name', 'Lookup name'); await input('create-ean', '5901234123457');
+  await input('create-ean', '5901234123457');
   await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
   assert(required('create-submit').textContent.includes(i18n.t('skuPolicy.useExisting')));
   assert.equal(calls.filter(call => call.path.endsWith('/sku-policy/preview')).at(-1).body.sku_identity, null, 'Existing-card lookup does not invent an MPN');

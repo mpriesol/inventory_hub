@@ -395,7 +395,14 @@ def validate_rows(document):
         if link_only(row):
             row['hub_errors'] = []
             continue
-        row['hub_errors'] = sorted(set(row.get('errors', [])) - {'missing_price', 'missing_vat'}
+        merchandising = {'missing_price', 'missing_vat'}
+        if (row['values'].get('sku_identity') or {}).get('leaf_confirmed'):
+            # A documented concrete leaf can exist before variant presentation
+            # is complete. Duplicated supplier codes/EANs are never exempted.
+            merchandising |= {'stock_feed_only', 'variant_attributes_missing', 'variant_attributes_ambiguous'}
+        if all(row['values'].get(key) is None for key in ('purchase_net', 'retail_gross', 'sale_gross')):
+            merchandising.add('currency_mismatch')
+        row['hub_errors'] = sorted(set(row.get('errors', [])) - merchandising
             | set((row.get('sku_preview') or {}).get('reasons', [])
                 if (row.get('sku_preview') or {}).get('status') in ('blocked', 'conflict') else []))
 
@@ -427,7 +434,16 @@ async def prepare_sku_rows(db, draft, document):
             item = SkuIdentityInput.model_validate(identity)
             result = await preview_sku(db, item,
                 barcodes=values['eans'], supplier_id=supplier_id,
-                supplier_sku=values['supplier_code'], expected_product_id=product_id)
+                supplier_sku=values['supplier_code'], expected_product_id=expected)
+            if product_id and result['status'] == 'new':
+                # A legacy prefixed-code candidate is not an approved target.
+                # Retain its original code for the ordinary explicit review;
+                # do not hide it by replacing the candidate with a new SKU.
+                result = {**result, 'status': 'blocked', 'reasons': ['import_identity_review_required'],
+                          'candidate_product_ids': [product_id]}
+            elif product_id and result['status'] == 'existing' and result['product_id'] != product_id:
+                result = {**result, 'status': 'conflict', 'reasons': ['local_identity_conflict'],
+                          'candidate_product_ids': [product_id, result['product_id']]}
             if values['brand'] and brand_key(values['brand']) != brand_key(item.brand):
                 source_brand = await registered_brand_id(db, values['brand'])
                 if source_brand is None or source_brand != result.get('brand_id'):
@@ -445,6 +461,8 @@ async def prepare_sku_rows(db, draft, document):
             if row['is_variant'] and not row['source'].get('canonical_parent_code'):
                 row['source'] = {**row['source'], 'canonical_parent_code': row['group_key']}
             values['code'] = result['sku']
+            if identity and not values['brand']:
+                values['brand'] = item.brand
             row['canonical_code'] = result['sku']
             if not row['is_variant']:
                 row['group_key'] = result['sku']

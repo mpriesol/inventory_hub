@@ -89,6 +89,8 @@ async def build(db, draft, *, summary_only=False, document=None):
         resolution = index.resolve(identity)
         matched = resolution.product_id
         errors = list(resolution.reasons) if resolution.status == 'conflict' else []
+        if (raw.get('sku_preview') or {}).get('status') == 'conflict':
+            errors.extend(raw['sku_preview'].get('reasons', []))
         expected = raw.get('hub_product_id') or raw.get('expected_hub_product_id')
         candidates = []
         search = found.get(str(raw['id']), {'candidates': [], 'truncated': False})

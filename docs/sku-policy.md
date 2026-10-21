@@ -74,7 +74,8 @@ vyžaduje samostatné vyriešenie rozporu.
    Zaúčtovanie už nevytvára novú kartu iba zo starej dodávateľskej predpony.
 3. **Bez feedu:** v **Sklade** otvor **Nová skladová karta**. Najprv vyhľadaj
    existujúce SKU alebo EAN; pre nový výrobok stačí názov a overená identita.
-   Dodávateľ a jeho kód sú samostatné voliteľné údaje.
+   Dodávateľské väzby doplníš cez existujúci detail karty alebo pri príjme;
+   API ručného založenia prijíma aj samostatný dodávateľský kontext.
 4. **Uloženie do Hubu** vytvorí alebo použije kartu a doloženú dodávateľskú väzbu.
    Hotový e-shopový popis, predajná cena a DPH nie sú podmienkou základnej karty.
 5. **Potvrdenie prijatých kusov** je samostatné zaúčtovanie príjemky. **Publikovanie
