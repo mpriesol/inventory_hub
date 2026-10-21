@@ -204,7 +204,7 @@ def _content(source: dict) -> dict:
     """Physical lock covers all line identities/quantities, not later timestamps."""
     # Newly preserved indicative native IDs are evidence for stock sync, not a
     # reason to invalidate the immutable content of an older issued snapshot.
-    ignored = {"title", "classification", "sku", "matched_by", "reasons", "native_product_id", "native_option_set_id"}
+    ignored = {"title", "classification", "sku", "matched_by", "reasons", "native_product_id", "native_option_set_id", "sku_alias_proof"}
     return {"uuid": source["uuid"], "order_number": source["order_number"],
             "lines": sorted(({key: value for key, value in line.items() if key not in ignored}
                               for line in source["lines"]), key=lambda row: row["line_key"])}

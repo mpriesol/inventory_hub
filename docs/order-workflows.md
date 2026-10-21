@@ -51,6 +51,13 @@ Podporované sú celé **kusy**. Metre, vážený tovar, prepočty balení a zlo
 
 Na `/orders/stock` vyber e-shop a zadaj číslo objednávky. Načítaj náhľad a skontroluj SKU, množstvá, dostupné kusy, rezervácie a vylúčené riadky. Potvrdenie výdaja vyžaduje aj potvrdenie skutočného odoslania alebo odovzdania.
 
+Pri overenom premenovaní môže náhľad ukázať **Overený pôvodný kód objednávky**
+a starý kód → aktuálne SKU tej istej karty. Vyžaduje presný alias, úplný audit
+pre daný e-shop a zhodu natívnej identity. Samotné EAN ani poznámka pri aliase
+nestačia. Chýbajúci dôkaz alebo natívny rozpor sa zobrazí ako blokovanie.
+Pôvodný riadok objednávky sa nemení, začiatok evidencie sa neposúva a vydaná
+objednávka sa nevydá znova. Podmienky a hranice sú v [prevode SKU](sku-migration.md#objednávky-so-starým-sku-implementované-v-kóde).
+
 Pred výdajom možno v e-shope pridať, odstrániť alebo vymeniť tovar a zmeniť množstvo. Potom vytvor nový náhľad; Hub upraví rezervácie podľa aktuálnej objednávky. Náhľad platí 30 minút a pri zmene podkladu alebo zásob môže vyžadovať nové načítanie.
 
 Pri nedostatku tovaru sa rezervujú dostupné kusy a zvyšok zostane nekrytý. **Čiastočný výdaj sa nevykonáva.** Objednávku možno vydať až po pokrytí všetkých jej skladovaných riadkov pri zachovaní rezervácií ostatných objednávok.

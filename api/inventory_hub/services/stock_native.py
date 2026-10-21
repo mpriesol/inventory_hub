@@ -104,13 +104,25 @@ async def _identities(db, shop_id, value, *, bind=False):
     rows = (await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shop_id,
         ShopProduct.product_id.in_({line["product_id"] for line in native})))).all()
     mappings = {row.product_id: row for row in rows}
+    aliases = None
+    if any((mapping := mappings.get(line["product_id"])) is not None
+           and (mapping.variant_code if mapping.is_variant else mapping.external_code) != line["code"] for line in native):
+        from inventory_hub.db_models import Shop
+        from inventory_hub.services import order_sku_aliases
+        from inventory_hub.services.product_identity import load_identity_index
+        shop = await db.get(Shop, shop_id)
+        index = await load_identity_index(db, shop_id, [order_sku_aliases.identity(shop_id, line) for line in native])
+        aliases = await order_sku_aliases.load(db, shop, index, native)
     for line in native:
         mapping = mappings.get(line["product_id"])
         if mapping is None:
             raise NativeError("stock_native_identity_unknown")
         code = mapping.variant_code if mapping.is_variant else mapping.external_code
+        alias_proof = None
         if code != line["code"]:
-            raise NativeError("stock_native_line_identity")
+            resolved, alias_proof = aliases.resolve({**line, "has_native_identity": True})
+            if resolved.status != "mapped" or resolved.product_id != line["product_id"] or alias_proof is None:
+                raise NativeError("stock_native_line_identity")
         # option_set_id is preserved separately; an unverified equivalence to
         # product.variant_id must never be manufactured by this evidence layer.
         if mapping.is_variant:
@@ -121,10 +133,18 @@ async def _identities(db, shop_id, value, *, bind=False):
             raise NativeError("stock_native_line_identity")
         proof = {"id": mapping.id, "code": code, "parent_code": mapping.parent_code,
                  "external_id": mapping.external_id, "is_variant": mapping.is_variant}
-        if ("mapping" in line and line["mapping"] != proof) or (not bind and "mapping" not in line):
+        stored = line.get("mapping")
+        # An audited code-only rename must not invalidate an immutable older
+        # observation. Native leaf, mapping row and variant parent stay fixed.
+        same_native = (alias_proof is not None and isinstance(stored, dict)
+                       and stored.get("code") in alias_proof["code_chain"]
+                       and all(stored.get(key) == proof[key] for key in ("id", "external_id", "is_variant", "parent_code")))
+        if (stored is not None and stored != proof and not same_native) or (not bind and stored is None):
             raise NativeError("stock_native_line_identity")
         if bind:
             line["mapping"] = proof
+            if alias_proof is not None:
+                line["sku_alias_proof"] = alias_proof
 
 
 async def record(db, order, source_order, statuses, source_hash):

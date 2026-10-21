@@ -158,6 +158,11 @@ const configurations = () => calls.filter(call => call.path.endsWith('/configure
   assert.deepEqual(['3', '9', '19'].map(id => configurations()[0].body.status_actions[id]), ['reserve', 'issue', 'issue']);
   await click(button('preview'));
   assert.equal(applies().length, 0); assert(document.body.textContent.includes('Synthetic manual service'));
+  stored.source.lines.push({ line_key: 'alias-line', code: 'OLD-001', sku: 'TP-001', title: 'Renamed card', sku_alias_proof: { old_code: 'OLD-001', current_code: 'TP-001' } });
+  await input(field('previewId'), stored.id); await click(button('recover'));
+  assert(document.querySelector('[data-testid="order-sku-alias"]').textContent.includes('OLD-001'));
+  assert(document.querySelector('[data-testid="order-sku-alias"]').textContent.includes('TP-001'));
+  assert.equal(applies().length, 0, 'Showing an audited alias does not apply inventory');
   assert(document.body.textContent.includes('3.0001 EUR') && document.body.textContent.includes('21.0007'));
   assert(button('apply').disabled);
   await click(field('applyConfirm')); await click(button('apply'));
@@ -188,6 +193,9 @@ const configurations = () => calls.filter(call => call.path.endsWith('/configure
   assert.equal(stored.id, retryId); assert.equal(applies().length, 4);
 
   planReady = false; await input(field('orderNumber'), 'SHORTAGE-1'); await click(button('preview'));
+  stored.source.lines[0].reasons = ['order_sku_alias_native_conflict'];
+  await input(field('previewId'), stored.id); await click(button('recover'));
+  assert(document.querySelector('[data-testid="order-sku-alias-conflict"]').textContent.includes(t('errors.order_sku_alias_native_conflict')));
   assert(document.body.textContent.includes(t('blocked'))); assert(button('apply').disabled && field('applyConfirm').disabled);
   assert(document.querySelector('[role="alert"]'), 'Blocked plans keep shortage diagnostics visible');
   const diagnostics = document.querySelector('[role="alert"]').textContent;
