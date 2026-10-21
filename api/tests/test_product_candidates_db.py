@@ -16,6 +16,7 @@ from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, 
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.services import product_candidates as service
+from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
@@ -174,9 +175,22 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
             service.CandidateQuery(key="bad-checksum", eans=("5901234123458",)),
             service.CandidateQuery(key="unverified", eans=("123456",)),
         )
-        self.assertEqual([row["product_id"] for row in result["zero"]["candidates"]], [self.product_a])
-        self.assertEqual(result["zero"]["candidates"][0]["eans"], [EAN_ZERO])
-        self.assertIn("exact_ean", result["zero"]["candidates"][0]["reasons"])
+        # The UPC is an equivalent representation of EAN_ZERO. Both existing
+        # owners must remain visible, without stripping either stored value or
+        # choosing one duplicate as authoritative.
+        candidates = {row["product_id"]: row for row in result["zero"]["candidates"]}
+        self.assertEqual(set(candidates), {self.product_a, self.product_b})
+        self.assertEqual(candidates[self.product_a]["eans"], [EAN_ZERO])
+        self.assertIn("123456789012", candidates[self.product_b]["eans"])
+        self.assertNotIn(EAN_ZERO, candidates[self.product_b]["eans"])
+        self.assertTrue(all("exact_ean" in row["reasons"] for row in candidates.values()))
+        async with self.sessions() as db:
+            await db.execute(text("SET TRANSACTION READ ONLY"))
+            incoming = RemoteIdentity(0, barcodes=(EAN_ZERO,))
+            index = await load_identity_index(db, 0, [incoming], local=True)
+            resolved = index.resolve(incoming)
+            self.assertEqual(resolved.reasons, ["identifier_conflict"])
+            self.assertEqual(set(resolved.candidate_product_ids), {self.product_a, self.product_b})
         for key in ("bad-checksum", "unverified"):
             self.assertFalse(any("exact_ean" in row["reasons"] for row in result[key]["candidates"]))
 

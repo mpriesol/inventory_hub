@@ -365,9 +365,15 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_publication_uses_edited_snapshot_after_feed_refresh(self):
         result = await self.create()
+        from inventory_hub.services.sku_policy import create_brand
+        from inventory_hub.sku_policy_types import BrandCreate
+        async with self.sessions() as db:
+            await create_brand(db, BrandCreate(name='Nová značka', code='NZ', source_ref='Synthetic corrected brand evidence'))
+            await db.commit()
+        corrected_identity = {**result['rows'][0]['values']['sku_identity'], 'brand': 'Nová značka'}
         result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{'id':self.ids[0], 'values': {
             'name':'Môj názov', 'description_html':'<p>Ručný popis</p>', 'seo_title':'Moje SEO',
-            'seo_description':'Presný popis z tabuľky', 'brand':'Nová značka', 'sale_gross':'89.99',
+            'seo_description':'Presný popis z tabuľky', 'brand':'Nová značka', 'sku_identity': corrected_identity, 'sale_gross':'89.99',
             'images':['https://images.example.com/edited.jpg'], 'parameters':[{'name':'Farba','value':'modrá'}]}}])
         result = await self.mutate(result, service.save)
         self.write_feed(xml_item(name='Updated supplier name'))
@@ -612,12 +618,13 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             rows=[{'id': self.ids[0], 'values': {'target_shops': ['biketrek']}}])
         result = await self.mutate(result, service.save)
         result = await self.mutate(result, service.preview)
-        # An approved existing-card link remains link-only even if an old or
-        # direct client later sends merchandising targets for the draft row.
-        self.assertIsNone(result['publication'])
-        self.assertEqual(result['publications'], {})
+        # An automatic exact-identity reuse can later prepare a separately
+        # selected shop listing. Preview still does not publish or rewrite Hub.
+        self.assertIsNotNone(result['publication'])
+        self.assertEqual(result['publication']['items'][0]['payload']['code'], 'EXISTING-001')
+        self.assertEqual(result['publication']['items'][0]['status'], 'ready')
         self.assertEqual(result['rows'][0]['hub_product_id'], product_id)
-        self.assertEqual(result['rows'][0]['values']['target_shops'], [])
+        self.assertEqual(result['rows'][0]['values']['target_shops'], ['biketrek'])
         async with self.sessions() as db:
             stored = await db.get(ProductImportDraft, result['id'])
             self.assertEqual(stored.document['rows'][0]['values']['target_shops'], ['biketrek'])

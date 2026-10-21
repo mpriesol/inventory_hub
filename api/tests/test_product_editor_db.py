@@ -237,7 +237,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 StockMovement.product_id == product_id)), 0)
             self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct).where(
                 ShopProduct.product_id == product_id)), 0)
-        rename = await self.save([self.change(row, variant={"sku": "TP-ARBITRARY"})])
+        rename = await self.save([self.change(row, variant={"sku": "TP-ARBITRARY"})], warehouse=None)
         self.assertEqual(rename["results"][0]["errors"][0]["code"], "sku_registered_rename_blocked")
 
     async def test_manual_identity_contradicting_existing_ean_cannot_steal_supplier_source(self):
