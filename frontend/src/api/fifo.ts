@@ -7,6 +7,7 @@ export interface FifoLayer {
   provenance: Record<string, unknown>;
 }
 export interface FifoStock {
+  item_type?: 'stock' | 'service'; stock_unit?: 'pcs' | 'pair' | 'pack' | 'm';
   product_id: number; sku: string; warehouse: { id: number; code: string; name: string };
   balance: { qty_on_hand: string; qty_reserved: string; qty_quarantined: string; qty_available: string; last_purchase_price?: string | null; last_purchase_at?: string | null } | null;
   tracking_confirmed?: boolean;

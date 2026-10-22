@@ -1,4 +1,5 @@
 """Protected order sample, identity and privacy contracts. No live Upgates calls."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import json
 import os
@@ -57,9 +58,8 @@ def page(*orders):
 def identity_index():
     products = [Product(id=1, sku="LOCAL-A", name="A"), Product(id=2, sku="LOCAL-B", name="B"),
                 Product(id=3, sku="UNMAPPED", name="Unmapped")]
-    mappings = [ShopProduct(id=1, shop_id=1, product_id=1, external_code="REMOTE-A", is_variant=False),
-                ShopProduct(id=2, shop_id=1, product_id=2, external_code="PARENT", parent_code="PARENT",
-                            variant_code="BLUE-M", is_variant=True)]
+    mappings = [ShopProduct(id=1, shop_id=1, product_id=1, external_code='REMOTE-A', is_variant=False),
+                ShopProduct(id=2, shop_id=1, product_id=2, external_code='BLUE-M', parent_code='PARENT', is_variant=True)]
     identifiers = [ProductIdentifier(id=1, product_id=1, value="4006381333931", identifier_type=IdentifierType.ean),
                    ProductIdentifier(id=2, product_id=3, value="5901234123457", identifier_type=IdentifierType.ean)]
     return IdentityIndex(1, products, mappings, identifiers)
@@ -108,9 +108,7 @@ class OrderNormalizationTests(unittest.IsolatedAsyncioTestCase):
                  (2, "xtrek", "eshop", ["SHOES", "LIGHTS"])]
         for shop_id, shop_code, origin, parents in shops:
             with self.subTest(shop=shop_code):
-                mappings = [ShopProduct(id=position + 1, shop_id=shop_id, product_id=product.id,
-                                        external_code=parent, parent_code=parent,
-                                        variant_code=product.sku, is_variant=True)
+                mappings = [ShopProduct(id=position + 1, shop_id=shop_id, product_id=product.id, external_code=product.sku, parent_code=parent, is_variant=True)
                             for position, (product, parent) in enumerate(zip(products, parents))]
                 index = IdentityIndex(shop_id, products, mappings)
                 sample = order(*(line(code=product.sku, product_id=900 if origin == "cash-register" else 100 + position,
@@ -315,6 +313,7 @@ class OrderAuditDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2]
             await connection.execute((root / "infra/db-init/001_schema.sql").read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -325,7 +324,7 @@ class OrderAuditDatabaseTests(unittest.IsolatedAsyncioTestCase):
             product = Product(sku="LOCAL-A", name="Test stock product")
             db.add(product)
             await db.flush()
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code="REMOTE-A", is_variant=False))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code='REMOTE-A', is_variant=False))
             await db.commit()
 
     async def asyncTearDown(self):
@@ -359,8 +358,7 @@ class OrderAuditDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all(products)
             await db.flush()
             for product, group in zip(products, groups):
-                db.add(ShopProduct(shop_id=xtrek_id, product_id=product.id, external_code=group.code,
-                                   parent_code=group.code, variant_code=product.sku, is_variant=True))
+                db.add(ShopProduct(shop_id=xtrek_id, product_id=product.id, external_code=product.sku, parent_code=group.code, is_variant=True))
             await db.commit()
             expected_ids = [product.id for product in products]
             expected_groups = [(product.id, product.group_id) for product in products]

@@ -18,6 +18,7 @@ import {
   prepareReceivingProducts,
   type ReceivingProducts,
   setLineQuantity,
+  setLineUnit,
   acceptAllItems,
   resetAllItems,
   type ReceivingLine,
@@ -32,7 +33,7 @@ import { API_BASE } from '../api/client';
 import { CatalogApiError } from '../api/catalog';
 
 function getRawScm(line: ReceivingLine): string {
-  return (line.scm || (line.product_code || '').replace(/^PL-/i, '')).trim();
+  return (line.scm || line.product_code || String(line.id || '')).trim();
 }
 
 export function ReceivingSessionPage() {
@@ -78,6 +79,7 @@ export function ReceivingSessionPage() {
   const [editingLine,    setEditingLine]    = useState<{ index: number; line: ReceivingLine } | null>(null);
   const [editQty,        setEditQty]        = useState('');
   const [editNote,       setEditNote]       = useState('');
+  const [editUnit, setEditUnit] = useState<'pcs' | 'pair' | 'pack' | 'm'>('pcs'), [editFactor, setEditFactor] = useState('1');
   const [savingEdit,     setSavingEdit]     = useState(false);
   const [quantityNeedsRefresh, setQuantityNeedsRefresh] = useState(false);
   const [pausing,        setPausing]        = useState(false);
@@ -305,7 +307,7 @@ export function ReceivingSessionPage() {
     }
   };
 
-  const openEditModal = (index: number, line: ReceivingLine) => { if (!canEdit || scanner.hasPending() || mutation.current) return; setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); };
+  const openEditModal = (index: number, line: ReceivingLine) => { if (!canEdit || scanner.hasPending() || mutation.current) return; setEditingLine({ index, line }); setEditQty(line.received_qty.toString()); setEditNote(''); setEditUnit(line.purchase_unit || line.stock_unit || 'pcs'); setEditFactor(line.purchase_to_stock_factor || '1'); };
 
   const refreshQuantities = async () => {
     if (!sessionId || mutation.current || scanner.hasPending()) return;
@@ -355,6 +357,32 @@ export function ReceivingSessionPage() {
     } finally {
       if (receiptContext.current === context) { mutation.current = false; setSavingEdit(false); }
     }
+  };
+
+  const saveUnitConversion = async () => {
+    if (!editingLine || !canEdit || mutation.current || scanner.hasPending()) return;
+    const factor = editFactor.trim().replace(',', '.');
+    if (!/^\d{1,6}(?:\.\d{1,3})?$/.test(factor) || Number(factor) <= 0 || Number(factor) > 999999.999) { setError(t('receiving.units.invalidFactor')); return; }
+    const context = receiptContext.current, index = editingLine.index;
+    mutation.current = true; context.revision += 1; setSavingEdit(true); setError(null);
+    try {
+      const result = await setLineUnit(supplier, sessionId, index, editUnit, factor);
+      if (receiptContext.current !== context) return;
+      if (lines[index]?.id !== undefined && result.line.id !== lines[index].id) throw new Error('receiving_unit_line_mismatch');
+      setLines(previous => previous.map((line, i) => i === index ? { ...line, ...result.line } : line));
+      setStats(result.summary); setEditingLine({ index, line: result.line }); setEditFactor(result.line.purchase_to_stock_factor || '1');
+    } catch (value) {
+      if (receiptContext.current !== context) return;
+      setSummaryReady(false);
+      try {
+        const current = await getReceivingSummary(supplier, sessionId);
+        if (receiptContext.current !== context) return;
+        setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status });
+        setSummaryReady(true); setEditingLine(null); const code = (value as {code?:string}).code; setError(t(`receiving.units.errors.${code || 'unknown'}`, { defaultValue: t('receiving.units.reloaded') }));
+      } catch {
+        if (receiptContext.current === context) { setQuantityNeedsRefresh(true); setError(t('receiving.quantityRefreshRequired')); }
+      }
+    } finally { if (receiptContext.current === context) { mutation.current = false; setSavingEdit(false); } }
   };
 
   const handleSaveEdit = () => {
@@ -635,7 +663,7 @@ export function ReceivingSessionPage() {
                         <div className="max-w-xs" title={line.title}>{line.title}</div>
                         {product && <div className="mt-2 space-y-1 text-xs" data-testid={`receiving-product-match-${idx}`}>
                           <div className="font-medium" style={{ color: product.status === 'matched' ? 'var(--color-success)' : product.status === 'ambiguous' ? 'var(--color-error)' : 'var(--color-text-secondary)' }}>{t(`receiving.products.statuses.${product.status}`)}</div>
-                          <div data-testid={`receiving-product-stock-${idx}`} style={{ color: 'var(--color-text-tertiary)' }}>{product.stock_confirmed && product.own_stock_qty !== null ? t('receiving.products.ownStock', { quantity: product.own_stock_qty }) : t('receiving.products.stockUnverified')}</div>
+                          <div data-testid={`receiving-product-stock-${idx}`} style={{ color: 'var(--color-text-tertiary)' }}>{product.item_type === 'service' || line.item_type === 'service' ? t('productEditor.nonstock') : product.stock_confirmed && product.own_stock_qty !== null ? t('receiving.products.ownStock', { quantity: product.own_stock_qty, unit: t(`productEditor.units.${product.stock_unit || line.stock_unit || 'pcs'}`) }) : t('receiving.products.stockUnverified')}</div>
                           {product.status === 'ambiguous' && <details className="max-w-sm" data-testid={`receiving-product-conflicts-${idx}`}>
                             <summary className="cursor-pointer underline">{t('receiving.products.reviewMatch')}</summary>
                             <p className="mt-1" style={{ color: 'var(--color-error)' }}>{t('receiving.products.ambiguousHelp')}</p>
@@ -655,10 +683,10 @@ export function ReceivingSessionPage() {
                           </button>}
                         </div>}
                       </td>
-                      <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>{line.ordered_qty}</td><td className="px-4 py-2 text-sm text-right">{line.unit_price == null ? t('productEditor.unknown') : formatNumber(line.unit_price, i18n.language, 4)}</td>
+                      <td className="px-4 py-2 text-sm text-right" style={{ color: 'var(--color-text-secondary)' }}>{line.ordered_qty} {t(`productEditor.units.${line.purchase_unit || line.stock_unit || 'pcs'}`)}</td><td className="px-4 py-2 text-sm text-right">{line.unit_price == null ? t('productEditor.unknown') : formatNumber(line.unit_price, i18n.language, 4)}</td>
                       <td className="px-4 py-2 text-sm text-right font-medium" style={{ color: line.received_qty >= line.ordered_qty ? 'var(--color-success)' : line.received_qty > 0 ? 'var(--color-info)' : 'var(--color-text-primary)' }}>
                         <div className="flex items-center justify-end gap-2">
-                          <span>{line.received_qty}</span>
+                          <span>{line.received_qty} {t(`productEditor.units.${line.purchase_unit || line.stock_unit || 'pcs'}`)}<small className="block" data-testid={`receiving-stock-quantity-${idx}`}>{line.item_type === 'service' ? t('productEditor.nonstock') : line.unit_conversion_error ? t(`receiving.units.errors.${line.unit_conversion_error}`, { defaultValue: t('receiving.units.invalidFactor') }) : line.stock_quantity != null ? `${t('receiving.units.toStock')}: ${formatNumber(line.stock_quantity, i18n.language, 3)} ${t(`productEditor.units.${line.stock_unit || 'pcs'}`)}` : ''}</small></span>
                           {canEdit && <span className="flex flex-col">
                             <button data-testid={`receiving-increase-line-${idx}`} type="button" aria-label={t('receiving.increaseQuantity', { code: line.product_code || line.scm })} title={t('receiving.increaseQuantity', { code: line.product_code || line.scm })}
                               disabled={preparingProducts || loading || savingEdit || bulkLoading || pausing || finalizing || line.received_qty > 999999998.999}
@@ -702,7 +730,7 @@ export function ReceivingSessionPage() {
             <div className="mt-4 p-3 rounded-lg" style={{ backgroundColor: 'var(--color-bg-primary)' }}>
               <div className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>{editingLine.line.product_code || editingLine.line.scm}</div>
               <div className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>{editingLine.line.title}</div>
-              <div className="text-xs mt-2" style={{ color: 'var(--color-text-tertiary)' }}>Objednané: <strong>{editingLine.line.ordered_qty}</strong> ks</div>
+              <div className="text-xs mt-2" style={{ color: 'var(--color-text-tertiary)' }}>Objednané: <strong>{editingLine.line.ordered_qty}</strong> {t(`productEditor.units.${editingLine.line.purchase_unit || editingLine.line.stock_unit || 'pcs'}`)}</div>
             </div>
             <div className="mt-4">
               <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>Prijaté množstvo</label>
@@ -711,6 +739,11 @@ export function ReceivingSessionPage() {
                 <button onClick={() => setEditQty(editingLine.line.ordered_qty.toString())} className="px-3 py-2 rounded-lg text-sm font-medium" style={{ backgroundColor: 'var(--color-accent-subtle)', color: 'var(--color-accent)' }}>= {editingLine.line.ordered_qty}</button>
               </div>
             </div>
+            {editingLine.line.stock_unit && editingLine.line.item_type !== 'service' && <details className="mt-4" data-testid="receiving-unit-conversion"><summary>{t('receiving.units.title')}</summary><p className="text-xs my-2">{t('receiving.units.help', { unit: t(`productEditor.units.${editingLine.line.stock_unit}`) })}</p>
+              <label className="block text-sm">{t('receiving.units.purchaseUnit')}<select data-testid="receiving-purchase-unit" className="w-full my-2 p-2" value={editUnit} disabled={savingEdit} onChange={event => setEditUnit(event.target.value as typeof editUnit)}>{(['pcs', 'pair', 'pack', 'm'] as const).map(unit => <option key={unit} value={unit}>{t(`productEditor.units.${unit}`)}</option>)}</select></label>
+              <label className="block text-sm">{t('receiving.units.factor', { unit: t(`productEditor.units.${editingLine.line.stock_unit}`) })}<input data-testid="receiving-unit-factor" inputMode="decimal" className="w-full my-2 p-2" value={editFactor} disabled={savingEdit} onChange={event => setEditFactor(event.target.value)} /></label>
+              <p className="text-xs">{t('receiving.units.costHelp')}</p><Button type="button" data-testid="receiving-unit-save" variant="secondary" disabled={savingEdit || pausing || loading || bulkLoading} onClick={saveUnitConversion}>{t('receiving.units.save')}</Button>
+            </details>}
             <div className="mt-4">
               <label className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>Poznámka (voliteľné)</label>
               <input type="text" value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Napr. poškodené, chýba v dodávke..." className="w-full mt-2 py-2" />

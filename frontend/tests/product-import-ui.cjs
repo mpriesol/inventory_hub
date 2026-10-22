@@ -32,7 +32,7 @@ global.fetch = async (path, init = {}) => {
   if (path === '/api/sku-policy/brands') return {ok:true,status:200,json:async()=>({brands:[{id:1,code:'TP',name:'Topeak',kind:'brand',aliases:[]}]})};
   if (path === '/api/sku-policy/preview') {
     const item=body.sku_identity;
-    return {ok:true,status:200,json:async()=>({status:!item||!item.leaf_confirmed?'blocked':'new',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:item?.leaf_confirmed?[]:['sku_leaf_not_confirmed'],candidate_product_ids:[]})};
+    return {ok:true,status:200,json:async()=>({status:item?.brand&&item.source_code?'new':'blocked',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:[],candidate_product_ids:[]})};
   }
   if (path === '/api/ai-content/rules') return { ok: true, status: 200, json: async () => ({book:{categories:[{id:'general',name:'Všeobecné'},{id:'inner_tubes',name:'Duše'}]}}) };
   if (path === '/api/product-imports/test-draft' && init.method === 'GET' && deferRead) {
@@ -45,7 +45,7 @@ global.fetch = async (path, init = {}) => {
     assert.deepEqual(body.product_ids, [1, 2, 3]); assert.equal(body.run_id, 42); assert.ok(body.request_id);
   } else if (path === '/api/product-imports/test-draft' && init.method === 'PUT') {
     assert.equal(body.expected_revision, server.revision);
-    for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); if (patch.values.sku_identity) row.values.code = 'TP-' + patch.values.sku_identity.source_code; Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
+    for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); if (patch.values.sku_identity) row.values.code='TP-'+patch.values.sku_identity.source_code; Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
   } else if (path.endsWith('/categories-refresh')) {
     assert.equal(body.expected_revision, server.revision);
@@ -498,23 +498,19 @@ async function render(entry) {
   const beforeIdentity = calls.length;
   await click(document.querySelector('[data-testid="import-sku-1"]'));
   const dialog=document.querySelector('[role="dialog"]'); assert(dialog);
-  assert.equal(dialog.querySelector('[data-testid="sku-source-code"]').value,'0001410');
-  assert(!dialog.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'A feed field cannot automatically prove an MPN');
-  assert(dialog.textContent.includes('SUP-900') && dialog.textContent.includes('0001410'),'Supplier and manufacturer candidate values remain separate');
-  await change(dialog.querySelector('[data-testid="sku-source-ref"]'),'Synthetic specification for this exact variant');
-  await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
-  assert(dialog.querySelector('[data-testid="import-sku-apply"]').disabled);
-  await click(dialog.querySelector('[data-testid="sku-leaf-confirmed"]'));
+  assert.equal(dialog.querySelector('[data-testid="sku-source-code"]').value,'SUP-900','Supplier leaf code is the normal fallback, without claiming MPN evidence');
+  assert(dialog.querySelector('[data-testid="sku-brand"]') && !dialog.querySelector('[data-testid="sku-leaf-confirmed"]'),'Brand prefix is automatic without a mandatory MPN confirmation');
+  assert(dialog.textContent.includes('SUP-900'),'The scoped supplier code remains visible');
+  await change(dialog.querySelector('[data-testid="sku-source-code"]'),'0001410');
   await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
   const proof=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body;
-  assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410');
+  assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410'); assert.equal(proof.sku_identity.code_kind,'supplier'); assert.equal(proof.sku_identity.leaf_confirmed,false);
   await click(dialog.querySelector('[data-testid="import-sku-apply"]'));
   assert.equal(document.querySelector('[role="dialog"]'),null);
   assert(!button('Uložiť produkty do Hubu').disabled,'A basic card is savable despite missing shop price/VAT');
   await click(button('Uložiť produkty do Hubu'));
-  assert.equal(server.rows[0].values.sku_identity.source_code,'0001410');
   assert.equal(server.rows[0].values.code,'TP-0001410');
-  assert(!('code' in calls.filter(call=>call.method==='PUT').at(-1).body.rows[0].values),'The server derives SKU; the browser cannot rename freely');
+  assert(!('code' in calls.filter(call=>call.method==='PUT').at(-1).body.rows[0].values),'SKU uniqueness and prefix generation belong to the server');
   assert.equal(server.rows[0].values.supplier_code,'SUP-900');
   assert.equal(server.rows[0].values.sale_gross,null);
   assert(!calls.slice(beforeIdentity).some(call=>/publish|finalize|stock/.test(call.path)),'Identity preparation and Hub save never publish or receive stock');

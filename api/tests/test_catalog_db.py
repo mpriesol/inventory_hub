@@ -1,4 +1,5 @@
 """PostgreSQL integration tests. Dedicated, ephemeral localhost test DB only."""
+from current_schema_fixture import apply_current_core_schema
 import json
 import os
 import tempfile
@@ -9,7 +10,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import asyncpg
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -37,6 +38,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             root = Path(__file__).resolve().parents[2]
             for name in ("001_schema.sql", "004_shop_product_content.sql", "012_product_editor.sql", "014_supplier_availability.sql", "021_product_feed_mapping.sql", "029_sku_policy.sql"):
                 await connection.execute((root / "infra" / "db-init" / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         # Each test gets a fresh namespace. The CI service is discarded after the job.
@@ -119,6 +121,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             bound = Product(sku='OLD-42', name='Bound card', brand='TEST', source_supplier_product_id=source.id)
             barcode_owner = Product(sku='OTHER-43', name='Other card', brand='TEST')
             db.add_all([bound, barcode_owner]); await db.flush()
+            db.add(ProductSupplySource(product_id=bound.id, supplier_product_id=source.id))
             db.add(ProductIdentifier(product_id=barcode_owner.id, identifier_type=IdentifierType.ean, value='5901234123457'))
             await db.commit()
             item = (await catalog.catalog_detail(db, 'paul-lange', source.id))['product']
@@ -126,7 +129,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(item.hub_sku)
             self.assertIn('assigned_product_changed', item.hub_identity_reasons)
 
-    async def test_catalog_checks_bound_card_brand_axes_and_multiple_source_owners(self):
+    async def test_catalog_checks_current_binding_and_ignores_other_card_provenance(self):
         self.write_feed(xml_item())
         await self.refresh()
         async with self.sessions() as db:
@@ -147,7 +150,8 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             item = (await catalog.catalog_page(db, 'paul-lange')).items[0].product
             self.assertEqual(item.hub_identity_status, 'conflict')
             self.assertIsNone(item.hub_product_id)
-            self.assertIn('supplier_source_multiple_owners', item.hub_identity_reasons)
+            self.assertNotIn('supplier_source_multiple_owners', item.hub_identity_reasons)
+            self.assertCountEqual(item.hub_identity_reasons, ['sku_brand_conflict', 'variant_axes_conflict'])
 
     async def image_fallback_fixture(self, *, variant=False):
         self.write_feed(xml_item(ean='5901234123457'))
@@ -162,13 +166,20 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             product = Product(sku='OLD-123', name='Linked product', brand='TEST', source_supplier_product_id=source.id)
             shop = await db.scalar(select(Shop).where(Shop.code == 'biketrek'))
             db.add(product); await db.flush()
+            db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id))
             parent = 'PARENT' if variant else product.sku
             leaf = {'code': product.sku, 'product_id': 11, 'ean': '5901234123457',
                     'images': [{'url': 'https://images.example.test/exact.jpg'}]}
             if variant: leaf['variant_id'] = 22
-            mapping = ShopProduct(shop_id=shop.id, product_id=product.id, external_code=parent,
-                parent_code=parent if variant else None, variant_code=product.sku if variant else None,
-                external_id='22' if variant else '11', is_variant=variant, is_listed=True)
+            mapping = ShopProduct(
+                shop_id=shop.id,
+                product_id=product.id,
+                external_code=product.sku if variant else parent,
+                parent_code=parent if variant else None,
+                is_variant=variant,
+                is_listed=True,
+                external_product_id=None if variant else '11',
+                external_variant_id='22' if variant else None)
             cache = ShopProductContent(shop_id=shop.id, external_code=parent,
                 data={'code': parent, 'product_id': 11, 'images': [{'url': 'https://images.example.test/parent.jpg'}],
                       'variants': [leaf]} if variant else leaf)
@@ -199,9 +210,9 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images,
                              ['https://images.example.test/exact.jpg'])
-            mapping = await db.get(ShopProduct, mapping_id); mapping.external_id = '99'; await db.commit()
+            mapping = await db.get(ShopProduct, mapping_id); mapping.external_variant_id = '99'; await db.commit()
             self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
-            mapping.external_id = '22'
+            mapping.external_variant_id = '22'
             cache = await db.get(ShopProductContent, cache_id)
             value = dict(cache.data); value['variants'] = [{**value['variants'][0], 'images': []}]
             cache.data = value; await db.commit()
@@ -213,19 +224,24 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_image_fallback_requires_enabled_exact_binding_brand_and_unique_native_target(self):
         source_id, product_id, _, _ = await self.image_fallback_fixture()
         async with self.sessions() as db:
-            product = await db.get(Product, product_id); product.source_supplier_product_id = None; await db.commit()
+            product = await db.get(Product, product_id)
+            await db.execute(delete(ProductSupplySource).where(ProductSupplySource.product_id == product_id))
+            await db.commit()
             self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
-            product.source_supplier_product_id = source_id; product.brand = 'OTHER'; await db.commit()
+            db.add(ProductSupplySource(product_id=product_id, supplier_product_id=source_id))
+            product.brand = 'OTHER'; await db.commit()
             self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
             product.brand = 'TEST'
             second = Product(sku='OTHER-456', name='Ambiguous second listing', brand='TEST', source_supplier_product_id=source_id)
             db.add(second); await db.flush()
             shop = await db.scalar(select(Shop).where(Shop.code == 'biketrek'))
-            db.add(ShopProduct(shop_id=shop.id, product_id=second.id, external_id='33', external_code=second.sku))
+            db.add(ShopProduct(shop_id=shop.id, product_id=second.id, external_code=second.sku, external_product_id='33'))
             db.add(ShopProductContent(shop_id=shop.id, external_code=second.sku, data={'code': second.sku, 'product_id': 33,
                 'images': [{'url': 'https://images.example.test/other.jpg'}]}))
             await db.commit()
-            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images, [])
+            # Mere creation provenance on another card cannot steal ownership.
+            self.assertEqual((await catalog.catalog_detail(db, 'paul-lange', source_id))['product'].images,
+                             ['https://images.example.test/exact.jpg'])
 
     async def test_refresh_is_atomic_keeps_ids_and_rejects_stale_selection(self):
         first = await self.refresh()
@@ -475,8 +491,7 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([product, *shops])
             await db.flush()
             for shop in shops:
-                db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code=item.shop_code,
-                                   variant_code=item.shop_code, parent_code="PARENT", is_listed=True))
+                db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code=item.shop_code, parent_code='PARENT', is_variant=True, is_listed=True))
                 db.add(ShopProductContent(shop_id=shop.id, external_code="PARENT", data={
                     "descriptions": [{"language": "sk", "url": f"https://{shop.code}.example.test/p/parent"}],
                     "admin_url": f"https://{shop.code}.example.test/admin/parent", "active_yn": True}))

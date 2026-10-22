@@ -20,9 +20,10 @@ class ImportValues(StrictModel):
     group_name: str = Field(default="", max_length=500)
     brand: str = Field(default="", max_length=100)
     manufacturer_code: str = Field(default="", max_length=100)
-    # Feed fields are claims. Only an explicitly reviewed leaf identity can
-    # allocate a new shared SKU; the source snapshot remains unchanged.
+    # Optional source proof; ordinary explicit SKU creation does not require it.
     sku_identity: SkuIdentityInput | None = None
+    item_type: Literal["stock", "service"] = "stock"
+    stock_unit: Literal["pcs", "pair", "pack", "m"] = "pcs"
     eans: list[str] = Field(default_factory=list, max_length=20)
     images: list[str] = Field(default_factory=list, max_length=100)
     description_html: str = Field(default="", max_length=100000)

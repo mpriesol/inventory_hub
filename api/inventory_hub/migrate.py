@@ -35,6 +35,9 @@ MIGRATIONS = (
     "product_links_migrate",          # 027
     "supplier_card_links_migrate",    # 028
     "sku_policy_migrate",             # 029
+    "shop_identity_migrate",          # 030
+    "item_units_migrate",             # 031
+    "supplier_authority_migrate",     # 032
 )
 
 

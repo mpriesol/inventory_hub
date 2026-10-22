@@ -292,7 +292,7 @@ async def _sample_targets(db, shop_code):
         rows = (await db.execute(select(Product.id, Product.sku, Product.is_active, ShopProduct)
             .join(ShopProduct, ShopProduct.product_id == Product.id).join(Shop, Shop.id == ShopProduct.shop_id)
             .where(Shop.code == shop_code).order_by(Product.id, ShopProduct.id))).all()
-    codes = [row.ShopProduct.variant_code if row.ShopProduct.is_variant else row.ShopProduct.external_code for row in rows]
+    codes = [row.ShopProduct.external_code for row in rows]
     owners = Counter(code.casefold() for code in codes if isinstance(code, str))
     mappings = Counter(row.id for row in rows)
     counts = Counter()

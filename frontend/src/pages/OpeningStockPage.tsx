@@ -92,7 +92,7 @@ export function OpeningStockPage() {
     // new input and must not reuse the original raw-input idempotency key.
     previewId.current = null;
     setForm({ warehouse: value.warehouse.code, source: value.source_reference, operator: value.operator_name,
-      countedAt: localDate(value.counted_at), csv: csvHeader + value.lines.map(line => `"${line.sku.replace(/"/g, '""')}";${line.quantity};${line.unit_cost};ks`).join('\n') });
+      countedAt: localDate(value.counted_at), csv: csvHeader + value.lines.map(line => `"${line.sku.replace(/"/g, '""')}";${line.quantity};${line.unit_cost};${line.unit}`).join('\n') });
   }
   function acceptOptions(value: OpeningOptions) {
     setOptions(value);
@@ -216,7 +216,7 @@ export function OpeningStockPage() {
       {batch && <section className="opening-stock-panel" aria-live="polite">
         <div className="opening-stock-actions"><h2>{t(batch.status === 'completed' ? 'openingStock.completed' : 'openingStock.previewTitle')}</h2><span className="opening-stock-badge">{t(`openingStock.status.${batch.status}`)}</span></div>
         <dl className="opening-stock-summary">
-          <div><dt>{t('openingStock.lines')}</dt><dd>{batch.summary.lines}</dd></div><div><dt>{t('openingStock.quantity')}</dt><dd>{batch.summary.quantity} ks</dd></div>
+          <div><dt>{t('openingStock.lines')}</dt><dd>{batch.summary.lines}</dd></div><div><dt>{t('openingStock.quantity')}</dt><dd>{batch.summary.quantity_by_unit ? Object.entries(batch.summary.quantity_by_unit).map(([unit, quantity]) => `${quantity} ${t(`productEditor.units.${unit === 'ks' ? 'pcs' : unit}`)}`).join(' · ') : `${batch.summary.quantity} ${batch.unit === 'mixed' ? '' : t(`productEditor.units.${batch.unit === 'ks' ? 'pcs' : batch.unit}`)}`}</dd></div>
           <div><dt>{t('openingStock.total')}</dt><dd>{batch.summary.total_value} EUR</dd></div>
         </dl>
         <p>{batch.warehouse.name} · {batch.source_reference} · {batch.operator_name}</p>
@@ -226,7 +226,7 @@ export function OpeningStockPage() {
           {['row', 'sku', 'name', 'quantity', 'unitCost', 'value'].map(key => <th scope="col" key={key}>{t(`openingStock.${key}`)}</th>)}
         </tr></thead><tbody>{batch.lines.slice(tablePage * 100, (tablePage + 1) * 100).map(line => <tr key={line.line_number}>
           <td>{line.line_number}</td><td><code>{line.sku}</code></td><td>{line.name}{line.warnings.map((code, index) => <small className="opening-stock-line-warning" key={index}>{message(code)}</small>)}</td>
-          <td>{line.quantity} ks</td><td>{line.unit_cost} EUR</td><td>{line.value} EUR</td>
+          <td>{line.quantity} {t(`productEditor.units.${line.unit === 'ks' ? 'pcs' : line.unit}`)}</td><td>{line.unit_cost} EUR</td><td>{line.value} EUR</td>
         </tr>)}</tbody></table></div>
         {batch.lines.length > 100 && <div className="opening-stock-pagination"><Button size="sm" variant="secondary" disabled={tablePage === 0} onClick={() => setTablePage(value => value - 1)}>{t('openingStock.previous')}</Button>
           <span>{t('openingStock.page', { page: tablePage + 1, pages: Math.ceil(batch.lines.length / 100) })}</span><Button size="sm" variant="secondary" disabled={(tablePage + 1) * 100 >= batch.lines.length} onClick={() => setTablePage(value => value + 1)}>{t('openingStock.next')}</Button></div>}

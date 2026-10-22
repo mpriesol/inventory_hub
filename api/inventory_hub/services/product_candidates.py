@@ -225,12 +225,10 @@ async def _find_candidates(db, queries, limit):
     if supplier_queries:
         scoped_sources = tuple_(SupplierProduct.supplier_id, SupplierProduct.supplier_sku).in_(supplier_queries)
         source_columns = (Product.id.label('product_id'), SupplierProduct.supplier_id, SupplierProduct.supplier_sku)
-        legacy = select(*source_columns).select_from(SupplierProduct).join(Product,
-            Product.source_supplier_product_id == SupplierProduct.id).where(scoped_sources)
         linked = select(*source_columns).select_from(SupplierProduct).join(ProductSupplySource,
             ProductSupplySource.supplier_product_id == SupplierProduct.id).join(Product,
             Product.id == ProductSupplySource.product_id).where(scoped_sources)
-        source_rows = (await db.execute(legacy.union(linked)
+        source_rows = (await db.execute(linked
             .order_by('product_id', 'supplier_id', 'supplier_sku').limit(EXACT_POOL_LIMIT + 1))).all()
         exact_truncated |= len(source_rows) > EXACT_POOL_LIMIT
         for pid, supplier, code in source_rows[:EXACT_POOL_LIMIT]:

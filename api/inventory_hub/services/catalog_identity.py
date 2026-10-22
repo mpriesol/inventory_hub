@@ -49,7 +49,9 @@ class ShopIdentityIndex:
             parent_code = entries[0].get("display_code", entries[0]["code"]) if entries else ""
             for entry in entries:
                 target = {"code": entry.get("display_code", entry["code"]), "parent_code": parent_code,
-                          "remote_product_id": None if parent_id.startswith("code:") else parent_id}
+                          "remote_product_id": None if parent_id.startswith("code:") else parent_id,
+                          "remote_variant_id": entry.get("variant_id"), "kind": entry.get("kind"),
+                          "eans": entry.get("eans", [])}
                 if entry["code"]:
                     self.codes.setdefault(entry["code"].casefold(), []).append(target)
                 for ean in entry["eans"]:

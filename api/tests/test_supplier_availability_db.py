@@ -1,4 +1,5 @@
 """Atomic supplier observations in a disposable PostgreSQL namespace only."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from decimal import Decimal
@@ -45,6 +46,7 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             root = Path(__file__).resolve().parents[2] / "infra" / "db-init"
             for name in ("001_schema.sql", "014_supplier_availability.sql", "014_supplier_availability.sql"):
                 await connection.execute((root / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -279,6 +281,7 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(product)
             await db.flush()
             product_id = product.id
+            db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id))
         with patch.object(database, "_engine", self.engine), patch.object(worker, "get_session_context", self.transaction), \
              patch.object(catalog, "_download", return_value=feed) as download:
             self.assertTrue(await worker.cycle())
@@ -355,11 +358,20 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(projected[self.products[0]]["label"], "overíme")
             self.assertIsNone(projected[self.products[0]]["source"])
 
+    async def test_creation_provenance_does_not_enable_availability_without_current_link(self):
+        await self.accept()
+        async with self.transaction() as db:
+            value = (await service.project(db, [self.products[1]]))[self.products[1]]
+            self.assertEqual(value["status"], "missing_link")
+            self.assertIsNone(value["available"])
+            self.assertIsNone(value["quantity"])
+            self.assertIsNotNone((await db.get(Product, self.products[1])).source_supplier_product_id)
+
     def set_prefix(self):
         self.config["adapter_settings"]["mapping"] = {"postprocess": {"product_code_prefix": "PL-"}}
         config_io.supplier_path("paul-lange").write_text(json.dumps(self.config))
 
-    async def test_downloaded_observation_repairs_exact_sku_without_new_download_or_stock(self):
+    async def test_downloaded_observation_repairs_scoped_alias_without_download_or_stock(self):
         self.set_prefix()
         plan = await self.accept([observation("001234", "6+"), observation("1234", "0")])
         async with self.transaction() as db:
@@ -367,6 +379,9 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(product)
             await db.flush()
             product_id = product.id
+            db.add(ProductIdentifier(product_id=product.id, supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value="001234"))
+            await db.flush()
             before = await service.project(db, [product_id])
             self.assertEqual(before[product_id]["status"], "missing_link")
             self.assertIsNone(await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku == "001234")))
@@ -384,18 +399,22 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_balances")), 0)
 
-    async def test_feed_acceptance_links_canonical_products_automatically(self):
+    async def test_feed_does_not_recreate_removed_link_from_provenance_or_alias(self):
         self.set_prefix()
         async with self.transaction() as db:
-            product = Product(sku="PL-001234", name="Existing product")
-            db.add(product)
-            await db.flush()
-            product_id = product.id
-        plan = await self.accept([observation("001234", "2")])
+            product = await db.get(Product, self.products[0])
+            source = await db.get(SupplierProduct, product.source_supplier_product_id)
+            db.add(ProductIdentifier(product_id=product.id, supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value=source.supplier_sku))
+            await db.delete(await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == product.id)))
+        await self.accept()
         async with self.transaction() as db:
-            self.assertIsNotNone(await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == product_id)))
-            run = await db.get(SupplierFeedRun, plan["run_id"])
-            self.assertEqual(run.error_details["supplier_links"]["linked"], 1)
+            self.assertIsNone(await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == self.products[0])))
+            value = (await service.project(db, [self.products[0]]))[self.products[0]]
+            self.assertEqual(value["status"], "missing_link")
+            self.assertIsNone(value["quantity"])
+            report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=[self.products[0]])
+            self.assertEqual(report["linked"], 1, 'Only an explicit operator repair restores the relationship')
 
     async def test_supplier_alias_keeps_existing_canonical_sku_for_another_supplier(self):
         self.set_prefix()
@@ -413,6 +432,8 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 identifier_type=IdentifierType.supplier_sku, value="001234"))
         await self.accept([observation("001234", "2")])
         async with self.transaction() as db:
+            report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=[product_id])
+            self.assertEqual(report["linked"], 1)
             self.assertEqual((await db.get(Product, product_id)).sku, "SL-OTHER")
             self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource).where(
                 ProductSupplySource.product_id == product_id)), 2)
@@ -448,7 +469,9 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([source, exact, barcode_only])
             await db.flush()
             ids = [exact.id, barcode_only.id]
-            db.add_all([ProductIdentifier(product_id=exact.id, identifier_type=IdentifierType.ean, value="5901234123457"),
+            db.add_all([ProductIdentifier(product_id=exact.id, supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value="001234"),
+                ProductIdentifier(product_id=exact.id, identifier_type=IdentifierType.ean, value="5901234123457"),
                 ProductIdentifier(product_id=barcode_only.id, identifier_type=IdentifierType.ean, value="4006381333931")])
         await self.accept([observation("001234", "2")])
         async with self.transaction() as db:
@@ -469,21 +492,35 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             owner = Product(sku="LEGACY", name="Legacy source owner", source_supplier_product_id=source.id)
             db.add_all([product, owner])
             await db.flush()
+            db.add(ProductSupplySource(product_id=owner.id, supplier_product_id=source.id))
+            db.add(ProductIdentifier(product_id=product.id, supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value="001234"))
+            await db.flush()
             report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=[product.id])
             self.assertEqual(report["conflicts"][0]["reason"], "supplier_source_multiple_products")
             self.assertEqual(report["linked"], 0)
 
-    async def test_exact_case_required_and_repair_does_not_fabricate_missing_supplier_item(self):
+    async def test_prefix_spelling_does_not_assign_identity_and_scoped_codes_are_exact(self):
         self.set_prefix()
         async with self.transaction() as db:
             db.add(SupplierProduct(supplier_id=self.supplier_id, supplier_sku="ABC", name="Case-sensitive item"))
-            exact, lower, missing = Product(sku="PL-ABC", name="Exact"), Product(sku="pl-abc", name="Collision"), Product(sku="PL-NONE", name="Unknown source")
+            exact, lower, missing = Product(sku="PL-ABC", name="Exact"), Product(sku="pl-abc", name="Case guess"), Product(sku="PL-NONE", name="Unknown source")
             db.add_all([exact, lower, missing])
             await db.flush()
-            report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=[exact.id, lower.id, missing.id])
-            self.assertEqual(report["linked"], 0)
-            self.assertEqual(len(report["conflicts"]), 1)
-            self.assertEqual(report["skipped_details"][0]["reason"], "supplier_item_missing")
+            ids = [exact.id, lower.id, missing.id]
+            self.assertEqual((await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=ids))["linked"], 0)
+            db.add_all([ProductIdentifier(product_id=exact.id, supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value="ABC"),
+                ProductIdentifier(product_id=lower.id, supplier_id=self.supplier_id,
+                    identifier_type=IdentifierType.supplier_sku, value="abc"),
+                ProductIdentifier(product_id=missing.id, supplier_id=self.supplier_id,
+                    identifier_type=IdentifierType.supplier_sku, value="NONE")])
+            await db.flush()
+            report = await supplier_links.reconcile_supplier_links(db, "paul-lange", product_ids=ids)
+            self.assertEqual(report["linked"], 1)
+            self.assertEqual(report["conflicts"], [])
+            self.assertEqual(report["skipped"], 2)
+            self.assertTrue(all(item["reason"] == "supplier_item_missing" for item in report["skipped_details"]))
             self.assertIsNone(await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku == "NONE")))
 
     async def test_invoice_alias_without_offer_preserves_existing_feed_link(self):
@@ -516,6 +553,10 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([source, first, second])
             await db.flush()
             ids, source_id = [first.id, second.id], source.id
+            db.add_all([ProductIdentifier(product_id=first.id, supplier_id=self.supplier_id,
+                identifier_type=IdentifierType.supplier_sku, value="001234"),
+                ProductIdentifier(product_id=second.id, supplier_id=self.supplier_id,
+                    identifier_type=IdentifierType.supplier_sku, value="OTHER")])
         plan = await self.accept([observation("001234", "2"), observation("OTHER", "0")])
         async with self.transaction() as db:
             first = await supplier_links.reconcile_supplier_links(db, "paul-lange", limit=1, product_ids=ids)

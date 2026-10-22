@@ -1,4 +1,5 @@
 """Capacity counts real local evidence without enabling or mutating anything."""
+from current_schema_fixture import apply_current_core_schema
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -40,6 +41,7 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for name in ('001_schema.sql', '007_order_stock.sql', '008_order_collection.sql',
                          '009_stock_automation.sql', '011_fifo.sql', '010_stock_publication.sql', '015_stock_sync.sql', '026_stock_delta.sql', '019_stock_tracking.sql'):
                 await connection.execute((root / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace('postgresql://', 'postgresql+asyncpg://', 1),
@@ -148,9 +150,13 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     product = Product(sku=code, name=code)
                     db.add(product)
                     await db.flush()
-                    db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code='PARENT' if variant else code,
-                        is_variant=variant, parent_code='PARENT' if variant else None,
-                        variant_code=code if variant else None, is_listed=True))
+                    db.add(ShopProduct(
+                        shop_id=self.shop_id,
+                        product_id=product.id,
+                        external_code=code,
+                        is_variant=variant,
+                        parent_code='PARENT' if variant else None,
+                        is_listed=True))
             await db.commit()
         before = await self.snapshot()
         expected = [

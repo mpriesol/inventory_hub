@@ -98,11 +98,12 @@ def _result(status, *, sku=None, product_id=None, reasons=(), candidates=(), bra
 
 
 async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplier_id=None,
-                      supplier_sku="", expected_product_id=None, sku=""):
+                      supplier_sku="", expected_product_id=None, sku="", item_type="stock"):
     """Resolve current identity first; allocate only a documented concrete leaf.
 
-    A missing policy input can find existing cards, but cannot authorize a new
-    supplier-prefix card. A provided proof is always checked, even on reuse.
+    A missing policy input can find existing cards but cannot allocate a new
+    code. Brand namespaces generate the prefix; source evidence remains scoped.
+    Optional verified proofs are checked, never inferred from a feed field name.
     """
     brand = None
     claims = []
@@ -114,23 +115,18 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
         if brand is None:
             return _result("blocked", reasons=["sku_brand_unregistered"])
         proposed = f"{brand.code}-{item.source_code}"
-        if not item.leaf_confirmed:
-            return _result("blocked", sku=proposed, brand_id=brand.id, reasons=["sku_leaf_not_confirmed"])
-        if (brand.kind == "brand" and item.code_kind not in ("manufacturer", "supplier", "gtin")
+        if (brand.kind == "brand" and item.code_kind not in ("manufacturer", "supplier", "gtin", "service")
                 or brand.kind != "brand" and item.code_kind != brand.kind):
             return _result("blocked", sku=proposed, brand_id=brand.id, reasons=["sku_namespace_kind_mismatch"])
-        if brand.kind == "service":
-            # A namespace does not make the current physical Product model
-            # non-stock. Keep service proposals visible until that distinction
-            # is implemented; existing cards remain searchable without a claim.
-            return _result("blocked", sku=proposed, brand_id=brand.id,
-                           reasons=["sku_service_card_requires_nonstock_model"])
+        if item_type != "service" and (brand.kind == "service" or item.code_kind == "service"):
+            return _result("blocked", sku=proposed, brand_id=brand.id, reasons=["sku_item_type_conflict"])
         if item.code_kind == "supplier":
             if not item.supplier_id or supplier_id and item.supplier_id != supplier_id:
                 return _result("blocked", sku=proposed, brand_id=brand.id, reasons=["sku_supplier_scope_required"])
             if await db.get(Supplier, item.supplier_id) is None:
                 return _result("blocked", sku=proposed, brand_id=brand.id, reasons=["sku_supplier_not_found"])
             supplier_id = item.supplier_id
+            supplier_sku = supplier_sku or item.source_code
         if item.code_kind == "gtin" and item.source_code not in verified_barcodes((item.source_code,)):
             return _result("blocked", sku=proposed, brand_id=brand.id, reasons=["sku_gtin_invalid"])
         if item.code_kind == "gtin":
@@ -164,7 +160,7 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
             if stored_brands - {brand.id}:
                 return _result("conflict", sku=proposed, brand_id=brand.id,
                                reasons=["sku_brand_conflict"], candidates=[product.id])
-        if brand and product.brand:
+        if brand and product.brand and brand_key(item.brand) != brand_key(product.brand):
             stored_brand = await _brand(db, product.brand)
             if stored_brand is None or stored_brand.id != brand.id:
                 return _result("conflict", sku=proposed, brand_id=brand.id,
@@ -198,10 +194,15 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
 async def record_sku_identity(db, product: Product, item: SkuIdentityInput, *, actor="operator-token"):
     """Append proof for this card under the shared lock, keeping its current SKU."""
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
-    result = await preview_sku(db, item, expected_product_id=product.id)
+    result = await preview_sku(db, item, expected_product_id=product.id,
+                               item_type=getattr(product, "item_type", "stock"))
     if result["status"] != "existing" or result["product_id"] != product.id:
         raise SkuPolicyError("sku_identity_conflict", reasons=result["reasons"],
                              candidate_product_ids=result["candidate_product_ids"])
+    # Choosing an operational code is not verification of a manufacturer code.
+    # Preserve explicit historical proofs; ordinary allocation uses aliases/FKs.
+    if not item.leaf_confirmed:
+        return None
     key = identity_key(result["brand_id"], item)
     existing = await db.scalar(select(ProductSkuIdentity).where(ProductSkuIdentity.identity_key == key))
     if existing is not None:

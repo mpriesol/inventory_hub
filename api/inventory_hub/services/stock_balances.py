@@ -4,7 +4,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.db_models_ext import StockBalance
-from inventory_hub.services.stock_publication_gate import require_stock_write_allowed
+from inventory_hub.db_models import Product
+from inventory_hub.services.stock_publication_gate import require_stock_write_allowed, StockPublicationHoldError
+
+
+class StockItemRequiredError(StockPublicationHoldError):
+    code = "stock_item_required"
 
 
 async def lock_stock_balances(
@@ -19,6 +24,10 @@ async def lock_stock_balances(
     rows: reservation-only backorders must not claim a physical balance.
     """
     await require_stock_write_allowed(db, warehouse_id)
+    products = (await db.scalars(select(Product).where(Product.id.in_(sorted(product_ids)))
+        .order_by(Product.id).with_for_update(read=True).execution_options(populate_existing=True))).all()
+    if any(product.item_type != "stock" for product in products):
+        raise StockItemRequiredError()
     balances = {}
     created_product_ids = set()
     for product_id in sorted(product_ids):

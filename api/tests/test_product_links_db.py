@@ -1,4 +1,5 @@
 """Link-only writes, frozen selection and retries in an isolated PostgreSQL schema."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 from copy import deepcopy
 import asyncio
@@ -49,8 +50,15 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
-            for name in ("001_schema.sql", "004_shop_product_content.sql", "012_product_editor.sql", "027_product_links.sql"):
-                await connection.execute((root / name).read_text())
+            await connection.execute((root / "001_schema.sql").read_text())
+            await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
+            await connection.execute((root / "002_invoice_management.sql").read_text())
+            # Replacing a removed POS variant checks every persisted stock and
+            # publication workflow; exercise those guards against real tables.
+            for path in sorted(root.glob("*.sql")):
+                if 4 <= int(path.name[:3]) <= 27:
+                    await connection.execute(path.read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1), poolclass=NullPool,
@@ -128,6 +136,63 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "product_ids": ids, "confirmed": True, **changes})
         async with self.transaction() as db:
             return await service.apply(db, str(preview["id"]), request)
+
+    async def replacement_fixture(self):
+        async with self.transaction() as db:
+            mapping = ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='OLD-POS',
+                parent_code='POS-PARENT', external_product_id='800', external_variant_id='901',
+                is_variant=True, is_listed=True)
+            db.add(mapping)
+            await db.flush()
+            mapping_id = mapping.id
+        request = self.request(product_ids=[self.ids[0]], manual_matches=[{'product_id': self.ids[0],
+            'code': 'SHARED-A', 'parent_code': 'SHARED-A', 'is_variant': False, 'replace_deleted_variant': True}])
+        return mapping_id, request
+
+    async def test_deleted_pos_variant_relinks_same_card_and_preserves_ledger_with_replay(self):
+        mapping_id, request = await self.replacement_fixture()
+        before = await self.snapshot()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(
+                return_value={'fingerprint': self.fingerprint, 'requests': 1})) as deletion:
+            preview = await self.preview(request)
+            self.assertEqual(preview['rows'][0]['status'], 'ready')
+            self.assertEqual(preview['rows'][0]['previous_mapping']['external_variant_id'], '901')
+            result = await self.apply(preview, [self.ids[0]])
+            self.assertEqual(await self.apply(preview, [self.ids[0]]), result)
+            self.assertEqual(deletion.await_count, 2)
+        mapping = (await self.mappings())[0]
+        self.assertEqual((mapping.id, mapping.product_id, mapping.external_product_id, mapping.external_variant_id,
+            mapping.external_code, mapping.parent_code, mapping.is_variant),
+            (mapping_id, self.ids[0], '101', None, 'SHARED-A', None, False))
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_live_or_reappearing_pos_variant_cannot_be_replaced(self):
+        mapping_id, request = await self.replacement_fixture()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(
+                side_effect=service.source.SourceError('product_links_variant_still_exists', 409))):
+            with self.assertRaisesRegex(service.LinkError, 'product_links_variant_still_exists'):
+                await self.preview(request)
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(side_effect=[
+                {'fingerprint': self.fingerprint, 'requests': 1},
+                service.source.SourceError('product_links_variant_still_exists', 409)])):
+            preview = await self.preview(request)
+            with self.assertRaisesRegex(service.LinkError, 'product_links_variant_still_exists'):
+                await self.apply(preview, [self.ids[0]])
+        mapping = (await self.mappings())[0]
+        self.assertEqual((mapping.id, mapping.external_variant_id, mapping.is_variant), (mapping_id, '901', True))
+
+    async def test_uncertain_publication_blocks_replacement_before_network(self):
+        from inventory_hub.product_editor_models import ProductEditorPublication
+        mapping_id, request = await self.replacement_fixture()
+        async with self.transaction() as db:
+            db.add(ProductEditorPublication(id=str(uuid4()), product_id=self.ids[0], shop_id=self.shop_id,
+                state='uncertain',
+                document={'identity': {'parent_code': 'POS-PARENT'}}))
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock()) as deletion:
+            with self.assertRaisesRegex(service.LinkError, 'product_links_replacement_in_use'):
+                await self.preview(request)
+            deletion.assert_not_awaited()
+        self.discover.assert_not_awaited()
 
     async def snapshot(self):
         async with self.sessions() as db:
@@ -208,7 +273,7 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["result"]["linked_product_ids"], [self.ids[0]])
         mappings = await self.mappings()
-        self.assertEqual([(row.product_id, row.external_code, row.external_id) for row in mappings],
+        self.assertEqual([(row.product_id, row.external_code, row.native_id) for row in mappings],
                          [(self.ids[0], "SHARED-A", "101")])
         self.assertFalse(mappings[0].push_pending)
         self.assertEqual(await self.snapshot(), before)
@@ -243,12 +308,11 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_mapping_added_after_preview_cannot_be_overwritten(self):
         preview = await self.preview(self.request(product_ids=[self.ids[0]]))
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="EXISTING-ALIAS",
-                               external_id="777", is_listed=True))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='EXISTING-ALIAS', is_listed=True, external_product_id='777'))
         with self.assertRaises(service.LinkError):
             await self.apply(preview, [self.ids[0]])
         mappings = await self.mappings()
-        self.assertEqual([(row.external_code, row.external_id) for row in mappings], [("EXISTING-ALIAS", "777")])
+        self.assertEqual([(row.external_code, row.native_id) for row in mappings], [("EXISTING-ALIAS", "777")])
 
     async def test_local_identity_edit_after_preview_rejects_whole_batch(self):
         preview = await self.preview(self.request(product_ids=self.ids[:2]))
@@ -280,14 +344,20 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview["rows"][0]["status"], "ready")
         await self.apply(preview, [self.ids[0]])
         mapping = (await self.mappings())[0]
-        self.assertEqual((mapping.product_id, mapping.variant_code, mapping.parent_code, mapping.is_variant),
+        self.assertEqual((mapping.product_id, mapping.external_code, mapping.parent_code, mapping.is_variant),
                          (self.ids[0], "SHOP-ALIAS", "REMOTE-PARENT", True))
         self.assertEqual(await self.snapshot(), before)
 
     async def test_existing_exact_mapping_is_preserved_and_reported_as_already_linked(self):
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="SHARED-A",
-                               external_id="101", shop_stock="123", shop_price="49.99", is_listed=True))
+            db.add(ShopProduct(
+                shop_id=self.shop_id,
+                product_id=self.ids[0],
+                external_code='SHARED-A',
+                shop_stock='123',
+                shop_price='49.99',
+                is_listed=True,
+                external_product_id='101'))
         preview = await self.preview(self.request(product_ids=[self.ids[0]]))
         self.assertEqual(preview["rows"][0]["status"], "already_linked")
         await self.apply(preview, [self.ids[0]])
@@ -329,8 +399,14 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "stock": 12, "images": [{"url": "https://fixture.invalid/image.jpg"}],
             "custom_field": {"retain": True}}
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="SHARED-A",
-                               external_id="101", shop_stock="123", shop_price="49.99", is_listed=True))
+            db.add(ShopProduct(
+                shop_id=self.shop_id,
+                product_id=self.ids[0],
+                external_code='SHARED-A',
+                shop_stock='123',
+                shop_price='49.99',
+                is_listed=True,
+                external_product_id='101'))
             db.add(ShopProductContent(shop_id=self.shop_id, external_code="SHARED-A", data=vault, pulled_at=pulled_at))
         self.remote[0].update(name="Fresh shop title", shop_url=SHOP_URL, shop_admin_url=ADMIN_URL)
         before = await self.snapshot()
@@ -350,8 +426,7 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_missing_urls_reports_incomplete_and_does_not_reuse_stale_urls(self):
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="SHARED-A",
-                               external_id="101", is_listed=True))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='SHARED-A', is_listed=True, external_product_id='101'))
             db.add(ShopProductContent(shop_id=self.shop_id, external_code="SHARED-A", data={
                 "product_id": 101, "code": "SHARED-A", "url": "https://fixture.invalid/stale",
                 "admin_url": "https://fixture.invalid/admin/stale"}))
@@ -364,8 +439,7 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_rejects_changed_native_target_and_mapping_race_without_metadata_writes(self):
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="SHARED-A",
-                               external_id="101", is_listed=True))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='SHARED-A', is_listed=True, external_product_id='101'))
         self.remote[0]["external_id"] = "999"
         with self.assertRaises(service.LinkError) as changed:
             await self.refresh([self.ids[0]])
@@ -376,7 +450,7 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async def change_mapping_during_read(*args, **kwargs):
             async with self.transaction() as db:
                 mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.ids[0]))
-                mapping.external_id = "999"
+                mapping.external_product_id = "999"
             return await self.discover_remote(*args, **kwargs)
 
         self.discover.side_effect = change_mapping_during_read
@@ -384,13 +458,12 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh([self.ids[0]])
         self.assertEqual(raced.exception.code, "product_links_identity_changed")
         self.assertIsNone(await self.content("SHARED-A"))
-        self.assertEqual((await self.mappings())[0].external_id, "999")
+        self.assertEqual((await self.mappings())[0].native_id, "999")
 
     async def test_refresh_parent_native_conflict_rolls_back_metadata_for_entire_batch(self):
         async with self.transaction() as db:
             for pid, remote in zip(self.ids, self.remote):
-                db.add(ShopProduct(shop_id=self.shop_id, product_id=pid, external_code=remote["code"],
-                                   external_id=remote["external_id"], is_listed=True))
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=pid, external_code=remote['code'], is_listed=True, external_product_id=remote['external_id']))
             db.add(ShopProductContent(shop_id=self.shop_id, external_code="SHARED-B",
                                      data={"code": "SHARED-B", "product_id": 999}))
         before = await self.snapshot()
@@ -415,8 +488,14 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
                  "admin_url": sibling_admin}]}
         async with self.transaction() as db:
             for pid, remote in zip(self.ids, self.remote):
-                db.add(ShopProduct(shop_id=self.shop_id, product_id=pid, external_code="FAMILY", parent_code="FAMILY",
-                    variant_code=remote["code"], external_id=remote["external_id"], is_variant=True, is_listed=True))
+                db.add(ShopProduct(
+                    shop_id=self.shop_id,
+                    product_id=pid,
+                    external_code=remote['code'],
+                    parent_code='FAMILY',
+                    is_variant=True,
+                    is_listed=True,
+                    external_variant_id=remote['external_id']))
             db.add(ShopProductContent(shop_id=self.shop_id, external_code="FAMILY", data=vault))
         await self.refresh([self.ids[0]])
         refreshed = await self.observed(self.ids[0])
@@ -433,8 +512,14 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.remote = [leaf("SHARED-A", 101, eans=[EAN_A], parent_code="FAMILY", shop_url=SHOP_URL,
                             shop_admin_url=ADMIN_URL)]
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="FAMILY", parent_code="FAMILY",
-                               variant_code="SHARED-A", external_id="101", is_variant=True, is_listed=True))
+            db.add(ShopProduct(
+                shop_id=self.shop_id,
+                product_id=self.ids[0],
+                external_code='SHARED-A',
+                parent_code='FAMILY',
+                is_variant=True,
+                is_listed=True,
+                external_variant_id='101'))
         await self.refresh([self.ids[0]])
         before = deepcopy((await self.content("FAMILY")).data)
         self.remote[0]["parent_id"] = "999"
@@ -445,8 +530,7 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_connection_change_during_read_cannot_write_metadata(self):
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code="SHARED-A",
-                               external_id="101", is_listed=True))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='SHARED-A', is_listed=True, external_product_id='101'))
         before = await self.snapshot()
         self.current_fingerprint.side_effect = [self.fingerprint, "b" * 64]
         with self.assertRaises(service.LinkError) as changed:

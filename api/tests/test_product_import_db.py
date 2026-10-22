@@ -127,15 +127,27 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(code, result['items'][0]['codes'])
             self.assertEqual((await service.history(db, '%_unlikely_literal'))['items'], [])
 
-    async def test_feed_manufacturer_field_alone_cannot_allocate_a_new_card(self):
-        draft = await self.create(approve_identity=False)
-        self.assertTrue(draft['rows'][0]['values']['manufacturer_code'])
-        self.assertIn('sku_identity_required', draft['rows'][0]['hub_errors'])
-        with self.assertRaises(catalog.CatalogError) as blocked:
-            await self.mutate(draft, service.save)
-        self.assertEqual(blocked.exception.code, 'import_invalid_rows')
+    async def test_new_card_automatically_prefixes_supplier_leaf_without_mpn_proof(self):
+        from inventory_hub.services.sku_policy import create_brand
+        from inventory_hub.sku_policy_types import BrandCreate
         async with self.sessions() as db:
-            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            await create_brand(db, BrandCreate(name='TEST', code='TT', source_ref='Synthetic brand registration'))
+            await db.commit()
+        draft = await self.create(approve_identity=False)
+        row = draft['rows'][0]
+        self.assertEqual(row['values']['code'], 'TT-' + row['values']['supplier_code'])
+        self.assertIsNone(row['values']['sku_identity'])
+        draft = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{
+            'id': row['id'], 'values': {'manufacturer_code': '', 'target_shops': []}}])
+        self.assertEqual(draft['rows'][0]['hub_errors'], [])
+        saved = await self.mutate(draft, service.save)
+        replay = await self.mutate(saved, service.save)
+        self.assertEqual(saved['rows'][0]['hub_product_id'], replay['rows'][0]['hub_product_id'])
+        async with self.sessions() as db:
+            card = await db.get(Product, saved['rows'][0]['hub_product_id'])
+            self.assertEqual(card.sku, 'TT-' + row['values']['supplier_code'])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)), 1)
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
         self.assertEqual(self.client.sent, [])
 

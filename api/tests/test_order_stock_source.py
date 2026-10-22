@@ -35,7 +35,7 @@ def envelope(raw):
 
 def identity_index(mapped=False):
     products = [Product(id=1, sku="SHARED", name="Canonical"), Product(id=2, sku="OTHER", name="Other")]
-    mappings = [ShopProduct(id=1, shop_id=1, product_id=1, external_code="ALIAS", is_variant=False)] if mapped else []
+    mappings = [ShopProduct(id=1, shop_id=1, product_id=1, external_code='ALIAS', is_variant=False)] if mapped else []
     identifiers = [ProductIdentifier(id=1, product_id=1, value="4006381333931", identifier_type=IdentifierType.ean),
                    ProductIdentifier(id=2, product_id=2, value="5901234123457", identifier_type=IdentifierType.ean)]
     return IdentityIndex(1, products, mappings, identifiers)
@@ -60,8 +60,7 @@ class SourceNormalizationTests(IsolatedAsyncioTestCase):
 
     async def test_mapped_variant_leaf_and_shared_sku_ean_conflicts_keep_original_resolver_rules(self):
         index = identity_index()
-        index.add_mapping(ShopProduct(id=2, shop_id=1, product_id=1, is_variant=True,
-                                     external_code="POS-UMBRELLA", variant_code="SHARED", parent_code="POS-UMBRELLA"))
+        index.add_mapping(ShopProduct(id=2, shop_id=1, product_id=1, is_variant=True, external_code='SHARED', parent_code='POS-UMBRELLA'))
         result = await self.load(order(line(option_set_id=901, product_id=999),
                                        line(ean="5901234123457"), line(code="shared")), index=index)
         rows = result["order"]["lines"]

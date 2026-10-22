@@ -493,6 +493,8 @@ class Product(TimestampMixin, Base):
     
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     sku: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    item_type: Mapped[str] = mapped_column(String(20), default="stock", server_default="stock", nullable=False)
+    stock_unit: Mapped[str] = mapped_column(String(20), default="pcs", server_default="pcs", nullable=False)
     supplier_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("suppliers.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     brand: Mapped[Optional[str]] = mapped_column(String(100))

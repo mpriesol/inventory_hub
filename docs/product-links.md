@@ -31,7 +31,7 @@ Všetky cesty vyžadujú operátorské prihlásenie, bežnú CSRF ochranu pre co
 | `POST /api/product-links/preview` | Uloží náhľad vybraných kariet pre jeden e-shop pod klientskym `request_id`. Kontroluje živú vzdialenú identitu cez existujúci limitovaný Upgates klient. |
 | `GET /api/product-links/{id}` | Vráti uložený náhľad alebo dokončený výsledok na obnovu po výpadku. |
 | `POST /api/product-links/{id}/apply` | Potvrdí presný náhľad a vybranú podmnožinu pripravených riadkov. Väzby zapisuje v jednej transakcii. |
-| `POST /api/product-links/refresh` | Pre 1–100 už prepojených kariet jedného e-shopu overí presnú existujúcu väzbu a obnoví iba lokálne názvy a odkazy. |
+| `POST /api/product-links/refresh` | Pre 1–100 už prepojených kariet jedného e-shopu overí presnú existujúcu väzbu, obnoví lokálne názvy a odkazy a môže doplniť chýbajúce natívne ID rodiča. |
 
 Náhľad uchováva konkrétne SKU, typ produktu/variantu, rodiča, natívne vzdialené ID a identifikačné dôkazy. Pred zápisom sa kontroluje aktuálne spojenie s e-shopom, vzdialená identita aj lokálne vlastníctvo cez spoločný `product_identity` resolver. Zápis používa `IDENTITY_WRITE_LOCK`; existujúca väzba sa potichu nepresmeruje na iný produkt. Konflikt SKU, overených čiarových kódov alebo vlastníkov zastaví zápis.
 
@@ -41,8 +41,73 @@ Pre varianty sa navyše načítajú presní rodičia cez `codes` s `variants_yn=
 
 Obnova prijíma `{shop_code, product_ids}` a vracia `{shop_code, remote_requests, rows}`. Každý riadok obsahuje `product_id`, `status` (`refreshed`, ak sú dostupné oba odkazy, inak `incomplete`), `shop_url` a `shop_admin_url`; chýbajúce adresy majú hodnotu `null`. Pred lokálnym zápisom sa pod spoločným zámkom znovu porovnajú všetky vybrané väzby aj aktuálny odtlačok spojenia s e-shopom. Zmena natívneho ID, rodiča, kódu, typu, spojenia alebo lokálnej väzby zápis odmietne. Stratenú odpoveď možno vyriešiť opakovaním obnovy: akcia nevytvára ďalšiu väzbu ani vzdialený zápis.
 
-Potvrdenie prepojenia aj samostatná obnova ukladajú iba pozorovaný názov a odkazy do `_hub_link_metadata` v existujúcej tabuľke `shop_product_content`. Údaje sú viazané na presný natívny cieľ; editor ich použije iba pre zodpovedajúcu väzbu. Existujúci úplný obsah, súrodenci, ceny, zásoby a čas úplného stiahnutia sa zachovajú. Nový záznam obsahujúci iba tieto údaje sa nepovažuje za úplný exportovateľný produkt. Aktuálne chýbajúci odkaz potlačí starý odkaz v editore. Obnova nemení kanonické názvy ani identifikátory Hubu, mapovanie, ručné úpravy alebo skladové pohyby a nevyžaduje novú migráciu.
+Potvrdenie prepojenia aj samostatná obnova ukladajú iba pozorovaný názov a odkazy do `_hub_link_metadata` v existujúcej tabuľke `shop_product_content`. Údaje sú viazané na presný natívny cieľ; editor ich použije iba pre zodpovedajúcu väzbu. Existujúci úplný obsah, súrodenci, ceny, zásoby a čas úplného stiahnutia sa zachovajú. Nový záznam obsahujúci iba tieto údaje sa nepovažuje za úplný exportovateľný produkt. Aktuálne chýbajúci odkaz potlačí starý odkaz v editore. Obnova nemení kanonické názvy ani identifikátory Hubu, cieľ väzby, ručné úpravy alebo skladové pohyby. Chýbajúce `external_product_id` variantu doplní iba z čerstvo overenej zhody jeho natívneho ID, kódu a rodiča; už známe ID nesmie nahradiť.
 
 Migrácia `027_product_links.sql` pridáva iba trvalé náhľady a výsledky do `product_link_previews`. Nespúšťa párovanie historických produktov ani nepovoľuje automatizáciu zásob. Nasadenie obsahuje migráciu pred reštartom API. Pri návrate na kompatibilný starší kód možno tabuľku ponechať; nemažte uložené výsledky potrebné na obnovu.
 
 Implementačné a syntetické testy nie sú dôkazom ostrého prepojenia konkrétneho produktu. Výsledok živej dávky sa overuje v jej uloženom výsledku a na karte v Hube.
+
+## Jedna reprezentácia a typované ID (migrácia 030)
+
+Jedna karta Hubu má najviac jednu predajnú reprezentáciu v konkrétnom e-shope.
+Rovnaký výrobok ako samostatný produkt aj pokladňový variant v BIKETREK je
+konflikt. Obsluha odstráni duplicitný pokladňový variant v e-shope a ponechá
+samostatný produkt. Hub nikdy automaticky nemaže vzdialené produkty ani
+nezakladá druhú kartu na obídenie konfliktu.
+
+`shop_products.product_id` odkazuje na internú kartu `products.id`. Natívna
+identita e-shopu má tieto jednoznačné polia:
+
+| Pole | Samostatný produkt | Variant |
+| --- | --- | --- |
+| `external_product_id` | Natívne ID produktu | Natívne ID rodiča |
+| `external_variant_id` | `NULL` | Natívne ID variantu |
+| `external_code` | Kód predajnej položky | Kód predajného variantu |
+| `parent_code` | `NULL` | Kód rodiča |
+| `is_variant` | `false` | `true` |
+
+Unikátna väzba `(shop_id, product_id)` zostáva. Ďalšie unikátne indexy chránia
+vlastníctvo natívneho samostatného produktu a variantu v oddelených menných
+priestoroch. Číselné ID produktu a variantu sa môžu zhodovať bez kolízie.
+Pravidelné skladové projekcie, FIFO nákupné ceny a produktové publikovanie
+používajú kód explicitnej väzby; nemusia sa zhodovať s interným SKU. Cieľ sa
+pred zápisom stále overuje podľa natívnej identity. Existujúce SKU sa nemenia.
+
+Migrácia prevedie staré variantové kódy na jednotný význam `external_code`.
+Natívne ID rodiča doplní iba z presného uloženého rodiča s jediným zodpovedajúcim
+variantom. Chýbajúci dôkaz zostáva `NULL`; neodvodzuje sa z číselnej podobnosti
+alebo názvu. Neúplný variantový kód alebo duplicitné natívne vlastníctvo migráciu
+zastavia v transakcii a vyžadujú opravu konkrétnych väzieb. Opakované spustenie
+neprepíše neskôr overené údaje starými stĺpcami.
+
+Staré fyzické stĺpce `external_id` a `variant_code` sa pri aditívnej migrácii
+ponechajú, ale aplikácia ich už nečíta ani nezapisuje. Rovnomenné hodnoty v
+existujúcich API odpovediach a auditných dokumentoch sú odvodené projekcie;
+nejde o ďalší zdroj identity. Po nových zápisoch sa nevracajte k binárke, ktorá
+používa staré stĺpce. Obnova má použiť kompatibilnú opravu vpred.
+
+## Nahradenie už vymazaného pokladňového variantu
+
+Pri ručnom výbere samostatného cieľového produktu možno výslovne označiť
+`manual_matches[].replace_deleted_variant = true`. Toto nie je všeobecné
+odpojenie ani presmerovanie existujúceho živého produktu. Povoľuje iba prechod
+zo starého variantu na samostatný produkt pri zachovaní rovnakej Hub karty.
+
+Náhľad zobrazí `previous_mapping` a nový cieľ. Server pri náhľade aj potvrdení
+číta pôvodného rodiča podľa `external_product_id` cez dokumentovaný
+[`GET /products/simple`](https://docs.upgates.com/api-reference/produkty-seznamy)
+s `variants_yn=true`, osobitne pre `archived_yn=false` a `archived_yn=true`.
+Kontroluje natívne ID pôvodného variantu vo všetkých vrátených variantoch;
+premenovanie či deaktivácia nie sú vymazaním. Neúplná odpoveď, zmena identity,
+opätovné objavenie variantu alebo prekročenie limitu čítania zápis zastavia.
+Ak chýba pôvodné natívne ID, najprv treba overiť pôvodnú väzbu načítaním z
+obchodu. Samotný chýbajúci kód nie je dôkazom vymazania.
+
+Aktívne objednávky, aktuálne natívne skladové účinky závislé od starej väzby a
+odosielané či nevyjasnené publikácie výmenu blokujú. Samotné staršie fyzické
+pohyby a FIFO vrstvy výmene nebránia a zostávajú nezmenené. Predchádzajúce
+kontrolné body synchronizácie sa neprepíšu: pre nový cieľ je potrebné nové
+kontrolované zosúladenie. Uloží sa tá istá mapovacia položka, predchádzajúca
+väzba zostáva v potvrdenom náhľade a výsledok je obnoviteľný rovnakým request ID.
+Pozorované ceny, dostupnosť a stav posledného odoslania starého cieľa sa na
+nový produkt neprenášajú.

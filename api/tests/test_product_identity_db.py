@@ -1,4 +1,5 @@
 """Real identity SELECTs against an isolated localhost test schema."""
+from current_schema_fixture import apply_current_core_schema
 import os
 from pathlib import Path
 import unittest
@@ -30,6 +31,7 @@ class IdentityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2] / "infra" / "db-init"
             await connection.execute((root / "001_schema.sql").read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

@@ -18,6 +18,7 @@ export const EDITOR_COLUMNS: EditorColumn[] = [
   { key: 'color', editable: true, type: 'text' }, { key: 'size', editable: true, type: 'text' },
   { key: 'attributes', editable: true, type: 'attributes', hidden: true },
   { key: 'quarantined', hidden: true }, { key: 'total_value', hidden: true }, { key: 'channels', hidden: true },
+  { key: 'item_type', hidden: true }, { key: 'stock_unit', hidden: true },
   ...(['biketrek', 'xtrek'] as const).flatMap(shop => [
     { key: `${shop}_name`, editable: true, type: 'text' as const, hidden: true },
     { key: `${shop}_price`, editable: true, type: 'money' as const, hidden: true },
@@ -26,7 +27,7 @@ export const EDITOR_COLUMNS: EditorColumn[] = [
 ];
 
 export const COLUMN_PRESETS: Record<string, string[]> = {
-  stock: ['sku', 'image_url', 'name', 'available', 'on_hand', 'reserved', 'location', 'tracking', 'supplier_quantity', 'supplier_availability', 'state'],
+  stock: ['sku', 'image_url', 'name', 'available', 'on_hand', 'reserved', 'ean', 'stock_unit', 'supplier_availability'],
   products: ['sku', 'image_url', 'name', 'brand', 'sale_price_gross', 'color', 'size', 'is_active', 'supplier_linked', 'state'],
   shops: ['sku', 'image_url', 'name', 'biketrek', 'xtrek', 'biketrek_price', 'xtrek_price', 'state'],
 };
@@ -94,7 +95,7 @@ export function shopColumn(field: string) {
   return match ? { shop: match[1] as EditorMode, field: ({ name: 'name', price: 'sale_price_gross', visible: 'visible' } as Record<string, string>)[match[2]] } : null;
 }
 export function fieldPath(field: string, mode: EditorMode): string[] {
-  if (field === 'is_active') return ['is_active'];
+  if (['is_active', 'item_type', 'stock_unit'].includes(field)) return [field];
   const shop = shopColumn(field);
   if (shop) return ['shops', shop.shop, shop.field];
   if (field.startsWith('shop_')) return ['shops', mode, ({ shop_name: 'name', shop_price: 'sale_price_gross', shop_visible: 'visible' } as Record<string, string>)[field]];
@@ -112,6 +113,8 @@ export function draftValue(draft: EditorDraft | undefined, field: string, mode: 
   return value;
 }
 export function originalValue(row: ProductEditorRow, field: string, mode: EditorMode): EditorValue {
+  if (field === 'item_type') return row.item_type || 'stock';
+  if (field === 'stock_unit') return row.stock_unit || 'pcs';
   if (field === 'is_active' || field === 'supplier_linked') return row[field];
   const shop = shopColumn(field);
   if (shop) return readPath(row.shops.find(item => item.shop_code === shop.shop)?.effective, [shop.field]) ?? null;

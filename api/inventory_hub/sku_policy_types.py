@@ -1,7 +1,7 @@
 """Explicit, lossless evidence for a concrete sale unit, never a parent code."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
 
 class PolicyModel(BaseModel):
@@ -24,8 +24,8 @@ class SkuIdentityInput(PolicyModel):
     brand: StrictStr
     source_code: StrictStr
     code_kind: Literal["manufacturer", "supplier", "gtin", "service", "unbranded"]
-    source_ref: StrictStr
-    leaf_confirmed: StrictBool
+    source_ref: StrictStr = ""
+    leaf_confirmed: StrictBool = False
     supplier_id: StrictInt | None = Field(default=None, gt=0)
 
     @field_validator("brand")
@@ -44,7 +44,14 @@ class SkuIdentityInput(PolicyModel):
     @field_validator("source_ref")
     @classmethod
     def evidence_text(cls, value):
-        return exact_text(value, 2000)
+        return exact_text(value, 2000) if value else ""
+
+
+    @model_validator(mode="after")
+    def verified_proof_has_source(self):
+        if self.leaf_confirmed and not self.source_ref:
+            raise ValueError("A verified identity needs its source reference")
+        return self
 
 
 class BrandCreate(PolicyModel):
@@ -87,6 +94,7 @@ class BrandAliasCreate(PolicyModel):
 
 class SkuPreviewRequest(PolicyModel):
     sku_identity: SkuIdentityInput | None = None
+    item_type: Literal["stock", "service"] = "stock"
     sku: StrictStr = Field(default="", max_length=100)
     barcodes: list[StrictStr] = Field(default_factory=list, max_length=20)
     supplier_id: StrictInt | None = Field(default=None, gt=0)

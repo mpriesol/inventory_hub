@@ -114,7 +114,7 @@
         "ambiguous": "Ambiguous match",
         "feed_unverified": "Feed could not be checked"
       },
-      "ownStock": "Our stock: {{quantity}} units",
+      "ownStock": "Own stock: {{quantity}} {{unit}}",
       "stockUnverified": "Our stock: unverified",
       "ambiguousHelp": "Identifiers point to several cards or conflict. Check the EAN and supplier code; resolve the match before creating a card.",
       "prepareError": "Card preparation could not be opened. Received quantities remain saved; refresh matching and try again.",
@@ -163,9 +163,9 @@
     "unitCost": "Purchase / unit excl. VAT",
     "reviewReceipt": "Review receipt",
     "postReceipt": "Post receipt",
-    "receiptImpact": "Warehouse: {{warehouse}}. {{count}} lines will be posted, total quantity {{qty}} in document units.",
+    "receiptImpact": "Warehouse: {{warehouse}}. {{count}} lines will be posted. Quantities and unit conversions are shown for each item.",
     "receiptValue": "Received value using saved purchase prices",
-    "receiptEffect": "Received quantities increase physical stock and create traceable stock movements and FIFO layers. Later corrections use an adjustment movement. This does not publish products to a shop.",
+    "receiptEffect": "Stock items increase inventory using the configured conversion and create traceable movements and FIFO layers. Services do not change inventory. Correct posted quantities through corrective movements. Products are not published to shops.",
     "receiptOverage": "Lines with excess quantity: {{count}}",
     "finalizeFailed": "Receipt confirmation failed. Refresh its status and check the result before retrying.",
     "chooseScanLine": "Choose invoice line",
@@ -191,6 +191,26 @@
         "paused": "Paused",
         "completed": "Completed",
         "cancelled": "Cancelled"
+      }
+    },
+    "units": {
+      "title": "Purchase unit and stock conversion",
+      "purchaseUnit": "Invoice unit",
+      "help": "Received quantities and scans use the purchase unit. One scan adds one purchase unit. The stock card uses {{unit}}.",
+      "factor": "Stock units ({{unit}}) per purchase unit",
+      "costHelp": "Posting multiplies quantity by this factor and divides unit cost by it. Total value stays unchanged.",
+      "save": "Save conversion",
+      "toStock": "Into stock",
+      "invalidFactor": "Enter a positive factor up to 999999.999 with at most three decimal places.",
+      "reloaded": "The conversion save response was not confirmed. The stored state has been reloaded; check it before continuing.",
+      "errors": {
+        "receiving_unit_changed": "The card stock unit changed. Check and save the conversion again.",
+        "receiving_unit_conversion_invalid": "Enter a positive factor up to 999999.999 with at most three decimal places.",
+        "receiving_unit_quantity_precision": "The conversion does not produce an exact stock quantity. Check the unit and factor.",
+        "receiving_unit_cost_invalid": "The converted acquisition cost is invalid. Check the document.",
+        "receiving_unit_cost_precision": "Conversion rounding would change the receipt value. Check the pack and price.",
+        "stock_quantity_unit_mismatch": "Pieces, pairs and packs require whole quantities; metres allow up to three decimal places.",
+        "stock_item_required": "This operation requires a stock card. Services do not have physical inventory."
       }
     }
   },
@@ -310,15 +330,16 @@
     "defaultShopUnset": "No default",
     "defaultShopHelp": "This shop is preselected when preparing this supplier’s products. Each product can target the other shop, both shops or Hub only.",
     "codeRename": {
-      "title": "Reconcile Zookee codes and links",
-      "help": "First rename legacy TOPEAK- codes to ZOO- in shop administration. For linked Topeak and Sensor products, Hub can also restore missing native IDs by verifying the original cached card against the shop. Sensor codes and stock history are preserved.",
-      "load": "Load cards to reconcile",
-      "apply": "Verify shops and reconcile Hub",
-      "failed": "Could not load legacy codes.",
-      "notVerified": "The shop change is not verified; the card is preserved.",
-      "progress": "Reconciled {{done}} of {{total}}",
+      "title": "Historical Zookee code changes",
+      "help": "The old code conversion has been retired. You can inspect saved results; this view does not change cards or shops.",
+      "load": "Load saved results",
+      "failed": "Saved results could not be loaded.",
+      "empty": "No saved conversions were found.",
+      "requestId": "Original request ID",
+      "recover": "Find saved result",
+      "missing": "No saved result exists for this request ID.",
       "results": {
-        "completed": "Reconciled"
+        "completed": "Completed"
       }
     }
   },
@@ -577,7 +598,9 @@
       "supplier_availability_invalid": "Check availability labels in supplier configuration; each field can contain at most 100 characters.",
       "stock_feed_only": "This item is only in the stock feed. A complete catalog record is required for publication.",
       "images_from_linked_shop": "Missing images are supplied by the verified linked shop product.",
-      "missing_purchase_price": "The feed does not provide an acquisition price."
+      "missing_purchase_price": "The feed does not provide an acquisition price.",
+      "shop_code_conflict": "This shop code already belongs to a product, variant or parent. Review the existing listing before continuing.",
+      "shop_identity_review_required": "An existing shop product matches this EAN. Review and confirm its link first."
     },
     "tab": {
       "data": "Data and parameters",
@@ -1364,7 +1387,7 @@
     "source": "Source / count reference",
     "operator": "Responsible person",
     "countedAt": "Physical count time (local time)",
-    "csvHelp": "UTF-8 CSV with columns sku;quantity;unit_cost;unit. Quantity must be a positive whole number and unit must be ks (pieces). Unit acquisition cost is EUR excluding VAT; use a decimal point. A missing price is an error; an explicit zero price needs review.",
+    "csvHelp": "UTF-8 CSV with columns sku;quantity;unit_cost;unit. Match the card unit: ks, pair, pack or m. Pieces, pairs and packs use whole quantities; metres allow three decimal places. Unit acquisition cost is EUR excluding VAT. Use a decimal point; missing cost is an error.",
     "csvFile": "Load CSV file",
     "csv": "CSV data",
     "preview": "Validate and prepare preview",
@@ -1420,7 +1443,7 @@
       "csv_unknown_columns": "The CSV contains unsupported columns. Keep only sku, quantity, unit_cost and unit.",
       "duplicate_sku": "The SKU appears more than once. Include the product once with the correct total quantity.",
       "existing_stock": "The item already has confirmed inventory. Use the quantity correction workflow.",
-      "invalid_quantity": "Quantity must be a positive whole number, at most 999,999,999 pieces.",
+      "invalid_quantity": "Quantity must be positive: whole for pieces, pairs and packs; at most three decimal places for metres.",
       "invalid_sku": "Enter a valid product SKU, at most 100 characters.",
       "invalid_unit_cost": "Cost must be a nonnegative number in EUR excluding VAT, no more than 99,999,999.9999 and with at most four decimal places.",
       "line_value_too_large": "The row value exceeds the supported range. Check quantity and cost.",
@@ -1435,7 +1458,7 @@
       "opening_request_changed": "This ID belongs to different input. Check the original batch; use a new batch for changed input.",
       "opening_warehouse_changed": "The warehouse changed or was disabled after preview. Check its configuration.",
       "unknown_sku": "The SKU was not found in the Hub. Use an existing product’s exact code.",
-      "unsupported_unit": "Only ks and whole pieces are supported. Metres or packs are not converted.",
+      "unsupported_unit": "Unit ks, pair, pack or m must match the stock card.",
       "warehouse_unavailable": "The selected warehouse is unavailable or disabled. Load the current warehouse list.",
       "zero_unit_cost": "Zero acquisition cost: verify that this is explicitly correct.",
       "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
@@ -1444,7 +1467,11 @@
       "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
       "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
       "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
-      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory.",
+      "nonstock_product": "A service cannot have opening physical stock.",
+      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items.",
+      "stock_item_required": "This operation requires a stock card. Services do not have physical inventory.",
+      "stock_quantity_unit_mismatch": "Pieces, pairs and packs require whole quantities; metres allow up to three decimal places."
     }
   },
   "orderStock": {
@@ -1597,7 +1624,8 @@
       "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
       "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
       "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
-      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory.",
+      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items."
     },
     "posHelp": "A paid and completed cash-register sale in the base received status with reservations enabled is proposed for issue. Payment alone never triggers issue of a web order.",
     "moreErrors": "{{count}} more errors. Correct the source and prepare a new preview."
@@ -1709,7 +1737,8 @@
       "stock_projection_balance_unverified": "Stock has not been confirmed by a new physical count or receipt.",
       "stock_projection_quantity_invalid": "On-hand and reserved quantities are invalid. Stock review is needed.",
       "stock_projection_unit_unsupported": "This draft supports whole pieces only; fractional quantities are not converted.",
-      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold."
+      "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
     },
     "origins": {
       "cash-register": "Cash register",
@@ -2188,7 +2217,9 @@
       "supplier_availability": "Supplier availability",
       "tracking": "Stock tracking status",
       "is_active": "Hub card status",
-      "supplier_linked": "Supplier link"
+      "supplier_linked": "Supplier link",
+      "item_type": "Card type",
+      "stock_unit": "Stock unit"
     },
     "rowStates": {
       "dirty": "Unsaved changes",
@@ -2237,7 +2268,12 @@
       "product_editor_attribute_refresh_empty": "The shop returned no attributes for this variant.",
       "invalid_activity": "Choose Active or Inactive.",
       "create_uncertain": "Creation could not be confirmed. Retry the same request to recover its result without creating another card.",
-      "sku_registered_rename_blocked": "This SKU was allocated from verified identity. Renaming requires a separate controlled migration."
+      "sku_registered_rename_blocked": "This SKU was allocated from verified identity. Renaming requires a separate controlled migration.",
+      "item_definition_locked": "This card already has stock history or a reservation. Its type and unit cannot be changed.",
+      "service_not_stock_managed": "Services do not have physical inventory.",
+      "item_definition_mismatch": "The existing card has a different type or stock unit. Open the existing card and review its definition.",
+      "stock_item_required": "This operation requires a stock card. Services do not have physical inventory.",
+      "stock_quantity_unit_mismatch": "Pieces, pairs and packs require whole quantities; metres allow up to three decimal places."
     },
     "savedValue": "Saved value",
     "browserPreferences": "Column widths, order and visibility are remembered in this browser. SKU stays first. Draft values are not stored in these preferences.",
@@ -2253,7 +2289,7 @@
     "familyPageCount": "On this page: {{count}} variants",
     "familyDrafts": "Contains unsaved changes",
     "movementHistory": "Movement history",
-    "unifiedHint": "A shared SKU identifies one physical product. Both shops appear in columns.",
+    "unifiedHint": "One shared card identifies a product or service. Both shops appear in columns.",
     "syncSettings": "Availability and stock transfers",
     "openShop": "Open in shop",
     "openAdmin": "Open in administration",
@@ -2299,7 +2335,8 @@
     "tracking": {
       "confirmed": "Confirmed inventory",
       "unconfirmed": "Awaiting count / first receipt",
-      "no_warehouse": "Select a warehouse"
+      "no_warehouse": "Select a warehouse",
+      "nonstock": "Non-stock item"
     },
     "trackingHelp": "Confirmed inventory shows only quantities confirmed by a stocktake or a new receipt. Active / Inactive is a separate card setting. For the first count, choose Unconfirmed items and open the detail → Correct quantity.",
     "openingStock": "Batch opening stock",
@@ -2323,7 +2360,7 @@
       "queued": "Refresh is queued.",
       "running": "Availability is being refreshed."
     },
-    "newCard": "New stock card",
+    "newCard": "New card",
     "createCard": "Create card",
     "cancelCreate": "Close",
     "retryCreate": "Check / retry creation",
@@ -2361,7 +2398,30 @@
     "sortedPage": "This page is sorted",
     "sortedResults": "All results are sorted",
     "resetSort": "Clear sorting",
-    "allRows": "All ({{count}})"
+    "allRows": "All ({{count}})",
+    "itemTypes": {
+      "stock": "Stock item",
+      "service": "Service"
+    },
+    "units": {
+      "pcs": "pcs",
+      "pair": "pair",
+      "pack": "pack",
+      "m": "m"
+    },
+    "unitHelp": "One stock unit is what you sell, such as one pair or a whole pack. Set purchase-pack conversion on the receipt.",
+    "serviceHelp": "A service has its own card and links but creates no inventory, reservations or FIFO cost.",
+    "nonstock": "Non-stock item",
+    "definitionHelp": "Set the type and unit before the first stock movement. Changing them does not convert existing quantities.",
+    "definitionPending": "The change is ready to save with your other edits.",
+    "detailSections": {
+      "identifiers": "Identifiers and attributes",
+      "suppliers": "Suppliers",
+      "shops": "Shops",
+      "definition": "Type and unit",
+      "diagnostics": "Advanced diagnostics"
+    },
+    "meterLimit": "Metres support local receiving, conversion and FIFO. Shop order processing and stock publication do not yet support metre-based items."
   },
   "actions": {
     "effects": {
@@ -2480,7 +2540,10 @@
       "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
       "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
       "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
-      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory.",
+      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items.",
+      "stock_item_required": "This operation requires a stock card. Services do not have physical inventory.",
+      "stock_quantity_unit_mismatch": "Pieces, pairs and packs require whole quantities; metres allow up to three decimal places."
     },
     "reload": "Reload current stock",
     "unknown": "Unknown cost",
@@ -3102,7 +3165,8 @@
       "stock_tracking_historical_issue": "This issue belongs to historical inventory and cannot create a return in the new inventory.",
       "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
       "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
-      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory."
+      "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory.",
+      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items."
     },
     "remoteValues": "Values sent to Upgates",
     "remoteWithVat": "Upgates unit prices are in EUR including VAT. Conversion uses each line’s VAT rate. FIFO costs above exclude VAT.",
@@ -3616,7 +3680,9 @@
       "request_failed": "The response was not confirmed. Read the current draft before another decision.",
       "import_identity_source_changed": "The supplier source changed since review. Read the current review.",
       "selection_identity_conflict": "Several selected items point to the same stock card. Resolve the selection first.",
-      "existing_card_link_only": "Choosing an existing card adds only its supplier link when you later save to Hub. Its SKU, name, group, prices and stock are preserved, and no shop listing is created."
+      "existing_card_link_only": "Choosing an existing card adds only its supplier link when you later save to Hub. Its SKU, name, group, prices and stock are preserved, and no shop listing is created.",
+      "shop_code_conflict": "This shop code already belongs to a product, variant or parent. Review the existing listing before continuing.",
+      "shop_identity_review_required": "An existing shop product matches this EAN. Review and confirm its link first."
     },
     "delivery": {
       "queued": "Shop delivery queued",
@@ -3860,7 +3926,11 @@
       "source_http_error": "The shop returned an error while reading the product.",
       "source_http_failed": "The shop returned an error while reading the product.",
       "source_authentication_failed": "The shop denied access. Check the connection settings.",
-      "product_links_mapping_missing": "The mapping no longer exists. Open product linking to check it."
+      "product_links_mapping_missing": "The mapping no longer exists. Open product linking to check it.",
+      "product_links_variant_still_exists": "The old variant still exists in the shop. Resolve the duplicate first.",
+      "product_links_replacement_identity_missing": "There is no unambiguous evidence that the standalone product belongs to this Hub card.",
+      "product_links_replacement_not_allowed": "Only a deleted variant may be replaced with a standalone product.",
+      "product_links_replacement_in_use": "This link has a pending or dependent operation. Complete or resolve it first."
     },
     "reasons": {
       "attributes_missing": "Variant attributes are unavailable in the shop response.",
@@ -3888,7 +3958,8 @@
       "cached_candidate_limit": "Cached results are too broad. Narrow the selection or enter an exact code.",
       "mapping_identity_changed": "The shop product code or identifier has changed.",
       "unmapped_sku_collision": "Multiple cards have the same SKU ignoring letter case.",
-      "assigned_product_changed": "The code and identifiers do not belong to the selected card."
+      "assigned_product_changed": "The code and identifiers do not belong to the selected card.",
+      "replaces_deleted_variant": "The link will move from the verified deleted variant to this standalone product."
     },
     "allAlreadyLinked": "All selected cards are already linked to {{shop}}.",
     "done": "Done",
@@ -3896,7 +3967,10 @@
     "shopBarcode": "Barcode in {{shop}}",
     "barcodeAbsent": "Not provided",
     "barcodeInvalid": "{{value}} is not a valid EAN or UPC.",
-    "barcodeNotRecorded": "This older preview did not retain the value."
+    "barcodeNotRecorded": "This older preview did not retain the value.",
+    "replaceDeletedVariant": "Replace a deleted POS variant with a standalone product",
+    "replacementHelp": "First delete the duplicate POS variant in the shop. Enter the standalone product code above. The preview checks deletion and identity; confirmation retains the same Hub card.",
+    "replacementPreview": "Replace link: {{old}} → {{code}}"
   },
   "supplierLinks": {
     "open": "Link a supplier product",
@@ -4094,8 +4168,8 @@
     "stock": "Hub → shop: own stock and delivery results"
   },
   "skuPolicy": {
-    "title": "Identity and SKU",
-    "help": "We first check whether a card already exists. A new SKU combines the registered brand abbreviation with an evidenced code for the exact product or variant.",
+    "title": "Automatic SKU",
+    "help": "The SKU is generated from the brand prefix and the exact item code. Existing cards keep their codes. Hub checks links and collisions.",
     "brand": "Brand or inventory category",
     "codeKind": "Meaning of the source code",
     "sourceCode": "Code of the exact sale unit",
@@ -4118,10 +4192,10 @@
     "saveAlias": "Add verified alias",
     "saveBrand": "Save to registry",
     "checking": "Checking identity…",
-    "completeFields": "Provide a brand, specific code and evidence, or look up an existing card by SKU / EAN.",
+    "completeFields": "Choose a brand and the exact item code, or find an existing card by barcode.",
     "existingCard": "Existing card #{{id}} will be used. Its SKU stays unchanged.",
     "candidates": "Affected cards: {{ids}}. Check them in stock and correct the conflicting evidence.",
-    "apply": "Use verified identity",
+    "apply": "Use proposed SKU",
     "retry": "Try again",
     "existingSku": "Existing SKU or old alias (optional)",
     "ean": "Verified EAN / UPC (optional)",
@@ -4129,10 +4203,10 @@
     "receivingPreparation": "This receipt includes an item without a stock card. Open card preparation, verify its identity and SKU, save it to the Hub, then return to confirm the receipt.",
     "prepareMissingCard": "Prepare missing card",
     "states": {
-      "new": "Proposed new SKU",
+      "new": "Automatically generated SKU",
       "existing": "Existing card found",
       "conflict": "Conflicting evidence",
-      "blocked": "Identity needs more evidence"
+      "blocked": "Check the code and identity"
     },
     "brandKinds": {
       "brand": "Manufacturer brand",
@@ -4156,7 +4230,7 @@
       "registryUnavailable": "The registry could not be loaded or saved. Try again.",
       "previewUnavailable": "Identity could not be checked. Verify exact field values without surrounding whitespace and try again.",
       "identity_conflict": "Identifiers refer to different cards or an uncertain variant. Check the listed cards and evidence; no new card will be created.",
-      "sku_identity_required": "A new item requires a brand, an evidenced specific code, and confirmation of the variant.",
+      "sku_identity_required": "A new card needs a brand and exact item code. Hub generates the SKU.",
       "sku_brand_unregistered": "This brand is not registered. Select an existing spelling or add it with a unique abbreviation.",
       "sku_leaf_not_confirmed": "Confirm the exact variant and pack after verifying the source code.",
       "sku_namespace_kind_mismatch": "The code type does not match the registry. Select the appropriate inventory category for services or unbranded goods.",
@@ -4187,9 +4261,15 @@
       "supplier_source_multiple_products": "The supplier item is linked to multiple cards. Resolve the conflicting links.",
       "supplier_card_links_source_ean_conflict": "The supplier item EAN conflicts with the card. Verify variant and pack.",
       "supplier_card_links_identity_conflict": "The supplier link conflicts with the card identity. Open supplier link review.",
-      "product_editor_name_required": "A new card needs a product name."
+      "product_editor_name_required": "A new card needs a product name.",
+      "sku_required": "A new card needs a brand and exact item code. Hub generates the SKU.",
+      "sku_code_required": "A new card needs a brand and exact item code. Hub generates the SKU.",
+      "sku_invalid": "Check the SKU: at most 100 characters, without control characters or separators.",
+      "sku_code_invalid": "Check the SKU: at most 100 characters, without control characters or separators.",
+      "sku_item_type_conflict": "A service namespace requires the Service card type."
     },
-    "newCardName": "Name for a new card"
+    "newCardName": "Name for a new card",
+    "lookupExisting": "Find an existing card by SKU"
   },
   "skuMigration": {
     "title": "Preview SKU change",

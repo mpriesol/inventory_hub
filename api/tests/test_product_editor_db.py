@@ -1,4 +1,5 @@
 """Manual product overrides and source isolation in disposable local PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import copy
 import json
@@ -47,6 +48,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for filename in ("002_invoice_management.sql", "004_shop_product_content.sql", "007_order_stock.sql",
                              "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -85,11 +87,21 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 ProductVariantAttribute(product_id=self.products["BIKE-10"], attribute_name="Veľkosť", attribute_value="10"),
             ])
             for sku in ("BIKE-2", "BIKE-10", "PART-1"):
-                db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=self.products[sku], external_code="xTrek",
-                    parent_code="xTrek", variant_code=sku, is_variant=True, shop_price=D("199.99")))
+                db.add(ShopProduct(
+                    shop_id=self.shops['biketrek'],
+                    product_id=self.products[sku],
+                    external_code=sku,
+                    parent_code='xTrek',
+                    is_variant=True,
+                    shop_price=D('199.99')))
             for sku in ("BIKE-2", "BIKE-10"):
-                db.add(ShopProduct(shop_id=self.shops["xtrek"], product_id=self.products[sku], external_code="REAL-FRAMES",
-                    parent_code="REAL-FRAMES", variant_code=sku, is_variant=True, shop_price=D("209.99")))
+                db.add(ShopProduct(
+                    shop_id=self.shops['xtrek'],
+                    product_id=self.products[sku],
+                    external_code=sku,
+                    parent_code='REAL-FRAMES',
+                    is_variant=True,
+                    shop_price=D('209.99')))
             umbrella = {"active_yn": True, "descriptions": [{"language": "sk", "title": "POS umbrella"}],
                 "variants": [{"code": sku, "active_yn": True, "descriptions": [{"language": "sk", "title": "Observed " + sku}]}
                              for sku in ("BIKE-2", "BIKE-10", "PART-1", "REMOTE-ONLY")]}
@@ -190,6 +202,42 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     sku="OLD-000123", name="Unreviewed identity"))
         self.assertEqual(error.exception.code, "sku_identity_required")
         self.assertEqual(await self.snapshot(), before)
+
+    async def test_item_definition_can_change_before_stock_but_not_reinterpret_history(self):
+        row = await self.detail("NO-STOCK")
+        self.assertFalse(row["item_definition_locked"])
+        saved = await self.save([self.change(row, item_type="service")])
+        service_row = saved["results"][0]["row"]
+        self.assertEqual(service_row["item_type"], "service")
+        self.assertFalse(service_row["stock"]["managed"])
+        self.assertFalse(service_row["stock"]["known"])
+        self.assertIsNone(service_row["stock"]["qty_on_hand"])
+        row = await self.detail("BIKE-2")
+        self.assertTrue(row["item_definition_locked"])
+        for values in ({"item_type": "service"}, {"stock_unit": "pair"}):
+            rejected = await self.save([self.change(row, **values)])
+            self.assertEqual(rejected["results"][0]["errors"][0]["code"], "item_definition_locked")
+            from sqlalchemy.exc import IntegrityError
+            async with self.sessions() as db:
+                with self.assertRaises(IntegrityError):
+                    async with db.begin_nested():
+                        await db.execute(update(Product).where(Product.id == row["id"]).values(**values))
+        self.assertEqual((await self.detail("BIKE-2"))["stock"]["qty_on_hand"], row["stock"]["qty_on_hand"])
+
+    async def test_service_card_creation_keeps_brand_policy_but_has_no_physical_stock(self):
+        request = ProductCardCreateRequest(request_id=uuid4(), name="Workshop service", item_type="service",
+            sku_identity={"brand": "Topeak", "source_code": "SERVICE-01", "code_kind": "manufacturer",
+                "source_ref": "Reviewed workshop card identity", "leaf_confirmed": True})
+        async with self.sessions() as db:
+            result = await service.create_card(db, request)
+        row = result["results"][0]["row"]
+        self.assertEqual((row["sku"], row["item_type"]), ("TP-SERVICE-01", "service"))
+        self.assertFalse(row["stock"]["managed"])
+        self.assertFalse(row["stock"]["known"])
+        async with self.sessions() as db:
+            self.assertEqual(await service.create_card(db, request), result)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)
+                .where(StockMovement.product_id == row["id"])), 0)
 
     async def test_manual_lookup_reuses_legacy_card_without_renaming_or_overwriting_it(self):
         before = await self.snapshot()

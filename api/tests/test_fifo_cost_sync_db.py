@@ -1,4 +1,5 @@
 """Isolated PostgreSQL gates for durable FIFO price publication and recovery."""
+from current_schema_fixture import apply_current_core_schema
 import copy
 import asyncio
 import os
@@ -43,6 +44,7 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                          '015_stock_sync.sql', '026_stock_delta.sql', '016_product_publication.sql', '017_stock_adjustments.sql',
                          '018_fifo_cost_sync.sql'):
                 await connection.execute((root / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace('postgresql://', 'postgresql+asyncpg://', 1),
@@ -75,8 +77,13 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             product = Product(sku='SKU-A', name='SKU-A')
             db.add_all([warehouse, product]); await db.flush()
             self.warehouse_id, self.product_id = warehouse.id, product.id
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code='POS-xTrek',
-                parent_code='POS-xTrek', variant_code='SKU-A', is_variant=True, external_id='91'))
+            db.add(ShopProduct(
+                shop_id=self.shop_id,
+                product_id=product.id,
+                external_code='SKU-A',
+                parent_code='POS-xTrek',
+                is_variant=True,
+                external_variant_id='91'))
 
     async def asyncTearDown(self):
         for item in reversed(self.patches):
@@ -298,21 +305,21 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         publication_id = await self.queue_product()
         async with self.session() as db:
             mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.product_id))
-            mapping.external_id = '999'
+            mapping.external_variant_id = '999'
         await self.invoke('process_publication', publication_id)
         self.assertEqual((await self.invoke('get_publication', publication_id))['error'], 'fifo_cost_source_changed')
         service.source.write_once.assert_not_awaited()
 
-    async def test_unicode_and_external_id_collision_fail_closed(self):
-        async with self.session() as db:
-            other = Product(sku='SKU-B', name='Other')
-            db.add(other); await db.flush()
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=other.id, external_code='OTHER', external_id='91',
-                variant_code='OTHER', parent_code='POS-xTrek', is_variant=True))
-        async with self.session() as db:
-            with self.assertRaises(service.CostSyncError) as error:
-                await service.product_target(db, self.shop_id, self.product_id, 'SKU-A')
-            self.assertEqual(error.exception.code, 'fifo_cost_mapping_ambiguous')
+    async def test_duplicate_native_leaf_owner_is_rejected_by_database(self):
+        from sqlalchemy.exc import IntegrityError
+        with self.assertRaises(IntegrityError):
+            async with self.session() as db:
+                other = Product(sku='SKU-B', name='Other')
+                db.add(other)
+                await db.flush()
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=other.id, external_code='OTHER',
+                    parent_code='POS-xTrek', is_variant=True, external_variant_id='91'))
+                await db.flush()
 
     async def test_activation_cutoff_uses_issue_date_not_original_creation(self):
         await self.invoke('configure', self.config(enabled=True, product_cost_enabled=False, order_cost_enabled=True))

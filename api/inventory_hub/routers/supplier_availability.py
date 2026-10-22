@@ -64,14 +64,12 @@ async def reconcile_links(supplier: SupplierCode, payload: SupplierLinkReconcile
         db, supplier, after_product_id=payload.after_product_id, limit=payload.limit, match_catalog=True))
 
 
-# Narrow administrative reconciliation; never a shop-code write endpoint.
+# Read-only history/recovery for the retired one-off administrative rename.
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from inventory_hub.access import admin_access
 from inventory_hub.services import zookee_code_reconciliation as code_service
-from inventory_hub.services.product_publication_source import source as code_transport
 from inventory_hub.services.product_editor import EditorError
-from inventory_hub.services.catalog import CatalogError
 
 
 class CodeReconcileInput(BaseModel):
@@ -87,12 +85,20 @@ async def legacy_codes(supplier: SupplierCode, db: AsyncSession = Depends(get_se
         raise HTTPException(error.status,detail={"code":error.code}) from None
 
 
+@router.get("/{supplier}/legacy-code-results/{request_id}", dependencies=[Depends(admin_access)])
+async def legacy_code_result(supplier: SupplierCode, request_id: UUID, db: AsyncSession = Depends(get_session)):
+    try:
+        return await code_service.read_result(db, supplier, request_id)
+    except EditorError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
 @router.post("/{supplier}/legacy-codes/{product_id}", dependencies=[Depends(admin_access)])
 async def reconcile_legacy_code(supplier: SupplierCode, product_id: Annotated[int, Path(gt=0)], payload: CodeReconcileInput,
                                 db: AsyncSession = Depends(get_session)):
     try:
         return await code_service.reconcile_one(db,supplier,product_id,payload.request_id)
-    except (EditorError,code_transport.SourceError,CatalogError) as error:
+    except EditorError as error:
         raise HTTPException(error.status,detail={"code":error.code}) from None
 
 
@@ -112,5 +118,5 @@ async def reconcile_legacy_batch(supplier: SupplierCode, payload: CodeReconcileB
         raise HTTPException(422, detail={"code": "product_editor_invalid_request"})
     try:
         return await code_service.reconcile_batch(db, supplier, payload.rows)
-    except (EditorError, CatalogError) as error:
+    except EditorError as error:
         raise HTTPException(error.status, detail={"code": error.code}) from None

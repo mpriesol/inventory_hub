@@ -175,6 +175,8 @@ class EditorRowPatch(EditorModel):
     expected_revision: StrictInt = Field(ge=0)
     snapshot_hash: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
     is_active: StrictBool | None = None
+    item_type: Literal["stock", "service"] | None = None
+    stock_unit: Literal["pcs", "pair", "pack", "m"] | None = None
     common: CommonPatch | None = None
     variant: VariantPatch | None = None
     warehouse: WarehousePatch | None = None
@@ -195,6 +197,8 @@ class ProductCardCreateRequest(EditorModel):
     sku: StrictStr | None = None
     name: StrictStr = ""
     is_active: StrictBool = True
+    item_type: Literal["stock", "service"] = "stock"
+    stock_unit: Literal["pcs", "pair", "pack", "m"] = "pcs"
     sku_identity: SkuIdentityInput | None = None
     eans: list[StrictStr] = Field(default_factory=list, max_length=20)
     supplier_id: StrictInt | None = Field(default=None, gt=0)

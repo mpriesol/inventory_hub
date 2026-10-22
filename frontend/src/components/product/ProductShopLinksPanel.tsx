@@ -10,7 +10,7 @@ import { applyProductLinks, forgetProductLink, PendingProductLink, pendingProduc
   previewProductLinks } from '../../api/productLinks';
 import './ProductShopLinksPanel.css';
 
-type Manual = Record<number, { parent: string; variant: string }>;
+type Manual = Record<number, { parent: string; variant: string; replace?: boolean }>;
 type SelectedCard = { id: number; sku: string; name: string };
 
 export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
@@ -20,7 +20,7 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
   const [shop, setShop] = useState<ProductLinkShop>('biketrek');
   const [manual, setManual] = useState<Manual>(() => Object.fromEntries(
     (pendingProductLink()?.request.manual_matches || []).map(item => [item.product_id,
-      { parent: item.parent_code, variant: item.is_variant ? item.code : '' }])));
+      { parent: item.parent_code, variant: item.is_variant ? item.code : '', replace: item.replace_deleted_variant === true }])));
   const [batch, setBatch] = useState<ProductLinkBatch | null>(null);
   const [recoveredScope, setRecoveredScope] = useState<SelectedCard[]>([]);
   const [pending, setPending] = useState<PendingProductLink | null>(() => pendingProductLink());
@@ -78,7 +78,7 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
           const value = manual[row.id];
           if (!value?.parent.trim()) return [];
           return [{ product_id: row.id, code: value.variant.trim() || value.parent.trim(),
-            parent_code: value.parent.trim(), is_variant: !!value.variant.trim() }];
+            parent_code: value.parent.trim(), is_variant: !!value.variant.trim(), ...(value.replace ? { replace_deleted_variant: true } : {}) }];
         }) };
       saved = { version: 1, request };
       try { store(saved); } catch { setError('storage_unavailable'); return; }
@@ -142,11 +142,12 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
 
   function changeManual(id: number, key: 'parent' | 'variant', value: string) {
     if (frozen || busyRef.current) return;
-    setManual(previous => ({ ...previous, [id]: { parent: '', variant: '', ...previous[id], [key]: value } }));
+    setManual(previous => ({ ...previous, [id]: { parent: '', variant: '', ...previous[id], [key]: value, ...(key === 'variant' && value ? { replace: false } : {}) } }));
     setBatch(null); setSelected([]);
   }
   const changeShop = (value: ProductLinkShop) => {
     if (frozen || busyRef.current) return;
+    setManual(previous => Object.fromEntries(Object.entries(previous).map(([id, entry]) => [id, { ...entry, replace: false }])));
     setShop(value); setBatch(null); setSelected([]); setError('');
   };
   const statuses: ProductLinkRow['status'][] = ['ready', 'already_linked', 'conflict', 'not_found'];
@@ -182,6 +183,7 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
       </tr></thead><tbody>{sourceRows.map(row => {
         const checked = batch?.rows.find(item => item.product_id === row.product_id);
         const remote = checked?.remote;
+        const canReplace = rows.find(item => item.id === row.product_id)?.shops?.find(item => item.shop_code === shop)?.mapping?.is_variant === true;
         const rawBarcodes = remote?.raw_barcodes ?? (remote?.eans.length ? remote.eans : undefined);
         const invalidBarcodes = remote?.invalid_barcodes || [];
         const warnings = checked?.warnings.filter(code =>
@@ -204,12 +206,15 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
             </dd>
             {remote.attributes.map(item => <React.Fragment key={item.name}><dt>{item.name}</dt><dd>{item.value}</dd></React.Fragment>)}
           </dl></> : <span className="product-editor-muted">{t('productLinks.notChecked')}</span>}
-            {!frozen && !settled && <details className="product-links-manual"><summary>{t('productLinks.exactTarget')}</summary>
+            {checked?.previous_mapping && <p data-testid={`product-links-replacement-${row.product_id}`}>{t('productLinks.replacementPreview', { old: checked.previous_mapping.external_code, code: remote?.code || '—' })}</p>}
+            {!frozen && batch?.status !== 'completed' && (!settled || canReplace) && <details className="product-links-manual"><summary>{t('productLinks.exactTarget')}</summary>
               <p>{t('productLinks.manualHelp')}</p>
               <label>{t('productLinks.parentInput')}<input data-testid={`product-links-parent-${row.product_id}`} maxLength={100} value={manual[row.product_id]?.parent || ''}
                 disabled={!!busy} onChange={event => changeManual(row.product_id, 'parent', event.target.value)} /></label>
               <label>{t('productLinks.variantInput')}<input data-testid={`product-links-variant-${row.product_id}`} maxLength={100} value={manual[row.product_id]?.variant || ''}
-                disabled={!!busy} onChange={event => changeManual(row.product_id, 'variant', event.target.value)} /></label>
+                disabled={!!busy || manual[row.product_id]?.replace} onChange={event => changeManual(row.product_id, 'variant', event.target.value)} /></label>
+              {canReplace && <label><input type="checkbox" data-testid={`product-links-replace-${row.product_id}`} disabled={!!busy} checked={manual[row.product_id]?.replace || false} onChange={event => { const checked = event.target.checked; setManual(previous => ({ ...previous, [row.product_id]: { parent: '', ...previous[row.product_id], variant: checked ? '' : previous[row.product_id]?.variant || '', replace: checked } })); setBatch(null); setSelected([]); }} />{t('productLinks.replaceDeletedVariant')}</label>}
+              {manual[row.product_id]?.replace && <p>{t('productLinks.replacementHelp')}</p>}
             </details>}
           </td>
           <td>{checked?.match_by ? t(`productLinks.matchBy.${checked.match_by}`, { defaultValue: checked.match_by }) : '—'}</td>

@@ -6,7 +6,7 @@ from inventory_hub.config_normalize import normalize_supplier_config
 
 def facts(**changes):
     return {'source_ean': '5901234123457', 'external_id': '22', 'is_variant': True,
-        'sku': 'SHOP-S', 'variant_code': 'SHOP-S', 'external_code': 'PARENT', 'parent_code': 'PARENT',
+        'sku': 'SHOP-S', 'external_code': 'SHOP-S', 'parent_code': 'PARENT',
         'cached_parent_code': 'PARENT', 'parent_id': '11', 'leaf_code': 'SHOP-S', 'leaf_parent_id': '11',
         'variant_id': '22', 'leaf_ean': '5901234123457', 'leaf_count': 1,
         'images': [{'url': 'https://images.example.test/own.jpg'}], 'image': None,
@@ -21,11 +21,14 @@ class CatalogShopImageTests(unittest.TestCase):
         self.assertEqual(verified_images(facts(images=[])), ['https://images.example.test/parent.jpg'])
 
     def test_wrong_identity_duplicate_leaves_or_barcode_conflict_are_rejected(self):
-        for changes in [{'leaf_count': 2}, {'leaf_code': 'OTHER'}, {'sku': 'OTHER'}, {'variant_id': '99'},
+        for changes in [{'leaf_count': 2}, {'leaf_code': 'OTHER'}, {'variant_id': '99'},
                         {'parent_id': None}, {'leaf_parent_id': '99'}, {'cached_parent_code': 'OTHER'},
                         {'external_id': None}, {'leaf_ean': '4006381333931'}]:
             with self.subTest(changes=changes):
                 self.assertEqual(verified_images(facts(**changes)), [])
+
+    def test_explicit_link_allows_distinct_hub_sku(self):
+        self.assertEqual(verified_images(facts(sku='LOCAL-IDENTITY')), ['https://images.example.test/own.jpg'])
 
     def test_unsafe_images_are_skipped_and_main_is_first(self):
         values = ['http://images.example.test/no.jpg', 'https://user:secret@example.test/no.jpg',

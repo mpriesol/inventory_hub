@@ -230,9 +230,10 @@ async def inspect_products(db, session, prefix):
         items.append({'line_id': line.id, 'status': status, 'product_id': product.id if product else None,
             'product_code': product.sku if product else (source.shop_code if source else None),
             'product_name': product.name if product else (source.name if source else None),
+            'item_type': product.item_type if product else None, 'stock_unit': product.stock_unit if product else None,
             'catalog_product_id': source.id if source else None, 'display_ean': '/'.join(eans),
-            'stock_confirmed': bool(product and product.id in stock),
-            'own_stock_qty': float(stock[product.id] or 0) if product and product.id in stock else None,
+            'stock_confirmed': bool(product and product.item_type == 'stock' and product.id in stock),
+            'own_stock_qty': float(stock[product.id] or 0) if product and product.item_type == 'stock' and product.id in stock else None,
             'can_prepare': can_prepare, 'draft_id': links.get(str(line.id)), 'warnings': warnings,
             'conflict_reasons': sorted(set(reasons)) if conflict else [],
             'candidate_products': [{'id': id, 'code': index.products[id].sku, 'name': index.products[id].name}

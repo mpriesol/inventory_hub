@@ -87,6 +87,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def saved_hub_card(self):
         """Ordinary AI publishes content for an independently reviewed identity."""
         from inventory_hub.db_models import Product, ProductIdentifier, IdentifierType, Supplier
+        from inventory_hub.db_models_ext import ProductSupplySource
         from inventory_hub.services.sku_policy import create_brand, preview_sku, record_sku_identity
         from inventory_hub.sku_policy_types import BrandCreate, SkuIdentityInput
         async with self.sessions() as db:
@@ -103,6 +104,7 @@ class AiDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(product)
             await db.flush()
             await record_sku_identity(db, product, proof, actor='test-fixture')
+            db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id))
             db.add(ProductIdentifier(product_id=product.id, supplier_id=supplier_id,
                 identifier_type=IdentifierType.supplier_sku, value=source.code))
             await db.commit()

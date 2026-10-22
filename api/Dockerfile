@@ -49,6 +49,9 @@ COPY infra/db-init/026_stock_delta.sql /app/inventory_hub/migrations/026_stock_d
 COPY infra/db-init/027_product_links.sql /app/inventory_hub/migrations/027_product_links.sql
 COPY infra/db-init/028_supplier_card_links.sql /app/inventory_hub/migrations/028_supplier_card_links.sql
 COPY infra/db-init/029_sku_policy.sql /app/inventory_hub/migrations/029_sku_policy.sql
+COPY infra/db-init/030_shop_identity.sql /app/inventory_hub/migrations/030_shop_identity.sql
+COPY infra/db-init/031_item_units.sql /app/inventory_hub/migrations/031_item_units.sql
+COPY infra/db-init/032_supplier_authority.sql /app/inventory_hub/migrations/032_supplier_authority.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

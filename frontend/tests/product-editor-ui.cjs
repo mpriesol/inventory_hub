@@ -53,7 +53,7 @@ async function paste(id, value) {
 const clone = value => JSON.parse(JSON.stringify(value));
 const reply = value => ({ ok: true, json: async () => clone(value) });
 const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.toString(16).padStart(4, '0')}`.padEnd(64, 'a');
-const makeRow = id => ({ id, is_active: true, supplier_linked: true, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
+const makeRow = id => ({ id, item_type:'stock', stock_unit:'pcs', item_definition_locked:id===1, is_active: true, supplier_linked: true, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
   attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
   supplier_availability: { available: true, fresh: ![2, 3, 4, 5].includes(id), status: ({ 2: 'stale', 3: 'missing_link', 4: 'missing_observation', 5: 'conflict' })[id] || 'fresh', label: [2, 3, 4, 5].includes(id) ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
   supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
@@ -73,7 +73,7 @@ const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, {
 let loseCreateResponse = true; const createdRequests = new Map();
 let skuPreviewMode = 'new', migrationMode = 'review', deferMigration = false, releaseMigration;
 const migrationResult = body => ({created_at:'2026-10-21T16:00:00Z',preview_hash:'synthetic-preview-hash',can_apply:false,required_checks:['migration_supported_upgates_rename'],items:[{product_id:body.items[0].product_id,name:'Fixture product 1',old_sku:'SKU-1',proposed_sku:'TP-'+body.items[0].sku_identity.source_code,status:migrationMode,reasons:migrationMode==='blocked'?['migration_remote_native_id_changed']:[],candidate_product_ids:migrationMode==='blocked'?[1,2]:[],identity:{...body.items[0].sku_identity,barcodes:['5901234123457'],source_hash:'synthetic-source'},aliases:[{type:'internal_sku',value:'OLD-001',supplier_id:null,origin:'product_identifiers'}],mappings:[{shop_code:'biketrek',mapping_id:9,is_variant:true,old_code:'SKU-1',proposed_code:'TP-'+body.items[0].sku_identity.source_code,native_id:'9812',parent_code:'PARENT-1',parent_native_id:'4823',remote_status:body.verify_remote?'verified':'not_checked',reasons:[],remote_identity:body.verify_remote?{variant_id:'9812'}:null,remote_hash:body.verify_remote?'synthetic-remote':null}],impacts:{counts:{stock_movements:3},stock_state:'confirmed',requires_review:[],unverified:['advertising_feed_ids_not_inspected'],refresh_required:['catalog_identity_index']},remote_verified:body.verify_remote}]});
-const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: [] }];
+const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: [] }, { id: 2, code: 'SV', name: 'Workshop', kind: 'service', aliases: [] }];
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave, linkRefreshMode = 'complete', detailMode = 'valid', resolveDetail;
@@ -96,11 +96,10 @@ global.fetch = async (path, init = {}) => {
   if (url.pathname === '/api/sku-policy/brands') return reply({ brands: skuBrands });
   if (url.pathname === '/api/sku-policy/preview') {
     assert.equal(init.method, 'POST');
-    const item = body.sku_identity;
     if (skuPreviewMode === 'existing') return reply({status:'existing',sku:'OLD-001',product_id:51,brand_id:null,reasons:[],candidate_product_ids:[51]});
     if (skuPreviewMode === 'conflict') return reply({status:'conflict',sku:null,product_id:null,brand_id:null,reasons:['supplier_identifier_conflict'],candidate_product_ids:[1,2]});
-    if (!item) return reply({status:'blocked',sku:null,product_id:null,brand_id:null,reasons:['sku_identity_required'],candidate_product_ids:[]});
-    return reply({status:item.leaf_confirmed?'new':'blocked',sku:'TP-'+item.source_code,product_id:null,brand_id:1,reasons:item.leaf_confirmed?[]:['sku_leaf_not_confirmed'],candidate_product_ids:[]});
+    const item=body.sku_identity, valid=!!(item?.brand && item.source_code);
+    return reply({status:valid?'new':'blocked',sku:valid?'TP-'+item.source_code:null,product_id:null,brand_id:valid?1:null,reasons:valid?[]:['sku_identity_required'],candidate_product_ids:[]});
   }
   if (url.pathname === '/api/product-links/refresh') {
     assert.equal(init.method, 'POST'); assert.deepEqual(body, { shop_code: 'xtrek', product_ids: [1] });
@@ -127,7 +126,7 @@ global.fetch = async (path, init = {}) => {
     if (createdRequests.has(body.request_id)) {
       const old = createdRequests.get(body.request_id); assert.deepEqual(old.body, body); return reply(old.result);
     }
-    const row = skuPreviewMode === 'existing' ? { ...makeRow(51), sku: 'OLD-001' } : { ...makeRow(100), sku: `TP-${body.sku_identity.source_code}`, common: { name: body.name, brand: null, internal_note: '' }, is_active: body.is_active, supplier_linked: false };
+    const row = skuPreviewMode === 'existing' ? { ...makeRow(51), sku: 'OLD-001' } : { ...makeRow(100), sku: 'TP-'+body.sku_identity.source_code, item_type: body.item_type, stock_unit: body.stock_unit, common: { name: body.name, brand: null, internal_note: '' }, is_active: body.is_active, supplier_linked: false };
     rows.set(row.id, row);
     const result = { request_id: body.request_id, results: [{ product_id: row.id, status: 'saved', row, errors: [] }] };
     createdRequests.set(body.request_id, { body, result });
@@ -206,6 +205,7 @@ global.fetch = async (path, init = {}) => {
       }
       const changed = clone(row);
       if ('is_active' in change) changed.is_active = change.is_active;
+      for (const field of ['item_type','stock_unit']) if (field in change) changed[field] = change[field];
       for (const scope of ['common', 'variant']) if (change[scope]) {
         Object.assign(changed[scope], change[scope]); Object.assign(changed.overrides[scope], change[scope]);
       }
@@ -406,8 +406,10 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await key(cell(1, 'name'), 'ArrowRight'); assert.equal(focusedCell(), 'cell-1-brand');
   const originalCell = cell(1, 'name'), grid = originalCell.closest('table,[role="grid"]');
   assert(grid); const scrollContainer = grid.parentElement; scrollContainer.scrollTop = 147;
-  await click('open-1-sku'); assert(document.querySelector('[role=dialog][aria-modal=true]'), 'SKU opens the stock-style popup'); await click('detail-tab-audit');
+  await click('open-1-sku'); assert(document.querySelector('[role=dialog][aria-modal=true]'), 'SKU opens the stock-style popup');
   assert.equal(required('movement-history').getAttribute('href'), '/stock/movements?sku=SKU-1');
+  assert(!required('detail-identifiers').open && !required('detail-shops').open && !required('detail-diagnostics').open, 'Advanced card information starts collapsed');
+  await click('detail-tab-audit');
   const audit = document.querySelector('.product-editor-audit');
   assert(audit && audit.textContent.includes('Audit previous name') && audit.textContent.includes('Audit current name'), 'Audit history shows the actual before and after names');
   assert(audit.textContent.includes('109.90') && audit.textContent.includes('119.95') && audit.textContent.includes(t('fields.sale_price_gross')), 'Audit prices are paired with their edited field and retain exact decimal strings');
@@ -462,7 +464,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await edit(1, 'color', 'Black');
   assert.equal(cellText(1, 'color'), 'Black'); assert(!cell(1, 'size').hasAttribute('data-dirty'), 'Editing colour marks that attribute only');
   assert(required('row-1').hasAttribute('data-dirty'));
-  await click('columns'); await click('column-attributes'); await click('column-ean'); await click('columns');
+  await click('columns'); await click('column-attributes'); if (!required('column-ean').checked) await click('column-ean'); await click('columns');
   assert(cellText(1, 'attributes').includes('Wheel size: 29') && cellText(1, 'attributes').includes('Veľkosť: M'), 'Editing colour preserves other named attributes');
   await edit(1, 'attributes', 'broken text'); await edit(1, 'size', 'XL'); assert(cellText(1, 'attributes').includes('Veľkosť: XL'));
   await edit(1, 'ean', '12345678, 1234567890123'); assert.equal(cellText(1, 'ean'), '12345678, 1234567890123');
@@ -645,6 +647,16 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(calls.slice(beforeEanFill).filter(item => item.method === 'POST').length, 0, 'Opening EAN adoption never writes or prepares an implicit apply');
   assert(document.querySelector('[role="dialog"]').textContent.includes('8585047234448'), 'The existing supplier EAN is visible without searching the item again');
   await click('supplier-links-close');
+  const stockRow = clone(rows.get(1));
+  rows.set(1,{...stockRow,item_type:'service',stock:{...stockRow.stock,managed:false,known:false}}); await click('load');
+  assert(!element('stock-action-1-on_hand'), 'Services never offer physical stock actions');
+  await click('detail-1'); assert(!element('detail-tab-adjustment') && !element('detail-tab-fifo'), 'Service cards have no stock or FIFO tab');
+  assert(required('detail-item-type').disabled && required('detail-stock-unit').disabled, 'Locked definitions cannot be changed from the detail');
+  await click('close-detail'); rows.set(1,stockRow); await click('load');
+  await click('detail-2'); await input('detail-stock-unit','m');
+  assert(document.body.textContent.includes(t('meterLimit')), 'Meter quantities clearly disclose channel limitations');
+  await click('detail-save'); assert.equal(saveCalls().at(-1).body.changes[0].stock_unit,'m');
+  assert.equal(rows.get(2).stock_unit,'m');
   // Migration preparation is read-only, including the reused identity controls.
   const beforeMigration = calls.length, originalMigrationRow = clone(rows.get(1));
   await click('detail-1'); await click('sku-migration-open');
@@ -700,26 +712,32 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'is_active').includes(t('activityStates.inactive'))); assert(!element('cell-2-sku'));
   await input('supplier-link-filter', 'unlinked'); await click('load'); assert(!element('cell-1-sku'));
   assert(element('new-card'), 'The stock page exposes the unified local card action');
-  // New cards require verified concrete identity; retries preserve the exact request.
+  // Brand prefixes are automatic; ordinary item codes need no invented MPN proof. Retries preserve the exact request.
   const { ProductCardCreateForm } = require('../src/components/product/ProductCardCreateForm.tsx');
   let createdCard;
   await act(async () => { root.render(React.createElement(ProductCardCreateForm, { onClose: () => {}, onCreated: row => { createdCard = row; } })); await tick(); });
   await input('create-name', 'Local demo'); await input('create-activity', 'false');
-  assert(required('create-submit').disabled, 'An arbitrary card name cannot allocate a supplier-prefix SKU');
-  await input('sku-brand', 'Topeak'); await input('sku-source-code', '0001410'); await input('sku-source-ref', 'Synthetic manufacturer specification / exact pack');
+  assert(required('create-submit').disabled, 'A new card requires a real code, never an invented suffix');
+  assert(element('sku-brand') && !element('sku-source-ref') && !element('sku-leaf-confirmed'), 'Brand and item code do not require a mandatory MPN proof form');
+  await input('sku-brand','Topeak'); await input('sku-source-code', '0001410'); await input('create-stock-unit', 'pair');
   await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
-  assert(required('create-submit').disabled, 'A source field is not automatically verified as a leaf MPN');
-  await click('sku-leaf-confirmed'); await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
-  assert(required('sku-preview').textContent.includes('TP-0001410'), 'The preview preserves leading zeros');
+  assert(required('sku-preview').textContent.includes('TP-0001410'), 'The generated SKU preserves leading zeros with the registered prefix');
   await click('create-submit');
-  assert(required('create-sku').disabled, 'An uncertain create preserves its exact payload');
+  assert(required('create-sku').disabled && required('create-stock-unit').disabled, 'An uncertain create preserves its exact payload');
   assert(required('create-submit').textContent.includes(t('retryCreate')));
   await click('create-submit');
   assert.equal(createdRequests.size, 1, 'Retry does not create another card');
   assert.equal(createdCard.sku, 'TP-0001410'); assert.equal(createdCard.is_active, false); assert.equal(createdCard.supplier_linked, false);
   const newRequest = [...createdRequests.values()][0].body;
-  assert.equal(newRequest.sku_identity.source_code, '0001410'); assert.equal(newRequest.sku_identity.leaf_confirmed, true);
-  assert(!('sku' in newRequest), 'The server allocates new SKU from evidence');
+  assert(!('sku' in newRequest),'The browser does not assign the new SKU'); assert.equal(newRequest.sku_identity.source_code,'0001410'); assert.equal(newRequest.sku_identity.leaf_confirmed,false,'An operational code is not fabricated MPN evidence');
+  assert.equal(newRequest.item_type,'stock'); assert.equal(newRequest.stock_unit,'pair');
+  await act(async () => { root.render(React.createElement(ProductCardCreateForm, {key:'service',onClose:()=>{},onCreated:row=>{createdCard=row;}})); await tick(); });
+  await input('create-name', 'Workshop work'); await input('sku-brand','Workshop'); await input('sku-source-code','SERVICE'); await input('create-item-type','service');
+  assert(!element('create-stock-unit'), 'Services do not offer a physical stock unit choice');
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300))); await click('create-submit');
+  assert.equal(calls.filter(call=>call.path.endsWith('/sku-policy/preview')).at(-1).body.item_type,'service');
+  assert.equal(createdCard.item_type,'service'); assert.equal(createdCard.stock_unit,'pcs');
+  assert.equal([...createdRequests.values()].at(-1).body.sku_identity.code_kind,'service', 'Registered service namespaces work without an extra code-kind control');
   skuPreviewMode = 'existing';
   await act(async () => { root.render(React.createElement(ProductCardCreateForm, {key:'existing',onClose:()=>{},onCreated:row=>{createdCard=row;}})); await tick(); });
   await input('create-ean', '5901234123457');

@@ -77,7 +77,8 @@ def policy_dto(policy):
 async def channels(db, warehouse_id):
     # Include any channel exposing known stock in this warehouse, even if that
     # channel was accidentally omitted from order-policy configuration.
-    products = select(StockBalance.product_id).where(StockBalance.warehouse_id == warehouse_id)
+    products = select(StockBalance.product_id).join(Product, Product.id == StockBalance.product_id).where(
+        StockBalance.warehouse_id == warehouse_id, Product.item_type == "stock")
     mapped = select(ShopProduct.shop_id).where(ShopProduct.product_id.in_(products), ShopProduct.is_listed.is_(True))
     rows = (await db.execute(select(Shop, OrderStockPolicy, StockShopSettings)
         .outerjoin(OrderStockPolicy, OrderStockPolicy.shop_id == Shop.id)
@@ -278,7 +279,7 @@ async def enqueue(db, payload, *, automatic=False):
     if policy.retry_after_at and policy.retry_after_at > now():
         raise SyncError('stock_sync_retry_later', 429)
     maximum = await db.scalar(select(func.max(Product.id)).join(ShopProduct, ShopProduct.product_id == Product.id)
-                             .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True))) or 0
+                             .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.item_type == "stock")) or 0
     row = Run(id=str(uuid4()), shop_id=shop.id, warehouse_id=warehouse.id, target_fingerprint=policy.target_fingerprint,
               settings_revision=policy.revision, protocol=policy.protocol, trigger='automatic' if automatic else 'manual', status='queued',
               selected_skus=selected, cursor_product_id=0, max_product_id=maximum, started_at=now())
@@ -382,7 +383,7 @@ async def process_run(db, identifier):
             run.cursor_product_id = run.max_product_id if exhausted else 0
         else:
             rows = (await db.execute(select(Product.id, Product.sku).join(ShopProduct, ShopProduct.product_id == Product.id)
-                .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.id > run.cursor_product_id,
+                .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.item_type == "stock", Product.id > run.cursor_product_id,
                        Product.id <= run.max_product_id).distinct().order_by(Product.id).limit(values['batch_size']))).all()
             selected = [row.sku for row in rows]
             run.cursor_product_id = rows[-1].id if rows else run.max_product_id

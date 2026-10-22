@@ -24,8 +24,9 @@ def identifier(id, value, kind=IdentifierType.ean, supplier_id=None):
 
 def mapping(id, product_id, code, *, shop_id=1, variant=False, external_id=None, legacy_parent=False):
     return SimpleNamespace(id=id, product_id=product_id, shop_id=shop_id, is_variant=variant,
-                           external_id=external_id, external_code="PARENT" if legacy_parent else code,
-                           variant_code=code if variant else None, parent_code="PARENT" if variant else None)
+                           native_id=external_id, external_code=code,
+                           external_product_id=None if variant else external_id,
+                           external_variant_id=external_id if variant else None, parent_code="PARENT" if variant else None)
 
 
 class IdentityResolverTests(unittest.TestCase):
@@ -82,7 +83,7 @@ class IdentityResolverTests(unittest.TestCase):
         index = IdentityIndex(2, [product(1, "COMMON")], [stored_mapping])
         result = index.resolve(RemoteIdentity(2, "COMMON", True, "15"))
         self.assertEqual((result.status, result.product_id, result.matched_by), ("mapped", 1, "shop_mapping"))
-        self.assertEqual((stored_mapping.product_id, stored_mapping.variant_code, stored_mapping.external_id), (1, "COMMON", "15"))
+        self.assertEqual((stored_mapping.product_id, stored_mapping.external_code, stored_mapping.native_id), (1, "COMMON", "15"))
 
     def test_valid_ean_links_different_shop_code_without_changing_local_sku(self):
         index = IdentityIndex(2, [product(1, "CANONICAL")], identifiers=[identifier(1, EAN_A)])
@@ -96,12 +97,10 @@ class IdentityResolverTests(unittest.TestCase):
                 index = IdentityIndex(1, [product(1, "OTHER")], identifiers=[identifier(1, value, kind)])
                 self.assertEqual(index.resolve(RemoteIdentity(1, "REMOTE", barcodes=(value,))).status, "unresolved")
 
-    def test_both_legacy_variant_mapping_conventions_resolve_the_leaf_only(self):
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
-                index = IdentityIndex(1, [product(1, "LOCAL")], [mapping(7, 1, "V-M", variant=True, legacy_parent=legacy)])
-                self.assertEqual(index.resolve(RemoteIdentity(1, "V-M")).product_id, 1)
-                self.assertEqual(index.resolve(RemoteIdentity(1, "PARENT")).status, "unresolved")
+    def test_variant_leaf_and_parent_have_distinct_roles(self):
+        index = IdentityIndex(1, [product(1, "LOCAL")], [mapping(7, 1, "V-M", variant=True)])
+        self.assertEqual(index.resolve(RemoteIdentity(1, "V-M")).product_id, 1)
+        self.assertEqual(index.resolve(RemoteIdentity(1, "PARENT")).status, "unresolved")
 
     def test_same_remote_numeric_id_does_not_cross_simple_variant_namespaces(self):
         index = IdentityIndex(1, [product(1, "S"), product(2, "V")],

@@ -319,6 +319,8 @@ async def _product_scope(db, product_id=None, sku=None, warehouse_code=None, loc
     product = await db.scalar(product_query.execution_options(populate_existing=True))
     if product is None or not product.is_active:
         raise FifoError("fifo_product_not_found", 404)
+    if product.item_type != "stock":
+        raise FifoError("stock_item_required")
     collision = await db.scalar(select(Product.id).where(func.lower(Product.sku) == product.sku.lower(), Product.id != product.id).limit(1))
     if collision is not None:
         raise FifoError("fifo_product_ambiguous")
@@ -345,7 +347,7 @@ def _balance(balance):
 async def _snapshot(db, product, warehouse, balance):
     last, count = (await db.execute(select(func.max(StockMovement.id), func.count()).where(
         StockMovement.product_id == product.id, StockMovement.warehouse_id == warehouse.id))).one()
-    return {"product_id": product.id, "sku": product.sku, "warehouse_id": warehouse.id,
+    return {"product_id": product.id, "sku": product.sku, "stock_unit": product.stock_unit, "warehouse_id": warehouse.id,
             "balance": _balance(balance), "last_movement_id": last, "movement_count": count,
             "tracking_confirmed": await stock_tracking.is_confirmed(db, product.id, warehouse.id),
             "valuation": await valuation(db, balance)}
@@ -370,6 +372,7 @@ async def stock(db, product_id, warehouse_code, limit=50, offset=0):
                             .limit(limit).offset(offset))).all()
     snapshot = await _snapshot(db, product, warehouse, balance)
     return {"product_id": product.id, "sku": product.sku, "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
+            "item_type": product.item_type, "stock_unit": product.stock_unit,
             "balance": _balance(balance) if snapshot["tracking_confirmed"] else None,
             "tracking_confirmed": snapshot["tracking_confirmed"],
             "valuation": snapshot["valuation"], "snapshot_hash": digest(snapshot),
@@ -508,6 +511,11 @@ async def receipt_preview(db, payload):
     raw = payload.model_dump(mode="json")
     request_hash = digest(raw)
     product, warehouse, balance = await _product_scope(db, sku=payload.sku, warehouse_code=payload.warehouse_code, lock=True)
+    from inventory_hub.services.item_units import validate_stock_quantity, ItemUnitError
+    try:
+        validate_stock_quantity(Decimal(payload.quantity), product.stock_unit)
+    except ItemUnitError as error:
+        raise FifoError(error.code, 422) from None
     existing = await db.get(FifoReceipt, str(payload.request_id))
     if existing:
         if existing.request_hash != request_hash:

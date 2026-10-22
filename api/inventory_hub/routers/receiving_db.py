@@ -6,7 +6,7 @@ Replaces JSON-based receiving.py with proper database operations.
 """
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Body, Depends, Query, BackgroundTasks, Request
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Literal
 from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -38,6 +38,7 @@ from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
 from inventory_hub.services import stock_tracking
+from inventory_hub.services.item_units import receipt_values, validate_stock_quantity, ItemUnitError
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
 from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
@@ -179,7 +180,7 @@ def _invoice_no_from_id(invoice_id: str, supplier_code: str) -> str:
 # Pydantic Models for API
 # ============================================================================
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr, field_validator
 
 
 class CreateSessionRequest(BaseModel):
@@ -199,6 +200,18 @@ class SetQtyRequest(BaseModel):
     line_index: int
     received_qty: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     note: Optional[str] = None
+
+
+class SetUnitRequest(BaseModel):
+    purchase_unit: Literal["pcs", "pair", "pack", "m"]
+    purchase_to_stock_factor: StrictStr
+
+    @field_validator("purchase_to_stock_factor")
+    @classmethod
+    def valid_factor(cls, value):
+        if not re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", value) or not 0 < Decimal(value) <= Decimal("999999.999"):
+            raise ValueError("Use a positive exact conversion factor with at most three decimals")
+        return value
 
 
 class AcceptAllRequest(BaseModel):
@@ -236,6 +249,16 @@ def _line_dict(line: ReceivingLine, prefix: str) -> Dict[str, Any]:
     """
     product = line.__dict__.get("product")  # Never trigger async lazy loading during serialization.
     product_code = product.sku if product is not None else (f"{prefix}{line.supplier_sku}" if line.supplier_sku else None)
+    factor = line.purchase_to_stock_factor if line.purchase_to_stock_factor is not None else Decimal("1")
+    quantity = cost = conversion_error = None
+    if product is not None and product.item_type == "stock":
+        try:
+            quantity, cost = receipt_values(line.received_qty, line.unit_price, factor)
+            validate_stock_quantity(quantity, product.stock_unit)
+            if line.conversion_stock_unit is not None and line.conversion_stock_unit != product.stock_unit:
+                conversion_error = "receiving_unit_changed"
+        except ItemUnitError as error:
+            conversion_error = error.code
     return {
         "id": line.id,
         "line_number": line.line_number,
@@ -247,6 +270,15 @@ def _line_dict(line: ReceivingLine, prefix: str) -> Dict[str, Any]:
         "title": line.description or "",             # alias (frontend)
         "ordered_qty": float(line.ordered_qty),
         "received_qty": float(line.received_qty),
+        "item_type": product.item_type if product is not None else None,
+        "stock_managed": product.item_type == "stock" if product is not None else None,
+        "purchase_unit": line.purchase_unit,
+        "conversion_stock_unit": line.conversion_stock_unit,
+        "purchase_to_stock_factor": str(factor),
+        "stock_unit": product.stock_unit if product is not None and product.item_type == "stock" else None,
+        "stock_quantity": str(quantity) if quantity is not None else None,
+        "stock_unit_cost": str(cost) if cost is not None else None,
+        "unit_conversion_error": conversion_error,
         "unit_price": float(line.unit_price) if line.unit_price is not None else None,
         "received_value": str(line.unit_price * line.received_qty) if line.unit_price is not None else None,
         "status": line.status,
@@ -392,7 +424,7 @@ async def _ensure_product_for_line(
         raise HTTPException(409, detail={
             "code": "receiving_product_preparation_required",
             "message": (f"Riadok {line.line_number}: najprv použite Založiť skladové karty "
-                        "a overte značku a kód konkrétneho výrobku alebo variantu. "
+                        "a overte kód konkrétneho výrobku alebo variantu. "
                         "Potom sa vráťte do tejto príjemky; prijaté množstvá zostávajú zachované."),
             "line_id": line.id, "line_number": line.line_number, "action": "prepare_products",
         })
@@ -456,12 +488,16 @@ async def _ensure_product_for_line(
             db.add(SupplierProduct(supplier_id=supplier.id, supplier_sku=sku_raw,
                 ean=ean or None, name=(line.description or product.sku)[:500], purchase_price=line.unit_price))
             await db.flush()
-        from inventory_hub.services.supplier_links import reconcile_supplier_links
-        report = await reconcile_supplier_links(db, supplier.code, product_ids=[product.id])
-        if report["conflicts"]:
+        from inventory_hub.services.supplier_links import bind_explicit_supplier_source
+        from inventory_hub.services.supplier_availability_source import AvailabilityError
+        try:
+            await bind_explicit_supplier_source(db, product.id, supplier.id,
+                matched_source.supplier_sku if matched_source is not None else sku_raw,
+                barcodes=verified_barcodes((ean,)), actor="receiving")
+        except AvailabilityError as error:
             raise HTTPException(409, detail={"code": "receiving_identity_conflict",
-                "message": f"Riadok {line.line_number}: dodávateľský kód označuje iný produkt. Skontroluj prepojenie.",
-                "line_number": line.line_number, "conflicts": report["conflicts"]})
+                "message": f"Riadok {line.line_number}: skontrolujte dodávateľské prepojenie.",
+                "line_number": line.line_number, "reason": error.code}) from None
     return product, created, None
 
 
@@ -479,8 +515,15 @@ async def _write_stock_for_line(
     (weighted-average cost) in the same transaction. Idempotent via
     unique idempotency_key per (session, line).
     """
-    qty = line.received_qty
-    unit_cost = line.unit_price
+    if product.item_type != "stock":
+        raise HTTPException(409, detail={"code": "stock_item_required"})
+    try:
+        qty, unit_cost = receipt_values(line.received_qty, line.unit_price, line.purchase_to_stock_factor)
+        validate_stock_quantity(qty, product.stock_unit)
+        if line.conversion_stock_unit is not None and line.conversion_stock_unit != product.stock_unit:
+            raise ItemUnitError("receiving_unit_changed")
+    except ItemUnitError as error:
+        raise HTTPException(409, detail={"code": error.code, "line_id": line.id}) from None
 
     try:
         await stock_tracking.activate(db, balance, source_type="receiving_session", source_id=session.id,
@@ -537,6 +580,8 @@ async def _write_stock_for_line(
         await fifo.add_receipt(db, balance, movement, now, unit_cost, "known",
             {"kind": "receiving", "session_id": session.id, "line_id": line.id,
              "supplier_code": supplier_code, "invoice_number": session.invoice_number,
+             "purchase_quantity": str(line.received_qty), "purchase_unit": line.purchase_unit or product.stock_unit,
+             "purchase_to_stock_factor": str(line.purchase_to_stock_factor), "stock_unit": product.stock_unit,
              "unit_cost_at_receipt": str(unit_cost)})
     except fifo.FifoError as error:
         raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
@@ -933,6 +978,37 @@ async def set_line_quantity(
     }
 
 
+@router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/lines/{line_index}/unit")
+async def set_line_unit(supplier_code: str, session_id: int, line_index: int, request: SetUnitRequest,
+                        db: AsyncSession = Depends(get_session)):
+    """Set purchase conversion without rewriting invoice quantities or prices."""
+    session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
+    _require_mutable_session(session)
+    lines = _lines_sorted(session)
+    if not 0 <= line_index < len(lines):
+        raise HTTPException(400, detail="Invalid line_index")
+    line = lines[line_index]
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    product = await db.get(Product, line.product_id) if line.product_id is not None else None
+    if product is None:
+        raise HTTPException(409, detail={"code": "receiving_product_preparation_required"})
+    if product.item_type == "service":
+        raise HTTPException(409, detail={"code": "stock_item_required"})
+    factor = Decimal(request.purchase_to_stock_factor)
+    try:
+        for quantity in (line.ordered_qty, line.received_qty):
+            amount, _ = receipt_values(quantity, line.unit_price, factor)
+            validate_stock_quantity(amount, product.stock_unit)
+    except ItemUnitError as error:
+        raise HTTPException(422, detail={"code": error.code}) from None
+    line.purchase_unit, line.purchase_to_stock_factor = request.purchase_unit, factor
+    line.conversion_stock_unit = product.stock_unit
+    await db.flush()
+    prefix = _product_code_prefix(supplier_code)
+    return {"success": True, "line": (await _line_dicts(db, session.supplier_id, [line], prefix))[0],
+            "summary": _summary_counts(session, await _count_unexpected(db, session.id))}
+
+
 @router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/accept-all")
 async def accept_all_items(
     supplier_code: str,
@@ -1050,12 +1126,6 @@ async def finalize_session(
             raise HTTPException(409, detail=f"Riadok {line.line_number}: oprav neplatné prijaté množstvo.")
         if line.received_qty == 0:
             continue
-        if line.unit_price is None or not line.unit_price.is_finite() or line.unit_price < 0:
-            raise HTTPException(409, detail=(
-                f"Riadok {line.line_number}: chýba platná nákupná cena. "
-                "Správca musí opraviť cenu v uloženom riadku nedokončeného príjmu; "
-                "samotná výmena CSV ho neaktualizuje. Príjem bez známej nákupnej ceny zatiaľ nie je podporovaný."
-            ))
         if not line.product_id and not (line.ean or "").strip() and not (line.supplier_sku or "").strip():
             raise HTTPException(409, detail=(
                 f"Riadok {line.line_number}: produkt nemá priradenie, EAN ani kód dodávateľa. "
@@ -1067,6 +1137,7 @@ async def finalize_session(
     identifier_service = ProductIdentifierService(db)
     products_created = 0
     resolved = []
+    skipped = []
 
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     for line in lines:
@@ -1082,7 +1153,19 @@ async def finalize_session(
             ))
         products_created += int(created)
         line.product_id = product.id
-        resolved.append((line, product))
+        if product.item_type == "service":
+            skipped.append({"line_number": line.line_number, "product_id": product.id,
+                            "reason": "service_outside_stock"})
+        else:
+            resolved.append((line, product))
+
+    for line, product in resolved:
+        if line.unit_price is None or not line.unit_price.is_finite() or line.unit_price < 0:
+            raise HTTPException(409, detail=(
+                f"Riadok {line.line_number}: chýba platná nákupná cena. "
+                "Správca musí opraviť cenu v uloženom riadku nedokončeného príjmu; "
+                "samotná výmena CSV ho neaktualizuje. Príjem bez známej nákupnej ceny zatiaľ nie je podporovaný."
+            ))
 
     balances = await _lock_stock_balances(db, session.warehouse_id, {product.id for _, product in resolved})
     for line, product in resolved:
@@ -1091,7 +1174,7 @@ async def finalize_session(
 
     session.status = ReceivingStatus.completed
     session.finished_at = datetime.now(timezone.utc)
-    result = await _finalize_result(db, session, len(resolved), products_created, [])
+    result = await _finalize_result(db, session, len(resolved), products_created, skipped)
     session.session_data = {**(session.session_data or {}), "finalize_result": result}
 
     # The index is outside the DB transaction. Commit first, so a failed

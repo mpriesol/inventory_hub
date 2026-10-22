@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from inventory_hub import config_io
 from inventory_hub.config_normalize import normalize_supplier_availability
-from inventory_hub.db_models import FeedRunStatus, Product, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
+from inventory_hub.db_models import FeedRunStatus, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services import catalog
 from inventory_hub.services.supplier_availability_source import AvailabilityError, ParsedAvailability, configuration
@@ -410,11 +410,6 @@ async def project(db, product_ids, at=None):
     links = list(await db.scalars(select(ProductSupplySource).where(ProductSupplySource.product_id.in_(product_ids))))
     candidates = [(link.product_id, link.supplier_product_id, link.priority, link.is_primary,
                    link.is_active and link.orderable) for link in links]
-    # Explicitly disabled links must never be revived through a legacy pointer.
-    linked = {link.product_id for link in links}
-    candidates.extend((product_id, source, 100, False, True) for product_id, source in
-        (await db.execute(select(Product.id, Product.source_supplier_product_id).where(
-            Product.id.in_(product_ids), Product.source_supplier_product_id.is_not(None)))).all() if product_id not in linked)
     ids = {row[1] for row in candidates}
     sources = {product.id: (product, supplier, observation, settings) for product, supplier, observation, settings in
         (await db.execute(select(SupplierProduct, Supplier, SupplierAvailabilityObservation, SupplierAvailabilitySettings)

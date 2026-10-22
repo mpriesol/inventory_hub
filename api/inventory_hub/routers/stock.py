@@ -7,6 +7,7 @@ Physical writers live in receiving and the dedicated stock services.
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
@@ -69,7 +70,7 @@ def valuation_balances():
                    (StockBalance.total_value.is_(None), StockBalance.qty_on_hand), else_=0)
     provisional = func.coalesce(layers.c.provisional_quantity, 0)
     return select(
-        StockBalance.product_id, StockBalance.warehouse_id, StockBalance.qty_on_hand,
+        StockBalance.product_id, StockBalance.warehouse_id, Product.stock_unit, StockBalance.qty_on_hand,
         StockBalance.qty_reserved, StockBalance.qty_quarantined,
         func.coalesce(cast(ProductEditorOverride.data["warehouses"][Warehouse.code]["min_quantity"].astext, Numeric(12, 3)),
                       StockBalance.min_quantity).label("min_quantity"),
@@ -78,7 +79,8 @@ def valuation_balances():
         func.coalesce(layers.c.provisional_value, 0).label("provisional_value"),
         unknown.label("unknown_quantity"), provisional.label("provisional_quantity"),
         case((and_(unknown == 0, provisional == 0, StockBalance.total_value.is_not(None)), 0), else_=1).label("incomplete"),
-    ).where(confirmed_stock()).join(Warehouse, Warehouse.id == StockBalance.warehouse_id)\
+    ).select_from(StockBalance).join(Product, Product.id == StockBalance.product_id)\
+     .where(confirmed_stock(), Product.item_type == "stock").join(Warehouse, Warehouse.id == StockBalance.warehouse_id)\
      .outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == StockBalance.product_id)\
      .outerjoin(FifoState, and_(FifoState.product_id == StockBalance.product_id,
                                FifoState.warehouse_id == StockBalance.warehouse_id))\
@@ -99,12 +101,12 @@ def valuation_fields(balance):
 
 
 def valuation_output(row):
-    on_hand, reserved, quarantined = (float(row.on_hand or 0), float(row.reserved or 0), float(row.quarantined or 0))
+    on_hand, reserved, quarantined = (Decimal(row.on_hand or 0), Decimal(row.reserved or 0), Decimal(row.quarantined or 0))
     complete = not row.incomplete
     value = float(row.total_value or 0) if complete else None
-    return {"on_hand": on_hand, "reserved": reserved, "quarantined": quarantined,
-            "available": on_hand - reserved - quarantined,
-            "avg_cost": value / on_hand if complete and on_hand else (0 if complete else None),
+    return {"on_hand": float(on_hand), "reserved": float(reserved), "quarantined": float(quarantined),
+            "available": float(on_hand - reserved - quarantined),
+            "avg_cost": float(Decimal(row.total_value or 0) / on_hand) if complete and on_hand else (0 if complete else None),
             "total_value": value, "value_complete": complete,
             "known_value": float(row.known_value or 0), "provisional_value": float(row.provisional_value or 0),
             "unknown_quantity": float(row.unknown_quantity or 0), "provisional_quantity": float(row.provisional_quantity or 0)}
@@ -113,13 +115,14 @@ def valuation_output(row):
 @router.get("/items")
 async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str, Any]]:
     balances = valuation_balances()
-    result = await db.execute(select(Product.id, Product.sku, Product.name, Product.brand,
+    result = await db.execute(select(Product.id, Product.sku, Product.name, Product.brand, Product.item_type, Product.stock_unit,
         *valuation_fields(balances), func.max(balances.c.min_quantity).label("min_quantity"))
         .join(balances, balances.c.product_id == Product.id)
-        .group_by(Product.id, Product.sku, Product.name, Product.brand).order_by(Product.sku))
+        .group_by(Product.id, Product.sku, Product.name, Product.brand, Product.item_type, Product.stock_unit).order_by(Product.sku))
     images = await _image_urls_by_product(db)
     names = await effective_names(db)
     return [{"sku": row.sku, "image_url": images.get(row.id), "name": names.get(row.id, {}).get("name", row.name), "brand": names.get(row.id, {}).get("brand", row.brand) or "",
+             "item_type": row.item_type, "stock_unit": row.stock_unit,
              **valuation_output(row),
              "low_stock": float(row.on_hand or 0) - float(row.reserved or 0) - float(row.quarantined or 0) <= float(row.min_quantity or 0)}
             for row in result.all()]
@@ -128,20 +131,31 @@ async def stock_items(db: AsyncSession = Depends(get_session)) -> List[Dict[str,
 @router.get("/summary")
 async def stock_summary(db: AsyncSession = Depends(get_session)) -> Dict[str, Any]:
     balances = valuation_balances()
-    row = (await db.execute(select(*valuation_fields(balances),
+    rows = (await db.execute(select(balances.c.stock_unit, *valuation_fields(balances),
         func.count(func.distinct(balances.c.product_id)).label("products_with_stock"),
-        func.sum(case((balances.c.qty_on_hand - balances.c.qty_reserved - balances.c.qty_quarantined <= balances.c.min_quantity, 1), else_=0)).label("low_stock")))).one()
-    values = valuation_output(row)
-    products_total = (await db.execute(select(func.count(Product.id)))).scalar() or 0
+        func.sum(case((balances.c.qty_on_hand - balances.c.qty_reserved - balances.c.qty_quarantined <= balances.c.min_quantity, 1), else_=0)).label("low_stock"))
+        .group_by(balances.c.stock_unit).order_by(balances.c.stock_unit))).all()
+    quantity_fields = ("on_hand", "reserved", "quarantined", "available", "unknown_quantity", "provisional_quantity")
+    quantities = {row.stock_unit: {key: value for key, value in valuation_output(row).items() if key in quantity_fields}
+                  for row in rows}
+    # Currency values are additive across products. A count of metres and a
+    # count of pieces is not: expose each unit and leave mixed scalar totals null.
+    values = (next(iter(quantities.values())) if len(quantities) == 1 else
+              {key: None if quantities else 0 for key in quantity_fields})
+    complete = not any(row.incomplete for row in rows)
+    monetary_total = lambda key: float(sum((getattr(row, key) or Decimal(0) for row in rows), Decimal(0)))
+    confirmed_products = sum(int(row.products_with_stock or 0) for row in rows)
+    products_total = (await db.execute(select(func.count(Product.id)).where(Product.item_type == "stock"))).scalar() or 0
     open_orders = int(await db.scalar(select(func.count(ShopOrder.id)).where(
         ShopOrder.stock_state.in_(("pending", "reserved")))) or 0)
-    return {"products_total": int(products_total), "products_with_stock": int(row.products_with_stock or 0),
-            "confirmed_products": int(row.products_with_stock or 0),
-            "unconfirmed_products": int(products_total) - int(row.products_with_stock or 0),
-            "inventory_value": values["total_value"], "known_inventory_value": values["known_value"],
-            "provisional_inventory_value": values["provisional_value"], "value_complete": values["value_complete"],
+    return {"products_total": int(products_total), "products_with_stock": confirmed_products,
+            "confirmed_products": confirmed_products,
+            "unconfirmed_products": int(products_total) - confirmed_products,
+            "quantity_by_unit": quantities, "stock_unit": next(iter(quantities)) if len(quantities) == 1 else None,
+            "inventory_value": monetary_total("total_value") if complete else None, "known_inventory_value": monetary_total("known_value"),
+            "provisional_inventory_value": monetary_total("provisional_value"), "value_complete": complete,
             "unknown_quantity": values["unknown_quantity"], "provisional_quantity": values["provisional_quantity"],
-            "quarantined_total": values["quarantined"], "reserved_total": values["reserved"], "low_stock_count": int(row.low_stock or 0),
+            "quarantined_total": values["quarantined"], "reserved_total": values["reserved"], "low_stock_count": sum(int(row.low_stock or 0) for row in rows),
             "on_hand_total": values["on_hand"], "available_total": values["available"], "open_managed_orders": open_orders}
 
 
@@ -209,6 +223,7 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
         valuation = {key: None for key in valuation}
         valuation["value_complete"] = False
     valuation["known"] = bool(stock_row.confirmed_warehouses)
+    valuation["managed"] = product.item_type == "stock"
 
     shop_rows = (await db.execute(
         select(ShopProduct, Shop.code)
@@ -227,12 +242,14 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
                                             ShopProductContent.external_code == parent).limit(1)
         )).scalar_one_or_none()
         if content and isinstance(content.data, dict):
-            image_url = _image_from_content(content.data, sp.variant_code)
+            image_url = _image_from_content(content.data, (sp.external_code if sp.is_variant else None))
             if image_url:
                 break
 
     return {
         "sku": product.sku,
+        "item_type": product.item_type,
+        "stock_unit": product.stock_unit,
         "name": names.get("name", product.name),
         "brand": names.get("brand", product.brand),
         "category": product.category,
@@ -251,7 +268,7 @@ async def product_detail(sku: str, db: AsyncSession = Depends(get_session)) -> D
         ],
         "stock": valuation,
         "shops": [
-            {"shop": shop_code, "external_code": sp.external_code, "variant_code": sp.variant_code,
+            {"shop": shop_code, "external_code": sp.external_code, "variant_code": (sp.external_code if sp.is_variant else None),
              "parent_code": sp.parent_code,
              "shop_availability": sp.shop_availability,
              "shop_stock": float(sp.shop_stock) if sp.shop_stock is not None else None,

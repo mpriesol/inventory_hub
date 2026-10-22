@@ -4,15 +4,30 @@ import unittest
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from catalog_fixtures import FakeUpgates, dummy_session, product
 from inventory_hub import config_io
 from inventory_hub.catalog_types import CatalogParameter, ShopImportOptions, ShopImportPreviewRequest
 from inventory_hub.services import catalog_import as imports
+from inventory_hub.services.catalog_identity import ShopIdentityIndex
 
 
 class ImportMappingTests(unittest.TestCase):
+    def test_occupied_code_requires_same_typed_native_mapping(self):
+        source = product().model_copy(update={"shop_code": "TP-00042", "eans": []})
+        index = ShopIdentityIndex({"products": {"44": [{"code": "tp-00042", "display_code": "TP-00042",
+            "kind": "product", "variant_id": None, "eans": []}]}})
+        mapping = SimpleNamespace(external_code="TP-00042", is_variant=False, external_product_id="44",
+            external_variant_id=None, parent_code=None)
+        self.assertTrue(imports._mapping_owns_remote(mapping, source, index))
+        mapping.external_product_id = "99"
+        self.assertFalse(imports._mapping_owns_remote(mapping, source, index))
+        mapping.external_product_id = "44"
+        mapping.is_variant = True
+        self.assertFalse(imports._mapping_owns_remote(mapping, source, index))
+
     def test_supplier_coefficients_do_not_inherit_another_supplier_defaults(self):
         p = product()
         p.brand = "SHIMANO"
@@ -120,6 +135,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         patch.object(imports, "canonical_codes", AsyncMock(side_effect=lambda db, rows: {p.id: p.shop_code for p in rows})).start()
         patch("inventory_hub.services.catalog.attach_shop_links", AsyncMock()).start()
         self.register = patch.object(imports, "register_created", AsyncMock()).start()
+        self.verified_existing = patch.object(imports, "verified_existing_sources", AsyncMock(return_value=set())).start()
         self.id = "a" * 32
         self.path = imports._path("test-shop", self.id)
         p = product()
@@ -346,7 +362,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1, 2, 3]))
         item = preview.items[0]
         self.assertEqual(item.status, "invalid")
-        self.assertEqual(item.errors, ["some_variants_in_shop"])
+        self.assertEqual(item.errors, ["shop_identity_review_required"])
         self.assertEqual(item.existing_product_ids, [1])
         self.assertFalse(item.parent_exists)
         self.assertEqual(item.product_ids, [2, 3, 1], "Preview follows size order, independent of request order")
@@ -371,7 +387,8 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         db = AsyncMock()
         db.scalar.return_value = 1
         preview = await imports.create_preview(db, "test-shop", ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1]))
-        self.assertEqual(preview.items[0].status, "exists")
+        self.assertEqual(preview.items[0].status, "invalid")
+        self.assertEqual(preview.items[0].errors, ["shop_code_conflict"])
         self.assertTrue(preview.items[0].parent_exists)
         self.assertEqual(preview.items[0].existing_product_ids, [1])
         self.assertEqual(preview.price_lines[0].shop_matches[0].matched_by, "parent_code")
@@ -386,8 +403,110 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_import()
         self.assertEqual(result["items"][0]["status"], "invalid")
         self.assertEqual(result["items"][0]["existing_product_ids"], [1])
-        self.assertEqual(result["items"][0]["errors"], ["some_variants_in_shop"])
+        self.assertEqual(result["items"][0]["errors"], ["shop_identity_review_required"])
         self.assertEqual(self.client.sent, [])
+
+    async def test_remote_only_code_collision_is_invalid_in_both_shop_previews(self):
+        source = product().model_copy(update={"code": "00042", "shop_code": "TP-00042", "brand": "Topeak", "eans": []})
+        imports.selected_products.return_value = [source]
+        for shop in ("biketrek", "xtrek"):
+            with self.subTest(shop=shop):
+                config_io.save_shop(shop, imports.shop_config("test-shop"))
+                self.client.products = {"TP-00042": {"product_id": 44, "code": "TP-00042", "manufacturer": "Other brand"}}
+                preview = await imports.create_preview(AsyncMock(), shop,
+                    ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1]))
+                self.assertEqual((preview.items[0].status, preview.items[0].errors), ("invalid", ["shop_code_conflict"]))
+        self.assertEqual(self.client.sent, [])
+        self.register.assert_not_awaited()
+
+    async def test_parent_variant_and_standalone_share_one_remote_code_namespace(self):
+        source = product().model_copy(update={"shop_code": "TP-00042", "eans": []})
+        imports.selected_products.return_value = [source]
+        for remote in (
+            {"product_id": 44, "code": "TP-00042"},
+            {"product_id": 44, "code": "TP-00042", "variants": [{"code": "OTHER", "variant_id": 45}]},
+            {"product_id": 44, "code": "PARENT", "variants": [{"code": "TP-00042", "variant_id": 45}]},
+        ):
+            with self.subTest(remote=remote):
+                self.client.products = {remote["code"]: remote}
+                preview = await imports.create_preview(AsyncMock(), "test-shop",
+                    ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1], refresh_shop=True))
+                self.assertEqual(preview.items[0].errors, ["shop_code_conflict"])
+        self.assertEqual(self.client.sent, [])
+
+    async def test_code_occupied_after_index_check_is_rejected_before_post(self):
+        original = self.client.get
+        def get(path, params=None):
+            if path == "products/simple" and (params or {}).get("codes"):
+                self.client.products["PL-A-001"] = {"product_id": 44, "code": "PL-A-001", "manufacturer": "Other brand"}
+            return original(path, params)
+        with patch.object(self.client, "get", side_effect=get):
+            result = await self.run_import()
+        self.assertEqual((result["items"][0]["status"], result["items"][0]["errors"]),
+                         ("invalid", ["shop_code_conflict"]))
+        self.assertEqual(self.client.sent, [])
+        self.register.assert_not_awaited()
+
+    async def test_distinct_brand_prefixed_skus_are_preserved_in_both_shop_payloads(self):
+        sources = [product(number).model_copy(update={"shop_code": code, "brand": brand,
+            "manufacturer_code": "00042"}) for number, code, brand in
+            ((1, "TP-00042", "Topeak"), (2, "SH-00042", "Shimano"))]
+        imports.selected_products.return_value = sources
+        clients = {shop: FakeUpgates() for shop in ("biketrek", "xtrek")}
+        for shop in clients:
+            config_io.save_shop(shop, imports.shop_config("test-shop"))
+        with patch.object(imports.UpgatesClient, "from_shop", side_effect=lambda shop: clients[shop]):
+            for shop in clients:
+                preview = await imports.create_preview(AsyncMock(), shop,
+                    ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1, 2]))
+                self.assertTrue(all(item.status == "ready" for item in preview.items))
+                imports.queue_import(shop, preview.preview_id)
+                await imports.execute_import(shop, preview.preview_id)
+                result = imports.import_result(shop, preview.preview_id)
+                self.assertTrue(all(item["status"] == "created" for item in result["items"]), result)
+                payloads = [payload["products"][0] for endpoint, payload in clients[shop].sent if endpoint == "products"]
+                self.assertEqual({(p["code"], p["manufacturer"]) for p in payloads},
+                                 {("TP-00042", "Topeak"), ("SH-00042", "Shimano")})
+
+    async def test_variant_leaf_skus_stay_brand_prefixed_under_their_parents_in_both_shops(self):
+        sources = [product(number, group_code=family, variant_relationship="explicit",
+            canonical_parent_code=parent, variant_attributes=[CatalogParameter(name="Size", value="M")])
+            .model_copy(update={"shop_code": leaf, "brand": brand})
+            for number, family, parent, leaf, brand in
+            ((1, "TP-FAMILY", "TP-G-00042", "TP-00042-M", "Topeak"),
+             (2, "SH-FAMILY", "SH-G-00042", "SH-00042-M", "Shimano"))]
+        imports.selected_products.return_value = sources
+        clients = {shop: FakeUpgates() for shop in ("biketrek", "xtrek")}
+        for shop in clients:
+            config_io.save_shop(shop, imports.shop_config("test-shop"))
+        with patch.object(imports.UpgatesClient, "from_shop", side_effect=lambda shop: clients[shop]):
+            for shop in clients:
+                preview = await imports.create_preview(AsyncMock(), shop,
+                    ShopImportPreviewRequest(supplier="paul-lange", product_ids=[1, 2]))
+                imports.queue_import(shop, preview.preview_id)
+                await imports.execute_import(shop, preview.preview_id)
+                result = imports.import_result(shop, preview.preview_id)
+                self.assertTrue(all(item["status"] == "created" for item in result["items"]), result)
+                payloads = [payload["products"][0] for endpoint, payload in clients[shop].sent if endpoint == "products"]
+                self.assertEqual({(p["code"], p["variants"][0]["code"]) for p in payloads},
+                                 {("TP-G-00042", "TP-00042-M"), ("SH-G-00042", "SH-00042-M")})
+
+    async def test_readback_cannot_adopt_same_code_with_wrong_brand_after_uncertain_send(self):
+        original = self.client.post
+        def post(endpoint, payload):
+            response = original(endpoint, payload)
+            if endpoint == "products":
+                self.client.products[payload["products"][0]["code"]]["manufacturer"] = "Other brand"
+            return response
+        with patch.object(self.client, "post", side_effect=post):
+            result = await self.run_import()
+        self.assertEqual((result["items"][0]["status"], result["items"][0]["errors"]),
+                         ("uncertain", ["import_readback_mismatch"]))
+        self.register.assert_not_awaited()
+        imports.queue_import("test-shop", self.id, retry_failed=True)
+        await imports.execute_import("test-shop", self.id)
+        self.assertEqual(len(self.client.sent), 1)
+        self.register.assert_not_awaited()
 
     async def test_success_is_verified_and_repeated_confirmation_is_idempotent(self):
         result = await self.run_import()
@@ -437,7 +556,8 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_ean_under_another_code_is_not_sent(self):
         self.client.products["OTHER"] = {"code": "OTHER", "ean": product().eans[0]}
         result = await self.run_import()
-        self.assertEqual(result["items"][0]["status"], "exists")
+        self.assertEqual(result["items"][0]["status"], "invalid")
+        self.assertEqual(result["items"][0]["errors"], ["shop_identity_review_required"])
         self.assertEqual(self.client.sent, [])
 
     async def test_database_failure_after_send_can_be_recovered_without_post(self):
@@ -462,7 +582,8 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         imports.checked_remote_identities("test-shop", self.client)
         self.client.products["OUTSIDE"] = {"product_id": 42, "code": "OUTSIDE", "ean": product().eans[0]}
         result = await self.run_import()
-        self.assertEqual(result["items"][0]["status"], "exists")
+        self.assertEqual(result["items"][0]["status"], "invalid")
+        self.assertEqual(result["items"][0]["errors"], ["shop_identity_review_required"])
         self.assertEqual(result["shop_check"]["mode"], "changes")
         self.assertEqual(self.client.sent, [])
 

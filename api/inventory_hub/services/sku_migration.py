@@ -61,9 +61,9 @@ async def _local(db, ids):
         .where(ShopProduct.product_id.in_(ids)).order_by(ShopProduct.id)
         .execution_options(populate_existing=True))).all():
         mappings[mapping.product_id].append({"shop_code": shop.code, "mapping_id": mapping.id,
-            "is_variant": mapping.is_variant, "old_code": mapping.variant_code if mapping.is_variant else mapping.external_code,
-            "native_id": _native(mapping.external_id), "parent_code": mapping.parent_code if mapping.is_variant else None,
-            "parent_native_id": None, "remote_status": "not_checked", "reasons": [],
+            "is_variant": mapping.is_variant, "old_code": mapping.external_code,
+            "native_id": _native(mapping.native_id), "parent_code": mapping.parent_code if mapping.is_variant else None,
+            "parent_native_id": _native(mapping.external_product_id), "remote_status": "not_checked", "reasons": [],
             "remote_identity": None, "remote_hash": None, "_shop_id": shop.id,
             "remote_checked_at": None, "remote_requests": None, "remote_connection_fingerprint": None,
             "retry_after_seconds": None,
@@ -270,7 +270,9 @@ async def preview(db, payload):
                 mapping["reasons"].append("migration_parent_missing")
             cache = cached.get(mapping["mapping_id"])
             if cache:
-                mapping["parent_native_id"] = _native(cache["parent_id"])
+                cached_parent_id = _native(cache["parent_id"])
+                if mapping["parent_native_id"] and cached_parent_id and mapping["parent_native_id"] != cached_parent_id:
+                    mapping["reasons"].append("migration_cached_parent_conflict")
                 if cache["parent_code"] != (mapping["parent_code"] if mapping["is_variant"] else mapping["old_code"]):
                     mapping["reasons"].append("migration_cached_parent_conflict")
                 if cache["is_set"] is True or not mapping["is_variant"] and (cache["has_variants"] is True or cache["variant_count"]):

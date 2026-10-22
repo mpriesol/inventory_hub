@@ -28,6 +28,7 @@ from inventory_hub.services.supplier_availability import project as supplier_ava
 from inventory_hub.services.stock_evidence import physical_stock_evidence
 from inventory_hub.services.stock_tracking import confirmed_stock, current_layer
 from inventory_hub.stock_tracking_models import StockTracking
+from inventory_hub.services.item_units import definition_locked, definition_lock_condition
 
 
 class EditorError(Exception):
@@ -119,11 +120,11 @@ FROM shop_products sp
 JOIN shop_product_content c ON c.shop_id = sp.shop_id
  AND c.external_code = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
 LEFT JOIN LATERAL (SELECT jsonb_path_query_first(c.data, '$.variants[*] ? (@.code == $code)',
- jsonb_build_object('code', sp.variant_code)) AS value) leaf ON sp.is_variant
+ jsonb_build_object('code', sp.external_code)) AS value) leaf ON sp.is_variant
 LEFT JOIN LATERAL (SELECT c.data->'_hub_link_metadata'->
- ((CASE WHEN sp.is_variant THEN 'variant:' ELSE 'product:' END) || sp.external_id) AS value) link
- ON link.value->>'external_id' = sp.external_id AND link.value->'is_variant' = to_jsonb(sp.is_variant)
- AND link.value->>'code' = CASE WHEN sp.is_variant THEN sp.variant_code ELSE sp.external_code END
+ ((CASE WHEN sp.is_variant THEN 'variant:' ELSE 'product:' END) || (CASE WHEN sp.is_variant THEN sp.external_variant_id ELSE sp.external_product_id END)) AS value) link
+ ON link.value->>'external_id' = (CASE WHEN sp.is_variant THEN sp.external_variant_id ELSE sp.external_product_id END) AND link.value->'is_variant' = to_jsonb(sp.is_variant)
+ AND link.value->>'code' = sp.external_code
  AND link.value->>'parent_code' = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
 WHERE sp.product_id = ANY(:ids)
 """
@@ -155,6 +156,8 @@ def _make_row(facts, data, revision, warehouse, stock):
         shops.append({**shop, "overrides": overrides, "effective": effective, "published_fields": published,
                       "state": ("published" if desired <= set(published) else "saved_unpublished") if desired else "inherited"})
     return {"id": facts["id"], "sku": facts["sku"], "is_active": facts["is_active"], "group": facts["group"],
+            "item_type": facts.get("item_type", "stock"), "stock_unit": facts.get("stock_unit", "pcs"),
+            "item_definition_locked": facts.get("item_definition_locked", False),
             "supplier_linked": facts.get("supplier_linked", False),
             "attributes": variant["attributes"], "eans": facts["eans"], "supplier_codes": facts["supplier_codes"],
             "image_url": common["image_url"], "revision": revision,
@@ -170,25 +173,26 @@ def _public(row):
 
 
 def supplier_link_condition():
-    """An explicit binding (even paused), or the legacy source if none exists.
+    """An explicit binding (even paused).
 
     A supplier SKU identifier alone is not a binding. This is a card filter,
     not an assertion that the supplier is currently orderable or in stock.
     """
-    return or_(exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id)),
-               Product.source_supplier_product_id.is_not(None))
+    return exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id))
 
 
 async def _rows(db, ids, warehouse):
     if not ids:
         return {}
     products = (await db.execute(select(Product.id, Product.sku, Product.name, Product.brand, Product.is_active,
+        Product.item_type, Product.stock_unit,
         supplier_link_condition().label("supplier_linked"),
         ProductGroup.id.label("group_id"), ProductGroup.code.label("group_code"), ProductGroup.name.label("group_name"),
         func.substr(ProductGroup.main_image_url, 1, 2001).label("group_image"))
         .outerjoin(ProductGroup, Product.group_id == ProductGroup.id).where(Product.id.in_(ids)))).all()
     overrides = {row.product_id: row for row in (await db.scalars(select(ProductEditorOverride)
         .where(ProductEditorOverride.product_id.in_(ids)).execution_options(populate_existing=True))).all()}
+    locked_definitions = set(await db.scalars(select(Product.id).where(Product.id.in_(ids), definition_lock_condition(Product.id))))
     identifiers = defaultdict(list)
     for row, supplier_code in (await db.execute(select(ProductIdentifier, Supplier.code).outerjoin(Supplier,
             ProductIdentifier.supplier_id == Supplier.id).where(ProductIdentifier.product_id.in_(ids))
@@ -207,9 +211,8 @@ async def _rows(db, ids, warehouse):
     supplier_query = select(Product.id, Supplier.code, SupplierProduct.supplier_sku,
         func.substr(func.coalesce(SupplierProduct.images[0]["url"].astext, SupplierProduct.images[0].astext), 1, 2001),
         SupplierProduct.attributes["catalog"]["variant_attributes"]).select_from(Product)
-    supplier_query = supplier_query.join(SupplierProduct, or_(SupplierProduct.id == Product.source_supplier_product_id,
-        exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id,
-            ProductSupplySource.supplier_product_id == SupplierProduct.id).correlate(Product, SupplierProduct)))).join(Supplier, SupplierProduct.supplier_id == Supplier.id)
+    supplier_query = supplier_query.join(ProductSupplySource, ProductSupplySource.product_id == Product.id).join(
+        SupplierProduct, SupplierProduct.id == ProductSupplySource.supplier_product_id).join(Supplier, SupplierProduct.supplier_id == Supplier.id)
     for product_id, supplier_code, code, image_url, supplier_attributes in (await db.execute(supplier_query.where(Product.id.in_(ids))
             .order_by(Supplier.code, SupplierProduct.supplier_sku))).all():
         sources[product_id].append((supplier_code, code, image_url, supplier_attributes))
@@ -248,11 +251,12 @@ async def _rows(db, ids, warehouse):
             mapping = mappings[product.id].get(shop.id)
             raw = observed.get(mapping.id, {}) if mapping else {}
             image_urls.append(raw.get("image_url"))
-            if not fallback_attributes and mapping and mapping.variant_code == product.sku:
+            if not fallback_attributes and mapping and mapping.is_variant:
                 fallback_attributes = variant_attributes({"parameters": raw.get("parameters")})
             shop_values.append({"shop_code": shop.code, "mapped": bool(mapping and mapping.is_listed),
-                "mapping": {"id": mapping.id, "external_id": mapping.external_id, "code": mapping.external_code,
-                    "variant_code": mapping.variant_code, "parent_code": mapping.parent_code, "is_variant": mapping.is_variant} if mapping else None,
+                "mapping": {"id": mapping.id, "external_id": mapping.native_id, "code": mapping.external_code,
+                    "external_product_id": mapping.external_product_id, "external_variant_id": mapping.external_variant_id,
+                    "variant_code": mapping.external_code if mapping.is_variant else None, "parent_code": mapping.parent_code, "is_variant": mapping.is_variant} if mapping else None,
                 "shop_url": _http_url(raw.get("shop_url")), "shop_admin_url": _http_url(raw.get("shop_admin_url")),
                 "observed": {"name": raw.get("name"), "price": _decimal(mapping.shop_price) if mapping else None,
                              "price_basis": "unknown", "visible": raw.get("visible")}})
@@ -266,6 +270,8 @@ async def _rows(db, ids, warehouse):
         minimum = (str(int(balance.min_quantity)) if balance.min_quantity == balance.min_quantity.to_integral_value()
                    else _decimal(balance.min_quantity)) if balance is not None else None
         facts = {"id": product.id, "sku": product.sku, "name": product.name, "brand": product.brand,
+            "item_type": product.item_type, "stock_unit": product.stock_unit,
+            "item_definition_locked": product.id in locked_definitions,
             "is_active": product.is_active, "supplier_linked": product.supplier_linked,
             "group": {"id": group.id, "code": group.code, "name": group.name} if group else None,
             "attributes": attributes[product.id] or fallback_attributes, "eans": [identifier.value for identifier, _ in identifiers[product.id]
@@ -277,7 +283,7 @@ async def _rows(db, ids, warehouse):
         stock = {"known": False, "qty_on_hand": None, "qty_reserved": None, "qty_quarantined": None,
                  "qty_available": None, "avg_cost": None, "total_value": None, "valuation_complete": False,
                  "known_value": None, "provisional_value": None, "unknown_qty": None, "provisional_qty": None}
-        if balance is not None and verified:
+        if product.item_type == "stock" and balance is not None and verified:
             quarantine = getattr(balance, "qty_quarantined", Decimal("0"))
             layer = fifo_values.get(product.id)
             complete = balance.avg_cost is not None and balance.total_value is not None
@@ -297,6 +303,9 @@ async def _rows(db, ids, warehouse):
                      "known_value": _decimal(known_value), "provisional_value": _decimal(provisional_value),
                      "unknown_qty": _decimal(unknown_qty), "provisional_qty": _decimal(provisional_qty)}
         stock["tracking_status"] = "confirmed" if verified else "unconfirmed" if warehouse else "no_warehouse"
+        stock["managed"] = product.item_type == "stock"
+        if product.item_type == "service":
+            stock["tracking_status"] = "not_applicable"
         stock["started_at"] = tracking[product.id].started_at.isoformat() if product.id in tracking else None
         override = overrides.get(product.id)
         result[product.id] = _make_row(facts, override.data if override else {}, override.revision if override else 0, warehouse, stock)
@@ -326,11 +335,9 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
         # A correlated OR/EXISTS can rescan the entire supplier catalog for
         # every nonmatching product, for both COUNT and the requested page.
         supplier_code_match = _sql_fold(SupplierProduct.supplier_sku).like(pattern, escape="\\")
-        matching_sources = select(SupplierProduct.id).where(supplier_code_match)
         matching_linked_products = select(ProductSupplySource.product_id).join(SupplierProduct,
             SupplierProduct.id == ProductSupplySource.supplier_product_id).where(supplier_code_match)
-        supplier_match = or_(Product.source_supplier_product_id.in_(matching_sources),
-                             Product.id.in_(matching_linked_products))
+        supplier_match = Product.id.in_(matching_linked_products)
         identifier_match = exists(select(ProductIdentifier.id).where(ProductIdentifier.product_id == Product.id,
             _sql_fold(ProductIdentifier.value).like(pattern, escape="\\")))
         statement = statement.where(or_(_sql_fold(Product.sku).like(pattern, escape="\\"), _sql_fold(name).like(pattern, escape="\\"),
@@ -435,7 +442,7 @@ def _apply_patch(data, patch, warehouse_code):
 
 
 def _audit_values(row):
-    return {key: deepcopy(row[key]) for key in ("is_active", "sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
+    return {key: deepcopy(row[key]) for key in ("is_active", "item_type", "stock_unit", "sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
 
 
 async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-card"):
@@ -444,7 +451,13 @@ async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-ca
     from inventory_hub.services.supplier_links import bind_explicit_supplier_source
     from inventory_hub.services.supplier_availability_source import AvailabilityError
     identifier = str(payload.request_id)
-    digest = _digest({"operation": "create_card", **payload.model_dump(mode="json")})
+    serialized = payload.model_dump(mode="json")
+    # Old pending requests did not send item metadata. Their original UUID and
+    # body still recover the same saved result after this additive API change.
+    for field in ("item_type", "stock_unit"):
+        if field not in payload.model_fields_set:
+            serialized.pop(field, None)
+    digest = _digest({"operation": "create_card", **serialized})
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(_digest(["product-editor", identifier])[:15], 16)})
     old = await db.get(ProductEditorSave, identifier)
     if old:
@@ -454,7 +467,7 @@ async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-ca
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     if payload.sku_identity is not None:
         resolution = await preview_sku(db, payload.sku_identity, barcodes=payload.eans,
-            supplier_id=payload.supplier_id, supplier_sku=payload.supplier_sku or "")
+            supplier_id=payload.supplier_id, supplier_sku=payload.supplier_sku or "", item_type=payload.item_type)
         if resolution["status"] not in ("new", "existing"):
             raise EditorError("sku_identity_required" if resolution["status"] == "blocked" else "sku_identity_conflict",
                 reasons=resolution["reasons"], candidate_product_ids=resolution["candidate_product_ids"])
@@ -476,10 +489,14 @@ async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-ca
     created = product_id is None
     product = await db.get(Product, product_id) if product_id is not None else None
     before = (await _rows(db, [product_id], None))[product_id] if product_id is not None else None
+    if not created and any(field in payload.model_fields_set and getattr(product, field) != getattr(payload, field)
+            for field in ("item_type", "stock_unit")):
+        raise EditorError("item_definition_mismatch", reasons=["item_definition_mismatch"])
     if created:
         if not payload.name:
             raise EditorError("product_editor_name_required", 422)
-        product = Product(sku=sku, name=payload.name, brand=payload.sku_identity.brand,
+        product = Product(sku=sku, name=payload.name, brand=payload.sku_identity.brand if payload.sku_identity else None,
+            item_type=payload.item_type, stock_unit=payload.stock_unit,
             is_active=True, created_from_source="manual:sku-policy")
         db.add(product)
         await db.flush()
@@ -579,7 +596,7 @@ async def save(db, payload: ProductEditorSaveRequest):
             patch = EditorRowPatch.model_validate(raw)
         except ValidationError as invalid:
             response = error("invalid", "product_editor_invalid_value")
-            allowed = {"product_id", "expected_revision", "snapshot_hash", "is_active", "common", "variant", "warehouse", "shops",
+            allowed = {"product_id", "expected_revision", "snapshot_hash", "is_active", "item_type", "stock_unit", "common", "variant", "warehouse", "shops",
                        "name", "brand", "internal_note", "sale_price_gross", "vat_rate", "note", "location", "min_quantity", "visible", "image_url", "eans", "attributes", "sku", "value"} | shops
             response["errors"] = [{"code": "product_editor_invalid_value", **({"field": ".".join(item["loc"])}
                 if item["loc"] and all(isinstance(part, str) and part in allowed for part in item["loc"]) else {})}
@@ -604,14 +621,22 @@ async def save(db, payload: ProductEditorSaveRequest):
             continue
         changed = _apply_patch(row["overrides"], patch, payload.warehouse_code)
         activity_changed = patch.is_active is not None and patch.is_active != row["is_active"]
+        definition_changes = {field: getattr(patch, field) for field in ("item_type", "stock_unit")
+            if getattr(patch, field) is not None and getattr(patch, field) != row[field]}
         identity_fields = patch.variant.model_fields_set & {"eans", "sku"} if patch.variant else set()
         identity_changed = bool(identity_fields and any(getattr(patch.variant, field) is not None
             and getattr(patch.variant, field) != row[field] for field in identity_fields))
-        if changed == row["overrides"] and not identity_changed and not activity_changed:
+        if changed == row["overrides"] and not identity_changed and not activity_changed and not definition_changes:
             results.append({"product_id": product_id, "status": "saved", "row": _public(row), "errors": []})
             continue
         try:
             async with db.begin_nested():
+                if definition_changes:
+                    if await definition_locked(db, product_id):
+                        raise EditorError("item_definition_locked")
+                    product = await db.get(Product, product_id)
+                    for field, value in definition_changes.items():
+                        setattr(product, field, value)
                 if activity_changed:
                     product = await db.get(Product, product_id)
                     product.is_active = patch.is_active
@@ -625,13 +650,18 @@ async def save(db, payload: ProductEditorSaveRequest):
                 else:
                     override.revision, override.data, override.updated_at = revision, changed, now()
                 facts = deepcopy(row["_facts"])
+                facts.update(definition_changes)
                 if activity_changed:
                     facts["is_active"] = patch.is_active
                 if identity_changed:
                     for field in identity_fields:
                         if getattr(patch.variant, field) is not None:
                             facts[field] = getattr(patch.variant, field)
-                saved = _make_row(facts, changed, revision, warehouse, row["stock"])
+                saved_stock = deepcopy(row["stock"])
+                if "item_type" in definition_changes:
+                    saved_stock["managed"] = definition_changes["item_type"] == "stock"
+                    saved_stock["tracking_status"] = ("unconfirmed" if warehouse else "no_warehouse") if saved_stock["managed"] else "not_applicable"
+                saved = _make_row(facts, changed, revision, warehouse, saved_stock)
                 db.add(ProductEditorAudit(request_id=identifier, product_id=product_id, revision=revision,
                     before_data=_audit_values(row), after_data=_audit_values(saved)))
                 await db.flush()

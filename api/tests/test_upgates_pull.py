@@ -1,4 +1,5 @@
 """Product pulls keep shop snapshots separate from physical inventory."""
+from current_schema_fixture import apply_current_core_schema
 import os
 import json
 import unittest
@@ -97,6 +98,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             root = Path(__file__).resolve().parents[2]
             for name in ("001_schema.sql", "004_shop_product_content.sql", "007_order_stock.sql", "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "019_stock_tracking.sql"):
                 await connection.execute((root / "infra" / "db-init" / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(
@@ -172,7 +174,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     "PULL-SIMPLE": (Decimal("7"), Decimal("123")),
                     "PULL-M": (Decimal("9"), Decimal("246")),
                     "PULL-L": (Decimal("2"), Decimal("369")),
-                }[mapping.variant_code or mapping.external_code]
+                }[mapping.external_code]
                 self.assertEqual((mapping.shop_stock, mapping.shop_price), expected)
         self.assertEqual(await self.stock_snapshot(), {"stock_balances": [], "stock_movements": []})
 
@@ -227,7 +229,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await db.execute(text("SELECT * FROM product_variant_attributes ORDER BY id"))).mappings().all(), before_attributes)
             mappings = (await db.execute(select(ShopProduct))).scalars().all()
             self.assertEqual(len(mappings), 6)
-            self.assertTrue(all(row.external_id for row in mappings))
+            self.assertTrue(all(row.native_id for row in mappings))
         self.assertEqual(await self.stock_snapshot(), {"stock_balances": [], "stock_movements": []})
 
     async def test_shared_sku_links_without_ean_but_conflicting_verified_ean_blocks(self):

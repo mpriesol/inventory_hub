@@ -93,9 +93,10 @@ def remote_snapshot(remote):
 def _mapping(row):
     if row is None:
         return None
-    return {'id': row.id, 'external_id': row.external_id, 'external_code': row.external_code,
-            'variant_code': row.variant_code, 'parent_code': row.parent_code,
-            'is_variant': row.is_variant, 'is_listed': row.is_listed}
+    return {'id': row.id, 'external_id': row.native_id, 'external_code': row.external_code,
+            'variant_code': row.external_code if row.is_variant else None, 'parent_code': row.parent_code,
+            'is_variant': row.is_variant, 'is_listed': row.is_listed,
+            'external_product_id': row.external_product_id, 'external_variant_id': row.external_variant_id}
 
 
 async def _shop(db, shop_code):
@@ -130,13 +131,12 @@ async def _facts(db, product_ids, *, lock=False, exclude_supplier_product_id=Non
         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data->'variants')='array'
           THEN c.data->'variants' ELSE '[]'::jsonb END) leaf(data)
         WHERE sp.product_id=ANY(CAST(:ids AS bigint[])) AND sp.is_variant AND sp.is_listed
-          AND sp.variant_code=p.sku AND leaf.data->>'code'=sp.variant_code
+          AND leaf.data->>'code'=sp.external_code
         """), {'ids': list(product_ids)})).mappings():
         fallback[row['product_id']].extend(variant_attributes({'parameters': row['attributes']}))
     supplier_attributes = (await db.execute(select(Product.id, SupplierProduct.attributes['catalog']['variant_attributes'])
-        .join(SupplierProduct, or_(SupplierProduct.id == Product.source_supplier_product_id,
-            SupplierProduct.id.in_(select(ProductSupplySource.supplier_product_id)
-                .where(ProductSupplySource.product_id == Product.id, ProductSupplySource.is_active.is_(True)))))
+        .join(SupplierProduct, SupplierProduct.id.in_(select(ProductSupplySource.supplier_product_id)
+                .where(ProductSupplySource.product_id == Product.id, ProductSupplySource.is_active.is_(True))))
         .where(Product.id.in_(product_ids), SupplierProduct.is_active.is_(True),
                SupplierProduct.id != exclude_supplier_product_id if exclude_supplier_product_id is not None else True))).all()
     for pid, values in supplier_attributes:
@@ -272,11 +272,65 @@ def _choice(facts, leaves, manual=None, cached=()):
     return (matches[0] if len(matches) == 1 else None), matched_by, len(matches)
 
 
-async def _rows(db, shop, facts, choices):
+async def _replacement_mappings(db, shop, manual, *, expected=None):
+    selected = {pid for pid, item in manual.items() if item.get('replace_deleted_variant')}
+    if not selected:
+        return {}
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    rows = list(await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shop.id,
+        ShopProduct.product_id.in_(selected)).with_for_update().execution_options(populate_existing=True)))
+    mappings = {row.product_id: _mapping(row) for row in rows}
+    if set(mappings) != selected or any(not row.is_variant or not row.is_listed for row in rows):
+        raise LinkError('product_links_replacement_not_allowed')
+    if expected is not None and mappings != expected:
+        raise LinkError('product_links_identity_changed')
+    try:
+        for row in rows:
+            source._native_id(row.external_product_id)
+            source._native_id(row.external_variant_id)
+            exact_code(row.parent_code)
+            exact_code(row.external_code)
+    except (ValueError, TypeError, source.SourceError):
+        raise LinkError('product_links_replacement_identity_missing') from None
+    from inventory_hub.db_models_ext import ShopOrder, ShopOrderItem
+    from inventory_hub.stock_native_models import StockNativeOrder, StockNativeEvent
+    from inventory_hub.stock_sync_models import StockSyncItem
+    from inventory_hub.stock_publication_models import StockPublicationBatch, StockPublicationItem
+    from inventory_hub.services.merchandising_write_guard import require_target_available
+    from inventory_hub.services.catalog import CatalogError
+    for row in rows:
+        native = await db.scalar(select(StockNativeOrder.order_id).join(StockNativeEvent,
+            StockNativeEvent.id == StockNativeOrder.event_id).where(StockNativeOrder.shop_id == shop.id,
+            StockNativeEvent.facts.contains({'lines': [{'product_id': row.product_id, 'native': True}]})).limit(1))
+        active = await db.scalar(select(ShopOrderItem.id).join(ShopOrder, ShopOrder.id == ShopOrderItem.order_id)
+            .where(ShopOrder.shop_id == shop.id, ShopOrderItem.product_id == row.product_id,
+                ShopOrderItem.stock_managed.is_(True), ShopOrder.stock_state.in_(('pending', 'reserved'))).limit(1))
+        if native is not None or active is not None:
+            raise LinkError('product_links_replacement_in_use')
+        sku = await db.scalar(select(Product.sku).where(Product.id == row.product_id))
+        pending = await db.scalar(select(StockSyncItem.id).where(StockSyncItem.shop_id == shop.id,
+            StockSyncItem.sku == sku, StockSyncItem.status.in_(('sending', 'uncertain'))).limit(1))
+        maintenance = await db.scalar(select(StockPublicationItem.id).join(StockPublicationBatch,
+            StockPublicationBatch.id == StockPublicationItem.batch_id).where(StockPublicationBatch.shop_id == shop.id,
+            StockPublicationItem.sku == sku, StockPublicationItem.status.in_(('sending', 'uncertain'))).limit(1))
+        if pending is not None or maintenance is not None:
+            raise LinkError('product_links_replacement_in_use')
+        try:
+            for parent in {row.parent_code, manual[row.product_id]['code']}:
+                await require_target_available(db, shop.code, parent)
+        except CatalogError:
+            raise LinkError('product_links_replacement_in_use') from None
+    return mappings
+
+
+async def _rows(db, shop, facts, choices, replacements=None):
     identities = [RemoteIdentity(shop.id, remote['code'], remote['is_variant'], remote['external_id'],
-        remote['parent_code'], tuple(remote['eans']), expected_product_id=pid)
+        remote['parent_code'], tuple(remote['eans']), expected_product_id=pid, external_product_id=remote['parent_id'])
         for pid, (remote, mode, count) in choices.items() if remote is not None]
     index = await load_identity_index(db, shop.id, identities)
+    replacements = replacements or {}
+    if replacements:
+        index = index.without_mappings({mapping['id'] for mapping in replacements.values()})
     duplicate_targets = Counter(remote_key(remote) for remote, mode, count in choices.values() if remote is not None)
     rows = []
     for pid, item in facts.items():
@@ -285,6 +339,11 @@ async def _rows(db, shop, facts, choices):
                'local_eans': sorted(verified_barcodes(item['manual_eans'] if item['manual_eans'] is not None else item['eans'])),
                'match_by': mode if remote else None, 'status': 'ready', 'warnings': [], 'errors': [],
                'local_hash': _facts_hash(item)}
+        if pid in replacements:
+            row['previous_mapping'] = replacements[pid]
+            row['warnings'].append('replaces_deleted_variant')
+            if remote is None or remote['is_variant']:
+                row['errors'].append('product_links_replacement_not_allowed')
         if not item['is_active']:
             row['errors'].append('inactive_product')
         if remote is None:
@@ -295,7 +354,7 @@ async def _rows(db, shop, facts, choices):
         if duplicate_targets[remote_key(remote)] > 1:
             row['errors'].append('remote_target_selected_twice')
         identity = RemoteIdentity(shop.id, remote['code'], remote['is_variant'], remote['external_id'],
-            remote['parent_code'], tuple(remote['eans']), expected_product_id=pid)
+            remote['parent_code'], tuple(remote['eans']), expected_product_id=pid, external_product_id=remote['parent_id'])
         resolution = index.resolve(identity)
         if resolution.status == 'conflict' or resolution.product_id != pid:
             row['errors'].extend(resolution.reasons or ['identity_unresolved'])
@@ -306,7 +365,7 @@ async def _rows(db, shop, facts, choices):
             mapping = mappings[0]
             expected_parent = remote['parent_code'] if remote['is_variant'] else None
             if (not mapping.is_listed or mapping.is_variant != remote['is_variant']
-                    or mapping_code(mapping) != remote['code'] or str(mapping.external_id) != remote['external_id']
+                    or mapping_code(mapping) != remote['code'] or str(mapping.native_id) != remote['external_id']
                     or (remote['is_variant'] and mapping.parent_code != expected_parent)):
                 row['errors'].append('existing_mapping_differs')
             else:
@@ -400,14 +459,14 @@ async def _refresh_mappings(db, shop_id, product_ids, *, lock=False):
         for row in rows:
             exact_code(mapping_code(row))
             exact_code(row.parent_code if row.is_variant else row.external_code)
-            source._native_id(row.external_id)
+            source._native_id(row.native_id)
     except (ValueError, TypeError, source.SourceError):
         raise LinkError('product_links_identity_changed') from None
     return {row.product_id: row for row in rows}
 
 
 async def refresh(db, payload):
-    """Read existing exact mappings and refresh display links only."""
+    """Refresh display links and a verified missing parent ID for the same leaf."""
     shop = await _shop(db, payload.shop_code)
     shop_id = shop.id
     mappings = await _refresh_mappings(db, shop_id, payload.product_ids)
@@ -424,7 +483,8 @@ async def refresh(db, payload):
         code = mapping['variant_code'] if mapping['is_variant'] else mapping['external_code']
         parent_code = mapping['parent_code'] if mapping['is_variant'] else mapping['external_code']
         matches = [leaf for leaf in leaves if leaf['code'] == code and leaf['is_variant'] == mapping['is_variant']
-                   and leaf['external_id'] == str(mapping['external_id']) and leaf['parent_code'] == parent_code]
+                   and leaf['external_id'] == str(mapping['external_id']) and leaf['parent_code'] == parent_code
+                   and mapping['external_product_id'] in (None, leaf['parent_id'])]
         if len(matches) != 1:
             raise LinkError('product_links_identity_changed')
         selected[pid] = matches[0]
@@ -435,6 +495,9 @@ async def refresh(db, payload):
         raise LinkError('product_links_identity_changed')
     if await _source_call(source.current_fingerprint(payload.shop_code)) != fingerprint:
         raise LinkError('source_connection_changed')
+    for pid, mapping in current.items():
+        if mapping.external_product_id is None:
+            mapping.external_product_id = selected[pid]['parent_id']
     await _cache_metadata(db, shop_id, selected.values())
     result = {'shop_code': payload.shop_code, 'remote_requests': observed['requests'], 'rows': [
         {'product_id': pid, 'status': 'refreshed' if leaf.get('shop_url') and leaf.get('shop_admin_url') else 'incomplete',
@@ -446,6 +509,9 @@ async def refresh(db, payload):
 
 async def preview(db, payload, *, actor=None):
     raw = payload.model_dump(mode='json')
+    for match in raw['manual_matches']:
+        if not match.get('replace_deleted_variant'):
+            match.pop('replace_deleted_variant', None)
     request_hash = digest(raw)
     existing = await db.get(ProductLinkPreview, str(payload.request_id))
     if existing is not None:
@@ -457,6 +523,7 @@ async def preview(db, payload, *, actor=None):
     facts = await _facts(db, payload.product_ids)
     cached, cache_limited = await _cached(db, shop_id, facts)
     manual = {item.product_id: item.model_dump() for item in payload.manual_matches}
+    replacements = await _replacement_mappings(db, shop, manual)
     # Explicit rows substitute their chosen leaf for the automatic SKU lookup.
     try:
         codes = sorted({manual[pid]['code'] if pid in manual else exact_code(item['sku']) for pid, item in facts.items()})
@@ -482,6 +549,10 @@ async def preview(db, payload, *, actor=None):
         leaves.extend(extra['leaves'])
         observed['requests'] += extra['requests']
     leaves = _unique(leaves)
+    if replacements:
+        deleted = await _source_call(source.verify_deleted_variants(payload.shop_code, list(replacements.values()),
+            observed['fingerprint'], max_requests=MAX_REQUESTS - observed['requests']))
+        observed['requests'] += deleted['requests']
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
     # Concurrent equal UUID requests share the first committed observation.
     existing = await db.get(ProductLinkPreview, str(payload.request_id), populate_existing=True)
@@ -494,7 +565,8 @@ async def preview(db, payload, *, actor=None):
         raise LinkError('product_links_identity_changed')
     facts = await _facts(db, payload.product_ids, lock=True)
     choices = {pid: _choice(item, leaves, manual.get(pid), cached) for pid, item in facts.items()}
-    rows = await _rows(db, shop, facts, choices)
+    replacements = await _replacement_mappings(db, shop, manual, expected=replacements)
+    rows = await _rows(db, shop, facts, choices, replacements)
     for row in rows:
         if fallback_skipped and row['status'] == 'not_found':
             row['warnings'].append('fallback_request_limit')
@@ -580,8 +652,13 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     selected = _apply_selection(row, payload)
     shop_code, fingerprint = row.document['shop_code'], row.document['fingerprint']
     frozen = [item['remote'] for item in selected]
+    replacements = {item['product_id']: item['previous_mapping'] for item in selected if item.get('previous_mapping')}
     await db.commit()
     observed = await _source_call(source.verify(shop_code, frozen, fingerprint, max_requests=MAX_REQUESTS))
+    if replacements:
+        deleted = await _source_call(source.verify_deleted_variants(shop_code, list(replacements.values()),
+            fingerprint, max_requests=MAX_REQUESTS - observed['requests']))
+        observed['requests'] += deleted['requests']
     current = {remote_key(leaf): leaf for leaf in _unique(observed['leaves'])}
     if observed['fingerprint'] != fingerprint or any(remote_key(leaf) not in current or
         remote_snapshot(leaf) != remote_snapshot(current[remote_key(leaf)]) for leaf in frozen):
@@ -601,7 +678,10 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     if any(_facts_hash(facts[item['product_id']]) != item['local_hash'] for item in selected):
         raise LinkError('product_links_identity_changed')
     choices = {item['product_id']: (current[remote_key(item['remote'])], item['match_by'], 1) for item in selected}
-    checked = await _rows(db, shop, facts, choices)
+    manual = {item['product_id']: {**item['remote'], 'replace_deleted_variant': True} for item in selected
+              if item['product_id'] in replacements}
+    replacements = await _replacement_mappings(db, shop, manual, expected=replacements)
+    checked = await _rows(db, shop, facts, choices, replacements)
     if any(item['status'] not in ('ready', 'already_linked') for item in checked):
         raise LinkError('product_links_identity_changed')
     if await _source_call(source.current_fingerprint(shop_code)) != fingerprint:
@@ -613,8 +693,18 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
         if item['status'] == 'already_linked':
             existing.append(pid)
             continue
-        db.add(ShopProduct(shop_id=shop.id, product_id=pid, external_id=remote['external_id'],
-            external_code=remote['code'], variant_code=remote['code'] if remote['is_variant'] else None,
+        if pid in replacements:
+            mapping = await db.get(ShopProduct, replacements[pid]['id'])
+            mapping.external_product_id, mapping.external_variant_id = remote['parent_id'], None
+            mapping.external_code, mapping.parent_code = remote['code'], None
+            mapping.is_variant, mapping.is_listed = False, True
+            mapping.shop_stock, mapping.shop_price, mapping.shop_availability = None, None, None
+            mapping.last_push_at, mapping.last_push_status, mapping.last_push_error = None, None, None
+            mapping.push_pending, mapping.last_pull_at = False, now()
+            linked.append(pid)
+            continue
+        db.add(ShopProduct(shop_id=shop.id, product_id=pid, external_product_id=remote['parent_id'],
+            external_variant_id=remote['external_id'] if remote['is_variant'] else None, external_code=remote['code'],
             parent_code=remote['parent_code'] if remote['is_variant'] else None,
             is_variant=remote['is_variant'], is_listed=True, shop_stock=None, shop_price=None,
             push_pending=False, last_pull_at=now()))

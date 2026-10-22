@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import select, or_, exists, func, String, text, case
+from sqlalchemy import select, exists, func, String, text
 
 from inventory_hub import config_io
 from inventory_hub.database import get_session_context
@@ -53,11 +53,9 @@ async def eligible_source(db, product_id, supplier, brands):
     return await db.scalar(select(SupplierProduct).join(Supplier, Supplier.id == SupplierProduct.supplier_id)
         .where(Supplier.code == supplier, Supplier.is_active.is_(True), SupplierProduct.is_active.is_(True),
             SupplierProduct.is_discontinued.is_(False), func.upper(SupplierProduct.brand).in_(brands),
-            or_((Product.source_supplier_product_id == SupplierProduct.id) & ~exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id)),
-                exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == product_id,
+            exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == product_id,
                     ProductSupplySource.supplier_product_id == SupplierProduct.id,
-                    ProductSupplySource.is_active.is_(True), ProductSupplySource.orderable.is_(True)))),
-            Product.id == product_id)
+                    ProductSupplySource.is_active.is_(True), ProductSupplySource.orderable.is_(True))))
         .order_by(SupplierProduct.id))
 
 
@@ -114,10 +112,9 @@ async def cycle():
         async with get_session_context() as db:
             # Process one bounded batch of exact mapped leaves per tick. Prior
             # attempts for this observation, including rejections, are not loops.
-            linked = or_((Product.source_supplier_product_id == SupplierProduct.id) & ~exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id)),
-                exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id,
+            linked = exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == Product.id,
                     ProductSupplySource.supplier_product_id == SupplierProduct.id,
-                    ProductSupplySource.is_active.is_(True), ProductSupplySource.orderable.is_(True))))
+                    ProductSupplySource.is_active.is_(True), ProductSupplySource.orderable.is_(True)))
             attempted = exists(select(ProductEditorPublication.id).where(
                 ProductEditorPublication.product_id == Product.id, ProductEditorPublication.shop_id == Shop.id,
                 ProductEditorPublication.document['workflow'].astext == WORKFLOW,
@@ -135,8 +132,8 @@ async def cycle():
                       (SupplierAvailabilityObservation.supplier_sku == SupplierProduct.supplier_sku))
                 .where(~attempted, ~fenced, Supplier.is_active.is_(True), func.upper(SupplierProduct.brand).in_(policy['brands']), Supplier.code == supplier, Shop.code == policy['shop_code'], Shop.is_active.is_(True),
                     ShopProduct.is_listed.is_(True), SupplierAvailabilitySettings.enabled.is_(True),
-                    ShopProduct.external_id.op('~')('^[1-9][0-9]{0,19}$'),
-                    case((ShopProduct.is_variant, ShopProduct.variant_code), else_=ShopProduct.external_code) == Product.sku,
+                    ShopProduct.native_id.op('~')('^[1-9][0-9]{0,19}$'),
+                    Product.item_type == "stock", Product.stock_unit != "m",
                     SupplierAvailabilityObservation.expires_at > editor.now(), SupplierAvailabilityObservation.available.is_not(None),
                     SupplierProduct.is_active.is_(True), SupplierProduct.is_discontinued.is_(False))
                 .order_by(Product.id).limit(20))).all()

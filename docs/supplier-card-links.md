@@ -1,6 +1,6 @@
 # Dodávateľské kódy existujúcich skladových kariet
 
-Implementované rozhranie umožňuje prepojiť existujúcu kartu Hubu s konkrétnou položkou uloženého dodávateľského katalógu, aj keď ich kódy nie sú rovnaké. Napríklad karta môže používať pôvodné SKU e-shopov a dodávateľ môže mať nový kód variantu. Prefix dodávateľa sa nestáva novým SKU už existujúcej karty.
+Implementované rozhranie umožňuje prepojiť existujúcu kartu Hubu s konkrétnou položkou uloženého dodávateľského katalógu, aj keď ich kódy nie sú rovnaké. Napríklad karta môže používať pôvodné SKU e-shopov a dodávateľ môže mať nový kód variantu. Prefix dodávateľa sa nestáva novým SKU už existujúcej karty. Prepojenie nepotrebuje prefix ani register značiek; pracuje s konkrétnymi databázovými ID a dodávateľským kódom.
 
 ## Postup obsluhy
 
@@ -24,7 +24,7 @@ Voľba existujúcej karty sa uloží do prípravy. Samotné dodávateľské prep
 
 ## Kontrakt a migrácia
 
-Chránené API `/api/supplier-card-links` poskytuje vyhľadanie kandidátov, náhľad, načítanie výsledku a výslovné potvrdenie. Náhľad uchováva presnú dvojicu interných ID a kontrolný súčet identity. Zápis znovu overuje dodávateľský zdroj, aktuálnu kartu a vlastníctvo pod spoločným `IDENTITY_WRITE_LOCK`. Kontroly používajú existujúci resolver produktových identifikátorov; nevzniká alternatívny spôsob automatického párovania.
+Chránené API `/api/supplier-card-links` poskytuje vyhľadanie kandidátov, náhľad, načítanie výsledku a výslovné potvrdenie. Náhľad uchováva presnú dvojicu interných ID a kontrolný súčet identity. Zápis znovu overuje dodávateľský zdroj, aktuálnu kartu a vlastníctvo pod spoločným `IDENTITY_WRITE_LOCK`. Kontroly používajú existujúci resolver produktových identifikátorov. Aktuálne vlastníctvo vyplýva iba z dodávateľskej väzby a scoped aliasu; pôvod založenia ani historický návrh SKU neurčujú dnešného vlastníka. Migrácia 032 navyše chráni jednu dodávateľskú ponuku pred dvomi kartami databázovým unikátnym indexom.
 
 Požiadavka náhľadu prijíma voliteľné `copy_supplier_eans` (predvolene `false`). Voľba a overené kódy sú súčasťou uloženého náhľadu; potvrdenie ich nemôže nahradiť iným zoznamom. Odpoveď `ean_adoption` vysvetľuje dostupnosť a plánované kódy, výsledok `copied_eans` potvrdzuje skutočne doplnené kódy. Opakovanie dokončeného potvrdenia vráti pôvodný výsledok bez ďalšieho identifikátora alebo auditu. Táto voľba nepotrebuje novú SQL migráciu a neaktivuje skladovú publikáciu.
 

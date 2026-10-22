@@ -1,4 +1,5 @@
 """Maintenance publication durability in disposable localhost PostgreSQL only."""
+from current_schema_fixture import apply_current_core_schema
 import copy
 import asyncio
 import os
@@ -63,6 +64,7 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for filename in ("002_invoice_management.sql", "006_opening_stock.sql", "007_order_stock.sql", "008_order_collection.sql",
                              "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql", "015_stock_sync.sql", "026_stock_delta.sql", "017_stock_adjustments.sql"):
                 await connection.execute((sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -101,9 +103,12 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(StockShopSettings(shop_id=self.shops["biketrek"], revision=1, overrides={}, mode="manual", updated_at=NOW))
             for product in products:
                 target = self.remote[product.sku]["identity"]
-                db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=product.id,
-                    external_code=target["parent_code"], parent_code=target["parent_code"],
-                    variant_code=target["variant_code"], is_variant=target["variant_code"] is not None))
+                db.add(ShopProduct(
+                    shop_id=self.shops['biketrek'],
+                    product_id=product.id,
+                    external_code=target['variant_code'],
+                    parent_code=target['parent_code'],
+                    is_variant=target['variant_code'] is not None))
                 db.add(StockBalance(product_id=product.id, warehouse_id=warehouse.id, qty_on_hand=D("7"),
                     qty_reserved=D("3"), avg_cost=D("3"), total_value=D("21")))
                 from stock_tracking_fixture import confirmed_inventory

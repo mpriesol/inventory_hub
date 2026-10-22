@@ -245,7 +245,8 @@ def _pull_families(shop_id: int, products: List[Dict[str, Any]]) -> list[dict]:
                 family["reasons"].add("remote_identity_invalid")
                 continue
             identity = RemoteIdentity(shop_id, code, bool(variants), external_id,
-                                      key if variants else None, _remote_barcodes(obj))
+                                      key if variants else None, _remote_barcodes(obj),
+                                      external_product_id=_remote_id(p.get("product_id")))
             family["leaves"].append((identity, obj))
             register(leaf_codes, code.casefold(), position, "remote_code_duplicate")
             if variants and external_id:
@@ -438,14 +439,15 @@ async def import_upgates_products(
                         db.add(mapping)
                         if resolution.status == "identified":
                             linked += 1
-                    # Preserve both legacy external_code conventions on existing mappings.
-                    if not mapping.external_code:
-                        mapping.external_code = identity.code
-                    mapping.variant_code = identity.code if variants else None
+                    mapping.external_code = identity.code
                     mapping.parent_code = code if variants else None
                     mapping.is_variant, mapping.is_listed = variants, True
-                    if identity.external_id:
-                        mapping.external_id = identity.external_id
+                    if identity.external_product_id:
+                        mapping.external_product_id = identity.external_product_id
+                    if variants and identity.external_id:
+                        mapping.external_variant_id = identity.external_id
+                    elif not variants:
+                        mapping.external_variant_id = None
                     mapping.shop_availability = str(obj.get("availability") or "") or None
                     mapping.shop_stock = _to_decimal(obj.get("stock"))
                     price = _main_price(obj)
@@ -679,8 +681,7 @@ async def push_products_to_shop(
                 if sp is None:
                     db.add(ShopProduct(
                         shop_id=shop.id, product_id=product.id,
-                        external_code=parent,
-                        variant_code=product.sku if product.sku != parent else None,
+                        external_code=product.sku,
                         parent_code=parent if product.sku != parent else None,
                         is_variant=product.sku != parent,
                         last_pull_at=now,

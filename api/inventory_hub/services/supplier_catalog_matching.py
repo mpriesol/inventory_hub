@@ -42,12 +42,12 @@ async def suggestions(db, supplier, products):
         # Existing cache evidence must identify the exact mapped native leaf.
         document = cache.get((mapping.shop_id,mapping.parent_code or mapping.external_code)) or {}
         leaves = document.get('variants', []) if mapping.is_variant else [document]
-        leaves = [leaf for leaf in leaves if isinstance(leaf,dict) and leaf.get('code') == product.sku]
+        leaves = [leaf for leaf in leaves if isinstance(leaf,dict) and leaf.get('code') == mapping.external_code]
         supplier_code = None
-        if len(leaves) == 1 and mapping.external_id:
+        if len(leaves) == 1 and mapping.native_id:
             leaf = leaves[0]
             native = leaf.get('variant_id' if mapping.is_variant else 'product_id')
-            if str(native) == str(mapping.external_id):
+            if str(native) == str(mapping.native_id):
                 supplier_code = leaf.get('code_supplier')
         exact = by_code.get(supplier_code) if isinstance(supplier_code,str) else None
         eans = facts[product.id]['manual_eans']

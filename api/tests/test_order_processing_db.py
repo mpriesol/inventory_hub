@@ -1,4 +1,5 @@
 """Automatic order stock writes in a disposable localhost PostgreSQL schema."""
+from current_schema_fixture import apply_current_core_schema
 import copy
 import os
 import unittest
@@ -57,6 +58,7 @@ class OrderProcessingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
                              "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql", "025_stock_native.sql"):
                 await connection.execute((sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

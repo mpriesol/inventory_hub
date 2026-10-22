@@ -1,4 +1,5 @@
 """Physical return and cost propagation regression tests in guarded PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import os
 import unittest
@@ -50,6 +51,7 @@ class FifoReturnsDatabaseTests(unittest.IsolatedAsyncioTestCase):
                              "008_order_collection.sql", "009_stock_automation.sql", "010_stock_publication.sql", "011_fifo.sql",
                              "012_product_editor.sql"):
                 await connection.execute((sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -339,3 +341,40 @@ class FifoReturnsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary["inventory_value"], 0.0002)
             self.assertEqual(summary["known_inventory_value"], 0.0002)
             self.assertTrue(summary["value_complete"])
+
+    async def test_stock_overview_separates_units_excludes_services_and_preserves_eur_value(self):
+        await self.receive("3", "5")
+        async with self.sessions() as db:
+            cable = Product(sku="CABLE-METRES", name="Cable", stock_unit="m")
+            labour = Product(sku="LABOUR", name="Workshop labour", item_type="service")
+            db.add_all([cable, labour])
+            await db.flush()
+            from stock_tracking_fixture import confirmed_inventory
+            db.add(confirmed_inventory(cable.id, self.warehouse_a))
+            db.add(StockBalance(product_id=cable.id, warehouse_id=self.warehouse_a,
+                qty_on_hand=D("2.5"), qty_reserved=D("0.5"), qty_quarantined=D("0.25"),
+                avg_cost=D("4"), total_value=D("10")))
+            await db.commit()
+        async with self.sessions() as db:
+            summary = await stock.stock_summary(db)
+            self.assertEqual((summary["products_total"], summary["confirmed_products"], summary["unconfirmed_products"]), (2, 2, 0))
+            self.assertIsNone(summary["stock_unit"])
+            self.assertIsNone(summary["on_hand_total"])
+            self.assertIsNone(summary["reserved_total"])
+            self.assertIsNone(summary["available_total"])
+            self.assertIsNone(summary["quarantined_total"])
+            self.assertIsNone(summary["unknown_quantity"])
+            self.assertEqual(summary["quantity_by_unit"], {
+                "pcs": {"on_hand": 3, "reserved": 0, "quarantined": 0, "available": 3,
+                        "unknown_quantity": 0, "provisional_quantity": 0},
+                "m": {"on_hand": 2.5, "reserved": 0.5, "quarantined": 0.25, "available": 1.75,
+                      "unknown_quantity": 0, "provisional_quantity": 0},
+            })
+            self.assertEqual((summary["inventory_value"], summary["known_inventory_value"]), (25, 25))
+            self.assertTrue(summary["value_complete"])
+            rows = {row["sku"]: row for row in await stock.stock_items(db)}
+            self.assertEqual(set(rows), {"FIFO-RETURN-SKU", "CABLE-METRES"})
+            self.assertEqual((rows["CABLE-METRES"]["stock_unit"], rows["CABLE-METRES"]["available"]), ("m", 1.75))
+            detail = await stock.product_detail("LABOUR", db)
+            self.assertFalse(detail["stock"]["managed"])
+            self.assertIsNone(detail["stock"]["on_hand"])

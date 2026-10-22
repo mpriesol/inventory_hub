@@ -1,4 +1,5 @@
 """Receiving ledger regressions in a guarded, disposable localhost PostgreSQL schema."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import json
 import os
@@ -179,6 +180,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((root / "011_fifo.sql").read_text())
             await connection.execute((root / "013_receiving_scan_requests.sql").read_text())
             await connection.execute((root / "014_supplier_availability.sql").read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(
@@ -291,6 +293,67 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             _, created = await lock_stock_balances(db, product_ids, self.warehouse_id)
             self.assertEqual(created, set())
+
+    async def test_explicit_purchase_pack_conversion_keeps_invoice_values_and_replays_one_receipt(self):
+        from inventory_hub.fifo_models import FifoLayer
+        session_id = await self.make_session()
+        async with self.sessions() as db:
+            result = await receiving.set_line_unit("receipt-test", session_id, 0,
+                receiving.SetUnitRequest(purchase_unit="pack", purchase_to_stock_factor="10"), db)
+            await db.commit()
+        self.assertEqual(D(result["line"]["stock_quantity"]), D("20"))
+        self.assertEqual(D(result["line"]["stock_unit_cost"]), D("0.5"))
+        result = await self.finalize(session_id)
+        self.assertEqual(await self.finalize(session_id), result)
+        self.assertEqual(result["movements_created"], 1)
+        async with self.sessions() as db:
+            line = await db.scalar(select(ReceivingLine).where(ReceivingLine.session_id == session_id))
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
+            layer = await db.scalar(select(FifoLayer).where(FifoLayer.product_id == self.product_id))
+            self.assertEqual((line.received_qty, line.unit_price), (D("2"), D("5")))
+            self.assertEqual((balance.qty_on_hand, balance.total_value), (D("20"), D("10")))
+            self.assertEqual((layer.quantity_original, layer.unit_cost), (D("20"), D("0.5")))
+            with self.assertRaises(HTTPException):
+                await receiving.set_line_unit("receipt-test", session_id, 0,
+                    receiving.SetUnitRequest(purchase_unit="pack", purchase_to_stock_factor="20"), db)
+
+    async def test_conversion_target_change_blocks_finalization_without_stock(self):
+        session_id = await self.make_session()
+        async with self.sessions() as db:
+            await receiving.set_line_unit("receipt-test", session_id, 0,
+                receiving.SetUnitRequest(purchase_unit="pack", purchase_to_stock_factor="10"), db)
+            await db.commit()
+        async with self.sessions() as db:
+            product = await db.get(Product, self.product_id)
+            product.stock_unit = "pair"
+            await db.commit()
+        with self.assertRaises(HTTPException) as error:
+            await self.finalize(session_id)
+        self.assertEqual(error.exception.detail["code"], "receiving_unit_changed")
+        self.assertEqual(await self.counts(session_id), (ReceivingStatus.in_progress, 0))
+
+    async def test_explicit_service_receipt_finishes_without_inventory_cost_or_stock(self):
+        async with self.sessions() as db:
+            product = await db.get(Product, self.product_id)
+            product.item_type = "service"
+            await db.commit()
+        session_id = await self.make_session([{"product_id": self.product_id, "received_qty": D("2"), "unit_price": None}])
+        result = await self.finalize(session_id)
+        self.assertEqual(result["movements_created"], 0)
+        self.assertEqual(result["skipped_lines"][0]["reason"], "service_outside_stock")
+        self.assertEqual(await self.finalize(session_id), result)
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockBalance)
+                .where(StockBalance.product_id == self.product_id)), 0)
+            from inventory_hub.services.stock_balances import StockItemRequiredError
+            with self.assertRaisesRegex(StockItemRequiredError, "stock_item_required"):
+                await lock_stock_balances(db, {self.product_id}, self.warehouse_id)
+        from sqlalchemy.exc import IntegrityError
+        async with self.sessions() as db:
+            with self.assertRaises(IntegrityError):
+                async with db.begin_nested():
+                    db.add(StockBalance(product_id=self.product_id, warehouse_id=self.warehouse_id))
+                    await db.flush()
 
     async def run_held_receipts(self, first_id, second_id):
         entered, release = asyncio.Event(), asyncio.Event()

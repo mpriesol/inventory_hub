@@ -60,7 +60,10 @@ def facts(order, source, statuses):
             raise NativeError("stock_native_line_identity")
         seen.add(key)
         if line.get("classification") in ("manual", "non_stock"):
-            if line.get("has_native_identity"):
+            service = (line.get("classification") == "non_stock" and line.get("item_type") == "service"
+                       and type(line.get("product_id")) is int and not line.get("identity_invalid")
+                       and "service_outside_stock" in line.get("reasons", []))
+            if line.get("has_native_identity") and not service:
                 raise NativeError("stock_native_line_identity")
             continue
         if (line.get("identity_invalid") or line.get("classification") not in ("mapped", "identified")
@@ -106,7 +109,7 @@ async def _identities(db, shop_id, value, *, bind=False):
     mappings = {row.product_id: row for row in rows}
     aliases = None
     if any((mapping := mappings.get(line["product_id"])) is not None
-           and (mapping.variant_code if mapping.is_variant else mapping.external_code) != line["code"] for line in native):
+           and (mapping.external_code) != line["code"] for line in native):
         from inventory_hub.db_models import Shop
         from inventory_hub.services import order_sku_aliases
         from inventory_hub.services.product_identity import load_identity_index
@@ -117,7 +120,7 @@ async def _identities(db, shop_id, value, *, bind=False):
         mapping = mappings.get(line["product_id"])
         if mapping is None:
             raise NativeError("stock_native_identity_unknown")
-        code = mapping.variant_code if mapping.is_variant else mapping.external_code
+        code = mapping.external_code
         alias_proof = None
         if code != line["code"]:
             resolved, alias_proof = aliases.resolve({**line, "has_native_identity": True})
@@ -128,11 +131,13 @@ async def _identities(db, shop_id, value, *, bind=False):
         if mapping.is_variant:
             if line["native_option_set_id"] is None:
                 raise NativeError("stock_native_identity_unknown")
-        elif (line["native_option_set_id"] is not None or mapping.external_id is None
-              or str(line["native_product_id"]) != mapping.external_id):
+            if mapping.external_product_id is not None and str(line["native_product_id"]) != mapping.external_product_id:
+                raise NativeError("stock_native_line_identity")
+        elif (line["native_option_set_id"] is not None or mapping.native_id is None
+              or str(line["native_product_id"]) != mapping.native_id):
             raise NativeError("stock_native_line_identity")
         proof = {"id": mapping.id, "code": code, "parent_code": mapping.parent_code,
-                 "external_id": mapping.external_id, "is_variant": mapping.is_variant}
+                 "external_id": mapping.native_id, "is_variant": mapping.is_variant}
         stored = line.get("mapping")
         # An audited code-only rename must not invalidate an immutable older
         # observation. Native leaf, mapping row and variant parent stay fixed.

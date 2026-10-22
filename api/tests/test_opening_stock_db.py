@@ -1,4 +1,5 @@
 """Opening inventory atomicity in an isolated localhost PostgreSQL schema only."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import os
 import unittest
@@ -49,6 +50,7 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((self.sql_root / "007_order_stock.sql").read_text())
             await connection.execute((self.sql_root / "010_stock_publication.sql").read_text())
             await connection.execute((self.sql_root / "011_fifo.sql").read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -172,6 +174,22 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_invalid_preview(warehouse_code="NO-SUCH-WAREHOUSE")
         self.assertEqual(await self.batch_count(), 0)
         self.assertEqual(await self.physical_snapshot(), before)
+
+    async def test_meter_opening_preserves_fractional_quantity_cost_and_replay(self):
+        async with self.sessions() as db:
+            product = await db.get(Product, self.first_id)
+            product.stock_unit = "m"
+            await db.commit()
+        batch = await self.batch(csv_text="sku;quantity;unit_cost;unit\nEXACT-SKU;1.125;2;m\nSECOND-SKU;2;5;ks\n")
+        self.assertEqual(batch["unit"], "mixed")
+        self.assertIsNone(batch["summary"]["quantity"])
+        self.assertEqual(batch["summary"]["quantity_by_unit"], {"ks": "2", "m": "1.125"})
+        self.assertEqual(batch["lines"][0]["quantity"], "1.125")
+        result = await self.finalize(batch)
+        self.assertEqual(await self.finalize(batch), result)
+        async with self.sessions() as db:
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.first_id))
+            self.assertEqual((balance.qty_on_hand, balance.total_value), (D("1.125"), D("2.25")))
 
     async def test_preview_request_id_replay_is_idempotent_and_different_input_is_rejected(self):
         request_id = str(uuid4())

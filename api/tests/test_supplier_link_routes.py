@@ -64,9 +64,9 @@ class SupplierLinkRoutesTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         repair.assert_awaited_once_with(self.db, "paul-lange", after_product_id=40, limit=2, match_catalog=True)
 
-    def test_prefix_domain_failure_remains_explicit(self):
+    def test_identity_domain_failure_remains_explicit(self):
         with patch.object(supplier_links, "reconcile_supplier_links",
-                          AsyncMock(side_effect=AvailabilityError("supplier_prefix_conflict"))):
+                          AsyncMock(side_effect=AvailabilityError("supplier_source_multiple_products"))):
             response = self.client.post(self.url, json={}, headers=self.headers)
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"]["code"], "supplier_prefix_conflict")
+        self.assertEqual(response.json()["detail"]["code"], "supplier_source_multiple_products")
