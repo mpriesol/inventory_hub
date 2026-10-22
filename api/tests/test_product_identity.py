@@ -109,6 +109,15 @@ class IdentityResolverTests(unittest.TestCase):
         self.assertEqual(index.resolve(RemoteIdentity(1, "V", True, "42")).product_id, 2)
         self.assertEqual(index.resolve(RemoteIdentity(1, external_id="42")).status, "unresolved")
 
+    def test_variant_parent_native_id_change_is_a_conflict_even_with_same_leaf(self):
+        stored = mapping(1, 1, "REMOTE-LEAF", variant=True, external_id="71")
+        stored.external_product_id = "7"
+        index = IdentityIndex(1, [product(1, "LOCAL-SKU")], [stored])
+        accepted = index.resolve(RemoteIdentity(1, "REMOTE-LEAF", True, "71", "PARENT", external_product_id="7"))
+        self.assertEqual((accepted.status, accepted.product_id), ("mapped", 1))
+        changed = index.resolve(RemoteIdentity(1, "REMOTE-LEAF", True, "71", "PARENT", external_product_id="8"))
+        self.assertEqual(changed.reasons, ["mapping_identity_changed"])
+
     def test_remote_id_and_code_pointing_at_different_products_block(self):
         index = IdentityIndex(1, [product(1, "S"), product(2, "OTHER")],
                               [mapping(1, 1, "S", external_id="42"), mapping(2, 2, "OTHER", external_id="99")])

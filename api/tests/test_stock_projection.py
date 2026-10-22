@@ -106,8 +106,9 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
             "variant_code": "REMOTE-LEAF", "product_id": 50, "variant_id": 51})
         self.assertEqual(row["qty_available"], "4")
 
-    async def test_case_conflict_outside_selection_and_alias_are_blocked(self):
+    async def test_code_collision_outside_selection_or_malformed_mapping_is_blocked(self):
         for mappings, reason in (([mapping(), mapping(2, 99, "sku-a")], "mapping_ambiguous"),
+                                 ([mapping(code="REMOTE-LEAF"), mapping(2, 99, "remote-leaf")], "mapping_ambiguous"),
                                  ([mapping(code=" SKU-A ")], "mapping_alias"),
                                  ([mapping(parent="")], "mapping_invalid"),
                                  ([], "mapping_missing")):
@@ -127,7 +128,7 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(row["qty_available"])
 
     async def test_exact_sku_order_and_standalone_target_are_preserved(self):
-        db = ReadOnlyDB(products=[product(1, "SKU-A")], mappings=[mapping(is_variant=False, external_code="SKU-A", variant_code=None, parent_code=None)])
+        db = ReadOnlyDB(products=[product(1, "SKU-A")], mappings=[mapping(is_variant=False, external_code="SKU-A", parent_code=None)])
         rows = (await service.preview(db, "biketrek", ["sku-a", "SKU-A"]))["rows"]
         self.assertEqual([row["sku"] for row in rows], ["sku-a", "SKU-A"])
         self.assertEqual(rows[0]["errors"], ["stock_projection_product_missing"])

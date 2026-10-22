@@ -652,6 +652,9 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(!element('stock-action-1-on_hand'), 'Services never offer physical stock actions');
   await click('detail-1'); assert(!element('detail-tab-adjustment') && !element('detail-tab-fifo'), 'Service cards have no stock or FIFO tab');
   assert(required('detail-item-type').disabled && required('detail-stock-unit').disabled, 'Locked definitions cannot be changed from the detail');
+  await key('close-detail','Tab',{shiftKey:true});
+  assert.equal(document.activeElement,required('detail-diagnostics').querySelector('summary'),'Keyboard focus skips controls inside collapsed sections');
+  await key(document.activeElement,'Tab'); assert.equal(document.activeElement,required('close-detail'),'The visible last control loops to the dialog close button');
   await click('close-detail'); rows.set(1,stockRow); await click('load');
   await click('detail-2'); await input('detail-stock-unit','m');
   assert(document.body.textContent.includes(t('meterLimit')), 'Meter quantities clearly disclose channel limitations');

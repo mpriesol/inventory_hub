@@ -3,7 +3,7 @@
 Rozhodnutie vlastníka z 22. 10. 2026: zachovať potrebné skladové funkcie, používať
 interné databázové väzby a odstrániť konkurenčné zdroje rovnakého údaja.
 Po kontrole možných kolízií vlastník výslovne ponechal automatické značkové
-prefixy pri nových SKU, aby obsluha nemusela riešiť ich jedinečnosť. Tento dokument opisuje kontrakt implementácie v tomto PR;
+prefixy pri nových SKU, aby obsluha nemusela riešiť ich jedinečnosť. Tento dokument opisuje kontrakt implementácie v tejto zmene;
 úspešné nasadenie a stav konkrétnych živých údajov sa overujú samostatne.
 
 ## Identita a prepojenia
@@ -120,4 +120,4 @@ jednotky alebo nové ID, nie je bezpečná obnova.
 
 Súvisiace kontrakty: [SKU](sku-policy.md), [e-shopové väzby](product-links.md),
 [dodávateľské väzby](supplier-card-links.md), [príjem](receiving-identity.md),
-[FIFO](fifo.md), [editor](product-editor.md) a [spustenie skladu](stock-start-plan.md).
+[FIFO](fifo.md), [editor](product-editor.md) [jednotky](stock-units.md) a [spustenie skladu](stock-start-plan.md).

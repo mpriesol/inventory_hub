@@ -26,7 +26,7 @@ const readPending = (key: string): Pending | null => {
 };
 
 export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: number; warehouseCode: string; onChanged?: () => void }) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const credential = useSyncExternalStore(subscribeAccess, accessRevision);
   const language = i18n.language.startsWith('sk') ? 'sk' : 'en';
   const c = fifoCopy[language];
@@ -201,6 +201,8 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
     {pending && <div role="alert"><p>{c.pending}</p><span className="action-control"><button type="button" data-testid="fifo-retry" disabled={busy} onClick={() => execute(pending)}>{c.retry}</button><ActionScope effects={['hub-write']} /></span></div>}
     {loading && <p role="status">{c.loading}</p>}
     {stock && <>
+      <p>{t('productEditor.fields.stock_unit')}: {t(`productEditor.units.${stock.stock_unit || 'pcs'}`)}</p>
+      {stock.stock_unit === 'm' && <p role="note">{t('productEditor.meterLimit')}</p>}
       {stock.valuation.mode !== 'fifo' && <p className="fifo-notice">{stock.valuation.mode === 'legacy' ? c.legacy : stock.valuation.mode === 'unconfirmed' ? c.unconfirmed : c.missing}</p>}
       <div className="fifo-metrics">{[[c.physical, stock.balance?.qty_on_hand], [c.reserved, stock.balance?.qty_reserved], [c.quarantine, stock.balance?.qty_quarantined], [c.available, stock.balance?.qty_available], [c.knownValue, amount(stock.valuation.known_value)], [c.provisionalValue, amount(stock.valuation.provisional_value)], [c.unknownQty, stock.valuation.unknown_qty], [c.avg, amount(stock.valuation.avg_cost)], [c.next, stock.valuation.next_layer ? `${amount(stock.valuation.next_layer.unit_cost)} · ${status(stock.valuation.next_layer.cost_status)}` : c.unknown], [c.last, `${amount(stock.balance?.last_purchase_price)} · ${stock.valuation.last_purchase_cost_status === 'legacy' ? c.legacyCost : status(stock.valuation.last_purchase_cost_status || 'unknown')}`]].map(([label, value]) => <div key={label}><small>{label}</small><strong>{value ?? c.unknown}</strong></div>)}</div>
       <p>{stock.valuation.value_complete ? c.complete : c.incomplete}. {c.prices}</p>

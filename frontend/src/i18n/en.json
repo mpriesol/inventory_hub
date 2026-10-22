@@ -1610,7 +1610,7 @@
       "order_stock_invalid_line_key": "The line has no unique valid identity. Check the order.",
       "order_stock_line_identity": "The line has no unambiguous stock identity. Correct its product identity; a name alone is insufficient.",
       "order_stock_quantity_unsupported": "Quantity must be a positive whole number within the allowed range.",
-      "order_stock_unit_unsupported": "Only whole pieces with unit ks are supported. Metres or packs are not converted automatically.",
+      "order_stock_unit_unsupported": "Shop orders support whole pieces, pairs or packs sold as one unit, with shop unit ks. Metre cards and other order units are not supported.",
       "order_stock_invalid_order_number": "Enter a valid exact order number.",
       "order_stock_invalid_response": "The shop returned incomplete or invalid data. The operation was not performed.",
       "order_stock_rate_limited": "The shop API limit was reached. Retry reading later; do not repeat an operation without checking.",
@@ -1625,7 +1625,9 @@
       "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
       "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
       "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory.",
-      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items."
+      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items.",
+      "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
     },
     "posHelp": "A paid and completed cash-register sale in the base received status with reservations enabled is proposed for issue. Payment alone never triggers issue of a web order.",
     "moreErrors": "{{count}} more errors. Correct the source and prepare a new preview."
@@ -1736,7 +1738,7 @@
       "stock_projection_balance_missing": "No balance exists in the selected warehouse. Quantity remains unknown.",
       "stock_projection_balance_unverified": "Stock has not been confirmed by a new physical count or receipt.",
       "stock_projection_quantity_invalid": "On-hand and reserved quantities are invalid. Stock review is needed.",
-      "stock_projection_unit_unsupported": "This draft supports whole pieces only; fractional quantities are not converted.",
+      "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
       "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
       "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
     },
@@ -2089,7 +2091,9 @@
       "stock_publication_rate_limited": "The shop rate limited requests. Wait until another attempt is permitted.",
       "stock_publication_connection_missing": "The shop connection is not configured.",
       "stock_publication_retry_later": "The shop requires a pause before another attempt. Wait until it ends; changing settings does not shorten it.",
-      "stock_publication_observation_changed": "The batch state changed during verification. Load the saved result and review it before continuing."
+      "stock_publication_observation_changed": "The batch state changed during verification. Load the saved result and review it before continuing.",
+      "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
     },
     "baselineTitle": "Starting balance for regular transfers",
     "baselineHelp": "Hub reads only the selected items again. It saves a starting balance only when shop quantities match confirmed available stock in Hub. Resolve any differences during maintenance first. This step does not change shop quantities or enable automation.",
@@ -2760,7 +2764,9 @@
       "supplier_availability_unknown_quantity": "The quantity is missing or does not establish availability.",
       "supplier_availability_invalid_identity": "The item code is missing or invalid.",
       "supplier_availability_no_usable_rows": "No items contain usable availability. Open the skipped items list for details.",
-      "supplier_availability_run_not_found": "This refresh record is no longer available. Reload the overview."
+      "supplier_availability_run_not_found": "This refresh record is no longer available. Reload the overview.",
+      "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",
@@ -3928,7 +3934,7 @@
       "source_authentication_failed": "The shop denied access. Check the connection settings.",
       "product_links_mapping_missing": "The mapping no longer exists. Open product linking to check it.",
       "product_links_variant_still_exists": "The old variant still exists in the shop. Resolve the duplicate first.",
-      "product_links_replacement_identity_missing": "There is no unambiguous evidence that the standalone product belongs to this Hub card.",
+      "product_links_replacement_identity_missing": "The old variant link is missing an exact native ID or code. Refresh the original link from the shop first.",
       "product_links_replacement_not_allowed": "Only a deleted variant may be replaced with a standalone product.",
       "product_links_replacement_in_use": "This link has a pending or dependent operation. Complete or resolve it first."
     },

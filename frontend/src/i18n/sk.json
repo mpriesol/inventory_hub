@@ -1611,7 +1611,7 @@
       "order_stock_invalid_line_key": "Položka nemá jednoznačnú platnú identitu riadka. Skontroluj objednávku.",
       "order_stock_line_identity": "Položka nemá jednoznačné skladové prepojenie. Oprav identitu produktu; názov samotný nestačí.",
       "order_stock_quantity_unsupported": "Množstvo musí byť kladné celé číslo v povolenom rozsahu.",
-      "order_stock_unit_unsupported": "Podporované sú iba celé kusy s jednotkou ks. Metre ani balenia sa automaticky neprepočítajú.",
+      "order_stock_unit_unsupported": "Objednávky podporujú celé kusy, páry alebo balenia predávané ako jedna jednotka, s jednotkou ks v e-shope. Karty v metroch ani iné objednávkové jednotky nie sú podporované.",
       "order_stock_invalid_order_number": "Zadaj platné presné číslo objednávky.",
       "order_stock_invalid_response": "E-shop vrátil neúplné alebo neplatné údaje. Operácia nebola vykonaná.",
       "order_stock_rate_limited": "E-shop dosiahol limit API. Skús čítanie neskôr; operáciu neposielaj opakovane bez overenia.",
@@ -1626,7 +1626,9 @@
       "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
       "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
       "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie.",
-      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky."
+      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "posHelp": "Zaplatený a dokončený pokladňový predaj v základnom prijatom stave so zapnutou rezerváciou sa navrhne na výdaj. Samotná platba webovej objednávky výdaj nespustí.",
     "moreErrors": "Ďalších {{count}} chýb. Oprav podklad a priprav nový náhľad."
@@ -1737,9 +1739,9 @@
       "stock_projection_balance_missing": "V zvolenom sklade chýba evidovaný stav. Množstvo zostáva neznáme.",
       "stock_projection_balance_unverified": "Skladový stav nie je potvrdený novou inventúrou alebo príjmom.",
       "stock_projection_quantity_invalid": "Fyzické a rezervované množstvá nie sú platné. Je potrebná kontrola skladu.",
-      "stock_projection_unit_unsupported": "Náhľad podporuje iba celé kusy; desatinné množstvo sa neprepočíta.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
       "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
-      "stock_projection_item_not_stocked": "Služba nemá fyzický sklad na odoslanie."
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "origins": {
       "cash-register": "Pokladňa",
@@ -2090,7 +2092,9 @@
       "stock_publication_rate_limited": "E-shop obmedzil počet volaní. Počkaj na povolený ďalší pokus.",
       "stock_publication_connection_missing": "Pripojenie k e-shopu nie je nastavené.",
       "stock_publication_retry_later": "E-shop vyžaduje prestávku pred ďalším pokusom. Počkaj na jej skončenie; zmena nastavení ju neskráti.",
-      "stock_publication_observation_changed": "Počas overovania sa stav dávky zmenil. Načítaj uložený výsledok a skontroluj ho pred ďalším krokom."
+      "stock_publication_observation_changed": "Počas overovania sa stav dávky zmenil. Načítaj uložený výsledok a skontroluj ho pred ďalším krokom.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "baselineTitle": "Počiatočný stav pre pravidelný prenos",
     "baselineHelp": "Hub znova načíta iba vybrané položky. Počiatočný stav uloží, iba ak sú množstvá v e-shope zhodné s potvrdenými voľnými zásobami Hubu. Pri rozdiele treba najprv zosúladiť zásoby počas údržby. Tento krok nemení množstvá v e-shope ani nezapína automatiku.",
@@ -2761,7 +2765,9 @@
       "supplier_availability_unknown_quantity": "Množstvo chýba alebo z neho nemožno určiť dostupnosť.",
       "supplier_availability_invalid_identity": "Kód položky chýba alebo má neplatný formát.",
       "supplier_availability_no_usable_rows": "Žiadna položka nemá použiteľný údaj o dostupnosti. Rozbaľte zoznam preskočených položiek.",
-      "supplier_availability_run_not_found": "Záznam načítania už nie je dostupný. Obnovte prehľad."
+      "supplier_availability_run_not_found": "Záznam načítania už nie je dostupný. Obnovte prehľad.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
@@ -3930,7 +3936,7 @@
       "source_authentication_failed": "E-shop odmietol prístup. Skontrolujte nastavenia pripojenia.",
       "product_links_mapping_missing": "Prepojenie sa už nenašlo. Otvorte párovanie produktu a skontrolujte ho.",
       "product_links_variant_still_exists": "Pôvodný variant v e-shope stále existuje. Najprv vyriešte duplicitu.",
-      "product_links_replacement_identity_missing": "Chýba jednoznačný dôkaz, že samostatný produkt patrí tejto Hub karte.",
+      "product_links_replacement_identity_missing": "Pôvodnej variantovej väzbe chýba overené natívne ID alebo kód. Najprv obnovte pôvodnú väzbu z e-shopu.",
       "product_links_replacement_not_allowed": "Nahradiť možno len vymazaný variant samostatným produktom.",
       "product_links_replacement_in_use": "Prepojenie má otvorenú alebo závislú operáciu. Najprv ju dokončite alebo vyriešte."
     },
