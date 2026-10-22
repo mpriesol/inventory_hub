@@ -178,8 +178,10 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((root / "007_order_stock.sql").read_text())
             await connection.execute((root / "010_stock_publication.sql").read_text())
             await connection.execute((root / "011_fifo.sql").read_text())
+            await connection.execute((root / "012_product_editor.sql").read_text())
             await connection.execute((root / "013_receiving_scan_requests.sql").read_text())
             await connection.execute((root / "014_supplier_availability.sql").read_text())
+            await connection.execute((root / "029_sku_policy.sql").read_text())
             await apply_current_core_schema(connection)
         finally:
             await connection.close()

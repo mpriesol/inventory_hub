@@ -106,8 +106,10 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 db.add(ShopProduct(
                     shop_id=self.shops['biketrek'],
                     product_id=product.id,
-                    external_code=target['variant_code'],
-                    parent_code=target['parent_code'],
+                    external_code=target['code'],
+                    parent_code=target['parent_code'] if target['variant_code'] is not None else None,
+                    external_product_id=str(target['product_id']),
+                    external_variant_id=str(target['variant_id']) if target['variant_id'] is not None else None,
                     is_variant=target['variant_code'] is not None))
                 db.add(StockBalance(product_id=product.id, warehouse_id=warehouse.id, qty_on_hand=D("7"),
                     qty_reserved=D("3"), avg_cost=D("3"), total_value=D("21")))

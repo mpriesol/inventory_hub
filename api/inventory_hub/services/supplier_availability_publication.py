@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import select, exists, func, String, text
+from sqlalchemy import select, exists, func, String, text, case
 
 from inventory_hub import config_io
 from inventory_hub.database import get_session_context
@@ -81,7 +81,8 @@ async def owns_target(db, shop_code, parent_code):
         if policy['shop_code'] != shop_code:
             continue
         rows = await db.scalars(select(ShopProduct.product_id).join(Shop, Shop.id == ShopProduct.shop_id)
-            .where(Shop.code == shop_code, ShopProduct.external_code == parent_code, ShopProduct.is_listed.is_(True)))
+            .where(Shop.code == shop_code, case((ShopProduct.is_variant, ShopProduct.parent_code),
+                else_=ShopProduct.external_code) == parent_code, ShopProduct.is_listed.is_(True)))
         for product_id in rows:
             source = await eligible_source(db, product_id, supplier, policy['brands'])
             if source and (source.brand or '').upper() in policy['brands']:

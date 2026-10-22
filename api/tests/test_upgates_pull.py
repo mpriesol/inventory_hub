@@ -128,7 +128,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 for table in ("stock_balances", "stock_movements")
             }
 
-    async def test_shop_pull_attaches_exact_supplier_source_without_creating_stock(self):
+    async def test_shop_pull_preserves_only_explicit_supplier_links_without_creating_stock(self):
         with TemporaryDirectory() as folder, patch.object(config_io, "DATA_ROOT", Path(folder)):
             config_path = config_io.supplier_path("paul-lange")
             config_path.parent.mkdir(parents=True)
@@ -145,14 +145,46 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.remote[:] = [{**PRODUCTS[0], "code": "PL-001234"}]
             before = await self.stock_snapshot()
             result = await self.pull()
-            self.assertEqual(result["supplier_links"]["linked"], 1)
+            self.assertEqual(result["supplier_links"], {"linked": 0, "conflicts": []})
             self.assertEqual(await self.stock_snapshot(), before)
             async with self.sessions() as db:
                 product = await db.scalar(select(Product).where(Product.sku == "PL-001234"))
-                link = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == product.id))
-                self.assertEqual(link.supplier_product_id, source_id)
+                product_id = product.id
+                self.assertIsNone(await db.scalar(select(ProductSupplySource.id)))
+                # Even legacy provenance and a scoped alias do not authorize
+                # an automatic pull to attach a supplier offer.
+                product.source_supplier_product_id = source_id
+                db.add(ProductIdentifier(product_id=product_id, supplier_id=supplier.id,
+                    identifier_type=IdentifierType.supplier_sku, value="001234"))
+                await db.commit()
             second = await self.pull(update_existing=True)
-            self.assertEqual(second["supplier_links"]["linked"], 0)
+            self.assertEqual(second["supplier_links"], {"linked": 0, "conflicts": []})
+            async with self.sessions() as db:
+                self.assertIsNone(await db.scalar(select(ProductSupplySource.id)))
+                # A reviewed link, including its disabled state and negotiated
+                # policies, remains authoritative through later shop refreshes.
+                db.add(ProductSupplySource(product_id=product_id, supplier_product_id=source_id,
+                    priority=17, is_active=False, negotiated_price=Decimal("12.34"),
+                    negotiated_currency="EUR", pack_size=6))
+                await db.commit()
+            third = await self.pull(update_existing=True)
+            self.assertEqual(third["supplier_links"], {"linked": 0, "conflicts": []})
+            async with self.sessions() as db:
+                link = await db.scalar(select(ProductSupplySource).where(ProductSupplySource.product_id == product_id))
+                self.assertEqual((link.supplier_product_id, link.priority, link.is_active,
+                    link.negotiated_price, link.negotiated_currency, link.pack_size),
+                    (source_id, 17, False, Decimal("12.34"), "EUR", 6))
+                await db.delete(link)
+                await db.commit()
+            removed = await self.pull(update_existing=True)
+            self.assertEqual(removed["supplier_links"], {"linked": 0, "conflicts": []})
+            async with self.sessions() as db:
+                self.assertIsNone(await db.scalar(select(ProductSupplySource.id)))
+                self.assertEqual((await db.get(Product, product_id)).source_supplier_product_id, source_id)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ProductIdentifier).where(
+                    ProductIdentifier.product_id == product_id,
+                    ProductIdentifier.identifier_type == IdentifierType.supplier_sku)), 1)
+            self.assertEqual(await self.stock_snapshot(), before)
 
     async def test_repeated_two_shop_pull_keeps_quantities_and_prices_as_snapshots_only(self):
         # Product-only pulls work before a default physical warehouse is configured.
@@ -518,13 +550,21 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             event.remove(self.engine.sync_engine, "before_cursor_execute", count_sql)
 
-    async def test_legacy_variant_mapping_parent_code_still_resolves_and_refreshes(self):
+    async def test_corrupted_variant_leaf_code_is_a_visible_conflict_not_an_automatic_repair(self):
         await self.pull()
         async with self.sessions() as db:
             await db.execute(update(ShopProduct).where(ShopProduct.is_variant.is_(True)).values(external_code="PULL-GROUP"))
             await db.commit()
+        before = await self.stock_snapshot()
         result = await self.pull(update_existing=True)
-        self.assertEqual((result["created_products"], result["conflict_count"], result["updated_products"]), (0, 0, 2))
+        self.assertEqual((result["created_products"], result["conflict_count"], result["updated_products"]), (0, 1, 1))
+        self.assertEqual(result["conflicts"][0]["code"], "PULL-GROUP")
+        self.assertEqual(result["conflicts"][0]["reasons"], ["mapping_identity_changed"])
+        async with self.sessions() as db:
+            variants = (await db.scalars(select(ShopProduct).where(ShopProduct.is_variant.is_(True)))).all()
+            self.assertEqual({row.external_code for row in variants}, {"PULL-GROUP"})
+            self.assertEqual({row.external_variant_id for row in variants}, {"301", "302"})
+        self.assertEqual(await self.stock_snapshot(), before)
 
 
 class LegacyPushIdentityTests(unittest.IsolatedAsyncioTestCase):

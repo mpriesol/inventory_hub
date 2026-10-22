@@ -194,6 +194,10 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_eligible_leaves_effective_intervals_and_order_workload_without_writes(self):
         await self.seed_products()
         async with self.sessions() as db:
+            service_product = Product(sku='SERVICE', name='Service', item_type='service')
+            db.add(service_product)
+            await db.flush()
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=service_product.id, external_code='SERVICE', is_listed=True))
             db.add(OrderStockPolicy(shop_id=self.shop_id, warehouse_id=self.warehouse_id,
                 starts_at=self.clock - timedelta(days=30), revision=1, status_actions={}, status_hash='a' * 64, statuses=[]))
             db.add(StockSyncWarehouseSettings(warehouse_id=self.warehouse_id, interval_seconds=900))
@@ -226,16 +230,15 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.sessions() as db:
                 local = await service.projection(db, 'biketrek')
         self.assertEqual((local['listed_skus'], local['confirmed_skus'], local['eligible_skus'], local['unpublishable_skus']),
-                         (5, 4, 2, 3))
+                         (5, 4, 3, 2))
         self.assertEqual(local['eligibility_errors'], [
             {'code': 'stock_projection_balance_unverified', 'count': 1},
-            {'code': 'stock_projection_mapping_alias', 'count': 1},
             {'code': 'stock_projection_product_inactive', 'count': 1}])
         self.assertEqual(local['stock']['interval_seconds'], 600)
-        self.assertEqual((local['stock']['initial_batch_calls'], local['stock']['singleton_pass_calls']), (1, 2))
+        self.assertEqual((local['stock']['initial_batch_calls'], local['stock']['singleton_pass_calls']), (1, 3))
         self.assertEqual(local['stock']['call_model'], 'origin_aware_delta')
-        self.assertEqual((local['stock']['unchanged_pass_calls'], local['stock']['all_changed_pass_calls']), (0, 3))
-        self.assertEqual((local['stock']['daily_unchanged_if_enabled'], local['stock']['daily_all_changed_if_enabled']), (4, 432))
+        self.assertEqual((local['stock']['unchanged_pass_calls'], local['stock']['all_changed_pass_calls']), (0, 4))
+        self.assertEqual((local['stock']['daily_unchanged_if_enabled'], local['stock']['daily_all_changed_if_enabled']), (4, 576))
         self.assertEqual((local['stock']['audit_interval_seconds'], local['stock']['audit_pass_calls']), (21600, 1))
         self.assertFalse(local['stock']['enabled'])
         self.assertFalse(local['stock']['server_enabled'])
@@ -250,8 +253,8 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('other_integrations', local['not_included'])
         self.assertEqual(await self.snapshot(), before)
 
-        # Invalid listed rows consume worker chunk slots. Two valid leaves in
-        # separate listed chunks require two GETs, not ceil(2 / 2) == one.
+        # Invalid listed rows consume worker chunk slots. The three valid leaves
+        # (including the explicit differing shop code) occupy three chunks.
         async with self.sessions() as db:
             policy = await db.get(StockSyncSettings, self.shop_id)
             policy.batch_size = 2
@@ -260,8 +263,8 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             chunked = await service.projection(db, 'biketrek')
         self.assertEqual(chunked['stock']['batch_size'], 2)
-        self.assertEqual(chunked['stock']['initial_batch_calls'], 2)
-        self.assertEqual(chunked['stock']['all_changed_pass_calls'], 4)
+        self.assertEqual(chunked['stock']['initial_batch_calls'], 3)
+        self.assertEqual(chunked['stock']['all_changed_pass_calls'], 6)
         self.assertEqual(await self.snapshot(), before_small_batches)
 
     async def test_missing_shop_never_probes_and_staged_local_changes_are_not_flushed(self):

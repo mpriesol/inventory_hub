@@ -334,13 +334,14 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_and_supplier_binding_filters_combine_before_pagination(self):
         async with self.transaction() as db:
-            source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="FILTER-SOURCE", name="Source")
-            db.add(source); await db.flush()
             for active in (True, False):
                 for linked in (True, False):
                     product = Product(sku=f"FILTER-{active}-{linked}", name="Filter", is_active=active)
                     db.add(product); await db.flush()
                     if linked:
+                        source = SupplierProduct(supplier_id=self.supplier_id,
+                            supplier_sku=f"FILTER-SOURCE-{active}", name="Source")
+                        db.add(source); await db.flush()
                         # A paused link still exists; this filter is not crawler eligibility.
                         db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id, is_active=False))
                     else:
@@ -357,7 +358,9 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             product = await db.get(Product, self.products["BIKE-2"])
             await db.execute(text("DELETE FROM product_supply_sources WHERE product_id = :id"), {"id": product.id})
-        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="linked"))["total"], 1, "Legacy source remains a binding")
+        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="linked"))["total"], 0,
+            "Creation provenance and supplier aliases are not current supply links")
+        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="unlinked"))["total"], 1)
 
     async def test_lists_all_canonical_products_including_missing_stock_without_expanding_pos_parent(self):
         before = await self.snapshot()
@@ -379,7 +382,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual({row["sku"] for row in result["items"]}, expected, query)
         self.assertEqual((await self.listing(q="REMOTE-ONLY"))["total"], 0)
 
-    async def test_supplier_code_search_preserves_legacy_and_explicit_links_without_duplicates(self):
+    async def test_supplier_code_search_uses_explicit_links_and_ignores_provenance_without_duplicates(self):
         async with self.transaction() as db:
             legacy_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-001", name="Legacy source")
             linked_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-002", name="Linked source")
@@ -394,9 +397,11 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([legacy, linked, literal])
             await db.flush()
             db.add_all([ProductSupplySource(product_id=linked.id, supplier_product_id=linked_source.id),
-                ProductSupplySource(product_id=linked.id, supplier_product_id=other_source.id)])
-        for query, expected in (("raw-zlta-001", {"PL-LEGACY-SEARCH"}), ("raw-zlta-002", {"PL-LINKED-SEARCH"}),
-                                ("raw-zlta", {"PL-LEGACY-SEARCH", "PL-LINKED-SEARCH"}),
+                ProductSupplySource(product_id=linked.id, supplier_product_id=other_source.id),
+                ProductSupplySource(product_id=literal.id, supplier_product_id=wildcard.id)])
+        for query, expected in (("raw-zlta-001", set()), ("raw-zlta-002", {"PL-LINKED-SEARCH"}),
+                                ("raw-zlta", {"PL-LINKED-SEARCH"}),
+                                ("PL-LEGACY-SEARCH", {"PL-LEGACY-SEARCH"}),
                                 ("PL-LINKED-SEARCH", {"PL-LINKED-SEARCH"}), ("raw-orphan", set()),
                                 ("raw-missing", set()), ("100%_CODE", {"PL-LITERAL-SEARCH"}), ("100X_CODE", set())):
             with self.subTest(query=query):

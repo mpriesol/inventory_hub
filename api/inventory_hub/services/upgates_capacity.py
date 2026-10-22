@@ -197,7 +197,7 @@ are scenarios if enabled, never a claim about measured or current API usage.
         collector = await db.get(OrderCollectionSettings, shop.id)
         listed_query = select(Product.id, Product.sku).join(ShopProduct,
             ShopProduct.product_id == Product.id).where(ShopProduct.shop_id == shop.id,
-                ShopProduct.is_listed.is_(True)).distinct()
+                ShopProduct.is_listed.is_(True), Product.item_type == "stock").distinct()
         listed = (await db.execute(listed_query.order_by(Product.id))).all()
         confirmed = None
         eligible = None

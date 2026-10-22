@@ -3763,7 +3763,17 @@
     "familyScope": "Shared field: this also changes other variants in the selected families.",
     "rowScope": "Only selected rows are changed. Enabling AI always applies to the entire variant family.",
     "automationScope": "Processing scope: all {{count}} preparation rows; target: {{shops}}. Rules may automatically save cards and send products to the shop after AI, without another confirmation. Row selection only limits bulk edits. Physical stock is unchanged.",
-    "manualScope": "Scope: all {{count}} preparation rows; target: {{shops}}. Cards are saved and a preview prepared first. Shop publication is confirmed separately. Physical stock is unchanged."
+    "manualScope": "Scope: all {{count}} preparation rows; target: {{shops}}. Cards are saved and a preview prepared first. Shop publication is confirmed separately. Physical stock is unchanged.",
+    "recentColumns": {
+      "name": "Preparation",
+      "codes": "Codes",
+      "source": "Supplier / shop",
+      "status": "Status",
+      "count": "Count",
+      "updated": "Updated"
+    },
+    "recentFilters": "Preparation status",
+    "recentScrollHelp": "Scroll the table sideways to see more columns. Use Tab to choose a preparation and Enter to open it."
   },
   "slogerProbe": {
     "signIn": "Sign in to Hub",
