@@ -10,9 +10,11 @@ zostávajú v [politike SKU](sku-policy.md), [príjme](receiving-identity.md),
 - Zachovať existujúce jednoznačné SKU. Starší dodávateľský prefix nebráni FIFO
   ani nákupu od ďalšieho dodávateľa. Rozhodujú interné Hub ID, jednoznačné väzby
   a doklady. Dve karty s históriou sa automaticky nezlučujú.
-- Nová fyzická predajná jednotka používa jeden kód
-  `<dvojpísmenová skratka značky>-<doložený kód výrobku/variantu>`. Nie je potrebný
-  ďalší skladový kód ani číselný rad. Pred založením sa overí existujúca karta.
+- Nová fyzická predajná jednotka dostane automatické SKU
+  `<značkový prefix>-<kód konkrétneho výrobku/variantu>`. Prefixy zostávajú
+  podľa výslovného doplnenia vlastníka z 22. 10.; predchádzajú kolíziám rovnakých
+  kódov rôznych značiek. Systém overí existujúcu kartu aj jedinečnosť. MPN
+  nie je jediným možným dôkazom konkrétnej predajnej jednotky.
 - Nájdená karta si ponechá pôvodné SKU aj pri doložení MPN alebo inom dodávateľovi;
   rozporná identita zostáva blokovaná. Návrh nového formátu nesmie vytvoriť
   paralelnú kartu pre ten istý výrobok.
@@ -23,8 +25,10 @@ zostávajú v [politike SKU](sku-policy.md), [príjme](receiving-identity.md),
 ## Zakladanie v Hube a preberanie z e-shopu
 
 Odporúčaný bežný postup je **Hub → príjem kusov → samostatné publikovanie**.
-Základná karta nepotrebuje hotový e-shopový popis. SKU pridelí spoločná politika
-po doložení konkrétnej predajnej jednotky, nie obsluha v novom číselnom rade.
+Základná karta nepotrebuje hotový e-shopový popis. Spoločná politika identity
+zostaví značkové SKU a overí väzby na konkrétnu predajnú jednotku. Obsluha
+sama nevymýšľa jedinečný kód. Dodávateľský kód sa vyhodnocuje v rámci
+dodávateľa, nie ako univerzálna identita.
 
 Existuje aj **Upgates → Hub**: náhľad a explicitný výber rodín cez
 `/shops/{shop}/upgates/products/preview` a `/import`. Pull používa kanálové
@@ -33,8 +37,8 @@ prípadne prevezme pôvodný kód novej upstream položky. Nepotvrdzuje sklad an
 nákupnú cenu. Nevyrába novú značkovú identitu z názvu e-shopového poľa.
 
 Po pulle sa existujúci `reconcile_product_links` pokúsi doplniť iba jednoznačné
-väzby z nakonfigurovaných dodávateľských identít: existujúci supplier alias,
-legacy pointer alebo pôvodný prefix. Nie je to univerzálne vyhľadanie výrobku
+väzby z výslovných dodávateľských identít a existujúcich relačných väzieb.
+Samotný historický prefix ani údaj o pôvode karty nie je aktívnou väzbou. Nie je to univerzálne vyhľadanie výrobku
 u všetkých dodávateľov podľa EAN. Neznáma dodávateľská väzba sa rieši samostatným
 [náhľadom a potvrdením](supplier-card-links.md). Konflikt sa nesmie obísť.
 
@@ -48,6 +52,11 @@ sa nepovažuje samotné neskoršie stiahnutie za dôkaz dodržania politiky SKU 
 za automatické pripojenie dodávateľa. Existujúce odlišné shopové kódy možno
 evidovať v mapovaní, ale tým sa nedokazuje pripravenosť konkrétneho skladového
 publikátora; tú treba overiť pre každé cieľové SKU.
+
+V BIKETREK nesmie mať tá istá karta súčasne samostatný produkt aj variant pod
+pokladňovým rodičom. Taká situácia je konflikt: obsluha ponechá samostatný
+produkt, odstráni duplicitný pokladňový variant a znovu overí väzbu. Táto
+implementácia nevykonáva hromadné mazanie v e-shope.
 
 ## Poradie prevádzkového prechodu
 

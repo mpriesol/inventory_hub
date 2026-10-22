@@ -36,10 +36,11 @@ function RouteControl() { navigation = useNavigate(); currentLocation = useLocat
 let received = 0, hold = true, resolveHeld, lose = false, ambiguous = false, chooseAmbiguous = false, failSummary = false, invalidResponse = null, holdSummary = false, resolveSummary;
 let holdQuantity = false, resolveQuantity, loseQuantity = false, invalidQuantityResponse = null;
 let sessionStatus = 'in_progress', pauseMode = 'ok', extraLines = [], failProducts = false, failPrepare = false, failNote = false;
-const preparations = [], productRequests = [];
+const preparations = [], productRequests = [], unitEdits = [];
+let purchaseUnit='pcs', unitFactor='1', loseUnit=false;
 let matches = [{ line_id: 41, status: 'feed_only', product_id: null, product_code: null, product_name: null, catalog_product_id: 77, display_ean: '0123456789012', own_stock_qty: null, stock_confirmed: false, can_prepare: true, draft_id: null, warnings: [] }];
 const productResult = () => ({ session_id: 'session-A', invoice_no: 'test-invoice', warehouse_id: 1, feed_verified: true, items: matches, counts: Object.fromEntries(['matched','basic_card','feed_only','not_found','ambiguous','feed_unverified'].map(status => [status, matches.filter(item => item.status === status).length])) });
-const line = () => ({ id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '', display_ean: '0123456789012', ean_source: 'supplier_catalog', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
+const line = () => ({ item_type:'stock', stock_unit:'pcs', purchase_unit:purchaseUnit, purchase_to_stock_factor:unitFactor, stock_quantity:String(received*Number(unitFactor)), stock_unit_cost:String(25/Number(unitFactor)), id: 41, scm: 'PART-A', product_code: 'PART-A', ean: '', display_ean: '0123456789012', ean_source: 'supplier_catalog', title: 'Synthetic part', ordered_qty: 20, received_qty: received, status: received >= 20 ? 'matched' : 'partial' });
 const summary = () => ({ matched: received >= 20 ? 1 : 0, partial: received > 0 && received < 20 ? 1 : 0, pending: received ? 0 : 1, overage: 0, unexpected: 0 });
 global.fetch = async (path, options = {}) => {
   calls.push({ path, method: options.method || 'GET' });
@@ -71,6 +72,12 @@ global.fetch = async (path, options = {}) => {
   }
   if (path.endsWith('/note')) return failNote && options.method === 'POST' ? response({ detail: 'Synthetic note save failure' }, 500) : response({ note: '' });
   if (path.endsWith('/received-items')) return response({ success: true });
+  if (path.endsWith('/lines/0/unit')) {
+    assert.equal(options.headers['X-Hub-Request'],'1'); assert.equal(options.credentials,'same-origin');
+    const body=JSON.parse(options.body); unitEdits.push(body); purchaseUnit=body.purchase_unit; unitFactor=body.purchase_to_stock_factor;
+    if(loseUnit){loseUnit=false;throw new TypeError('Lost conversion acknowledgement after commit');}
+    return response({success:true,line:line(),summary:summary()});
+  }
   if (path.endsWith('/set-qty')) {
     const body = JSON.parse(options.body); quantityEdits.push(body);
     assert.equal(body.line_index, 0, 'Manual quantity targets the chosen invoice row');
@@ -557,7 +564,24 @@ async function mountReceipt(status = 'in_progress') {
   await act(async () => { find('receiving-scan-retry').click(); await tick(); });
   assert.deepEqual(scans.at(-1), { ...ambiguousRequest, line_id: 41 }, 'Uncertain retry preserves the selected line and UUID');
   assert.equal(received, 1, 'Replaying the selected line cannot double receive');
-  chooseAmbiguous = false; extraLines = [];
+  chooseAmbiguous = false; extraLines = []; received=2; await mountReceipt();
+  const changeUnit = async (id,value) => act(async()=>{const el=find(id),proto=el.tagName==='SELECT'?dom.window.HTMLSelectElement.prototype:dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value);el.dispatchEvent(new dom.window.Event(el.tagName==='SELECT'?'change':'input',{bubbles:true}));await tick();});
+  await act(async()=>{find('receiving-edit-line-0').click();await tick();});
+  assert(find('receiving-unit-conversion'),'Matched stock cards expose explicit purchase conversion');
+  await changeUnit('receiving-purchase-unit','pack'); await changeUnit('receiving-unit-factor','10');
+  const quantityBeforeConversion=quantityEdits.length, scansBeforeConversion=scans.length;
+  await act(async()=>{find('receiving-unit-save').click();await tick();});
+  assert.deepEqual(unitEdits.at(-1),{purchase_unit:'pack',purchase_to_stock_factor:'10'});
+  assert.equal(received,2,'Saving conversion does not overwrite purchase quantity');
+  assert.equal(line().stock_quantity,'20');assert.equal(line().stock_unit_cost,'2.5');
+  assert.equal(quantityEdits.length,quantityBeforeConversion);assert.equal(scans.length,scansBeforeConversion,'Conversion never creates a scan');
+  assert(find('receiving-stock-quantity-0').textContent.includes('20'));
+  await changeUnit('receiving-unit-factor','2,5');loseUnit=true;
+  const beforeLostUnit=unitEdits.length;
+  await act(async()=>{find('receiving-unit-save').click();await tick();});
+  assert.equal(unitEdits.length,beforeLostUnit+1,'Lost conversion response reads the receipt without repeating a write');
+  assert.equal(unitFactor,'2.5');assert.equal(received,2);assert(find('receiving-stock-quantity-0').textContent.includes('5'));
   await act(async () => { root.unmount(); });
   console.log('Receiving UI: scan UUID/retry/context protections, visible invoice items, manual quantity serialization/recovery, explicit historical closure, readonly receipts and pause reconciliation passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

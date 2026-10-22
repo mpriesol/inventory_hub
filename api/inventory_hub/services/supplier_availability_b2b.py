@@ -8,7 +8,7 @@ from datetime import timedelta
 from decimal import Decimal
 import hashlib
 
-from sqlalchemy import exists, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from inventory_hub.db_models import FeedRunStatus, Product, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
@@ -25,12 +25,9 @@ async def scope_skus(db, supplier_id):
     """Only active products already held in the Hub, including zero own stock."""
     linked = select(ProductSupplySource.supplier_product_id).join(Product, Product.id == ProductSupplySource.product_id).where(
         Product.is_active.is_(True), ProductSupplySource.is_active.is_(True), ProductSupplySource.orderable.is_(True))
-    fallback = select(Product.source_supplier_product_id).where(Product.is_active.is_(True),
-        Product.source_supplier_product_id.is_not(None), ~exists(select(ProductSupplySource.id).where(
-            ProductSupplySource.product_id == Product.id)))
     return list((await db.scalars(select(SupplierProduct.supplier_sku).where(
         SupplierProduct.supplier_id == supplier_id, SupplierProduct.is_active.is_(True),
-        SupplierProduct.is_discontinued.is_(False), SupplierProduct.id.in_(linked.union(fallback)))
+        SupplierProduct.is_discontinued.is_(False), SupplierProduct.id.in_(linked))
         .order_by(SupplierProduct.supplier_sku))).all())
 
 

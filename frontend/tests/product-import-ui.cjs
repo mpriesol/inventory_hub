@@ -25,6 +25,7 @@ const options = { language: 'sk', currency: 'EUR', pricelist: 'Default', categor
 const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, { code: 'PARTS', parent_code: 'MENU', names: { sk: 'Komponenty' } }, { code: 'TUBES', parent_code: 'PARTS', names: { sk: 'Duše' } }];
 const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: ['https://images.example.test/item.jpg'], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
+let recentItems = null;
 const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
@@ -32,7 +33,7 @@ global.fetch = async (path, init = {}) => {
   if (path === '/api/sku-policy/brands') return {ok:true,status:200,json:async()=>({brands:[{id:1,code:'TP',name:'Topeak',kind:'brand',aliases:[]}]})};
   if (path === '/api/sku-policy/preview') {
     const item=body.sku_identity;
-    return {ok:true,status:200,json:async()=>({status:!item||!item.leaf_confirmed?'blocked':'new',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:item?.leaf_confirmed?[]:['sku_leaf_not_confirmed'],candidate_product_ids:[]})};
+    return {ok:true,status:200,json:async()=>({status:item?.brand&&item.source_code?'new':'blocked',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:[],candidate_product_ids:[]})};
   }
   if (path === '/api/ai-content/rules') return { ok: true, status: 200, json: async () => ({book:{categories:[{id:'general',name:'Všeobecné'},{id:'inner_tubes',name:'Duše'}]}}) };
   if (path === '/api/product-imports/test-draft' && init.method === 'GET' && deferRead) {
@@ -40,12 +41,16 @@ global.fetch = async (path, init = {}) => {
     return new Promise(resolve => { releaseRead = value => resolve({ ok: true, status: 200, json: async () => value }); });
   }
   if (init.method === 'PUT' && failEdit) return { ok: false, status: 409, json: async () => ({ detail: { code: 'product_import_changed' } }) };
-  if (path === '/api/product-imports' && init.method === 'GET') return { ok: true, status: 200, json: async () => ({ items: [{ id: server.id, revision: server.revision, status: server.status, supplier: server.supplier, shop: server.shop, rows_count: 3, updated_at: '2026-10-08T11:00:00Z' }] }) };
+  if ((path === '/api/product-imports' || path.startsWith('/api/product-imports?')) && init.method === 'GET') {
+    const query = new URL(path,'https://hub.example.test').searchParams.get('q')?.toLowerCase() || '';
+    const items = recentItems || [{ id: server.id, revision: server.revision, status: server.status, supplier: server.supplier, shop: server.shop, rows_count: 3, updated_at: '2026-10-08T11:00:00Z' }];
+    return { ok: true, status: 200, json: async () => ({ items: items.filter(item => `${item.title || ''} ${(item.codes || []).join(' ')}`.toLowerCase().includes(query)) }) };
+  }
   if (path === '/api/product-imports' && init.method === 'POST') {
     assert.deepEqual(body.product_ids, [1, 2, 3]); assert.equal(body.run_id, 42); assert.ok(body.request_id);
   } else if (path === '/api/product-imports/test-draft' && init.method === 'PUT') {
     assert.equal(body.expected_revision, server.revision);
-    for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); if (patch.values.sku_identity) row.values.code = 'TP-' + patch.values.sku_identity.source_code; Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
+    for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); if (patch.values.sku_identity) row.values.code='TP-'+patch.values.sku_identity.source_code; Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
   } else if (path.endsWith('/categories-refresh')) {
     assert.equal(body.expected_revision, server.revision);
@@ -308,9 +313,36 @@ async function render(entry) {
   assert(document.body.textContent.includes('Import do e-shopu dokončený'));
   assert(!button('Pripraviť import'),'Completed automatic publication does not offer another preview');
 
+  recentItems = [
+    {id:'test-draft',revision:server.revision,status:'saved',title:'Dlhý názov rodiny produktov s veľkosťami a farbami',codes:['NF-000123-S','NF-000123-M','NF-000123-L'],supplier:'northfinder',shop:'biketrek',rows_count:67,updated_at:'2026-10-16T10:57:52Z'},
+    {id:'needs-review',revision:1,status:'draft',publication_state:'partial',needs_attention:true,title:'Kontrola importu',codes:['SKP-1'],supplier:'sk-profi-bike',shop:'xtrek',rows_count:1,updated_at:'2026-10-15T12:25:53Z'},
+    {id:'completed',revision:2,status:'saved',publication_state:'completed',title:'Dokončená príprava',codes:[],supplier:'sloger',shop:'biketrek',rows_count:4,updated_at:'2026-10-13T22:34:00Z'},
+  ];
+  const beforeRecent = calls.length;
   await render('/product-import');
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   await click(button('Všetky'));
+  const recentTable = () => document.querySelector('table.import-recent');
+  assert.deepEqual([...recentTable().querySelectorAll('thead th')].map(node=>node.textContent),['Názov prípravy','Kódy','Dodávateľ / e-shop','Stav','Počet','Upravené']);
+  assert.equal(recentTable().querySelectorAll('tbody tr').length,3);
+  const firstRecent = recentTable().querySelector('tbody tr');
+  assert.equal(firstRecent.querySelectorAll('th,td').length,6,'Every draft has the same explicit metadata columns');
+  assert.equal(firstRecent.querySelector('.import-recent-count').textContent,'67');
+  assert.equal(firstRecent.querySelector('time').dateTime,'2026-10-16T10:57:52Z');
+  assert.equal(firstRecent.querySelectorAll('.import-recent-codes code').length,3,'Exact leading-zero codes stay individually readable');
+  assert(firstRecent.querySelector('.import-recent-source').textContent.includes('BIKETREK'));
+  assert.equal(document.querySelector('.import-recent-scroll').tabIndex,0,'The horizontal region is keyboard focusable');
+  const draftLink = firstRecent.querySelector('a');draftLink.focus();
+  assert.equal(document.activeElement,draftLink);assert.equal(draftLink.tabIndex,0,'Each draft keeps a native keyboard link');
+  await click(button('Vyžadujú pozornosť'));assert.equal(recentTable().querySelectorAll('tbody tr').length,1);assert(recentTable().textContent.includes('Kontrola importu'));
+  await click(button('Dokončené'));assert.equal(recentTable().querySelectorAll('tbody tr').length,1);assert(recentTable().textContent.includes('Dokončená príprava'));
+  await click(button('Všetky'));
+  await change(label('Hľadať prípravu podľa názvu alebo SKU'),'NF-000123');
+  await act(async () => { await new Promise(resolve => setTimeout(resolve,300)); });
+  assert.equal(recentTable().querySelectorAll('tbody tr').length,1,'Server search still narrows drafts by exact source codes');
+  await change(label('Hľadať prípravu podľa názvu alebo SKU'),'');
+  await act(async () => { await new Promise(resolve => setTimeout(resolve,20)); });
+  assert(!calls.slice(beforeRecent).some(call=>['POST','PUT'].includes(call.method)),'Listing, searching and changing filters never write a draft');
   assert.ok(document.querySelector('a[href="/product-import?draft=test-draft"]'), 'Saved drafts are discoverable without route state');
   await click(document.querySelector('a[href="/product-import?draft=test-draft"]'));
   assert.equal(document.querySelectorAll('tr[data-row]').length, 3, 'Draft resumes from server via durable URL');
@@ -498,23 +530,19 @@ async function render(entry) {
   const beforeIdentity = calls.length;
   await click(document.querySelector('[data-testid="import-sku-1"]'));
   const dialog=document.querySelector('[role="dialog"]'); assert(dialog);
-  assert.equal(dialog.querySelector('[data-testid="sku-source-code"]').value,'0001410');
-  assert(!dialog.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'A feed field cannot automatically prove an MPN');
-  assert(dialog.textContent.includes('SUP-900') && dialog.textContent.includes('0001410'),'Supplier and manufacturer candidate values remain separate');
-  await change(dialog.querySelector('[data-testid="sku-source-ref"]'),'Synthetic specification for this exact variant');
-  await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
-  assert(dialog.querySelector('[data-testid="import-sku-apply"]').disabled);
-  await click(dialog.querySelector('[data-testid="sku-leaf-confirmed"]'));
+  assert.equal(dialog.querySelector('[data-testid="sku-source-code"]').value,'SUP-900','Supplier leaf code is the normal fallback, without claiming MPN evidence');
+  assert(dialog.querySelector('[data-testid="sku-brand"]') && !dialog.querySelector('[data-testid="sku-leaf-confirmed"]'),'Brand prefix is automatic without a mandatory MPN confirmation');
+  assert(dialog.textContent.includes('SUP-900'),'The scoped supplier code remains visible');
+  await change(dialog.querySelector('[data-testid="sku-source-code"]'),'0001410');
   await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
   const proof=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body;
-  assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410');
+  assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410'); assert.equal(proof.sku_identity.code_kind,'supplier'); assert.equal(proof.sku_identity.leaf_confirmed,false);
   await click(dialog.querySelector('[data-testid="import-sku-apply"]'));
   assert.equal(document.querySelector('[role="dialog"]'),null);
   assert(!button('Uložiť produkty do Hubu').disabled,'A basic card is savable despite missing shop price/VAT');
   await click(button('Uložiť produkty do Hubu'));
-  assert.equal(server.rows[0].values.sku_identity.source_code,'0001410');
   assert.equal(server.rows[0].values.code,'TP-0001410');
-  assert(!('code' in calls.filter(call=>call.method==='PUT').at(-1).body.rows[0].values),'The server derives SKU; the browser cannot rename freely');
+  assert(!('code' in calls.filter(call=>call.method==='PUT').at(-1).body.rows[0].values),'SKU uniqueness and prefix generation belong to the server');
   assert.equal(server.rows[0].values.supplier_code,'SUP-900');
   assert.equal(server.rows[0].values.sale_gross,null);
   assert(!calls.slice(beforeIdentity).some(call=>/publish|finalize|stock/.test(call.path)),'Identity preparation and Hub save never publish or receive stock');

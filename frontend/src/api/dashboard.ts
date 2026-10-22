@@ -1,6 +1,7 @@
 // Dashboard reads local Hub data only; no Upgates request is made here.
 import { API_BASE, fetchJSON } from "./client";
 import { hubUnlocked } from './access';
+import type { StockUnit } from './productEditor';
 import { getMovements } from './stockHistory';
 
 export interface DashboardStats {
@@ -9,10 +10,9 @@ export interface DashboardStats {
   lowStockCount: number;
   openOrders: number;
   inventoryValue: number | null;
-  onHand: number;
-  reserved: number;
-  available: number;
-  quarantined: number;
+  onHand: number | null; reserved: number | null; available: number | null; quarantined: number | null;
+  stockUnit: StockUnit | null;
+  quantityByUnit: Partial<Record<StockUnit, {on_hand:number;reserved:number;available:number;quarantined:number;unknown_quantity:number;provisional_quantity:number}>>;
 }
 export interface ActivityItem {
   id: string; timestamp: string; sku: string; name: string; quantity: string;
@@ -21,14 +21,15 @@ export interface ActivityItem {
 export async function getDashboardStats(): Promise<DashboardStats> {
   const value = await fetchJSON<{
     products_total: number; inventory_value: number | null; low_stock_count: number;
-    open_managed_orders: number; on_hand_total: number; reserved_total: number;
-    available_total: number; quarantined_total: number; confirmed_products: number;
+    open_managed_orders: number; on_hand_total: number | null; reserved_total: number | null;
+    available_total: number | null; quarantined_total: number | null; confirmed_products: number;
+    stock_unit?: StockUnit | null; quantity_by_unit?: DashboardStats['quantityByUnit'];
   }>(`${API_BASE}/stock/summary`);
   return {
     totalProducts: value.products_total, confirmedProducts: value.confirmed_products, inventoryValue: value.inventory_value,
     lowStockCount: value.low_stock_count, openOrders: value.open_managed_orders,
     onHand: value.on_hand_total, reserved: value.reserved_total,
-    available: value.available_total, quarantined: value.quarantined_total,
+    available: value.available_total, quarantined: value.quarantined_total, stockUnit:value.stock_unit || null, quantityByUnit:value.quantity_by_unit || {},
   };
 }
 export async function getRecentActivity(): Promise<ActivityItem[]> {

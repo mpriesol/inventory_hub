@@ -1,13 +1,14 @@
 """Read-only identity resolution shared by shop pulls, orders, catalog and receiving.
 
-BIKETREK and xTrek share exact canonical product/variant codes. Explicit shop
-mappings take precedence, then a unique exact SKU or registered old SKU,
+New BIKETREK and xTrek products share canonical codes. Existing explicit shop
+mappings may use different codes and take precedence, then an exact SKU or registered old SKU,
 then validated EAN/UPC (including equivalent GTIN representations).
 Conflicting evidence is reported; existing products and mappings never merge.
 """
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import copy
 from dataclasses import dataclass, field
 
 from sqlalchemy import select, func, tuple_
@@ -50,6 +51,7 @@ class RemoteIdentity:
     supplier_id: int | None = None
     supplier_sku: str = ""
     expected_product_id: int | None = None
+    external_product_id: str | None = None
 
 
 @dataclass
@@ -62,9 +64,7 @@ class IdentityResolution:
 
 
 def mapping_code(mapping: ShopProduct) -> str:
-    # Legacy pull external_code is the parent; catalog writes the variant code.
-    # variant_code is the unambiguous leaf in both historical conventions.
-    return str((mapping.variant_code if mapping.is_variant else mapping.external_code) or "").strip()
+    return str((mapping.external_code) or "").strip()
 
 
 class IdentityIndex:
@@ -103,8 +103,20 @@ class IdentityIndex:
         code = mapping_code(mapping)
         if code:
             self.by_code[code.casefold()].append(mapping)
-        if mapping.external_id and mapping.external_id != "None":
-            self.by_external_id[(bool(mapping.is_variant), str(mapping.external_id))].append(mapping)
+        if mapping.native_id and mapping.native_id != "None":
+            self.by_external_id[(bool(mapping.is_variant), str(mapping.native_id))].append(mapping)
+
+    def without_mappings(self, mapping_ids: set[int]) -> "IdentityIndex":
+        """Review a replacement while retaining every other identity conflict.
+
+        The caller must separately verify deletion and lock/revalidate the exact
+        excluded mapping before changing it. This method never writes data.
+        """
+        result = copy(self)
+        for field in ("by_code", "by_external_id", "by_product"):
+            setattr(result, field, defaultdict(list, {key: [row for row in rows if row.id not in mapping_ids]
+                for key, rows in getattr(self, field).items()}))
+        return result
 
     def resolve(self, identity: RemoteIdentity) -> IdentityResolution:
         if identity.shop_id != self.shop_id:
@@ -153,7 +165,9 @@ class IdentityIndex:
             mapping = next(iter(mappings.values()))
             if (identity.is_variant is not None and identity.is_variant != mapping.is_variant
                     or code and mapping_code(mapping) != code
-                    or identity.external_id and mapping.external_id not in (None, "", "None", identity.external_id)):
+                    or identity.external_id and mapping.native_id not in (None, "", "None", identity.external_id)
+                    or identity.parent_code and mapping.parent_code not in (None, "", identity.parent_code)
+                    or identity.external_product_id and mapping.external_product_id not in (None, "", identity.external_product_id)):
                 return conflict("mapping_identity_changed")
             if (sku_ids | alias_ids) and (sku_ids | alias_ids) != {mapping.product_id}:
                 return conflict("mapping_identifier_conflict")

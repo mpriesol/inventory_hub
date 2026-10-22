@@ -115,7 +115,7 @@
         "ambiguous": "Nejasná zhoda",
         "feed_unverified": "Feed sa nepodarilo overiť"
       },
-      "ownStock": "Náš sklad: {{quantity}} ks",
+      "ownStock": "Náš sklad: {{quantity}} {{unit}}",
       "stockUnverified": "Náš sklad: neoverený",
       "ambiguousHelp": "Identifikátory ukazujú na viac kariet alebo si odporujú. Skontrolujte EAN a kód dodávateľa; bez vyriešenia zhody kartu nezakladáme.",
       "prepareError": "Prípravu kariet sa nepodarilo otvoriť. Množstvá zostávajú uložené; obnovte párovanie a skúste to znova.",
@@ -164,9 +164,9 @@
     "unitCost": "Nákup / jednotku bez DPH",
     "reviewReceipt": "Skontrolovať príjem",
     "postReceipt": "Zaúčtovať príjem",
-    "receiptImpact": "Sklad: {{warehouse}}. Zaúčtuje sa {{count}} riadkov, spolu množstvo {{qty}} podľa jednotiek dokladu.",
+    "receiptImpact": "Sklad: {{warehouse}}. Zaúčtuje sa {{count}} riadkov. Množstvá a prepočty jednotiek sú uvedené pri jednotlivých položkách.",
     "receiptValue": "Hodnota prijatého tovaru podľa uložených nákupných cien",
-    "receiptEffect": "Prijaté množstvá zvýšia fyzický sklad a vytvoria dohľadateľné skladové pohyby a FIFO vrstvy. Oprava po zaúčtovaní sa robí opravným pohybom. Produkty sa tým nepublikujú do e-shopu.",
+    "receiptEffect": "Tovar zvýši fyzický sklad podľa nastaveného prepočtu a vytvorí dohľadateľné pohyby a FIFO vrstvy. Služby zásoby nemenia. Oprava po zaúčtovaní sa robí opravným pohybom. Produkty sa tým nepublikujú do e-shopu.",
     "receiptOverage": "Riadky s množstvom navyše: {{count}}",
     "finalizeFailed": "Príjem sa nepodarilo potvrdiť. Obnovte jeho stav a overte výsledok pred opakovaním.",
     "chooseScanLine": "Vyberte faktúrový riadok",
@@ -192,6 +192,26 @@
         "paused": "Pozastavená",
         "completed": "Dokončená",
         "cancelled": "Zrušená"
+      }
+    },
+    "units": {
+      "title": "Nákupná jednotka a prepočet do skladu",
+      "purchaseUnit": "Jednotka na faktúre",
+      "help": "Prijaté množstvo aj skenovanie sú v nákupnej jednotke. Jeden sken pridá jednu nákupnú jednotku. Skladová karta sa eviduje v jednotke {{unit}}.",
+      "factor": "Počet skladových jednotiek ({{unit}}) v jednej nákupnej jednotke",
+      "costHelp": "Pri zaúčtovaní sa množstvo násobí prepočtom a jednotková nákupná cena sa ním vydelí. Celková hodnota sa nemení.",
+      "save": "Uložiť prepočet",
+      "toStock": "Do skladu",
+      "invalidFactor": "Zadajte kladný prepočet najviac 999999.999 s najviac tromi desatinnými miestami.",
+      "reloaded": "Odpoveď na uloženie prepočtu sa nepotvrdila. Načítali sme uložený stav; pred pokračovaním ho skontrolujte.",
+      "errors": {
+        "receiving_unit_changed": "Skladová jednotka karty sa zmenila. Skontrolujte a znova uložte prepočet.",
+        "receiving_unit_conversion_invalid": "Zadajte kladný prepočet najviac 999999.999 s najviac tromi desatinnými miestami.",
+        "receiving_unit_quantity_precision": "Prepočet nevytvorí presné skladové množstvo. Skontrolujte jednotku a faktor.",
+        "receiving_unit_cost_invalid": "Nákupná cena po prepočte nie je platná. Skontrolujte doklad.",
+        "receiving_unit_cost_precision": "Prepočet by zmenil hodnotu príjmu zaokrúhlením. Skontrolujte balenie a cenu.",
+        "stock_quantity_unit_mismatch": "Kusy, páry a balenia vyžadujú celé množstvá; metre môžu mať najviac tri desatinné miesta.",
+        "stock_item_required": "Táto operácia vyžaduje skladový tovar. Služby nemajú fyzické skladové zásoby."
       }
     }
   },
@@ -311,15 +331,16 @@
     "defaultShopUnset": "Bez predvoľby",
     "defaultShopHelp": "Tento e-shop sa predvolí pri príprave produktov dodávateľa. Pri každom produkte môžete vybrať aj druhý e-shop, oba alebo iba Hub.",
     "codeRename": {
-      "title": "Zosúladenie kódov a prepojení Zookee",
-      "help": "Staré kódy TOPEAK- najprv premenujte na ZOO- v administrácii e-shopov. Pri prepojených produktoch Topeak a Sensor Hub tiež opraví chýbajúce interné ID po porovnaní pôvodnej karty s e-shopom. Kódy Sensoru a skladová história zostanú zachované.",
-      "load": "Načítať karty na zosúladenie",
-      "apply": "Overiť v e-shopoch a zosúladiť Hub",
-      "failed": "Kódy sa nepodarilo načítať.",
-      "notVerified": "Zmena v e-shope nie je overená; karta zostáva zachovaná.",
-      "progress": "Zosúladené {{done}} z {{total}}",
+      "title": "História zmien kódov Zookee",
+      "help": "Starý prevod kódov je vyradený. Tu možno prezerať uložené výsledky; tento prehľad nemení karty ani e-shopy.",
+      "load": "Načítať uložené výsledky",
+      "failed": "Uložené výsledky sa nepodarilo načítať.",
+      "empty": "Nenašli sa žiadne uložené prevody.",
+      "requestId": "ID pôvodnej požiadavky",
+      "recover": "Vyhľadať uložený výsledok",
+      "missing": "Pre toto ID požiadavky neexistuje uložený výsledok.",
       "results": {
-        "completed": "Zosúladené"
+        "completed": "Dokončené"
       }
     }
   },
@@ -578,7 +599,9 @@
       "supplier_availability_invalid": "Skontroluj texty dostupnosti v konfigurácii dodávateľa; každé pole môže mať najviac 100 znakov.",
       "stock_feed_only": "Produkt je iba v skladovom feede. Na publikovanie chýba úplný katalógový záznam.",
       "images_from_linked_shop": "Chýbajúce obrázky sú doplnené z overeného prepojeného e-shopu.",
-      "missing_purchase_price": "Nákupná cena vo feede nie je uvedená."
+      "missing_purchase_price": "Nákupná cena vo feede nie je uvedená.",
+      "shop_code_conflict": "Tento kód v e-shope už patrí produktu, variantu alebo rodičovi. Najprv skontrolujte existujúce prepojenie.",
+      "shop_identity_review_required": "EAN zodpovedá existujúcemu produktu v e-shope. Najprv skontrolujte a potvrďte prepojenie."
     },
     "tab": {
       "data": "Údaje a parametre",
@@ -1365,7 +1388,7 @@
     "source": "Podklad / označenie inventúry",
     "operator": "Meno zodpovednej osoby",
     "countedAt": "Čas fyzického spočítania (miestny čas)",
-    "csvHelp": "CSV v UTF-8, stĺpce sku;quantity;unit_cost;unit. Množstvo musí byť kladné celé číslo a jednotka ks. Jednotková obstarávacia cena je v EUR bez DPH; desatinné miesta oddeľ bodkou. Chýbajúca cena je chyba, výslovná nulová cena vyžaduje kontrolu.",
+    "csvHelp": "UTF-8 CSV so stĺpcami sku;quantity;unit_cost;unit. Jednotka musí zodpovedať karte: ks, pair, pack alebo m. Kusy, páry a balenia majú celé množstvá; metre najviac tri desatinné miesta. Jednotková nákupná cena je v EUR bez DPH. Použite desatinnú bodku; chýbajúca cena je chyba.",
     "csvFile": "Načítať CSV súbor",
     "csv": "CSV údaje",
     "preview": "Skontrolovať a pripraviť náhľad",
@@ -1392,7 +1415,7 @@
       "csv_unknown_columns": "CSV obsahuje nepodporované stĺpce. Ponechaj iba sku, quantity, unit_cost a unit.",
       "duplicate_sku": "SKU sa v dávke opakuje. Uveď produkt iba raz so správnym celkovým množstvom.",
       "existing_stock": "Položka už má potvrdenú skladovú evidenciu. Použite Opravu množstva.",
-      "invalid_quantity": "Množstvo musí byť kladné celé číslo, najviac 999 999 999 ks.",
+      "invalid_quantity": "Množstvo musí byť kladné: celé pre kusy, páry a balenia; najviac tri desatinné miesta pre metre.",
       "invalid_sku": "Vyplň platné SKU produktu, najviac 100 znakov.",
       "invalid_unit_cost": "Cena musí byť nezáporné číslo v EUR bez DPH, najviac 99 999 999,9999 a so štyrmi desatinnými miestami.",
       "line_value_too_large": "Hodnota riadka presahuje povolený rozsah. Skontroluj množstvo a cenu.",
@@ -1407,7 +1430,7 @@
       "opening_request_changed": "Pod týmto ID je uložený iný podklad. Over pôvodnú dávku; pre zmenený podklad priprav novú dávku.",
       "opening_warehouse_changed": "Sklad sa od vytvorenia náhľadu zmenil alebo bol vypnutý. Skontroluj jeho nastavenie.",
       "unknown_sku": "SKU sa v Hube nenašlo. Použi presný kód existujúceho produktu.",
-      "unsupported_unit": "Podporovaná je iba jednotka ks a celé kusy. Metre ani balenia sa neprepočítavajú.",
+      "unsupported_unit": "Jednotka ks, pair, pack alebo m musí zodpovedať skladovej karte.",
       "warehouse_unavailable": "Vybraný sklad nie je dostupný alebo je vypnutý. Načítaj aktuálny zoznam skladov.",
       "zero_unit_cost": "Nulová obstarávacia cena: over, že je výslovne správna.",
       "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
@@ -1416,7 +1439,11 @@
       "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
       "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
       "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
-      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie.",
+      "nonstock_product": "Služba nemôže mať počiatočnú fyzickú zásobu.",
+      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky.",
+      "stock_item_required": "Táto operácia vyžaduje skladový tovar. Služby nemajú fyzické skladové zásoby.",
+      "stock_quantity_unit_mismatch": "Kusy, páry a balenia vyžadujú celé množstvá; metre môžu mať najviac tri desatinné miesta."
     },
     "warnings": "Upozornenia",
     "row": "Riadok",
@@ -1584,7 +1611,7 @@
       "order_stock_invalid_line_key": "Položka nemá jednoznačnú platnú identitu riadka. Skontroluj objednávku.",
       "order_stock_line_identity": "Položka nemá jednoznačné skladové prepojenie. Oprav identitu produktu; názov samotný nestačí.",
       "order_stock_quantity_unsupported": "Množstvo musí byť kladné celé číslo v povolenom rozsahu.",
-      "order_stock_unit_unsupported": "Podporované sú iba celé kusy s jednotkou ks. Metre ani balenia sa automaticky neprepočítajú.",
+      "order_stock_unit_unsupported": "Objednávky podporujú celé kusy, páry alebo balenia predávané ako jedna jednotka, s jednotkou ks v e-shope. Karty v metroch ani iné objednávkové jednotky nie sú podporované.",
       "order_stock_invalid_order_number": "Zadaj platné presné číslo objednávky.",
       "order_stock_invalid_response": "E-shop vrátil neúplné alebo neplatné údaje. Operácia nebola vykonaná.",
       "order_stock_rate_limited": "E-shop dosiahol limit API. Skús čítanie neskôr; operáciu neposielaj opakovane bez overenia.",
@@ -1598,7 +1625,10 @@
       "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
       "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
       "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
-      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie.",
+      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "posHelp": "Zaplatený a dokončený pokladňový predaj v základnom prijatom stave so zapnutou rezerváciou sa navrhne na výdaj. Samotná platba webovej objednávky výdaj nespustí.",
     "moreErrors": "Ďalších {{count}} chýb. Oprav podklad a priprav nový náhľad."
@@ -1709,8 +1739,9 @@
       "stock_projection_balance_missing": "V zvolenom sklade chýba evidovaný stav. Množstvo zostáva neznáme.",
       "stock_projection_balance_unverified": "Skladový stav nie je potvrdený novou inventúrou alebo príjmom.",
       "stock_projection_quantity_invalid": "Fyzické a rezervované množstvá nie sú platné. Je potrebná kontrola skladu.",
-      "stock_projection_unit_unsupported": "Náhľad podporuje iba celé kusy; desatinné množstvo sa neprepočíta.",
-      "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni."
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "origins": {
       "cash-register": "Pokladňa",
@@ -2061,7 +2092,9 @@
       "stock_publication_rate_limited": "E-shop obmedzil počet volaní. Počkaj na povolený ďalší pokus.",
       "stock_publication_connection_missing": "Pripojenie k e-shopu nie je nastavené.",
       "stock_publication_retry_later": "E-shop vyžaduje prestávku pred ďalším pokusom. Počkaj na jej skončenie; zmena nastavení ju neskráti.",
-      "stock_publication_observation_changed": "Počas overovania sa stav dávky zmenil. Načítaj uložený výsledok a skontroluj ho pred ďalším krokom."
+      "stock_publication_observation_changed": "Počas overovania sa stav dávky zmenil. Načítaj uložený výsledok a skontroluj ho pred ďalším krokom.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "baselineTitle": "Počiatočný stav pre pravidelný prenos",
     "baselineHelp": "Hub znova načíta iba vybrané položky. Počiatočný stav uloží, iba ak sú množstvá v e-shope zhodné s potvrdenými voľnými zásobami Hubu. Pri rozdiele treba najprv zosúladiť zásoby počas údržby. Tento krok nemení množstvá v e-shope ani nezapína automatiku.",
@@ -2189,7 +2222,9 @@
       "supplier_availability": "Dodávateľská dostupnosť",
       "tracking": "Stav skladovej evidencie",
       "is_active": "Stav karty v Hube",
-      "supplier_linked": "Dodávateľská väzba"
+      "supplier_linked": "Dodávateľská väzba",
+      "item_type": "Typ karty",
+      "stock_unit": "Skladová jednotka"
     },
     "rowStates": {
       "dirty": "Neuložené zmeny",
@@ -2238,7 +2273,12 @@
       "product_editor_attribute_refresh_empty": "E-shop pre tento variant nevrátil parametre.",
       "invalid_activity": "Vyberte Aktívna alebo Neaktívna.",
       "create_uncertain": "Výsledok vytvorenia sa nepodarilo potvrdiť. Overte ho opakovaním tej istej požiadavky; ďalšia karta tým nevznikne.",
-      "sku_registered_rename_blocked": "Toto SKU bolo pridelené podľa overenej identity. Zmenu treba vykonať osobitným kontrolovaným prevodom."
+      "sku_registered_rename_blocked": "Toto SKU bolo pridelené podľa overenej identity. Zmenu treba vykonať osobitným kontrolovaným prevodom.",
+      "item_definition_locked": "Karta už má skladovú evidenciu alebo rezerváciu. Typ a jednotku nemožno zmeniť.",
+      "service_not_stock_managed": "Služba nemá fyzický sklad.",
+      "item_definition_mismatch": "Existujúca karta má iný typ alebo skladovú jednotku. Otvorte ju a skontrolujte jej definíciu.",
+      "stock_item_required": "Táto operácia vyžaduje skladový tovar. Služby nemajú fyzické skladové zásoby.",
+      "stock_quantity_unit_mismatch": "Kusy, páry a balenia vyžadujú celé množstvá; metre môžu mať najviac tri desatinné miesta."
     },
     "savedValue": "Uložené po úprave",
     "browserPreferences": "Šírky, poradie a viditeľnosť stĺpcov sa pamätajú v tomto prehliadači. SKU zostáva prvý. Rozpracované hodnoty sa neukladajú do nastavení.",
@@ -2254,7 +2294,7 @@
     "familyPageCount": "Na tejto stránke: {{count}} variantov",
     "familyDrafts": "Obsahuje neuložené úpravy",
     "movementHistory": "História pohybov",
-    "unifiedHint": "Spoločné SKU, jeden fyzický produkt. Údaje oboch e-shopov nájdete v stĺpcoch.",
+    "unifiedHint": "Jedna spoločná karta označuje tovar alebo službu. Oba e-shopy sú v stĺpcoch.",
     "syncSettings": "Dostupnosti a prenos zásob",
     "openShop": "Otvoriť v e-shope",
     "openAdmin": "Otvoriť v administrácii",
@@ -2300,7 +2340,8 @@
     "tracking": {
       "confirmed": "Potvrdená evidencia",
       "unconfirmed": "Čaká na inventúru / prvý príjem",
-      "no_warehouse": "Vyberte sklad"
+      "no_warehouse": "Vyberte sklad",
+      "nonstock": "Neskladová položka"
     },
     "trackingHelp": "Filter Len potvrdené položky zobrazuje iba zásoby potvrdené inventúrou alebo novým príjmom. Stav Aktívna / Neaktívna je samostatná vlastnosť karty. Staré importy zostávajú v histórii. Pre prvé spočítanie vyberte Nepotvrdené položky a otvorte detail → Oprava množstva.",
     "openingStock": "Hromadný počiatočný stav",
@@ -2324,7 +2365,7 @@
       "queued": "Načítanie čaká na spustenie.",
       "running": "Dostupnosti sa práve načítavajú."
     },
-    "newCard": "Nová skladová karta",
+    "newCard": "Nová karta",
     "createCard": "Vytvoriť kartu",
     "cancelCreate": "Zavrieť",
     "retryCreate": "Overiť / zopakovať vytvorenie",
@@ -2362,7 +2403,30 @@
     "sortedPage": "Zoradená táto stránka",
     "sortedResults": "Zoradené všetky výsledky",
     "resetSort": "Zrušiť zoradenie",
-    "allRows": "Všetky ({{count}})"
+    "allRows": "Všetky ({{count}})",
+    "itemTypes": {
+      "stock": "Tovar",
+      "service": "Služba"
+    },
+    "units": {
+      "pcs": "ks",
+      "pair": "pár",
+      "pack": "balenie",
+      "m": "m"
+    },
+    "unitHelp": "Jedna skladová jednotka je to, čo predávate: napríklad jeden pár alebo celé balenie. Prepočet nákupného balenia nastavíte pri príjme.",
+    "serviceHelp": "Služba má vlastnú kartu a prepojenia, ale nevytvára zásoby, rezervácie ani FIFO náklady.",
+    "nonstock": "Neskladová položka",
+    "definitionHelp": "Typ a jednotku nastavte pred prvým skladovým pohybom. Existujúce množstvá sa ich zmenou neprepočítavajú.",
+    "definitionPending": "Zmena je pripravená na uloženie spolu s ostatnými úpravami.",
+    "detailSections": {
+      "identifiers": "Identifikátory a parametre",
+      "suppliers": "Dodávatelia",
+      "shops": "E-shopy",
+      "definition": "Typ a jednotka",
+      "diagnostics": "Pokročilá diagnostika"
+    },
+    "meterLimit": "Metre podporujú lokálny príjem, prepočet a FIFO. Objednávky a prenos skladových množstiev do e-shopov zatiaľ metrové položky nespracujú."
   },
   "actions": {
     "effects": {
@@ -2481,7 +2545,10 @@
       "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
       "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
       "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
-      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie.",
+      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky.",
+      "stock_item_required": "Táto operácia vyžaduje skladový tovar. Služby nemajú fyzické skladové zásoby.",
+      "stock_quantity_unit_mismatch": "Kusy, páry a balenia vyžadujú celé množstvá; metre môžu mať najviac tri desatinné miesta."
     },
     "reload": "Načítať aktuálny sklad",
     "unknown": "Neznáma cena",
@@ -2698,7 +2765,9 @@
       "supplier_availability_unknown_quantity": "Množstvo chýba alebo z neho nemožno určiť dostupnosť.",
       "supplier_availability_invalid_identity": "Kód položky chýba alebo má neplatný formát.",
       "supplier_availability_no_usable_rows": "Žiadna položka nemá použiteľný údaj o dostupnosti. Rozbaľte zoznam preskočených položiek.",
-      "supplier_availability_run_not_found": "Záznam načítania už nie je dostupný. Obnovte prehľad."
+      "supplier_availability_run_not_found": "Záznam načítania už nie je dostupný. Obnovte prehľad.",
+      "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
@@ -3103,7 +3172,8 @@
       "stock_tracking_historical_issue": "Tento výdaj patrí do historickej evidencie. V novej evidencii ho nemožno použiť na vratku.",
       "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
       "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
-      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie."
+      "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie.",
+      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky."
     },
     "remoteValues": "Hodnoty odosielané do Upgates",
     "remoteWithVat": "Jednotkové ceny v Upgates sú v EUR s DPH. Prepočet používa DPH konkrétnej položky. FIFO náklady vyššie sú bez DPH.",
@@ -3618,7 +3688,9 @@
       "request_failed": "Odpoveď sa nepotvrdila. Načítajte aktuálnu prípravu pred ďalším rozhodnutím.",
       "import_identity_source_changed": "Dodávateľský zdroj sa od kontroly zmenil. Načítajte aktuálnu kontrolu.",
       "selection_identity_conflict": "Viaceré vybrané položky ukazujú na tú istú skladovú kartu. Najprv vyriešte výber.",
-      "existing_card_link_only": "Voľba existujúcej karty uloží iba dodávateľskú väzbu pri následnom uložení do Hubu. Zachová jej SKU, názov, skupinu, ceny aj sklad a nezalistuje ju v e-shopoch."
+      "existing_card_link_only": "Voľba existujúcej karty uloží iba dodávateľskú väzbu pri následnom uložení do Hubu. Zachová jej SKU, názov, skupinu, ceny aj sklad a nezalistuje ju v e-shopoch.",
+      "shop_code_conflict": "Tento kód v e-shope už patrí produktu, variantu alebo rodičovi. Najprv skontrolujte existujúce prepojenie.",
+      "shop_identity_review_required": "EAN zodpovedá existujúcemu produktu v e-shope. Najprv skontrolujte a potvrďte prepojenie."
     },
     "delivery": {
       "queued": "Odoslanie vo fronte",
@@ -3693,7 +3765,17 @@
     "familyScope": "Spoločné pole: zmena sa týka aj ostatných variantov vybraných rodín.",
     "rowScope": "Hodnota sa zmení iba vo vybraných riadkoch. Zapnutie AI vždy platí pre celú variantovú rodinu.",
     "automationScope": "Rozsah spracovania: všetkých {{count}} riadkov prípravy, cieľ: {{shops}}. Pravidlá môžu po AI automaticky uložiť karty a odoslať produkty do e-shopu bez ďalšieho potvrdenia. Označenie riadkov obmedzuje iba hromadné úpravy. Fyzická zásoba sa tým nemení.",
-    "manualScope": "Rozsah: všetkých {{count}} riadkov prípravy, cieľ: {{shops}}. Najprv sa uložia karty a pripraví náhľad. Odoslanie do e-shopu potvrdíte osobitne. Fyzická zásoba sa nemení."
+    "manualScope": "Rozsah: všetkých {{count}} riadkov prípravy, cieľ: {{shops}}. Najprv sa uložia karty a pripraví náhľad. Odoslanie do e-shopu potvrdíte osobitne. Fyzická zásoba sa nemení.",
+    "recentColumns": {
+      "name": "Názov prípravy",
+      "codes": "Kódy",
+      "source": "Dodávateľ / e-shop",
+      "status": "Stav",
+      "count": "Počet",
+      "updated": "Upravené"
+    },
+    "recentFilters": "Stav prípravy",
+    "recentScrollHelp": "Ďalšie stĺpce zobrazíte posunutím tabuľky do strany. Klávesom Tab vyberiete prípravu, Enter ju otvorí."
   },
   "slogerProbe": {
     "signIn": "Prihlásiť sa do Hubu",
@@ -3862,7 +3944,11 @@
       "source_http_error": "E-shop vrátil chybu pri čítaní produktu.",
       "source_http_failed": "E-shop vrátil chybu pri čítaní produktu.",
       "source_authentication_failed": "E-shop odmietol prístup. Skontrolujte nastavenia pripojenia.",
-      "product_links_mapping_missing": "Prepojenie sa už nenašlo. Otvorte párovanie produktu a skontrolujte ho."
+      "product_links_mapping_missing": "Prepojenie sa už nenašlo. Otvorte párovanie produktu a skontrolujte ho.",
+      "product_links_variant_still_exists": "Pôvodný variant v e-shope stále existuje. Najprv vyriešte duplicitu.",
+      "product_links_replacement_identity_missing": "Pôvodnej variantovej väzbe chýba overené natívne ID alebo kód. Najprv obnovte pôvodnú väzbu z e-shopu.",
+      "product_links_replacement_not_allowed": "Nahradiť možno len vymazaný variant samostatným produktom.",
+      "product_links_replacement_in_use": "Prepojenie má otvorenú alebo závislú operáciu. Najprv ju dokončite alebo vyriešte."
     },
     "reasons": {
       "attributes_missing": "Parametre variantu nie sú v odpovedi e-shopu dostupné.",
@@ -3890,7 +3976,8 @@
       "cached_candidate_limit": "Uložené výsledky sú príliš rozsiahle. Zúžte výber alebo zadajte presný kód.",
       "mapping_identity_changed": "Kód alebo identifikátor e-shopového produktu sa zmenil.",
       "unmapped_sku_collision": "Viac kariet má rovnaký SKU bez ohľadu na veľkosť písmen.",
-      "assigned_product_changed": "Kód a identifikátory nepatria vybranej karte."
+      "assigned_product_changed": "Kód a identifikátory nepatria vybranej karte.",
+      "replaces_deleted_variant": "Prepojenie sa presunie z overene vymazaného variantu na tento samostatný produkt."
     },
     "allAlreadyLinked": "Všetky vybrané karty sú už prepojené s {{shop}}.",
     "done": "Hotovo",
@@ -3898,7 +3985,10 @@
     "shopBarcode": "Čiarový kód v {{shop}}",
     "barcodeAbsent": "Neuvedený",
     "barcodeInvalid": "Hodnota {{value}} nie je platný EAN alebo UPC.",
-    "barcodeNotRecorded": "Hodnota nie je v tomto staršom náhľade uložená."
+    "barcodeNotRecorded": "Hodnota nie je v tomto staršom náhľade uložená.",
+    "replaceDeletedVariant": "Nahradiť vymazaný pokladňový variant samostatným produktom",
+    "replacementHelp": "Najprv vymažte duplicitný pokladňový variant v e-shope. Zadajte kód samostatného produktu vyššie. Náhľad preverí zmazanie aj identitu a po potvrdení zachová tú istú Hub kartu.",
+    "replacementPreview": "Nahradenie prepojenia: {{old}} → {{code}}"
   },
   "supplierLinks": {
     "open": "Prepojiť s dodávateľom",
@@ -4096,8 +4186,8 @@
     "stock": "Hub → e-shop: vlastná zásoba a výsledky odoslania"
   },
   "skuPolicy": {
-    "title": "Identita a SKU",
-    "help": "Najprv overíme, či karta už existuje. Nové SKU vznikne zo skratky značky a doloženého kódu konkrétneho výrobku alebo variantu.",
+    "title": "Automatické SKU",
+    "help": "SKU vytvoríme automaticky zo skratky značky a kódu konkrétneho tovaru. Existujúca karta si ponechá svoj kód. Prepojenia a kolízie skontroluje Hub.",
     "brand": "Značka alebo evidenčná kategória",
     "codeKind": "Význam zdrojového kódu",
     "sourceCode": "Kód konkrétnej predajnej jednotky",
@@ -4120,10 +4210,10 @@
     "saveAlias": "Pridať overený zápis",
     "saveBrand": "Uložiť do registra",
     "checking": "Overujem identitu…",
-    "completeFields": "Doplňte značku, konkrétny kód a podklad, alebo vyhľadajte existujúcu kartu podľa SKU / EAN.",
+    "completeFields": "Vyberte značku a kód konkrétneho tovaru, alebo vyhľadajte existujúcu kartu pomocou EAN.",
     "existingCard": "Použije sa existujúca karta č. {{id}}. Jej SKU zostane zachované.",
     "candidates": "Dotknuté karty: {{ids}}. Skontrolujte ich v sklade a opravte rozporné podklady.",
-    "apply": "Použiť overenú identitu",
+    "apply": "Použiť návrh SKU",
     "retry": "Skúsiť znova",
     "existingSku": "Existujúce SKU alebo starý alias (voliteľné)",
     "ean": "Overený EAN / UPC (voliteľné)",
@@ -4131,10 +4221,10 @@
     "receivingPreparation": "Príjem obsahuje výrobok bez priradenej skladovej karty. Otvorte prípravu karty, overte identitu a SKU, uložte kartu do Hubu a potom sa vráťte k potvrdeniu príjmu.",
     "prepareMissingCard": "Pripraviť chýbajúcu kartu",
     "states": {
-      "new": "Navrhované nové SKU",
+      "new": "Automaticky zostavené SKU",
       "existing": "Našla sa existujúca karta",
       "conflict": "Podklady si odporujú",
-      "blocked": "Identitu treba doplniť"
+      "blocked": "Skontrolujte kód a prepojenie"
     },
     "brandKinds": {
       "brand": "Značka výrobcu",
@@ -4158,7 +4248,7 @@
       "registryUnavailable": "Register sa nepodarilo načítať alebo uložiť. Skúste znova.",
       "previewUnavailable": "Overenie identity sa nepodarilo. Skontrolujte presný zápis polí bez okrajových medzier a skúste znova.",
       "identity_conflict": "Identifikátory označujú odlišné karty alebo nejednoznačný variant. Skontrolujte uvedené karty a podklady; nová karta sa nevytvorí.",
-      "sku_identity_required": "Nový výrobok potrebuje značku, doložený konkrétny kód a potvrdenie variantu.",
+      "sku_identity_required": "Nová karta potrebuje značku a kód konkrétneho tovaru. SKU zostaví Hub.",
       "sku_brand_unregistered": "Značka nie je v registri. Vyberte existujúci zápis alebo ju doplňte s jedinečnou skratkou.",
       "sku_leaf_not_confirmed": "Potvrďte konkrétny variant a balenie až po overení zdrojového kódu.",
       "sku_namespace_kind_mismatch": "Druh kódu nezodpovedá registru. Pre služby alebo neznačkový tovar vyberte príslušnú evidenčnú kategóriu.",
@@ -4189,9 +4279,15 @@
       "supplier_source_multiple_products": "Dodávateľská položka je spojená s viacerými kartami. Opravte konflikt v prepojeniach.",
       "supplier_card_links_source_ean_conflict": "EAN dodávateľskej položky odporuje karte. Overte variant a balenie.",
       "supplier_card_links_identity_conflict": "Dodávateľská väzba odporuje identite karty. Otvorte kontrolu dodávateľských prepojení.",
-      "product_editor_name_required": "Nová karta potrebuje názov výrobku."
+      "product_editor_name_required": "Nová karta potrebuje názov výrobku.",
+      "sku_required": "Nová karta potrebuje značku a kód konkrétneho tovaru. SKU zostaví Hub.",
+      "sku_code_required": "Nová karta potrebuje značku a kód konkrétneho tovaru. SKU zostaví Hub.",
+      "sku_invalid": "Skontrolujte SKU: najviac 100 znakov, bez riadiacich znakov a oddeľovačov.",
+      "sku_code_invalid": "Skontrolujte SKU: najviac 100 znakov, bez riadiacich znakov a oddeľovačov.",
+      "sku_item_type_conflict": "Servisná značka vyžaduje typ karty Služba."
     },
-    "newCardName": "Názov pre novú kartu"
+    "newCardName": "Názov pre novú kartu",
+    "lookupExisting": "Vyhľadať existujúcu kartu podľa SKU"
   },
   "skuMigration": {
     "title": "Náhľad zmeny SKU",

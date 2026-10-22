@@ -4,6 +4,7 @@
 import { API_BASE, fetchJSON } from "./client";
 
 export interface StockItem {
+  item_type: 'stock' | 'service'; stock_unit: 'pcs' | 'pair' | 'pack' | 'm';
   sku: string;
   image_url: string | null;
   name: string;
@@ -25,9 +26,9 @@ export interface StockSummary {
   inventory_value: number | null;
   known_inventory_value: number;
   value_complete: boolean;
-  unknown_quantity: number;
-  provisional_quantity: number;
-  reserved_total: number;
+  unknown_quantity: number | null; provisional_quantity: number | null; reserved_total: number | null;
+  stock_unit: 'pcs' | 'pair' | 'pack' | 'm' | null;
+  quantity_by_unit: Partial<Record<'pcs' | 'pair' | 'pack' | 'm', {on_hand:number;reserved:number;available:number;quarantined:number;unknown_quantity:number;provisional_quantity:number}>>;
   low_stock_count: number;
 }
 
@@ -40,6 +41,7 @@ export async function getStockSummary(): Promise<StockSummary> {
 }
 
 export interface ProductDetail {
+  item_type?: 'stock' | 'service'; stock_unit?: 'pcs' | 'pair' | 'pack' | 'm';
   sku: string;
   name: string;
   brand: string | null;
@@ -53,8 +55,8 @@ export interface ProductDetail {
   image_url: string | null;
   attributes: { name: string; value: string }[];
   identifiers: { type: string; value: string; is_primary: boolean }[];
-  stock: { known: boolean; on_hand: number | null; reserved: number | null; available: number | null; avg_cost: number | null };
-  shops: { shop: string; external_code: string; parent_code?: string | null; variant_code: string | null; shop_availability: string | null; shop_stock: number | null; last_pull_at: string | null }[];
+  stock: { managed?: boolean; known: boolean; on_hand: number | null; reserved: number | null; available: number | null; avg_cost: number | null };
+  shops: { shop: string; external_code: string; external_product_id?: string | null; external_variant_id?: string | null; parent_code?: string | null; variant_code: string | null; shop_availability: string | null; shop_stock: number | null; last_pull_at: string | null }[];
 }
 
 export async function getProductDetail(sku: string): Promise<ProductDetail> {

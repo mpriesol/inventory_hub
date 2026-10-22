@@ -204,30 +204,34 @@ async def product_target(db, shop_id, product_id, sku):
     mapping = await one(db, ShopProduct, (ShopProduct.shop_id == shop_id) & (ShopProduct.product_id == product_id))
     if mapping is None or not mapping.is_listed:
         raise CostSyncError('fifo_cost_mapping_missing')
-    code = mapping.variant_code if mapping.is_variant else mapping.external_code
+    code = mapping.external_code
     parent = mapping.parent_code if mapping.is_variant else mapping.external_code
-    if code != sku or not parent:
+    if not code or code != code.strip() or not parent:
         raise CostSyncError('fifo_cost_mapping_alias')
-    # Exact SKU is authoritative. Case-fold collisions must not select another
+    product = await db.get(Product, product_id)
+    if product is None or product.item_type == 'service' or product.stock_unit == 'm':
+        raise CostSyncError('fifo_cost_unit_unsupported')
+    # The explicit remote mapping is authoritative. Case-fold collisions must not select another
     # leaf, including Unicode case-fold expansions which SQL lower() misses.
-    leaf = case((ShopProduct.is_variant.is_(True), ShopProduct.variant_code), else_=ShopProduct.external_code)
+    leaf = ShopProduct.external_code
     candidates = (await db.execute(select(ShopProduct.product_id, ShopProduct.is_variant,
-        ShopProduct.external_id, leaf.label('code')).where(
+        ShopProduct.native_id.label("external_id"), leaf.label('code')).where(
         ShopProduct.shop_id == shop_id,
         or_(func.lower(leaf) == code.lower(), leaf.op('~')(r'[^ -~]'),
-            (ShopProduct.external_id == mapping.external_id) & (ShopProduct.is_variant == mapping.is_variant)
-            if mapping.external_id else False)))).all()
+            (ShopProduct.native_id == mapping.native_id) & (ShopProduct.is_variant == mapping.is_variant)
+            if mapping.native_id else False)))).all()
     if len([row for row in candidates if row.code and row.code.casefold() == code.casefold()]) != 1:
         raise CostSyncError('fifo_cost_mapping_ambiguous')
-    if mapping.external_id and len([row for row in candidates if row.external_id == mapping.external_id
+    if mapping.native_id and len([row for row in candidates if row.external_id == mapping.native_id
                                    and row.is_variant == mapping.is_variant]) != 1:
         raise CostSyncError('fifo_cost_mapping_ambiguous')
     identity = {'code': code, 'parent_code': parent, 'variant_code': code if mapping.is_variant else None}
-    if mapping.external_id:
-        if not mapping.external_id.isdigit() or int(mapping.external_id) <= 0:
-            raise CostSyncError('fifo_cost_mapping_invalid')
-        identity['variant_id' if mapping.is_variant else 'product_id'] = int(mapping.external_id)
-    return {'identity': identity, 'mapping_id': mapping.id, 'external_id': mapping.external_id}
+    for native, key in ((mapping.external_product_id, 'product_id'), (mapping.external_variant_id, 'variant_id')):
+        if native is not None:
+            if not native.isdigit() or int(native) <= 0:
+                raise CostSyncError('fifo_cost_mapping_invalid')
+            identity[key] = int(native)
+    return {'identity': identity, 'mapping_id': mapping.id, 'external_id': mapping.native_id}
 
 
 async def local_source(db, kind, identifier, warehouse_id, shop_id):
@@ -410,8 +414,8 @@ async def enqueue(db, payload, *, automatic=False):
     if not policy.scan_active:
         policy.scan_active, policy.scan_manual = True, not automatic
         policy.product_cursor = policy.order_cursor = 0
-        policy.product_max = (await db.scalar(select(func.max(ShopProduct.product_id)).where(
-            ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True)))) or 0
+        policy.product_max = (await db.scalar(select(func.max(ShopProduct.product_id)).join(Product, Product.id == ShopProduct.product_id).where(
+            ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.item_type == "stock"))) or 0
         policy.order_max = (await db.scalar(select(func.max(ShopOrder.id)).where(ShopOrder.shop_id == shop.id))) or 0
         policy.last_error = None
         policy.last_batch_at = now()
@@ -462,7 +466,7 @@ async def scan_batch(db, shop_id):
     if not policy.order_cost_enabled:
         policy.order_cursor = policy.order_max
     products = (await db.execute(select(Product.id, Product.sku).join(ShopProduct, ShopProduct.product_id == Product.id)
-        .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.id > policy.product_cursor,
+        .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.item_type == "stock", Product.id > policy.product_cursor,
                Product.id <= policy.product_max).order_by(Product.id).limit(product_budget))).all() if product_budget else []
     orders = (await db.execute(select(ShopOrder.id, ShopOrder.external_id).where(ShopOrder.shop_id == shop.id,
         ShopOrder.id > policy.order_cursor, ShopOrder.id <= policy.order_max, ShopOrder.stock_state == 'issued',

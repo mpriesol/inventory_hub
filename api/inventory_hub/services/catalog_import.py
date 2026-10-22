@@ -284,7 +284,7 @@ def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool
                     full_at = None
             except (KeyError, ValueError, TypeError):
                 pass
-        full = refresh or full_at is None or started - full_at >= timedelta(hours=24)
+        full = refresh or not saved or saved.get("identity_schema") != 2 or full_at is None or started - full_at >= timedelta(hours=24)
         products = {} if full else dict(saved["products"])
         params = {} if full else {"last_update_time_from": (datetime.fromisoformat(saved["checked_at"]) - timedelta(minutes=5)).isoformat(timespec="seconds")}
         rows = _pages(client, "products/simple", "products", params)
@@ -297,21 +297,56 @@ def checked_remote_identities(shop: str, client: UpgatesClient, *, refresh: bool
             variants = product.get("variants") or []
             if not isinstance(variants, list):
                 raise CatalogError("upgates_read_failed", "The variant identity response is incomplete", 502)
-            for item in [product, *variants]:
+            for position, item in enumerate([product, *variants]):
                 if not isinstance(item, dict):
                     raise CatalogError("upgates_read_failed", "A product or variant identity is invalid", 502)
                 identities.append({"code": str(item.get("code") or "").casefold(),
                                    "display_code": str(item.get("code") or ""),
+                                   "kind": "variant" if position else "parent" if variants or product.get("variants_exists_yn") else "product",
+                                   "variant_id": str(item["variant_id"]) if position and item.get("variant_id") is not None else None,
                                    "eans": re.split(r"[;,|/\s]+", str(item.get("ean") or "").strip())})
             products[key] = identities
         # Save only after every page succeeds; failures never become a successful check.
-        state = {"version": 1, "fingerprint": fingerprint, "checked_at": started.isoformat(),
+        state = {"version": 1, "identity_schema": 2, "fingerprint": fingerprint, "checked_at": started.isoformat(),
                  "full_checked_at": started.isoformat() if full else saved["full_checked_at"], "products": products}
         _write(path, state)
         codes = {item["code"] for entries in products.values() for item in entries if item["code"]}
         eans = {ean for entries in products.values() for item in entries for ean in item["eans"] if ean}
         return codes, eans, {"checked_at": state["checked_at"], "full_checked_at": state["full_checked_at"],
                              "mode": "full" if full else "changes"}
+
+
+def _mapping_owns_remote(mapping, source, index) -> bool:
+    """An occupied code is success only for the exact already-linked remote leaf."""
+    entries = index.codes.get(source.shop_code.casefold(), [])
+    if len(entries) != 1 or mapping.external_code != source.shop_code:
+        return False
+    target = entries[0]
+    variant = bool(source.group_code and source.variant_relationship == "explicit")
+    if (mapping.is_variant != variant or target["code"] != source.shop_code
+            or target.get("kind") != ("variant" if variant else "product")
+            or not mapping.external_product_id
+            or str(mapping.external_product_id) != target.get("remote_product_id")):
+        return False
+    if variant and (not mapping.external_variant_id
+            or str(mapping.external_variant_id) != target.get("remote_variant_id")
+            or mapping.parent_code != parent_shop_code(source)
+            or target.get("parent_code") != mapping.parent_code):
+        return False
+    incoming = {ProductIdentifierService.gtin_key(value) for value in source.eans} - {None}
+    remote = {ProductIdentifierService.gtin_key(value) for value in target.get("eans", [])} - {None}
+    return not (incoming and remote and not incoming & remote)
+
+
+async def verified_existing_sources(db, shop, products, index, local) -> set[int]:
+    if not local:
+        return set()
+    mappings = (await db.scalars(select(ShopProduct).join(Shop, Shop.id == ShopProduct.shop_id)
+        .where(Shop.code == shop, ShopProduct.product_id.in_(set(local.values())),
+               ShopProduct.is_listed.is_(True)))).all()
+    by_product = {mapping.product_id: mapping for mapping in mappings}
+    return {source.id for source in products if local.get(source.id) in by_product
+        and _mapping_owns_remote(by_product[local[source.id]], source, index)}
 
 
 def _money(value: Decimal) -> float:
@@ -535,6 +570,10 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     selection_eans = Counter(ean for p in products for ean in p.eans)
     selection_codes = Counter(p.shop_code.casefold() for p in products)
     parent_codes = Counter(item.code.casefold() for item in items)
+    local, conflicts = await local_identities(db, products)
+    occupied = any(p.shop_code.casefold() in codes or set(p.eans) & eans
+        or parent_shop_code(p).casefold() in codes for p in products)
+    verified = await verified_existing_sources(db, shop, products, index, local) if occupied else set()
     for item in items:
         item.parent_exists = bool(item.variants_count and item.code.casefold() in codes)
         item.existing_product_ids = [id for id in item.product_ids if item.parent_exists or
@@ -544,16 +583,17 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
             lines[id].shop_matches = index.matches(sources[id])
         if item.status == "invalid":
             continue
-        if item.parent_exists or len(item.existing_product_ids) == len(item.product_ids):
-            item.status = "exists"
-            item.warnings.append("already_in_shop")
-        elif item.existing_product_ids:
-            item.status, item.errors = "invalid", ["some_variants_in_shop"]
+        if item.existing_product_ids:
+            if set(item.product_ids) <= verified:
+                item.status = "exists"
+                item.warnings.append("already_in_shop")
+            else:
+                code_conflict = item.code.casefold() in codes or any(sources[id].shop_code.casefold() in codes for id in item.product_ids)
+                item.status, item.errors = "invalid", ["shop_code_conflict" if code_conflict else "shop_identity_review_required"]
         elif (parent_codes[item.code.casefold()] > 1 or
               (item.variants_count and item.code.casefold() in selection_codes) or
               any(selection_codes[sources[id].shop_code.casefold()] > 1 or any(selection_eans[e] > 1 for e in sources[id].eans) for id in item.product_ids)):
             item.status, item.errors = "invalid", ["selection_identity_conflict"]
-    local, conflicts = await local_identities(db, products)
     for item in items:
         if any(id in conflicts for id in item.product_ids):
             item.status, item.errors = "invalid", ["local_identity_conflict"]
@@ -702,16 +742,22 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
     for source in products:
         product_id = existing.get(source.id)
         mapping = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == shop_id, ShopProduct.product_id == product_id))
-        if mapping is not None and (mapping.variant_code or mapping.external_code) not in (None, source.shop_code):
-            raise CatalogError("local_mapping_conflict", "The local product is already linked to another shop code", 409)
+        variant = bool(item["variants_count"])
+        external = remote_variants.get(source.shop_code, {}) if variant else remote
+        native_product = str(remote["product_id"]) if remote.get("product_id") is not None else None
+        native_variant = str(external["variant_id"]) if variant and external.get("variant_id") is not None else None
+        if mapping is not None and (mapping.external_code not in (None, source.shop_code)
+                or mapping.is_variant != variant
+                or mapping.external_product_id not in (None, native_product)
+                or mapping.external_variant_id not in (None, native_variant)
+                or variant and mapping.parent_code not in (None, item["code"])):
+            raise CatalogError("local_mapping_conflict", "The local product is already linked to another shop identity", 409)
         if mapping is None:
             mapping = ShopProduct(shop_id=shop_id, product_id=product_id)
             db.add(mapping)
-        variant = bool(item["variants_count"])
-        external = remote_variants.get(source.shop_code, {}) if variant else remote
-        mapping.external_id = str(external.get("variant_id") if variant else external.get("product_id"))
+        mapping.external_product_id = native_product
+        mapping.external_variant_id = native_variant
         mapping.external_code = source.shop_code
-        mapping.variant_code = source.shop_code if variant else None
         mapping.parent_code = item["code"] if variant else None
         mapping.is_variant, mapping.is_listed = variant, True
         mapping.last_push_at, mapping.last_push_status = now(), "catalog_created"
@@ -746,11 +792,20 @@ def _verify_created(client: UpgatesClient, item: dict) -> dict | None:
         raise CatalogError("import_readback_mismatch", "Created product visibility or validation flag requires review", 409)
     if item["payload"].get("ean") and remote.get("ean") != item["payload"]["ean"]:
         raise CatalogError("import_readback_mismatch", "The created product's EAN differs from the selected item", 409)
+    if item["payload"].get("manufacturer"):
+        from inventory_hub.services.sku_policy import brand_key
+        if brand_key(str(remote.get("manufacturer") or "")) != brand_key(item["payload"]["manufacturer"]):
+            raise CatalogError("import_readback_mismatch", "The created product's brand differs from the selected item", 409)
+    if item["payload"].get("code_supplier") and remote.get("code_supplier") != item["payload"]["code_supplier"]:
+        raise CatalogError("import_readback_mismatch", "The created product's supplier code differs from the selected item", 409)
     variants = {v.get("code"): v for v in remote.get("variants", [])}
     if any(v["code"] not in variants or validation_value(variants[v["code"]]) != validation_value(v) for v in item["payload"].get("variants", [])):
         raise CatalogError("import_readback_mismatch", "Some selected variants or their validation flags were not confirmed", 409)
     if any(v.get("ean") and variants[v["code"]].get("ean") != v["ean"] for v in item["payload"].get("variants", [])):
         raise CatalogError("import_readback_mismatch", "A created variant's EAN differs from the selection", 409)
+    if any(v.get("code_supplier") and variants[v["code"]].get("code_supplier") != v["code_supplier"]
+           for v in item["payload"].get("variants", [])):
+        raise CatalogError("import_readback_mismatch", "A created variant's supplier code differs from the selection", 409)
     if any("short_description" in d for d in item["payload"].get("descriptions", [])):
         from inventory_hub.services.ai_content_upgates import verify_content
         verify_content(remote, item["payload"])
@@ -979,19 +1034,28 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     parent_exists = bool(item["variants_count"] and item["code"].casefold() in codes)
                     existing = [id for id in item["product_ids"] if parent_exists or sources[id].shop_code.casefold() in codes
                                 or bool(set(sources[id].eans) & eans)]
-                    partial = len(existing) < len(item["product_ids"])
-                    item.update(status="invalid" if partial else "exists", existing_product_ids=existing, parent_exists=parent_exists,
-                                errors=["some_variants_in_shop"] if partial else [],
-                                warnings=list(dict.fromkeys([*item["warnings"], *([] if partial else ["already_in_shop"])])))
+                    selected = [sources[id] for id in item["product_ids"]]
+                    index = await asyncio.to_thread(cached_identities, shop)
+                    async with get_session_context() as db:
+                        local, _ = await local_identities(db, selected)
+                        verified = await verified_existing_sources(db, shop, selected, index, local)
+                    confirmed = set(item["product_ids"]) <= verified
+                    code_conflict = item["code"].casefold() in codes or any(p.shop_code.casefold() in codes for p in selected)
+                    item.update(status="exists" if confirmed else "invalid", existing_product_ids=existing,
+                        parent_exists=parent_exists,
+                        errors=[] if confirmed else ["shop_code_conflict" if code_conflict else "shop_identity_review_required"],
+                        warnings=list(dict.fromkeys([*item["warnings"], *(["already_in_shop"] if confirmed else [])])))
                     continue
-                # Check codes immediately before each create as well as the complete EAN index.
+                # Fresh direct checks cover standalone, parent and variant code
+                # namespaces. A newly occupied code requires explicit review;
+                # it must never be accepted as successful publication or linked.
                 check_codes = [item["code"], *(sources[id].shop_code for id in item["product_ids"])]
                 for key in ("codes", "variant_codes"):
                     found = await asyncio.to_thread(_pages, client, "products/simple", "products", {key: ";".join(dict.fromkeys(check_codes))})
                     if found:
-                        item.update(status="exists", errors=[], warnings=[*item["warnings"], "already_in_shop"])
+                        item.update(status="invalid", errors=["shop_code_conflict"])
                         break
-                if item["status"] == "exists":
+                if item["status"] == "invalid":
                     continue
                 if document.get("staging"):
                     main = next((c['code'] for c in item['payload'].get('categories', []) if c.get('main_yn')), None)

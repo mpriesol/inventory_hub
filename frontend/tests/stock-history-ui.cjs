@@ -34,7 +34,7 @@ const movement = (id, changes = {}) => ({ id, product_id: id, sku: oddSku, produ
   movement_type: 'SALE_OUT', quantity: '-1.000', balance_before: '2.000', balance_after: '1.000', unit_cost: null, total_cost: null, cost_basis: 'unknown',
   reason: 'Physical handover', reference_type: 'order', reference_id: 'order-A', reference_source: 'order', reference_label: 'BT-100', document: null,
   shop_code: 'biketrek', supplier_code: null, created_by: 'fixture-operator', created_at: '2026-09-24T10:00:00Z', ...changes });
-const calls = []; let hold = false, resolveHeld, holdOptions = true, resolveOptions, failOptions = true, fail = false, rejectAccess = false, summaryFail = false, empty = false;
+const calls = []; let hold = false, resolveHeld, holdOptions = true, resolveOptions, failOptions = true, fail = false, rejectAccess = false, summaryFail = false, empty = false, mixedUnits = false;
 const historyOptions = { warehouses: [
   { code: 'aaa', name: 'Other warehouse', is_default: false, is_active: true },
   { code: 'closed', name: 'Closed warehouse', is_default: true, is_active: false },
@@ -49,6 +49,7 @@ global.fetch = async (path, options = {}) => {
   assert(['/api/stock-history/options', '/api/stock-history/movements', '/api/stock/summary'].includes(url.pathname), 'Only local endpoints are used');
   if (url.pathname === '/api/stock/summary') {
     if (summaryFail) return reply({ detail: 'Unavailable' }, 500);
+    if(mixedUnits) return reply({products_total:3,confirmed_products:2,inventory_value:null,low_stock_count:1,open_managed_orders:2,on_hand_total:null,reserved_total:null,available_total:null,quarantined_total:null,stock_unit:null,quantity_by_unit:{pcs:{on_hand:10,reserved:2,available:7,quarantined:1,unknown_quantity:0,provisional_quantity:0},m:{on_hand:2.5,reserved:0,available:2.5,quarantined:0,unknown_quantity:2.5,provisional_quantity:0}}});
     return reply({ products_total: 3, inventory_value: null, low_stock_count: 1, open_managed_orders: 2,
       confirmed_products: 2, on_hand_total: 10, reserved_total: 2, available_total: 7, quarantined_total: 1 });
   }
@@ -212,6 +213,10 @@ async function mountHistory(path = '/stock/history') {
   assert.equal(required('current-route').textContent, '/settings/stock', 'Settings action leads to a real settings page');
   assert.equal(calls.length, beforeNavigation, 'Quick-action navigation performs no hidden stock upload');
 
+  mixedUnits=true;await mountDashboard();
+  const mixedText=statsCard('onHand').querySelector('.text-2xl').textContent;
+  assert(mixedText.includes('10 '+i18n.t('productEditor.units.pcs')) && mixedText.includes('2,5 m'),'Mixed stock is displayed per unit, never added into a fictitious scalar');
+  assert(!mixedText.includes('12,5'));mixedUnits=false;
   empty = true; await mountDashboard();
   assert(document.body.textContent.includes(i18n.t('dashboard.noActivity')));
   assert.equal(document.querySelectorAll('ul li').length, 0, 'Empty ledger renders no fabricated recent activity');

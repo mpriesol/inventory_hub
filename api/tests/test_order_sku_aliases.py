@@ -27,9 +27,16 @@ def audit(old="OLD-001", new="TP-001", *, variant=False, identifier=71, revision
 
 def fixture(*, variant=False, audits=None, identifiers=None, mappings=None):
     products = [Product(id=1, sku="TP-001", name="Canonical"), Product(id=2, sku="OTHER", name="Other")]
-    mapping = ShopProduct(id=11, shop_id=1, product_id=1, external_code="PARENT" if variant else "TP-001",
-        variant_code="TP-001" if variant else None, parent_code="PARENT" if variant else None,
-        external_id="990" if variant else "100", is_variant=variant, is_listed=True)
+    mapping = ShopProduct(
+        id=11,
+        shop_id=1,
+        product_id=1,
+        external_code='TP-001',
+        parent_code='PARENT' if variant else None,
+        is_variant=variant,
+        is_listed=True,
+        external_product_id=None if variant else '100',
+        external_variant_id='990' if variant else None)
     values = [ProductIdentifier(id=1, product_id=1, value="OLD-001", identifier_type=IdentifierType.internal_sku),
               ProductIdentifier(id=2, product_id=1, value="4006381333931", identifier_type=IdentifierType.ean),
               ProductIdentifier(id=3, product_id=2, value="5901234123457", identifier_type=IdentifierType.ean)]
@@ -76,7 +83,7 @@ class OrderSkuAliasTests(TestCase):
 
     def test_conflicting_code_in_same_shop_cannot_be_overridden_by_alias_audit(self):
         aliases = fixture()
-        aliases.index.add_mapping(ShopProduct(id=12, shop_id=1, product_id=2, external_code="OLD-001", is_variant=False))
+        aliases.index.add_mapping(ShopProduct(id=12, shop_id=1, product_id=2, external_code='OLD-001', is_variant=False))
         result, proof = aliases.resolve(line())
         self.assertEqual(result.status, "conflict")
         self.assertIsNone(proof)
@@ -112,7 +119,7 @@ class OrderSkuAliasTests(TestCase):
         self.assertIsNone(fixture(audits=[row]).resolve(line())[1])
 
     def test_changed_connection_mapping_native_id_activity_or_pos_group_blocks(self):
-        for key, value in (("external_id", "999"), ("is_listed", False), ("external_code", "OTHER"), ("parent_code", "xTrek")):
+        for key, value in (("external_product_id", "999"), ("is_listed", False), ("external_code", "OTHER"), ("parent_code", "xTrek")):
             aliases = fixture()
             setattr(aliases.index.by_product[1][0], key, value)
             with self.subTest(key=key):

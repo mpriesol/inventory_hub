@@ -51,7 +51,7 @@ async def add_alias(brand_id: int, payload: BrandAliasCreate, request: Request,
 async def preview(payload: SkuPreviewRequest, db: AsyncSession = Depends(get_session)):
     return await _call(service.preview_sku(db, payload.sku_identity, barcodes=payload.barcodes,
         supplier_id=payload.supplier_id, supplier_sku=payload.supplier_sku,
-        expected_product_id=payload.expected_product_id, sku=payload.sku))
+        expected_product_id=payload.expected_product_id, sku=payload.sku, item_type=payload.item_type))
 
 
 @router.post("/migration-preview")

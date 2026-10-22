@@ -26,6 +26,11 @@ export function DashboardPage() {
     return () => { active = false; };
   }, [revision]);
   const number = (value: number) => value.toLocaleString(i18n.language, { maximumFractionDigits: 3 });
+  const quantity = (metric: 'on_hand' | 'reserved' | 'available' | 'quarantined', total: number | null) => {
+    const groups = Object.entries(stats?.quantityByUnit || {});
+    if (groups.length) return groups.map(([unit, amounts]) => `${number(amounts[metric])} ${t(`productEditor.units.${unit}`)}`).join(' · ');
+    return total === null ? t('productEditor.unknown') : `${number(total)}${stats?.stockUnit ? ` ${t(`productEditor.units.${stats.stockUnit}`)}` : ''}`;
+  };
   return <main className="space-y-6">
     <header><h1 className="text-2xl font-semibold">{t('dashboard.title')}</h1>
       <p>{t('dashboard.subtitle')}</p>
@@ -42,10 +47,10 @@ export function DashboardPage() {
         <StatsCard icon="€" value={stats.inventoryValue === null ? t('stock.unknownValue') : new Intl.NumberFormat(i18n.language, { style: 'currency', currency: 'EUR' }).format(stats.inventoryValue)} label={t('dashboard.inventoryValue')} sublabel={t('stock.valuationBasis')} />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatsCard icon="📦" value={number(stats.onHand)} label={t('dashboard.onHand')} />
-        <StatsCard icon="📋" value={number(stats.reserved)} label={t('dashboard.reserved')} />
-        <StatsCard icon="✓" value={number(stats.available)} label={t('dashboard.available')} />
-        <StatsCard icon="⏸" value={number(stats.quarantined)} label={t('dashboard.quarantined')} />
+        <StatsCard icon="📦" value={quantity('on_hand',stats.onHand)} label={t('dashboard.onHand')} />
+        <StatsCard icon="📋" value={quantity('reserved',stats.reserved)} label={t('dashboard.reserved')} />
+        <StatsCard icon="✓" value={quantity('available',stats.available)} label={t('dashboard.available')} />
+        <StatsCard icon="⏸" value={quantity('quarantined',stats.quarantined)} label={t('dashboard.quarantined')} />
       </div>
     </>}
     <section className="rounded-xl border p-6">

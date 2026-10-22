@@ -170,6 +170,9 @@ def _normalize_line(raw: dict, position: int, identity: RemoteIdentity, index) -
                 classification = "identified"
         if product_id is not None and product_id in index.products:
             sku = index.products[product_id].sku
+            if getattr(index.products[product_id], "item_type", "stock") == "service" and classification in ("mapped", "identified"):
+                classification = "non_stock"
+                reasons.append("service_outside_stock")
     if classification not in ("manual", "non_stock") and _text(raw.get("unit"), 30) and _label(_text(raw.get("unit"), 30)) != "ks":
         reasons.append("unit_requires_review")
     if quantity is None and classification != "non_stock":

@@ -215,8 +215,8 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_variant_parent_or_listing_state_cannot_be_silently_replaced(self):
         remote = {**self.remote, "parent_code": "NEW-PARENT", "is_variant": True}
-        mapping = SimpleNamespace(id=7, product_id=1, shop_id=2, external_id="101", external_code="REMOTE-CODE",
-            variant_code="REMOTE-CODE", parent_code="OLD-PARENT", is_variant=True, is_listed=True)
+        mapping = SimpleNamespace(id=7, product_id=1, shop_id=2, native_id="101", external_product_id="800", external_variant_id="101", external_code="REMOTE-CODE",
+            parent_code="OLD-PARENT", is_variant=True, is_listed=True)
         rows = await self.rows({1: self.facts}, {1: (remote, "manual", 1)}, mappings=[mapping])
         self.assertEqual(rows[0]["status"], "conflict")
         self.assertIn("existing_mapping_differs", rows[0]["errors"])

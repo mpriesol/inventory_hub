@@ -414,7 +414,7 @@ async def prepare_sku_rows(db, draft, document):
     the verified input in the immutable saved draft digest.
     """
     from inventory_hub.sku_policy_types import SkuIdentityInput
-    from inventory_hub.services.sku_policy import preview_sku, registered_brand_id, brand_key
+    from inventory_hub.services.sku_policy import preview_sku
     supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == draft.supplier))
     document['supplier_id'] = supplier_id
     selected = [r for r in document['rows'] if not link_only(r)]
@@ -430,30 +430,28 @@ async def prepare_sku_rows(db, draft, document):
             row['sku_preview'] = {'status': 'conflict', 'reasons': ['assigned_product_changed']}
             continue
         identity = values.get('sku_identity')
-        if identity:
-            item = SkuIdentityInput.model_validate(identity)
-            result = await preview_sku(db, item,
-                barcodes=values['eans'], supplier_id=supplier_id,
-                supplier_sku=values['supplier_code'], expected_product_id=expected)
-            if product_id and result['status'] == 'new':
-                # A legacy prefixed-code candidate is not an approved target.
-                # Retain its original code for the ordinary explicit review;
-                # do not hide it by replacing the candidate with a new SKU.
-                result = {**result, 'status': 'blocked', 'reasons': ['import_identity_review_required'],
-                          'candidate_product_ids': [product_id]}
-            elif product_id and result['status'] == 'existing' and result['product_id'] != product_id:
-                result = {**result, 'status': 'conflict', 'reasons': ['local_identity_conflict'],
-                          'candidate_product_ids': [product_id, result['product_id']]}
-            if values['brand'] and brand_key(values['brand']) != brand_key(item.brand):
-                source_brand = await registered_brand_id(db, values['brand'])
-                if source_brand is None or source_brand != result.get('brand_id'):
-                    result = {**result, 'status': 'conflict', 'reasons': ['sku_brand_conflict']}
-        elif product_id:
-            product = await db.get(Product, product_id)
-            result = {'status': 'existing', 'sku': product.sku, 'product_id': product_id,
-                      'reasons': [], 'candidate_product_ids': [product_id]}
-        else:
-            result = {'status': 'blocked', 'reasons': ['sku_identity_required'], 'candidate_product_ids': []}
+        # Ordinary supplier leaf codes are sufficient; a missing MPN is not an
+        # exception. The registry supplies the brand prefix automatically.
+        if not identity and not product_id and not expected and values['brand'] and values['supplier_code']:
+            identity = {'brand': values['brand'], 'source_code': values['supplier_code'],
+                'code_kind': 'supplier', 'supplier_id': supplier_id,
+                'source_ref': 'supplier:' + draft.supplier + ':leaf:' + values['supplier_code'],
+                'leaf_confirmed': False}
+        item = SkuIdentityInput.model_validate(identity) if identity else None
+        result = await preview_sku(db, item, sku=values['code'],
+            barcodes=values['eans'], supplier_id=supplier_id,
+            supplier_sku=values['supplier_code'], expected_product_id=expected,
+            item_type=values.get('item_type', 'stock'))
+        if result['status'] == 'conflict' and result['reasons'] == ['sku_source_scope_collision']:
+            # An equal code is a candidate for explicit linking, not evidence
+            # that two suppliers sell the same item. The review remains usable.
+            result = {**result, 'status': 'blocked', 'reasons': ['import_identity_review_required']}
+        elif product_id and result['status'] == 'new':
+            result = {**result, 'status': 'blocked', 'reasons': ['import_identity_review_required'],
+                      'candidate_product_ids': [product_id]}
+        elif product_id and result['status'] == 'existing' and result['product_id'] != product_id:
+            result = {**result, 'status': 'conflict', 'reasons': ['local_identity_conflict'],
+                      'candidate_product_ids': [product_id, result['product_id']]}
         row['sku_preview'] = result
         if result['status'] in ('new', 'existing'):
             # The supplier parent is a grouping code, not a physical SKU. Freeze
@@ -718,8 +716,8 @@ async def patch_rows(db, draft, request):
         except (ValidationError, ValueError):
             raise CatalogError('import_invalid_cells', 'Check the edited field values', 422) from None
         if 'code' in values and parsed.code != row['values']['code']:
-            raise CatalogError('sku_identity_required', 'Use the verified product identity to propose its SKU', 422)
-        if (row.get('hub_product_id') or row.get('expected_hub_product_id')) and any(k in values for k in ('code', 'supplier_code', 'eans', 'sku_identity')):
+            raise CatalogError('sku_identity_required', 'The registered brand and leaf code determine the SKU', 422)
+        if (row.get('hub_product_id') or row.get('expected_hub_product_id')) and any(k in values for k in ('code', 'supplier_code', 'eans', 'sku_identity', 'item_type', 'stock_unit')):
             raise CatalogError('import_identity_saved', 'Edit saved product identifiers in the product editor', 409)
         if 'target_shops' in values:
             available = {shop['code'] for shop in document.get('shops', [{'code': draft.shop}]) if not shop.get('error')}
@@ -841,10 +839,10 @@ async def _save(db, draft):
             group_id = group.id
         catalog_id = row.get('catalog_product_id') if receiving else source.id
         if product_id is None:
-            product = Product(sku=source.shop_code, supplier_id=supplier_id, name=source.name, brand=source.brand,
+            product = Product(sku=source.shop_code, name=source.name, brand=source.brand,
+                item_type=v.get('item_type', 'stock'), stock_unit=v.get('stock_unit', 'pcs'),
                 group_id=group_id, validation_required=True, validation_reason='Hub import draft; shop publication separate',
-                created_from_source='product_import_draft', source_supplier_product_id=catalog_id,
-                supplier_feed_data=row['source'], supplier_feed_synced_at=source.fetched_at)
+                created_from_source='product_import_draft', source_supplier_product_id=catalog_id)
             db.add(product)
             await db.flush()
             product_id = product.id
@@ -874,9 +872,6 @@ async def _save(db, draft):
             if group_id and product.group_id is None:
                 # _receiving_sources permitted this only for a pristine card.
                 product.group_id = group_id
-            product.source_supplier_product_id = catalog_id
-            product.supplier_feed_data = deepcopy(row['source'])
-            product.supplier_feed_synced_at = source.fetched_at
             row['enriched_in_draft'] = True
         # Do not overwrite changes made in the ordinary product editor after a draft save.
         if override and row.get('editor_revision') != override.revision:
@@ -896,12 +891,21 @@ async def _save(db, draft):
     if document.get('receiving_origin'):
         from inventory_hub.services.receiving_products import bind_imported_products
         await bind_imported_products(db, draft, document)
-    from inventory_hub.services.supplier_links import reconcile_supplier_links
-    ordinary_ids = [r['hub_product_id'] for r in document['rows'] if r['id'] not in linked]
-    if ordinary_ids:
-        links = await reconcile_supplier_links(db, draft.supplier, product_ids=ordinary_ids)
-        if links['conflicts']:
-            raise CatalogError('local_identity_conflict', 'Supplier source links require reconciliation', 409)
+    from inventory_hub.services.supplier_links import bind_explicit_supplier_source
+    from inventory_hub.services.supplier_availability_source import AvailabilityError
+    for row in document['rows']:
+        if row['id'] in linked or not row['values']['supplier_code']:
+            continue
+        if document.get('receiving_origin') and row.get('catalog_product_id') is None:
+            # An invoice alias is not a supplier catalog offer. Keep the exact
+            # scoped identifier without fabricating a feed product or price.
+            continue
+        try:
+            await bind_explicit_supplier_source(db, row['hub_product_id'], supplier_id,
+                row['values']['supplier_code'], barcodes=row['values']['eans'],
+                brand=row['values']['brand'] or None, actor='product-import')
+        except AvailabilityError as error:
+            raise CatalogError(error.code, 'Supplier source links require reconciliation', error.status) from None
     document['saved_hash'] = content_hash(document)
     changed(draft, document, 'Products saved in Hub; no shop writes', dirty=False)
     draft.status = 'saved'

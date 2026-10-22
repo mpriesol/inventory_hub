@@ -1,12 +1,14 @@
 # Ručná oprava fyzického množstva
 
-V jednotnej tabuľke Sklad klikni na fyzické množstvo alebo otvor detail produktu a záložku opravy. Vyber správny sklad, zadaj skutočne spočítané celé kusy, obsluhu, referenciu a dôvod. Najprv sa vytvorí náhľad; druhé potvrdenie zaúčtuje jeho rozdiel.
+Fyzický počet je celé číslo pre `pcs`, `pair` a `pack`; karta `m` prijíma najviac tri desatinné miesta. Služby nemožno inventarizovať. Typ/jednotka sú súčasťou kontroly náhľadu; existujúce nemenné pohyby sa neprepisujú. [Typy a jednotky](stock-units.md).
+
+V jednotnej tabuľke Sklad klikni na fyzické množstvo alebo otvor detail produktu a záložku opravy. Vyber správny sklad, zadaj skutočne spočítané množstvo v jednotke karty, obsluhu, referenciu a dôvod. Najprv sa vytvorí náhľad; druhé potvrdenie zaúčtuje jeho rozdiel.
 
 Pri produkte bez overeného fyzického stavu možno výslovne potvrdiť aj **0 kusov**. Zostane uložený doklad počítania a prázdny overený sklad; nevznikne fiktívny príjem, pohyb ani nákupná cena. Takto môže pravidelný prenos bezpečne prenášať dodávateľskú dostupnosť produktu, ktorý sme nikdy fyzicky nemali. Neznámy stav sa na nulu nemení automaticky.
 
 Prírastok vytvorí nákupnú vrstvu. Cena je v EUR bez DPH; ak ju nepoznáš, zostáva neznáma, nie nulová. Úbytok spotrebuje najstaršie dostupné príjmy a zachová ich pôvodný náklad. Nejde o tržbu ani zákaznícku vratku. V histórii vznikne `ADJUSTMENT_IN` alebo `ADJUSTMENT_OUT`; predchádzajúce pohyby sa nemenia.
 
-Spočítané množstvo nemôže klesnúť pod rezervované kusy plus karanténu. Tieto záväzky vyrieš cez príslušnú objednávku alebo karanténu. Voľné množstvo, rezervácie z objednávok a celková nákupná hodnota sa neprepisujú nezávislými číslami v tabuľke. Nákupné ceny sa opravujú v časti Nákupné ceny. Staršie zásoby pred korekciou vyžadujú zdokumentovaný prechod nákupných vrstiev.
+Spočítané množstvo nemôže klesnúť pod rezervované množstvo plus karanténu. Tieto záväzky vyrieš cez príslušnú objednávku alebo karanténu. Voľné množstvo, rezervácie z objednávok a celková nákupná hodnota sa neprepisujú nezávislými číslami v tabuľke. Nákupné ceny sa opravujú v časti Nákupné ceny. Staršie zásoby pred korekciou vyžadujú zdokumentovaný prechod nákupných vrstiev.
 
 Ak sa sklad po náhľade zmení, zaúčtovanie sa odmietne a treba nový náhľad. Platnosť je 30 minút. Po strate odpovede použi **Obnoviť pôvodnú požiadavku**; prehliadač uchováva jej pôvodné UUID a obsah. Server vráti už uložený výsledok bez ďalšieho pohybu. Zatvorenie detailu nie je zrušenie už odoslanej operácie.
 

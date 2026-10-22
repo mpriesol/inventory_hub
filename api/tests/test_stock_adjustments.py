@@ -15,11 +15,15 @@ class StockAdjustmentInputTests(unittest.TestCase):
             "counted_at": datetime.now(timezone.utc), "source_reference": "Count-1", "operator_name": "Operator",
             "reason": "Physical recount", **changes}
 
-    def test_quantities_are_explicit_whole_counts_not_json_numbers(self):
-        for value in [3, True, "-1", "1.5", "NaN", "1000000000", ""]:
+    def test_quantities_are_explicit_decimal_counts_not_json_numbers(self):
+        for value in [3, True, "-1", "1.0001", "NaN", "1000000000", ""]:
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 StockAdjustmentPreview(**self.data(counted_quantity=value))
         self.assertEqual(StockAdjustmentPreview(**self.data(counted_quantity="0")).counted_quantity, "0")
+        self.assertEqual(StockAdjustmentPreview(**self.data(counted_quantity="1.5")).counted_quantity, "1.5")
+        with self.assertRaisesRegex(FifoError, "quantity_invalid"):
+            validate_count(None, Decimal("1.5"))
+        self.assertEqual(validate_count(None, Decimal("1.5"), stock_unit="m"), Decimal("1.5"))
 
     def test_unknown_cost_never_becomes_zero(self):
         self.assertIsNone(StockAdjustmentPreview(**self.data()).unit_cost)

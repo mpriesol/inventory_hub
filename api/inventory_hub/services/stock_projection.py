@@ -74,9 +74,9 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
     else:
         mapping = mappings[0]
         code = mapping_code(mapping)
-        raw_code = mapping.variant_code if mapping.is_variant else mapping.external_code
+        raw_code = mapping.external_code
         parent = mapping.parent_code if mapping.is_variant else mapping.external_code
-        if not code or raw_code != sku or code != sku:
+        if not code or raw_code != code or len(code) > 100 or any(ord(char) < 32 or ord(char) == 127 for char in code):
             reject("mapping_alias")
         elif len(code_owners[code.casefold()]) != 1:
             reject("mapping_ambiguous")
@@ -85,6 +85,17 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
             reject("mapping_invalid")
         else:
             row["target"] = {"parent_code": parent, "variant_code": code if mapping.is_variant else None, "code": code}
+            for field, key in (("external_product_id", "product_id"), ("external_variant_id", "variant_id")):
+                native = getattr(mapping, field, None)
+                if native is not None:
+                    if not isinstance(native, str) or not native.isdigit() or int(native) <= 0:
+                        reject("mapping_invalid")
+                    else:
+                        row["target"][key] = int(native)
+    if getattr(product, "item_type", "stock") == "service":
+        reject("item_not_stocked")
+    if getattr(product, "stock_unit", "pcs") == "m":
+        reject("unit_unsupported")
     if stock is None:
         reject("balance_missing")
         return row
@@ -136,7 +147,7 @@ zero-count audit. An absent balance is never inferred to mean zero.
         # ss). Keep non-ASCII candidates so the resolver's collision guard is
         # preserved without fetching every ordinary SKU/mapping in the shop.
         products = {product.sku: product for product in (await db.execute(
-            select(Product.id, Product.sku, Product.is_active).where(or_(
+            select(Product.id, Product.sku, Product.is_active, Product.item_type, Product.stock_unit).where(or_(
                 func.lower(Product.sku).in_(requested_codes), Product.sku.op("~")(r"[^ -~]"))))).all()}
         sku_owners = defaultdict(list)
         for product in products.values():
@@ -146,11 +157,14 @@ zero-count audit. An absent balance is never inferred to mean zero.
         # plus owners of case-conflicting codes outside the selected products.
         # A regular pass must not fetch thousands of unrelated umbrella siblings
         # twice for each individual leaf.
-        leaf_code = case((ShopProduct.is_variant.is_(True), ShopProduct.variant_code), else_=ShopProduct.external_code)
+        leaf_code = ShopProduct.external_code
+        selected_codes = select(func.lower(ShopProduct.external_code)).where(
+            ShopProduct.shop_id == shop.id, ShopProduct.product_id.in_(product_ids))
         mappings = (await db.execute(select(ShopProduct.id, ShopProduct.product_id, ShopProduct.is_variant,
-            ShopProduct.variant_code, ShopProduct.external_code, ShopProduct.parent_code, ShopProduct.is_listed)
+            ShopProduct.external_code, ShopProduct.parent_code, ShopProduct.is_listed,
+            ShopProduct.external_product_id, ShopProduct.external_variant_id)
             .where(ShopProduct.shop_id == shop.id, or_(ShopProduct.product_id.in_(product_ids),
-                  func.lower(leaf_code).in_(requested_codes), leaf_code.op("~")(r"[^ -~]"))))).all()
+                  func.lower(leaf_code).in_(selected_codes), leaf_code.op("~")(r"[^ -~]"))))).all()
         by_product, code_owners = defaultdict(list), defaultdict(list)
         for mapping in mappings:
             by_product[mapping.product_id].append(mapping)

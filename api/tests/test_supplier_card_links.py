@@ -40,18 +40,17 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.supplier = SimpleNamespace(id=5, code='northfinder', name='Northfinder', is_active=True)
         self.source = source()
 
-    async def inspect(self, *, identifiers=(), aliases=(), links=(), legacy_owners=(), other_sources=(), local_brand=None):
+    async def inspect(self, *, identifiers=(), aliases=(), links=(), other_sources=(), local_brand=None):
         db = AsyncMock()
-        db.scalar.side_effect = [self.source, None, local_brand]
+        db.scalar.side_effect = [self.source, local_brand]
         db.get.return_value = self.supplier
-        db.scalars.side_effect = [list(aliases), list(links), list(legacy_owners), list(other_sources)]
+        db.scalars.side_effect = [list(aliases), list(links), list(other_sources)]
         products = [SimpleNamespace(id=1, sku=self.facts['sku'], is_active=True),
                     SimpleNamespace(id=2, sku='OTHER-CARD', is_active=True)]
         own_eans = [SimpleNamespace(product_id=1, identifier_type=IdentifierType.ean,
             supplier_id=None, value=ean) for ean in self.facts['eans']]
         index = IdentityIndex(0, products, identifiers=[*own_eans, *identifiers, *aliases])
         with patch.object(service, '_product', AsyncMock(return_value=self.facts)), \
-             patch.object(service, '_prefix', return_value='NF-'), \
              patch.object(service, '_ean_adoption', AsyncMock(return_value={
                  'available': True, 'selected': False, 'eans': [EAN], 'reason': None, '_existing': []})), \
              patch.object(service, 'load_identity_index', AsyncMock(return_value=index)):
@@ -100,11 +99,10 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         unknown = await self.inspect()
         self.assertEqual(unknown['errors'], [], 'Missing brand alone is not contradictory evidence')
 
-    async def test_alias_source_and_legacy_owners_cannot_be_overridden(self):
+    async def test_alias_and_source_owners_cannot_be_overridden(self):
         alias = SimpleNamespace(product_id=2, identifier_type=IdentifierType.supplier_sku,
                                 supplier_id=5, value='103404-281-103')
-        for changes in ({'aliases': [alias]}, {'legacy_owners': [2]},
-                        {'links': [SimpleNamespace(product_id=2)]}):
+        for changes in ({'aliases': [alias]}, {'links': [SimpleNamespace(product_id=2)]}):
             with self.subTest(changes=changes):
                 self.assertIn('supplier_source_multiple_products', (await self.inspect(**changes))['errors'])
         self.assertIn('supplier_link_already_configured', (await self.inspect(other_sources=[12]))['errors'])
@@ -130,20 +128,26 @@ class SupplierCardIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.source.attributes['catalog']['variant_attributes'][1]['value'] = 'L'
         self.assertNotEqual((await self.inspect())['preview_hash'], before['preview_hash'])
 
+    async def test_cached_sku_proposal_never_owns_a_supplier_link_or_invalidates_review(self):
+        before = await self.inspect()
+        self.source.attributes['catalog']['shop_code'] = 'UNRELATED-CACHED-PROPOSAL'
+        after = await self.inspect()
+        self.assertEqual(after['errors'], [])
+        self.assertEqual(after['preview_hash'], before['preview_hash'])
+
     def test_source_record_and_catalog_identity_must_agree(self):
         for mutation, expected in ((lambda row: setattr(row, 'ean', OTHER), 'supplier_card_links_source_ean_conflict'),
             (lambda row: row.attributes['catalog'].update(code='different'), 'supplier_card_links_source_identity_changed'),
             (lambda row: row.attributes['catalog'].update(group_code='different'), 'supplier_card_links_source_identity_changed')):
             row = source(); mutation(row)
             with self.subTest(expected=expected), self.assertRaises(service.LinkError) as error:
-                service._source(row, self.supplier, 'NF-')
+                service._source(row, self.supplier)
             self.assertEqual(error.exception.code, expected)
 
     async def test_apply_helper_adds_only_exact_relations_without_committing(self):
         inspected = await self.inspect()
         db = AsyncMock(); db.add = MagicMock()
         with patch.object(service, 'inspect_link', AsyncMock(return_value=inspected)), \
-             patch.object(service.config_io, 'claim_supplier_prefix', return_value='NF-'), \
              patch.object(service.ProductIdentifierService, 'add_identifier', AsyncMock()) as add_alias:
             result = await service.apply_link(db, 1, 11, expected_hash=inspected['preview_hash'])
         self.assertEqual(result['changes'], ['supplier_alias', 'supplier_source'])

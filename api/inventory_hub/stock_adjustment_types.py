@@ -27,8 +27,8 @@ class StockAdjustmentPreview(FifoInput):
     @field_validator("counted_quantity")
     @classmethod
     def whole_quantity(cls, value):
-        if not re.fullmatch(r"[0-9]{1,9}", value) or Decimal(value) > Decimal("999999999"):
-            raise ValueError("Use a nonnegative whole physical count")
+        if not re.fullmatch(r"[0-9]{1,9}(?:\.[0-9]{1,3})?", value) or Decimal(value) > Decimal("999999999.999"):
+            raise ValueError("Use a nonnegative exact physical count with at most three decimals")
         return value
 
     @field_validator("unit_cost")

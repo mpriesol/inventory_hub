@@ -16,7 +16,7 @@ def product(identifier=1, sku="SKU-A", **changes):
 
 def mapping(identifier=1, product_id=1, code="SKU-A", parent="NORMAL-PARENT", **changes):
     return Row(**{"id": identifier, "product_id": product_id, "is_variant": True,
-                  "variant_code": code, "external_code": parent, "parent_code": parent,
+                  "external_code": code, "parent_code": parent,
                   "is_listed": True, **changes})
 
 
@@ -97,9 +97,18 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["rows"][0]["qty_available"], "4")
         self.assertEqual(len(db.calls), 6)
 
-    async def test_case_conflict_outside_selection_and_alias_are_blocked(self):
+    async def test_explicit_mapping_uses_remote_code_and_native_ids_without_renaming_card(self):
+        db = ReadOnlyDB(mappings=[mapping(code="REMOTE-LEAF", external_product_id="50", external_variant_id="51")])
+        row = (await service.preview(db, "biketrek", ["SKU-A"]))["rows"][0]
+        self.assertTrue(row["quantity_known"])
+        self.assertEqual(row["sku"], "SKU-A")
+        self.assertEqual(row["target"], {"code": "REMOTE-LEAF", "parent_code": "NORMAL-PARENT",
+            "variant_code": "REMOTE-LEAF", "product_id": 50, "variant_id": 51})
+        self.assertEqual(row["qty_available"], "4")
+
+    async def test_code_collision_outside_selection_or_malformed_mapping_is_blocked(self):
         for mappings, reason in (([mapping(), mapping(2, 99, "sku-a")], "mapping_ambiguous"),
-                                 ([mapping(code="ALIAS")], "mapping_alias"),
+                                 ([mapping(code="REMOTE-LEAF"), mapping(2, 99, "remote-leaf")], "mapping_ambiguous"),
                                  ([mapping(code=" SKU-A ")], "mapping_alias"),
                                  ([mapping(parent="")], "mapping_invalid"),
                                  ([], "mapping_missing")):
@@ -119,7 +128,7 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(row["qty_available"])
 
     async def test_exact_sku_order_and_standalone_target_are_preserved(self):
-        db = ReadOnlyDB(products=[product(1, "SKU-A")], mappings=[mapping(is_variant=False, external_code="SKU-A", variant_code=None, parent_code=None)])
+        db = ReadOnlyDB(products=[product(1, "SKU-A")], mappings=[mapping(is_variant=False, external_code="SKU-A", parent_code=None)])
         rows = (await service.preview(db, "biketrek", ["sku-a", "SKU-A"]))["rows"]
         self.assertEqual([row["sku"] for row in rows], ["sku-a", "SKU-A"])
         self.assertEqual(rows[0]["errors"], ["stock_projection_product_missing"])

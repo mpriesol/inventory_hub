@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { accessRevision, hubRequest, hubUnlocked, subscribeAccess } from '../../api/access';
+import { type StockUnit } from '../../api/productEditor';
 import { fifoStock, type FifoStock } from '../../api/fifo';
 import { ActionScope } from '../ui/ActionScope';
 import './fifoPanel.css';
@@ -22,10 +23,10 @@ const definitiveRejections = new Set(['fifo_invalid_request', 'fifo_request_conf
   'fifo_preview_stale', 'fifo_preview_expired', 'fifo_cutover_required', 'fifo_product_not_found',
   'fifo_warehouse_not_found', 'fifo_product_ambiguous', 'fifo_date_invalid', 'adjustment_not_found',
   'adjustment_no_change', 'adjustment_below_committed', 'adjustment_quantity_invalid',
-  'adjustment_issue_cost_derived', 'stock_publication_warehouse_held']);
+  'adjustment_issue_cost_derived', 'stock_publication_warehouse_held', 'stock_item_required', 'stock_quantity_unit_mismatch']);
 
-export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged }: {
-  productId: number; sku: string; warehouseCode: string; onChanged?: () => void;
+export function StockAdjustmentPanel({ productId, sku, warehouseCode, stockUnit = 'pcs', onChanged }: {
+  productId: number; sku: string; warehouseCode: string; stockUnit?: StockUnit; onChanged?: () => void;
 }) {
   const { t } = useTranslation();
   const c = (key: string, values?: Record<string, unknown>) => t(`stockAdjustment.${key}`, values);
@@ -53,8 +54,10 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
     return () => { generation.current++; controller.abort(); };
   }, [productId, warehouseCode, credential, refresh]);
   const changing = (fn: () => void) => { fn(); setConfirmed(false); };
-  const incoming = Number(count) > Number(stock?.balance?.qty_on_hand || 0);
-  const valid = /^\d{1,9}$/.test(count) && !!reason.trim() && !!source.trim() && !!operator.trim()
+  const normalizedCount = count.replace(',', '.');
+  const unit = stock?.stock_unit || stockUnit;
+  const incoming = Number(normalizedCount) > Number(stock?.balance?.qty_on_hand || 0);
+  const valid = (unit === 'm' ? /^\d{1,9}(?:\.\d{1,3})?$/.test(normalizedCount) : /^\d{1,9}$/.test(count)) && !!reason.trim() && !!source.trim() && !!operator.trim()
     && (!incoming || !known || /^\d+(\.\d{1,4})?$/.test(cost));
   const immutable = busy || !!pending || !!preview;
   const explainError = (value: any) => {
@@ -100,7 +103,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
       preview_hash: preview.preview_hash, confirmed: true, quantities_verified: true, costs_documented: true,
     } });
     else if (valid) void command({ path: '/api/stock-adjustments/preview', body: {
-      request_id: crypto.randomUUID(), sku, warehouse_code: warehouseCode, counted_quantity: count,
+      request_id: crypto.randomUUID(), sku, warehouse_code: warehouseCode, counted_quantity: normalizedCount,
       counted_at: new Date().toISOString(), source_reference: source.trim(), operator_name: operator.trim(), reason: reason.trim(),
       cost_status: incoming && known ? 'known' : 'unknown', unit_cost: incoming && known ? cost : null,
     } });
@@ -112,7 +115,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, onChanged 
     {pending && <div><p>{c('uncertain')}</p><button type="button" data-testid="adjustment-retry" disabled={busy} onClick={() => void command(pending)}>{c('retry')}</button></div>}
     {stock && <><p>{sku} · {stock.warehouse.name} · {c('current')}: {stock.balance?.qty_on_hand ?? c('unknownQuantity')}</p>{!stock.balance && <p data-testid="adjustment-initial-count-help">{c('initialCountHelp')}</p>}
       <fieldset disabled={immutable}><div className="fifo-fields">
-        <label>{c('count')}<input data-testid="adjustment-count" inputMode="numeric" value={count} onChange={e => changing(() => setCount(e.target.value))} /></label>
+        <label>{c('count')} ({t(`productEditor.units.${unit}`)})<input data-testid="adjustment-count" inputMode={unit === 'm' ? 'decimal' : 'numeric'} value={count} onChange={e => changing(() => setCount(e.target.value))} /></label>
         <label>{c('operator')}<input data-testid="adjustment-operator" value={operator} onChange={e => changing(() => setOperator(e.target.value))} /></label>
         <label>{c('source')}<input data-testid="adjustment-source" value={source} onChange={e => changing(() => setSource(e.target.value))} /></label>
         <label>{c('reason')}<input data-testid="adjustment-reason" value={reason} onChange={e => changing(() => setReason(e.target.value))} /></label>

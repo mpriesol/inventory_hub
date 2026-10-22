@@ -38,10 +38,14 @@ def target(row, shop_code):
     if not shop or not shop['mapped'] or not mapping:
         raise ERROR('product_publication_mapping_missing', 422)
     code = mapping['variant_code'] if mapping['is_variant'] else mapping['code']
-    if code != row['sku']:
-        raise ERROR('product_publication_identity_changed')
     identity = {'code': code, 'parent_code': mapping['parent_code'] if mapping['is_variant'] else code,
                 'variant_code': code if mapping['is_variant'] else None}
+    for field, key in (('external_product_id', 'product_id'), ('external_variant_id', 'variant_id')):
+        value = mapping.get(field)
+        if value is not None:
+            if not isinstance(value, str) or not value.isdigit() or int(value) <= 0:
+                raise ERROR('product_publication_identity_changed')
+            identity[key] = int(value)
     try:
         transport.source._target(identity)
     except transport.source.SourceError as exc:
@@ -292,10 +296,10 @@ async def _assert_mapping(db, row, shop, shop_id):
     """Reject case aliases and multiply owned leaf IDs before any remote write."""
     mapping = shop['mapping']
     code = mapping['variant_code'] if mapping['is_variant'] else mapping['code']
-    leaf_code = case((ShopProduct.is_variant.is_(True), ShopProduct.variant_code), else_=ShopProduct.external_code)
+    leaf_code = ShopProduct.external_code
     duplicates = [func.lower(leaf_code) == code.lower()]
     if mapping['external_id']:
-        duplicates.append(and_(ShopProduct.is_variant == mapping['is_variant'], ShopProduct.external_id == mapping['external_id']))
+        duplicates.append(and_(ShopProduct.is_variant == mapping['is_variant'], ShopProduct.native_id == mapping['external_id']))
     duplicate = await db.scalar(select(ShopProduct.id).where(ShopProduct.shop_id == shop_id,
         ShopProduct.product_id != row['id'], or_(*duplicates)).limit(1))
     sku_alias = await db.scalar(select(Product.id).where(Product.id != row['id'], func.lower(Product.sku) == row['sku'].lower()).limit(1))

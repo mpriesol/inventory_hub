@@ -91,6 +91,43 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
         details = [{**detailed(v["code"], v["variant_id"]), **v} for v in variants]
         self.setup_client(page("products", []), page("variants", details), page("products", [parent_metadata()]))
 
+    async def test_deleted_variant_is_verified_by_native_parent_not_old_code(self):
+        self.setup_client(page("products", [family(variant("RENAMED-SIBLING", 72))]), page("products", []))
+        result = await source.verify_deleted_variants("biketrek", [{"is_variant": True,
+            "external_product_id": "7", "external_variant_id": "71"}], FINGERPRINT)
+        self.assertEqual(result["requests"], 2)
+        self.assertEqual(self.session.calls[0][0], BASE + "/products/simple")
+        self.assertEqual(self.session.calls[0][1]["params"],
+                         {"product_ids": "7", "variants_yn": "true", "archived_yn": "false", "page": 1, "current_page_items": 100})
+
+    async def test_renamed_or_inactive_original_variant_still_blocks_replacement(self):
+        self.setup_client(page("products", []), page("products", [family({**variant("RENAMED", 71), "active_yn": False})]))
+        with self.assertRaisesRegex(source.SourceError, "product_links_variant_still_exists"):
+            await source.verify_deleted_variants("biketrek", [{"is_variant": True,
+                "external_product_id": "7", "external_variant_id": "71"}], FINGERPRINT)
+
+    async def test_missing_variant_array_does_not_prove_deletion(self):
+        parent = family()
+        parent.pop("variants")
+        self.setup_client(page("products", [parent]), page("products", []))
+        with self.assertRaisesRegex(source.SourceError, "source_rows_invalid"):
+            await source.verify_deleted_variants("biketrek", [{"is_variant": True,
+                "external_product_id": "7", "external_variant_id": "71"}], FINGERPRINT)
+
+    async def test_absence_from_both_archive_partitions_allows_deleted_parent(self):
+        self.setup_client(page("products", []), page("products", []))
+        result = await source.verify_deleted_variants("biketrek", [{"is_variant": True,
+            "external_product_id": "7", "external_variant_id": "71"}], FINGERPRINT)
+        self.assertEqual(result["requests"], 2)
+        self.assertEqual([kwargs["params"]["archived_yn"] for _, kwargs in self.session.calls], ["false", "true"])
+
+    async def test_parent_in_both_archive_partitions_cannot_prove_deletion(self):
+        self.setup_client(page("products", [family(variant("SIBLING", 72))]),
+                          page("products", [family(variant("SIBLING", 72))]))
+        with self.assertRaisesRegex(source.SourceError, "source_filter_mismatch"):
+            await source.verify_deleted_variants("biketrek", [{"is_variant": True,
+                "external_product_id": "7", "external_variant_id": "71"}], FINGERPRINT)
+
     async def test_exact_variant_filter_and_separate_documented_axes(self):
         self.discovery(variant())
         result = await source.discover("xtrek", ["LEAF-M"])

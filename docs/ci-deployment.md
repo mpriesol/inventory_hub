@@ -29,7 +29,7 @@ test-specific database guards still apply. Never run these tests against a live
 warehouse database.
 
 Pip downloads are cached against `api/requirements.txt`. The frontend retains its
-npm cache, build and all 21 jsdom interaction suites. No application tests are
+npm cache, build and all configured jsdom interaction suites. No application tests are
 removed. The ordinary serial `unittest discover` command in [AGENTS.md](../AGENTS.md)
 remains useful for local diagnosis; disclose database skips in local results.
 
@@ -72,12 +72,16 @@ The entire release workflow uses a common concurrency group with
 not interrupted by a newer run. Do not use cancellation to speed up deployment.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes twenty-four upgrade
-modules, `005` through `028`, in their existing order. Each module retains its
+temporary API container. Its explicit list invokes twenty-eight upgrade
+modules, `005` through `032`, in their existing order. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The first failure stops the runner and prevents the service restart. Already
 committed migrations remain applied. No schema SQL is changed by this optimization.
-New migrations require explicit runner and image-packaging updates.
+New migrations require explicit runner and image-packaging updates. The warehouse
+model changes add `030_shop_identity.sql`, `031_item_units.sql` and
+`032_supplier_authority.sql`; they retain historical data and leave publication
+authority switches unchanged. After new unit/identity writes, recovery uses a
+compatible forward fix, not old writers that ignore these fields.
 
 After successful migrations, the existing `--force-recreate` for `api`,
 `frontend-build` and `caddy` remains. Both public health routes must return HTTP

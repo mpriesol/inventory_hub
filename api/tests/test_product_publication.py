@@ -25,6 +25,22 @@ def local():
 
 
 class ProductPublicationPureTests(TestCase):
+    def test_explicit_remote_mapping_can_have_different_code_from_hub_sku(self):
+        from inventory_hub.services.product_publication import target
+        row = {'sku': 'LOCAL-CARD', 'shops': [{'shop_code': 'biketrek', 'mapped': True,
+            'mapping': {'code': 'REMOTE-LEAF', 'variant_code': 'REMOTE-LEAF', 'parent_code': 'REMOTE-PARENT',
+                        'is_variant': True, 'external_product_id': '10', 'external_variant_id': '20'}}]}
+        shop, identity = target(row, 'biketrek')
+        observed = source.plain(remote())
+        observed['identity'] = identity
+        observed['leaf']['code'] = 'REMOTE-LEAF'
+        patch_value = source.build_patch(local(), {'effective': {'visible': False}}, observed, ['visible'])
+        self.assertEqual(patch_value['payload']['products'][0]['code'], 'REMOTE-PARENT')
+        self.assertEqual(patch_value['payload']['products'][0]['variants'][0]['code'], 'REMOTE-LEAF')
+        self.assertEqual(identity['product_id'], 10)
+        self.assertEqual(identity['variant_id'], 20)
+        self.assertEqual(row['sku'], 'LOCAL-CARD')
+
     def test_variant_price_is_decimal_converted_and_targets_only_leaf_without_discounts_or_siblings(self):
         observation = source.plain(remote())
         shop = {'effective': {'name': 'New', 'sale_price_gross': '147.60', 'visible': False}}

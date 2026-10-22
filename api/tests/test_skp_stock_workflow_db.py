@@ -98,13 +98,12 @@ class SkpStockWorkflowDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((first["products_created"], first["movements_created"]), (0, 1))
 
         # New products are prepared independently from confirming physical units.
-        # This fixture explicitly verifies the concrete manufacturer's label;
-        # the invoice's supplier code alone cannot allocate a shared SKU.
+        # The registered brand adds its prefix automatically; creating a card
+        # still does not confirm physical stock or need verified MPN evidence.
         async with self.sessions() as db:
             new_card = await product_editor.create_card(db, ProductCardCreateRequest(request_id=uuid4(),
                 name="Synthetic new part", supplier_id=self.skp_id, supplier_sku="new-part",
-                sku_identity={"brand": "Topeak", "source_code": "000-NEW-PART", "code_kind": "manufacturer",
-                    "source_ref": "Synthetic manufacturer specification for this sale unit", "leaf_confirmed": True}))
+                sku_identity={"brand": "Topeak", "source_code": "000-NEW-PART", "code_kind": "manufacturer"}))
         async with self.sessions() as db:
             self.assertIsNone(await db.scalar(select(StockBalance.id).where(
                 StockBalance.product_id == new_card["results"][0]["product_id"])))

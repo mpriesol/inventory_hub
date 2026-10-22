@@ -9,7 +9,7 @@ export interface SkuPreview {
   status: 'new' | 'existing' | 'conflict' | 'blocked'; sku: string | null; product_id: number | null;
   reasons: string[]; candidate_product_ids: number[]; brand_id: number | null;
 }
-export interface SkuPreviewContext { barcodes?: string[]; supplier_id?: number; supplier_sku?: string; expected_product_id?: number; sku?: string }
+export interface SkuPreviewContext { item_type?: 'stock' | 'service'; barcodes?: string[]; supplier_id?: number; supplier_sku?: string; expected_product_id?: number; sku?: string }
 export const emptySkuIdentity = (brand = '', source_code = ''): SkuIdentityInput => ({ brand, source_code, code_kind: 'manufacturer', source_ref: '', leaf_confirmed: false });
 export const getSkuBrands = (signal?: AbortSignal) => hubRequest<{ brands: SkuBrand[] }>('/api/sku-policy/brands', undefined, signal);
 export const createSkuBrand = (body: Omit<SkuBrand, 'id'> & { source_ref: string }) => hubRequest<SkuBrand>('/api/sku-policy/brands', body);

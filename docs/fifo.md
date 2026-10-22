@@ -1,5 +1,7 @@
 # FIFO pre BIKETREK a xTrek
 
+FIFO pracuje so základnou jednotkou karty. Príjem nákupného balenia prevádza množstvo aj cenu výslovným faktorom a zachováva faktúrový riadok. Lokálne metre podporujú tri desatinné miesta, služby nemajú FIFO. Vratky predajov zostávajú celé predajné jednotky. [Typy, jednotky a hranice](stock-units.md).
+
 Tento dokument opisuje lokálne skladové vrstvy a oceňovanie implementované v kóde. Nasadenie samo osebe nevytvorí príjem, nezmení historické pohyby a nezapne odosielanie zásob do e-shopov. Databázové a súbehové scenáre overuje izolované PostgreSQL CI; testy nepoužívajú produkčné e-shopy.
 
 ## Čo znamenajú vrstvy

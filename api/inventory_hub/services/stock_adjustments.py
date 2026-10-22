@@ -9,6 +9,7 @@ from inventory_hub.services import fifo
 from inventory_hub.services import stock_tracking
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
+from inventory_hub.services.item_units import validate_stock_quantity, ItemUnitError
 
 
 def dto(batch):
@@ -23,12 +24,15 @@ async def get(db, identifier):
     return dto(batch)
 
 
-def validate_count(balance, counted, *, initial_zero=False):
+def validate_count(balance, counted, *, initial_zero=False, stock_unit="pcs"):
     current = Decimal(balance.qty_on_hand) if balance else fifo.ZERO
     reserved = Decimal(balance.qty_reserved) if balance else fifo.ZERO
     quarantined = Decimal(balance.qty_quarantined) if balance else fifo.ZERO
-    if any(value < 0 or value != value.to_integral_value() for value in (current, reserved, quarantined)):
-        raise fifo.FifoError("adjustment_quantity_invalid")
+    try:
+        for value in (current, reserved, quarantined, counted):
+            validate_stock_quantity(value, stock_unit)
+    except ItemUnitError:
+        raise fifo.FifoError("adjustment_quantity_invalid") from None
     if counted < reserved + quarantined:
         raise fifo.FifoError("adjustment_below_committed")
     if counted == current and not (initial_zero and counted == fifo.ZERO):
@@ -65,7 +69,7 @@ async def preview(db, payload):
     if snapshot["tracking_confirmed"] and snapshot["valuation"]["mode"] != "fifo" and (snapshot["movement_count"] or balance and balance.qty_on_hand != fifo.ZERO):
         raise fifo.FifoError("fifo_cutover_required")
     initial_zero = await initial_zero_count(db, product, warehouse, balance, snapshot, Decimal(payload.counted_quantity))
-    delta = validate_count(balance if snapshot["tracking_confirmed"] else None, Decimal(payload.counted_quantity), initial_zero=initial_zero)
+    delta = validate_count(balance if snapshot["tracking_confirmed"] else None, Decimal(payload.counted_quantity), initial_zero=initial_zero, stock_unit=product.stock_unit)
     if delta <= 0 and (payload.unit_cost is not None or payload.cost_status != "unknown"):
         raise fifo.FifoError("adjustment_issue_cost_derived", 422)
     plan = await fifo.plan_issue(db, balance, [{"line_key": "adjustment", "quantity": -delta}], lock=True) if delta < 0 else None
@@ -114,7 +118,7 @@ async def apply(db, identifier, payload):
     initial_zero = await initial_zero_count(db, product, warehouse, balance, snapshot, Decimal(data["counted_quantity"]))
     if bool(data.get("initial_zero_count")) != initial_zero:
         raise fifo.FifoError("fifo_preview_stale")
-    delta = validate_count(balance if snapshot["tracking_confirmed"] else None, Decimal(data["counted_quantity"]), initial_zero=initial_zero)
+    delta = validate_count(balance if snapshot["tracking_confirmed"] else None, Decimal(data["counted_quantity"]), initial_zero=initial_zero, stock_unit=product.stock_unit)
     was_missing = balance is None
     try:
         balances, created_ids = await lock_stock_balances(db, {product.id}, warehouse.id)

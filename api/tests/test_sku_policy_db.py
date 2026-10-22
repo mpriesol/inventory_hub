@@ -1,4 +1,5 @@
 """Real registry uniqueness and cross-supplier reuse in isolated PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -35,6 +36,7 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for filename in ("001_schema.sql", "029_sku_policy.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -95,8 +97,7 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             value = await service.preview_sku(db, SkuIdentityInput(**evidence()))
             self.assertEqual((value["status"], value["sku"]), ("new", "TP-0001410"))
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
-            for changes, reason in (({"leaf_confirmed": False}, "sku_leaf_not_confirmed"),
-                                    ({"brand": "Unknown"}, "sku_brand_unregistered"),
+            for changes, reason in (({"brand": "Unknown"}, "sku_brand_unregistered"),
                                     ({"code_kind": "supplier"}, "sku_supplier_scope_required"),
                                     ({"code_kind": "gtin", "source_code": "1234567890123"}, "sku_gtin_invalid")):
                 blocked = await service.preview_sku(db, SkuIdentityInput(**evidence(**changes)))
@@ -165,7 +166,9 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             item = SkuIdentityInput(**evidence(brand="Workshop services", source_code="REPAIR-01", code_kind="service"))
             result = await service.preview_sku(db, item)
             self.assertEqual((result["status"], result["sku"]), ("blocked", "SV-REPAIR-01"))
-            self.assertEqual(result["reasons"], ["sku_service_card_requires_nonstock_model"])
+            self.assertEqual(result["reasons"], ["sku_item_type_conflict"])
+            result = await service.preview_sku(db, item, item_type="service")
+            self.assertEqual((result["status"], result["sku"]), ("new", "SV-REPAIR-01"))
             wrong = await service.preview_sku(db, SkuIdentityInput(**evidence(brand="Workshop services")))
             self.assertEqual(wrong["reasons"], ["sku_namespace_kind_mismatch"])
             missing = await service.preview_sku(db, None)
@@ -174,3 +177,28 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             result = await service.preview_sku(db, SkuIdentityInput(**evidence(
                 brand="Unbranded parts", source_code="PART-01", code_kind="unbranded")))
             self.assertEqual((result["status"], result["sku"]), ("new", "NB-PART-01"))
+
+    async def test_two_brands_with_same_raw_code_receive_distinct_automatic_skus(self):
+        async with self.transaction() as db:
+            first = SkuIdentityInput(brand="Topeak", source_code="00042", code_kind="supplier", supplier_id=self.first)
+            other = SkuIdentityInput(brand="Shimano", source_code="00042", code_kind="supplier", supplier_id=self.second)
+            one = await service.preview_sku(db, first)
+            two = await service.preview_sku(db, other)
+            self.assertEqual((one["status"], one["sku"]), ("new", "TP-00042"))
+            self.assertEqual((two["status"], two["sku"]), ("new", "SH-00042"))
+            card = await self.add_product(db, sku=one["sku"], brand="Topeak")
+            db.add(ProductIdentifier(product_id=card.id, identifier_type=IdentifierType.supplier_sku,
+                supplier_id=self.first, value="00042"))
+            await db.flush()
+            same = await service.preview_sku(db, first)
+            self.assertEqual((same["status"], same["sku"], same["product_id"]), ("existing", "TP-00042", card.id))
+            self.assertIsNone(await service.record_sku_identity(db, card, first))
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSkuIdentity)), 0)
+
+    async def test_new_raw_sku_alone_cannot_bypass_automatic_prefix_allocation(self):
+        async with self.transaction() as db:
+            blocked = await service.preview_sku(db, None, sku="00042")
+            self.assertEqual((blocked["status"], blocked["reasons"]), ("blocked", ["sku_identity_required"]))
+            old = await self.add_product(db, sku="OLD-42")
+            existing = await service.preview_sku(db, None, sku="OLD-42")
+            self.assertEqual((existing["status"], existing["sku"], existing["product_id"]), ("existing", "OLD-42", old.id))

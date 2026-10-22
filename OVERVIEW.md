@@ -1,6 +1,8 @@
 # Inventory Hub — prehľad projektu
 
-Nové skladové karty používajú spoločnú [politiku SKU a identity](docs/sku-policy.md): register dvojpísmenových skratiek značiek, doložený kód konkrétneho výrobku/variantu a rovnaké kontroly v katalógu, príjme aj ručnom založení. Existujúca jednoznačná karta sa používa znova; historické SKU sa tým nemení. Základnú kartu možno uložiť bez hotového e-shopového obsahu. Príjem množstiev a publikovanie zostávajú samostatné kroky. Migrácia **029** pridáva register a dôkazy identity bez prečíslovania či aktivácie skladu. Staršie opisy dodávateľského prefixu nižšie platia len pre historické väzby.
+[Zjednodušený dátový model](docs/warehouse-model.md) používa interné `products.id` a výslovné databázové väzby. Existujúce SKU zostávajú; pri novej karte Hub automaticky zostaví SKU zo značkového prefixu a kódu konkrétnej predajnej jednotky. Vlastník po kontrole možných kolízií 22. 10. výslovne ponechal značkové prefixy. Chýbajúce MPN neblokuje kartu, ak je doložený konkrétny dodávateľský variant; jedinečnosť a cieľové kolízie kontroluje systém. Skutočné rozpory identity naďalej blokujú založenie alebo prepojenie. Základnú kartu možno uložiť bez e-shopového obsahu; príjem a publikovanie sú samostatné kroky. Podrobnosti sú v [politike SKU](docs/sku-policy.md).
+
+Migrácie **030–032** dopĺňajú jednoznačné natívne ID produktov/variantov e-shopov, typ karty a skladovú jednotku, výslovný prepočet nákupného balenia pri príjme a jednotné dodávateľské väzby. Jedna Hub karta má najviac jednu reprezentáciu v jednom e-shope. Servisná karta nevytvára fyzickú zásobu ani FIFO. Nasadenie neaktivuje skladovú autoritu a samo neodstraňuje živé pokladňové varianty.
 
 Existujúce karty majú samostatný [náhľad prevodu SKU](docs/sku-migration.md) s kontrolou identity, kolízií, natívnych väzieb a závislostí. Voliteľné čerstvé overenie v e-shopoch používa iba GET. Náhľad neprečísluje produkty ani neukladá schválenie migrácie; chýbajúci postup premenovania v Upgates, reklamné identifikátory a otvorené objednávky zostávajú osobitnými podmienkami pilotu. Táto etapa nemá novú databázovú migráciu ani skladové zápisy.
 
@@ -55,7 +57,8 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 | [Mapovanie produktových feedov](docs/product-feed-mapping.md) | Zdrojové polia, transformácie, parametre a kategórie podľa dodávateľa a e-shopu. |
 | [Príprava importu](docs/product-imports.md) | Uložený editovateľný náhľad, voliteľné AI, uloženie do Hubu a samostatné odoslanie do e-shopu. |
 | [Prepojenie existujúcich kariet](docs/product-links.md) | Jednotlivé aj hromadné párovanie s existujúcimi produktmi e-shopov, náhľad, konflikty a obnova. |
-| [Spoločná identita a nové SKU](docs/sku-policy.md) | Register značiek, doložené variantové kódy a spoločné zakladanie kariet. |
+| [Spoločná identita a nové SKU](docs/sku-policy.md) | Automatický značkový prefix a kód predajnej jednotky; spoločné kontroly identity. |
+| [Dátový model skladu](docs/warehouse-model.md) | Diagram ID, autorita údajov, služby, jednotky a hranice migrácie. |
 | [Prevod existujúcich SKU](docs/sku-migration.md) | Čítací náhľad pilotu, kontrola natívnych ID, závislosti, obnova indexov a návrat. |
 | [Dodávateľská identita](docs/supplier-identity.md) | Historické prefixy a doplnenie väzieb dostupností z už načítaných údajov. |
 | [Centrálny sklad](docs/central-stock.md) | Schválené obchodné pravidlá, prvý bezpečnostný balík a hranice ďalšej implementácie. |
@@ -375,11 +378,11 @@ Pravidelný prenos odlišuje čakajúcu objednávku od nespracovaného skladové
 
 Migrácie `014_supplier_availability.sql`, `015_stock_sync.sql`, `016_product_publication.sql` a `017_stock_adjustments.sql` sú aditívne, zabalené v API obraze a zapojené do deploymentu po `013` pred spustením nového API. Nezapínajú nové plánovanie ani hromadné zápisy. Príslušné zámery, nejasné pokusy a účtovné výsledky sa pri návrate verzie nemažú; pre riešenie nasadenej chyby uprednostni kompatibilnú doprednú opravu.
 
-## Dodávateľské prefixy a väzby dostupností
+## Dodávateľské väzby dostupností
 
-Etapa `codex/supplier-prefix-availability` zjednocuje prefixy a dopĺňanie dodávateľských väzieb. Nový produkt používa spoločné SKU `prefix + kód variantu dodávateľa`, ale jeho nemenná identita zostáva interné produktové ID. Použitý prefix chráni trvalý filesystem register; existujúce neprázdne prefixy sa konzervatívne uzamknú. Zmena nemení staré SKU ani skladovú históriu.
+Aktívne dodávateľské vzťahy určuje `product_supply_sources`, nie prefix SKU ani údaj o pôvode založenia. Historická konfigurácia dodávateľských prefixov sa nepoužíva na domýšľanie nových väzieb. Automatické obnovenie feedu opravuje identifikátory už prepojených kariet; odpojený zdroj samo nepripája. Nové SKU prideľuje samostatná spoločná značková politika. Migrácia 032 jednorazovo doplní iba jednoznačné historické vzťahy a vynúti jedného vlastníka ponuky; existujúce SKU a skladová história zostávajú.
 
-`services/supplier_links.py` prepája iba jednoznačné lokálne identity. Chránené `POST /supplier-availability/{supplier}/links/reconcile` a tlačidlo **Prepojiť dostupnosti** doplnia väzby aj z už prijatých dát bez nového sťahovania či Upgates volaní. Skladová tabuľka rozlišuje chýbajúcu väzbu a konflikt od chýbajúceho alebo starého pozorovania. Nová SQL migrácia nie je potrebná; etapa nezapína prenos zásob ani cien. Podrobný kontrakt: [supplier-identity.md](docs/supplier-identity.md). Nasadenie a testy sú vedené samostatne v `docs/mvp-progress.md`.
+`services/supplier_links.py` prepája iba jednoznačné lokálne identity. Chránené `POST /supplier-availability/{supplier}/links/reconcile` a tlačidlo **Prepojiť dostupnosti** doplnia väzby aj z už prijatých dát bez nového sťahovania či Upgates volaní. Skladová tabuľka rozlišuje chýbajúcu väzbu a konflikt od chýbajúceho alebo starého pozorovania. Migrácia 032 ani lokálne prepojenie nezapínajú prenos zásob či cien. Podrobný kontrakt: [supplier-identity.md](docs/supplier-identity.md). Nasadenie a testy sú vedené samostatne v `docs/mvp-progress.md`.
 
 AI content context v2 adds category reference-product snapshots (read-only Upgates preview followed by versioned rule publication), frozen high reasoning for new Luna jobs, usage reasoning-token details and bounded Paul Lange technical-table/document sources. See `docs/ai-content.md` for selection, snapshot compatibility and the remaining single-category-branch limit. No schema migration is required.
 AI zadanie verzie 3 zoskupuje parametre vzorových produktov do výstupnej schémy. Nové duše zlučujú iba opakované skupiny štyroch schválených rozmerových parent parametrov, bez nových hodnôt; ostatné konflikty a variantové kontroly zostávajú. Podrobnosti sú v `docs/ai-content.md`.
@@ -395,11 +398,8 @@ Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej akt
 - Operational table routes use the available main-content width; the fixed 1280px wrapper remains for settings and other form pages. This change does not redesign tablet navigation.
 - No schema migration is required. Deployment, supplier configuration, exact live match counts and scheduled publication outcomes must be verified separately from code/fixture tests.
 
-- Zookee's collapsed legacy-code reconciliation tool is implemented in code: after an administrative `TOPEAK-` → `ZOO-` rename it verifies all mapped shop native IDs through GETs, then atomically updates canonical code/mappings with an editor audit while retaining product IDs and the immutable ledger. It does not perform the remote rename or relax ordinary mapped-SKU editing. See [Zookee](docs/zookee.md).
-- Empty legacy native IDs can be restored from the exact cached source identity only after fresh remote ID verification; ambiguous/missing evidence is blocked and recovery is audited. Reconciliation failures expose stable diagnostic codes.
-- The same explicit reconciliation supports missing IDs on linked Topeak/Sensor BIKETREK cards under the configured Zookee matching policy, preserving unchanged codes such as `SEN-`, cached source content and stock history.
-
-- Scoped supplier availability and Zookee code reconciliation share bounded reads in batches of up to 20 leaves. Availability retains individual durable intents/fences and uses one availability-only envelope with complete native-ID acknowledgement/readback; batch reconciliation never writes to a shop. See [Zookee](docs/zookee.md).
-- Automatic supplier batches require verified native mappings and exact canonical leaf codes. Availability settings count current per-card results while retaining unresolved-write visibility and complete history.
+- The one-off `TOPEAK-` → `ZOO-` code reconciliation is retired. Fresh requests return HTTP 410; the UI reads saved history and recovers an already completed operation by its UUID. Previous aliases, identity audits and stock history remain intact. Ordinary mapping refresh uses the shared product-links workflow. See [Zookee](docs/zookee.md).
+- Scoped supplier availability keeps bounded reads in batches of up to 20 leaves, individual durable intents/fences and availability-only envelopes with native-ID acknowledgement/readback. Retiring the historical code writer does not disable this regular workflow.
+- Automatic supplier batches require verified native mappings and exact mapped leaf codes. Availability settings count current per-card results while retaining unresolved-write visibility and complete history.
 
 - Optional catalog image fallback fills missing supplier photographs from explicitly linked, identity-checked cached shop products in catalog list/detail and new preparations. Source images and raw snapshots remain intact; no API call, stock write or migration is required. See [Zookee](docs/zookee.md#missing-catalog-images).

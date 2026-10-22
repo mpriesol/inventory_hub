@@ -39,8 +39,7 @@ class NativeDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await fixture.OrderProcessingDatabaseTests.asyncSetUp(self)
         async with self.transaction() as db:
-            db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=self.product_id,
-                external_code="SKU-A", external_id="101", is_variant=False))
+            db.add(ShopProduct(shop_id=self.shops['biketrek'], product_id=self.product_id, external_code='SKU-A', is_variant=False, external_product_id='101'))
 
     async def native(self):
         async with self.sessions() as db:
@@ -169,11 +168,11 @@ class NativeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.seed("5")
         await self.process(self.raw(raw_line(product_id=101)))
         async with self.transaction() as db:
-            await db.execute(update(ShopProduct).values(external_id="999"))
+            await db.execute(update(ShopProduct).values(external_product_id="999"))
         with self.assertRaisesRegex(service.NativeError, "stock_native_line_identity"):
             await self.native()
         async with self.transaction() as db:
-            await db.execute(update(ShopProduct).values(external_id="101"))
+            await db.execute(update(ShopProduct).values(external_product_id="101"))
             row = await db.scalar(select(ShopOrder))
             row.stock_revision += 1
         with self.assertRaisesRegex(service.NativeError, "stock_native_coverage_stale"):
@@ -208,8 +207,7 @@ class NativeDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(confirmed_inventory(product.id, self.warehouse_id))
             db.add(StockBalance(product_id=product.id, warehouse_id=self.warehouse_id,
                 qty_on_hand=5, qty_reserved=0, avg_cost=3, total_value=15))
-            db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=product.id,
-                external_code="SKU-B", external_id="202", is_variant=False))
+            db.add(ShopProduct(shop_id=self.shops['biketrek'], product_id=product.id, external_code='SKU-B', is_variant=False, external_product_id='202'))
         raw = self.raw(raw_line(product_id=101, quantity="2"))
         await self.process(raw)
         raw["products"][0].update(code="SKU-B", product_id=202)

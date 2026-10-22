@@ -1,4 +1,5 @@
 """Stock drafts in a disposable localhost PostgreSQL schema, never production."""
+from current_schema_fixture import apply_current_core_schema
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -42,6 +43,7 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((sql_root / "007_order_stock.sql").read_text())
             await connection.execute((sql_root / "011_fifo.sql").read_text())
             await connection.execute((sql_root / "017_stock_adjustments.sql").read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -61,8 +63,7 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     starts_at=datetime.now(timezone.utc), revision=1, status_actions={}, status_hash="a" * 64, statuses=[]))
                 for product in products:
                     parent = "xTrek" if shop_code == "biketrek" else "NORMAL-" + product.sku
-                    db.add(ShopProduct(shop_id=self.shops[shop_code], product_id=product.id,
-                        external_code=parent, variant_code=product.sku, parent_code=parent, is_variant=True))
+                    db.add(ShopProduct(shop_id=self.shops[shop_code], product_id=product.id, external_code=product.sku, parent_code=parent, is_variant=True))
             await db.commit()
 
     async def asyncTearDown(self):
@@ -132,16 +133,17 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             other_mapping = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
                                                                       ShopProduct.product_id == self.products["SKU-B"]))
-            other_mapping.variant_code = "sku-a"
+            other_mapping.external_code = "sku-a"
             await db.commit()
         self.assertEqual((await self.preview())["rows"][0]["errors"], ["stock_projection_mapping_ambiguous"])
         self.assertTrue((await self.preview("xtrek"))["rows"][0]["quantity_known"])
         async with self.sessions() as db:
             mapping = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["xtrek"],
                                                                 ShopProduct.product_id == self.products["SKU-A"]))
-            mapping.variant_code = "OTHER-CODE"
+            mapping.external_code = "OTHER-CODE"
             await db.commit()
-        self.assertEqual((await self.preview("xtrek"))["rows"][0]["errors"], ["stock_projection_mapping_alias"])
+        self.assertTrue((await self.preview("xtrek"))["rows"][0]["quantity_known"])
+        self.assertEqual((await self.preview("xtrek"))["rows"][0]["target"]["code"], "OTHER-CODE")
 
     async def test_unmapped_canonical_case_duplicate_blocks_exact_mapped_sku(self):
         await self.seed("SKU-A")
@@ -190,17 +192,17 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             product.sku = "STRASSE"
             selected = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
                                                                   ShopProduct.product_id == product.id))
-            selected.variant_code = "STRASSE"
+            selected.external_code = "STRASSE"
             other = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
                                                                ShopProduct.product_id == self.products["SKU-B"]))
-            other.variant_code = "Straße"
+            other.external_code = "Straße"
             await db.commit()
         row = (await self.preview(skus=["STRASSE"]))["rows"][0]
         self.assertEqual(row["errors"], ["stock_projection_mapping_ambiguous"])
         async with self.sessions() as db:
             other = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
                                                                ShopProduct.product_id == self.products["SKU-B"]))
-            other.variant_code = "SKU-B"
+            other.external_code = "SKU-B"
             db.add(Product(sku="Straße", name="Unmapped Unicode collision"))
             await db.commit()
         row = (await self.preview(skus=["STRASSE"]))["rows"][0]

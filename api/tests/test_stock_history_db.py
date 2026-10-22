@@ -1,4 +1,5 @@
 """Local ledger history against a disposable, strictly isolated PostgreSQL schema."""
+from current_schema_fixture import apply_current_core_schema
 import os
 import unittest
 from contextlib import asynccontextmanager
@@ -43,6 +44,7 @@ class StockHistoryDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for filename in ("002_invoice_management.sql", "006_opening_stock.sql", "007_order_stock.sql",
                              "011_fifo.sql", "012_product_editor.sql"):
                 await connection.execute((sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

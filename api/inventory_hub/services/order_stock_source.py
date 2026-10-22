@@ -19,7 +19,7 @@ from inventory_hub.services import order_sku_aliases
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connection_fingerprint
 
 
-IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons", "sku_alias_proof"}
+IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons", "sku_alias_proof", "item_type", "stock_unit"}
 
 
 class SourceError(Exception):
@@ -237,6 +237,7 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
     result = []
     for line in lines:
         reasons, product_id, sku, matched_by = [], None, None, None
+        item_type = stock_unit = None
         alias_proof = None
         if line["identity_invalid"]:
             classification, reasons = "conflict", ["invalid_identity"]
@@ -253,11 +254,17 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
             if not line["code"]:
                 reasons.append("missing_code_with_identity")
             if product_id is not None:
-                sku = index.products[product_id].sku
+                product = index.products[product_id]
+                sku = product.sku
+                item_type, stock_unit = getattr(product, "item_type", "stock"), getattr(product, "stock_unit", "pcs")
+                if item_type == "service" and classification in ("mapped", "identified"):
+                    classification = "non_stock"
+                    reasons.append("service_outside_stock")
         if line["quantity"] is None and classification not in ("manual", "non_stock"):
             classification = "conflict"
             reasons.append("invalid_quantity")
         result.append({**line, "classification": classification, "product_id": product_id, "sku": sku,
+                       "item_type": item_type, "stock_unit": stock_unit,
                        "matched_by": matched_by, "reasons": sorted(set(reasons)),
                        **({"sku_alias_proof": alias_proof} if alias_proof else {})})
     return result

@@ -1,4 +1,5 @@
 """Manual product overrides and source isolation in disposable local PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import copy
 import json
@@ -47,6 +48,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for filename in ("002_invoice_management.sql", "004_shop_product_content.sql", "007_order_stock.sql",
                              "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -85,11 +87,21 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 ProductVariantAttribute(product_id=self.products["BIKE-10"], attribute_name="Veľkosť", attribute_value="10"),
             ])
             for sku in ("BIKE-2", "BIKE-10", "PART-1"):
-                db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=self.products[sku], external_code="xTrek",
-                    parent_code="xTrek", variant_code=sku, is_variant=True, shop_price=D("199.99")))
+                db.add(ShopProduct(
+                    shop_id=self.shops['biketrek'],
+                    product_id=self.products[sku],
+                    external_code=sku,
+                    parent_code='xTrek',
+                    is_variant=True,
+                    shop_price=D('199.99')))
             for sku in ("BIKE-2", "BIKE-10"):
-                db.add(ShopProduct(shop_id=self.shops["xtrek"], product_id=self.products[sku], external_code="REAL-FRAMES",
-                    parent_code="REAL-FRAMES", variant_code=sku, is_variant=True, shop_price=D("209.99")))
+                db.add(ShopProduct(
+                    shop_id=self.shops['xtrek'],
+                    product_id=self.products[sku],
+                    external_code=sku,
+                    parent_code='REAL-FRAMES',
+                    is_variant=True,
+                    shop_price=D('209.99')))
             umbrella = {"active_yn": True, "descriptions": [{"language": "sk", "title": "POS umbrella"}],
                 "variants": [{"code": sku, "active_yn": True, "descriptions": [{"language": "sk", "title": "Observed " + sku}]}
                              for sku in ("BIKE-2", "BIKE-10", "PART-1", "REMOTE-ONLY")]}
@@ -191,6 +203,42 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code, "sku_identity_required")
         self.assertEqual(await self.snapshot(), before)
 
+    async def test_item_definition_can_change_before_stock_but_not_reinterpret_history(self):
+        row = await self.detail("NO-STOCK")
+        self.assertFalse(row["item_definition_locked"])
+        saved = await self.save([self.change(row, item_type="service")])
+        service_row = saved["results"][0]["row"]
+        self.assertEqual(service_row["item_type"], "service")
+        self.assertFalse(service_row["stock"]["managed"])
+        self.assertFalse(service_row["stock"]["known"])
+        self.assertIsNone(service_row["stock"]["qty_on_hand"])
+        row = await self.detail("BIKE-2")
+        self.assertTrue(row["item_definition_locked"])
+        for values in ({"item_type": "service"}, {"stock_unit": "pair"}):
+            rejected = await self.save([self.change(row, **values)])
+            self.assertEqual(rejected["results"][0]["errors"][0]["code"], "item_definition_locked")
+            from sqlalchemy.exc import IntegrityError
+            async with self.sessions() as db:
+                with self.assertRaises(IntegrityError):
+                    async with db.begin_nested():
+                        await db.execute(update(Product).where(Product.id == row["id"]).values(**values))
+        self.assertEqual((await self.detail("BIKE-2"))["stock"]["qty_on_hand"], row["stock"]["qty_on_hand"])
+
+    async def test_service_card_creation_keeps_brand_policy_but_has_no_physical_stock(self):
+        request = ProductCardCreateRequest(request_id=uuid4(), name="Workshop service", item_type="service",
+            sku_identity={"brand": "Topeak", "source_code": "SERVICE-01", "code_kind": "manufacturer",
+                "source_ref": "Reviewed workshop card identity", "leaf_confirmed": True})
+        async with self.sessions() as db:
+            result = await service.create_card(db, request)
+        row = result["results"][0]["row"]
+        self.assertEqual((row["sku"], row["item_type"]), ("TP-SERVICE-01", "service"))
+        self.assertFalse(row["stock"]["managed"])
+        self.assertFalse(row["stock"]["known"])
+        async with self.sessions() as db:
+            self.assertEqual(await service.create_card(db, request), result)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)
+                .where(StockMovement.product_id == row["id"])), 0)
+
     async def test_manual_lookup_reuses_legacy_card_without_renaming_or_overwriting_it(self):
         before = await self.snapshot()
         async with self.sessions() as db:
@@ -286,13 +334,14 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_and_supplier_binding_filters_combine_before_pagination(self):
         async with self.transaction() as db:
-            source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="FILTER-SOURCE", name="Source")
-            db.add(source); await db.flush()
             for active in (True, False):
                 for linked in (True, False):
                     product = Product(sku=f"FILTER-{active}-{linked}", name="Filter", is_active=active)
                     db.add(product); await db.flush()
                     if linked:
+                        source = SupplierProduct(supplier_id=self.supplier_id,
+                            supplier_sku=f"FILTER-SOURCE-{active}", name="Source")
+                        db.add(source); await db.flush()
                         # A paused link still exists; this filter is not crawler eligibility.
                         db.add(ProductSupplySource(product_id=product.id, supplier_product_id=source.id, is_active=False))
                     else:
@@ -309,7 +358,9 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             product = await db.get(Product, self.products["BIKE-2"])
             await db.execute(text("DELETE FROM product_supply_sources WHERE product_id = :id"), {"id": product.id})
-        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="linked"))["total"], 1, "Legacy source remains a binding")
+        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="linked"))["total"], 0,
+            "Creation provenance and supplier aliases are not current supply links")
+        self.assertEqual((await self.listing(q="BIKE-2", supplier_link="unlinked"))["total"], 1)
 
     async def test_lists_all_canonical_products_including_missing_stock_without_expanding_pos_parent(self):
         before = await self.snapshot()
@@ -331,7 +382,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual({row["sku"] for row in result["items"]}, expected, query)
         self.assertEqual((await self.listing(q="REMOTE-ONLY"))["total"], 0)
 
-    async def test_supplier_code_search_preserves_legacy_and_explicit_links_without_duplicates(self):
+    async def test_supplier_code_search_uses_explicit_links_and_ignores_provenance_without_duplicates(self):
         async with self.transaction() as db:
             legacy_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-001", name="Legacy source")
             linked_source = SupplierProduct(supplier_id=self.supplier_id, supplier_sku="RAW-ŽLTÁ-002", name="Linked source")
@@ -346,9 +397,11 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([legacy, linked, literal])
             await db.flush()
             db.add_all([ProductSupplySource(product_id=linked.id, supplier_product_id=linked_source.id),
-                ProductSupplySource(product_id=linked.id, supplier_product_id=other_source.id)])
-        for query, expected in (("raw-zlta-001", {"PL-LEGACY-SEARCH"}), ("raw-zlta-002", {"PL-LINKED-SEARCH"}),
-                                ("raw-zlta", {"PL-LEGACY-SEARCH", "PL-LINKED-SEARCH"}),
+                ProductSupplySource(product_id=linked.id, supplier_product_id=other_source.id),
+                ProductSupplySource(product_id=literal.id, supplier_product_id=wildcard.id)])
+        for query, expected in (("raw-zlta-001", set()), ("raw-zlta-002", {"PL-LINKED-SEARCH"}),
+                                ("raw-zlta", {"PL-LINKED-SEARCH"}),
+                                ("PL-LEGACY-SEARCH", {"PL-LEGACY-SEARCH"}),
                                 ("PL-LINKED-SEARCH", {"PL-LINKED-SEARCH"}), ("raw-orphan", set()),
                                 ("raw-missing", set()), ("100%_CODE", {"PL-LITERAL-SEARCH"}), ("100X_CODE", set())):
             with self.subTest(query=query):

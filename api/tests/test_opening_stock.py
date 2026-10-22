@@ -60,7 +60,7 @@ class OpeningParserTests(unittest.TestCase):
             "sku;quantity;unit_cost;unit;sku\nSKU-A;2;10;ks;OTHER\n",
             HEADER + "SKU-A;2;;ks\n",
             HEADER + "SKU-A;2;10;\n",
-            HEADER + "SKU-A;2;10;m\n",
+            HEADER + "SKU-A;2;10;kg\n",
             HEADER + "SKU-A;2;10;kg\n",
             HEADER + ";2;10;ks\n",
             HEADER + "SKU-A;2;10;ks;EXTRA\n",

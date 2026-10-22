@@ -47,15 +47,15 @@ class OpeningStockLine(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     value: Mapped[Decimal] = mapped_column(Numeric(16, 4), nullable=False)
-    unit: Mapped[str] = mapped_column(String(2), nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
     movement_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("stock_movements.id", ondelete="RESTRICT"), unique=True)
 
     __table_args__ = (
         UniqueConstraint("batch_id", "line_number", name="uq_opening_line_number"),
         UniqueConstraint("batch_id", "product_id", name="uq_opening_line_product"),
         CheckConstraint("line_number > 0", name="chk_opening_line_number"),
-        CheckConstraint("quantity > 0 AND quantity <= 999999999 AND quantity = trunc(quantity)", name="chk_opening_quantity"),
+        CheckConstraint("quantity > 0 AND quantity <= 999999999.999 AND (unit = 'm' OR quantity = trunc(quantity))", name="chk_opening_quantity"),
         CheckConstraint("unit_cost >= 0", name="chk_opening_cost"),
-        CheckConstraint("unit = 'ks'", name="chk_opening_unit"),
+        CheckConstraint("unit IN ('ks', 'pair', 'pack', 'm')", name="chk_opening_unit"),
         CheckConstraint("value >= 0 AND value = round(quantity * unit_cost, 4)", name="chk_opening_value"),
     )

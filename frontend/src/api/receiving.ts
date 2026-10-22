@@ -8,6 +8,13 @@ export interface ReceivingSession {
 }
 
 export interface ReceivingLine {
+  item_type?: 'stock' | 'service'; stock_managed?: boolean;
+  purchase_unit?: 'pcs' | 'pair' | 'pack' | 'm' | null;
+  purchase_to_stock_factor?: string;
+  stock_unit?: 'pcs' | 'pair' | 'pack' | 'm' | null;
+  stock_quantity?: string | null;
+  stock_unit_cost?: string | null;
+  unit_conversion_error?: string | null;
   line_number?: number;
   unit_price?: number | null;
   received_value?: string | null;
@@ -66,6 +73,7 @@ export interface ReceivingSessionSummary {
 
 export type ReceivingProductStatus = 'matched' | 'basic_card' | 'feed_only' | 'not_found' | 'ambiguous' | 'feed_unverified';
 export interface ReceivingProductMatch {
+  item_type?: 'stock' | 'service'; stock_unit?: 'pcs' | 'pair' | 'pack' | 'm';
   line_id: number;
   status: ReceivingProductStatus;
   product_id: number | null;
@@ -282,6 +290,14 @@ export async function setLineQuantity(
   if (!object(result) || result.success !== true || !validLine(result.line) || result.line.received_qty !== received_qty || !validSummary(result.summary)) {
     throw new Error('receiving_quantity_response_invalid');
   }
+  return result as unknown as SetQtyResult;
+}
+
+
+export async function setLineUnit(supplier: string, sessionId: string, lineIndex: number,
+  purchase_unit: 'pcs' | 'pair' | 'pack' | 'm', purchase_to_stock_factor: string): Promise<SetQtyResult> {
+  const result = await hubRequest<unknown>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/receiving/sessions/${encodeURIComponent(sessionId)}/lines/${lineIndex}/unit`, { purchase_unit, purchase_to_stock_factor });
+  if (!object(result) || result.success !== true || !validLine(result.line) || !validSummary(result.summary)) throw new Error('receiving_unit_response_invalid');
   return result as unknown as SetQtyResult;
 }
 

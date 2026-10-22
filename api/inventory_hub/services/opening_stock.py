@@ -26,7 +26,7 @@ from inventory_hub.services.stock_publication_gate import StockPublicationHoldEr
 
 MAX_BYTES = 1_048_576
 MAX_ROWS = 5000
-MAX_QUANTITY = Decimal("999999999")
+MAX_QUANTITY = Decimal("999999999.999")
 MAX_UNIT_COST = Decimal("99999999.9999")
 MAX_VALUE = Decimal("999999999999.9999")
 EXPIRY_MINUTES = 30
@@ -102,14 +102,14 @@ def parse_csv(csv_text: str) -> tuple[list[dict], list[dict], list[dict]]:
                 row_errors.append(_error(number, "duplicate_sku", "sku"))
             seen.add(sku)
             quantity = _decimal(raw["quantity"], 3)
-            if quantity is None or not 0 < quantity <= MAX_QUANTITY or quantity != quantity.to_integral_value():
+            if quantity is None or not 0 < quantity <= MAX_QUANTITY or (raw["unit"] != "m" and quantity != quantity.to_integral_value()):
                 row_errors.append(_error(number, "invalid_quantity", "quantity"))
             cost = _decimal(raw["unit_cost"], 4)
             if not raw["unit_cost"].strip():
                 row_errors.append(_error(number, "missing_unit_cost", "unit_cost"))
             elif cost is None or not 0 <= cost <= MAX_UNIT_COST:
                 row_errors.append(_error(number, "invalid_unit_cost", "unit_cost"))
-            if raw["unit"] != "ks":
+            if raw["unit"] not in ("ks", "pair", "pack", "m"):
                 row_errors.append(_error(number, "unsupported_unit", "unit"))
             if not row_errors:
                 value = quantity * cost
@@ -117,7 +117,7 @@ def parse_csv(csv_text: str) -> tuple[list[dict], list[dict], list[dict]]:
                     row_errors.append(_error(number, "line_value_too_large", "unit_cost"))
                 else:
                     rows.append({"line_number": number, "sku": sku, "quantity": quantity,
-                                 "unit_cost": cost, "value": value.quantize(Decimal("0.0001")), "unit": "ks"})
+                                 "unit_cost": cost, "value": value.quantize(Decimal("0.0001")), "unit": raw["unit"]})
                     if cost == 0:
                         warnings.append(_error(number, "zero_unit_cost"))
             errors.extend(row_errors)
@@ -150,7 +150,7 @@ async def options(db: AsyncSession) -> dict:
     return {"warehouses": [{"id": w.id, "code": w.code, "name": w.name, "is_default": w.is_default} for w in warehouses],
             "limits": {"max_bytes": MAX_BYTES, "max_rows": MAX_ROWS, "max_quantity": str(MAX_QUANTITY),
                        "max_unit_cost": str(MAX_UNIT_COST)},
-            "unit": "ks", "currency": "EUR", "price_basis": "ex_vat", "expires_minutes": EXPIRY_MINUTES}
+            "unit": "ks", "units": ["ks", "pair", "pack", "m"], "currency": "EUR", "price_basis": "ex_vat", "expires_minutes": EXPIRY_MINUTES}
 
 
 async def get_batch(db: AsyncSession, batch_id: str) -> dict:
@@ -215,6 +215,10 @@ async def preview(db: AsyncSession, payload: OpeningPreviewRequest) -> dict:
             errors.append(_error(row["line_number"], "ambiguous_sku", "sku"))
         elif row["sku"] not in products:
             errors.append(_error(row["line_number"], "unknown_sku", "sku"))
+        elif products[row["sku"]].item_type != "stock":
+            errors.append(_error(row["line_number"], "stock_item_required", "sku"))
+        elif products[row["sku"]].stock_unit != ("pcs" if row["unit"] == "ks" else row["unit"]):
+            errors.append(_error(row["line_number"], "unsupported_unit", "unit"))
     occupied = await _occupied(db, warehouse.id, {p.id for p in products.values()})
     for row in rows:
         if row["sku"] in products and products[row["sku"]].id in occupied:
@@ -222,15 +226,19 @@ async def preview(db: AsyncSession, payload: OpeningPreviewRequest) -> dict:
     if errors:
         return _invalid(errors, warnings)
     lines = [{"line_number": row["line_number"], "product_id": products[row["sku"]].id,
-              "sku": row["sku"], "name": products[row["sku"]].name, "quantity": format(row["quantity"], ".0f"),
-              "unit_cost": format(row["unit_cost"], ".4f"), "value": format(row["value"], ".4f"), "unit": "ks",
+              "stock_unit": products[row["sku"]].stock_unit,
+              "sku": row["sku"], "name": products[row["sku"]].name, "quantity": fifo.number(row["quantity"]),
+              "unit_cost": format(row["unit_cost"], ".4f"), "value": format(row["value"], ".4f"), "unit": row["unit"],
               "warnings": ["zero_unit_cost"] if row["unit_cost"] == 0 else []} for row in rows]
+    quantity_by_unit = {unit: fifo.number(sum((row["quantity"] for row in rows if row["unit"] == unit), Decimal(0)))
+                        for unit in sorted({row["unit"] for row in rows})}
+    batch_unit = next(iter(quantity_by_unit)) if len(quantity_by_unit) == 1 else "mixed"
     expires_at = at + timedelta(minutes=EXPIRY_MINUTES)
     snapshot = {"id": batch_id, "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
                 "source_reference": payload.source_reference, "operator_name": payload.operator_name,
                 "counted_at": payload.counted_at.isoformat(), "created_at": at.isoformat(), "expires_at": expires_at.isoformat(),
-                "unit": "ks", "currency": "EUR", "price_basis": "ex_vat", "lines": lines, "warnings": warnings,
-                "summary": {"lines": len(lines), "quantity": format(sum(row["quantity"] for row in rows), ".0f"),
+                "unit": batch_unit, "currency": "EUR", "price_basis": "ex_vat", "lines": lines, "warnings": warnings,
+                "summary": {"lines": len(lines), "quantity": quantity_by_unit.get(batch_unit), "quantity_by_unit": quantity_by_unit,
                             "total_value": format(sum(row["value"] for row in rows), ".4f")}}
     created_id = (await db.execute(insert(OpeningStockBatch).values(
         id=batch_id, warehouse_id=warehouse.id, warehouse_code=warehouse.code, source_reference=payload.source_reference,
@@ -276,6 +284,10 @@ async def finalize(db: AsyncSession, batch_id: str, payload: OpeningFinalizeRequ
         products.update((product.id, product) for product in rows)
     if any(line.product_id not in products or products[line.product_id].sku != line.sku for line in lines):
         raise OpeningError("opening_products_changed")
+    if any(products[line.product_id].item_type != "stock"
+           or products[line.product_id].stock_unit != frozen.get("stock_unit", "pcs")
+           for line, frozen in zip(lines, batch.preview_data["lines"])):
+        raise OpeningError("opening_products_changed")
     _, ambiguous = await _sku_candidates(db, [line.sku for line in lines])
     if ambiguous:
         raise OpeningError("opening_products_changed")
@@ -283,7 +295,7 @@ async def finalize(db: AsyncSession, batch_id: str, payload: OpeningFinalizeRequ
     # claiming any stock row; drafts have no patch/update route.
     saved = batch.preview_data["lines"]
     actual = [{"line_number": line.line_number, "product_id": line.product_id, "sku": line.sku,
-               "quantity": format(line.quantity, ".0f"), "unit_cost": format(line.unit_cost, ".4f"),
+               "quantity": fifo.number(line.quantity), "unit_cost": format(line.unit_cost, ".4f"),
                "value": format(line.value, ".4f"), "unit": line.unit} for line in lines]
     expected = [{key: row[key] for key in actual[0]} for row in saved]
     if actual != expected or _hash(batch.preview_data) != batch.preview_hash:
@@ -325,7 +337,7 @@ async def finalize(db: AsyncSession, batch_id: str, payload: OpeningFinalizeRequ
             raise OpeningError(error.code, error.status) from None
         line.movement_id = movement.id
         result_lines.append({"line_number": line.line_number, "sku": line.sku, "product_id": line.product_id,
-                             "movement_id": movement.id, "quantity": format(line.quantity, ".0f"),
+                             "movement_id": movement.id, "quantity": fifo.number(line.quantity),
                              "unit_cost": format(line.unit_cost, ".4f"), "value": format(line.value, ".4f")})
     result = {"batch_id": batch.id, "completed_at": at.isoformat(), "movements_created": len(movements),
               "summary": batch.preview_data["summary"], "lines": result_lines}

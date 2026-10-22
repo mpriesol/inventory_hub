@@ -385,7 +385,7 @@ def public_product(row: SupplierProduct, *, detail: bool = False, listed: bool =
 async def listed_codes(db: AsyncSession, shop_code: str | None) -> set[str]:
     if not shop_code:
         return set()
-    rows = (await db.execute(select(Product.sku, ShopProduct.external_code, ShopProduct.variant_code)
+    rows = (await db.execute(select(Product.sku, ShopProduct.external_code)
                             .join(ShopProduct, ShopProduct.product_id == Product.id)
                             .join(Shop, Shop.id == ShopProduct.shop_id)
                             .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True)))).all()
@@ -411,14 +411,14 @@ async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: l
     if not shop_code or not codes:
         return
     rows = (await db.execute(select(
-        Product.sku, ShopProduct.external_code, ShopProduct.variant_code,
+        Product.sku, ShopProduct.external_code,
         func.coalesce(func.nullif(ShopProduct.parent_code, ""), ShopProduct.external_code).label("content_code"),
     ).select_from(Product).join(ShopProduct, ShopProduct.product_id == Product.id)
         .join(Shop, Shop.id == ShopProduct.shop_id)
         .where(Shop.code == shop_code, ShopProduct.is_listed.is_(True)))).all()
     folded_codes = {code.casefold() for code in codes}
     rows = [row for row in rows if any(code and code.casefold() in folded_codes
-                                     for code in (row.sku, row.external_code, row.variant_code))]
+                                     for code in (row.sku, row.external_code))]
     if not rows:
         return
     # A legacy parent can contain thousands of variants. Extracting its large JSON
@@ -433,7 +433,7 @@ async def attach_shop_links(db: AsyncSession, shop_code: str | None, products: l
         .where(Shop.code == shop_code, ShopProductContent.external_code.in_({row.content_code for row in rows})))).all()
     by_parent = {row.external_code: row for row in parents}
     links = {code.casefold(): by_parent[row.content_code] for row in rows if row.content_code in by_parent
-             for code in (row.sku, row.external_code, row.variant_code) if code}
+             for code in (row.sku, row.external_code) if code}
     for product in products:
         row = next((links[code.casefold()] for code in [product.shop_code, *(m.code for m in product.shop_matches),
                     *(m.parent_code for m in product.shop_matches)] if code.casefold() in links), None)

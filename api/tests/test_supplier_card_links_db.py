@@ -1,4 +1,5 @@
 """Supplier alias writes and recovery against disposable localhost PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 from copy import deepcopy
 import asyncio
@@ -43,15 +44,12 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for name in ('001_schema.sql', '004_shop_product_content.sql', '012_product_editor.sql',
                          '028_supplier_card_links.sql', '028_supplier_card_links.sql', '029_sku_policy.sql'):
                 await connection.execute((root / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace('postgresql://', 'postgresql+asyncpg://', 1),
             poolclass=NullPool, connect_args={'server_settings': {'search_path': self.schema}})
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, autoflush=False)
-        self.patches = [patch.object(service, '_prefix', return_value='NF-'),
-                        patch.object(service.config_io, 'claim_supplier_prefix', return_value='NF-')]
-        for patcher in self.patches:
-            patcher.start()
         async with self.transaction() as db:
             supplier = Supplier(code='northfinder-test', name='Synthetic supplier')
             db.add(supplier)
@@ -72,8 +70,14 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([ProductVariantAttribute(product_id=local.id, attribute_name='Farba', attribute_value='Blue'),
                         ProductVariantAttribute(product_id=local.id, attribute_name='Veľkosť', attribute_value='M')])
             shop_id = await db.scalar(text("SELECT id FROM shops WHERE code='biketrek'"))
-            db.add(ShopProduct(shop_id=shop_id, product_id=local.id, external_code='SHOP-PARENT',
-                parent_code='SHOP-PARENT', variant_code=local.sku, external_id='123', is_variant=True, is_listed=True))
+            db.add(ShopProduct(
+                shop_id=shop_id,
+                product_id=local.id,
+                external_code=local.sku,
+                parent_code='SHOP-PARENT',
+                is_variant=True,
+                is_listed=True,
+                external_variant_id='123'))
             await db.execute(text("""INSERT INTO stock_balances
                 (product_id,warehouse_id,qty_on_hand,qty_reserved,avg_cost,total_value)
                 SELECT :id,id,7,2,17.25,120.75 FROM warehouses WHERE code='hlavny-sklad'"""), {'id': local.id})
@@ -83,8 +87,6 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 FROM warehouses WHERE code='hlavny-sklad'"""), {'id': local.id})
 
     async def asyncTearDown(self):
-        for patcher in reversed(self.patches):
-            patcher.stop()
         await self.engine.dispose()
         connection = await asyncpg.connect(TEST_URL)
         try:
@@ -185,13 +187,14 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def assert_existing_owner_not_reassigned(self, kind):
         async with self.transaction() as db:
-            owner = Product(sku='OTHER-' + kind, name='Existing owner',
-                source_supplier_product_id=self.source_id if kind == 'legacy' else None)
+            owner = Product(sku='OTHER-' + kind, name='Existing owner')
             db.add(owner)
             await db.flush()
             if kind == 'alias':
                 db.add(ProductIdentifier(product_id=owner.id, identifier_type=IdentifierType.supplier_sku,
                     supplier_id=self.supplier_id, value='103404-281-103'))
+            else:
+                db.add(ProductSupplySource(product_id=owner.id, supplier_product_id=self.source_id))
         before = await self.relations()
         preview = await self.inspect()
         self.assertTrue(preview['errors'])
@@ -202,8 +205,8 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_source_alias_owner_is_not_reassigned(self):
         await self.assert_existing_owner_not_reassigned('alias')
 
-    async def test_source_legacy_pointer_owner_is_not_reassigned(self):
-        await self.assert_existing_owner_not_reassigned('legacy')
+    async def test_current_source_owner_is_not_reassigned(self):
+        await self.assert_existing_owner_not_reassigned('source')
 
     async def test_source_identity_changes_invalidate_preview_and_rollback_partial_write(self):
         preview = await self.inspect()

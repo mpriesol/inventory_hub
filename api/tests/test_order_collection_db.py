@@ -1,4 +1,5 @@
 """Collector durability and worker isolation in disposable localhost PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,7 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql",
                              "009_stock_automation.sql", "011_fifo.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

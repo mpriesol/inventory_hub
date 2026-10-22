@@ -65,14 +65,14 @@ class AliasIndex:
             return conflict("order_sku_alias_unverified")
         mapping = mappings[0]
         current = mapping_code(mapping)
-        native_id = _native(mapping.external_id)
+        native_id = _native(mapping.native_id)
         if (not native_id or current != index.products[product_id].sku or mapping.is_listed is False
                 or (mapping.parent_code or "").casefold() == "xtrek"):
             return conflict("order_sku_alias_unverified")
         # Reuse all ordinary collision, activity and barcode checks against
         # the current mapping. Only the old text code is substituted here.
         resolved = index.resolve(replace(incoming, code=current, is_variant=mapping.is_variant,
-                                         external_id=str(mapping.external_id)))
+                                         external_id=str(mapping.native_id)))
         if resolved.status != "mapped" or resolved.product_id != product_id:
             return resolved, None
 

@@ -7,13 +7,11 @@ are written atomically; broad supplier reconciliation is not invoked.
 """
 from copy import deepcopy
 from datetime import timedelta
-import json
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
 from sqlalchemy import case, func, or_, select, text
 
-from inventory_hub import config_io
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier, SupplierProduct
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
@@ -21,7 +19,6 @@ from inventory_hub.services import catalog, product_links
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, barcode_keys, load_identity_index, verified_barcodes
 from inventory_hub.supplier_card_link_models import SupplierCardLinkPreview
-from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 
 
 PREVIEW_MINUTES = 30
@@ -37,29 +34,13 @@ class SupplierCardLinkError(Exception):
 LinkError = SupplierCardLinkError
 
 
-def _prefix(supplier_code):
-    # load_supplier(write_back_on_load=False) can initialize the prefix registry.
-    # Preview and discovery only read existing configuration.
-    try:
-        cfg = json.loads(config_io.supplier_path(supplier_code).read_text(encoding='utf-8'))
-        prefix = get_supplier_prefix(cfg)
-        if not prefix:
-            raise SupplierCardLinkError('supplier_prefix_missing', 422)
-        return prefix
-    except SupplierPrefixError as error:
-        raise SupplierCardLinkError(error.code, error.status) from None
-    except (OSError, ValueError, TypeError):
-        raise SupplierCardLinkError('supplier_card_links_configuration_invalid', 409) from None
-
-
-def _source(row, supplier, prefix):
+def _source(row, supplier):
     """Use the accepted catalog identity, never manufacture an offer from a name."""
     try:
         parsed = catalog.public_product(row, detail=True)
-        code = canonical_supplier_sku(prefix, row.supplier_sku)
-    except (ValidationError, SupplierPrefixError, ValueError, TypeError):
+    except (ValidationError, ValueError, TypeError):
         raise SupplierCardLinkError('supplier_card_links_catalog_invalid', 409) from None
-    if (parsed.supplier != supplier.code or parsed.code != row.supplier_sku or parsed.shop_code != code
+    if (parsed.supplier != supplier.code or parsed.code != row.supplier_sku
             or parsed.group_code != row.supplier_group_code):
         raise SupplierCardLinkError('supplier_card_links_source_identity_changed')
     record_eans = sorted(verified_barcodes((row.ean,)))
@@ -72,7 +53,7 @@ def _source(row, supplier, prefix):
         warnings.append('supplier_catalog_snapshot')
     attrs = [item.model_dump() for item in parsed.variant_attributes]
     return {'id': row.id, 'supplier_id': supplier.id, 'supplier_code': supplier.code,
-        'supplier_name': supplier.name, 'supplier_sku': row.supplier_sku, 'shop_sku': code,
+        'supplier_name': supplier.name, 'supplier_sku': row.supplier_sku, 'shop_sku': parsed.shop_code,
         'name': parsed.name or row.name, 'brand': parsed.brand or getattr(row, 'brand', None),
         'eans': sorted(set(record_eans + catalog_eans)),
         'attributes': attrs, 'group_code': parsed.group_code,
@@ -137,8 +118,7 @@ async def inspect_link(db, product_id, source_id, *, lock=False, copy_supplier_e
         await db.get(Supplier, source_row.supplier_id, populate_existing=True)
     if supplier is None:
         raise SupplierCardLinkError('supplier_card_links_supplier_missing', 404)
-    prefix = _prefix(supplier.code)
-    source = _source(source_row, supplier, prefix)
+    source = _source(source_row, supplier)
     errors, warnings = list(source['import_blockers']), list(source['warnings'])
     if not facts['is_active']:
         errors.append('inactive_product')
@@ -150,21 +130,15 @@ async def inspect_link(db, product_id, source_id, *, lock=False, copy_supplier_e
     owners = {row.product_id for row in aliases}
     links = list(await db.scalars(select(ProductSupplySource).where(ProductSupplySource.supplier_product_id == source_id)))
     owners.update(row.product_id for row in links)
-    owners.update(await db.scalars(select(Product.id).where(Product.source_supplier_product_id == source_id)))
     if owners - {product_id}:
         errors.append('supplier_source_multiple_products')
     other_sources = list(await db.scalars(select(ProductSupplySource.supplier_product_id)
         .join(SupplierProduct, SupplierProduct.id == ProductSupplySource.supplier_product_id)
         .where(ProductSupplySource.product_id == product_id, SupplierProduct.supplier_id == supplier.id,
                ProductSupplySource.supplier_product_id != source_id)))
-    legacy = await db.scalar(select(Product.source_supplier_product_id).where(Product.id == product_id))
-    if legacy and legacy != source_id:
-        legacy_supplier = await db.scalar(select(SupplierProduct.supplier_id).where(SupplierProduct.id == legacy))
-        if legacy_supplier == supplier.id:
-            other_sources.append(legacy)
     if other_sources:
         errors.append('supplier_link_already_configured')
-    identity = RemoteIdentity(0, source['shop_sku'], barcodes=tuple(source['eans']),
+    identity = RemoteIdentity(0, '', barcodes=tuple(source['eans']),
         supplier_id=supplier.id, supplier_sku=source['supplier_sku'], expected_product_id=product_id)
     resolution = (await load_identity_index(db, 0, [identity], local=True)).resolve(identity)
     if resolution.status == 'conflict' or resolution.product_id != product_id:
@@ -214,9 +188,9 @@ async def inspect_link(db, product_id, source_id, *, lock=False, copy_supplier_e
     # Independent source policy, all existing opposing owners and actual identity
     # evidence remain frozen. Stock, availability and prices are not identity.
     frozen = {'product_hash': product_links._facts_hash(facts), 'source': {
-        key: source[key] for key in ('id', 'supplier_id', 'supplier_code', 'supplier_sku', 'shop_sku', 'eans', 'group_code', 'active')},
+        key: source[key] for key in ('id', 'supplier_id', 'supplier_code', 'supplier_sku', 'eans', 'group_code', 'active')},
         'source_axes': source_axes, 'brands': {'product': local_brand, 'source': source['brand']},
-        'prefix': prefix, 'owners_other_than_target': sorted(owners - {product_id}),
+        'owners_other_than_target': sorted(owners - {product_id}),
         'other_source_ids': sorted(set(other_sources)), 'source_policy': policy,
         'source_import_blockers': sorted(source['import_blockers'])}
     if copy_supplier_eans:
@@ -271,10 +245,6 @@ async def apply_link(db, product_id, source_id, *, expected_hash, actor=None,
     if copy_supplier_eans and not request_id:
         raise SupplierCardLinkError('supplier_card_links_invalid_request', 422)
     source = inspected['source']
-    try:
-        config_io.claim_supplier_prefix(source['supplier_code'], inspected['identity']['prefix'])
-    except SupplierPrefixError as error:
-        raise SupplierCardLinkError(error.code, error.status) from None
     changes = list(inspected['planned_changes'])
     if 'supplier_alias' in changes:
         await ProductIdentifierService(db).add_identifier(product_id, source['supplier_sku'],
@@ -293,7 +263,7 @@ async def apply_link(db, product_id, source_id, *, expected_hash, actor=None,
 def _existing_source(row, supplier):
     """An old link remains visible even when its catalog can no longer validate."""
     try:
-        return _source(row, supplier, _prefix(supplier.code))
+        return _source(row, supplier)
     except SupplierCardLinkError:
         return {'id': row.id, 'supplier_id': supplier.id, 'supplier_code': supplier.code,
             'supplier_name': supplier.name, 'supplier_sku': row.supplier_sku, 'shop_sku': '',
@@ -323,12 +293,10 @@ async def candidates(db, payload):
     supplier = await db.scalar(select(Supplier).where(Supplier.code == payload.supplier_code))
     if supplier is None or not supplier.is_active:
         raise SupplierCardLinkError('supplier_card_links_supplier_missing', 404)
-    prefix = _prefix(supplier.code)
     aliases = set(await db.scalars(select(ProductIdentifier.value).where(
         ProductIdentifier.product_id == payload.product_id, ProductIdentifier.supplier_id == supplier.id,
         ProductIdentifier.identifier_type == IdentifierType.supplier_sku)))
-    raw_sku = facts['sku'][len(prefix):] if facts['sku'].startswith(prefix) else facts['sku']
-    codes = {facts['sku'], raw_sku, *aliases}
+    codes = {facts['sku'], *aliases}
     conditions = [SupplierProduct.supplier_sku.in_(codes)]
     ean_match = False
     if facts['eans']:
@@ -339,7 +307,7 @@ async def candidates(db, payload):
     params = {'candidate_eans': sorted({value for raw in facts['eans']
                                      for value in ProductIdentifierService.gtin_equivalents(raw)})}
     if payload.query:
-        value = payload.query[len(prefix):] if payload.query.startswith(prefix) else payload.query
+        value = payload.query
         conditions = [SupplierProduct.supplier_sku.ilike('%' + value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%', escape='\\'),
                       SupplierProduct.name.icontains(payload.query, autoescape=True),
                       SupplierProduct.ean.icontains(payload.query, autoescape=True)]
@@ -353,7 +321,7 @@ async def candidates(db, payload):
     candidates_out, invalid = [], False
     for row in rows[:100]:
         try:
-            item = _source(row, supplier, prefix)
+            item = _source(row, supplier)
         except SupplierCardLinkError:
             invalid = True
             continue

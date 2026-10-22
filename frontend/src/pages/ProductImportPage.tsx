@@ -265,7 +265,36 @@ export function ProductImportPage() {
       {error && <div className="import-error import-panel" role="alert">{errorText(error)}{draft ? <Button variant="secondary" size="sm" disabled={!!busy} onClick={reload}>{c('reload')}</Button> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button>}{error.startsWith('sloger_credentials_') && <Link to="/suppliers?edit=sloger">{t('slogerProbe.settingsLink')}</Link>}</div>}
       {notice && !['continued', 'sourceRetried', 'sourceSkipped'].includes(notice) && !(notice === 'published' && !publicationBusy) && <div className="import-notice" role="status">{c(`notices.${notice}`)}</div>}
       {busy === 'loading' && <p role="status">{t('common.loading')}</p>}
-      {!draft && !busy && <div className="import-panel"><h2>{c('recent')}</h2><p>{c('recentHelp')}</p><input aria-label={c('recentSearch')} placeholder={c('recentSearch')} value={recentQuery} maxLength={200} onChange={e => setRecentQuery(e.target.value)} /><div className="import-views">{['active', 'attention', 'completed', 'all'].map(tab => <button key={tab} aria-pressed={recentTab === tab} onClick={() => setRecentTab(tab)}>{c(`recentTabs.${tab}`)}</button>)}</div>{!recentRows.length ? <p>{c('empty')}</p> : <div className="import-recent">{recentRows.map(item => <Link key={item.id} to={`?draft=${item.id}`}><b>{item.title || item.codes?.join(', ') || c('title')}</b><small>{item.codes?.join(' · ')}</small>{item.supplier} · {item.shop}<strong>{item.publication_state ? c(`delivery.${item.publication_state}`) : c(item.status === 'saved' ? 'savedHub' : 'draft')}</strong><span>{c('rowCount', { count: item.rows_count })} · {new Date(item.updated_at).toLocaleString(i18n.language)}</span></Link>)}</div>}</div>}
+      {!draft && !busy && <section className="import-panel" aria-labelledby="import-recent-heading">
+        <h2 id="import-recent-heading">{c('recent')}</h2><p>{c('recentHelp')}</p>
+        <div className="import-recent-controls">
+          <input aria-label={c('recentSearch')} placeholder={c('recentSearch')} value={recentQuery} maxLength={200} onChange={event => setRecentQuery(event.target.value)} />
+          <div className="import-views import-recent-filters" role="group" aria-label={c('recentFilters')}>{['active', 'attention', 'completed', 'all'].map(tab => <button key={tab} aria-pressed={recentTab === tab} onClick={() => setRecentTab(tab)}>{c(`recentTabs.${tab}`)}</button>)}</div>
+        </div>
+        {!recentRows.length ? <p role="status">{c('empty')}</p> : <>
+          <p id="import-recent-scroll-help" className="import-recent-scroll-help">{c('recentScrollHelp')}</p>
+          <div className="import-recent-scroll" role="region" aria-label={c('recent')} aria-describedby="import-recent-scroll-help" tabIndex={0}>
+            <table className="import-recent" aria-label={c('recent')}>
+              <colgroup>{['name', 'codes', 'source', 'status', 'count', 'updated'].map(column => <col key={column} className={`import-recent-col-${column}`} />)}</colgroup>
+              <thead><tr>{['name', 'codes', 'source', 'status', 'count', 'updated'].map(column => <th key={column} scope="col" className={`import-recent-${column}`}>{c(`recentColumns.${column}`)}</th>)}</tr></thead>
+              <tbody>{recentRows.map(item => {
+                const title = item.title || item.codes?.join(', ') || c('title');
+                const attention = item.needs_attention || ['failed', 'partial', 'unknown'].includes(item.publication_state || '') || item.status === 'source_failed';
+                const status = item.publication_state ? c(`delivery.${item.publication_state}`) : c(item.status === 'saved' ? 'savedHub' : 'draft');
+                const updated = new Date(item.updated_at);
+                return <tr key={item.id}>
+                  <th scope="row"><Link className="import-recent-link" to={`?draft=${encodeURIComponent(item.id)}`} title={title}>{title}</Link></th>
+                  <td className="import-recent-codes">{item.codes?.length ? item.codes.map((code, index) => <code key={`${code}:${index}`}>{code}</code>) : <span className="import-muted">—</span>}</td>
+                  <td className="import-recent-source"><span>{item.supplier}</span><small>{shopName(item.shop)}</small></td>
+                  <td><span className={`import-status${attention ? ' is-attention' : item.status === 'saved' || item.publication_state === 'completed' ? ' is-saved' : ''}`}>{status}</span></td>
+                  <td className="import-recent-count">{item.rows_count.toLocaleString(i18n.language)}</td>
+                  <td className="import-recent-updated"><time dateTime={item.updated_at}><span>{updated.toLocaleDateString(i18n.language)}</span><small>{updated.toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}</small></time></td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>
+        </>}
+      </section>}
       {draft && <>
         {draft.receiving_origin && <p className="import-notice" data-testid="import-receiving-help">{c('receivingHelp')}</p>}
         {(sourceLocked || draft.source_lookup?.state === 'skipped') && <section className="import-panel" data-testid="import-source-status" role="status">

@@ -13,8 +13,8 @@ from inventory_hub.services.product_identity import verified_barcodes
 
 
 IMAGE_SQL = """
-SELECT source.id AS source_id, source.ean AS source_ean, sp.external_id,
- sp.is_variant, p.sku, p.brand, sp.variant_code, sp.external_code, sp.parent_code,
+SELECT source.id AS source_id, source.ean AS source_ean, CASE WHEN sp.is_variant THEN sp.external_variant_id ELSE sp.external_product_id END AS external_id,
+ sp.is_variant, p.sku, p.brand, sp.external_code, sp.parent_code,
  c.pulled_at, c.data->>'code' AS cached_parent_code,
  c.data->>'product_id' AS parent_id, leaf.value->>'code' AS leaf_code,
  leaf.value->>'product_id' AS leaf_parent_id,
@@ -29,15 +29,13 @@ JOIN suppliers supplier ON supplier.id = source.supplier_id
 JOIN products p ON (
  EXISTS (SELECT 1 FROM product_supply_sources binding
          WHERE binding.product_id = p.id AND binding.supplier_product_id = source.id
-           AND binding.is_active)
- OR (p.source_supplier_product_id = source.id AND NOT EXISTS
-     (SELECT 1 FROM product_supply_sources binding WHERE binding.product_id = p.id)))
+           AND binding.is_active))
 JOIN shop_products sp ON sp.product_id = p.id AND sp.is_listed
 JOIN shops shop ON shop.id = sp.shop_id AND shop.code = :shop AND shop.is_active
 JOIN shop_product_content c ON c.shop_id = sp.shop_id
  AND c.external_code = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
 LEFT JOIN LATERAL (SELECT jsonb_path_query_array(c.data,
- '$.variants[*] ? (@.code == $code)', jsonb_build_object('code', sp.variant_code)) AS matches) v ON sp.is_variant
+ '$.variants[*] ? (@.code == $code)', jsonb_build_object('code', sp.external_code)) AS matches) v ON sp.is_variant
 JOIN LATERAL (SELECT CASE WHEN sp.is_variant THEN v.matches->0 ELSE c.data END AS value) leaf ON true
 WHERE source.id = ANY(:ids) AND supplier.code = :supplier AND source.is_active
  AND upper(source.brand) = ANY(:brands) AND upper(p.brand) = upper(source.brand)
@@ -65,10 +63,10 @@ def image_urls(images, single=None):
 
 
 def verified_images(row):
-    code = row['variant_code'] if row['is_variant'] else row['external_code']
+    code = row['external_code']
     parent = row['parent_code'] if row['is_variant'] else row['external_code']
     native = row['variant_id'] if row['is_variant'] else row['parent_id']
-    if (row['leaf_count'] != 1 or not code or row['sku'] != code or row['leaf_code'] != code
+    if (row['leaf_count'] != 1 or not code or row['leaf_code'] != code
             or not parent or row['cached_parent_code'] != parent
             or not native or not str(native).isdigit() or str(native) != row['external_id']
             or not row['parent_id'] or not str(row['parent_id']).isdigit()

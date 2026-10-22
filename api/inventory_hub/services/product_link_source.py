@@ -354,3 +354,49 @@ async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
     found = {_key(leaf) for leaf in selected}
     _need(found == expected, "source_identity_changed", 409)
     return {**result, "leaves": selected}
+
+
+def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests):
+    """Verify absence by native parent ID, including renamed/archived variants.
+
+    The documented simple product list includes all variants when requested.
+    Both explicit archival partitions are read; inactive variants still count.
+    A missing old code alone is not proof of deletion. Read limits and incomplete
+    responses fail closed; this operation never issues DELETE or another write.
+    """
+    parent_ids = {_native_id(row.get("external_product_id")) for row in mappings}
+    expected = {(str(row["external_product_id"]), _native_id(row.get("external_variant_id"))) for row in mappings}
+    _need(bool(expected) and all(row.get("is_variant") is True for row in mappings), "source_leaves_invalid", 422)
+    reader = _Reader(shop_code, fingerprint, max_requests)
+    try:
+        parents = []
+        for archived in ("false", "true"):
+            parents.extend(reader.pages("/products/simple", "products", {
+                "product_ids": ";".join(sorted(parent_ids)), "variants_yn": "true", "archived_yn": archived}))
+        seen = set()
+        for parent in parents:
+            parent_id = _native_id(parent.get("product_id"))
+            _need(parent_id in parent_ids and parent_id not in seen, "source_filter_mismatch")
+            seen.add(parent_id)
+            _need(type(parent.get("variants_exists_yn")) is bool, "source_product_kind_unknown")
+            variants = parent.get("variants")
+            if parent["variants_exists_yn"] is False:
+                _need(variants in (None, []), "source_product_kind_unknown")
+                continue
+            _need(isinstance(variants, list) and bool(variants), "source_rows_invalid")
+            ids = set()
+            for leaf in variants:
+                _need(isinstance(leaf, dict), "source_rows_invalid")
+                native_id = _native_id(leaf.get("variant_id"))
+                _need(native_id not in ids, "source_duplicate_variant")
+                ids.add(native_id)
+                if leaf.get("product_id") is not None:
+                    _need(_native_id(leaf["product_id"]) == parent_id, "source_filter_mismatch")
+                _need((parent_id, native_id) not in expected, "product_links_variant_still_exists", 409)
+        return {"fingerprint": reader.fingerprint, "requests": reader.requests}
+    finally:
+        reader.close()
+
+
+async def verify_deleted_variants(shop_code, mappings, fingerprint, *, max_requests=MAX_REQUESTS):
+    return await asyncio.to_thread(_verify_deleted_variants, shop_code, mappings, fingerprint, max_requests)

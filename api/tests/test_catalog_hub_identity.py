@@ -19,7 +19,7 @@ class CatalogHubIdentityTests(unittest.IsolatedAsyncioTestCase):
         alias = ProductIdentifier(product_id=42, identifier_type=IdentifierType.supplier_sku, supplier_id=4, value=products[0].code)
         index = IdentityIndex(0, products=[hub, prefix_guess], identifiers=[alias])
         db = SimpleNamespace(execute=AsyncMock(side_effect=[SimpleNamespace(all=lambda: []),
-            SimpleNamespace(all=lambda: []), SimpleNamespace(all=lambda: [])]))
+            SimpleNamespace(all=lambda: [])]))
         card = {'product_id': 42, 'sku': hub.sku, 'brand': hub.brand, 'attributes': [], 'manual_eans': None}
         with patch.object(service, 'load_identity_index', AsyncMock(return_value=index)) as load, \
                 patch.object(service, '_load_cards', AsyncMock(return_value={42: card})) as cards:

@@ -1,4 +1,5 @@
 """Revision, inheritance, activation and migration durability in guarded PostgreSQL."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import os
@@ -37,6 +38,7 @@ class StockSettingsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "007_order_stock.sql", "008_order_collection.sql", "009_stock_automation.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1), poolclass=NullPool,

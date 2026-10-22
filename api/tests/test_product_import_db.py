@@ -127,15 +127,27 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(code, result['items'][0]['codes'])
             self.assertEqual((await service.history(db, '%_unlikely_literal'))['items'], [])
 
-    async def test_feed_manufacturer_field_alone_cannot_allocate_a_new_card(self):
-        draft = await self.create(approve_identity=False)
-        self.assertTrue(draft['rows'][0]['values']['manufacturer_code'])
-        self.assertIn('sku_identity_required', draft['rows'][0]['hub_errors'])
-        with self.assertRaises(catalog.CatalogError) as blocked:
-            await self.mutate(draft, service.save)
-        self.assertEqual(blocked.exception.code, 'import_invalid_rows')
+    async def test_new_card_automatically_prefixes_supplier_leaf_without_mpn_proof(self):
+        from inventory_hub.services.sku_policy import create_brand
+        from inventory_hub.sku_policy_types import BrandCreate
         async with self.sessions() as db:
-            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            await create_brand(db, BrandCreate(name='TEST', code='TT', source_ref='Synthetic brand registration'))
+            await db.commit()
+        draft = await self.create(approve_identity=False)
+        row = draft['rows'][0]
+        self.assertEqual(row['values']['code'], 'TT-' + row['values']['supplier_code'])
+        self.assertIsNone(row['values']['sku_identity'])
+        draft = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{
+            'id': row['id'], 'values': {'manufacturer_code': '', 'target_shops': []}}])
+        self.assertEqual(draft['rows'][0]['hub_errors'], [])
+        saved = await self.mutate(draft, service.save)
+        replay = await self.mutate(saved, service.save)
+        self.assertEqual(saved['rows'][0]['hub_product_id'], replay['rows'][0]['hub_product_id'])
+        async with self.sessions() as db:
+            card = await db.get(Product, saved['rows'][0]['hub_product_id'])
+            self.assertEqual(card.sku, 'TT-' + row['values']['supplier_code'])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)), 1)
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
         self.assertEqual(self.client.sent, [])
 
@@ -365,15 +377,17 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_publication_uses_edited_snapshot_after_feed_refresh(self):
         result = await self.create()
-        from inventory_hub.services.sku_policy import create_brand
-        from inventory_hub.sku_policy_types import BrandCreate
+        from inventory_hub.services.sku_policy import add_brand_alias, registered_brand_id
+        from inventory_hub.sku_policy_types import BrandAliasCreate
         async with self.sessions() as db:
-            await create_brand(db, BrandCreate(name='Nová značka', code='NZ', source_ref='Synthetic corrected brand evidence'))
+            brand_id = await registered_brand_id(db, 'TEST')
+            await add_brand_alias(db, brand_id, BrandAliasCreate(alias='TEST oficiálny názov',
+                source_ref='Synthetic verified display-name alias for the same brand'))
             await db.commit()
-        corrected_identity = {**result['rows'][0]['values']['sku_identity'], 'brand': 'Nová značka'}
+        corrected_identity = {**result['rows'][0]['values']['sku_identity'], 'brand': 'TEST oficiálny názov'}
         result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{'id':self.ids[0], 'values': {
             'name':'Môj názov', 'description_html':'<p>Ručný popis</p>', 'seo_title':'Moje SEO',
-            'seo_description':'Presný popis z tabuľky', 'brand':'Nová značka', 'sku_identity': corrected_identity, 'sale_gross':'89.99',
+            'seo_description':'Presný popis z tabuľky', 'brand':'TEST oficiálny názov', 'sku_identity': corrected_identity, 'sale_gross':'89.99',
             'images':['https://images.example.com/edited.jpg'], 'parameters':[{'name':'Farba','value':'modrá'}]}}])
         result = await self.mutate(result, service.save)
         self.write_feed(xml_item(name='Updated supplier name'))
@@ -382,7 +396,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         preview = result['publication']
         payload = preview['items'][0]['payload']
         self.assertEqual(payload['descriptions'][0]['title'], 'Môj názov')
-        self.assertEqual(payload['manufacturer'], 'Nová značka')
+        self.assertEqual(payload['manufacturer'], 'TEST oficiálny názov')
         self.assertEqual(payload['images'][0]['url'], 'https://images.example.com/edited.jpg')
         self.assertEqual(payload['parameters'][0]['values'][0]['descriptions'][0]['value'], 'modrá')
         with self.assertRaises(catalog.CatalogError) as error:
@@ -397,6 +411,33 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 1)
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+
+    async def test_import_rejects_unrelated_brand_without_leaving_a_card_or_source_link(self):
+        result = await self.create()
+        from inventory_hub.services.sku_policy import create_brand
+        from inventory_hub.sku_policy_types import BrandCreate
+        from inventory_hub.sku_policy_models import ProductSkuIdentity
+        from inventory_hub.product_editor_models import ProductEditorOverride
+        async with self.sessions() as db:
+            await create_brand(db, BrandCreate(name='Nová značka', code='NZ',
+                source_ref='Synthetic registration for a different brand'))
+            await db.commit()
+        changed_identity = {**result['rows'][0]['values']['sku_identity'], 'brand': 'Nová značka'}
+        result = await self.mutate(result, service.patch_rows, DraftPatch, rows=[{
+            'id': self.ids[0], 'values': {'brand': 'Nová značka', 'sku_identity': changed_identity}}])
+        with self.assertRaises(catalog.CatalogError) as error:
+            await self.mutate(result, service.save)
+        self.assertEqual(error.exception.code, 'sku_brand_conflict')
+        async with self.sessions() as db:
+            for model in (Product, ProductIdentifier, ProductSkuIdentity, ProductEditorOverride,
+                          ProductSupplySource, ShopProduct):
+                with self.subTest(model=model.__tablename__):
+                    self.assertEqual(await db.scalar(select(func.count()).select_from(model)), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+            current = await service.public(db, await service.get_draft(db, result['id']))
+            self.assertIsNone(current['rows'][0]['hub_product_id'])
+            self.assertEqual(current['revision'], result['revision'])
+        self.assertEqual(self.client.sent, [])
 
     async def test_saved_existing_product_is_not_overwritten(self):
         first = await self.mutate(await self.create(), service.save)

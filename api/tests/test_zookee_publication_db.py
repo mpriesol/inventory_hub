@@ -13,7 +13,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from inventory_hub import config_io
 from inventory_hub.db_models import SupplierProduct, Product, ProductIdentifier, IdentifierType, SupplierFeed, SupplierFeedRun, FeedRunStatus
-from inventory_hub.db_models_ext import ShopProduct
+from inventory_hub.db_models_ext import ProductSupplySource, ShopProduct
 from inventory_hub.product_editor_models import ProductEditorPublication
 from inventory_hub.supplier_availability_models import SupplierAvailabilitySettings, SupplierAvailabilityObservation
 from inventory_hub.services import supplier_availability_publication as service
@@ -39,7 +39,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             source_row = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id))
             source_row.brand = 'TOPEAK'; self.sku = source_row.supplier_sku
             mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-2'], ShopProduct.shop_id == self.shops['biketrek']))
-            mapping.external_id = '22'
+            mapping.external_variant_id = '22'
             await db.commit()
         self.remote = {'identity':{'code':'BIKE-2','variant_code':'BIKE-2','parent_code':'xTrek','product_id':11,'variant_id':22},
                        'options':None,'leaf':{'code':'BIKE-2','stock':'0','availability':'do 5 dní'}}
@@ -60,6 +60,14 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         leaf = payload['products'][0]['variants'][0]
         self.assertEqual(set(leaf), {'code','availability'}, 'Supplier stock never overwrites own quantities or prices')
         self.remote['leaf']['availability'] = leaf['availability']
+
+    async def link_sibling_source(self, db):
+        source_row = SupplierProduct(supplier_id=self.supplier_id, supplier_sku=self.sku + '-SIBLING',
+            name='Second physical variant', brand='TOPEAK')
+        db.add(source_row)
+        await db.flush()
+        db.add(ProductSupplySource(product_id=self.products['BIKE-10'], supplier_product_id=source_row.id))
+        return source_row
 
     async def prepare(self):
         async with self.sessions() as db:
@@ -133,8 +141,10 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(SupplierAvailabilityObservation(supplier_id=self.supplier_id,supplier_sku=self.sku,feed_id=feed.id,run_id=run.id,
                 available=False,quantity=0,quantity_kind='exact',raw={},observed_at=now,expires_at=now+timedelta(hours=1)))
             # This sibling has supplier evidence but no verified shop ID yet.
-            second = await db.get(Product, self.products['BIKE-10']); second.source_supplier_product_id = second.source_supplier_product_id or (
-                await db.scalar(select(SupplierProduct.id).where(SupplierProduct.supplier_id == self.supplier_id)))
+            second_source = await self.link_sibling_source(db)
+            db.add(SupplierAvailabilityObservation(supplier_id=self.supplier_id, supplier_sku=second_source.supplier_sku,
+                feed_id=feed.id, run_id=run.id, available=False, quantity=0, quantity_kind='exact', raw={},
+                observed_at=now, expires_at=now+timedelta(hours=1)))
             await db.commit()
         requested = []
         async def read_batch(shop, documents, fingerprint):
@@ -151,7 +161,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.sessions() as db:
                 mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-10'],
                     ShopProduct.shop_id == self.shops['biketrek']))
-                mapping.external_id = '23'; await db.commit()
+                mapping.external_variant_id = '23'; await db.commit()
             self.assertTrue(await service.cycle(), 'Repair makes the same fresh observation eligible without a failed-attempt loop')
             self.assertFalse(await service.cycle())
             self.assertIn('BIKE-10', requested)
@@ -194,10 +204,10 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sibling_batch_has_one_write_and_individual_receipts(self):
         async with self.sessions() as db:
-            first_source=await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id==self.supplier_id))
-            second=await db.get(Product,self.products['BIKE-10']);second.source_supplier_product_id=first_source.id
+            await self.link_sibling_source(db)
+            second=await db.get(Product,self.products['BIKE-10'])
             mapping=await db.scalar(select(ShopProduct).where(ShopProduct.product_id==second.id,ShopProduct.shop_id==self.shops['biketrek']))
-            mapping.external_id='23';await db.commit()
+            mapping.external_variant_id='23';await db.commit()
         remotes={'BIKE-2':copy.deepcopy(self.remote),'BIKE-10':copy.deepcopy(self.remote)}
         remotes['BIKE-10']['identity'].update(code='BIKE-10',variant_code='BIKE-10',variant_id=23)
         remotes['BIKE-10']['leaf']['code']='BIKE-10'
@@ -205,7 +215,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         for code in ('BIKE-2','BIKE-10'):
             async with self.sessions() as db:
                 ids.append(await service._prepare_and_send(db,self.products[code],self.shops['biketrek'],
-                    'editor-supplier',self.sku,999,self.policy,self.config,remote=remotes[code],send=False))
+                    'editor-supplier',self.sku if code == 'BIKE-2' else self.sku + '-SIBLING',999,self.policy,self.config,remote=remotes[code],send=False))
         async def read_batch(*args): return copy.deepcopy(remotes)
         async def write_batch(shop,items,fingerprint):
             self.assertEqual(len(items),2)

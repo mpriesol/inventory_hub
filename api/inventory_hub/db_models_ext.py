@@ -13,9 +13,10 @@ import hashlib
 from sqlalchemy import (
     String, Integer, BigInteger, Boolean, Text, Date, DateTime,
     Numeric, ForeignKey, Index, CheckConstraint, UniqueConstraint,
-    Enum as SQLEnum, Computed, func
+    Enum as SQLEnum, Computed, func, case
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY, ENUM as PGEnum
 
 from inventory_hub.database import Base
@@ -79,6 +80,7 @@ class ProductSupplySource(TimestampMixin, Base):
     
     __table_args__ = (
         UniqueConstraint("product_id", "supplier_product_id", name="uq_supply_sources"),
+        Index("uq_supply_source_owner", "supplier_product_id", unique=True),
         Index("idx_supply_sources_primary", "product_id", unique=True,
               postgresql_where="is_primary = true"),
         Index("idx_supply_sources_product", "product_id"),
@@ -316,9 +318,9 @@ class ShopProduct(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     shop_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("shops.id", ondelete="CASCADE"), nullable=False)
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
-    external_id: Mapped[Optional[str]] = mapped_column(String(100))
+    external_product_id: Mapped[Optional[str]] = mapped_column(String(100))
+    external_variant_id: Mapped[Optional[str]] = mapped_column(String(100))
     external_code: Mapped[Optional[str]] = mapped_column(String(100))
-    variant_code: Mapped[Optional[str]] = mapped_column(String(100))
     parent_code: Mapped[Optional[str]] = mapped_column(String(100))
     is_variant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     shop_availability: Mapped[Optional[str]] = mapped_column(String(100))
@@ -331,6 +333,15 @@ class ShopProduct(TimestampMixin, Base):
     last_pull_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     is_listed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     
+    @hybrid_property
+    def native_id(self) -> Optional[str]:
+        """Native ID of the saleable leaf; ownership always includes its type."""
+        return self.external_variant_id if self.is_variant else self.external_product_id
+
+    @native_id.expression
+    def native_id(cls):
+        return case((cls.is_variant, cls.external_variant_id), else_=cls.external_product_id)
+
     # Relationships
     shop: Mapped["Shop"] = relationship(back_populates="shop_products")
     product: Mapped["Product"] = relationship()
@@ -338,7 +349,12 @@ class ShopProduct(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("shop_id", "product_id", name="uq_shop_products"),
         Index("idx_shop_products_pending", "shop_id", postgresql_where="push_pending = true"),
-        Index("idx_shop_products_external", "shop_id", "external_id"),
+        CheckConstraint("is_variant OR (external_variant_id IS NULL AND parent_code IS NULL)",
+                        name="chk_shop_products_identity_shape"),
+        Index("uq_shop_products_native_product", "shop_id", "external_product_id", unique=True,
+              postgresql_where="NOT is_variant AND external_product_id IS NOT NULL"),
+        Index("uq_shop_products_native_variant", "shop_id", "external_variant_id", unique=True,
+              postgresql_where="is_variant AND external_variant_id IS NOT NULL"),
     )
 
 
@@ -577,6 +593,9 @@ class ReceivingLine(TimestampMixin, Base):
     ordered_qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     received_qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, nullable=False)
     unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    purchase_unit: Mapped[Optional[str]] = mapped_column(String(20))
+    conversion_stock_unit: Mapped[Optional[str]] = mapped_column(String(20))
+    purchase_to_stock_factor: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
     total_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     unit_price_original: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
     total_price_original: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))

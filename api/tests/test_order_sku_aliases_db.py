@@ -48,9 +48,14 @@ class OrderSkuAliasDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def mapping(self, *, variant=False):
         async with self.sessions() as db:
-            row = ShopProduct(shop_id=self.shops["biketrek"], product_id=self.products["SKU-A"],
-                external_code="PARENT" if variant else "SKU-A", parent_code="PARENT" if variant else None,
-                variant_code="SKU-A" if variant else None, external_id="990" if variant else "100", is_variant=variant)
+            row = ShopProduct(
+                shop_id=self.shops['biketrek'],
+                product_id=self.products['SKU-A'],
+                external_code='SKU-A',
+                parent_code='PARENT' if variant else None,
+                is_variant=variant,
+                external_product_id=None if variant else '100',
+                external_variant_id='990' if variant else None)
             db.add(row)
             await db.commit()
             self.mapping_id = row.id
@@ -59,7 +64,7 @@ class OrderSkuAliasDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             await db.execute(update(Product).where(Product.id == self.products["SKU-A"]).values(sku="TP-001"))
             await db.execute(update(ShopProduct).where(ShopProduct.id == self.mapping_id).values(
-                **({"variant_code": "TP-001"} if variant else {"external_code": "TP-001"})))
+                external_code="TP-001"))
             db.add(ProductIdentifier(product_id=self.products["SKU-A"], value="SKU-A",
                                      identifier_type=IdentifierType.internal_sku, notes="Old canonical SKU"))
             if audited:
@@ -119,7 +124,7 @@ class OrderSkuAliasDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.apply(preview)
         async with self.sessions() as db:
             mapping = await db.get(ShopProduct, self.mapping_id)
-            self.assertEqual((mapping.external_code, mapping.parent_code, mapping.external_id), ("PARENT", "PARENT", "990"))
+            self.assertEqual((mapping.external_code, mapping.parent_code, mapping.native_id), ("TP-001", "PARENT", "990"))
             self.assertIsNone((await db.scalar(select(StockNativeOrder))).error)
         self.assertEqual(len(await self.movements()), 1)
 

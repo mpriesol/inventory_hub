@@ -1,4 +1,5 @@
 """Read-only product migration reviews against disposable PostgreSQL schemas."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -42,6 +43,7 @@ class SkuMigrationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for path in sorted(root.glob("*.sql")):
                 if 4 <= int(path.name[:3]) <= 29:
                     await connection.execute(path.read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -55,7 +57,7 @@ class SkuMigrationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.flush()
             db.add_all([ProductIdentifier(product_id=self.product.id, value="5901234123457", identifier_type=IdentifierType.ean),
                 ProductIdentifier(product_id=self.product.id, value="LEGACY-01", identifier_type=IdentifierType.internal_sku),
-                ShopProduct(shop_id=self.shop_id, product_id=self.product.id, external_id="101", external_code="OLD-01", is_variant=False),
+                ShopProduct(shop_id=self.shop_id, product_id=self.product.id, external_code='OLD-01', is_variant=False, external_product_id='101'),
                 ShopProductContent(shop_id=self.shop_id, external_code="OLD-01", data={"code": "OLD-01", "product_id": 101,
                     "variants_exists_yn": False, "set_yn": False, "ean": "5901234123457"})])
 

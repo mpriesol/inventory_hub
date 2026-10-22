@@ -1,4 +1,5 @@
 """Advisory product candidates against disposable, read-only PostgreSQL queries."""
+from current_schema_fixture import apply_current_core_schema
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for filename in ("001_schema.sql", "012_product_editor.sql"):
                 await connection.execute((sql_root / filename).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -205,7 +207,7 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(matches, [expected])
         self.assertFalse(any("supplier_sku" in row["reasons"] for row in result["none"]["candidates"]))
 
-    async def test_supplier_source_links_and_legacy_source_are_scoped_without_orphan_candidates(self):
+    async def test_supplier_links_are_scoped_and_provenance_is_not_a_current_owner(self):
         async with self.transaction() as db:
             sources = [SupplierProduct(supplier_id=supplier, supplier_sku=code, name="Supplier offer")
                        for supplier, code in ((self.supplier_a, "SOURCE-LINK"), (self.supplier_b, "SOURCE-LINK"),
@@ -224,10 +226,10 @@ class ProductCandidatesDatabaseTests(unittest.IsolatedAsyncioTestCase):
             service.CandidateQuery(key="legacy", supplier_id=self.supplier_a, supplier_sku="SOURCE-LEGACY"),
             service.CandidateQuery(key="orphan", supplier_id=self.supplier_a, supplier_sku="ORPHAN-OFFER"),
         )
-        for key, expected in (("a", self.product_a), ("b", self.product_b), ("legacy", self.inactive)):
+        for key, expected in (("a", self.product_a), ("b", self.product_b)):
             matches = [row for row in result[key]["candidates"] if "supplier_sku" in row["reasons"]]
             self.assertEqual([row["product_id"] for row in matches], [expected])
-        self.assertFalse(result["legacy"]["candidates"][0]["is_active"])
+        self.assertEqual(result["legacy"]["candidates"], [])
         self.assertEqual(result["orphan"]["candidates"], [])
 
     async def test_queries_leave_products_identity_links_and_stock_unchanged(self):

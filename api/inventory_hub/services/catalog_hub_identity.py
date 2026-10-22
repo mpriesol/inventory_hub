@@ -8,7 +8,6 @@ from collections import defaultdict
 
 from sqlalchemy import select
 
-from inventory_hub.db_models import Product
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services.product_candidates import _load_cards
 from inventory_hub.services.product_identity import RemoteIdentity, barcode_keys, load_identity_index, verified_barcodes
@@ -51,9 +50,6 @@ async def attach(db, products, sources):
     for source_id, product_id in (await db.execute(select(
             ProductSupplySource.supplier_product_id, ProductSupplySource.product_id)
             .where(ProductSupplySource.supplier_product_id.in_(source_ids)))).all():
-        owners[source_id].add(product_id)
-    for source_id, product_id in (await db.execute(select(Product.source_supplier_product_id, Product.id)
-            .where(Product.source_supplier_product_id.in_(source_ids)))).all():
         owners[source_id].add(product_id)
     identities = {}
     for product in products:

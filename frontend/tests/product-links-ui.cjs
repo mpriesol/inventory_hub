@@ -55,7 +55,8 @@ function preview(body) {
         parent_code: manual.get(id)?.parent_code || 'PARENT', is_variant: manual.get(id)?.is_variant ?? true,
         external_id: String(1000 + id), parent_id: '999', name: 'Shop card ' + id,
         ...barcodeEvidence, attributes: [] },
-      warnings: [...(id === 1 ? ['variant_axes_unknown'] : []),
+      previous_mapping: manual.get(id)?.replace_deleted_variant ? {id:91,external_code:'POS-OLD',external_product_id:'99',external_variant_id:'88',parent_code:'POS',is_variant:true} : undefined,
+      warnings: [...(manual.get(id)?.replace_deleted_variant ? ['replaces_deleted_variant'] : []), ...(id === 1 ? ['variant_axes_unknown'] : []),
         ...(['invalid', 'legacy_invalid'].includes(barcodeMode) ? ['unverified_barcode', 'barcode_missing'] : [])],
       errors: id === 3 ? ['identifier_conflict'] : [] })) };
 }
@@ -246,6 +247,19 @@ function clearPending() { dom.window.sessionStorage.removeItem(PRODUCT_LINK_PEND
   await click('product-links-preview');
   assert.deepEqual(previews().at(-1).body.product_ids, [4], 'Explicit current selection stays the scope of a new preview');
   await unmount(); clearPending();
+
+  const mappedVariant={...rows[0],shops:[{shop_code:'biketrek',mapped:true,mapping:{is_variant:true}}]};
+  await mount([mappedVariant]);
+  assert(!required('product-links-replace-1').checked,'Replacing a deleted POS variant requires an explicit choice');
+  await input('product-links-parent-1','STANDALONE'); await input('product-links-variant-1','OLD-VARIANT');
+  await click('product-links-replace-1'); assert.equal(required('product-links-variant-1').value,''); assert(required('product-links-variant-1').disabled);
+  const beforeReplacement=writes().length;
+  await click('product-links-preview');
+  assert.deepEqual(previews().at(-1).body.manual_matches,[{product_id:1,code:'STANDALONE',parent_code:'STANDALONE',is_variant:false,replace_deleted_variant:true}]);
+  assert(required('product-links-replacement-1').textContent.includes('POS-OLD') && required('product-links-replacement-1').textContent.includes('STANDALONE'));
+  assert.equal(writes().length,beforeReplacement,'Reviewing replacement does not rebind or delete products');
+  applyMode='valid'; await click('product-links-apply'); assert.deepEqual(writes().at(-1).body.product_ids,[1]);
+  await unmount();clearPending();
 
   await mount(Array.from({ length: 101 }, (_, index) => ({ id: index + 1, sku: 'LIMIT-' + index, common: { name: 'Limit' } })));
   assert(disabled('product-links-preview')); assert(document.body.textContent.includes(i18n.t('productLinks.limit'))); await unmount();

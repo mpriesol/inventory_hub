@@ -11,7 +11,7 @@ export function ImportSkuIdentityDialog({ row, draft, onApply, onClose, onDirtyC
   onClose: () => void; onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const initial = useRef(row.values.sku_identity || emptySkuIdentity(row.values.brand, row.values.manufacturer_code));
+  const initial = useRef(row.values.sku_identity || { ...emptySkuIdentity(row.values.brand, row.values.supplier_code), code_kind: 'supplier' as const, supplier_id: draft.supplier_id });
   const [value, setValue] = useState(initial.current), [preview, setPreview] = useState<SkuPreview | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const dirty = JSON.stringify(value) !== JSON.stringify(initial.current);
@@ -35,9 +35,9 @@ export function ImportSkuIdentityDialog({ row, draft, onApply, onClose, onDirtyC
   }, []);
   return createPortal(<div className="product-import product-import-editor-backdrop"><section ref={panel} role="dialog" aria-modal="true" aria-label={t('skuPolicy.title')} className="product-import-cell-editor">
     <header><div><h2>{t('skuPolicy.title')}</h2><small>{row.values.name} · {row.is_variant ? t('productImport.variant') : t('productImport.standalone')}</small></div><Button variant="ghost" onClick={close}>{t('common.close')}</Button></header>
-    <div className="import-cell-editor-body"><SkuIdentityForm value={value} onChange={setValue} onPreview={setPreview}
+    <div className="import-cell-editor-body"><SkuIdentityForm simplified value={value} onChange={setValue} onPreview={setPreview}
       source={{ supplierCode: row.values.supplier_code, manufacturerCode: row.values.manufacturer_code, groupCode: row.is_variant ? row.group_key : undefined }}
-      context={{ barcodes: row.values.eans, supplier_id: draft.supplier_id, supplier_sku: row.values.supplier_code, expected_product_id: row.expected_hub_product_id || undefined }} />
-    </div><footer><Button variant="ghost" onClick={close}>{t('common.cancel')}</Button><Button data-testid="import-sku-apply" disabled={!preview || !['new', 'existing'].includes(preview.status)} onClick={() => preview && onApply(value.brand && value.source_code && value.source_ref ? value : null, preview)}>{t('skuPolicy.apply')}</Button></footer>
+      context={{ item_type: row.values.item_type || 'stock', barcodes: row.values.eans, supplier_id: draft.supplier_id, supplier_sku: row.values.supplier_code, expected_product_id: row.expected_hub_product_id || undefined }} />
+    </div><footer><Button variant="ghost" onClick={close}>{t('common.cancel')}</Button><Button data-testid="import-sku-apply" disabled={!preview || !['new', 'existing'].includes(preview.status)} onClick={() => preview && onApply(value.brand && value.source_code ? value : null, preview)}>{t('skuPolicy.apply')}</Button></footer>
   </section></div>, document.body);
 }

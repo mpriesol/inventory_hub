@@ -5,6 +5,7 @@ import { SkuIdentityInput, SkuPreview } from './skuPolicy';
 
 export interface ProductImportSelection { supplier: string; feed_key: string; run_id: number | null; product_ids: number[]; shop: string; options: ImportOptions }
 export interface ImportValues {
+  item_type: 'stock' | 'service'; stock_unit: 'pcs' | 'pair' | 'pack' | 'm';
   sku_identity?: SkuIdentityInput | null;
   code: string; supplier_code: string; group_name: string; name: string; brand: string; manufacturer_code: string;
   eans: string[]; images: string[]; description_html: string; short_description: string;

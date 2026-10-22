@@ -1,4 +1,5 @@
 """Warehouse links never imply physical confirmation or order-stock activation."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import os
 import unittest
@@ -38,6 +39,7 @@ class WarehouseAssignmentDatabaseTests(unittest.IsolatedAsyncioTestCase):
             root = Path(__file__).resolve().parents[2] / "infra" / "db-init"
             for name in ("001_schema.sql", "007_order_stock.sql"):
                 await connection.execute((root / name).read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

@@ -1,5 +1,7 @@
 # BIKETREK / xTrek — centrálny sklad
 
+Výslovne označená karta služby sa po jednoznačnom vyriešení identity označí `non_stock` aj pri existujúcom kóde a natívnom ID. Neznámy či konfliktný kód zostáva chybou. Karty v metroch majú lokálne skladové operácie, ale aktuálny objednávkový/publikačný kontrakt Upgates ich odmietne bez prevodu na kusy. [Typy a jednotky](stock-units.md).
+
 ## Schválené obchodné pravidlá
 
 Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačné kroky:

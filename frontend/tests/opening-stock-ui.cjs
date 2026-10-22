@@ -177,6 +177,12 @@ async function confirmBoth() { for (const checkbox of checks()) if (!checkbox.ch
   await click(button('loadWarehouses'));
   assert.equal(field('warehouse').value, 'count-room', 'First options load preserves the recovered warehouse');
 
+  await click(button('newBatch'));
+  stored={...stored,status:'prepared',result:null,unit:'mixed',summary:{lines:2,quantity:null,quantity_by_unit:{ks:'3',m:'2.5'},total_value:'270002725.0003'},lines:[stored.lines[0],{...stored.lines[0],line_number:3,sku:'CABLE',unit:'m',quantity:'2.5',unit_cost:'10',value:'25'}]};
+  await input(field('batchId'),stored.id);await click(button('recover'));
+  assert(field('csv').value.includes('"CABLE";2.5;10;m'),'Recovery preserves meter units in the replayable CSV');
+  assert(document.querySelector('tbody').textContent.includes('2.5 m'),'Preview renders each row in its own stock unit');
+  assert(!document.body.textContent.includes('null ks'),'Mixed totals never claim a piece quantity');
   await click(button('newBatch')); await click(button('loadWarehouses')); await fillForm();
   previewCount = 201; await click(button('preview'));
   assert.equal(document.querySelectorAll('tbody tr').length, 100, 'Large previews render at most 100 rows at once');

@@ -197,7 +197,7 @@ are scenarios if enabled, never a claim about measured or current API usage.
         collector = await db.get(OrderCollectionSettings, shop.id)
         listed_query = select(Product.id, Product.sku).join(ShopProduct,
             ShopProduct.product_id == Product.id).where(ShopProduct.shop_id == shop.id,
-                ShopProduct.is_listed.is_(True)).distinct()
+                ShopProduct.is_listed.is_(True), Product.item_type == "stock").distinct()
         listed = (await db.execute(listed_query.order_by(Product.id))).all()
         confirmed = None
         eligible = None
@@ -292,7 +292,7 @@ async def _sample_targets(db, shop_code):
         rows = (await db.execute(select(Product.id, Product.sku, Product.is_active, ShopProduct)
             .join(ShopProduct, ShopProduct.product_id == Product.id).join(Shop, Shop.id == ShopProduct.shop_id)
             .where(Shop.code == shop_code).order_by(Product.id, ShopProduct.id))).all()
-    codes = [row.ShopProduct.variant_code if row.ShopProduct.is_variant else row.ShopProduct.external_code for row in rows]
+    codes = [row.ShopProduct.external_code for row in rows]
     owners = Counter(code.casefold() for code in codes if isinstance(code, str))
     mappings = Counter(row.id for row in rows)
     counts = Counter()

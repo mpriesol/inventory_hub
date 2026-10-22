@@ -1,4 +1,5 @@
 """Order reservation and issue invariants in a disposable local PostgreSQL schema."""
+from current_schema_fixture import apply_current_core_schema
 import asyncio
 import copy
 import os
@@ -55,6 +56,7 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((self.sql_root / "010_stock_publication.sql").read_text())
             await connection.execute((self.sql_root / "011_fifo.sql").read_text())
             await connection.execute((self.sql_root / "025_stock_native.sql").read_text())
+            await apply_current_core_schema(connection)
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -389,8 +391,7 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(group)
             await db.flush()
             await db.execute(update(Product).where(Product.id == self.products["SKU-A"]).values(group_id=group.id))
-            db.add(ShopProduct(shop_id=self.shops["xtrek"], product_id=self.products["SKU-A"], external_code=group.code,
-                parent_code=group.code, variant_code="SKU-A", is_variant=True))
+            db.add(ShopProduct(shop_id=self.shops['xtrek'], product_id=self.products['SKU-A'], external_code='SKU-A', parent_code=group.code, is_variant=True))
             await db.commit()
             group_id = group.id
         raw = raw_order(raw_line(title="xTrek", product_id=900, option_set_id=101), origin="cash-register",

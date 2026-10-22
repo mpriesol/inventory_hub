@@ -2,7 +2,7 @@ import { hubRequest } from './access';
 
 export type ProductLinkShop = 'biketrek' | 'xtrek';
 export interface ProductLinkManualMatch {
-  product_id: number; code: string; parent_code: string; is_variant: boolean;
+  product_id: number; code: string; parent_code: string; is_variant: boolean; replace_deleted_variant?: boolean;
 }
 export interface ProductLinkPreviewBody {
   request_id: string; shop_code: ProductLinkShop; product_ids: number[];
@@ -16,6 +16,7 @@ export interface ProductLinkRemote {
 export interface ProductLinkRow {
   product_id: number; sku: string; name: string; local_eans?: string[];
   status: 'ready' | 'already_linked' | 'not_found' | 'conflict'; match_by: string | null;
+  previous_mapping?: { id: number; external_code: string; external_product_id: string | null; external_variant_id: string | null; parent_code: string | null; is_variant: boolean };
   remote: ProductLinkRemote | null; warnings: string[]; errors: string[];
 }
 export interface ProductLinkBatch {
@@ -52,7 +53,8 @@ export function pendingProductLink(): PendingProductLink | null {
     if (item.request.manual_matches !== undefined && (!Array.isArray(item.request.manual_matches) ||
         item.request.manual_matches.length > 100 || !item.request.manual_matches.every((match: ProductLinkManualMatch) =>
           match && item.request.product_ids.includes(match.product_id) && typeof match.code === 'string' &&
-          typeof match.parent_code === 'string' && typeof match.is_variant === 'boolean'))) return null;
+          typeof match.parent_code === 'string' && typeof match.is_variant === 'boolean' &&
+          (match.replace_deleted_variant === undefined || typeof match.replace_deleted_variant === 'boolean')))) return null;
     if (item.apply && (typeof item.apply.preview_hash !== 'string' || item.apply.confirmed !== true ||
         !Array.isArray(item.apply.product_ids) || !item.apply.product_ids.length ||
         !item.apply.product_ids.every((id: number) => item.request.product_ids.includes(id)))) return null;

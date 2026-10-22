@@ -1,5 +1,7 @@
 # Produktový editor / Product editor
 
+Karta obsahuje `item_type`, `stock_unit` a `item_definition_locked`. Typ tovar/služba a jednotka sa menia existujúcim potvrdeným uložením s kontrolou revízie; po skladovej histórii sa uzamknú. Služba má `stock.managed: false`, neznáme množstvá a `tracking_status: not_applicable`. Podrobnosti: [typy a jednotky](stock-units.md).
+
 ## Návod pre obsluhu
 
 Sekcia **Sklad** je spoločná pracovná tabuľka všetkých evidovaných produktov BIKETREK a xTrek vrátane položiek bez skladovej bilancie. Riadok predstavuje jeden fyzický produkt alebo variant s vlastným spoločným SKU. Pokladňový parent „xTrek“ neurčuje skupinu na hromadnú úpravu.

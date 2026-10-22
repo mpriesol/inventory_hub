@@ -86,8 +86,8 @@ global.fetch = async (url, options = {}) => {
   if (mode === 'held') return new Promise(resolve => { heldResponse = () => resolve(reply(result)); });
   return reply(result);
 };
-async function render(product = 1, warehouse = 'main', onChanged = () => { oldChanges++; }) {
-  await act(async () => { root.render(React.createElement(StockAdjustmentPanel, { productId: product, sku: `PART-${product}`, warehouseCode: warehouse, onChanged })); await tick(); });
+async function render(product = 1, warehouse = 'main', onChanged = () => { oldChanges++; }, stockUnit = 'pcs') {
+  await act(async () => { root.render(React.createElement(StockAdjustmentPanel, { productId: product, sku: `PART-${product}`, warehouseCode: warehouse, stockUnit, onChanged })); await tick(); });
 }
 async function remount(product = 1, warehouse = 'main', onChanged) {
   await act(async () => { root.render(null); await tick(); }); await render(product, warehouse, onChanged);
@@ -241,6 +241,11 @@ async function apply() { await click('adjustment-confirm'); await click('adjustm
   await act(async () => { abandonedApplyResponse(); await tick(); });
   assert.equal(newChanges, 0, 'An unmounted apply result cannot invoke onChanged');
   await render(2); assert.equal(required('adjustment-count').value, '6', 'A fresh read recovers actual completed stock');
+  await act(async()=>{root.render(null);await tick();});await render(4,'main',()=>{},'m');
+  await fill('6,125');await click('adjustment-confirm');assert(!required('adjustment-submit').disabled,'Meters accept exact thousandths');await click('adjustment-submit');
+  assert.equal(writes.at(-1).body.counted_quantity,'6.125','Decimal comma is normalized without integer rounding');await apply();assert.equal(quantity(4),'6.125');
+  await input('adjustment-count','6.1251');await click('adjustment-confirm');assert(required('adjustment-submit').disabled,'More than three meter decimals are rejected');
+  await act(async()=>{root.render(null);await tick();});await render(4,'main',()=>{},'pcs');await fill('6.125');await click('adjustment-confirm');assert(required('adjustment-submit').disabled,'Discrete stock units still require whole quantities');
   await act(async () => { root.unmount(); });
   console.log('Stock adjustments UI: documented preview/apply, cost classification, durable lost-response replay, duplicate clicks and stale/unmounted contexts passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
