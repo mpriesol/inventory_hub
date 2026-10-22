@@ -8,6 +8,13 @@ Objednávky so starým SKU majú osobitné overenie cez presný alias, existujú
 
 Prevádzkový kontext pre ďalší prechod: **BIKETREK** je produkčný Upgates, **xTrek** naďalej používa Atomer. Pripojenie prípravného xTrek Upgates sa nesmie považovať za zdroj všetkých živých predajov.
 
+[Plán spustenia skladu](docs/stock-start-plan.md) odporúča zachovať existujúce
+SKU a nové karty prideľovať podľa spoločnej politiky. Hromadné prečíslovanie
+nie je podmienkou inventúry. Produktový pull s neprázdnym výberom `codes`
+obnovuje iba vybrané rodiny aj pri `update_existing=true`; rodina zahŕňa všetky
+svoje varianty. Atomer pred migráciou potrebuje samostatne vyriešenú evidenciu
+predajov spoločných zásob. Tento plán ani oprava pullu nezapínajú skladové zápisy.
+
 Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Obsahuje aj oddelené plánované čítanie dodávateľských dostupností, pravidelný prenos zásob a potvrdené odoslanie vybraných produktových polí. Prevzatie skladovej autority zostáva výslovne zapínateľné; nasadenie kódu nie je ostrý pilot.
 
 **Posledné porovnanie s kódom:** 24. 9. 2026, dostupnosti, pravidelný prenos a jednotná tabuľka nad `main 6bdfd71` (nasadený PR #34). Aktuálny stav overenia a nadväzujúce priority sú v [MVP postupe](docs/mvp-progress.md). Popis kódu nepotvrdzuje obsah produkčnej DB ani celú serverovú konfiguráciu.

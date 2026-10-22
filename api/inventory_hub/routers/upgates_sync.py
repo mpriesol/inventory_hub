@@ -354,8 +354,9 @@ async def import_upgates_products(
     identities = [i for f in families for i, _ in f["leaves"]]
     index = await load_identity_index(db, shop.id, identities)
     _mark_resolved_duplicates(families, index)
+    # update_existing controls refresh behavior, not the explicitly selected scope.
     selected = [f for f in families if import_all or f["code"] in wanted or (
-        update_existing and any(index.by_code.get(i.code.casefold()) or
+        not wanted and update_existing and any(index.by_code.get(i.code.casefold()) or
                                 index.by_external_id.get((i.is_variant, i.external_id))
                                 for i, _ in f["leaves"]))]
     missing = sorted(set(wanted) - {f["code"] for f in families})

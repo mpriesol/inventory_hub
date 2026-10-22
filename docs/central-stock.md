@@ -20,6 +20,17 @@ Upresnenie vlastníka z 23. 9. 2026 je záväzné pre nasledujúce implementačn
 
 `POST /shops/{shop}/upgates/products/import` načíta produkty, varianty, mapovania a snímku údajov e-shopu. Nevytvára `stock_balances` ani `stock_movements` a nepotrebuje predvolený sklad. Snímka `shop_stock` nie je vlastná zásoba; predajná cena e-shopu nie je obstarávacia cena.
 
+Neprázdne `codes` obmedzujú import aj pri `update_existing=true` na vybrané
+produktové rodiny. Táto voľba povoľuje obnovu ich existujúcich väzieb, nerozširuje
+výber na ostatné namapované produkty. Neznámy vybraný kód sa vykáže ako nenájdený.
+Variantová rodina sa naďalej načítava spolu s jej variantmi; nejde o výber jediného
+variantového listu. `all:true` výslovne vyberie celý katalóg; samotné
+`update_existing:true` bez neprázdneho výberu obnovuje existujúce rodiny.
+
+Odporúčané poradie spustenia BIKETREK a neskoršej migrácie xTrek je v
+[prevádzkovom pláne](stock-start-plan.md). Zachovanie historického SKU je
+podporovaný stav; nový formát nie je podmienkou fyzickej inventúry.
+
 Parameter `include_stock` môže chýbať alebo byť JSON `false`. Iná hodnota vracia HTTP 400 ešte pred volaním e-shopu. Odpoveď zachováva kompatibilné `stock_initialized: 0`. UI odstránilo voľbu inicializácie zásoby. Existujúce historické pohyby, množstvá a náklady sa nemenia.
 
 Počiatočný stav používa samostatný kontrolovaný import s fyzickým množstvom, identitou, pôvodom a obstarávacou cenou, opísaný v treťom balíku nižšie. Párovanie rozdielnych kódov pri bežnom pulle a oddelenie údajov e-shopu od spoločného produktu rozširuje druhý balík. Existujúce historické duplicity automaticky nezlučuje.

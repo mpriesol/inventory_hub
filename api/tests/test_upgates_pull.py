@@ -269,6 +269,49 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["conflicts"][0]["reasons"], ["mapping_identifier_conflict"])
         self.assertEqual(result["content_saved"], 1)
 
+    async def test_selected_refresh_keeps_unselected_standalone_and_variant_snapshots(self):
+        await self.pull()
+        async with self.sessions() as db:
+            original_ids = dict((await db.execute(select(Product.sku, Product.id))).all())
+        for selected, unselected in (("PULL-SIMPLE", "PULL-GROUP"), ("PULL-GROUP", "PULL-SIMPLE")):
+            with self.subTest(selected=selected):
+                async with self.sessions() as db:
+                    untouched = (await db.execute(select(ShopProductContent.data, ShopProductContent.pulled_at)
+                        .where(ShopProductContent.external_code == unselected))).one()
+                    untouched_mappings = (await db.execute(select(ShopProduct.id, ShopProduct.shop_price,
+                        ShopProduct.last_pull_at).where((ShopProduct.external_code == unselected) |
+                                                       (ShopProduct.parent_code == unselected)))).all()
+                    self.assertTrue(untouched_mappings)
+                for remote in self.remote:
+                    remote["pilot_marker"] = selected
+                    for leaf in remote.get("variants") or [remote]:
+                        leaf["prices"] = [{"price_with_vat": 999}]
+                async with self.sessions() as db:
+                    result = await upgates_sync.import_upgates_products("biketrek", {
+                        "codes": [selected], "update_existing": True, "include_stock": False,
+                    }, db)
+                    await db.commit()
+                self.assertEqual((result["content_saved"], result["created_products"],
+                                  result["created_variants"], result["conflict_count"]), (1, 0, 0, 0))
+                async with self.sessions() as db:
+                    self.assertEqual((await db.execute(select(ShopProductContent.data, ShopProductContent.pulled_at)
+                        .where(ShopProductContent.external_code == unselected))).one(), untouched)
+                    self.assertEqual((await db.execute(select(ShopProduct.id, ShopProduct.shop_price,
+                        ShopProduct.last_pull_at).where((ShopProduct.external_code == unselected) |
+                                                       (ShopProduct.parent_code == unselected)))).all(), untouched_mappings)
+                    self.assertEqual(dict((await db.execute(select(Product.sku, Product.id))).all()), original_ids)
+                    self.assertEqual(await db.scalar(select(func.count()).select_from(StockMovement)), 0)
+
+    async def test_missing_selected_code_does_not_refresh_other_mapped_products(self):
+        await self.pull()
+        async with self.sessions() as db:
+            result = await upgates_sync.import_upgates_products("biketrek", {
+                "codes": ["NOT-IN-SHOP"], "update_existing": True,
+            }, db)
+            await db.commit()
+        self.assertEqual((result["content_saved"], result["updated_products"]), (0, 0))
+        self.assertEqual(result["skipped"], [{"code": "NOT-IN-SHOP", "reason": "not found in Upgates"}])
+
     async def test_duplicate_remote_code_skips_affected_families_and_imports_other_family(self):
         self.remote.append({"code": "PULL-M", "product_id": 444})
         result = await self.pull()
