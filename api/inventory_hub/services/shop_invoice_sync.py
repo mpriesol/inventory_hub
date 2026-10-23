@@ -173,6 +173,7 @@ async def refresh(db, shop_code, request, *, actor='operator'):
             pdf = await source.read_pdf(shop_code, number, page['fingerprint'])
         except source.SourceError as error:
             result['stopped_error'], result['retry_after'] = error.code, error.retry_after
+            result.update(error.diagnostics())
             result['next'] = {'page': request.page, 'offset': offset, 'page_token': page['page_token']}
             return result
         try:

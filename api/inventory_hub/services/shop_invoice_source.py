@@ -27,9 +27,16 @@ CREATION_TIME_ZONE = ZoneInfo('Europe/Bratislava')
 
 
 class SourceError(Exception):
-    def __init__(self, code, status=502, retry_after=None):
+    def __init__(self, code, status=502, retry_after=None, *, upstream_status=None, operation=None):
         super().__init__(code)
         self.code, self.status, self.retry_after = code, status, retry_after
+        self.upstream_status = upstream_status if type(upstream_status) is int and 100 <= upstream_status <= 599 else None
+        self.operation = operation if operation in ('list', 'pdf') else None
+
+    def diagnostics(self):
+        """Only fixed operation names and an HTTP number may leave transport."""
+        return {key: value for key, value in (
+            ('upstream_status', self.upstream_status), ('operation', self.operation)) if value is not None}
 
 
 def _need(condition, code, status=502):
@@ -83,6 +90,7 @@ def _client(shop_code, expected_fingerprint=None):
 
 def _get(client, path, *, params=None, pdf=False):
     response = None
+    operation = 'pdf' if pdf else 'list'
     limit = MAX_PDF_BYTES if pdf else MAX_JSON_BYTES
     try:
         response = client.session.get(f'{client.base_url}/{path}', params=params or {},
@@ -95,7 +103,8 @@ def _get(client, path, *, params=None, pdf=False):
                     'invoice_source_redirect_refused' if 300 <= status < 400 else
                     'invoice_source_document_missing' if status == 404 else 'invoice_source_http_failed')
             raise SourceError(code, 429 if status == 429 else 502,
-                              _retry_after_seconds(response.headers.get('Retry-After')) if status == 429 else None)
+                              _retry_after_seconds(response.headers.get('Retry-After')) if status == 429 else None,
+                              upstream_status=status, operation=operation)
         content_type = response.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
         _need(content_type == ('application/pdf' if pdf else 'application/json'), 'invoice_source_content_type_invalid')
         length = response.headers.get('Content-Length')
@@ -115,10 +124,13 @@ def _get(client, path, *, params=None, pdf=False):
             raise SourceError('invoice_source_json_invalid') from None
         _need(isinstance(document, dict) and not document.get('messages'), 'invoice_source_response_invalid')
         return _json_values(document)
+    except SourceError as error:
+        error.operation = operation
+        raise
     except AdmissionDenied as error:
-        raise SourceError('invoice_source_rate_limited', 429, error.retry_after) from None
+        raise SourceError('invoice_source_rate_limited', 429, error.retry_after, operation=operation) from None
     except requests.RequestException:
-        raise SourceError('invoice_source_unavailable') from None
+        raise SourceError('invoice_source_unavailable', operation=operation) from None
     finally:
         if response is not None:
             response.close()

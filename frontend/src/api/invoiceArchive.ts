@@ -129,7 +129,8 @@ export async function downloadInvoiceArchive(ids: number[] | number): Promise<vo
 }
 
 export interface ShopInvoiceSyncRequest { date_from: string; date_to: string; page: number; offset: number; page_token?: string | null }
-export interface ShopInvoiceSyncResult {
+export interface ShopInvoiceSourceDiagnostic { upstream_status?: number | null; operation?: 'list' | 'pdf' | null }
+export interface ShopInvoiceSyncResult extends ShopInvoiceSourceDiagnostic {
   imported: number; unchanged: number; failed: number;
   items: { invoice_number: string; status: string; id?: number; error?: string }[];
   next: { page: number; offset: number; page_token?: string | null } | null; total_in_source: number; source_pages: number;
