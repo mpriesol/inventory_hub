@@ -91,8 +91,15 @@ jobs:
                   volumes:
                     - ./ai-content.env:/run/secrets/hub-ai.env:ro
                     - supplier_secrets:/var/lib/inventory-hub-secrets
+                caddy:
+                  networks:
+                    sps_proxy: {}
               volumes:
                 supplier_secrets:
+              networks:
+                sps_proxy:
+                  external: true
+                  name: sps-proxy
               YAML
               run_phase() {
                 phase_name="$1"
@@ -107,6 +114,10 @@ jobs:
                   exit "$phase_status"
                 fi
               }
+              # Preserve SPS connectivity when Caddy is recreated. The external
+              # network belongs to the separate SPS stack; do not recreate it.
+              run_phase sps-network docker network inspect sps-proxy --format '{{.Name}}'
+              run_phase compose-config docker compose -f docker-compose.yml -f docker-compose.ai-content.yml config --quiet
               run_phase pull docker compose pull
               run_phase migrations docker compose -f docker-compose.yml -f docker-compose.ai-content.yml run --rm --no-deps api python -m inventory_hub.migrate
               run_phase restart docker compose -f docker-compose.yml -f docker-compose.ai-content.yml up -d --force-recreate api frontend-build caddy
@@ -139,6 +150,7 @@ jobs:
                 exit 1
               fi
               printf 'DEPLOY_TIMING readiness %ss success\n' "$(( $(date +%s) - readiness_started ))"
+              run_phase sps-readiness curl --fail --silent --show-error --max-time 10 --retry 3 --retry-delay 2 --output /dev/null https://hub.biketrek.sk/sps/healthz
               run_phase cleanup docker image prune -f
 
   timing-summary:

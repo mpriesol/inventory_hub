@@ -96,6 +96,39 @@ change reverts orchestration, not already committed migrations; the migration
 modules remain independently callable. See [OVERVIEW.md](../OVERVIEW.md#produkčné-nasadzovanie-a-diagnostika)
 for the production and rollback boundaries.
 
+## SPS proxy network (23 October 2026)
+
+The separately deployed SPS receiver uses the external Docker network
+`sps-proxy` with the alias `sps-receiver`. Caddy must join that network as well as
+the existing Hub network. The incident's supplied server output showed healthy
+SPS on `sps-proxy,sps_default`, but recreated Caddy only on `inventory-hub-net`;
+Caddy logged `lookup sps-receiver ... no such host` for `/sps/`.
+
+The release-generated `docker-compose.ai-content.yml` now also adds Caddy's
+`sps_proxy` network, preserving its base networks through Compose merge. The
+production reference includes the same attachment. Changing only the reference
+would not fix the server: deployment uses the server's own `docker-compose.yml`.
+Before pulling images, migrating or recreating services, deployment checks that
+`sps-proxy` exists and that the merged Compose configuration is valid. It does
+not create, remove or reconfigure the SPS stack/network. After Hub readiness, a
+bounded read-only HTTPS request checks `/sps/healthz`; failure marks deployment
+failed and skips image cleanup, without automatically rolling back services.
+
+For manual Hub recreation, include the generated overlay, exactly as the release
+does: `docker compose -f docker-compose.yml -f docker-compose.ai-content.yml ...`.
+A bare Compose invocation against an older server base file can omit the SPS
+attachment. For immediate recovery of the incident's running Caddy, the scoped
+command is `docker network connect sps-proxy inventory-hub-caddy-1`; it does not
+restart containers, but does not persist into a replacement container by itself.
+The SPS alias and its application remain owned by the SPS deployment.
+
+No migration or application behavior is changed by this fix. The normal release
+still recreates API, frontend builder and Caddy; PostgreSQL, Redis and SPS are not
+recreated by this change. A rollback must retain the network attachment or
+`/sps/` can fail again after Caddy recreation. Repository configuration and local
+validation alone do not prove production deployment; verify the release run and
+the live SPS route separately.
+
 ## Measured baseline before optimization
 
 On 13 October 2026, [PR #68 checks](https://github.com/mpriesol/inventory_hub/actions/runs/38393069125)

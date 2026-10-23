@@ -70,6 +70,7 @@ services:
       - api
     networks:
       - hubnet
+      - sps_proxy
 
 volumes:
   supplier_secrets:
@@ -81,3 +82,7 @@ volumes:
 networks:
   hubnet:
     name: inventory-hub-net
+  # Shared with the separately managed SPS receiver (alias sps-receiver).
+  sps_proxy:
+    external: true
+    name: sps-proxy
