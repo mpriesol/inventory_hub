@@ -412,9 +412,9 @@ def _index_entries(root, supplier):
         key = str(row.get('original_number') or row.get('number') or row.get('invoice_id') or '')
         if not key:
             continue
-        if key in entries and _digest(entries[key]) != _digest(row):
-            raise InvoiceArchiveError('invoice_index_ambiguous')
-        entries[key] = row
+        # Mutable processing/download fields do not define a document. Validate
+        # each candidate only after filtering and pagination by this source key.
+        entries.setdefault(key, []).append(row)
     return sorted(entries.items())
 
 
@@ -454,6 +454,36 @@ def _indexed_document(root, supplier, key, entry):
     return metadata, lines, files
 
 
+def _indexed_candidates(root, supplier, key, entries):
+    """Merge index aliases only when facts and original bytes prove agreement."""
+    if len(entries) == 1:
+        return (*_indexed_document(root, supplier, key, entries[0]), entries[0])
+    expected = None
+    merged, evidence = {}, []
+    for entry in entries:
+        metadata, lines, files = _indexed_document(root, supplier, key, entry)
+        header = ArchiveMetadata.model_validate(metadata)
+        rows = [ArchiveLine.model_validate(line) for line in lines]
+        originals, observed = set(), []
+        for file in files:
+            # Freeze the proven bytes for ingestion, so a subsequent cache
+            # replacement cannot substitute an unverified original.
+            content = _bytes(file['path'])
+            digest = hashlib.sha256(content).hexdigest()
+            observed.append({'path': str(file['path']), 'role': file['role'], 'sha256': digest})
+            if file['role'] == 'original':
+                originals.add(digest)
+            if digest not in merged or file['role'] == 'original':
+                merged[digest] = {'filename': file['path'].name, 'content': content, 'role': file['role']}
+        proof = (source_hash(header, rows), frozenset(originals))
+        if not originals or expected is not None and proof != expected:
+            raise InvoiceArchiveError('invoice_index_ambiguous')
+        if expected is None:
+            expected, agreed_header, agreed_rows = proof, header, rows
+        evidence.append({'entry': entry, 'files': observed})
+    return agreed_header, agreed_rows, list(merged.values()), {'index_candidates': evidence}
+
+
 async def reconcile_supplier(db, payload, *, source_keys=None):
     """Bounded, explicit index import; individual bad documents remain visible."""
     if not isinstance(payload, InvoiceReconcileInput):
@@ -466,21 +496,26 @@ async def reconcile_supplier(db, payload, *, source_keys=None):
     batch = selected[:payload.limit]
     report = {'supplier_code': supplier.code, 'scanned': len(batch), 'created': 0, 'existing': 0,
               'conflicts': [], 'next_after_key': batch[-1][0] if len(selected) > len(batch) else None}
-    for key, entry in batch:
+    for key, candidates in batch:
         try:
-            metadata, lines, files = _indexed_document(Path(settings.INVENTORY_DATA_ROOT), supplier.code, key, entry)
+            metadata, lines, files, evidence = _indexed_candidates(
+                Path(settings.INVENTORY_DATA_ROOT), supplier.code, key, candidates)
             async with db.begin_nested():
+                # All aliases must agree on a single existing receipt as well.
+                session_keys = sorted({str(entry.get('number') or key) for entry in candidates})
+                session_ids = (await db.execute(text('''SELECT id FROM receiving_sessions
+                    WHERE supplier_id=:supplier AND invoice_number=ANY(CAST(:numbers AS text[]))'''),
+                    {'supplier': supplier.id, 'numbers': session_keys})).scalars().all()
+                if len(session_ids) > 1:
+                    raise InvoiceArchiveError('invoice_receiving_ambiguous')
                 result = await ingest_invoice(db, direction='purchase', source_kind='supplier', source_key=key,
-                    supplier_id=supplier.id, metadata=metadata, lines=lines, files=files, source_data=entry,
+                    supplier_id=supplier.id, metadata=metadata, lines=lines, files=files, source_data=evidence,
                     actor='supplier-reconcile')
                 # A receiving session is a separate workflow; link only an exact
                 # existing supplier+invoice key, never create or finalize one.
-                session_key = str(entry.get('number') or key)
-                session_id = await db.scalar(text('''SELECT id FROM receiving_sessions
-                    WHERE supplier_id=:supplier AND invoice_number=:number'''), {'supplier': supplier.id, 'number': session_key})
-                if session_id:
+                if session_ids:
                     await db.execute(text('UPDATE uploaded_invoices SET receiving_session_id=:session WHERE id=:id'),
-                        {'id': result['id'], 'session': session_id})
+                        {'id': result['id'], 'session': session_ids[0]})
                 report['existing' if result['replayed'] else 'created'] += 1
         except (InvoiceArchiveError, HTTPException, ValidationError, ValueError, OSError) as error:
             report['conflicts'].append({'source_key': key, 'code': getattr(error, 'code', 'invoice_source_invalid')})

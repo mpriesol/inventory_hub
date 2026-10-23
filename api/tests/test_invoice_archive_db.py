@@ -1,5 +1,6 @@
 """External invoice identity, source evidence and indexing with real PostgreSQL."""
 import asyncio
+from contextlib import asynccontextmanager
 import csv
 from decimal import Decimal as D
 import hashlib
@@ -7,6 +8,7 @@ from io import BytesIO, StringIO
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from sqlalchemy import text
@@ -298,6 +300,112 @@ class InvoiceArchiveDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual({item["source_key"] for item in result["conflicts"]}, {"MISSING", "OTHER"})
         self.assertEqual(await self.scalar("SELECT supplier_sku FROM uploaded_invoice_lines"), "ONLY-GOOD")
         await self.assert_no_inventory_effects()
+
+    async def test_reconcile_status_only_index_duplicates_archive_once_with_all_evidence(self):
+        entries = [
+            {"number": "INV", "status": "new", "pdf_path": "invoices/raw/original.pdf",
+             "csv_path": "invoices/csv/original.csv", "total_with_vat": "12.30", "currency": "EUR"},
+            {"number": "INV", "status": "processed", "note": "Retain source note",
+             "pdf_path": "invoices/raw/copy.pdf", "csv_path": "invoices/csv/copy.csv",
+             "total_with_vat": "12.30", "currency": "EUR"},
+        ]
+        folder = self.index(entries)
+        (folder / "raw").mkdir()
+        (folder / "csv").mkdir()
+        original = b"%PDF-1.4\nSynthetic shared invoice\n%%EOF"
+        for name in ("original", "copy"):
+            (folder / "raw" / f"{name}.pdf").write_bytes(original)
+            ending = "\n" if name == "original" else "\r\n"
+            (folder / "csv" / f"{name}.csv").write_bytes(f"SCM;QTY;PRICE{ending}ITEM;2;5.00{ending}".encode())
+        report = await self.reconcile()
+        self.assertEqual((report["scanned"], report["created"], report["conflicts"]), (1, 1, []))
+        row = (await self.rows("SELECT source_data,total_with_vat,receiving_session_id FROM uploaded_invoices"))[0]
+        data = json.loads(row["source_data"]) if isinstance(row["source_data"], str) else row["source_data"]
+        self.assertEqual([candidate["entry"] for candidate in data["index_candidates"]], entries)
+        self.assertEqual(row["total_with_vat"], D("12.30"))
+        self.assertIsNone(row["receiving_session_id"])
+        self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoice_lines"), 1)
+        self.assertEqual(await self.scalar("SELECT count(*) FROM invoice_files"), 3)
+        original_path = await self.scalar("SELECT file_path FROM invoice_files WHERE role='original'")
+        self.assertEqual(Path(original_path).read_bytes(), original)
+        replay = await self.reconcile()
+        self.assertEqual((replay["scanned"], replay["existing"], replay["conflicts"]), (1, 1, []))
+        await self.assert_no_inventory_effects()
+
+    async def test_reconcile_conflicts_are_per_document_and_pages_count_unique_source_keys(self):
+        def entry(key, **changes):
+            return {"number": key, "csv_path": "invoices/csv/shared.csv", "total_with_vat": "12.30", **changes}
+
+        folder = self.index([
+            entry("A", status="new"), entry("A", total_with_vat="12.31"),
+            entry("B", status="new"), entry("B", status="processed"),
+            entry("C", raw_path="invoices/raw/first.pdf"), entry("C", raw_path="invoices/raw/changed.pdf"),
+            entry("D"),
+        ])
+        (folder / "csv").mkdir()
+        (folder / "csv/shared.csv").write_text("SCM;QTY;PRICE\nITEM;1;10.00\n")
+        (folder / "raw").mkdir()
+        for name in ("first", "changed"):
+            (folder / "raw" / f"{name}.pdf").write_bytes(f"%PDF-1.4\nSynthetic {name}\n%%EOF".encode())
+        first = await self.reconcile(limit=2)
+        self.assertEqual((first["scanned"], first["created"], first["next_after_key"]), (2, 1, "B"))
+        self.assertEqual(first["conflicts"], [{"source_key": "A", "code": "invoice_index_ambiguous"}])
+        second = await self.reconcile(limit=2, after_key=first["next_after_key"])
+        self.assertEqual((second["scanned"], second["created"], second["next_after_key"]), (2, 1, None))
+        self.assertEqual(second["conflicts"], [{"source_key": "C", "code": "invoice_index_ambiguous"}])
+        self.assertEqual([row["source_key"] for row in await self.rows(
+            "SELECT source_key FROM uploaded_invoices ORDER BY source_key")], ["B", "D"])
+        self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoice_lines"), 2)
+        await self.assert_no_inventory_effects()
+
+    async def test_upload_archive_filters_unrelated_ambiguous_keys_before_reading_candidates(self):
+        folder = self.index([
+            {"number": "BAD", "total_with_vat": "1.00", "csv_path": "invoices/csv/missing.csv"},
+            {"number": "BAD", "total_with_vat": "2.00", "csv_path": "invoices/csv/missing.csv"},
+            {"number": "GOOD", "csv_path": "invoices/csv/good.csv"},
+        ])
+        (folder / "csv").mkdir()
+        (folder / "csv/good.csv").write_text("SCM;QTY\nGOOD-ITEM;1\n")
+
+        @asynccontextmanager
+        async def session_context():
+            async with self.sessions() as db:
+                yield db
+                await db.commit()
+
+        with patch("inventory_hub.database.get_session_context", session_context), patch.object(
+                archive.settings, "USE_POSTGRES", True):
+            result = await archive.archive_after_upload("archive-fixture", {
+                "invoice_number": "GOOD", "csv_path": "invoices/csv/good.csv"})
+        self.assertEqual((result["status"], result["scanned"], result["created"], result["conflicts"]),
+                         ("completed", 1, 1, []))
+        self.assertEqual(await self.scalar("SELECT source_key FROM uploaded_invoices"), "GOOD")
+        await self.assert_no_inventory_effects()
+
+    async def test_reconcile_receiving_alias_ambiguity_keeps_other_document_and_exact_receipt_link(self):
+        folder = self.index([
+            {"original_number": "AMBIGUOUS", "number": "RECEIPT-A", "csv_path": "invoices/csv/shared.csv"},
+            {"original_number": "AMBIGUOUS", "number": "RECEIPT-B", "csv_path": "invoices/csv/shared.csv"},
+            {"number": "GOOD", "csv_path": "invoices/csv/shared.csv"},
+        ])
+        (folder / "csv").mkdir()
+        (folder / "csv/shared.csv").write_text("SCM;QTY\nITEM;1\n")
+        async with self.sessions() as db:
+            warehouse_id = await db.scalar(text(
+                "INSERT INTO warehouses(code,name) VALUES ('archive-test','Archive test') RETURNING id"))
+            receipts = {}
+            for number in ("RECEIPT-A", "RECEIPT-B", "GOOD"):
+                receipts[number] = await db.scalar(text("""INSERT INTO receiving_sessions
+                    (supplier_id,warehouse_id,invoice_number) VALUES (:supplier,:warehouse,:number) RETURNING id"""),
+                    {"supplier": self.supplier_id, "warehouse": warehouse_id, "number": number})
+            await db.commit()
+        report = await self.reconcile()
+        self.assertEqual((report["scanned"], report["created"]), (2, 1))
+        self.assertEqual(report["conflicts"], [{"source_key": "AMBIGUOUS", "code": "invoice_receiving_ambiguous"}])
+        row = (await self.rows("SELECT source_key,receiving_session_id FROM uploaded_invoices"))[0]
+        self.assertEqual((row["source_key"], row["receiving_session_id"]), ("GOOD", receipts["GOOD"]))
+        self.assertEqual(await self.scalar("SELECT count(*) FROM receiving_sessions"), 3)
+        self.assertEqual(await self.scalar("SELECT count(*) FROM stock_movements"), 0)
 
     async def test_indexed_upload_date_is_not_fabricated_as_invoice_issue_date(self):
         folder = self.index({"LEGACY": {"number": "LEGACY", "issue_date": "2026-02-01",
