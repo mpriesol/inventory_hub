@@ -8,7 +8,7 @@ import {
   downloadInvoiceArchive, getArchiveShops, getArchiveSuppliers, getInvoiceArchive, getInvoiceArchiveStats,
   invoiceArchiveDefaults, invoiceArchiveQuery, reconcileSupplierInvoiceArchive, syncShopInvoiceArchive, uploadArchivedInvoice,
 } from '../api/invoiceArchive';
-import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
+import { invoiceDate, invoiceError, invoiceMoney, invoiceSourceDiagnostic, InvoicePaymentBadge } from './invoiceArchiveUi';
 import './invoiceArchive.css';
 
 function filtersFromUrl(params: URLSearchParams): InvoiceArchiveFilters {
@@ -134,7 +134,11 @@ export function InvoicesPage() {
     try {
       const value = await syncShopInvoiceArchive(sync.shop, { date_from: sync.date_from, date_to: sync.date_to, ...(continuation && syncResult?.next ? syncResult.next : { page: 1, offset: 0 }) });
       setSyncResult(value); setRetryAt(value.retry_after ? Date.now() + value.retry_after * 1000 : 0); setNow(Date.now()); setRefresh(value => value + 1);
-    } catch (reason) { setSyncUncertain(true); setError(invoiceError(reason, t('invoiceArchive.syncFailed'))); }
+    } catch (reason) {
+      setSyncUncertain(true);
+      setError([invoiceError(reason, t('invoiceArchive.syncFailed')),
+        invoiceSourceDiagnostic((reason as { detail?: unknown })?.detail, t)].filter(Boolean).join(' '));
+    }
     finally { setWorking(false); }
   };
   const reconcile = async (continuation = false) => {
@@ -184,7 +188,7 @@ export function InvoicesPage() {
       </div><footer><button onClick={() => setSyncOpen(false)}>{t('common.close')}</button><button className="primary" data-testid="invoice-sync-start" disabled={!sync.shop || !sync.date_from || !sync.date_to || sync.date_to < sync.date_from} onClick={() => syncBatch()}>{t('invoiceArchive.syncStart')}</button></footer></fieldset>
       {syncUncertain && <p className="notice warning">{t('invoiceArchive.syncUncertain')}</p>}
       {syncResult && <div style={{ marginTop: '.9rem' }}><p role="status">{t('invoiceArchive.syncResult', { imported: syncResult.imported, unchanged: syncResult.unchanged, failed: syncResult.failed })}</p>
-        {syncResult.stopped_error && <p className="notice warning">{t('invoiceArchive.syncStopped')} ({syncResult.stopped_error})</p>}
+        {syncResult.stopped_error && <p className="notice warning" data-testid="invoice-sync-stopped">{t('invoiceArchive.syncStopped')} ({syncResult.stopped_error}) {invoiceSourceDiagnostic(syncResult, t)}</p>}
         {syncResult.items.some(row => row.error) && <ul>{syncResult.items.filter(row => row.error).map((row, index) => <li key={index}>{row.invoice_number}: {row.error}</li>)}</ul>}
         {syncResult.next ? <button data-testid="invoice-sync-next" disabled={working || retryAt > now} onClick={() => syncBatch(true)}>{t('invoiceArchive.syncNext')}{retryAt > now ? ` (${Math.ceil((retryAt - now) / 1000)} s)` : ''}</button> : <p className="muted small">{t('invoiceArchive.syncDone')}</p>}
       </div>}

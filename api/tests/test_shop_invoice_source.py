@@ -113,7 +113,43 @@ class ShopInvoiceSourceTests(unittest.IsolatedAsyncioTestCase):
                     await source.read_pdf('biketrek', 'INV-1', FINGERPRINT)
                 self.assertEqual(str(caught.exception), code)
                 self.assertEqual(caught.exception.retry_after, 37 if status == 429 else None)
+                self.assertEqual(caught.exception.diagnostics(), {'upstream_status': status, 'operation': 'pdf'})
                 self.assertEqual(len(session.calls), 1)
+
+    async def test_http_failure_keeps_numeric_status_and_fixed_operation_without_private_response(self):
+        for status in (400, 422, 500):
+            for operation in ('list', 'pdf'):
+                with self.subTest(status=status, operation=operation):
+                    response = Response(b'private customer body and credentials', 'text/plain', status)
+                    _, session = self.client(response)
+                    with self.assertRaises(source.SourceError) as caught:
+                        if operation == 'list':
+                            await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+                        else:
+                            await source.read_pdf('biketrek', 'PRIVATE-INVOICE-001', FINGERPRINT)
+                    self.assertEqual(str(caught.exception), 'invoice_source_http_failed')
+                    self.assertEqual(caught.exception.status, 502)
+                    self.assertEqual(caught.exception.diagnostics(), {'upstream_status': status, 'operation': operation})
+                    self.assertEqual(len(session.calls), 1)
+                    self.assertTrue(response.closed and session.closed)
+
+    def test_diagnostics_reject_unexpected_status_or_operation_values(self):
+        for status, operation in (('400 private', 'list'), (True, 'pdf'), (700, 'pdf'), (400, 'https://private.invalid')):
+            with self.subTest(status=status, operation=operation):
+                error = source.SourceError('invoice_source_http_failed', upstream_status=status, operation=operation)
+                values = error.diagnostics()
+                self.assertNotIn('private', json.dumps(values))
+                self.assertTrue('upstream_status' not in values or type(values['upstream_status']) is int)
+                self.assertTrue('operation' not in values or values['operation'] in ('list', 'pdf'))
+
+    async def test_local_budget_denial_has_operation_without_inventing_upstream_http_status(self):
+        _, session = self.client(source.AdmissionDenied(19))
+        with self.assertRaises(source.SourceError) as caught:
+            await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+        self.assertEqual(caught.exception.diagnostics(), {'operation': 'list'})
+        self.assertEqual(caught.exception.retry_after, 19)
+        self.assertEqual(len(session.calls), 1)
+        self.assertTrue(session.closed)
 
     async def test_connection_change_or_traversal_is_rejected_before_get(self):
         _, session = self.client(base='https://other.invalid/api/v2')
@@ -143,7 +179,8 @@ class ShopInvoiceSourceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_network_error_contains_no_credentials_or_customer_body(self):
         _, session = self.client(requests.ConnectionError('https://fixture.invalid secret customer'))
-        with self.assertRaisesRegex(source.SourceError, '^invoice_source_unavailable$'):
+        with self.assertRaisesRegex(source.SourceError, '^invoice_source_unavailable$') as caught:
             await source.read_pdf('biketrek', 'INV-1', FINGERPRINT)
+        self.assertEqual(caught.exception.diagnostics(), {'operation': 'pdf'})
         self.assertEqual(len(session.calls), 1)
         self.assertTrue(session.closed)

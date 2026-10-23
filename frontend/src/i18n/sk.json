@@ -4644,6 +4644,8 @@
     "syncDone": "Táto dávka nemá ďalšie pokračovanie. Prípadné chyby sú uvedené vyššie.",
     "syncStopped": "Sťahovanie bolo pozastavené. Pokračujte po uvoľnení prístupu k e-shopu.",
     "syncFailed": "Výsledok sťahovania sa nepodarilo potvrdiť.",
+    "syncListOperation": "Zoznam faktúr v e-shope",
+    "syncPdfOperation": "Stiahnutie originálu PDF",
     "syncUncertain": "Obnovte archív a zopakujte tú istú dávku. Existujúce zdrojové doklady sa znovu nevytvoria.",
     "back": "Späť na archív",
     "detailTitle": "Detail faktúry",

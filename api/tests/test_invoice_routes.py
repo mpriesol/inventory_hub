@@ -12,8 +12,11 @@ from pydantic import SecretStr
 from inventory_hub.database import get_session
 from inventory_hub.routers import invoice_archive as archive_routes
 from inventory_hub.routers import invoices_unified as routes
+from inventory_hub.routers import shop_invoice_sync as shop_routes
 from inventory_hub.services import invoice_archive as archive
 from inventory_hub.services import invoice_finance as finance
+from inventory_hub.services import shop_invoice_sync
+from inventory_hub.services.shop_invoice_source import SourceError
 from inventory_hub.settings import settings
 
 
@@ -29,6 +32,7 @@ class InvoiceRouteTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(routes.router)
         app.include_router(archive_routes.router)
+        app.include_router(shop_routes.router)
         app.dependency_overrides[get_session] = session
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
@@ -52,11 +56,13 @@ class InvoiceRouteTests(unittest.TestCase):
             ("PATCH", "/invoices/1/payment", {"payment_status": "paid"}),
             ("DELETE", "/invoices/1", None),
             ("POST", "/invoices/reconcile", {"supplier_code": "archive-fixture"}),
+            ("POST", "/invoices/sync/shop/biketrek", {"date_from": "2026-10-01", "date_to": "2026-10-23"}),
         ]
         with ExitStack() as stack:
             calls = [stack.enter_context(patch.object(service, name, AsyncMock())) for service, name in (
                 (finance, "apply_payment"), (finance, "operation_result"), (finance, "update_metadata"),
                 (archive, "reconcile_supplier"),
+                (shop_invoice_sync, "refresh"),
             )]
             for method, path, payload in requests:
                 with self.subTest(method=method, path=path):
@@ -71,6 +77,23 @@ class InvoiceRouteTests(unittest.TestCase):
             self.db.execute.assert_not_awaited()
             for action in calls:
                 action.assert_not_awaited()
+
+    def test_shop_source_http_error_exposes_only_status_operation_and_stable_code(self):
+        for status in (400, 403, 429):
+            code = 'invoice_source_rate_limited' if status == 429 else 'invoice_source_http_failed'
+            error = SourceError(code, 429 if status == 429 else 502, 37 if status == 429 else None,
+                                upstream_status=status, operation='list')
+            error.url = 'https://private.invalid/PRIVATE-INVOICE-001'
+            error.body = 'private customer and credential details'
+            with self.subTest(status=status), patch.object(shop_invoice_sync, 'refresh', AsyncMock(side_effect=error)):
+                response = self.client.post('/invoices/sync/shop/biketrek', headers=self.headers,
+                    json={'date_from': '2026-10-01', 'date_to': '2026-10-23'})
+                self.assertEqual(response.status_code, 429 if status == 429 else 502)
+                self.assertEqual(response.json(), {'detail': {'code': code, 'upstream_status': status, 'operation': 'list'}})
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                if status == 429:
+                    self.assertEqual(response.headers['retry-after'], '37')
+                self.assertNotIn('private', response.text)
 
     def test_payment_and_reversal_use_typed_requests_and_authenticated_actor(self):
         with patch.object(finance, "apply_payment", AsyncMock(return_value={"ok": True})) as action:

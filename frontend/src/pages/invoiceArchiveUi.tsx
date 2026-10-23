@@ -1,6 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArchivedInvoice, InvoiceAmount } from '../api/invoiceArchive';
+import { TFunction } from 'i18next';
+import { ArchivedInvoice, InvoiceAmount, ShopInvoiceSourceDiagnostic } from '../api/invoiceArchive';
 
 /** String formatting preserves the stored amount; calculation belongs to the API. */
 export function invoiceMoney(value: InvoiceAmount | null | undefined, currency: string | null = 'EUR', language = 'sk'): string {
@@ -26,4 +27,13 @@ export function InvoicePaymentBadge({ invoice }: { invoice: ArchivedInvoice }) {
 export function invoiceError(error: unknown, fallback: string): string {
   const code = (error as { code?: string })?.code;
   return code && code !== 'request_failed' ? `${fallback} (${code})` : fallback;
+}
+
+export function invoiceSourceDiagnostic(value: unknown, t: TFunction): string {
+  const diagnostic = value as ShopInvoiceSourceDiagnostic | null | undefined;
+  if (diagnostic?.operation !== 'list' && diagnostic?.operation !== 'pdf') return '';
+  const label = t(diagnostic.operation === 'list' ? 'invoiceArchive.syncListOperation' : 'invoiceArchive.syncPdfOperation');
+  const status = diagnostic.upstream_status;
+  return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+    ? `${label} (HTTP ${status})` : label;
 }

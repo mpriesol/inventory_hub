@@ -130,10 +130,12 @@ class ShopInvoiceSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rate_limit_keeps_committed_document_and_resumes_at_unsent_document(self):
         self.page.update(invoices=[document('A'), document('B')], total=2)
-        self.download.side_effect = [self.pdf, service.source.SourceError('invoice_source_rate_limited', 429, 55)]
+        self.download.side_effect = [self.pdf, service.source.SourceError(
+            'invoice_source_rate_limited', 429, 55, upstream_status=429, operation='pdf')]
         result = await service.refresh(self.db, 'biketrek', self.request)
         self.assertEqual((result['imported'], result['retry_after'], result['stopped_error']), (1, 55, 'invoice_source_rate_limited'))
         self.assertEqual(result['next'], {'page': 1, 'offset': 1, 'page_token': 'a' * 64})
+        self.assertEqual((result['upstream_status'], result['operation']), (429, 'pdf'))
         self.assertEqual(self.ingest.await_count, 1)
         self.assertEqual(self.db.commit.await_count, 2)
 

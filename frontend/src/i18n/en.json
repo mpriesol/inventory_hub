@@ -4643,6 +4643,8 @@
     "syncDone": "This batch has no further continuation. Any errors are shown above.",
     "syncStopped": "Downloading paused. Continue once shop access is available.",
     "syncFailed": "Could not confirm the download result.",
+    "syncListOperation": "Shop invoice list",
+    "syncPdfOperation": "Original PDF download",
     "syncUncertain": "Refresh the archive and repeat the same batch. Existing source documents will not be duplicated.",
     "back": "Back to archive",
     "detailTitle": "Invoice detail",

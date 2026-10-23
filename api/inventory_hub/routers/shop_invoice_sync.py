@@ -21,4 +21,4 @@ async def refresh(payload: ShopInvoiceSyncRequest, request: Request,
         return await shop_invoice_sync.refresh(db, shop_code, payload, actor=actor)
     except SourceError as error:
         headers = {'Retry-After': str(error.retry_after)} if error.retry_after is not None else None
-        raise HTTPException(error.status, detail={'code': error.code}, headers=headers) from None
+        raise HTTPException(error.status, detail={'code': error.code, **error.diagnostics()}, headers=headers) from None

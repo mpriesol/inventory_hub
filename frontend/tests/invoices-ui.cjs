@@ -20,7 +20,7 @@ const { createRoot } = require('react-dom/client');
 const { createMemoryRouter, RouterProvider } = require('react-router-dom');
 const { InvoicesPage } = require('../src/pages/InvoicesPage.tsx');
 const { InvoiceDetailPage } = require('../src/pages/InvoiceDetailPage.tsx');
-const { invoiceMoney } = require('../src/pages/invoiceArchiveUi.tsx');
+const { invoiceMoney, invoiceSourceDiagnostic } = require('../src/pages/invoiceArchiveUi.tsx');
 const { unlockHub } = require('../src/api/access.ts');
 let root = createRoot(document.getElementById('root')), router;
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
@@ -45,7 +45,7 @@ async function render(path) {
 }
 const clone = value => JSON.parse(JSON.stringify(value));
 const reply = value => ({ ok: true, status: 200, json: async () => clone(value) });
-const failure = (status, code, knownUnapplied = false) => ({ ok: false, status, json: async () => ({ detail: { code, known_unapplied: knownUnapplied } }) });
+const failure = (status, code, knownUnapplied = false, detail = {}) => ({ ok: false, status, json: async () => ({ detail: { code, known_unapplied: knownUnapplied, ...detail } }) });
 const finance = (overrides = {}) => ({ payment_revision: 0, currency: 'EUR', gross_amount: '100.00', paid_amount: '0.00', outstanding_amount: '100.00', status: 'unpaid', is_overdue: true, opening_required: false, payments: [], ...overrides });
 const makeInvoice = (id, extra = {}) => ({ id, direction: 'purchase', document_type: 'invoice', source_kind: 'upload', supplier_id: 7, supplier_code: 'fixture-vendor', supplier_name: 'Fixture vendor', shop_code: null, shop_name: null,
   original_filename: `fixture-${id}.pdf`, file_type: 'pdf', invoice_number: `FA-${id}`, invoice_date: '2026-10-01', due_date: '2026-10-15', currency: 'EUR',
@@ -63,6 +63,7 @@ const stats = direction => ({ direction, total_invoices: 4, unpaid_count: 2, ove
   aging: [{ bucket: '1_30', currency: 'EUR', outstanding_amount: '100.00', invoice_count: 1 }],
 });
 let paymentMode = 'success', hideRecovery = false, downloadFail = false, deferredList = false, releaseList;
+let shopSyncMode = 'success';
 let paymentCounter = 100;
 const calls = [], operations = new Map(), attempts = new Map(), downloads = [];
 global.URL.createObjectURL = blob => { assert(blob instanceof Blob); return 'blob:https://hub.example.test/synthetic-download'; };
@@ -109,6 +110,15 @@ global.fetch = async (path, init = {}) => {
   if (url.pathname === '/api/invoices/sync/shop/biketrek') {
     assert.equal(body.date_from, '2026-10-01'); assert.equal(body.date_to, '2026-10-22');
     if (body.offset) assert.equal(body.page_token, 'same-page-token', 'Continuation preserves upstream page identity');
+    if (shopSyncMode === 'list-http') return failure(502, 'invoice_source_http_failed', false, {
+      upstream_status: 400, operation: 'list', url: 'https://private.invalid/PRIVATE-INVOICE', body: 'private credentials and customer',
+    });
+    if (shopSyncMode === 'invalid-diagnostic') return failure(502, 'invoice_source_http_failed', false, {
+      upstream_status: '400 private', operation: 'https://private.invalid/PRIVATE-INVOICE',
+    });
+    if (shopSyncMode === 'pdf-http') return reply({ imported: 1, unchanged: 0, failed: 0, items: [],
+      next: { page: 1, offset: 1, page_token: 'same-page-token' }, total_in_source: 12, source_pages: 1,
+      stopped_error: 'invoice_source_http_failed', upstream_status: 503, operation: 'pdf' });
     return reply({ imported: 2, unchanged: 0, failed: 0, items: [], next: body.offset ? null : { page: 1, offset: 10, page_token: 'same-page-token' }, total_in_source: 12, source_pages: 1 });
   }
   const recovery = url.pathname.match(/^\/api\/invoices\/(\d+)\/payment-operations\/(.+)$/);
@@ -138,6 +148,8 @@ global.fetch = async (path, init = {}) => {
   await act(async () => { await i18n.changeLanguage('en'); unlockHub('synthetic-invoice-token'); });
   assert.equal(invoiceMoney('9007199254740993.00', 'EUR', 'en'), '9,007,199,254,740,993.00 EUR', 'Display does not lose monetary digits');
   assert.equal(invoiceMoney(null), '—'); assert.match(invoiceMoney('0.00'), /^0,/);
+  assert.equal(invoiceSourceDiagnostic({ upstream_status: '400 private', operation: 'list' }, i18n.t), 'Shop invoice list');
+  assert.equal(invoiceSourceDiagnostic({ upstream_status: 400, operation: 'https://private.invalid' }, i18n.t), '');
   await render('/invoices?page=2');
   assert.equal(calls.filter(call => new URL(call.path, dom.window.location.href).pathname === '/api/invoices').at(-1).path.includes('page=2'), true, 'Opening a paginated URL does not reset the page');
   await click('invoice-prev'); assert(element('invoice-row-10'));
@@ -161,6 +173,19 @@ global.fetch = async (path, init = {}) => {
   await click('invoice-sync-open'); await input('sync-shop', 'biketrek'); await input('sync-date_from', '2026-10-01'); await input('sync-date_to', '2026-10-22'); await click('invoice-sync-start');
   assert.equal(calls.filter(call => call.path.includes('/sync/shop/')).length, 1);
   await click('invoice-sync-next'); assert.equal(calls.filter(call => call.path.includes('/sync/shop/')).length, 2);
+  shopSyncMode = 'list-http'; await click('invoice-sync-start');
+  assert(required('invoice-error').textContent.includes('Shop invoice list (HTTP 400)'));
+  assert(required('invoice-error').textContent.includes('invoice_source_http_failed'));
+  assert(!required('invoice-error').textContent.includes('private'), 'Only allowed diagnostics reach the visible error');
+  await act(async () => { await i18n.changeLanguage('sk'); });
+  shopSyncMode = 'pdf-http'; await click('invoice-sync-start');
+  assert(required('invoice-sync-stopped').textContent.includes('Stiahnutie originálu PDF (HTTP 503)'));
+  assert(required('invoice-sync-stopped').textContent.includes('invoice_source_http_failed'));
+  assert.equal(calls.filter(call => call.path.includes('/sync/shop/')).length, 4, 'Diagnostic failures are never retried automatically');
+  shopSyncMode = 'invalid-diagnostic'; await click('invoice-sync-start');
+  assert(!required('invoice-error').textContent.includes('private'), 'Unexpected operation/status values are not rendered');
+  assert(!required('invoice-error').textContent.includes('HTTP 400'));
+  shopSyncMode = 'success'; await act(async () => { await i18n.changeLanguage('en'); });
   await render('/invoices/10');
   assert(calls.some(call => call.path === '/api/invoices/10'));
   const receipt = new URL(required('invoice-receiving-link').href);
