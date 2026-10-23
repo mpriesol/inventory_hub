@@ -76,8 +76,9 @@ class ProductTraceDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual(result['sales']['net_quantity'], '2.000')
         self.assertEqual(result['movements']['total'], 2)
         async with self.sessions() as db:
-            await db.execute(text('''INSERT INTO stock_tracking(product_id,warehouse_id,source_type,source_id,operator_name)
-                VALUES (:p,:w,'fixture','fixture','fixture')'''), {'p': self.product_id,'w': warehouse})
+            await db.execute(text('''INSERT INTO stock_tracking
+                (product_id,warehouse_id,source_type,source_id,operator_name,archived_balance)
+                VALUES (:p,:w,'fixture','fixture','fixture','{}'::jsonb)'''), {'p': self.product_id,'w': warehouse})
             await db.commit()
         confirmed = await self.lookup(product_id=self.product_id)
         self.assertEqual(confirmed['stocks'][0]['available'], '47.000')
