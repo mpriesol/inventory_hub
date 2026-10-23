@@ -38,6 +38,7 @@ MIGRATIONS = (
     "shop_identity_migrate",          # 030
     "item_units_migrate",             # 031
     "supplier_authority_migrate",     # 032
+    "invoice_archive_migrate",        # 033
 )
 
 

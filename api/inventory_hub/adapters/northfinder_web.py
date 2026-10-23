@@ -716,6 +716,7 @@ class NorthfinderInvoiceDownloader:
             "issue_date": inv.get("issue_date"),
             "due_date": inv.get("due_date"),
             "total": inv.get("total"),
+            "total_without_vat": inv.get("total_base"),
             "currency": inv.get("currency", "EUR"),
             "status": "new",
             "downloaded_at": datetime.now(timezone.utc).isoformat(),

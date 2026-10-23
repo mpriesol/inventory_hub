@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
 
 
-_DOCUMENT_SUFFIXES = {".csv", ".tsv", ".xml", ".json", ".pdf", ".xlsx", ".xls",
+_DOCUMENT_SUFFIXES = {".csv", ".tsv", ".xml", ".json", ".pdf", ".xlsx", ".xls", ".doc", ".docx",
                       ".txt", ".log", ".html", ".htm", ".feed"}
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
 _PRIVATE_PART = re.compile(

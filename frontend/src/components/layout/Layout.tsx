@@ -4,7 +4,7 @@ import { Sidebar } from './Sidebar';
 
 export function Layout() {
   const { pathname } = useLocation();
-  const wide = /^\/(stock|receiving|invoices|orders|product-import|suppliers)(?:\/|$)/.test(pathname);
+  const wide = /^\/(stock|receiving|invoices|orders|product-import|product-trace|suppliers)(?:\/|$)/.test(pathname);
   return (
     <div
       className="min-h-screen"

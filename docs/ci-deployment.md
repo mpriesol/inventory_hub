@@ -72,8 +72,8 @@ The entire release workflow uses a common concurrency group with
 not interrupted by a newer run. Do not use cancellation to speed up deployment.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes twenty-eight upgrade
-modules, `005` through `032`, in their existing order. Each module retains its
+temporary API container. Its explicit list invokes twenty-nine upgrade
+modules, `005` through `033`, in their existing order. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The first failure stops the runner and prevents the service restart. Already
 committed migrations remain applied. No schema SQL is changed by this optimization.
@@ -113,3 +113,5 @@ baseline values, not measurements of the optimized implementation. The proposed
 
 
 Od 14. 10. 2026 readiness používa `inventory_hub.security_check` v API kontajneri proti verejnému HTTPS. Overuje zdravú DB, anonymné HTTP 401 pre sklad a konfiguračné cesty, autorizovaný stav AI a HTTP 404 pre raw konfiguráciu aj po prihlásení. Kľúč sa neobjaví v argumentoch ani logu. Kontrola je čítacia, nepovoľuje presmerovania a opakuje sa najviac počas existujúceho 60-sekundového okna. Anonymné HTTP 200 pre `/ai-content/status` už nie je úspešný stav.
+
+Migration033 (`033_invoice_archive.sql`) adds the external document archive, indexed invoice items and append-only settlement evidence. It is packaged and explicitly run after032; it does not download documents or issue invoices. CI also runs `invoices-ui.cjs` and `product-trace-ui.cjs`.

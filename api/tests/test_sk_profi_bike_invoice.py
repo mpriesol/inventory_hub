@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -268,6 +268,8 @@ class SkpInvoiceParserTests(unittest.TestCase):
 
 class SkpInvoiceUploadTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch('inventory_hub.services.invoice_archive.archive_after_upload',
+                                AsyncMock(return_value={'status': 'completed'})))
         folder = self.enterContext(tempfile.TemporaryDirectory())
         self.root = Path(folder)
         self.enterContext(patch.object(suppliers, "DATA_ROOT", self.root))

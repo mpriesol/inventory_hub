@@ -100,7 +100,8 @@ Príprava produktov (15. 10. 2026) umožňuje vybrať aj neaktívne a nadradené
 | Oblasť / cesta UI | Stav podľa kódu | Hranice a zdroje |
 | --- | --- | --- |
 | Dashboard `/` | Údaje zo skladu a reálne posledné pohyby | Súčet fyzických, rezervovaných, voľných a karanténnych kusov, nákupná hodnota a rozpracované objednávky evidované Hubom. Žiadne ukážkové udalosti ani vymyslené percentá synchronizácie. Chyba nie je nulový stav. |
-| Faktúry `/invoices`, `/invoices/:invoiceId` | Nahrávanie, evidencia, filtre a detail | `routers/invoices.py`, `invoices_unified.py` a príslušné stránky. Nahratie súboru neznamená univerzálne OCR ani rozpoznanie každého formátu. |
+| Faktúry `/invoices`, `/invoices/:invoiceId` | Archív dodávateľských a stiahnutých e-shopových dokladov, položky, úhrady, grafy a ZIP pre účtovníčku | [Kontrakt archívu](docs/invoice-archive.md). Doklady vystavujú dodávatelia/e-shopy; import nemení sklad. Neznáme formáty zostávajú uložené bez tvrdenia o univerzálnom OCR. |
+| EAN prehľad `/product-trace` | Karta, zásoby, ceny, súvisiace faktúry, predaje a pohyby | Presná identita, výber pri nejednoznačnosti, fakturované jednotky a skladové výdaje oddelene. |
 | Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile Nákupné ceny. Nové skeny majú request UUID; replay nepridá druhý kus. [Kontrakt identity a skenera](docs/receiving-identity.md). |
 | Sklad `/stock` | Jednotná produktová a skladová tabuľka | Obrázky, parametre, manuálne bunky, označenie zmenenej bunky aj riadka, prítomnosť/odkazy BIKETREK a xTrek, detail po kliknutí na SKU/názov. Samostatné prepojenie jednej alebo vybraných existujúcich kariet s e-shopom cez [náhľad väzieb](docs/product-links.md). Oddelené uloženie v Hube a potvrdené odoslanie vybraných polí. Fyzické množstvo cez [opravný pohyb](docs/stock-adjustments.md). |
 | História `/stock/movements` | Chránené čítanie nemennej evidencie | Filtre celého skladu alebo presného SKU, doklad, dôvod, pôvodný náklad a množstvo pred/po. Bez zápisov a Upgates volaní. [Návod a API](docs/stock-history.md). |
@@ -289,11 +290,11 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `027_product_links.sql` | Trvalé náhľady a výsledky prepojenia existujúcich kariet s e-shopmi. |
 | `028_supplier_card_links.sql` | Trvalé náhľady a výsledky ručného priradenia dodávateľskej položky k existujúcej karte. |
 
-**Deployment spúšťa `005` až `028` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých dvadsaťštyri upgrade SQL súbory balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Nové `024`–`026` sú aditívne a neaktivujú synchronizáciu.
+**Deployment spúšťa `005` až `033` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých dvadsaťdeväť upgrade SQL súborov balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Nové `024`–`026` sú aditívne a neaktivujú synchronizáciu.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 
-Pri čistej lokálnej inštalácii over postupnosť `001`–`028` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
+Pri čistej lokálnej inštalácii over postupnosť `001`–`033` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
 
 ## Lokálny vývoj a overovanie
 
@@ -330,7 +331,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 1. Push do `main` s aspoň jednou zmenou mimo `**/*.md` a `docs/**`, alebo ručne spustený workflow na `main`, zostaví API a frontend paralelne. Obrazy používajú oddelené cache `api` a `frontend`. Bežné nasadenie publikuje do GHCR tagy `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
 3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `028` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
+4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `033` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
 Workflow je serializovaný s vypnutým rušením rozbehnutého nasadenia. Zmeny iba Markdown súborov alebo `docs/**` produkčný workflow nespúšťajú, úplné PR kontroly však zostávajú. Ručné spustenie na `main` s `deploy=false` slúži na meranie zostavenia/cache: publikuje iba SHA tag, nemení produkčný tag `main` a nepripája sa na produkčný server. Predvolená hodnota je `deploy=true`.
@@ -403,3 +404,7 @@ Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej akt
 - Automatic supplier batches require verified native mappings and exact mapped leaf codes. Availability settings count current per-card results while retaining unresolved-write visibility and complete history.
 
 - Optional catalog image fallback fills missing supplier photographs from explicitly linked, identity-checked cached shop products in catalog list/detail and new preparations. Source images and raw snapshots remain intact; no API call, stock write or migration is required. See [Zookee](docs/zookee.md#missing-catalog-images).
+
+## Archív faktúr a EAN prehľad
+
+Migrácia033 a nové služby sú opísané v [invoice-archive.md](docs/invoice-archive.md). Existujúce skladové a príjmové procesy zostávajú samostatné. Faktúry sa v Hube nevystavujú; dodávateľské dokumenty a Upgates originály sa archivujú pod jednoznačným zdrojom, položky sa indexujú pre EAN vyhľadanie a úhrady majú nemenný záznam s ochranou opakovania. Nasadenie a skutočné naplnenie archívu sa overujú oddelene.

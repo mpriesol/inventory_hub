@@ -1,1078 +1,238 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { Download, RefreshCw, Upload, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import { accessRevision, subscribeAccess } from '../api/access';
 import {
-  FileText,
-  Download,
-  ChevronLeft,
-  ChevronRight,
-  AlertCircle,
-  CheckCircle,
-  Clock,
-  RefreshCw,
-  Upload,
-  X,
-  Building2,
-  Calendar,
-  Filter,
-} from 'lucide-react';
+  ArchivedInvoice, InvoiceArchiveFilters, InvoiceArchivePage, InvoiceArchiveStats, ShopInvoiceSyncResult, SupplierInvoiceReconcileResult,
+  downloadInvoiceArchive, getArchiveShops, getArchiveSuppliers, getInvoiceArchive, getInvoiceArchiveStats,
+  invoiceArchiveDefaults, invoiceArchiveQuery, reconcileSupplierInvoiceArchive, syncShopInvoiceArchive, uploadArchivedInvoice,
+} from '../api/invoiceArchive';
+import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
+import './invoiceArchive.css';
 
-const API_BASE = (import.meta.env.VITE_API_BASE || '/api').replace(/\/$/, '');
-
-// ============================================================================
-// Types
-// ============================================================================
-
-interface Supplier {
-  id: number;
-  code: string;
-  name: string;
-  invoice_count: number;
+function filtersFromUrl(params: URLSearchParams): InvoiceArchiveFilters {
+  const result = { ...invoiceArchiveDefaults };
+  (Object.keys(result) as (keyof InvoiceArchiveFilters)[]).forEach(key => {
+    if (params.has(key)) (result as Record<string, string>)[key] = params.get(key) || '';
+  });
+  if (!['purchase', 'sale'].includes(result.direction)) result.direction = 'purchase';
+  if (!['asc', 'desc'].includes(result.sort_order)) result.sort_order = 'desc';
+  return result;
 }
 
-interface Invoice {
-  id: number;
-  supplier_id: number;
-  supplier_code: string;
-  supplier_name: string;
-  original_filename: string;
-  file_type: string;
-  invoice_number: string | null;
-  invoice_date: string | null;
-  due_date: string | null;
-  currency: string;
-  total_amount: number | null;
-  total_with_vat: number | null;
-  vat_amount: number | null;
-  vat_rate: number;
-  vat_included: boolean;
-  items_count: number;
-  payment_status: 'unpaid' | 'partial' | 'paid';
-  receiving_status: string;
-  is_overdue: boolean;
-  days_until_due: number | null;
-  is_parsed: boolean;
-  created_at: string;
-}
-
-interface InvoiceListResponse {
-  items: Invoice[];
-  total: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
-  summary: {
-    filtered_count: number;
-    filtered_total: number;
-    unpaid_count: number;
-    unpaid_total: number;
+function ArchiveDashboard({ stats }: { stats: InvoiceArchiveStats }) {
+  const { t, i18n } = useTranslation();
+  const [chosen, setChosen] = useState('EUR');
+  const group = stats.totals_by_currency.find(row => (row.currency || '') === chosen) || stats.totals_by_currency[0];
+  const currency = group?.currency ?? null;
+  const monthly = stats.monthly.filter(row => row.currency === currency).slice(-6);
+  const aging = stats.aging.filter(row => row.currency === currency);
+  const bars = (rows: { label: string; value: string | null }[], overdue = false) => {
+    const maximum = Math.max(0, ...rows.map(row => Math.abs(Number(row.value || 0))));
+    return rows.length ? rows.map((row, index) => <div className="chart-row" key={index}>
+      <span>{row.label}</span><span className="chart-track" aria-hidden="true"><span className={`chart-fill${overdue ? ' overdue' : ''}`} style={{ display: 'block', width: `${maximum ? Math.abs(Number(row.value || 0)) / maximum * 100 : 0}%` }} /></span>
+      <span className="amount">{invoiceMoney(row.value, currency, i18n.language)}</span>
+    </div>) : <p className="muted small">{t('invoiceArchive.noChartData')}</p>;
   };
+  return <section className="panel" data-testid="invoice-dashboard">
+    <header><div><h2>{t(stats.direction === 'sale' ? 'invoiceArchive.salesOverview' : 'invoiceArchive.purchaseOverview')}</h2><p className="muted small">{t('invoiceArchive.dashboardScope', { count: stats.total_invoices })}</p></div>
+      {stats.totals_by_currency.length > 1 && <label>{t('invoiceArchive.currency')}<select data-testid="dashboard-currency" value={currency || ''} onChange={event => setChosen(event.target.value)}>
+        {stats.totals_by_currency.map(row => <option key={row.currency || 'unknown'} value={row.currency || ''}>{row.currency || t('invoiceArchive.unknownCurrency')}</option>)}
+      </select></label>}
+    </header>
+    {group ? <><div className="metric-grid" style={{ marginTop: '.9rem' }}>
+      <div className="metric"><span className="muted">{t('invoiceArchive.invoiceValue')}</span><strong>{invoiceMoney(group.total_amount, currency, i18n.language)}</strong><small>{t('invoiceArchive.documentsCount', { count: group.invoice_count })}</small></div>
+      <div className="metric"><span className="muted">{t('invoiceArchive.outstanding')}</span><strong>{invoiceMoney(group.outstanding_amount, currency, i18n.language)}</strong><small>{t('invoiceArchive.documentsCount', { count: group.unpaid_count })}</small></div>
+      <div className="metric"><span className="muted">{t('invoiceArchive.status.overdue')}</span><strong style={{ color: 'var(--color-error)' }}>{invoiceMoney(group.overdue_amount, currency, i18n.language)}</strong><small>{t('invoiceArchive.documentsCount', { count: group.overdue_count })}</small></div>
+    </div>
+    {group.unknown_amount_count > 0 && <p className="notice warning small">{t('invoiceArchive.unknownAmounts', { count: group.unknown_amount_count })}</p>}
+    {!!group.unknown_outstanding_count && <p className="notice warning small" data-testid="invoice-unknown-payments">{t('invoiceArchive.unknownPayments', { count: group.unknown_outstanding_count })}</p>}
+    <div className="charts"><div><h2>{t('invoiceArchive.monthly')}</h2>{bars(monthly.map(row => ({ label: row.month, value: row.total_amount })))}</div>
+      <div><h2>{t('invoiceArchive.agingTitle')}</h2>{bars(aging.map(row => ({ label: t(`invoiceArchive.aging.${row.bucket}`), value: row.outstanding_amount })), true)}</div></div>
+    </> : <p className="muted">{t('invoiceArchive.empty')}</p>}
+  </section>;
 }
-
-interface InvoiceStats {
-  total_invoices: number;
-  total_amount: number;
-  unpaid_count: number;
-  unpaid_amount: number;
-  overdue_count: number;
-  overdue_amount: number;
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-const formatCurrency = (amount: number | null, currency = 'EUR'): string => {
-  if (amount === null || amount === undefined) return '—';
-  return new Intl.NumberFormat('sk-SK', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-  }).format(amount);
-};
-
-const formatDate = (dateStr: string | null): string => {
-  if (!dateStr) return '—';
-  try {
-    return new Date(dateStr).toLocaleDateString('sk-SK');
-  } catch {
-    return dateStr;
-  }
-};
-
-// Debounce hook
-function useDebounce<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState<T>(value);
-  useEffect(() => {
-    const handler = setTimeout(() => setDebouncedValue(value), delay);
-    return () => clearTimeout(handler);
-  }, [value, delay]);
-  return debouncedValue;
-}
-
-// ============================================================================
-// Components
-// ============================================================================
-
-const PaymentStatusBadge: React.FC<{ status: string; isOverdue: boolean }> = ({
-  status,
-  isOverdue,
-}) => {
-  if (isOverdue) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
-        style={{
-          backgroundColor: 'var(--color-error-subtle)',
-          color: 'var(--color-error)',
-        }}
-      >
-        <AlertCircle size={12} />
-        Po splatnosti
-      </span>
-    );
-  }
-
-  const styles: Record<string, { bg: string; color: string; icon: React.ReactNode }> = {
-    paid: {
-      bg: 'var(--color-success-subtle)',
-      color: 'var(--color-success)',
-      icon: <CheckCircle size={12} />,
-    },
-    partial: {
-      bg: 'var(--color-warning-subtle)',
-      color: 'var(--color-warning)',
-      icon: <Clock size={12} />,
-    },
-    unpaid: {
-      bg: 'var(--color-bg-tertiary)',
-      color: 'var(--color-text-secondary)',
-      icon: <Clock size={12} />,
-    },
-  };
-
-  const style = styles[status] || styles.unpaid;
-  const labels: Record<string, string> = {
-    paid: 'Uhradené',
-    partial: 'Čiastočne',
-    unpaid: 'Neuhradené',
-  };
-
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
-      style={{ backgroundColor: style.bg, color: style.color }}
-    >
-      {style.icon}
-      {labels[status] || status}
-    </span>
-  );
-};
-
-const ReceivingStatusBadge: React.FC<{ status: string }> = ({ status }) => {
-  const styles: Record<string, { bg: string; color: string }> = {
-    completed: { bg: 'var(--color-success-subtle)', color: 'var(--color-success)' },
-    in_progress: { bg: 'var(--color-info-subtle)', color: 'var(--color-info)' },
-    new: { bg: 'var(--color-warning-subtle)', color: 'var(--color-warning)' },
-    not_started: { bg: 'var(--color-bg-tertiary)', color: 'var(--color-text-tertiary)' },
-    paused: { bg: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' },
-    cancelled: { bg: 'var(--color-error-subtle)', color: 'var(--color-error)' },
-  };
-
-  const labels: Record<string, string> = {
-    completed: 'Prijaté',
-    in_progress: 'Prebieha',
-    new: 'Nové',
-    not_started: 'Nezačaté',
-    paused: 'Pozastavené',
-    cancelled: 'Zrušené',
-  };
-
-  const style = styles[status] || styles.not_started;
-
-  return (
-    <span
-      className="px-2 py-1 rounded-full text-xs font-medium"
-      style={{ backgroundColor: style.bg, color: style.color }}
-    >
-      {labels[status] || status}
-    </span>
-  );
-};
-
-// ============================================================================
-// Filter Row State
-// ============================================================================
-
-interface FilterState {
-  f_invoice_number: string;
-  f_supplier: string;
-  date_from: string;
-  date_to: string;
-  due_from: string;
-  due_to: string;
-  f_amount_min: string;
-  f_amount_max: string;
-  payment_status: string;
-  receiving_status: string;
-}
-
-const initialFilters: FilterState = {
-  f_invoice_number: '',
-  f_supplier: '',
-  date_from: '',
-  date_to: '',
-  due_from: '',
-  due_to: '',
-  f_amount_min: '',
-  f_amount_max: '',
-  payment_status: '',
-  receiving_status: '',
-};
-
-// ============================================================================
-// Main Component
-// ============================================================================
 
 export function InvoicesPage() {
-  const { t } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  // State
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [stats, setStats] = useState<InvoiceStats | null>(null);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const { t, i18n } = useTranslation();
+  const access = useSyncExternalStore(subscribeAccess, accessRevision);
+  const [params, setParams] = useSearchParams();
+  const query = params.toString();
+  const applied = useMemo(() => filtersFromUrl(new URLSearchParams(query)), [query]);
+  const page = Math.max(1, Number.parseInt(params.get('page') || '1', 10) || 1);
+  const [filters, setFilters] = useState(applied);
+  const [data, setData] = useState<InvoiceArchivePage | null>(null);
+  const [stats, setStats] = useState<InvoiceArchiveStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
-  const [summary, setSummary] = useState<InvoiceListResponse['summary'] | null>(null);
+  const [statsError, setStatsError] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [refresh, setRefresh] = useState(0);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [working, setWorking] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [reconcileOpen, setReconcileOpen] = useState(false);
+  const [reconcileSupplier, setReconcileSupplier] = useState('');
+  const [reconcileResult, setReconcileResult] = useState<SupplierInvoiceReconcileResult | null>(null);
+  const [suppliers, setSuppliers] = useState<{ code: string; name: string }[]>([]);
+  const [upload, setUpload] = useState({ supplier_code: '', invoice_number: '', invoice_date: '', due_date: '', vat_included: true });
+  const [file, setFile] = useState<File | null>(null);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [shops, setShops] = useState<{ code: string; name: string }[]>([]);
+  const [sync, setSync] = useState({ shop: '', date_from: '', date_to: '' });
+  const [syncResult, setSyncResult] = useState<ShopInvoiceSyncResult | null>(null);
+  const [syncUncertain, setSyncUncertain] = useState(false);
+  const [retryAt, setRetryAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { if (retryAt > Date.now()) { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); } }, [retryAt]);
 
-  // Upload modal
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
-  const [uploadSupplier, setUploadSupplier] = useState('');
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploadInvoiceNumber, setUploadInvoiceNumber] = useState('');
-  const [uploadInvoiceDate, setUploadInvoiceDate] = useState('');
-  const [uploadDueDate, setUploadDueDate] = useState('');
-  const [uploadVatIncluded, setUploadVatIncluded] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
-
-  // Pagination
-  const page = parseInt(searchParams.get('page') || '1', 10);
-  const pageSize = 25;
-
-  // Filter row state (local, debounced)
-  const [filters, setFilters] = useState<FilterState>(() => ({
-    f_invoice_number: searchParams.get('f_invoice_number') || '',
-    f_supplier: searchParams.get('f_supplier') || '',
-    date_from: searchParams.get('date_from') || '',
-    date_to: searchParams.get('date_to') || '',
-    due_from: searchParams.get('due_from') || '',
-    due_to: searchParams.get('due_to') || '',
-    f_amount_min: searchParams.get('f_amount_min') || '',
-    f_amount_max: searchParams.get('f_amount_max') || '',
-    payment_status: searchParams.get('payment_status') || '',
-    receiving_status: searchParams.get('receiving_status') || '',
-  }));
-
-  const debouncedFilters = useDebounce(filters, 400);
-
-  // Check if any filter is active
-  const hasActiveFilters = useMemo(() => {
-    return Object.values(filters).some((v) => v !== '');
-  }, [filters]);
-
-  // Update filter
-  const updateFilter = useCallback((key: keyof FilterState, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
-  }, []);
-
-  // Clear all filters
-  const clearFilters = useCallback(() => {
-    setFilters(initialFilters);
-    setSearchParams({});
-  }, [setSearchParams]);
-
-  // Sync debounced filters to URL
+  useEffect(() => { setFilters(applied); setSelected(new Set()); }, [applied]);
   useEffect(() => {
-    const params: Record<string, string> = {};
-    Object.entries(debouncedFilters).forEach(([k, v]) => {
-      if (v) params[k] = v;
-    });
-    // Keep page if it exists
-    const currentPage = searchParams.get('page');
-    if (currentPage && currentPage !== '1') {
-      // Reset to page 1 when filters change
-    }
-    setSearchParams(params);
-  }, [debouncedFilters, setSearchParams]);
-
-  // Fetch suppliers from main suppliers endpoint (not invoices/suppliers)
-  // This returns ALL configured suppliers from filesystem configs
+    const controller = new AbortController(); setLoading(true); setError(''); setData(null); setSelected(new Set());
+    getInvoiceArchive(applied, page, controller.signal).then(value => { if (!controller.signal.aborted) setData(value); })
+      .catch(reason => { if (!controller.signal.aborted) setError(invoiceError(reason, t('invoiceArchive.loadFailed'))); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [query, refresh, access, t]);
   useEffect(() => {
-    const fetchSuppliers = async () => {
-      try {
-        // Use /api/suppliers - reads from filesystem supplier configs
-        const res = await fetch(`${API_BASE}/suppliers`);
-        console.log('[InvoicesPage] Suppliers response status:', res.status);
-        
-        if (res.ok) {
-          const data = await res.json();
-          console.log('[InvoicesPage] Suppliers data:', data);
-          
-          // Handle both array and object response formats
-          const supplierList = Array.isArray(data) ? data : (data.suppliers || data.items || []);
-          
-          if (supplierList.length === 0) {
-            console.warn('[InvoicesPage] No suppliers found! Check if supplier configs exist in inventory-data/suppliers/*/config.json');
-          }
-          
-          setSuppliers(supplierList);
-        } else {
-          console.error('[InvoicesPage] Failed to fetch suppliers:', res.status, await res.text());
-        }
-      } catch (e) {
-        console.error('[InvoicesPage] Error fetching suppliers:', e);
-      }
-    };
-    fetchSuppliers();
-  }, []);
-
-  // Fetch stats
+    const controller = new AbortController(); setStats(null); setStatsError(false);
+    getInvoiceArchiveStats(applied.direction, controller.signal).then(value => { if (!controller.signal.aborted) setStats(value); })
+      .catch(() => { if (!controller.signal.aborted) setStatsError(true); });
+    return () => controller.abort();
+  }, [applied.direction, refresh, access]);
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/invoices/stats`);
-        if (res.ok) {
-          setStats(await res.json());
-        }
-      } catch (e) {
-        console.error('Failed to fetch stats:', e);
-      }
-    };
-    fetchStats();
-  }, []);
+    const controller = new AbortController();
+    if (uploadOpen || reconcileOpen) getArchiveSuppliers(controller.signal).then(setSuppliers).catch(() => { if (!controller.signal.aborted) setError(t('invoiceArchive.suppliersFailed')); });
+    if (syncOpen) getArchiveShops(controller.signal).then(value => setShops(value.shops)).catch(() => { if (!controller.signal.aborted) setError(t('invoiceArchive.shopsFailed')); });
+    return () => controller.abort();
+  }, [uploadOpen, reconcileOpen, syncOpen, access]);
 
-  // Fetch invoices
-  const fetchInvoices = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
+  const update = (key: keyof InvoiceArchiveFilters, value: string) => { setFilters(old => ({ ...old, [key]: value })); setSelected(new Set()); };
+  const apply = (values: InvoiceArchiveFilters = filters, nextPage = 1) => setParams(invoiceArchiveQuery({ ...values, page: nextPage }));
+  const status = applied.is_overdue === 'true' ? 'overdue' : applied.payment_status || 'all';
+  const statusFilter = (value: string) => apply({ ...applied, payment_status: ['all', 'overdue'].includes(value) ? '' : value, is_overdue: value === 'overdue' ? 'true' : '' });
+  const download = async (ids: number | number[]) => {
+    if (working) return; setWorking(true); setError('');
+    try { await downloadInvoiceArchive(ids); } catch (reason) { setError(invoiceError(reason, t('invoiceArchive.downloadFailed'))); }
+    finally { setWorking(false); }
+  };
+  const handleUpload = async (event: React.FormEvent) => {
+    event.preventDefault(); if (!file || !upload.supplier_code || working) return;
+    setWorking(true); setError(''); setMessage('');
+    const body = new FormData(); body.append('file', file);
+    Object.entries(upload).forEach(([key, value]) => { if (value !== '') body.append(key, String(value)); });
     try {
-      const params = new URLSearchParams();
-      params.set('page', String(page));
-      params.set('page_size', String(pageSize));
-
-      // Add filters
-      Object.entries(debouncedFilters).forEach(([k, v]) => {
-        if (v) params.set(k, v);
-      });
-
-      const res = await fetch(`${API_BASE}/invoices?${params}`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-
-      const data: InvoiceListResponse = await res.json();
-      setInvoices(data.items);
-      setTotal(data.total);
-      setTotalPages(data.total_pages);
-      setSummary(data.summary);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch invoices');
-    } finally {
-      setLoading(false);
-    }
-  }, [page, pageSize, debouncedFilters]);
-
-  useEffect(() => {
-    fetchInvoices();
-  }, [fetchInvoices]);
-
-  // Handle upload
-  const handleUpload = async () => {
-    if (!uploadSupplier || !uploadFile) {
-      setUploadError('Vyberte dodávateľa a súbor');
-      return;
-    }
-
-    setUploading(true);
-    setUploadError(null);
-    setUploadSuccess(null);
-
+      await uploadArchivedInvoice(body); setFile(null); setUploadOpen(false); setMessage(t('invoiceArchive.uploaded'));
+      setRefresh(value => value + 1);
+    } catch (reason) { setError(invoiceError(reason, t('invoiceArchive.uploadFailed'))); }
+    finally { setWorking(false); }
+  };
+  const syncBatch = async (continuation = false) => {
+    if (working || !sync.shop || !sync.date_from || !sync.date_to) return;
+    setWorking(true); setError(''); setSyncUncertain(false);
     try {
-      const formData = new FormData();
-      formData.append('supplier_code', uploadSupplier);
-      formData.append('file', uploadFile);
-      if (uploadInvoiceNumber) formData.append('invoice_number', uploadInvoiceNumber);
-      if (uploadInvoiceDate) formData.append('invoice_date', uploadInvoiceDate);
-      if (uploadDueDate) formData.append('due_date', uploadDueDate);
-      formData.append('vat_included', String(uploadVatIncluded));
-
-      const res = await fetch(`${API_BASE}/invoices/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `Upload failed: ${res.status}`);
-      }
-
-      const result = await res.json();
-      setUploadSuccess(`Faktúra ${result.invoice_number || uploadFile.name} bola nahratá`);
-
-      // Reset form
-      setUploadFile(null);
-      setUploadInvoiceNumber('');
-      setUploadInvoiceDate('');
-      setUploadDueDate('');
-      setUploadVatIncluded(true);
-
-      // Refresh list
-      fetchInvoices();
-
-      // Close modal after short delay
-      setTimeout(() => {
-        setUploadModalOpen(false);
-        setUploadSuccess(null);
-      }, 1500);
-    } catch (e) {
-      setUploadError(e instanceof Error ? e.message : 'Upload failed');
-    } finally {
-      setUploading(false);
-    }
+      const value = await syncShopInvoiceArchive(sync.shop, { date_from: sync.date_from, date_to: sync.date_to, ...(continuation && syncResult?.next ? syncResult.next : { page: 1, offset: 0 }) });
+      setSyncResult(value); setRetryAt(value.retry_after ? Date.now() + value.retry_after * 1000 : 0); setNow(Date.now()); setRefresh(value => value + 1);
+    } catch (reason) { setSyncUncertain(true); setError(invoiceError(reason, t('invoiceArchive.syncFailed'))); }
+    finally { setWorking(false); }
   };
-
-  // Pagination handlers
-  const goToPage = (newPage: number) => {
-    const params = new URLSearchParams(searchParams);
-    params.set('page', String(newPage));
-    setSearchParams(params);
+  const reconcile = async (continuation = false) => {
+    if (working || !reconcileSupplier) return; setWorking(true); setError('');
+    try {
+      setReconcileResult(await reconcileSupplierInvoiceArchive(reconcileSupplier, continuation ? reconcileResult?.next_after_key || null : null));
+      setRefresh(value => value + 1);
+    } catch (reason) { setError(invoiceError(reason, t('invoiceArchive.reconcileFailed'))); }
+    finally { setWorking(false); }
   };
+  const invoiceTitle = (invoice: ArchivedInvoice) => invoice.invoice_number || invoice.original_filename;
+  const rows = data?.items || [];
 
-  // Filter input style
-  const filterInputStyle: React.CSSProperties = {
-    backgroundColor: 'var(--color-bg-primary)',
-    border: '1px solid var(--color-border-subtle)',
-    borderRadius: '4px',
-    padding: '4px 8px',
-    fontSize: '12px',
-    color: 'var(--color-text-primary)',
-    width: '100%',
-    minWidth: '60px',
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
-            Faktúry
-          </h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-            Zoznam všetkých nahratých faktúr od dodávateľov
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={fetchInvoices}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors"
-            style={{
-              backgroundColor: 'var(--color-bg-secondary)',
-              color: 'var(--color-text-primary)',
-              border: '1px solid var(--color-border-subtle)',
-            }}
-          >
-            <RefreshCw size={16} />
-            Obnoviť
-          </button>
-          <button
-            onClick={() => setUploadModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors"
-            style={{
-              backgroundColor: 'var(--color-accent)',
-              color: 'var(--color-bg-primary)',
-            }}
-          >
-            <Upload size={16} />
-            {t('receiving.uploadArchive')}
-          </button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      {stats && (
-        <div className="grid grid-cols-3 gap-4">
-          <div
-            className="p-4 rounded-xl"
-            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-          >
-            <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              Celkom faktúr
-            </div>
-            <div className="text-2xl font-bold mt-1" style={{ color: 'var(--color-text-primary)' }}>
-              {stats.total_invoices}
-            </div>
-            <div className="text-sm mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
-              {formatCurrency(stats.total_amount)}
-            </div>
-          </div>
-          <div
-            className="p-4 rounded-xl"
-            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-          >
-            <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              Neuhradené
-            </div>
-            <div className="text-2xl font-bold mt-1" style={{ color: 'var(--color-warning)' }}>
-              {stats.unpaid_count}
-            </div>
-            <div className="text-sm mt-1" style={{ color: 'var(--color-warning)' }}>
-              {formatCurrency(stats.unpaid_amount)}
-            </div>
-          </div>
-          <div
-            className="p-4 rounded-xl"
-            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-          >
-            <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              Po splatnosti
-            </div>
-            <div className="text-2xl font-bold mt-1" style={{ color: 'var(--color-error)' }}>
-              {stats.overdue_count}
-            </div>
-            <div className="text-sm mt-1" style={{ color: 'var(--color-error)' }}>
-              {formatCurrency(stats.overdue_amount)}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Clear filters button */}
-      {hasActiveFilters && (
-        <div className="flex items-center gap-2">
-          <Filter size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-          <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-            Aktívne filtre
-          </span>
-          <button
-            onClick={clearFilters}
-            className="text-sm px-2 py-1 rounded"
-            style={{
-              backgroundColor: 'var(--color-bg-tertiary)',
-              color: 'var(--color-accent)',
-            }}
-          >
-            Vymazať filtre
-          </button>
-        </div>
-      )}
-
-      {/* Error */}
-      {error && (
-        <div
-          className="p-4 rounded-xl flex items-center gap-3"
-          style={{ backgroundColor: 'var(--color-error-subtle)', color: 'var(--color-error)' }}
-        >
-          <AlertCircle size={20} />
-          {error}
-        </div>
-      )}
-
-      {/* Summary */}
-      {summary && (
-        <div className="flex items-center gap-4 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-          <span>
-            Zobrazených: <strong>{summary.filtered_count}</strong> faktúr
-          </span>
-          <span>
-            Suma: <strong>{formatCurrency(summary.filtered_total)}</strong>
-          </span>
-          {summary.unpaid_count > 0 && (
-            <span style={{ color: 'var(--color-warning)' }}>
-              Neuhradené: <strong>{formatCurrency(summary.unpaid_total)}</strong>
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Table */}
-      <div
-        className="rounded-xl overflow-hidden"
-        style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-      >
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              {/* Header row */}
-              <tr style={{ backgroundColor: 'var(--color-bg-tertiary)' }}>
-                <th className="px-3 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Faktúra
-                </th>
-                <th className="px-3 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Dodávateľ
-                </th>
-                <th className="px-3 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Dátum
-                </th>
-                <th className="px-3 py-3 text-left font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Splatnosť
-                </th>
-                <th className="px-3 py-3 text-right font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Suma
-                </th>
-                <th className="px-3 py-3 text-center font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Položky
-                </th>
-                <th className="px-3 py-3 text-center font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Platba
-                </th>
-                <th className="px-3 py-3 text-center font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Príjem
-                </th>
-                <th className="px-3 py-3 text-center font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                  Súbor
-                </th>
-              </tr>
-
-              {/* Filter row */}
-              <tr style={{ backgroundColor: 'var(--color-bg-secondary)' }}>
-                <td className="px-2 py-2">
-                  <input
-                    type="text"
-                    placeholder="Číslo / Názov..."
-                    value={filters.f_invoice_number}
-                    onChange={(e) => updateFilter('f_invoice_number', e.target.value)}
-                    style={filterInputStyle}
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <input
-                    type="text"
-                    placeholder="Dodávateľ..."
-                    value={filters.f_supplier}
-                    onChange={(e) => updateFilter('f_supplier', e.target.value)}
-                    style={filterInputStyle}
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <div className="flex gap-1">
-                    <input
-                      type="date"
-                      value={filters.date_from}
-                      onChange={(e) => updateFilter('date_from', e.target.value)}
-                      style={{ ...filterInputStyle, width: '50%' }}
-                      title="Od"
-                    />
-                    <input
-                      type="date"
-                      value={filters.date_to}
-                      onChange={(e) => updateFilter('date_to', e.target.value)}
-                      style={{ ...filterInputStyle, width: '50%' }}
-                      title="Do"
-                    />
-                  </div>
-                </td>
-                <td className="px-2 py-2">
-                  <div className="flex gap-1">
-                    <input
-                      type="date"
-                      value={filters.due_from}
-                      onChange={(e) => updateFilter('due_from', e.target.value)}
-                      style={{ ...filterInputStyle, width: '50%' }}
-                      title="Od"
-                    />
-                    <input
-                      type="date"
-                      value={filters.due_to}
-                      onChange={(e) => updateFilter('due_to', e.target.value)}
-                      style={{ ...filterInputStyle, width: '50%' }}
-                      title="Do"
-                    />
-                  </div>
-                </td>
-                <td className="px-2 py-2">
-                  <div className="flex gap-1">
-                    <input
-                      type="number"
-                      placeholder="Min"
-                      value={filters.f_amount_min}
-                      onChange={(e) => updateFilter('f_amount_min', e.target.value)}
-                      style={{ ...filterInputStyle, width: '50%' }}
-                    />
-                    <input
-                      type="number"
-                      placeholder="Max"
-                      value={filters.f_amount_max}
-                      onChange={(e) => updateFilter('f_amount_max', e.target.value)}
-                      style={{ ...filterInputStyle, width: '50%' }}
-                    />
-                  </div>
-                </td>
-                <td className="px-2 py-2">
-                  {/* Items filter - not commonly needed */}
-                </td>
-                <td className="px-2 py-2">
-                  <select
-                    value={filters.payment_status}
-                    onChange={(e) => updateFilter('payment_status', e.target.value)}
-                    style={filterInputStyle}
-                  >
-                    <option value="">Všetky</option>
-                    <option value="unpaid">Neuhradené</option>
-                    <option value="partial">Čiastočne</option>
-                    <option value="paid">Uhradené</option>
-                  </select>
-                </td>
-                <td className="px-2 py-2">
-                  <select
-                    value={filters.receiving_status}
-                    onChange={(e) => updateFilter('receiving_status', e.target.value)}
-                    style={filterInputStyle}
-                  >
-                    <option value="">Všetky</option>
-                    <option value="not_started">Nezačaté</option>
-                    <option value="in_progress">Prebieha</option>
-                    <option value="completed">Prijaté</option>
-                  </select>
-                </td>
-                <td className="px-2 py-2">
-                  {/* Download column - no filter */}
-                </td>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center" style={{ color: 'var(--color-text-tertiary)' }}>
-                    <RefreshCw className="animate-spin inline-block mr-2" size={20} />
-                    Načítavam...
-                  </td>
-                </tr>
-              ) : invoices.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center" style={{ color: 'var(--color-text-tertiary)' }}>
-                    <FileText className="inline-block mr-2 mb-1" size={24} />
-                    Žiadne faktúry
-                  </td>
-                </tr>
-              ) : (
-                invoices.map((invoice) => (
-                  <tr
-                    key={invoice.id}
-                    className="border-t transition-colors"
-                    style={{ borderColor: 'var(--color-border-subtle)' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                  >
-                    <td className="px-3 py-3">
-                      <Link
-                        to={`/invoices/${invoice.id}`}
-                        className="font-medium hover:underline"
-                        style={{ color: 'var(--color-accent)' }}
-                      >
-                        {invoice.invoice_number || invoice.original_filename}
-                      </Link>
-                      {invoice.invoice_number && (
-                        <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-                          {invoice.original_filename}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-2">
-                        <Building2 size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-                        <span>{invoice.supplier_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3" style={{ color: 'var(--color-text-secondary)' }}>
-                      {formatDate(invoice.invoice_date)}
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-2">
-                        <Calendar size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-                        <span style={{ color: invoice.is_overdue ? 'var(--color-error)' : 'var(--color-text-secondary)' }}>
-                          {formatDate(invoice.due_date)}
-                        </span>
-                        {invoice.days_until_due !== null && !invoice.is_overdue && invoice.days_until_due <= 7 && invoice.days_until_due >= 0 && (
-                          <span className="text-xs" style={{ color: 'var(--color-warning)' }}>
-                            ({invoice.days_until_due}d)
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-right font-mono">
-                      <div>
-                        {formatCurrency(invoice.total_with_vat || invoice.total_amount, invoice.currency)}
-                      </div>
-                      {!invoice.vat_included && invoice.total_amount && (
-                        <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                          +{invoice.vat_rate}% DPH
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-3 text-center" style={{ color: 'var(--color-text-secondary)' }}>
-                      {invoice.items_count}
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <PaymentStatusBadge status={invoice.payment_status} isOverdue={invoice.is_overdue} />
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <ReceivingStatusBadge status={invoice.receiving_status} />
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <a
-                        href={`${API_BASE}/invoices/${invoice.id}/download`}
-                        className="inline-flex items-center justify-center p-1.5 rounded hover:bg-opacity-80"
-                        style={{ backgroundColor: 'var(--color-bg-tertiary)' }}
-                        title="Stiahnuť"
-                      >
-                        <Download size={14} style={{ color: 'var(--color-text-secondary)' }} />
-                      </a>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div
-            className="flex items-center justify-between px-4 py-3 border-t"
-            style={{ borderColor: 'var(--color-border-subtle)' }}
-          >
-            <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              Strana {page} z {totalPages} ({total} záznamov)
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => goToPage(page - 1)}
-                disabled={page <= 1}
-                className="p-2 rounded-lg disabled:opacity-50"
-                style={{ backgroundColor: 'var(--color-bg-tertiary)' }}
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <button
-                onClick={() => goToPage(page + 1)}
-                disabled={page >= totalPages}
-                className="p-2 rounded-lg disabled:opacity-50"
-                style={{ backgroundColor: 'var(--color-bg-tertiary)' }}
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Upload Modal */}
-      {uploadModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
-        >
-          <div
-            className="w-full max-w-md p-6 rounded-xl"
-            style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold" style={{ color: 'var(--color-text-primary)' }}>
-                {t('receiving.uploadArchive')}
-              </h2>
-              <button
-                onClick={() => setUploadModalOpen(false)}
-                className="p-1 rounded hover:bg-opacity-80"
-                style={{ backgroundColor: 'var(--color-bg-tertiary)' }}
-              >
-                <X size={20} style={{ color: 'var(--color-text-secondary)' }} />
-              </button>
-            </div>
-
-            {uploadError && (
-              <div
-                className="p-3 rounded-lg mb-4 flex items-center gap-2"
-                style={{ backgroundColor: 'var(--color-error-subtle)', color: 'var(--color-error)' }}
-              >
-                <AlertCircle size={16} />
-                {uploadError}
-              </div>
-            )}
-
-            {uploadSuccess && (
-              <div
-                className="p-3 rounded-lg mb-4 flex items-center gap-2"
-                style={{ backgroundColor: 'var(--color-success-subtle)', color: 'var(--color-success)' }}
-              >
-                <CheckCircle size={16} />
-                {uploadSuccess}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              {/* Supplier */}
-              <div>
-                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                  Dodávateľ *
-                </label>
-                <p>{t('receiving.archiveHelp')} <Link to={`/receiving${uploadSupplier ? `?supplier=${encodeURIComponent(uploadSupplier)}` : ''}`}>{t('receiving.goToReceipt')}</Link></p>
-                <select
-                  value={uploadSupplier}
-                  onChange={(e) => setUploadSupplier(e.target.value)}
-                  className="w-full p-2 rounded-lg"
-                  style={{
-                    backgroundColor: 'var(--color-bg-primary)',
-                    border: '1px solid var(--color-border-subtle)',
-                    color: 'var(--color-text-primary)',
-                  }}
-                >
-                  <option value="">Vyberte dodávateľa</option>
-                  {suppliers.length === 0 && (
-                    <option value="" disabled>
-                      (Žiadni dodávatelia - skontrolujte konfiguráciu)
-                    </option>
-                  )}
-                  {suppliers.map((s) => (
-                    <option key={s.code} value={s.code}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-                {suppliers.length === 0 && (
-                  <p className="text-xs mt-1" style={{ color: 'var(--color-warning)' }}>
-                    Tip: Skontrolujte či existujú supplier configs v inventory-data/suppliers/*/config.json
-                  </p>
-                )}
-              </div>
-
-              {/* File */}
-              <div>
-                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                  Súbor *
-                </label>
-                <input
-                  type="file"
-                  accept=".pdf,.csv,.xlsx,.xls,.doc,.docx,.xml,.txt"
-                  onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                  className="w-full p-2 rounded-lg"
-                  style={{
-                    backgroundColor: 'var(--color-bg-primary)',
-                    border: '1px solid var(--color-border-subtle)',
-                    color: 'var(--color-text-primary)',
-                  }}
-                />
-                {uploadFile && (
-                  <div className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {uploadFile.name} ({(uploadFile.size / 1024).toFixed(1)} KB)
-                  </div>
-                )}
-              </div>
-
-              {/* Invoice number */}
-              <div>
-                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                  Číslo faktúry (voliteľné)
-                </label>
-                <input
-                  type="text"
-                  value={uploadInvoiceNumber}
-                  onChange={(e) => setUploadInvoiceNumber(e.target.value)}
-                  placeholder="Automaticky z názvu súboru"
-                  className="w-full p-2 rounded-lg"
-                  style={{
-                    backgroundColor: 'var(--color-bg-primary)',
-                    border: '1px solid var(--color-border-subtle)',
-                    color: 'var(--color-text-primary)',
-                  }}
-                />
-              </div>
-
-              {/* Dates */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                    Dátum vystavenia
-                  </label>
-                  <input
-                    type="date"
-                    value={uploadInvoiceDate}
-                    onChange={(e) => setUploadInvoiceDate(e.target.value)}
-                    className="w-full p-2 rounded-lg"
-                    style={{
-                      backgroundColor: 'var(--color-bg-primary)',
-                      border: '1px solid var(--color-border-subtle)',
-                      color: 'var(--color-text-primary)',
-                    }}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                    Splatnosť
-                  </label>
-                  <input
-                    type="date"
-                    value={uploadDueDate}
-                    onChange={(e) => setUploadDueDate(e.target.value)}
-                    className="w-full p-2 rounded-lg"
-                    style={{
-                      backgroundColor: 'var(--color-bg-primary)',
-                      border: '1px solid var(--color-border-subtle)',
-                      color: 'var(--color-text-primary)',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* VAT */}
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="vatIncluded"
-                  checked={uploadVatIncluded}
-                  onChange={(e) => setUploadVatIncluded(e.target.checked)}
-                />
-                <label htmlFor="vatIncluded" className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                  DPH je zahrnutá v cenách
-                </label>
-              </div>
-
-              {/* Submit */}
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  onClick={() => setUploadModalOpen(false)}
-                  className="px-4 py-2 rounded-lg"
-                  style={{
-                    backgroundColor: 'var(--color-bg-tertiary)',
-                    color: 'var(--color-text-primary)',
-                  }}
-                >
-                  Zrušiť
-                </button>
-                <button
-                  onClick={handleUpload}
-                  disabled={uploading || !uploadSupplier || !uploadFile}
-                  className="px-4 py-2 rounded-lg disabled:opacity-50"
-                  style={{
-                    backgroundColor: 'var(--color-accent)',
-                    color: 'var(--color-bg-primary)',
-                  }}
-                >
-                  {uploading ? t('common.loading') : t('receiving.uploadArchive')}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+  return <div className="invoice-archive">
+    <header><div><h1>{t('invoiceArchive.title')}</h1><p className="muted">{t('invoiceArchive.subtitle')}</p></div>
+      <div className="actions"><button data-testid="invoice-refresh" disabled={working || loading} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16} />{t('common.refresh')}</button>
+        {applied.direction === 'purchase' ? <><button data-testid="invoice-reconcile-open" disabled={working} onClick={() => setReconcileOpen(value => !value)}>{t('invoiceArchive.reconcile')}</button><button className="primary" data-testid="invoice-upload-open" disabled={working} onClick={() => setUploadOpen(value => !value)}><Upload size={16} />{t('receiving.uploadArchive')}</button></>
+          : <button className="primary" data-testid="invoice-sync-open" disabled={working} onClick={() => setSyncOpen(value => !value)}><Download size={16} />{t('invoiceArchive.syncShop')}</button>}</div>
+    </header>
+    <div className="status-tabs" aria-label={t('invoiceArchive.direction')}>
+      {(['purchase', 'sale'] as const).map(direction => <button key={direction} data-testid={`invoice-direction-${direction}`} disabled={working} aria-pressed={applied.direction === direction} onClick={() => { apply({ ...invoiceArchiveDefaults, direction }); setUploadOpen(false); setSyncOpen(false); setReconcileOpen(false); }}>
+        {t(`invoiceArchive.directionLabels.${direction}`)}</button>)}
     </div>
-  );
+    {error && <div role="alert" className="notice error" data-testid="invoice-error">{error}</div>}
+    {message && <div role="status" className="notice success">{message}</div>}
+    {reconcileOpen && <section className="panel"><h2>{t('invoiceArchive.reconcile')}</h2><p className="muted small">{t('invoiceArchive.reconcileHelp')}</p>
+      <div className="fields" style={{ marginTop: '.8rem' }}><label>{t('invoiceArchive.supplier')}<select data-testid="invoice-reconcile-supplier" disabled={working} value={reconcileSupplier} onChange={event => { setReconcileSupplier(event.target.value); setReconcileResult(null); }}><option value="">{t('invoiceArchive.chooseSupplier')}</option>{suppliers.map(supplier => <option key={supplier.code} value={supplier.code}>{supplier.name}</option>)}</select></label></div>
+      <footer><button disabled={working} onClick={() => setReconcileOpen(false)}>{t('common.close')}</button><button className="primary" data-testid="invoice-reconcile-start" disabled={working || !reconcileSupplier} onClick={() => reconcile()}>{t('invoiceArchive.reconcileStart')}</button></footer>
+      {reconcileResult && <><p role="status">{t('invoiceArchive.reconcileResult', { scanned: reconcileResult.scanned, created: reconcileResult.created, existing: reconcileResult.existing, conflicts: reconcileResult.conflicts.length })}</p>
+        {reconcileResult.conflicts.length > 0 && <ul>{reconcileResult.conflicts.map((row, index) => <li key={index}>{row.source_key}: {row.code}</li>)}</ul>}
+        {reconcileResult.next_after_key ? <button disabled={working} data-testid="invoice-reconcile-next" onClick={() => reconcile(true)}>{t('invoiceArchive.reconcileNext')}</button> : <p className="muted small">{t('invoiceArchive.reconcileDone')}</p>}
+      </>}
+    </section>}
+    {uploadOpen && <form className="panel" onSubmit={handleUpload} data-testid="invoice-upload-form"><h2>{t('receiving.uploadArchive')}</h2>
+      <p className="muted small">{t('receiving.archiveHelp')} <Link to="/receiving">{t('receiving.goToReceipt')}</Link></p>
+      <fieldset disabled={working}><div className="fields" style={{ marginTop: '.9rem' }}>
+        <label>{t('invoiceArchive.supplier')}<select required data-testid="upload-supplier" value={upload.supplier_code} onChange={event => setUpload({ ...upload, supplier_code: event.target.value })}><option value="">{t('invoiceArchive.chooseSupplier')}</option>{suppliers.map(row => <option key={row.code} value={row.code}>{row.name}</option>)}</select></label>
+        <label>{t('invoiceArchive.file')}<input required type="file" accept=".pdf,.csv,.xlsx,.xls,.doc,.docx,.xml,.txt,.jpg,.jpeg,.png" onChange={event => setFile(event.target.files?.[0] || null)} /></label>
+        {(['invoice_number', 'invoice_date', 'due_date'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.endsWith('date') ? 'date' : 'text'} value={upload[key]} onChange={event => setUpload({ ...upload, [key]: event.target.value })} /></label>)}
+        <label className="check"><input type="checkbox" checked={upload.vat_included} onChange={event => setUpload({ ...upload, vat_included: event.target.checked })} />{t('invoiceArchive.vatIncluded')}</label>
+      </div><footer><button type="button" onClick={() => setUploadOpen(false)}>{t('common.cancel')}</button><button className="primary" disabled={!file || !upload.supplier_code}>{t('receiving.uploadArchive')}</button></footer></fieldset>
+    </form>}
+    {syncOpen && <section className="panel"><h2>{t('invoiceArchive.syncShop')}</h2><p className="muted small">{t('invoiceArchive.syncHelp')}</p>
+      <fieldset disabled={working}><div className="fields" style={{ marginTop: '.9rem' }}>
+        <label>{t('invoiceArchive.shop')}<select data-testid="sync-shop" value={sync.shop} onChange={event => { setSync({ ...sync, shop: event.target.value }); setSyncResult(null); }}><option value="">{t('invoiceArchive.chooseShop')}</option>{shops.map(shop => <option key={shop.code} value={shop.code}>{shop.name}</option>)}</select></label>
+        {(['date_from', 'date_to'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input data-testid={`sync-${key}`} type="date" value={sync[key]} onChange={event => { setSync({ ...sync, [key]: event.target.value }); setSyncResult(null); }} /></label>)}
+      </div><footer><button onClick={() => setSyncOpen(false)}>{t('common.close')}</button><button className="primary" data-testid="invoice-sync-start" disabled={!sync.shop || !sync.date_from || !sync.date_to || sync.date_to < sync.date_from} onClick={() => syncBatch()}>{t('invoiceArchive.syncStart')}</button></footer></fieldset>
+      {syncUncertain && <p className="notice warning">{t('invoiceArchive.syncUncertain')}</p>}
+      {syncResult && <div style={{ marginTop: '.9rem' }}><p role="status">{t('invoiceArchive.syncResult', { imported: syncResult.imported, unchanged: syncResult.unchanged, failed: syncResult.failed })}</p>
+        {syncResult.stopped_error && <p className="notice warning">{t('invoiceArchive.syncStopped')} ({syncResult.stopped_error})</p>}
+        {syncResult.items.some(row => row.error) && <ul>{syncResult.items.filter(row => row.error).map((row, index) => <li key={index}>{row.invoice_number}: {row.error}</li>)}</ul>}
+        {syncResult.next ? <button data-testid="invoice-sync-next" disabled={working || retryAt > now} onClick={() => syncBatch(true)}>{t('invoiceArchive.syncNext')}{retryAt > now ? ` (${Math.ceil((retryAt - now) / 1000)} s)` : ''}</button> : <p className="muted small">{t('invoiceArchive.syncDone')}</p>}
+      </div>}
+    </section>}
+    {stats && <ArchiveDashboard stats={stats} />}
+    {statsError && <p className="notice warning">{t('invoiceArchive.statsFailed')}</p>}
+    <section className="panel">
+      <div className="status-tabs" aria-label={t('invoiceArchive.paymentStatus')}>
+        {['all', 'unpaid', 'partial', 'paid', 'overdue', 'unknown'].map(value => <button key={value} data-testid={`invoice-status-${value}`} disabled={working} aria-pressed={status === value} onClick={() => statusFilter(value)}>{t(`invoiceArchive.status.${value}`)}</button>)}
+      </div>
+      <form onSubmit={event => { event.preventDefault(); apply(); }} style={{ marginTop: '1rem' }}><fieldset disabled={working}>
+        <div className="fields">
+          <label>{t('invoiceArchive.invoice_number')}<input data-testid="invoice-search" value={filters.f_invoice_number} onChange={event => update('f_invoice_number', event.target.value)} /></label>
+          <label>{t(applied.direction === 'purchase' ? 'invoiceArchive.supplier' : 'invoiceArchive.source')}<input value={filters.f_supplier} onChange={event => update('f_supplier', event.target.value)} /></label>
+          <label>{t('invoiceArchive.date_from')}<input type="date" data-testid="invoice-date-from" value={filters.date_from} onChange={event => update('date_from', event.target.value)} /></label>
+          <label>{t('invoiceArchive.date_to')}<input type="date" value={filters.date_to} onChange={event => update('date_to', event.target.value)} /></label>
+        </div>
+        <details style={{ marginTop: '.8rem' }}><summary>{t('invoiceArchive.moreFilters')}</summary><div className="fields">
+          {(['due_from', 'due_to', 'f_amount_min', 'f_amount_max', 'f_currency'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.startsWith('due') ? 'date' : 'text'} inputMode={key.startsWith('f_amount') ? 'decimal' : undefined} value={filters[key]} onChange={event => update(key, event.target.value)} /></label>)}
+          {applied.direction === 'purchase' && <label>{t('invoiceArchive.receiving')}<select value={filters.receiving_status} onChange={event => update('receiving_status', event.target.value)}>{['', 'not_started', 'in_progress', 'completed'].map(value => <option key={value} value={value}>{t(value ? `invoiceArchive.receivingStatus.${value}` : 'invoiceArchive.status.all')}</option>)}</select></label>}
+          <label>{t('invoiceArchive.sort')}<select value={filters.sort_by} onChange={event => update('sort_by', event.target.value)}>{['invoice_date', 'due_date', 'created_at', 'invoice_number', 'total_amount'].map(value => <option key={value} value={value}>{t(`invoiceArchive.${value}`)}</option>)}</select></label>
+          <label>{t('invoiceArchive.sortOrder')}<select value={filters.sort_order} onChange={event => update('sort_order', event.target.value)}><option value="desc">{t('invoiceArchive.desc')}</option><option value="asc">{t('invoiceArchive.asc')}</option></select></label>
+        </div></details>
+        <div className="actions"><button type="submit" data-testid="invoice-apply-filters">{t('invoiceArchive.applyFilters')}</button><button type="button" className="quiet" onClick={() => apply({ ...invoiceArchiveDefaults, direction: applied.direction })}>{t('invoiceArchive.clearFilters')}</button></div>
+      </fieldset></form>
+    </section>
+    <section className="panel">
+      <header><div><h2>{t('invoiceArchive.archive')}</h2><p className="muted small">{t('invoiceArchive.documentsCount', { count: data?.total || 0 })}</p></div><div className="actions">
+        <span className="muted small">{t('invoiceArchive.selectedCount', { count: selected.size })}</span><button className="primary" data-testid="invoice-batch-download" disabled={working || loading || !selected.size} onClick={() => download([...selected])}><Download size={15} />{t('invoiceArchive.accountantExport')}</button>
+      </div></header><p className="muted small">{t('invoiceArchive.exportHelp')}</p>
+      <div className="table-scroll"><table data-testid="invoice-table"><thead><tr>
+        <th><input aria-label={t('invoiceArchive.selectPage')} data-testid="invoice-select-page" type="checkbox" disabled={working || loading || !rows.length} checked={rows.length > 0 && rows.every(row => selected.has(row.id))} onChange={event => setSelected(event.target.checked ? new Set(rows.map(row => row.id)) : new Set())} /></th>
+        {['invoice_number', applied.direction === 'purchase' ? 'supplier' : 'source', 'invoice_date', 'due_date'].map(key => <th key={key}>{t(`invoiceArchive.${key}`)}</th>)}
+        <th className="amount">{t('invoiceArchive.total_amount')}</th><th className="amount">{t('invoiceArchive.outstanding')}</th><th>{t('invoiceArchive.paymentStatus')}</th>{applied.direction === 'purchase' && <th>{t('invoiceArchive.receiving')}</th>}<th>{t('invoiceArchive.file')}</th>
+      </tr></thead><tbody>
+        {loading ? <tr><td colSpan={10} className="empty" role="status">{t('common.loading')}</td></tr> : !rows.length ? <tr><td colSpan={10} className="empty"><FileText size={22} style={{ display: 'inline', marginRight: '.5rem' }} />{t('invoiceArchive.empty')}</td></tr> : rows.map(invoice => <tr key={invoice.id} data-testid={`invoice-row-${invoice.id}`}>
+          <td><input type="checkbox" disabled={working} aria-label={t('invoiceArchive.selectInvoice', { number: invoiceTitle(invoice) })} checked={selected.has(invoice.id)} onChange={event => setSelected(old => { const next = new Set(old); event.target.checked ? next.add(invoice.id) : next.delete(invoice.id); return next; })} /></td>
+          <td><Link to={`/invoices/${invoice.id}`}>{invoiceTitle(invoice)}</Link><span className="secondary file-name">{invoice.original_filename}</span>{invoice.document_type && invoice.document_type !== 'invoice' && <span className="badge">{t(`invoiceArchive.documentType.${invoice.document_type}`, { defaultValue: invoice.document_type })}</span>}</td>
+          <td>{invoice.supplier_name || invoice.shop_name || invoice.shop_code || '—'}{invoice.customer_name && <span className="secondary">{invoice.customer_name}</span>}</td>
+          <td>{invoiceDate(invoice.invoice_date, i18n.language)}</td><td>{invoiceDate(invoice.due_date, i18n.language)}</td>
+          <td className="amount">{invoiceMoney(invoice.finance ? invoice.finance.gross_amount : invoice.total_with_vat ?? invoice.total_amount, invoice.currency, i18n.language)}</td>
+          <td className="amount">{invoiceMoney(invoice.finance?.outstanding_amount, invoice.currency, i18n.language)}</td>
+          <td><InvoicePaymentBadge invoice={invoice} /></td>{applied.direction === 'purchase' && <td><span className="badge">{t(`invoiceArchive.receivingStatus.${invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</span></td>}
+          <td><button className="quiet" disabled={working} data-testid={`invoice-download-${invoice.id}`} aria-label={t('invoiceArchive.downloadInvoice', { number: invoiceTitle(invoice) })} onClick={() => download(invoice.id)}><Download size={15} /></button></td>
+        </tr>)}
+      </tbody></table></div>
+      <footer><span className="muted small">{t('invoiceArchive.pagination', { page, pages: Math.max(1, data?.total_pages || 1) })}</span><div className="actions"><button data-testid="invoice-prev" aria-label={t('invoiceArchive.previousPage')} disabled={loading || working || page <= 1} onClick={() => apply(applied, page - 1)}><ChevronLeft size={17} /></button><button data-testid="invoice-next" aria-label={t('invoiceArchive.nextPage')} disabled={loading || working || page >= (data?.total_pages || 1)} onClick={() => apply(applied, page + 1)}><ChevronRight size={17} /></button></div></footer>
+    </section>
+  </div>;
 }
-
 export default InvoicesPage;

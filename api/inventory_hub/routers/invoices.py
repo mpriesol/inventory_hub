@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import io, csv, json, hashlib
+import io, csv, json, hashlib, asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple
@@ -268,7 +268,7 @@ def _dispatch_northfinder(cfg: Dict, data_root: Path, supplier: str, months_back
     )
 
 @router.post("/suppliers/{supplier}/invoices/refresh")
-def invoices_refresh(supplier: str, months_back: Optional[int] = Query(None)) -> Dict[str, Any]:
+async def invoices_refresh(supplier: str, months_back: Optional[int] = Query(None)) -> Dict[str, Any]:
     cfg = load_supplier_config(supplier)
     strat = _cfg_get(cfg, "invoices", "download", "strategy")
     if not strat:
@@ -276,18 +276,20 @@ def invoices_refresh(supplier: str, months_back: Optional[int] = Query(None)) ->
 
     mb = int(months_back or _cfg_get(cfg, "invoices", "months_back_default", default=6) or 3)
     data_root = Path(settings.INVENTORY_DATA_ROOT).expanduser()
+    prev_map = _load_prev_index_map(supplier)
 
     if strat == "paul-lange-web":
-        res = _dispatch_paul_lange(cfg, data_root, supplier, mb)
+        res = await asyncio.to_thread(_dispatch_paul_lange, cfg, data_root, supplier, mb)
     elif strat == "northfinder-web":
-        res = _dispatch_northfinder(cfg, data_root, supplier, mb)
+        res = await asyncio.to_thread(_dispatch_northfinder, cfg, data_root, supplier, mb)
     elif strat == "manual":
-        return {"ok": True, "downloaded": 0, "skipped": 0, "failed": 0, "pages": 0, "log_files": [], "message": "Manual strategy - no auto-download"}
+        from inventory_hub.services.invoice_archive import archive_after_refresh
+        return {"ok": True, "downloaded": 0, "skipped": 0, "failed": 0, "pages": 0, "log_files": [],
+                "message": "Manual strategy - no auto-download", "archive": await archive_after_refresh(supplier)}
     else:
         raise HTTPException(400, detail=f"Unsupported strategy: {strat}")
 
     # carry-over processed status from previous index
-    prev_map = _load_prev_index_map(supplier)
     idx_path = _index_latest_path(supplier)
     if idx_path.is_file():
         try:
@@ -316,6 +318,7 @@ def invoices_refresh(supplier: str, months_back: Optional[int] = Query(None)) ->
 
     errors   = getattr(res, "errors", []) or []
     log_files = getattr(res, "log_files", []) or []
+    from inventory_hub.services.invoice_archive import archive_after_refresh
     return {
         "ok": res.failed == 0 and len(errors) == 0,
         "downloaded": res.downloaded,
@@ -324,6 +327,7 @@ def invoices_refresh(supplier: str, months_back: Optional[int] = Query(None)) ->
         "pages": getattr(res, "pages", 0),
         "errors": errors,
         "log_files": log_files,
+        "archive": await archive_after_refresh(supplier),
     }
 
 # ── Routes: index / reindex ───────────────────────────────────────────────────
