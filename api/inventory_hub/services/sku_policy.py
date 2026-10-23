@@ -105,6 +105,21 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
     code. Brand namespaces generate the prefix; source evidence remains scoped.
     Optional verified proofs are checked, never inferred from a feed field name.
     """
+    if item is not None and not item.leaf_confirmed and (barcodes or expected_product_id or supplier_id and supplier_sku):
+        # An incomplete new-code proposal must not make an already identified
+        # card depend on brand registration or a missing manufacturer code.
+        # Only independent current relationships are used, never a guessed SKU.
+        existing_identity = RemoteIdentity(0, barcodes=tuple(barcodes), supplier_id=supplier_id,
+            supplier_sku=supplier_sku, expected_product_id=expected_product_id)
+        existing_index = await load_identity_index(db, 0, [existing_identity], local=True)
+        existing_resolution = existing_index.resolve(existing_identity)
+        if existing_resolution.status == 'conflict':
+            return _result('conflict', reasons=existing_resolution.reasons,
+                           candidates=existing_resolution.candidate_product_ids)
+        existing_product = existing_index.products.get(existing_resolution.product_id)
+        if existing_product is not None:
+            return _result('existing', sku=existing_product.sku, product_id=existing_product.id,
+                           candidates=[existing_product.id])
     brand = None
     claims = []
     key = None
@@ -188,6 +203,13 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
                        candidates=[product.id], brand_id=brand.id if brand else None)
     if item is None:
         return _result("blocked", reasons=["sku_identity_required"])
+    # Supplier aliases and GTINs can still resolve an existing card above. They
+    # never supply the manufacturer product code for a newly allocated SKU.
+    if item_type != "service":
+        if brand.kind != "brand" or item.code_kind != "manufacturer":
+            return _result("blocked", brand_id=brand.id, reasons=["sku_manufacturer_code_required"])
+        if not item.leaf_confirmed:
+            return _result("blocked", brand_id=brand.id, reasons=["sku_manufacturer_code_unverified"])
     return _result("new", sku=proposed, brand_id=brand.id)
 
 

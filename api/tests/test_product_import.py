@@ -34,6 +34,47 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_only_confirmed_manufacturer_mapping_allocates_its_exact_code(self):
+        item = row(manufacturer_code='00042-M')
+        item['source'].update(manufacturer_code='00042-M', mapping_provenance={'fields': {'manufacturer_code': {
+            'scope': 'feed', 'revision': 3, 'source': 'ManufacturerVariantCode',
+            'manufacturer_code_confirmed': True, 'value': '00042-M'}}})
+        proof = service.mapped_manufacturer_identity(item, 'paul-lange')
+        self.assertEqual((proof['source_code'], proof['code_kind'], proof['leaf_confirmed']),
+                         ('00042-M', 'manufacturer', True))
+        self.assertNotEqual(proof['source_code'], item['values']['supplier_code'])
+        self.assertIn('ManufacturerVariantCode', proof['source_ref'])
+        for mutation in ('unconfirmed', 'edited_code', 'edited_brand', 'shop_scope', 'stale_value'):
+            changed = deepcopy(item)
+            field = changed['source']['mapping_provenance']['fields']['manufacturer_code']
+            if mutation == 'unconfirmed': field['manufacturer_code_confirmed'] = False
+            elif mutation == 'edited_code': changed['values']['manufacturer_code'] = 'OTHER'
+            elif mutation == 'edited_brand': changed['values']['brand'] = 'OTHER'
+            elif mutation == 'shop_scope': field['scope'] = 'biketrek'
+            else: field['value'] = 'OTHER'
+            with self.subTest(mutation=mutation):
+                self.assertIsNone(service.mapped_manufacturer_identity(changed, 'paul-lange'))
+        self.assertIsNone(service.mapped_manufacturer_identity(row(manufacturer_code='unverified source MPN'), 'paul-lange'))
+
+    def test_confirmed_mapping_freezes_manufacturer_identity_without_using_supplier_code(self):
+        from inventory_hub.services import sku_policy
+        item = row(manufacturer_code='00042-M')
+        item['source'].update(manufacturer_code='00042-M', mapping_provenance={'fields': {'manufacturer_code': {
+            'scope': 'feed', 'revision': 3, 'source': 'ManufacturerVariantCode',
+            'manufacturer_code_confirmed': True, 'value': '00042-M'}}})
+        doc = document([item])
+        draft = SimpleNamespace(supplier='paul-lange', document=doc)
+        db = SimpleNamespace(scalar=AsyncMock(return_value=17))
+        with patch.object(catalog_import, 'local_identities', AsyncMock(return_value=({}, set()))), \
+             patch.object(sku_policy, 'preview_sku', AsyncMock(return_value={'status': 'new',
+                 'sku': 'TT-00042-M', 'brand_id': 1, 'reasons': []})) as preview:
+            asyncio.run(service.prepare_sku_rows(db, draft, doc))
+        self.assertEqual(preview.call_args.args[1].code_kind, 'manufacturer')
+        self.assertEqual(preview.call_args.args[1].source_code, '00042-M')
+        self.assertEqual(preview.call_args.kwargs['supplier_sku'], 'A-001')
+        self.assertTrue(item['values']['sku_identity']['leaf_confirmed'])
+        self.assertEqual(item['values']['code'], 'TT-00042-M')
+
     def test_legacy_code_candidate_does_not_become_independent_sku_evidence(self):
         from inventory_hub.services import sku_policy
         item = row(sku_identity={'brand': 'TEST', 'source_code': 'LEAF-42',

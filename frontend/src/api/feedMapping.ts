@@ -8,6 +8,7 @@ export interface FeedTransform {
 export interface FeedBinding {
   target: string; source?: string; constant?: unknown; default?: unknown; transforms: FeedTransform[];
   param_name_path?: string; param_value_path?: string; param_match_name?: string;
+  manufacturer_code_confirmed?: boolean;
 }
 export interface FeedDefinition {
   format: 'auto' | 'xml' | 'csv' | 'json'; record_path: string; csv_delimiter: string;

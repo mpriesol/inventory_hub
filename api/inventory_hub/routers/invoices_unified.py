@@ -22,12 +22,11 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from inventory_hub.access import operator_access
 from inventory_hub.file_access import stored_document_path, document_response
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from inventory_hub.database import get_session
-from inventory_hub.db_models import Supplier
 from inventory_hub.services import invoice_finance as finance
 
 class InvoiceRoute(APIRoute):
@@ -153,6 +152,16 @@ def _get_file_type(filename: str) -> str:
 # Endpoints
 # ============================================================================
 
+@router.get("/supplier-options")
+async def supplier_filter_options(db: AsyncSession = Depends(get_session)):
+    """Names only; historic invoice owners remain filterable after deactivation."""
+    rows = await db.execute(text("""SELECT s.code,s.name FROM suppliers s
+        WHERE s.is_active=true OR EXISTS (
+            SELECT 1 FROM uploaded_invoices ui WHERE ui.supplier_id=s.id AND ui.direction='purchase')
+        ORDER BY s.name,s.code"""))
+    return [{"code": row.code, "name": row.name} for row in rows.fetchall()]
+
+
 @router.get("/suppliers")
 async def list_all_suppliers(db: AsyncSession = Depends(get_session)):
     """
@@ -200,14 +209,16 @@ async def upload_invoice(
 ):
     """Archive the original and supported invoice lines without changing stock."""
     from hashlib import sha256
-    from inventory_hub.services.invoice_archive import ingest_invoice, parse_uploaded_document, InvoiceArchiveError, MAX_FILE
+    from inventory_hub.services.invoice_archive import ingest_invoice, parse_uploaded_document, resolve_supplier, InvoiceArchiveError, MAX_FILE
     if not file.filename:
         raise HTTPException(400, "No filename provided")
     if Path(file.filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise HTTPException(422, detail={"code": "invoice_file_type_unsupported", "known_unapplied": True})
-    supplier = await db.scalar(select(Supplier).where(Supplier.code == supplier_code))
-    if supplier is None:
-        raise HTTPException(404, "Supplier not found")
+    try:
+        supplier = await resolve_supplier(db, supplier_code)
+    except InvoiceArchiveError as error:
+        await db.rollback()
+        raise HTTPException(error.status, detail={"code": error.code, "known_unapplied": True}) from None
     try:
         parsed_invoice_date = date.fromisoformat(invoice_date) if invoice_date else None
         parsed_due_date = date.fromisoformat(due_date) if due_date else None
@@ -245,7 +256,8 @@ async def list_invoices(
     direction: Literal["purchase", "sale"] = Query("purchase"),
     # Filter row parameters
     f_invoice_number: Optional[str] = Query(None, description="Invoice number (partial match)"),
-    f_supplier: Optional[str] = Query(None, description="Supplier name or code (partial match)"),
+    f_supplier: Optional[str] = Query(None, description="Supplier/shop name or code (partial match)"),
+    supplier_code: Optional[str] = Query(None, min_length=1, max_length=100),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     due_from: Optional[date] = Query(None),
@@ -275,8 +287,13 @@ async def list_invoices(
         conditions.append("(ui.invoice_number ILIKE :inv_num OR ui.original_filename ILIKE :inv_num)")
         params["inv_num"] = f"%{f_invoice_number}%"
     
+    if supplier_code:
+        conditions.append("s.code = :supplier_code")
+        params["supplier_code"] = supplier_code
+
     if f_supplier:
-        conditions.append("(s.name ILIKE :supplier OR s.code ILIKE :supplier)")
+        owner = "s" if direction == "purchase" else "sh"
+        conditions.append(f"({owner}.name ILIKE :supplier OR {owner}.code ILIKE :supplier)")
         params["supplier"] = f"%{f_supplier}%"
     
     if date_from:
@@ -339,18 +356,27 @@ async def list_invoices(
         "invoice_date": "ui.invoice_date",
         "due_date": "ui.due_date",
         "total_amount": "ui.total_amount",
-        "supplier_name": "s.name",
+        "supplier_name": "COALESCE(s.name,sh.name,sh.code)",
         "created_at": "ui.created_at",
         "original_filename": "ui.original_filename",
+        "receiving_status": "COALESCE(rs.status,'not_started')",
     }
     sort_col = sort_columns.get(sort_by, "ui.created_at")
     sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
+    if sort_by in ("total_amount", "outstanding_amount", "payment_status"):
+        # Sort the exact displayed financial snapshot before SQL pagination.
+        # Do not rebuild payment/VAT rules in an ORDER BY expression.
+        params["sort_ids"] = finance.sorted_invoice_ids(financial_rows, finances,
+            sort_by=sort_by, descending=sort_dir == "DESC")
+        sort_col = "array_position(CAST(:sort_ids AS bigint[]),ui.id)"
+        sort_dir = "ASC"
     
     # Count query
     count_sql = text(f"""
         SELECT COUNT(*) 
         FROM uploaded_invoices ui
         LEFT JOIN suppliers s ON ui.supplier_id = s.id
+        LEFT JOIN shops sh ON ui.shop_id = sh.id
         LEFT JOIN receiving_sessions rs ON ui.receiving_session_id = rs.id AND rs.supplier_id = ui.supplier_id
         WHERE {where_clause}
     """)
@@ -413,7 +439,7 @@ async def list_invoices(
         LEFT JOIN shops sh ON ui.shop_id = sh.id
         LEFT JOIN receiving_sessions rs ON ui.receiving_session_id = rs.id AND rs.supplier_id = ui.supplier_id
         WHERE {where_clause}
-        ORDER BY {sort_col} {sort_dir} NULLS LAST
+        ORDER BY {sort_col} {sort_dir} NULLS LAST, ui.id ASC
         LIMIT :limit OFFSET :offset
     """)
     

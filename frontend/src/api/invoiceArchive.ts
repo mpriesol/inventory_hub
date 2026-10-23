@@ -43,7 +43,7 @@ export interface ArchivedInvoiceDetail extends ArchivedInvoice {
   notes: string | null; updated_at: string | null; lines: ArchivedInvoiceLine[];
 }
 export interface InvoiceArchiveFilters {
-  direction: InvoiceDirection; f_invoice_number: string; f_supplier: string;
+  direction: InvoiceDirection; f_invoice_number: string; f_supplier: string; supplier_code: string;
   date_from: string; date_to: string; due_from: string; due_to: string;
   f_amount_min: string; f_amount_max: string; f_currency: string;
   payment_status: string; receiving_status: string; is_overdue: string;
@@ -64,7 +64,7 @@ export interface InvoiceArchiveStats {
   aging: { bucket: 'not_due' | '1_30' | '31_60' | '61_90' | 'over_90' | 'unknown_due'; currency: string | null; outstanding_amount: string; invoice_count: number }[];
 }
 export const invoiceArchiveDefaults: InvoiceArchiveFilters = {
-  direction: 'purchase', f_invoice_number: '', f_supplier: '', date_from: '', date_to: '',
+  direction: 'purchase', f_invoice_number: '', f_supplier: '', supplier_code: '', date_from: '', date_to: '',
   due_from: '', due_to: '', f_amount_min: '', f_amount_max: '', f_currency: '',
   payment_status: '', receiving_status: '', is_overdue: '', sort_by: 'invoice_date', sort_order: 'desc',
 };
@@ -84,6 +84,7 @@ export async function getArchiveSuppliers(signal?: AbortSignal): Promise<{ code:
   const value = await hubRequest<{ code: string; name: string }[] | { suppliers?: { code: string; name: string }[]; items?: { code: string; name: string }[] }>('/api/suppliers', undefined, signal);
   return Array.isArray(value) ? value : value.suppliers || value.items || [];
 }
+export const getInvoiceSupplierOptions = (signal?: AbortSignal) => hubRequest<{ code: string; name: string }[]>(`${base}/supplier-options`, undefined, signal);
 export interface InvoiceMetadataChange {
   expected_revision: number; invoice_number?: string | null; invoice_date?: string | null; due_date?: string | null;
   total_amount?: string | null; vat_rate?: string | null; vat_included?: boolean; notes?: string | null; currency?: string | null;
@@ -129,7 +130,11 @@ export async function downloadInvoiceArchive(ids: number[] | number): Promise<vo
 }
 
 export interface ShopInvoiceSyncRequest { date_from: string; date_to: string; page: number; offset: number; page_token?: string | null }
-export interface ShopInvoiceSourceDiagnostic { upstream_status?: number | null; operation?: 'list' | 'pdf' | null }
+export type ShopInvoiceListParameter = 'creation_time_from' | 'creation_time_to' | 'page';
+export interface ShopInvoiceSourceDiagnostic {
+  upstream_status?: number | null; operation?: 'list' | 'pdf' | null;
+  rejected_parameters?: ShopInvoiceListParameter[];
+}
 export interface ShopInvoiceSyncResult extends ShopInvoiceSourceDiagnostic {
   imported: number; unchanged: number; failed: number;
   items: { invoice_number: string; status: string; id?: number; error?: string }[];

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 class MappingTransform(BaseModel):
@@ -30,11 +30,16 @@ class FieldBinding(BaseModel):
     param_name_path: str | None = Field(default=None, max_length=200)
     param_value_path: str | None = Field(default=None, max_length=200)
     param_match_name: str | None = Field(default=None, min_length=1, max_length=100)
+    manufacturer_code_confirmed: StrictBool = False
 
     @model_validator(mode="after")
     def one_source(self):
         if self.source and self.constant is not None:
             raise ValueError("Choose a source field or a constant, not both")
+        if self.manufacturer_code_confirmed and (self.target != "manufacturer_code" or not self.source
+                or self.constant is not None or self.default is not None
+                or any(transform.op != "trim" for transform in self.transforms)):
+            raise ValueError("A confirmed manufacturer code needs its actual source field, without generated codes or defaults")
         return self
 
 

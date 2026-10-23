@@ -98,7 +98,7 @@ global.fetch = async (path, init = {}) => {
     assert.equal(init.method, 'POST');
     if (skuPreviewMode === 'existing') return reply({status:'existing',sku:'OLD-001',product_id:51,brand_id:null,reasons:[],candidate_product_ids:[51]});
     if (skuPreviewMode === 'conflict') return reply({status:'conflict',sku:null,product_id:null,brand_id:null,reasons:['supplier_identifier_conflict'],candidate_product_ids:[1,2]});
-    const item=body.sku_identity, valid=!!(item?.brand && item.source_code);
+    const item=body.sku_identity, valid=!!(item?.brand && item.source_code && (body.item_type==='service' || item.code_kind==='manufacturer' && item.leaf_confirmed && item.source_ref));
     return reply({status:valid?'new':'blocked',sku:valid?'TP-'+item.source_code:null,product_id:null,brand_id:valid?1:null,reasons:valid?[]:['sku_identity_required'],candidate_product_ids:[]});
   }
   if (url.pathname === '/api/product-links/refresh') {
@@ -715,14 +715,17 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'is_active').includes(t('activityStates.inactive'))); assert(!element('cell-2-sku'));
   await input('supplier-link-filter', 'unlinked'); await click('load'); assert(!element('cell-1-sku'));
   assert(element('new-card'), 'The stock page exposes the unified local card action');
-  // Brand prefixes are automatic; ordinary item codes need no invented MPN proof. Retries preserve the exact request.
+  // New stock codes use confirmed manufacturer identities. Retries preserve the exact request.
   const { ProductCardCreateForm } = require('../src/components/product/ProductCardCreateForm.tsx');
   let createdCard;
   await act(async () => { root.render(React.createElement(ProductCardCreateForm, { onClose: () => {}, onCreated: row => { createdCard = row; } })); await tick(); });
   await input('create-name', 'Local demo'); await input('create-activity', 'false');
   assert(required('create-submit').disabled, 'A new card requires a real code, never an invented suffix');
-  assert(element('sku-brand') && !element('sku-source-ref') && !element('sku-leaf-confirmed'), 'Brand and item code do not require a mandatory MPN proof form');
+  assert(element('sku-brand') && !element('sku-source-ref') && element('sku-leaf-confirmed'), 'Manufacturer verification uses one simple confirmation');
   await input('sku-brand','Topeak'); await input('sku-source-code', '0001410'); await input('create-stock-unit', 'pair');
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  assert(required('create-submit').disabled,'A source code without manufacturer confirmation cannot create stock');
+  await click('sku-leaf-confirmed');
   await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
   assert(required('sku-preview').textContent.includes('TP-0001410'), 'The generated SKU preserves leading zeros with the registered prefix');
   await click('create-submit');
@@ -732,7 +735,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(createdRequests.size, 1, 'Retry does not create another card');
   assert.equal(createdCard.sku, 'TP-0001410'); assert.equal(createdCard.is_active, false); assert.equal(createdCard.supplier_linked, false);
   const newRequest = [...createdRequests.values()][0].body;
-  assert(!('sku' in newRequest),'The browser does not assign the new SKU'); assert.equal(newRequest.sku_identity.source_code,'0001410'); assert.equal(newRequest.sku_identity.leaf_confirmed,false,'An operational code is not fabricated MPN evidence');
+  assert(!('sku' in newRequest),'The browser does not assign the new SKU'); assert.equal(newRequest.sku_identity.source_code,'0001410'); assert.equal(newRequest.sku_identity.code_kind,'manufacturer'); assert.equal(newRequest.sku_identity.leaf_confirmed,true); assert.equal(newRequest.sku_identity.source_ref,'operator:manufacturer-code');
   assert.equal(newRequest.item_type,'stock'); assert.equal(newRequest.stock_unit,'pair');
   await act(async () => { root.render(React.createElement(ProductCardCreateForm, {key:'service',onClose:()=>{},onCreated:row=>{createdCard=row;}})); await tick(); });
   await input('create-name', 'Workshop work'); await input('sku-brand','Workshop'); await input('sku-source-code','SERVICE'); await input('create-item-type','service');

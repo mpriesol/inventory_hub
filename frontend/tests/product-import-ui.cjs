@@ -33,7 +33,8 @@ global.fetch = async (path, init = {}) => {
   if (path === '/api/sku-policy/brands') return {ok:true,status:200,json:async()=>({brands:[{id:1,code:'TP',name:'Topeak',kind:'brand',aliases:[]}]})};
   if (path === '/api/sku-policy/preview') {
     const item=body.sku_identity;
-    return {ok:true,status:200,json:async()=>({status:item?.brand&&item.source_code?'new':'blocked',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:[],candidate_product_ids:[]})};
+    const verified=!!(item?.brand&&item.source_code&&item.code_kind==='manufacturer'&&item.leaf_confirmed&&item.source_ref);
+    return {ok:true,status:200,json:async()=>({status:verified?'new':'blocked',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:verified?[]:['sku_manufacturer_code_unverified'],candidate_product_ids:[]})};
   }
   if (path === '/api/ai-content/rules') return { ok: true, status: 200, json: async () => ({book:{categories:[{id:'general',name:'Všeobecné'},{id:'inner_tubes',name:'Duše'}]}}) };
   if (path === '/api/product-imports/test-draft' && init.method === 'GET' && deferRead) {
@@ -530,13 +531,15 @@ async function render(entry) {
   const beforeIdentity = calls.length;
   await click(document.querySelector('[data-testid="import-sku-1"]'));
   const dialog=document.querySelector('[role="dialog"]'); assert(dialog);
-  assert.equal(dialog.querySelector('[data-testid="sku-source-code"]').value,'SUP-900','Supplier leaf code is the normal fallback, without claiming MPN evidence');
-  assert(dialog.querySelector('[data-testid="sku-brand"]') && !dialog.querySelector('[data-testid="sku-leaf-confirmed"]'),'Brand prefix is automatic without a mandatory MPN confirmation');
+  assert.equal(dialog.querySelector('[data-testid="sku-source-code"]').value,'0001410',"The manufacturer's product code is distinct from the supplier item code");
+  assert(dialog.querySelector('[data-testid="sku-brand"]') && dialog.querySelector('[data-testid="sku-leaf-confirmed"]'),'A manufacturer code needs explicit confirmation before allocation');
   assert(dialog.textContent.includes('SUP-900'),'The scoped supplier code remains visible');
-  await change(dialog.querySelector('[data-testid="sku-source-code"]'),'0001410');
+  await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
+  assert(dialog.querySelector('[data-testid="import-sku-apply"]').disabled,'An unverified source manufacturer field cannot allocate a new SKU');
+  await click(dialog.querySelector('[data-testid="sku-leaf-confirmed"]'));
   await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
   const proof=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body;
-  assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410'); assert.equal(proof.sku_identity.code_kind,'supplier'); assert.equal(proof.sku_identity.leaf_confirmed,false);
+  assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410'); assert.equal(proof.sku_identity.code_kind,'manufacturer'); assert.equal(proof.sku_identity.leaf_confirmed,true); assert.equal(proof.sku_identity.source_ref,'operator:manufacturer-code');
   await click(dialog.querySelector('[data-testid="import-sku-apply"]'));
   assert.equal(document.querySelector('[role="dialog"]'),null);
   assert(!button('Uložiť produkty do Hubu').disabled,'A basic card is savable despite missing shop price/VAT');
@@ -546,6 +549,68 @@ async function render(entry) {
   assert.equal(server.rows[0].values.supplier_code,'SUP-900');
   assert.equal(server.rows[0].values.sale_gross,null);
   assert(!calls.slice(beforeIdentity).some(call=>/publish|finalize|stock/.test(call.path)),'Identity preparation and Hub save never publish or receive stock');
+  for (const correction of ['saved-unconfirmed', 'staged-confirmed']) {
+    const identity = {brand:correction === 'saved-unconfirmed' ? 'Previous brand' : 'Topeak',source_code:'SOURCE-0001',code_kind:'manufacturer',source_ref:'feed-mapping:fixture:products:2:MPN',leaf_confirmed:correction === 'staged-confirmed'};
+    server={...server,status:'draft',rows:[{...clone(initial[2]),values:{...values(3),brand:'Topeak',manufacturer_code:correction === 'saved-unconfirmed' ? 'CORRECTED-00042' : identity.source_code,target_shops:[],sku_identity:identity}}]};
+    await render(`/product-import?draft=test-draft&case=${correction}`);
+    await click(button('Všetky polia'));
+    if (correction === 'staged-confirmed') {
+      await click(document.querySelector('[data-testid="import-sku-3"]'));
+      assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'A matching confirmed manufacturer identity remains confirmed');
+      await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
+      assert.equal(calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body.sku_identity.source_ref,identity.source_ref,'An unchanged mapping keeps its evidence');
+      await key(document.querySelector('[role="dialog"]'),'Escape');
+      await click(field(3,'manufacturer_code').querySelector('button'));
+      await change(label(i18n.t('productImport.fields.manufacturer_code')),'CORRECTED-00042');
+      await key(label(i18n.t('productImport.fields.manufacturer_code')),'Enter');
+      assert.equal(server.rows[0].values.manufacturer_code,'SOURCE-0001','The corrected table value is still an unsaved local edit');
+    }
+    await click(document.querySelector('[data-testid="import-sku-3"]'));
+    assert.equal(document.querySelector('[data-testid="sku-brand"]').value,'Topeak','Reopening uses the corrected row manufacturer');
+    assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'CORRECTED-00042','Reopening uses the corrected row product code rather than the stale identity');
+    assert(!document.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'A changed manufacturer identity must be confirmed again');
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
+    const correctedPreview=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body.sku_identity;
+    assert.equal(correctedPreview.source_ref,'','The old code evidence cannot be reused for a correction');
+    assert(document.querySelector('[data-testid="import-sku-apply"]').disabled);
+    await click(document.querySelector('[data-testid="sku-leaf-confirmed"]'));
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
+    await click(document.querySelector('[data-testid="import-sku-apply"]'));
+    assert(field(3,'manufacturer_code').textContent.includes('CORRECTED-00042'));
+    await click(document.querySelector('[data-testid="import-sku-3"]'));
+    assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'CORRECTED-00042');
+    assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'Reopening an applied correction keeps its new confirmation');
+    await change(document.querySelector('[data-testid="sku-source-code"]'),'DIALOG-00043');
+    assert(!document.querySelector('[data-testid="sku-leaf-confirmed"]').checked);
+    await click(document.querySelector('[data-testid="sku-leaf-confirmed"]'));
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
+    await click(document.querySelector('[data-testid="import-sku-apply"]'));
+    assert(field(3,'manufacturer_code').textContent.includes('DIALOG-00043'),'Applying an explicit dialog code also updates its table field');
+    await click(document.querySelector('[data-testid="import-sku-3"]'));
+    assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'DIALOG-00043','An intentional unsaved dialog choice survives reopening');
+    assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').checked);
+    await key(document.querySelector('[role="dialog"]'),'Escape');
+    await click(button('Uložiť produkty do Hubu'));
+    const correctionPatch=calls.filter(call=>call.method==='PUT').at(-1).body.rows[0].values;
+    assert.equal(correctionPatch.manufacturer_code,'DIALOG-00043');
+    assert.equal(correctionPatch.sku_identity.source_code,'DIALOG-00043');
+    assert.equal(correctionPatch.sku_identity.brand,'Topeak');
+    assert.equal(correctionPatch.sku_identity.source_ref,'operator:manufacturer-code');
+    assert.equal(server.rows[0].values.code,'TP-DIALOG-00043','Saving uses the correction rather than restoring the old code');
+  }
+  server={...server,status:'draft',rows:[{...clone(initial[2]),values:{...values(3),item_type:'service',manufacturer_code:'',target_shops:[],sku_identity:{brand:'Service',source_code:'WORK-001',code_kind:'service',source_ref:'operator:service-code',leaf_confirmed:true}}}]};
+  await render('/product-import?draft=test-draft&case=service-identity');
+  await click(document.querySelector('[data-testid="import-sku-3"]'));
+  assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'WORK-001','Services keep their explicit identity without a manufacturer field');
+  assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'The manufacturer correction rule leaves service confirmation unchanged');
+  await key(document.querySelector('[role="dialog"]'),'Escape');
+  server={...server,status:'draft',rows:[{...clone(initial[0]),values:{...values(1),brand:'Topeak',manufacturer_code:'',supplier_code:'SUP-900',sku_identity:{brand:'Topeak',source_code:'SUP-900',code_kind:'supplier',supplier_id:8,source_ref:'supplier:fixture:leaf:SUP-900',leaf_confirmed:false}}}]};
+  await render('/product-import?draft=test-draft&case=missing-manufacturer-code');
+  await click(document.querySelector('[data-testid="import-sku-1"]'));
+  assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'','A missing manufacturer code never falls back to or relabels a historical supplier code');
+  await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
+  const lookup=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body;
+  assert.equal(lookup.sku_identity,null); assert.equal(lookup.supplier_sku,'SUP-900','The scoped supplier code still supports existing-card lookup');
   await act(async () => root.unmount());
   console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

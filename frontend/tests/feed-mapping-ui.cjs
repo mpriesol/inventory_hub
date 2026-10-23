@@ -408,6 +408,39 @@ async function navigate(path) { await act(async () => { void router.navigate(pat
   assert(!document.querySelector('.category-tree-list').textContent.includes('Cieľ 999'),'Collapsed unrelated branches do not mount their 1,000 descendants');
   await click(largeManual.querySelector('summary'));
   assert.equal(document.querySelectorAll('.category-tree-list').length,0);
+  // Confirming the manufacturer's field never converts a supplier code into it.
+  await input(labelled(f('scope')), ''); await act(tick);
+  fields.push({key:'manufacturer_code',label:'Manufacturer code',type:'text'});
+  inspection.fields.push({path:'MFG_CODE',type:'string',examples:['0001410'],populated:2,total:2},
+    {path:'OTHER_MFG_CODE',type:'string',examples:['0001411'],populated:2,total:2});
+  baseStored={...clone(base),definition:{...emptyFeedDefinition(),bindings:[
+    {target:'code',source:'ITEM_CODE',transforms:[]},
+    {target:'manufacturer_code',source:'MFG_CODE',transforms:[]},
+  ]}};
+  await navigate('/suppliers/manufacturer/feed-mapping'); await tab('fields');
+  const manufacturerCheck=()=>document.querySelector('[data-testid="manufacturer-code-confirmed-1"]');
+  assert(manufacturerCheck() && !manufacturerCheck().checked);
+  assert(document.body.textContent.includes(f('manufacturerCodeConfirmed')));
+  await click(manufacturerCheck()); await click(button(f('preview')));
+  assert.equal(lastCall('/preview').body.definition.bindings[1].manufacturer_code_confirmed,true);
+  assert.equal(lastCall('/preview').body.definition.bindings[0].source,'ITEM_CODE','Supplier codes retain their own mapping');
+  await click(button(f('save')));
+  assert.equal(baseStored.definition.bindings[1].manufacturer_code_confirmed,true,'The one-time field assertion is saved with its mapping revision');
+  await input(labelled(f('sourceForRow',{row:2})),'OTHER_MFG_CODE');
+  assert(!manufacturerCheck().checked,'Changing the source requires fresh manufacturer verification');
+  await click(manufacturerCheck());
+  await input(labelled(f('targetForRow',{row:2})),'name');
+  assert(!manufacturerCheck(),'A confirmation cannot follow a binding to another destination');
+  await input(labelled(f('targetForRow',{row:2})),'manufacturer_code');
+  assert(!manufacturerCheck().checked);
+  await click(manufacturerCheck());
+  const manufacturerRow=manufacturerCheck().closest('article');
+  await click([...manufacturerRow.querySelectorAll('button')].find(el=>el.textContent.trim()==='+ '+f('addTransformation')));
+  assert(!manufacturerCheck().checked,'Changing transforms clears a manufacturer assertion');
+  await input(manufacturerRow.querySelector('[aria-label="'+f('transformation')+'"]'),'prefix');
+  assert(manufacturerCheck().disabled,'A synthetic prefix cannot be confirmed as an exact manufacturer code');
+  await click(button(f('preview')));
+  assert.equal(lastCall('/preview').body.definition.bindings[1].manufacturer_code_confirmed,undefined);
   await act(async () => root.unmount());
   router.dispose();
   console.log('Feed mapping UI passed: CSV round trips and atomic validation, bounded large-rule rendering, authenticated automatic inspection, click/drop mapping, exact parameter pairs, parent/inactive categories with protected system menus, isolated scopes/preview/refresh, revision conflicts, upload, navigation and stale supplier responses.');

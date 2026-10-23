@@ -90,7 +90,12 @@ export function FeedMappingPage() {
     try { await action(current); } catch (e) { if(current())failure(e); } finally { if(current())setBusy(''); }
   }
   function change(next: FeedDefinition) { generation.current += 1; setPreviewBusy(false); setDefinition(next); setNotice(''); setPreview(null); setPreviewError(''); }
-  function binding(index: number, next: FeedBinding) { change({ ...definition, bindings: definition.bindings.map((row, i) => i === index ? next : row) }); }
+  function binding(index: number, next: FeedBinding) {
+    const previous = definition.bindings[index];
+    const proofFields = (row: FeedBinding) => JSON.stringify([row.target, row.source, row.constant, row.default, row.transforms, row.param_name_path, row.param_value_path, row.param_match_name]);
+    if (next.target !== 'manufacturer_code' || proofFields(previous) !== proofFields(next)) delete next.manufacturer_code_confirmed;
+    change({ ...definition, bindings: definition.bindings.map((row, i) => i === index ? next : row) });
+  }
   function switchContext(action: () => void, preserveSample = false) {
     if (busy) return;
     if (!dirty || window.confirm(f('discard'))) {
@@ -174,7 +179,7 @@ export function FeedMappingPage() {
     const code = display((item as unknown as Record<string, unknown>).target_category_code);
     return code ? categoryPath(code) : item.category || item.category_code || f('empty');
   }
-  const sharedOnly = new Set(['code', 'group_code', 'group_name', 'eans', 'supplier_stock', 'supplier_stock_min', 'supplier_stock_external', 'supplier_stock_raw', 'supplier_stock_external_raw', 'supplier_external_available', 'availability']);
+  const sharedOnly = new Set(['code', 'manufacturer_code', 'group_code', 'group_name', 'eans', 'supplier_stock', 'supplier_stock_min', 'supplier_stock_external', 'supplier_stock_raw', 'supplier_stock_external_raw', 'supplier_external_available', 'availability']);
   const fieldOptions = (config?.fields || []).filter(field => shop ? !sharedOnly.has(field.key) : field.key !== 'target_category_code');
   const effectiveNewFieldTarget = fieldOptions.some(field=>field.key===newFieldTarget) ? newFieldTarget : fieldOptions[0]?.key || 'name';
   function appendBinding(target = '', source = '') {
@@ -276,6 +281,7 @@ export function FeedMappingPage() {
             {selectedField && !parameters && <button type="button" className="fm-text-button" onClick={()=>assignField(index,selectedField)}>{f('useSelectedField',{name:fieldLabel(selectedField)})}</button>}
           </div></div>
         <small className="fm-example">{row.param_match_name ? sourceParameters.find(item=>item.source===row.source && item.name===row.param_match_name)?.examples.join(' · ') : mode==='source' ? sourceExample(row.source) || f('noExample') : display(row.constant)}</small>
+        {row.target === 'manufacturer_code' && !shop && <label className="fm-checkbox"><input data-testid={`manufacturer-code-confirmed-${index}`} type="checkbox" checked={row.manufacturer_code_confirmed === true} disabled={mode !== 'source' || !row.source || row.default != null || transformed(row).some(item=>item.op !== 'trim')} onChange={event=>binding(index,{...row,manufacturer_code_confirmed:event.target.checked})}/>{f('manufacturerCodeConfirmed')}</label>}
         <details className="fm-binding-advanced"><summary>{f('transformations')} {transformed(row).length>0 && `(${transformed(row).length})`}</summary><label>{f('fallback')}<input value={display(row.default)} onChange={e=>{const next={...row};if(e.target.value==='')delete next.default;else next.default=e.target.value;binding(index,next);}} placeholder={f('noFallback')}/></label><TransformEditor value={transformed(row)} onChange={transforms=>binding(index,{...row,transforms})}/></details>
         <details className="fm-binding-advanced"><summary>{f('advancedBinding')}</summary>{mode==='source' && <label>{f('sourceField')}<input aria-label={f('manualSourceForRow',{row:index+1})} value={row.source || ''} onChange={e=>binding(index,{...row,source:e.target.value})}/></label>}{(['parameters','variant_attributes'].includes(row.target) || !!row.param_match_name) && <div className="fm-parameter-paths"><label>{f('parameterNamePath')}<input value={row.param_name_path || ''} onChange={e=>binding(index,{...row,param_name_path:e.target.value})}/></label><label>{f('parameterValuePath')}<input value={row.param_value_path || ''} onChange={e=>binding(index,{...row,param_value_path:e.target.value})}/></label></div>}{!!row.param_match_name && <label>{f('exactParameterName')}<input value={row.param_match_name} onChange={e=>binding(index,{...row,param_match_name:e.target.value})}/></label>}</details>
       </article>;

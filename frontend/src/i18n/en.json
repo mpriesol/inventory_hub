@@ -48,7 +48,7 @@
     "stockHistory": "Movement history",
     "productImport": "Product preparation",
     "productTrace": "Product overview",
-    "invoices": "Invoice archive"
+    "invoices": "Invoices"
   },
   "dashboard": {
     "title": "Warehouse overview",
@@ -3369,7 +3369,7 @@
       "suffix": "Add suffix"
     },
     "targets": {
-      "code": "Supplier code",
+      "code": "Internal supplier item code",
       "name": "Product name",
       "description": "Long description",
       "short_description": "Short description",
@@ -3389,7 +3389,7 @@
       "prices_discount_gross": "Sale price incl. VAT",
       "prices_currency": "Currency",
       "prices_vat_percent": "VAT (%)",
-      "manufacturer_code": "Manufacturer code",
+      "manufacturer_code": "Manufacturer's product code (for new SKUs)",
       "parameters": "Parameter list",
       "url": "Supplier URL",
       "group_code": "Variant group code",
@@ -3491,7 +3491,8 @@
     "parameterWarnings": {
       "upgates_parameter_registry_unavailable": "The Upgates parameter list is currently unavailable.",
       "upgates_parameter_registry_truncated": "The Upgates list exceeded the limit; only loaded parameters are shown."
-    }
+    },
+    "manufacturerCodeConfirmed": "I confirm that this field contains the manufacturer's product code for the exact variant and package, not an internal supplier item code."
   },
   "productImport": {
     "productPreview": "Product preview",
@@ -3598,11 +3599,11 @@
     "imagesHelp": "One image URL per line; the first image is the main image.",
     "fields": {
       "code": "Product code",
-      "supplier_code": "Supplier code",
+      "supplier_code": "Internal supplier item code",
       "group_name": "Family name",
       "name": "Name",
       "brand": "Brand",
-      "manufacturer_code": "Source MPN field (unverified)",
+      "manufacturer_code": "Manufacturer's product code (for new SKUs)",
       "eans": "EANs",
       "images": "Images",
       "description_html": "Long description (HTML)",
@@ -4194,19 +4195,19 @@
   },
   "skuPolicy": {
     "title": "Automatic SKU",
-    "help": "The SKU is generated from the brand prefix and the exact item code. Existing cards keep their codes. Hub checks links and collisions.",
-    "brand": "Brand or inventory category",
+    "help": "New stock-item SKUs use the manufacturer's two-letter prefix and exact product code. Supplier item codes are stored separately. Existing SKUs stay unchanged.",
+    "brand": "Manufacturer or service namespace",
     "codeKind": "Meaning of the source code",
-    "sourceCode": "Code of the exact sale unit",
+    "sourceCode": "Manufacturer's product code",
     "sourceRef": "Evidence or verification source",
     "sourceRefHint": "Manufacturer URL, feed field, or document and line number",
     "preserveCode": "Preserve the original spelling, including leading zeros.",
-    "leafConfirmed": "I verified that the code identifies this exact variant and pack, not only the parent group.",
+    "leafConfirmed": "I checked that this is the manufacturer's code for this exact variant and package, not an internal supplier or parent-group code.",
     "sourceValues": "Original source values",
     "supplierCode": "Supplier item code",
-    "sourceManufacturer": "Manufacturer code field (unverified)",
+    "sourceManufacturer": "Manufacturer's product code from the source",
     "groupCode": "Group in this preparation",
-    "sourceHelp": "These fields can have different meanings. Equal values do not establish a manufacturer code.",
+    "sourceHelp": "The supplier item code and manufacturer's product code are separate identifiers. Equal text does not establish their meaning.",
     "registerBrand": "Add a brand or alternate spelling",
     "registerHelp": "First check whether this is another spelling of an existing brand. Abbreviations must be unique; existing SKUs stay unchanged.",
     "aliasTarget": "Does this spelling belong to an existing brand?",
@@ -4217,7 +4218,7 @@
     "saveAlias": "Add verified alias",
     "saveBrand": "Save to registry",
     "checking": "Checking identity…",
-    "completeFields": "Choose a brand and the exact item code, or find an existing card by barcode.",
+    "completeFields": "Choose the manufacturer and verify its exact product code, or find an existing card by EAN.",
     "existingCard": "Existing card #{{id}} will be used. Its SKU stays unchanged.",
     "candidates": "Affected cards: {{ids}}. Check them in stock and correct the conflicting evidence.",
     "apply": "Use proposed SKU",
@@ -4240,14 +4241,14 @@
     },
     "codeKinds": {
       "manufacturer": "Manufacturer code of the exact variant (MPN)",
-      "supplier": "Exception: evidenced supplier item code",
-      "gtin": "Exception: verified sale-unit GTIN",
+      "supplier": "Supplier code for finding an existing card",
+      "gtin": "GTIN for finding an existing card",
       "service": "Existing evidenced service code",
       "unbranded": "Existing evidenced unbranded item code"
     },
     "exceptions": {
-      "supplier": "Use only after verifying that no suitable MPN exists. Evidence must identify the selected supplier and exact variant. The same text from another supplier is not a match.",
-      "gtin": "Use only a verified GTIN of this exact variant and pack. Document why a manufacturer code cannot be used.",
+      "supplier": "Supplier item codes are scoped to the selected supplier. They cannot allocate a new SKU; supply the manufacturer's product code.",
+      "gtin": "A GTIN can find an existing card. For a new item, supply the manufacturer's separate product code.",
       "service": "Select a Services registry category and an existing evidenced service code. Do not invent an MPN or sequential suffix.",
       "unbranded": "Select an Unbranded goods category and an evidenced stable code for this exact item. If no such code exists, the case remains unresolved."
     },
@@ -4255,7 +4256,7 @@
       "registryUnavailable": "The registry could not be loaded or saved. Try again.",
       "previewUnavailable": "Identity could not be checked. Verify exact field values without surrounding whitespace and try again.",
       "identity_conflict": "Identifiers refer to different cards or an uncertain variant. Check the listed cards and evidence; no new card will be created.",
-      "sku_identity_required": "A new card needs a brand and exact item code. Hub generates the SKU.",
+      "sku_identity_required": "A new stock card needs a registered manufacturer and its verified concrete product code.",
       "sku_brand_unregistered": "This brand is not registered. Select an existing spelling or add it with a unique abbreviation.",
       "sku_leaf_not_confirmed": "Confirm the exact variant and pack after verifying the source code.",
       "sku_namespace_kind_mismatch": "The code type does not match the registry. Select the appropriate inventory category for services or unbranded goods.",
@@ -4291,10 +4292,16 @@
       "sku_code_required": "A new card needs a brand and exact item code. Hub generates the SKU.",
       "sku_invalid": "Check the SKU: at most 100 characters, without control characters or separators.",
       "sku_code_invalid": "Check the SKU: at most 100 characters, without control characters or separators.",
-      "sku_item_type_conflict": "A service namespace requires the Service card type."
+      "sku_item_type_conflict": "A service namespace requires the Service card type.",
+      "sku_manufacturer_code_required": "New SKUs use the manufacturer's product code. Supplier codes and EANs find and link existing cards.",
+      "sku_manufacturer_code_unverified": "Confirm the manufacturer's code for this exact variant or use a confirmed manufacturer-code feed mapping."
     },
     "newCardName": "Name for a new card",
-    "lookupExisting": "Find an existing card by SKU"
+    "lookupExisting": "Find an existing card by SKU",
+    "serviceConfirmed": "I checked the exact business code of this service.",
+    "serviceCode": "Service business code",
+    "existingIdentityCode": "Existing identity code",
+    "existingIdentityConfirmed": "I checked the source and exact sale unit of this existing identity."
   },
   "skuMigration": {
     "title": "Preview SKU change",
@@ -4537,7 +4544,7 @@
     "unit": "Unit"
   },
   "invoiceArchive": {
-    "title": "Invoice archive",
+    "title": "Invoices",
     "subtitle": "Supplier invoices, shop documents and payment records in one place.",
     "direction": "Document direction",
     "directionLabels": {
@@ -4645,8 +4652,14 @@
     "syncFailed": "Could not confirm the download result.",
     "syncListOperation": "Shop invoice list",
     "syncPdfOperation": "Original PDF download",
+    "syncRejectedParameters": "The shop rejected: {{parameters}}.",
+    "syncParameterLabels": {
+      "creation_time_from": "document creation period start",
+      "creation_time_to": "document creation period end",
+      "page": "list page"
+    },
     "syncUncertain": "Refresh the archive and repeat the same batch. Existing source documents will not be duplicated.",
-    "back": "Back to archive",
+    "back": "Back to invoices",
     "detailTitle": "Invoice detail",
     "notFound": "Invoice not found.",
     "downloadOriginal": "Download original",
@@ -4714,6 +4727,43 @@
     "reconcileNext": "Process next batch",
     "reconcileResult": "Checked: {{scanned}} · Added: {{created}} · Already stored: {{existing}} · Conflicts: {{conflicts}}",
     "reconcileDone": "The available supplier records have been checked. Any conflicts are shown above.",
-    "reconcileFailed": "Document reconciliation was not confirmed. Refresh the archive and repeat the same batch."
+    "reconcileFailed": "Document reconciliation was not confirmed. Refresh the archive and repeat the same batch.",
+    "addInvoice": "Add invoice",
+    "showSummary": "Overview and charts",
+    "hideSummary": "Hide overview and charts",
+    "supplierSearch": "Supplier text search",
+    "allSuppliers": "All suppliers",
+    "dropFile": "Drop an invoice or its scan here",
+    "scanHelp": "PDF, photo or JPG/PNG scan. The original is saved; automatic scan recognition is not available yet.",
+    "chooseFile": "Choose file",
+    "changeFile": "Change file",
+    "noFile": "No file selected",
+    "dropOneFile": "Add one invoice at a time.",
+    "unsupportedFile": "This format is not supported. Choose a PDF, image or supported document.",
+    "fileSizeLimit": "The file must be nonempty and no larger than 50 MiB.",
+    "sortColumn": "Sort: {{column}} · {{order}}"
+  },
+  "invoiceCalendar": {
+    "title": "Due date calendar",
+    "help": "Due dates of all invoices matching the applied filters. Select an invoice to open its details.",
+    "view": "Calendar view",
+    "week": "Week",
+    "month": "Month",
+    "year": "Year",
+    "previous": "Previous period",
+    "next": "Next period",
+    "today": "Today",
+    "date": "Date",
+    "loading": "Loading due dates…",
+    "failed": "Could not load the calendar. The displayed records could be incomplete.",
+    "tooMany": "The selected period contains more than 5,000 invoices. Choose a shorter period or a supplier; a partial calendar is not shown.",
+    "count_one": "{{count}} invoice",
+    "count_other": "{{count}} invoices",
+    "more": "+ {{count}}",
+    "selectedDay": "Invoices on the selected day",
+    "emptyDay": "No invoices matching the applied filters are due on this day.",
+    "noDueDate": "Invoices without a due date remain in the table and cannot be placed on the calendar. An unverified payment does not mean an unpaid invoice.",
+    "retry": "Try again",
+    "openMonth": "Open this month"
   }
 }

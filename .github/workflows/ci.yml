@@ -121,6 +121,7 @@ jobs:
       - name: Check invoice archive and product trace interactions
         run: |
           node frontend/tests/invoices-ui.cjs
+          node frontend/tests/invoice-calendar-ui.cjs
           node frontend/tests/product-trace-ui.cjs
 
       - name: Check import identity review interactions

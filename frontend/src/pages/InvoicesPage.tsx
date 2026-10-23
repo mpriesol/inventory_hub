@@ -1,15 +1,20 @@
-import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Download, RefreshCw, Upload, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import { Download, RefreshCw, Upload, ChevronLeft, ChevronRight, FileText, BarChart3, ChevronDown, ChevronUp } from 'lucide-react';
 import { accessRevision, subscribeAccess } from '../api/access';
 import {
   ArchivedInvoice, InvoiceArchiveFilters, InvoiceArchivePage, InvoiceArchiveStats, ShopInvoiceSyncResult, SupplierInvoiceReconcileResult,
-  downloadInvoiceArchive, getArchiveShops, getArchiveSuppliers, getInvoiceArchive, getInvoiceArchiveStats,
+  downloadInvoiceArchive, getArchiveShops, getArchiveSuppliers, getInvoiceArchive, getInvoiceArchiveStats, getInvoiceSupplierOptions,
   invoiceArchiveDefaults, invoiceArchiveQuery, reconcileSupplierInvoiceArchive, syncShopInvoiceArchive, uploadArchivedInvoice,
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, invoiceSourceDiagnostic, InvoicePaymentBadge } from './invoiceArchiveUi';
+import { InvoiceDueCalendar } from '../components/InvoiceDueCalendar';
 import './invoiceArchive.css';
+
+const uploadExtensions = new Set(['pdf', 'csv', 'tsv', 'xlsx', 'xls', 'doc', 'docx', 'xml', 'txt', 'jpg', 'jpeg', 'png']);
+const uploadAccept = [...uploadExtensions].map(value => `.${value}`).join(',');
+const sortColumns = ['invoice_number', 'supplier_name', 'invoice_date', 'due_date', 'total_amount', 'outstanding_amount', 'payment_status', 'receiving_status', 'original_filename', 'created_at'];
 
 function filtersFromUrl(params: URLSearchParams): InvoiceArchiveFilters {
   const result = { ...invoiceArchiveDefaults };
@@ -18,6 +23,7 @@ function filtersFromUrl(params: URLSearchParams): InvoiceArchiveFilters {
   });
   if (!['purchase', 'sale'].includes(result.direction)) result.direction = 'purchase';
   if (!['asc', 'desc'].includes(result.sort_order)) result.sort_order = 'desc';
+  if (!sortColumns.includes(result.sort_by)) result.sort_by = 'invoice_date';
   return result;
 }
 
@@ -66,6 +72,7 @@ export function InvoicesPage() {
   const [stats, setStats] = useState<InvoiceArchiveStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [statsError, setStatsError] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [refresh, setRefresh] = useState(0);
@@ -78,6 +85,9 @@ export function InvoicesPage() {
   const [suppliers, setSuppliers] = useState<{ code: string; name: string }[]>([]);
   const [upload, setUpload] = useState({ supplier_code: '', invoice_number: '', invoice_date: '', due_date: '', vat_included: true });
   const [file, setFile] = useState<File | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const [syncOpen, setSyncOpen] = useState(false);
   const [shops, setShops] = useState<{ code: string; name: string }[]>([]);
   const [sync, setSync] = useState({ shop: '', date_from: '', date_to: '' });
@@ -96,17 +106,28 @@ export function InvoicesPage() {
     return () => controller.abort();
   }, [query, refresh, access, t]);
   useEffect(() => {
+    if (!showDashboard) return;
     const controller = new AbortController(); setStats(null); setStatsError(false);
     getInvoiceArchiveStats(applied.direction, controller.signal).then(value => { if (!controller.signal.aborted) setStats(value); })
       .catch(() => { if (!controller.signal.aborted) setStatsError(true); });
     return () => controller.abort();
-  }, [applied.direction, refresh, access]);
+  }, [applied.direction, refresh, access, showDashboard]);
   useEffect(() => {
     const controller = new AbortController();
-    if (uploadOpen || reconcileOpen) getArchiveSuppliers(controller.signal).then(setSuppliers).catch(() => { if (!controller.signal.aborted) setError(t('invoiceArchive.suppliersFailed')); });
+    Promise.allSettled([getArchiveSuppliers(controller.signal), getInvoiceSupplierOptions(controller.signal)]).then(results => {
+      if (controller.signal.aborted) return;
+      const options = new Map<string, { code: string; name: string }>();
+      results.forEach(result => { if (result.status === 'fulfilled') result.value.forEach(row => options.set(row.code, row)); });
+      setSuppliers([...options.values()].sort((a, b) => a.name.localeCompare(b.name, i18n.language) || a.code.localeCompare(b.code)));
+      if (results.some(result => result.status === 'rejected')) setError(t('invoiceArchive.suppliersFailed'));
+    });
+    return () => controller.abort();
+  }, [access, i18n.language, t]);
+  useEffect(() => {
+    const controller = new AbortController();
     if (syncOpen) getArchiveShops(controller.signal).then(value => setShops(value.shops)).catch(() => { if (!controller.signal.aborted) setError(t('invoiceArchive.shopsFailed')); });
     return () => controller.abort();
-  }, [uploadOpen, reconcileOpen, syncOpen, access]);
+  }, [syncOpen, access, t]);
 
   const update = (key: keyof InvoiceArchiveFilters, value: string) => { setFilters(old => ({ ...old, [key]: value })); setSelected(new Set()); };
   const apply = (values: InvoiceArchiveFilters = filters, nextPage = 1) => setParams(invoiceArchiveQuery({ ...values, page: nextPage }));
@@ -117,8 +138,19 @@ export function InvoicesPage() {
     try { await downloadInvoiceArchive(ids); } catch (reason) { setError(invoiceError(reason, t('invoiceArchive.downloadFailed'))); }
     finally { setWorking(false); }
   };
+  const chooseFiles = (files: FileList | File[] | null) => {
+    if (working || !files?.length) return;
+    setUploadOpen(true); setUploadError(''); setMessage('');
+    const chosen = files[0];
+    const failure = files.length !== 1 ? 'dropOneFile' : !uploadExtensions.has(chosen.name.split('.').pop()?.toLowerCase() || '')
+      ? 'unsupportedFile' : !chosen.size || chosen.size > 50 * 1024 * 1024 ? 'fileSizeLimit' : '';
+    if (failure) { setFile(null); setUploadError(t(`invoiceArchive.${failure}`)); return; }
+    setFile(chosen);
+    setUpload(old => ({ ...old, supplier_code: old.supplier_code || applied.supplier_code }));
+    if (fileInput.current) fileInput.current.value = '';
+  };
   const handleUpload = async (event: React.FormEvent) => {
-    event.preventDefault(); if (!file || !upload.supplier_code || working) return;
+    event.preventDefault(); if (!file || !upload.supplier_code || working || uploadError) return;
     setWorking(true); setError(''); setMessage('');
     const body = new FormData(); body.append('file', file);
     Object.entries(upload).forEach(([key, value]) => { if (value !== '') body.append(key, String(value)); });
@@ -151,19 +183,40 @@ export function InvoicesPage() {
   };
   const invoiceTitle = (invoice: ArchivedInvoice) => invoice.invoice_number || invoice.original_filename;
   const rows = data?.items || [];
+  const sortHeader = (label: string, key: string, amount = false) => <th key={key} className={amount ? 'amount' : undefined}
+    aria-sort={applied.sort_by === key ? applied.sort_order === 'asc' ? 'ascending' : 'descending' : 'none'}>
+    <button type="button" className="sort-header" data-testid={`invoice-sort-${key}`} disabled={working || loading}
+      onClick={() => apply({ ...applied, sort_by: key, sort_order: applied.sort_by === key && applied.sort_order === 'asc' ? 'desc' : 'asc' })}
+      aria-label={t('invoiceArchive.sortColumn', { column: t(`invoiceArchive.${label}`), order: t(applied.sort_by === key && applied.sort_order === 'asc' ? 'invoiceArchive.desc' : 'invoiceArchive.asc') })}>
+      {t(`invoiceArchive.${label}`)}<span aria-hidden="true">{applied.sort_by === key ? applied.sort_order === 'asc' ? '↑' : '↓' : '↕'}</span>
+    </button>
+  </th>;
 
   return <div className="invoice-archive">
     <header><div><h1>{t('invoiceArchive.title')}</h1><p className="muted">{t('invoiceArchive.subtitle')}</p></div>
       <div className="actions"><button data-testid="invoice-refresh" disabled={working || loading} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16} />{t('common.refresh')}</button>
-        {applied.direction === 'purchase' ? <><button data-testid="invoice-reconcile-open" disabled={working} onClick={() => setReconcileOpen(value => !value)}>{t('invoiceArchive.reconcile')}</button><button className="primary" data-testid="invoice-upload-open" disabled={working} onClick={() => setUploadOpen(value => !value)}><Upload size={16} />{t('receiving.uploadArchive')}</button></>
+        {applied.direction === 'purchase' ? <><button data-testid="invoice-reconcile-open" disabled={working} onClick={() => setReconcileOpen(value => !value)}>{t('invoiceArchive.reconcile')}</button><button className="primary" data-testid="invoice-upload-open" disabled={working} onClick={() => setUploadOpen(value => !value)}><Upload size={16} />{t('invoiceArchive.addInvoice')}</button></>
           : <button className="primary" data-testid="invoice-sync-open" disabled={working} onClick={() => setSyncOpen(value => !value)}><Download size={16} />{t('invoiceArchive.syncShop')}</button>}</div>
     </header>
     <div className="status-tabs" aria-label={t('invoiceArchive.direction')}>
-      {(['purchase', 'sale'] as const).map(direction => <button key={direction} data-testid={`invoice-direction-${direction}`} disabled={working} aria-pressed={applied.direction === direction} onClick={() => { apply({ ...invoiceArchiveDefaults, direction }); setUploadOpen(false); setSyncOpen(false); setReconcileOpen(false); }}>
+      {(['purchase', 'sale'] as const).map(direction => <button key={direction} data-testid={`invoice-direction-${direction}`} disabled={working} aria-pressed={applied.direction === direction} onClick={() => { apply({ ...invoiceArchiveDefaults, direction }); setUploadOpen(false); setUploadError(''); setDragging(false); setSyncOpen(false); setReconcileOpen(false); }}>
         {t(`invoiceArchive.directionLabels.${direction}`)}</button>)}
     </div>
+    <div className="invoice-view-tools"><button type="button" className="quiet" data-testid="invoice-summary-toggle" aria-expanded={showDashboard} aria-controls="invoice-financial-overview" onClick={() => setShowDashboard(value => !value)}>
+      <BarChart3 size={16} />{t(showDashboard ? 'invoiceArchive.hideSummary' : 'invoiceArchive.showSummary')}{showDashboard ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+    </button></div>
+    {applied.direction === 'purchase' && <section className={`invoice-dropzone${dragging ? ' dragging' : ''}${working ? ' disabled' : ''}`} data-testid="invoice-dropzone"
+      onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); if (!working) setDragging(true); } }}
+      onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = working ? 'none' : 'copy'; } }}
+      onDragLeave={event => { if (!(event.relatedTarget as Node | null)?.nodeType || !event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+      onDrop={event => { event.preventDefault(); setDragging(false); chooseFiles(event.dataTransfer.files); }}>
+      <Upload size={24} aria-hidden="true" /><div><strong>{t('invoiceArchive.dropFile')}</strong><p className="muted small">{t('invoiceArchive.scanHelp')}</p></div>
+      <button type="button" disabled={working} onClick={() => fileInput.current?.click()}>{t('invoiceArchive.chooseFile')}</button>
+      <input ref={fileInput} hidden type="file" accept={uploadAccept} data-testid="invoice-upload-file" onChange={event => chooseFiles(event.target.files)} />
+    </section>}
     {error && <div role="alert" className="notice error" data-testid="invoice-error">{error}</div>}
     {message && <div role="status" className="notice success">{message}</div>}
+    {uploadError && <p role="alert" className="notice error" data-testid="invoice-upload-error">{uploadError}</p>}
     {reconcileOpen && <section className="panel"><h2>{t('invoiceArchive.reconcile')}</h2><p className="muted small">{t('invoiceArchive.reconcileHelp')}</p>
       <div className="fields" style={{ marginTop: '.8rem' }}><label>{t('invoiceArchive.supplier')}<select data-testid="invoice-reconcile-supplier" disabled={working} value={reconcileSupplier} onChange={event => { setReconcileSupplier(event.target.value); setReconcileResult(null); }}><option value="">{t('invoiceArchive.chooseSupplier')}</option>{suppliers.map(supplier => <option key={supplier.code} value={supplier.code}>{supplier.name}</option>)}</select></label></div>
       <footer><button disabled={working} onClick={() => setReconcileOpen(false)}>{t('common.close')}</button><button className="primary" data-testid="invoice-reconcile-start" disabled={working || !reconcileSupplier} onClick={() => reconcile()}>{t('invoiceArchive.reconcileStart')}</button></footer>
@@ -172,14 +225,14 @@ export function InvoicesPage() {
         {reconcileResult.next_after_key ? <button disabled={working} data-testid="invoice-reconcile-next" onClick={() => reconcile(true)}>{t('invoiceArchive.reconcileNext')}</button> : <p className="muted small">{t('invoiceArchive.reconcileDone')}</p>}
       </>}
     </section>}
-    {uploadOpen && <form className="panel" onSubmit={handleUpload} data-testid="invoice-upload-form"><h2>{t('receiving.uploadArchive')}</h2>
+    {uploadOpen && <form className="panel" onSubmit={handleUpload} data-testid="invoice-upload-form"><h2>{t('invoiceArchive.addInvoice')}</h2>
       <p className="muted small">{t('receiving.archiveHelp')} <Link to="/receiving">{t('receiving.goToReceipt')}</Link></p>
       <fieldset disabled={working}><div className="fields" style={{ marginTop: '.9rem' }}>
         <label>{t('invoiceArchive.supplier')}<select required data-testid="upload-supplier" value={upload.supplier_code} onChange={event => setUpload({ ...upload, supplier_code: event.target.value })}><option value="">{t('invoiceArchive.chooseSupplier')}</option>{suppliers.map(row => <option key={row.code} value={row.code}>{row.name}</option>)}</select></label>
-        <label>{t('invoiceArchive.file')}<input required type="file" accept=".pdf,.csv,.xlsx,.xls,.doc,.docx,.xml,.txt,.jpg,.jpeg,.png" onChange={event => setFile(event.target.files?.[0] || null)} /></label>
+        <div className="upload-selected"><span className="muted small">{t('invoiceArchive.file')}</span><strong data-testid="invoice-selected-file">{file?.name || t('invoiceArchive.noFile')}</strong><button type="button" onClick={() => fileInput.current?.click()}>{t(file ? 'invoiceArchive.changeFile' : 'invoiceArchive.chooseFile')}</button></div>
         {(['invoice_number', 'invoice_date', 'due_date'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.endsWith('date') ? 'date' : 'text'} value={upload[key]} onChange={event => setUpload({ ...upload, [key]: event.target.value })} /></label>)}
         <label className="check"><input type="checkbox" checked={upload.vat_included} onChange={event => setUpload({ ...upload, vat_included: event.target.checked })} />{t('invoiceArchive.vatIncluded')}</label>
-      </div><footer><button type="button" onClick={() => setUploadOpen(false)}>{t('common.cancel')}</button><button className="primary" disabled={!file || !upload.supplier_code}>{t('receiving.uploadArchive')}</button></footer></fieldset>
+      </div><footer><button type="button" onClick={() => setUploadOpen(false)}>{t('common.cancel')}</button><button className="primary" disabled={!file || !upload.supplier_code || !!uploadError} data-testid="invoice-upload-save">{t('invoiceArchive.addInvoice')}</button></footer></fieldset>
     </form>}
     {syncOpen && <section className="panel"><h2>{t('invoiceArchive.syncShop')}</h2><p className="muted small">{t('invoiceArchive.syncHelp')}</p>
       <fieldset disabled={working}><div className="fields" style={{ marginTop: '.9rem' }}>
@@ -193,8 +246,10 @@ export function InvoicesPage() {
         {syncResult.next ? <button data-testid="invoice-sync-next" disabled={working || retryAt > now} onClick={() => syncBatch(true)}>{t('invoiceArchive.syncNext')}{retryAt > now ? ` (${Math.ceil((retryAt - now) / 1000)} s)` : ''}</button> : <p className="muted small">{t('invoiceArchive.syncDone')}</p>}
       </div>}
     </section>}
-    {stats && <ArchiveDashboard stats={stats} />}
-    {statsError && <p className="notice warning">{t('invoiceArchive.statsFailed')}</p>}
+    {showDashboard && <div id="invoice-financial-overview">{stats && <ArchiveDashboard stats={stats} />}
+      {statsError && <p className="notice warning">{t('invoiceArchive.statsFailed')}</p>}
+      {!stats && !statsError && <p role="status" className="muted">{t('common.loading')}</p>}
+    </div>}
     <section className="panel">
       <div className="status-tabs" aria-label={t('invoiceArchive.paymentStatus')}>
         {['all', 'unpaid', 'partial', 'paid', 'overdue', 'unknown'].map(value => <button key={value} data-testid={`invoice-status-${value}`} disabled={working} aria-pressed={status === value} onClick={() => statusFilter(value)}>{t(`invoiceArchive.status.${value}`)}</button>)}
@@ -202,27 +257,35 @@ export function InvoicesPage() {
       <form onSubmit={event => { event.preventDefault(); apply(); }} style={{ marginTop: '1rem' }}><fieldset disabled={working}>
         <div className="fields">
           <label>{t('invoiceArchive.invoice_number')}<input data-testid="invoice-search" value={filters.f_invoice_number} onChange={event => update('f_invoice_number', event.target.value)} /></label>
-          <label>{t(applied.direction === 'purchase' ? 'invoiceArchive.supplier' : 'invoiceArchive.source')}<input value={filters.f_supplier} onChange={event => update('f_supplier', event.target.value)} /></label>
+          {applied.direction === 'purchase' ? <label>{t('invoiceArchive.supplier')}<select data-testid="invoice-supplier-filter" value={filters.supplier_code}
+            onChange={event => apply({ ...filters, supplier_code: event.target.value, f_supplier: '' })}>
+            <option value="">{t('invoiceArchive.allSuppliers')}</option>
+            {filters.supplier_code && !suppliers.some(row => row.code === filters.supplier_code) && <option value={filters.supplier_code}>{filters.supplier_code}</option>}
+            {suppliers.map(row => <option key={row.code} value={row.code}>{row.name}</option>)}
+          </select></label> : <label>{t('invoiceArchive.source')}<input data-testid="invoice-source-filter" value={filters.f_supplier} onChange={event => update('f_supplier', event.target.value)} /></label>}
           <label>{t('invoiceArchive.date_from')}<input type="date" data-testid="invoice-date-from" value={filters.date_from} onChange={event => update('date_from', event.target.value)} /></label>
           <label>{t('invoiceArchive.date_to')}<input type="date" value={filters.date_to} onChange={event => update('date_to', event.target.value)} /></label>
         </div>
         <details style={{ marginTop: '.8rem' }}><summary>{t('invoiceArchive.moreFilters')}</summary><div className="fields">
           {(['due_from', 'due_to', 'f_amount_min', 'f_amount_max', 'f_currency'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.startsWith('due') ? 'date' : 'text'} inputMode={key.startsWith('f_amount') ? 'decimal' : undefined} value={filters[key]} onChange={event => update(key, event.target.value)} /></label>)}
+          {applied.direction === 'purchase' && <label>{t('invoiceArchive.supplierSearch')}<input value={filters.f_supplier} onChange={event => update('f_supplier', event.target.value)} /></label>}
           {applied.direction === 'purchase' && <label>{t('invoiceArchive.receiving')}<select value={filters.receiving_status} onChange={event => update('receiving_status', event.target.value)}>{['', 'not_started', 'in_progress', 'completed'].map(value => <option key={value} value={value}>{t(value ? `invoiceArchive.receivingStatus.${value}` : 'invoiceArchive.status.all')}</option>)}</select></label>}
-          <label>{t('invoiceArchive.sort')}<select value={filters.sort_by} onChange={event => update('sort_by', event.target.value)}>{['invoice_date', 'due_date', 'created_at', 'invoice_number', 'total_amount'].map(value => <option key={value} value={value}>{t(`invoiceArchive.${value}`)}</option>)}</select></label>
-          <label>{t('invoiceArchive.sortOrder')}<select value={filters.sort_order} onChange={event => update('sort_order', event.target.value)}><option value="desc">{t('invoiceArchive.desc')}</option><option value="asc">{t('invoiceArchive.asc')}</option></select></label>
+
         </div></details>
         <div className="actions"><button type="submit" data-testid="invoice-apply-filters">{t('invoiceArchive.applyFilters')}</button><button type="button" className="quiet" onClick={() => apply({ ...invoiceArchiveDefaults, direction: applied.direction })}>{t('invoiceArchive.clearFilters')}</button></div>
       </fieldset></form>
     </section>
+    <InvoiceDueCalendar filters={applied} refresh={refresh} />
     <section className="panel">
       <header><div><h2>{t('invoiceArchive.archive')}</h2><p className="muted small">{t('invoiceArchive.documentsCount', { count: data?.total || 0 })}</p></div><div className="actions">
         <span className="muted small">{t('invoiceArchive.selectedCount', { count: selected.size })}</span><button className="primary" data-testid="invoice-batch-download" disabled={working || loading || !selected.size} onClick={() => download([...selected])}><Download size={15} />{t('invoiceArchive.accountantExport')}</button>
       </div></header><p className="muted small">{t('invoiceArchive.exportHelp')}</p>
       <div className="table-scroll"><table data-testid="invoice-table"><thead><tr>
         <th><input aria-label={t('invoiceArchive.selectPage')} data-testid="invoice-select-page" type="checkbox" disabled={working || loading || !rows.length} checked={rows.length > 0 && rows.every(row => selected.has(row.id))} onChange={event => setSelected(event.target.checked ? new Set(rows.map(row => row.id)) : new Set())} /></th>
-        {['invoice_number', applied.direction === 'purchase' ? 'supplier' : 'source', 'invoice_date', 'due_date'].map(key => <th key={key}>{t(`invoiceArchive.${key}`)}</th>)}
-        <th className="amount">{t('invoiceArchive.total_amount')}</th><th className="amount">{t('invoiceArchive.outstanding')}</th><th>{t('invoiceArchive.paymentStatus')}</th>{applied.direction === 'purchase' && <th>{t('invoiceArchive.receiving')}</th>}<th>{t('invoiceArchive.file')}</th>
+        {sortHeader('invoice_number', 'invoice_number')}{sortHeader(applied.direction === 'purchase' ? 'supplier' : 'source', 'supplier_name')}
+        {sortHeader('invoice_date', 'invoice_date')}{sortHeader('due_date', 'due_date')}
+        {sortHeader('total_amount', 'total_amount', true)}{sortHeader('outstanding', 'outstanding_amount', true)}{sortHeader('paymentStatus', 'payment_status')}
+        {applied.direction === 'purchase' && sortHeader('receiving', 'receiving_status')}{sortHeader('file', 'original_filename')}
       </tr></thead><tbody>
         {loading ? <tr><td colSpan={10} className="empty" role="status">{t('common.loading')}</td></tr> : !rows.length ? <tr><td colSpan={10} className="empty"><FileText size={22} style={{ display: 'inline', marginRight: '.5rem' }} />{t('invoiceArchive.empty')}</td></tr> : rows.map(invoice => <tr key={invoice.id} data-testid={`invoice-row-${invoice.id}`}>
           <td><input type="checkbox" disabled={working} aria-label={t('invoiceArchive.selectInvoice', { number: invoiceTitle(invoice) })} checked={selected.has(invoice.id)} onChange={event => setSelected(old => { const next = new Set(old); event.target.checked ? next.add(invoice.id) : next.delete(invoice.id); return next; })} /></td>

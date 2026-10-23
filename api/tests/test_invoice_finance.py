@@ -17,6 +17,21 @@ def invoice(**changes):
 
 
 class InvoiceFinanceTests(unittest.TestCase):
+    def test_invoice_header_sort_uses_displayed_decimal_snapshots_and_unknowns_last(self):
+        rows = [{"id": key} for key in (7, 3, 5, 1)]
+        finances = {
+            7: {"gross_amount": None, "outstanding_amount": None, "status": "unknown"},
+            3: {"gross_amount": "9007199254740993.01", "outstanding_amount": "0.00", "status": "paid"},
+            5: {"gross_amount": "9007199254740993.00", "outstanding_amount": "1.01", "status": "partial"},
+            1: {"gross_amount": "9007199254740993.00", "outstanding_amount": "3.00", "status": "unpaid"},
+        }
+        self.assertEqual(finance.sorted_invoice_ids(rows, finances, sort_by="total_amount"), [1, 5, 3, 7])
+        self.assertEqual(finance.sorted_invoice_ids(rows, finances, sort_by="total_amount", descending=True), [3, 1, 5, 7])
+        self.assertEqual(finance.sorted_invoice_ids(rows, finances, sort_by="outstanding_amount"), [3, 5, 1, 7])
+        self.assertEqual(finance.sorted_invoice_ids(rows, finances, sort_by="outstanding_amount", descending=True), [1, 5, 3, 7])
+        self.assertEqual(finance.sorted_invoice_ids(rows, finances, sort_by="payment_status"), [1, 5, 3, 7])
+        self.assertEqual(finance.sorted_invoice_ids(rows, finances, sort_by="payment_status", descending=True), [3, 5, 1, 7])
+
     def test_exact_tax_basis_rounding_and_zero_rate(self):
         self.assertEqual(finance.derived_totals(Decimal("123"), Decimal("23"), True),
             {"total_without_vat": Decimal("100"), "vat_amount": Decimal("23"), "total_with_vat": Decimal("123")})

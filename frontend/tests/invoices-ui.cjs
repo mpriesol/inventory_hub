@@ -32,6 +32,11 @@ async function input(id, value) { await act(async () => {
   Object.getOwnPropertyDescriptor(prototype, 'value').set.call(target, value);
   target.dispatchEvent(new dom.window.Event(target.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); await tick();
 }); }
+async function dropFiles(files) { await act(async () => {
+  const event = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: { types: ['Files'], files } });
+  required('invoice-dropzone').dispatchEvent(event); await tick();
+}); }
 async function render(path) {
   await act(async () => {
     root.unmount(); document.getElementById('root').innerHTML = ''; root = createRoot(document.getElementById('root'));
@@ -65,7 +70,7 @@ const stats = direction => ({ direction, total_invoices: 4, unpaid_count: 2, ove
 let paymentMode = 'success', hideRecovery = false, downloadFail = false, deferredList = false, releaseList;
 let shopSyncMode = 'success';
 let paymentCounter = 100;
-const calls = [], operations = new Map(), attempts = new Map(), downloads = [];
+const calls = [], operations = new Map(), attempts = new Map(), downloads = [], uploadedFiles = [];
 global.URL.createObjectURL = blob => { assert(blob instanceof Blob); return 'blob:https://hub.example.test/synthetic-download'; };
 global.URL.revokeObjectURL = () => {};
 dom.window.HTMLAnchorElement.prototype.click = function() { if (this.download) downloads.push({ href: this.href, filename: this.download }); };
@@ -90,6 +95,16 @@ global.fetch = async (path, init = {}) => {
   calls.push({ path, method: init.method || 'GET', body: clone(body || null) });
   const url = new URL(path, dom.window.location.href);
   if (url.pathname === '/api/suppliers') return reply([{ code: 'fixture-vendor', name: 'Fixture vendor' }]);
+  if (url.pathname === '/api/invoices/supplier-options') return reply([{ code: 'retired-vendor', name: 'Archived inactive vendor' }]);
+  if (url.pathname === '/api/invoices/calendar') return reply({
+    range_from: url.searchParams.get('range_from'), range_to: url.searchParams.get('range_to'),
+    items: [], total: 0, limit: 5000,
+  });
+  if (url.pathname === '/api/invoices/upload') {
+    assert(body instanceof FormData);
+    uploadedFiles.push({ file: body.get('file'), supplier: body.get('supplier_code') });
+    return reply({ id: 20, invoice_number: null });
+  }
   if (url.pathname === '/api/product-editor/options') return reply({ shops: [{ code: 'biketrek', name: 'BIKETREK' }] });
   if (url.pathname === '/api/invoices/stats') return reply(stats(url.searchParams.get('direction')));
   if (url.pathname === '/api/invoices') {
@@ -112,6 +127,7 @@ global.fetch = async (path, init = {}) => {
     if (body.offset) assert.equal(body.page_token, 'same-page-token', 'Continuation preserves upstream page identity');
     if (shopSyncMode === 'list-http') return failure(502, 'invoice_source_http_failed', false, {
       upstream_status: 400, operation: 'list', url: 'https://private.invalid/PRIVATE-INVOICE', body: 'private credentials and customer',
+      rejected_parameters: ['creation_time_from', 'private', 'query.page', 'creation_time_from'],
     });
     if (shopSyncMode === 'invalid-diagnostic') return failure(502, 'invoice_source_http_failed', false, {
       upstream_status: '400 private', operation: 'https://private.invalid/PRIVATE-INVOICE',
@@ -150,10 +166,34 @@ global.fetch = async (path, init = {}) => {
   assert.equal(invoiceMoney(null), '—'); assert.match(invoiceMoney('0.00'), /^0,/);
   assert.equal(invoiceSourceDiagnostic({ upstream_status: '400 private', operation: 'list' }, i18n.t), 'Shop invoice list');
   assert.equal(invoiceSourceDiagnostic({ upstream_status: 400, operation: 'https://private.invalid' }, i18n.t), '');
+  const rejected = { upstream_status: 400, operation: 'list', rejected_parameters: ['creation_time_to', 'page', 'creation_time_from', 'private', 'page'] };
+  assert.equal(invoiceSourceDiagnostic(rejected, i18n.t), 'Shop invoice list (HTTP 400). The shop rejected: document creation period start, document creation period end, list page.');
+  assert.equal(invoiceSourceDiagnostic({ ...rejected, operation: 'pdf' }, i18n.t), 'Original PDF download (HTTP 400)');
+  assert.equal(invoiceSourceDiagnostic({ ...rejected, upstream_status: 500 }, i18n.t), 'Shop invoice list (HTTP 500)');
+  assert.equal(invoiceSourceDiagnostic({ ...rejected, rejected_parameters: 'page' }, i18n.t), 'Shop invoice list (HTTP 400)');
+  await act(async () => { await i18n.changeLanguage('sk'); });
+  assert.equal(invoiceSourceDiagnostic(rejected, i18n.t), 'Zoznam faktúr v e-shope (HTTP 400). E-shop odmietol: začiatok obdobia vytvorenia dokladov, koniec obdobia vytvorenia dokladov, stranu zoznamu.');
+  await act(async () => { await i18n.changeLanguage('en'); });
   await render('/invoices?page=2');
   assert.equal(calls.filter(call => new URL(call.path, dom.window.location.href).pathname === '/api/invoices').at(-1).path.includes('page=2'), true, 'Opening a paginated URL does not reset the page');
   await click('invoice-prev'); assert(element('invoice-row-10'));
   assert(required('invoice-row-12').textContent.includes('0.00 EUR'), 'Known zero is not shown as missing');
+  assert(!element('invoice-dashboard'), 'Overview is collapsed by default');
+  assert.equal(calls.filter(call => call.path.startsWith('/api/invoices/stats')).length, 0, 'Hidden overview does not load financial summaries');
+  assert.equal(required('invoice-summary-toggle').getAttribute('aria-expanded'), 'false');
+  assert(required('invoice-supplier-filter').textContent.includes('Archived inactive vendor'), 'Historical inactive suppliers remain available');
+  await input('invoice-supplier-filter', 'fixture-vendor');
+  assert.equal(router.state.location.search.includes('supplier_code=fixture-vendor'), true);
+  assert.equal(new URLSearchParams(router.state.location.search).get('page'), '1', 'Supplier selection resets pagination');
+  await click('invoice-sort-due_date');
+  let sortedUrl = new URL(calls.filter(call => call.path.startsWith('/api/invoices?')).at(-1).path, dom.window.location.href);
+  assert.equal(sortedUrl.searchParams.get('supplier_code'), 'fixture-vendor');
+  assert.equal(sortedUrl.searchParams.get('sort_by'), 'due_date'); assert.equal(sortedUrl.searchParams.get('sort_order'), 'asc');
+  assert.equal(required('invoice-sort-due_date').closest('th').getAttribute('aria-sort'), 'ascending');
+  await click('invoice-sort-due_date'); assert.equal(required('invoice-sort-due_date').closest('th').getAttribute('aria-sort'), 'descending');
+  await click('invoice-sort-outstanding_amount');
+  assert.equal(new URLSearchParams(router.state.location.search).get('sort_by'), 'outstanding_amount');
+  await click('invoice-summary-toggle');
   assert(!required('invoice-dashboard').textContent.includes('220.00'), 'Currencies are never added together');
   assert(element('invoice-unknown-payments'), 'Unknown payment amounts are explained even when invoice totals are complete');
   await input('dashboard-currency', 'USD'); assert(required('invoice-dashboard').textContent.includes('20.00 USD'));
@@ -166,6 +206,26 @@ global.fetch = async (path, init = {}) => {
   assert.equal(overdueUrl.searchParams.get('is_overdue'), 'true'); assert.equal(overdueUrl.searchParams.has('payment_status'), false, 'Overdue includes partial payments too');
   assert(required('invoice-batch-download').disabled, 'Filter changes clear export selection');
   downloadFail = true; await click('invoice-download-10'); assert(required('invoice-error').textContent.includes('invoice_export_original_missing')); assert.equal(downloads.length, 1); downloadFail = false;
+  const uploadsBefore = calls.filter(call => call.path === '/api/invoices/upload').length;
+  await dropFiles([new File(['synthetic scan'], 'invoice-scan.png', { type: 'image/png' })]);
+  assert(element('invoice-upload-form')); assert.equal(required('invoice-selected-file').textContent, 'invoice-scan.png');
+  assert.equal(required('upload-supplier').value, 'fixture-vendor', 'The selected supplier is used for a dropped invoice');
+  assert.equal(calls.filter(call => call.path === '/api/invoices/upload').length, uploadsBefore, 'Dropping never submits automatically');
+  await click('invoice-upload-save');
+  assert.equal(uploadedFiles.length, 1); assert.equal(uploadedFiles[0].file.name, 'invoice-scan.png'); assert.equal(uploadedFiles[0].supplier, 'fixture-vendor');
+  assert(!element('invoice-upload-form'), 'Successful original upload closes the form');
+  await dropFiles([new File(['bad'], 'unsupported.exe')]);
+  assert(element('invoice-upload-error')); assert(required('invoice-upload-save').disabled);
+  assert.equal(uploadedFiles.length, 1, 'Invalid dropped formats never reach the upload API');
+  await dropFiles([new File(['1'], 'one.pdf'), new File(['2'], 'two.pdf')]);
+  assert(required('invoice-upload-error').textContent.includes('one invoice'));
+  await dropFiles([new File([], 'empty.pdf')]); assert(required('invoice-upload-error').textContent.includes('nonempty'));
+  const oversized = new File(['synthetic'], 'large.pdf'); Object.defineProperty(oversized, 'size', { value: 50 * 1024 * 1024 + 1 });
+  await dropFiles([oversized]); assert(required('invoice-upload-save').disabled);
+  const chosenScan = new File(['synthetic PDF'], 'chosen-scan.pdf', { type: 'application/pdf' });
+  await act(async () => { Object.defineProperty(required('invoice-upload-file'), 'files', { configurable: true, value: [chosenScan] }); required('invoice-upload-file').dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); });
+  assert.equal(required('invoice-selected-file').textContent, 'chosen-scan.pdf', 'File chooser shares the same validation and original retention flow');
+  assert(!element('invoice-upload-error'));
   await click('invoice-reconcile-open'); await input('invoice-reconcile-supplier', 'fixture-vendor'); await click('invoice-reconcile-start');
   assert.equal(calls.filter(call => call.path === '/api/invoices/reconcile').length, 1, 'Reconciliation does not loop without explicit continuation');
   await click('invoice-reconcile-next'); assert.equal(calls.filter(call => call.path === '/api/invoices/reconcile').at(-1).body.after_key, 'source-key-100');
@@ -176,6 +236,7 @@ global.fetch = async (path, init = {}) => {
   shopSyncMode = 'list-http'; await click('invoice-sync-start');
   assert(required('invoice-error').textContent.includes('Shop invoice list (HTTP 400)'));
   assert(required('invoice-error').textContent.includes('invoice_source_http_failed'));
+  assert(required('invoice-error').textContent.includes('The shop rejected: document creation period start.'));
   assert(!required('invoice-error').textContent.includes('private'), 'Only allowed diagnostics reach the visible error');
   await act(async () => { await i18n.changeLanguage('sk'); });
   shopSyncMode = 'pdf-http'; await click('invoice-sync-start');
@@ -222,5 +283,5 @@ global.fetch = async (path, init = {}) => {
   assert(!element('invoice-receiving-link'), 'Sales archive cannot create a stock receipt');
   assert(!calls.some(call => /\/issue|\/billing|\/stock\/|\/payment$/.test(call.path)), 'Archive never issues documents or uses status-only payment shortcuts');
   await act(async () => root.unmount());
-  console.log('invoice archive UI: authenticated exports, currencies, filters, bounded downloads, exact payments, recovery, conflicts, source locks and receiving links passed');
+  console.log('invoice UI: exact suppliers, collapsed overview, header sorting, scan drop/chooser validation, authenticated exports, exact payments/recovery and receiving links passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

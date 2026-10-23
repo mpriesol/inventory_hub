@@ -1,0 +1,59 @@
+.invoice-due-calendar { padding: 1.25rem; margin: 1.25rem 0; }
+.calendar-title-row, .calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.calendar-title-row h2 { margin: 0 0 .35rem; }
+.calendar-title-row p { margin: 0; }
+.calendar-views, .calendar-period-controls { display: inline-flex; gap: .35rem; align-items: center; }
+.invoice-due-calendar button { min-height: 2rem; border: 1px solid var(--color-border-subtle); border-radius: .45rem; padding: .35rem .7rem; color: var(--color-text-primary); background: var(--color-bg-secondary); cursor: pointer; }
+.invoice-due-calendar button:hover { background: var(--color-bg-tertiary); }
+.invoice-due-calendar button:focus-visible, .invoice-due-calendar a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.calendar-views button[aria-pressed=true] { background: var(--color-accent-subtle); color: var(--color-accent); border-color: var(--color-accent); }
+.calendar-toolbar { margin: 1.2rem 0 .8rem; }
+.calendar-toolbar h3 { margin: 0; font-size: 1.1rem; text-transform: capitalize; }
+.calendar-period-controls button { display: inline-flex; align-items: center; justify-content: center; }
+.calendar-jump { display: flex; align-items: center; gap: .5rem; font-size: .8rem; color: var(--color-text-secondary); }
+.calendar-jump input { max-width: 10rem; }
+.calendar-result-count { font-size: .8rem; color: var(--color-text-secondary); margin-bottom: .65rem; }
+.calendar-legend { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0 0 .7rem; font-size: .7rem; color: var(--color-text-secondary); }
+.calendar-grid-scroll { overflow-x: auto; }
+.calendar-main-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; min-width: 650px; border: 1px solid var(--color-border-subtle); border-radius: .65rem; overflow: hidden; background: var(--color-border-subtle); }
+.calendar-weekday { background: var(--color-bg-tertiary); font-size: .75rem; text-align: center; padding: .6rem .25rem; color: var(--color-text-secondary); }
+.calendar-day { min-height: 110px; background: var(--color-bg-secondary); padding: .3rem; }
+.calendar-main-grid.week .calendar-day { min-height: 240px; }
+.calendar-day.outside { background: var(--color-bg-primary); opacity: .5; }
+.calendar-day.selected { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.invoice-due-calendar .calendar-day-heading { display: flex; justify-content: space-between; align-items: center; gap: .2rem; width: 100%; background: transparent; border: 0; min-height: 1.7rem; padding: .2rem .35rem; font-size: .8rem; }
+.calendar-day.today .calendar-day-heading time { background: var(--color-accent); color: var(--color-bg-primary); border-radius: 50%; min-width: 1.5rem; padding: .15rem; }
+.calendar-day-count { color: var(--color-text-secondary); font-size: .7rem; }
+.calendar-day-items { display: grid; gap: .2rem; padding-top: .2rem; }
+.calendar-invoice-link { display: flex; flex-direction: column; gap: .25rem; color: var(--color-text-primary); text-decoration: none; background: var(--color-bg-tertiary); padding: .65rem .75rem; border: 1px solid var(--color-border-subtle); border-left: 3px solid var(--color-text-tertiary); border-radius: .35rem; min-width: 0; }
+.calendar-invoice-link:hover { border-color: var(--color-accent); }
+.calendar-invoice-link strong { overflow-wrap: anywhere; font-size: .85rem; }
+.calendar-invoice-link > span { font-size: .75rem; color: var(--color-text-secondary); }
+.calendar-invoice-link.compact { padding: .25rem .35rem; }
+.calendar-invoice-link.compact strong { font-size: .7rem; font-weight: 500; }
+.calendar-invoice-link.paid, .calendar-mini-grid button.paid { border-left-color: var(--color-success); }
+.calendar-invoice-link.unpaid, .calendar-invoice-link.partial, .calendar-mini-grid button.unpaid { border-left-color: var(--color-warning); }
+.calendar-invoice-link.overdue, .calendar-mini-grid button.overdue { border-left-color: var(--color-error); }
+.invoice-due-calendar .calendar-more { padding: .15rem .3rem; min-height: 1.5rem; font-size: .7rem; text-align: left; border: 0; background: transparent; color: var(--color-accent); }
+.calendar-selected-day { margin-top: 1.1rem; padding-top: 1rem; border-top: 1px solid var(--color-border-subtle); }
+.calendar-selected-day h3 { margin: 0 0 .75rem; font-size: .95rem; }
+.calendar-selected-invoices { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .6rem; }
+.calendar-status { width: fit-content; }
+.calendar-status.overdue { color: var(--color-error); }
+.calendar-status.paid { color: var(--color-success); }
+.calendar-status.unpaid, .calendar-status.partial { color: var(--color-warning); }
+.calendar-footnote { margin: 1rem 0 0; }
+.calendar-notice { min-height: 3rem; padding: .5rem 0; }
+.calendar-year { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.calendar-mini-month { border: 1px solid var(--color-border-subtle); border-radius: .6rem; padding: .7rem; }
+.calendar-mini-month h3 { text-align: center; margin: 0 0 .4rem; }
+.invoice-due-calendar .calendar-mini-month h3 button { background: transparent; border: 0; font-size: .9rem; text-transform: capitalize; }
+.calendar-mini-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .15rem; }
+.calendar-mini-weekday { font-size: .65rem; color: var(--color-text-secondary); text-align: center; padding: .2rem 0; }
+.invoice-due-calendar .calendar-mini-grid button { position: relative; min-width: 0; padding: .3rem .1rem; min-height: 2rem; border-color: transparent; font-size: .75rem; background: transparent; }
+.invoice-due-calendar .calendar-mini-grid button.has-invoices { border-left-width: 3px; background: var(--color-bg-tertiary); font-weight: 600; }
+.invoice-due-calendar .calendar-mini-grid button.selected { outline: 1px solid var(--color-accent); }
+.invoice-due-calendar .calendar-mini-grid button.today { color: var(--color-accent); }
+.calendar-mini-count { position: absolute; right: 1px; top: 0; font-size: .5rem; color: var(--color-text-secondary); }
+@media (max-width: 1050px) { .calendar-year { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .invoice-due-calendar { padding: .8rem; } .calendar-year { grid-template-columns: 1fr; } .calendar-toolbar { gap: .6rem; } .calendar-toolbar h3 { order: -1; width: 100%; } }

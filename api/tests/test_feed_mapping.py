@@ -111,6 +111,37 @@ class FeedMappingTests(unittest.TestCase):
                 result = mapping.apply_definition(product(), {"value": "00123"}, definition, "paul-lange", "products", CFG)
                 self.assertEqual(getattr(result, field), "00123")
 
+    def test_confirmed_manufacturer_field_retains_its_distinct_source_and_exact_value(self):
+        definition = MappingDefinition.model_validate({'bindings': [
+            {'target': 'code', 'source': 'supplierId'},
+            {'target': 'manufacturer_code', 'source': 'manufacturerVariantCode',
+             'transforms': [{'op': 'trim'}], 'manufacturer_code_confirmed': True}]})
+        result = mapping.apply_definition(product(), {'supplierId': 'SUP-77', 'manufacturerVariantCode': ' 00042-M '},
+                                          definition, 'paul-lange', 'products', CFG, revision=7)
+        self.assertEqual((result.code, result.manufacturer_code), ('SUP-77', '00042-M'))
+        proof = result.mapping_provenance['fields']['manufacturer_code']
+        self.assertEqual((proof['manufacturer_code_confirmed'], proof['value'], proof['revision']),
+                         (True, '00042-M', 7))
+        again = mapping.apply_definition(result, {'supplierId': 'SUP-77', 'manufacturerVariantCode': '00042-M'},
+                                         definition, 'paul-lange', 'products', CFG, revision=7)
+        self.assertEqual(again.mapping_provenance['fields']['manufacturer_code'], proof)
+        missing = mapping.apply_definition(result, {'supplierId': 'SUP-77'}, definition,
+                                           'paul-lange', 'products', CFG, revision=7)
+        self.assertFalse(missing.mapping_provenance['fields']['manufacturer_code']['manufacturer_code_confirmed'])
+        self.assertTrue(missing.mapping_provenance['fields']['manufacturer_code']['missing_source'])
+        for invalid in ('x' * 98, 'invalid;code', 'invalid\x00code'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                mapping.apply_definition(product(), {'supplierId': 'SUP-77', 'manufacturerVariantCode': invalid},
+                                         definition, 'paul-lange', 'products', CFG, revision=7)
+        with self.assertRaisesRegex(ValueError, 'shared supplier mapping'):
+            mapping.apply_definition(product(), {'supplierId': 'SUP-77', 'manufacturerVariantCode': '00042-M'},
+                                     MappingDefinition(bindings=[definition.bindings[1]]),
+                                     'paul-lange', 'products', CFG, revision=7, shop='biketrek')
+        for changes in ({'target': 'code'}, {'source': None}, {'constant': 'invented'}, {'default': 'invented'},
+                        {'transforms': [{'op': 'prefix', 'value': 'M-'}]}, {'manufacturer_code_confirmed': 'true'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                MappingDefinition.model_validate({'bindings': [{**definition.bindings[1].model_dump(), **changes}]})
+
     def test_shop_mapping_categories_are_shop_specific_and_preserve_raw_source(self):
         definition = MappingDefinition.model_validate({"category_rules": [{"source": "Tubes", "target_code": "leaf-10"}],
             "bindings": [{"target": "seo_title", "source": "title", "transforms": [{"op": "suffix", "value": " | BIKETREK"}]}]})

@@ -23,20 +23,31 @@ from inventory_hub.services.upgates_budget import AdmissionDenied
 MAX_JSON_BYTES = 8_000_000
 MAX_PDF_BYTES = 25_000_000
 MAX_READ_SECONDS = 30
+MAX_ERROR_BYTES = 64 * 1024
+MAX_ERROR_READ_SECONDS = 5
+LIST_QUERY_PARAMETERS = ('creation_time_from', 'creation_time_to', 'page')
 CREATION_TIME_ZONE = ZoneInfo('Europe/Bratislava')
 
 
 class SourceError(Exception):
-    def __init__(self, code, status=502, retry_after=None, *, upstream_status=None, operation=None):
+    def __init__(self, code, status=502, retry_after=None, *, upstream_status=None, operation=None,
+                 rejected_parameters=()):
         super().__init__(code)
         self.code, self.status, self.retry_after = code, status, retry_after
         self.upstream_status = upstream_status if type(upstream_status) is int and 100 <= upstream_status <= 599 else None
         self.operation = operation if operation in ('list', 'pdf') else None
+        values = rejected_parameters if isinstance(rejected_parameters, (list, tuple)) else ()
+        self.rejected_parameters = [name for name in LIST_QUERY_PARAMETERS
+            if self.operation == 'list' and self.upstream_status in (400, 422)
+            and any(type(value) is str and value == name for value in values)]
 
     def diagnostics(self):
-        """Only fixed operation names and an HTTP number may leave transport."""
-        return {key: value for key, value in (
+        """Only fixed operation, HTTP number and known query names may leave."""
+        result = {key: value for key, value in (
             ('upstream_status', self.upstream_status), ('operation', self.operation)) if value is not None}
+        if self.rejected_parameters:
+            result['rejected_parameters'] = list(self.rejected_parameters)
+        return result
 
 
 def _need(condition, code, status=502):
@@ -62,6 +73,35 @@ def _unique_object(pairs):
 
 def _nonfinite(_):
     raise SourceError('invoice_source_amount_invalid')
+
+
+def _rejected_parameters(response, sent_parameters):
+    """Read a small error body, returning exact documented query names only."""
+    try:
+        content_type = response.headers.get('Content-Type', '')
+        if not isinstance(content_type, str) or content_type.split(';', 1)[0].strip().lower() != 'application/json':
+            return []
+        length = response.headers.get('Content-Length')
+        if length is not None and (not isinstance(length, str) or not length.isascii() or not length.isdigit()
+                                   or int(length) >= MAX_ERROR_BYTES):
+            return []
+        data, started = bytearray(), monotonic()
+        for chunk in response.iter_content(1024):
+            # Stop at the byte ceiling even without a trustworthy length. A
+            # partial or slow body must never replace the original HTTP error.
+            if len(data) + len(chunk) >= MAX_ERROR_BYTES or monotonic() - started > MAX_ERROR_READ_SECONDS:
+                return []
+            data.extend(chunk)
+        document = json.loads(data, object_pairs_hook=_unique_object, parse_float=Decimal, parse_constant=_nonfinite)
+        messages = document.get('messages') if isinstance(document, dict) else None
+        if not isinstance(messages, list) or monotonic() - started > MAX_ERROR_READ_SECONDS:
+            return []
+        properties = [row.get('property') for row in messages
+            if isinstance(row, dict) and row.get('level') in ('error', 'fatal_error')]
+        return [name for name in LIST_QUERY_PARAMETERS if name in sent_parameters
+                and any(type(value) is str and value == name for value in properties)]
+    except (SourceError, requests.RequestException, OSError, ValueError, TypeError, UnicodeError, RecursionError):
+        return []
 
 
 def _json_values(value):
@@ -104,7 +144,9 @@ def _get(client, path, *, params=None, pdf=False):
                     'invoice_source_document_missing' if status == 404 else 'invoice_source_http_failed')
             raise SourceError(code, 429 if status == 429 else 502,
                               _retry_after_seconds(response.headers.get('Retry-After')) if status == 429 else None,
-                              upstream_status=status, operation=operation)
+                              upstream_status=status, operation=operation,
+                              rejected_parameters=_rejected_parameters(response, params or {})
+                                  if not pdf and status in (400, 422) else ())
         content_type = response.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
         _need(content_type == ('application/pdf' if pdf else 'application/json'), 'invoice_source_content_type_invalid')
         length = response.headers.get('Content-Length')

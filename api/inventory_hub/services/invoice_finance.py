@@ -295,6 +295,22 @@ async def apply_payment(db, invoice_id, request, *, actor, reverses_payment_id=N
     return response
 
 
+def sorted_invoice_ids(rows, finances, *, sort_by, descending=False):
+    """Order displayed finance values exactly, with stable ties and unknowns last."""
+    field = {"total_amount": "gross_amount", "outstanding_amount": "outstanding_amount",
+             "payment_status": "status"}[sort_by]
+    def value(row):
+        found = finances[row["id"]][field]
+        if field == "status":
+            return {"unpaid": 0, "partial": 1, "paid": 2}.get(found)
+        return Decimal(found) if found is not None else None
+    ordered = sorted(rows, key=lambda row: row["id"])
+    known = [row for row in ordered if value(row) is not None]
+    unknown = [row for row in ordered if value(row) is None]
+    known.sort(key=value, reverse=descending)
+    return [row["id"] for row in known + unknown]
+
+
 async def financial_rows(db, *, conditions="1=1", params=None):
     result = await db.execute(text(f"""SELECT ui.id,ui.supplier_id,ui.shop_id,ui.direction,ui.document_type,
         ui.invoice_date,ui.due_date,ui.currency,ui.total_amount,ui.total_with_vat,ui.vat_rate,ui.vat_included,
