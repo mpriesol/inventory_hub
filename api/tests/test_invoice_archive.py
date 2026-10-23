@@ -1,5 +1,7 @@
 """Pure archive parsing, exact amounts and private original-document handling."""
+import csv
 from decimal import Decimal
+import io
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -54,6 +56,49 @@ class InvoiceArchiveTests(unittest.TestCase):
             path.write_text('SCM;QTY;PRICE\nX;invalid;1\n')
             with self.assertRaises((ValidationError, service.InvoiceArchiveError)):
                 service._csv_lines(path)
+
+    def test_whitespace_preamble_uses_actual_header_delimiter_and_mapped_source_values(self):
+        mapping = {'SCM': 'SČM', 'EAN': 'EAN', 'TITLE': 'Názov',
+                   'QTY': 'Počet kusov', 'UNIT_PRICE_EX': 'Jednotková cena'}
+        for delimiter in (',', ';', '\t'):
+            content = io.StringIO(' \r\n\t\r\n')
+            content.seek(0, io.SEEK_END)
+            writer = csv.writer(content, delimiter=delimiter)
+            writer.writerow(['SČM', 'EAN', 'Názov', 'Počet kusov', 'Jednotková cena'])
+            writer.writerow(['00001', '5901234123457', 'Synthetic, part', '2,5', '1,2500'])
+            for encoding in ('utf-8-sig', 'cp1250'):
+                with self.subTest(delimiter=delimiter, encoding=encoding):
+                    rows = service._csv_content(content.getvalue().encode(encoding), mapping)
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual((rows[0].supplier_sku, rows[0].ean, rows[0].product_name),
+                                     ('00001', '5901234123457', 'Synthetic, part'))
+                    self.assertEqual((rows[0].quantity, rows[0].unit_price), (Decimal('2.5'), Decimal('1.2500')))
+                    self.assertIsNone(rows[0].unit)
+                    self.assertIsNone(rows[0].vat_rate)
+
+    def test_configured_present_columns_stay_authoritative_and_invalid_data_is_not_skipped(self):
+        header = ' \nQTY;Actual quantity;UNIT_PRICE_EX;Actual price\n'
+        mapping = {'QTY': 'Actual quantity', 'UNIT_PRICE_EX': 'Actual price'}
+        for values in ('2;;1.25;0.00\n', '2;invalid;1.25;0.00\n', '2;3;1.25;invalid\n'):
+            with self.subTest(values=values), self.assertRaises(service.InvoiceArchiveError):
+                service._csv_content((header + values).encode(), mapping)
+        row = service._csv_content((header + '2;3;1.25;\n').encode(), mapping)[0]
+        self.assertEqual(row.quantity, Decimal('3'))
+        self.assertIsNone(row.unit_price, 'A blank mapped price must not fall back to another column')
+        for content in (b'', b' \r\n\t\r\n', b' \nSCM;QTY\n'):
+            with self.subTest(content=content), self.assertRaises(service.InvoiceArchiveError):
+                service._csv_content(content)
+
+    def test_canonical_ex_vat_price_is_preserved_without_deriving_missing_tax_or_gross(self):
+        rows = service._csv_content(b'\nSCM;QTY;UNIT_PRICE_EX;UNIT_PRICE_INC\nA;1;0.0000;12.30\nB;2;;24.60\n')
+        self.assertEqual(rows[0].unit_price, Decimal('0.0000'))
+        self.assertIsNone(rows[1].unit_price)
+        for row in rows:
+            self.assertIsNone(row.vat_rate)
+            self.assertIsNone(row.unit_price_with_vat)
+            self.assertIsNone(row.total_price)
+            self.assertIsNone(row.total_price_with_vat)
+            self.assertIsNone(row.unit)
 
     def test_original_is_content_addressed_and_allowed_by_private_download_boundary(self):
         with TemporaryDirectory() as folder:

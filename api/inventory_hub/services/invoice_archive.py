@@ -329,8 +329,9 @@ def _csv_content(raw, mapping=None):
         content = raw.decode('utf-8-sig')
     except UnicodeDecodeError:
         content = raw.decode('cp1250')
-    reader = csv.reader(io.StringIO(content), delimiter=receiving._detect_delimiter(content.splitlines()[0] if content else ''))
-    headers = next(reader, [])
+    first_line = next((line for line in content.splitlines() if line.strip()), '')
+    reader = csv.reader(io.StringIO(content), delimiter=receiving._detect_delimiter(first_line))
+    headers = next((row for row in reader if any(value.strip() for value in row)), [])
     index = receiving._build_index(headers)
     result = []
     for row in reader:
@@ -339,7 +340,7 @@ def _csv_content(raw, mapping=None):
         get = lambda names: receiving._get_val(row, index, names)
         source = lambda canonical, names: get([mapping[canonical]]) if mapping and mapping.get(canonical) else get(names)
         quantity = _number_text(source('QTY', receiving._HDR_QTY + ['Quantity']))
-        price = _number_text(source('UNIT_PRICE_EX', receiving._HDR_PRICE))
+        price = _number_text(source('UNIT_PRICE_EX', ['UNIT_PRICE_EX', *receiving._HDR_PRICE]))
         if not quantity:
             raise InvoiceArchiveError('invoice_lines_invalid', 422)
         result.append(ArchiveLine(line_number=len(result) + 1, supplier_sku=source('SCM', receiving._HDR_SCM) or None,
