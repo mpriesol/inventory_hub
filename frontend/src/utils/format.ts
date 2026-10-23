@@ -13,3 +13,10 @@ export function sumDecimals(values: string[]): string {
   const raw = (total < 0n ? -total : total).toString().padStart(scale + 1, '0');
   return `${total < 0n ? '-' : ''}${scale ? `${raw.slice(0, -scale)}.${raw.slice(-scale)}` : raw}`;
 }
+
+/** Business date for invoice forms; independent of browser UTC offset. */
+export function todayDate(now = new Date()) {
+  const pieces = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Bratislava', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const part = (type: string) => pieces.find(piece => piece.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}

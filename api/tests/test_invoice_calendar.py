@@ -16,6 +16,26 @@ from inventory_hub.settings import settings
 
 
 class InvoiceCalendarTests(unittest.IsolatedAsyncioTestCase):
+    def test_planning_sums_remaining_cents_by_currency_without_netting_credits(self):
+        items = [{'currency': currency, 'outstanding_amount': amount} for currency, amount in [
+            ('EUR', '0.10'), ('EUR', '0.20'), ('EUR', '-15.00'), ('EUR', None),
+            ('CZK', '100.00'), (None, '3.00'), (None, None)]]
+        totals = {row['currency']: row for row in service.payment_summary(items)}
+        self.assertEqual(totals['EUR'], {'currency': 'EUR', 'outstanding_amount': '0.30', 'unknown_count': 1, 'invoice_count': 4})
+        self.assertEqual(totals['CZK']['outstanding_amount'], '100.00')
+        self.assertEqual((totals[None]['outstanding_amount'], totals[None]['unknown_count']), ('3.00', 1))
+
+    def test_periods_clip_monday_weeks_and_months_without_duplicating_invoices(self):
+        items = [{'id': identifier, 'due_date': due, 'currency': 'EUR', 'outstanding_amount': '1.00'}
+                 for identifier, due in enumerate(('2025-12-31', '2026-01-01', '2026-01-04', '2026-01-05'))]
+        first, last = date(2025, 12, 31), date(2026, 1, 6)
+        weeks = service.planning_periods(items, first, last, weekly=True)
+        self.assertEqual([(row['from'], row['to'], row['invoice_ids']) for row in weeks],
+                         [('2025-12-31', '2026-01-04', [0, 1, 2]), ('2026-01-05', '2026-01-06', [3])])
+        months = service.planning_periods(items, first, last, weekly=False)
+        self.assertEqual([(row['from'], row['to'], row['invoice_ids']) for row in months],
+                         [('2025-12-31', '2025-12-31', [0]), ('2026-01-01', '2026-01-06', [1, 2, 3])])
+
     def query(self, **changes):
         return InvoiceCalendarQuery.model_validate({"range_from": "2024-01-01", "range_to": "2024-12-31", **changes})
 

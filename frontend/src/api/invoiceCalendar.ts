@@ -9,7 +9,10 @@ export interface InvoiceCalendarItem {
 }
 export interface InvoiceCalendarResult {
   range_from: string; range_to: string; items: InvoiceCalendarItem[]; total: number; limit: number;
+  totals: InvoiceCalendarTotal[]; weeks: InvoiceCalendarPeriod[]; months: InvoiceCalendarPeriod[];
 }
+export interface InvoiceCalendarTotal { currency: string | null; outstanding_amount: string; unknown_count: number; invoice_count: number }
+export interface InvoiceCalendarPeriod { from: string; to: string; totals: InvoiceCalendarTotal[]; invoice_ids: number[] }
 
 export function invoiceCalendarQuery(filters: InvoiceArchiveFilters, from: string, to: string) {
   const values: Record<string, unknown> = { ...filters, range_from: from, range_to: to };

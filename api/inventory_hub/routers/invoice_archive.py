@@ -18,3 +18,9 @@ async def reconcile(payload: InvoiceReconcileInput, db: AsyncSession = Depends(g
         return await service.reconcile_supplier(db, payload)
     except service.InvoiceArchiveError as error:
         raise HTTPException(error.status, detail={'code': error.code}) from None
+
+
+@router.get('/archive-status')
+async def archive_status():
+    from inventory_hub.services.invoice_archive_worker import status
+    return status()

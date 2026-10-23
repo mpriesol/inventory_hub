@@ -58,6 +58,7 @@ There are two data stores. PostgreSQL holds relational business data; the filesy
 - Live testing permission is limited to the agreed behavior, target shops and products. It does not authorize unrelated bulk changes, deletion of production data, destructive migrations or bypassing the application's validation/review steps. Respect a narrower instruction in the current task.
 - Server access must actually be available and authorized. Request the specific missing access or log evidence when needed; do not invent credentials or claim to have inspected the server.
 - On 24 September 2026 the owner explicitly reconfirmed automatic PR approval/merge and consequent workflow deployment until revoked. This standing permission covers reviewed implementation PRs and their additive migrations; it does not activate live stock authority or authorize unrelated bulk production writes.
+- On 23 October 2026 the owner explicitly reconfirmed publishing new project code to the public `mpriesol/inventory_hub` repository and asked not to be prompted repeatedly. Authorized implementation work includes pushing its feature branch, opening a PR, and the reviewed merge/deployment above. Preserve the existing boundaries for secrets, production data and unrelated changes.
 - These rules preserve the scope of the user's authorization; editing this file does not itself grant new permissions.
 
 ## Safety boundaries

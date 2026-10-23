@@ -1,4 +1,7 @@
 """Bounded due-date projection using the same authoritative settlement snapshot."""
+from datetime import timedelta
+from decimal import Decimal
+
 from sqlalchemy import text
 
 from inventory_hub.invoice_calendar_types import InvoiceCalendarQuery
@@ -6,6 +9,38 @@ from inventory_hub.services import invoice_finance as finance
 
 
 MAX_CALENDAR_INVOICES = 5000
+
+
+def payment_summary(items):
+    """Cash still to pay, never netted against credits or unknown settlements."""
+    groups = {}
+    for item in items:
+        currency = item['currency']
+        group = groups.setdefault(currency, {'currency': currency, 'outstanding_amount': Decimal('0.00'),
+                                             'unknown_count': 0, 'invoice_count': 0})
+        group['invoice_count'] += 1
+        if item['outstanding_amount'] is None:
+            group['unknown_count'] += 1
+        else:
+            group['outstanding_amount'] += max(Decimal(item['outstanding_amount']), Decimal('0.00'))
+    return [{**groups[key], 'outstanding_amount': format(groups[key]['outstanding_amount'], '.2f')}
+            for key in sorted(groups, key=lambda value: value or '')]
+
+
+def planning_periods(items, first, last, *, weekly):
+    result = []
+    start = first
+    while start <= last:
+        if weekly:
+            end = min(start + timedelta(days=6-start.weekday()), last)
+        else:
+            next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            end = min(next_month - timedelta(days=1), last)
+        selected = [item for item in items if start.isoformat() <= item['due_date'] <= end.isoformat()]
+        result.append({'from': start.isoformat(), 'to': end.isoformat(),
+                       'totals': payment_summary(selected), 'invoice_ids': [item['id'] for item in selected]})
+        start = end + timedelta(days=1)
+    return result
 
 
 class InvoiceCalendarError(Exception):
@@ -89,4 +124,7 @@ async def calendar(db, query, *, today=None):
             "gross_amount": current["gross_amount"], "outstanding_amount": current["outstanding_amount"],
             "payment_status": current["status"], "is_overdue": current["is_overdue"]})
     return {"range_from": query.range_from.isoformat(), "range_to": query.range_to.isoformat(),
-            "items": items, "total": len(items), "limit": MAX_CALENDAR_INVOICES}
+            "items": items, "total": len(items), "limit": MAX_CALENDAR_INVOICES,
+            "totals": payment_summary(items),
+            "weeks": planning_periods(items, query.range_from, query.range_to, weekly=True),
+            "months": planning_periods(items, query.range_from, query.range_to, weekly=False)}

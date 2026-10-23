@@ -4455,10 +4455,10 @@
   "productTrace": {
     "title": "Product overview",
     "subtitle": "One card, its stock, prices, invoices and recorded sales.",
-    "searchLabel": "EAN or SKU",
-    "searchPlaceholder": "Scan a barcode or enter an SKU",
+    "searchLabel": "EAN, SKU, manufacturer code or feed name",
+    "searchPlaceholder": "Scan an EAN or enter a code or name",
     "search": "Search",
-    "initial": "Scan an EAN and press Enter. Codes are matched exactly, including leading zeros.",
+    "initial": "Stock card EANs and codes match exactly, including leading zeros. Supplier feeds also support name search.",
     "loading": "Loading overview…",
     "retry": "Try loading again",
     "unknown": "Unknown",
@@ -4541,7 +4541,21 @@
     "salesDocuments": "Sales from downloaded invoices",
     "salesDocumentsScope": "Only shop sales documents stored in Hub. Quantities retain the invoice units and are not added to stock issues. Missing documents may make this overview incomplete.",
     "noSalesDocuments": "No sales lines are recorded in downloaded invoices for this card yet.",
-    "unit": "Unit"
+    "unit": "Unit",
+    "storefront": "Storefront product",
+    "administration": "Product administration",
+    "linkMissing": "Link not loaded yet",
+    "feeds": "Supplier feed results",
+    "feedScope": "Last downloaded catalogs in the Hub. Supplier stock is separate; finding a feed item does not create a stock card.",
+    "noFeedMatches": "No matching item in the downloaded feeds.",
+    "manufacturerCode": "Manufacturer code",
+    "feedInactive": "No longer in the current feed",
+    "openCatalog": "Open catalog",
+    "feedOnly": "No linked stock card",
+    "purchaseNet": "Purchase excluding VAT",
+    "retailGross": "Recommended including VAT",
+    "supplierStock": "Supplier stock",
+    "feedTruncated": "Showing the first 100 matches. Refine the code or name."
   },
   "invoiceArchive": {
     "title": "Invoices",
@@ -4741,7 +4755,13 @@
     "dropOneFile": "Add one invoice at a time.",
     "unsupportedFile": "This format is not supported. Choose a PDF, image or supported document.",
     "fileSizeLimit": "The file must be nonempty and no larger than 50 MiB.",
-    "sortColumn": "Sort: {{column}} · {{order}}"
+    "sortColumn": "Sort: {{column}} · {{order}}",
+    "automaticArchive": "Supplier documents appear in invoices automatically after upload or download.",
+    "archiveStatusFailed": "Automatic processing status could not be loaded. The check will retry automatically.",
+    "archiveProcessing": "Automatic supplier document processing",
+    "archiveProgress": "Documents checked: {{count}}. Processing continues automatically.",
+    "archiveWaiting": "Waiting for automatic processing",
+    "archiveIssue": "Document needs attention ({{code}}). Temporary failures are retried automatically."
   },
   "invoiceCalendar": {
     "title": "Due date calendar",
@@ -4764,6 +4784,15 @@
     "emptyDay": "No invoices matching the applied filters are due on this day.",
     "noDueDate": "Invoices without a due date remain in the table and cannot be placed on the calendar. An unverified payment does not mean an unpaid invoice.",
     "retry": "Try again",
-    "openMonth": "Open this month"
+    "openMonth": "Open this month",
+    "show": "Calendar and payment plan",
+    "hide": "Hide calendar and payment plan",
+    "periodTotal": "Remaining payments in the selected period",
+    "remaining": "Remaining",
+    "unknownTotal": "Payment unverified for {{count}} documents",
+    "noPayments": "No documents in this period",
+    "summaryHelp": "Known remaining amounts grouped by due date. Unverified payments are excluded; credits do not reduce other invoice payments. Currencies are kept separate.",
+    "weekPlanning": "Weekly payment plan",
+    "weekScope": "Monday to Sunday, restricted to the selected month in month view. Select a row to show invoices."
   }
 }

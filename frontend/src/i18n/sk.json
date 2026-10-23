@@ -4456,10 +4456,10 @@
   "productTrace": {
     "title": "Prehľad produktu",
     "subtitle": "Jedna karta, jej zásoby, ceny, faktúry a evidované predaje.",
-    "searchLabel": "EAN alebo SKU",
-    "searchPlaceholder": "Naskenujte kód alebo zadajte SKU",
+    "searchLabel": "EAN, SKU, kód výrobcu alebo názov vo feede",
+    "searchPlaceholder": "Naskenujte EAN alebo zadajte kód či názov",
     "search": "Vyhľadať",
-    "initial": "Naskenujte EAN a stlačte Enter. Kód sa vyhľadáva presne, vrátane núl na začiatku.",
+    "initial": "EAN a kódy skladových kariet sa hľadajú presne vrátane úvodných núl. Vo feedoch môžete hľadať aj podľa názvu.",
     "loading": "Načítavam prehľad…",
     "retry": "Skúsiť načítať znova",
     "unknown": "Neznáme",
@@ -4542,7 +4542,21 @@
     "salesDocuments": "Predaje podľa stiahnutých faktúr",
     "salesDocumentsScope": "Len predajné doklady uložené z e-shopov v Hube. Množstvá zostávajú v jednotkách faktúr a nesčítavajú sa so skladovými výdajmi. Chýbajúce doklady môžu prehľad skresliť.",
     "noSalesDocuments": "Pre túto kartu zatiaľ nie sú evidované predajné riadky v stiahnutých faktúrach.",
-    "unit": "Jednotka"
+    "unit": "Jednotka",
+    "storefront": "Produkt v e-shope",
+    "administration": "Administrácia produktu",
+    "linkMissing": "Odkaz zatiaľ nie je načítaný",
+    "feeds": "Výsledky z dodávateľských feedov",
+    "feedScope": "Posledné načítané katalógy v Hube. Dodávateľská zásoba je samostatný údaj; nájdenie vo feede nevytvára skladovú kartu.",
+    "noFeedMatches": "V načítaných feedoch sa nenašla zodpovedajúca položka.",
+    "manufacturerCode": "Kód výrobcu",
+    "feedInactive": "Položka už nie je v aktuálnom feede",
+    "openCatalog": "Otvoriť v katalógu",
+    "feedOnly": "Bez prepojenej skladovej karty",
+    "purchaseNet": "Nákup bez DPH",
+    "retailGross": "Odporúčaná cena s DPH",
+    "supplierStock": "Zásoba dodávateľa",
+    "feedTruncated": "Zobrazených je prvých 100 výsledkov. Spresnite kód alebo názov."
   },
   "invoiceArchive": {
     "title": "Faktúry",
@@ -4742,7 +4756,13 @@
     "dropOneFile": "Pridajte jednu faktúru naraz.",
     "unsupportedFile": "Tento formát nepodporujeme. Vyberte PDF, obrázok alebo podporovaný dokument.",
     "fileSizeLimit": "Súbor musí byť neprázdny a mať najviac 50 MiB.",
-    "sortColumn": "Zoradiť: {{column}} · {{order}}"
+    "sortColumn": "Zoradiť: {{column}} · {{order}}",
+    "automaticArchive": "Dodávateľské doklady sa po nahratí alebo stiahnutí automaticky zobrazia vo faktúrach.",
+    "archiveStatusFailed": "Stav automatického spracovania sa nepodarilo načítať. Kontrola sa zopakuje automaticky.",
+    "archiveProcessing": "Automatické spracovanie dodávateľských dokladov",
+    "archiveProgress": "Skontrolované doklady: {{count}}. Pokračovanie prebieha automaticky.",
+    "archiveWaiting": "Čaká na automatické spracovanie",
+    "archiveIssue": "Doklad vyžaduje kontrolu ({{code}}). Pri dočasnej chybe sa spracovanie zopakuje automaticky."
   },
   "invoiceCalendar": {
     "title": "Kalendár splatností",
@@ -4767,6 +4787,15 @@
     "emptyDay": "V tento deň nie sú podľa použitých filtrov žiadne splatné faktúry.",
     "noDueDate": "Faktúry bez dátumu splatnosti zostávajú v tabuľke; v kalendári ich nemožno zaradiť. Neoverená úhrada neznamená neuhradenú faktúru.",
     "retry": "Skúsiť znovu",
-    "openMonth": "Zobraziť tento mesiac"
+    "openMonth": "Zobraziť tento mesiac",
+    "show": "Kalendár a plán úhrad",
+    "hide": "Skryť kalendár a plán úhrad",
+    "periodTotal": "Zostáva uhradiť vo vybranom období",
+    "remaining": "Zostáva uhradiť",
+    "unknownTotal": "Úhrada neoverená pri {{count}} dokladoch",
+    "noPayments": "Žiadne doklady v období",
+    "summaryHelp": "Súčet známych zostávajúcich úhrad podľa splatnosti. Neoverené úhrady nie sú započítané; dobropisy neznižujú platby ostatných faktúr. Meny sa nesčítavajú.",
+    "weekPlanning": "Plán úhrad po týždňoch",
+    "weekScope": "Pondelok až nedeľa, v mesačnom pohľade iba dni vybraného mesiaca. Kliknutím na riadok zobrazíte faktúry."
   }
 }
