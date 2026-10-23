@@ -149,3 +149,7 @@ export interface SupplierInvoiceReconcileResult {
 }
 export const reconcileSupplierInvoiceArchive = (supplier: string, after: string | null = null) =>
   hubRequest<SupplierInvoiceReconcileResult>(`${base}/reconcile`, { supplier_code: supplier, after_key: after, limit: 100 });
+
+export interface InvoiceArchiveStatus { items: { supplier_code: string; status: string; scanned: number;
+  conflicts: { source_key: string | null; code: string }[]; uploads: { source_key: string | null; code?: string | null; status: string }[] }[] }
+export const getInvoiceArchiveStatus = (signal?: AbortSignal) => hubRequest<InvoiceArchiveStatus>(`${base}/archive-status`, undefined, signal);

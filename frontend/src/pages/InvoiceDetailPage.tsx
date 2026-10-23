@@ -9,6 +9,7 @@ import {
   getInvoicePaymentOperation, reverseInvoicePayment, updateArchivedInvoice,
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
+import { todayDate } from '../utils/format';
 import './invoiceArchive.css';
 
 type PendingPayment = { invoice_id: number; actor: string; payment_id?: number; body: InvoicePaymentRequest | InvoiceReversalRequest };
@@ -162,7 +163,13 @@ export function InvoiceDetailPage() {
         <p className="muted small" style={{ marginTop: '1rem' }}>{invoice.original_filename} · {invoice.file_type?.toUpperCase()} · {t('invoiceArchive.created_at')}: {invoiceDate(invoice.created_at, i18n.language)}</p>
       </section><div className="stack"><section className="panel"><h2>{t('invoiceArchive.paymentStatus')}</h2><InvoicePaymentBadge invoice={invoice} /><dl style={{ marginTop: '1rem' }}><dt>{t('invoiceArchive.paidAmount')}</dt><dd>{money(finance?.paid_amount)}</dd><dt>{t('invoiceArchive.outstanding')}</dt><dd><strong>{money(finance?.outstanding_amount)}</strong></dd></dl>
         <p className="muted small">{t('invoiceArchive.manualPaymentsHelp')}</p>
-        <button style={{ marginTop: '.7rem' }} className="primary" disabled={locked || editing || !finance} data-testid="invoice-payment-open" onClick={() => setPaymentOpen(value => !value)}>{t('invoiceArchive.addPayment')}</button>
+        <button style={{ marginTop: '.7rem' }} className="primary" disabled={locked || editing || !finance} data-testid="invoice-payment-open" onClick={() => {
+          if (!paymentOpen) {
+            const amount = finance?.outstanding_amount ?? finance?.gross_amount ?? '';
+            setPayment({ kind: String(amount).startsWith('-') ? 'refund' : 'payment', amount: String(amount).replace(/^-/, ''), paid_at: todayDate(), note: '', opening_paid_amount: '' });
+          }
+          setPaymentOpen(value => !value);
+        }}>{t('invoiceArchive.addPayment')}</button>
       </section>{invoice.direction !== 'sale' && <section className="panel"><h2>{t('invoiceArchive.receiving')}</h2><p>{t(`invoiceArchive.receivingStatus.${invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</p>
         {!!invoice.receiving_session_id && invoice.receiving_invoice_number && invoice.supplier_code && <Link data-testid="invoice-receiving-link" to={`/receiving/${encodeURIComponent(invoice.receiving_invoice_number)}?supplier=${encodeURIComponent(invoice.supplier_code)}&session=${encodeURIComponent(invoice.receiving_session_id)}`}>{t('invoiceArchive.openReceiving')}</Link>}
       </section>}</div></div>
@@ -187,9 +194,9 @@ export function InvoiceDetailPage() {
       </section>
       <section className="panel"><h2>{t('invoiceArchive.lines', { count: invoice.lines.length })}</h2>{invoice.parse_error && <p className="notice warning">{t('invoiceArchive.parseIncomplete')}</p>}
         {!invoice.lines.length ? <p className="muted">{t('invoiceArchive.noLines')}</p> : <div className="table-scroll"><table><thead><tr>{['line', 'ean', 'code', 'description', 'quantity', 'unitPrice', 'total_amount', 'linkedProduct'].map(key => <th key={key} className={['quantity', 'unitPrice', 'total_amount'].includes(key) ? 'amount' : ''}>{t(`invoiceArchive.${key}`)}</th>)}</tr></thead><tbody>{invoice.lines.map(line => <tr key={line.id}>
-          <td>{line.line_number}</td><td>{line.ean || '—'}</td><td>{line.supplier_sku || '—'}</td><td>{line.product_name || '—'}</td><td className="amount">{line.quantity ?? '—'} {line.unit || '—'}</td>
+          <td>{line.line_number}</td><td>{line.ean || '—'}</td><td>{line.supplier_sku || '—'}</td><td>{line.matched_product_id ? <Link to={`/product-trace?product_id=${line.matched_product_id}`}>{line.product_name || line.product_sku}</Link> : line.product_name || '—'}</td><td className="amount">{line.quantity ?? '—'} {line.unit || '—'}</td>
           <td className="amount">{money(invoice.vat_included ? line.unit_price_with_vat ?? line.unit_price : line.unit_price)}</td><td className="amount">{money(invoice.vat_included ? line.total_price_with_vat ?? line.total_price : line.total_price)}</td>
-          <td>{line.matched_product_id && line.product_sku ? <Link to={`/products/${encodeURIComponent(line.product_sku)}`}>{line.product_sku}</Link> : t('invoiceArchive.unlinked')}</td>
+          <td>{line.matched_product_id ? <Link to={`/product-trace?product_id=${line.matched_product_id}`}>{line.product_sku || line.product_name}</Link> : t('invoiceArchive.unlinked')}</td>
         </tr>)}</tbody></table><p className="muted small">{t(invoice.vat_included ? 'invoiceArchive.pricesGross' : 'invoiceArchive.pricesNet')}</p></div>}
       </section>
     </>}

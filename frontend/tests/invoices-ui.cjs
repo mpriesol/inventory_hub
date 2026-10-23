@@ -22,6 +22,7 @@ const { InvoicesPage } = require('../src/pages/InvoicesPage.tsx');
 const { InvoiceDetailPage } = require('../src/pages/InvoiceDetailPage.tsx');
 const { invoiceMoney, invoiceSourceDiagnostic } = require('../src/pages/invoiceArchiveUi.tsx');
 const { unlockHub } = require('../src/api/access.ts');
+const { todayDate } = require('../src/utils/format.ts');
 let root = createRoot(document.getElementById('root')), router;
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const element = id => document.querySelector(`[data-testid="${id}"]`);
@@ -96,6 +97,7 @@ global.fetch = async (path, init = {}) => {
   const url = new URL(path, dom.window.location.href);
   if (url.pathname === '/api/suppliers') return reply([{ code: 'fixture-vendor', name: 'Fixture vendor' }]);
   if (url.pathname === '/api/invoices/supplier-options') return reply([{ code: 'retired-vendor', name: 'Archived inactive vendor' }]);
+  if (url.pathname === '/api/invoices/archive-status') return reply({ items: [{ supplier_code: 'fixture-vendor', status: 'attention', scanned: 100, conflicts: [{ source_key: 'BAD-1', code: 'invoice_index_ambiguous' }], uploads: [] }] });
   if (url.pathname === '/api/invoices/calendar') return reply({
     range_from: url.searchParams.get('range_from'), range_to: url.searchParams.get('range_to'),
     items: [], total: 0, limit: 5000,
@@ -179,6 +181,13 @@ global.fetch = async (path, init = {}) => {
   await click('invoice-prev'); assert(element('invoice-row-10'));
   assert(required('invoice-row-12').textContent.includes('0.00 EUR'), 'Known zero is not shown as missing');
   assert(!element('invoice-dashboard'), 'Overview is collapsed by default');
+  assert(!element('invoice-dropzone'), 'Drop and manual upload appear only after Add invoice');
+  assert(!element('calendar-main-grid'));
+  assert.equal(calls.filter(call => call.path.startsWith('/api/invoices/calendar')).length, 0, 'Hidden calendar makes no request');
+  assert(required('invoice-archive-status').textContent.includes('BAD-1'), 'Automatic indexing exposes document conflicts');
+  assert(!element('invoice-reconcile-open'), 'Routine imports do not require reconciliation clicks');
+  await click('invoice-calendar-toggle'); assert(element('calendar-main-grid'));
+  await click('invoice-calendar-toggle'); assert(!element('calendar-main-grid'));
   assert.equal(calls.filter(call => call.path.startsWith('/api/invoices/stats')).length, 0, 'Hidden overview does not load financial summaries');
   assert.equal(required('invoice-summary-toggle').getAttribute('aria-expanded'), 'false');
   assert(required('invoice-supplier-filter').textContent.includes('Archived inactive vendor'), 'Historical inactive suppliers remain available');
@@ -207,6 +216,7 @@ global.fetch = async (path, init = {}) => {
   assert(required('invoice-batch-download').disabled, 'Filter changes clear export selection');
   downloadFail = true; await click('invoice-download-10'); assert(required('invoice-error').textContent.includes('invoice_export_original_missing')); assert.equal(downloads.length, 1); downloadFail = false;
   const uploadsBefore = calls.filter(call => call.path === '/api/invoices/upload').length;
+  await click('invoice-upload-open');
   await dropFiles([new File(['synthetic scan'], 'invoice-scan.png', { type: 'image/png' })]);
   assert(element('invoice-upload-form')); assert.equal(required('invoice-selected-file').textContent, 'invoice-scan.png');
   assert.equal(required('upload-supplier').value, 'fixture-vendor', 'The selected supplier is used for a dropped invoice');
@@ -214,6 +224,7 @@ global.fetch = async (path, init = {}) => {
   await click('invoice-upload-save');
   assert.equal(uploadedFiles.length, 1); assert.equal(uploadedFiles[0].file.name, 'invoice-scan.png'); assert.equal(uploadedFiles[0].supplier, 'fixture-vendor');
   assert(!element('invoice-upload-form'), 'Successful original upload closes the form');
+  assert(!element('invoice-dropzone')); await click('invoice-upload-open');
   await dropFiles([new File(['bad'], 'unsupported.exe')]);
   assert(element('invoice-upload-error')); assert(required('invoice-upload-save').disabled);
   assert.equal(uploadedFiles.length, 1, 'Invalid dropped formats never reach the upload API');
@@ -226,10 +237,10 @@ global.fetch = async (path, init = {}) => {
   await act(async () => { Object.defineProperty(required('invoice-upload-file'), 'files', { configurable: true, value: [chosenScan] }); required('invoice-upload-file').dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); });
   assert.equal(required('invoice-selected-file').textContent, 'chosen-scan.pdf', 'File chooser shares the same validation and original retention flow');
   assert(!element('invoice-upload-error'));
-  await click('invoice-reconcile-open'); await input('invoice-reconcile-supplier', 'fixture-vendor'); await click('invoice-reconcile-start');
-  assert.equal(calls.filter(call => call.path === '/api/invoices/reconcile').length, 1, 'Reconciliation does not loop without explicit continuation');
-  await click('invoice-reconcile-next'); assert.equal(calls.filter(call => call.path === '/api/invoices/reconcile').at(-1).body.after_key, 'source-key-100');
+  assert.equal(calls.filter(call => call.path === '/api/invoices/reconcile').length, 0, 'The invoice UI never needs manual indexing');
+  await click('invoice-calendar-toggle');
   await click('invoice-direction-sale'); assert(element('invoice-row-13')); assert(!element('invoice-upload-open'));
+  assert(!element('invoice-calendar-toggle')); assert(!element('calendar-main-grid'), 'Shop invoices do not display the due calendar');
   await click('invoice-sync-open'); await input('sync-shop', 'biketrek'); await input('sync-date_from', '2026-10-01'); await input('sync-date_to', '2026-10-22'); await click('invoice-sync-start');
   assert.equal(calls.filter(call => call.path.includes('/sync/shop/')).length, 1);
   await click('invoice-sync-next'); assert.equal(calls.filter(call => call.path.includes('/sync/shop/')).length, 2);
@@ -252,7 +263,11 @@ global.fetch = async (path, init = {}) => {
   const receipt = new URL(required('invoice-receiving-link').href);
   assert.equal(decodeURIComponent(receipt.pathname), '/receiving/SUP/2026 98'); assert.equal(receipt.searchParams.get('supplier'), 'fixture-vendor'); assert.equal(receipt.searchParams.get('session'), '67');
   assert(!calls.some(call => /undefined|NaN/.test(call.path)), 'Detail uses the real invoiceId route parameter');
-  await click('invoice-payment-open'); await input('invoice-payment-amount', '12,34'); await input('invoice-payment-date', '2026-10-22');
+  assert(document.querySelector('a[href="/product-trace?product_id=18"]'), 'Linked invoice products open the full product overview');
+  await click('invoice-payment-open');
+  assert.equal(required('invoice-payment-amount').value, '100.00');
+  assert.equal(required('invoice-payment-date').value, todayDate());
+  await input('invoice-payment-amount', '12,34'); await input('invoice-payment-date', '2026-10-22');
   paymentMode = 'lost-after'; hideRecovery = true; await click('invoice-payment-save');
   assert(element('invoice-payment-pending')); assert(required('invoice-edit-open').disabled, 'Uncertain payment blocks metadata changes');
   const first = calls.filter(call => /\/10\/payments$/.test(call.path)).at(-1); assert.equal(first.body.amount, '12.34'); assert.equal(typeof first.body.amount, 'string');
@@ -260,7 +275,9 @@ global.fetch = async (path, init = {}) => {
   hideRecovery = false; await click('invoice-payment-recover'); assert(!element('invoice-payment-pending'));
   assert.equal(calls.filter(call => /\/10\/payments$/.test(call.path)).length, 1, 'Recovery GET does not write another payment');
   assert(!element('invoice-reverse-90'), 'Opening balance is never offered as reversible');
-  paymentMode = 'lost-before'; await click('invoice-payment-open'); await input('invoice-payment-amount', '0.01'); await input('invoice-payment-date', '2026-10-22'); await click('invoice-payment-save');
+  paymentMode = 'lost-before'; await click('invoice-payment-open');
+  assert.equal(required('invoice-payment-amount').value, '87.66', 'A partial invoice defaults only its remaining balance');
+  await input('invoice-payment-amount', '0.01'); await input('invoice-payment-date', '2026-10-22'); await click('invoice-payment-save');
   const lostBody = clone(calls.filter(call => /\/10\/payments$/.test(call.path)).at(-1).body); assert(element('invoice-payment-pending'));
   await render('/invoices/10'); assert(element('invoice-payment-pending'), 'Uncertain UUID survives a page remount');
   paymentMode = 'success'; await click('invoice-payment-retry');

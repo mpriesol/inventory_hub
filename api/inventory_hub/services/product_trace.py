@@ -1,11 +1,15 @@
 """Exact-code product investigation. Read-only: invoices and stock are evidence, not writers."""
-from datetime import date
-from decimal import Decimal
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
 from fastapi import HTTPException
 from sqlalchemy import text
 from inventory_hub.services.stock_history import list_movements
+from inventory_hub import config_io
+from inventory_hub.services.catalog import _http_url, folded
+from inventory_hub.services.catalog_identity import connection_fingerprint, read_cache
+from inventory_hub.services.product_editor import OBSERVED_SQL
 
 PAGE_SIZE = 50
 
@@ -24,6 +28,79 @@ def as_dict(row):
 
 async def rows(db, sql, params):
     return [as_dict(row) for row in (await db.execute(text(sql), params)).mappings().all()]
+
+
+def shop_price_context(prices, expected, options):
+    """Follow the pull's first-price selection, carrying its explicit context."""
+    def walk(node, language=None, currency=None):
+        if isinstance(node, dict):
+            language = node.get('language') or language
+            currency = node.get('currency') or node.get('currency_id') or currency
+            for key in ('price_with_vat', 'price'):
+                if node.get(key) not in (None, ''):
+                    try:
+                        amount = Decimal(str(node[key]))
+                        if amount.is_finite():
+                            return amount, language, currency, True if key == 'price_with_vat' else None
+                    except (InvalidOperation, ValueError):
+                        pass
+            for child in node.values():
+                found = walk(child, language, currency)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for child in node:
+                found = walk(child, language, currency)
+                if found is not None:
+                    return found
+        return None
+    found = walk(prices)
+    if not found or expected is None or found[0] != Decimal(expected):
+        return None, None
+    _, language, currency, vat = found
+    if not currency and language:
+        currencies = {row.get('currency') for row in options.get('languages', []) if row.get('code') == language}
+        currency = next(iter(currencies)) if len(currencies) == 1 else None
+    currency = currency.upper() if isinstance(currency, str) and len(currency) == 3 and currency.isalpha() else None
+    return currency, vat
+
+
+def saved_shop_options(shop):
+    # Connection-scoped observed settings only. Never fetch or default to EUR.
+    path = config_io.shop_path(shop)
+    cfg = config_io.load_shop(shop) if path.is_file() else {}
+    saved = read_cache(path.parent / 'catalog-cache/options.json', connection_fingerprint(cfg), datetime.now(timezone.utc))
+    return (saved or {}).get('data') or {}
+
+
+async def feed_matches(db, code, product_id, barcodes):
+    query = folded(code).replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    matches = await rows(db, """SELECT sp.id,s.code AS supplier_code,s.name AS supplier_name,
+        sp.supplier_sku,sp.manufacturer_sku,sp.name,sp.brand,sp.ean,
+        sp.attributes #> '{catalog,eans}' AS eans,
+        COALESCE(sp.images->0->>'url',sp.images->>0) AS image_url,
+        sp.purchase_price,sp.purchase_currency,sp.recommended_price,
+        sp.attributes #>> '{catalog,prices,currency}' AS catalog_currency,
+        sp.supplier_availability_text,sp.stock_qty,sp.is_active,sp.last_seen_at,
+        f.code AS feed_code,p.id AS hub_product_id,p.sku AS hub_sku
+        FROM supplier_products sp JOIN suppliers s ON s.id=sp.supplier_id
+        LEFT JOIN supplier_feeds f ON f.id=sp.source_feed_id
+        LEFT JOIN product_supply_sources ps ON ps.supplier_product_id=sp.id
+        LEFT JOIN products p ON p.id=ps.product_id
+        WHERE (CAST(:product_id AS bigint) IS NOT NULL AND ps.product_id=:product_id)
+           OR (CAST(:code AS text) <> '' AND (sp.supplier_sku=:code OR sp.manufacturer_sku=:code
+               OR sp.ean=ANY(CAST(:barcodes AS text[]))
+               OR (sp.attributes #> '{catalog,eans}') ?| CAST(:barcodes AS text[])
+               OR sp.attributes->>'search_name' LIKE :query ESCAPE '\\'
+               OR lower(sp.name) LIKE :literal_query ESCAPE '\\'))
+        ORDER BY sp.is_active DESC,s.code,sp.supplier_sku,sp.id LIMIT 101""",
+        {'code': code, 'product_id': product_id, 'barcodes': barcodes,
+         'query': '%' + query + '%', 'literal_query': '%' + code.lower().replace('\\','\\\\').replace('%','\\%').replace('_','\\_') + '%'})
+    for row in matches:
+        row['image_url'] = _http_url(row['image_url'])
+        row['eans'] = row['eans'] if isinstance(row['eans'], list) else ([row['ean']] if row['ean'] else [])
+        row['catalog_url'] = '/suppliers/' + quote(row['supplier_code'], safe='') + '/catalog?code=' + quote(row['supplier_sku'], safe='') + '&feed=' + quote(row['feed_code'] or 'products', safe='')
+    return {'items': matches[:100], 'truncated': len(matches) > 100}
 
 
 async def trace(db, *, code='', product_id=None, invoice_page=1, movement_page=1):
@@ -87,17 +164,41 @@ async def trace(db, *, code='', product_id=None, invoice_page=1, movement_page=1
             FROM product_supply_sources ps JOIN supplier_products sp ON sp.id=ps.supplier_product_id
             JOIN suppliers s ON s.id=sp.supplier_id
             WHERE ps.product_id=:product_id AND ps.is_active ORDER BY ps.is_primary DESC,s.name""", params)
-        prices += await rows(db, """SELECT 'shop' AS source,s.name AS label,sp.shop_price AS price,
-            NULL::text AS currency,NULL::boolean AS vat_included,sp.last_pull_at AS observed_at
+        shop_rows = await rows(db, """SELECT sp.id,s.code AS shop_code,'shop' AS source,s.name AS label,sp.shop_price AS price,
+            sp.last_pull_at AS observed_at
             FROM shop_products sp JOIN shops s ON s.id=sp.shop_id
             WHERE sp.product_id=:product_id AND sp.is_listed ORDER BY s.name""", params)
+        observed = {row['id']: row for row in (await db.execute(text(OBSERVED_SQL), {'ids': [selected]})).mappings().all()}
+        price_rows = await rows(db, """SELECT sp.id,CASE WHEN sp.is_variant THEN
+            jsonb_path_query_first(c.data, '$.variants[*] ? (@.code == $code).prices', jsonb_build_object('code',sp.external_code))
+            ELSE c.data->'prices' END AS prices
+            FROM shop_products sp JOIN shop_product_content c ON c.shop_id=sp.shop_id
+            AND c.external_code=CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
+            WHERE sp.product_id=:product_id""", params)
+        price_data = {row['id']: row['prices'] for row in price_rows}
+        product['shops'] = []
+        for row in shop_rows:
+            raw = observed.get(row['id'], {})
+            currency, vat = shop_price_context(price_data.get(row['id']), row['price'], saved_shop_options(row['shop_code']))
+            prices.append({**row, 'currency': currency, 'vat_included': vat})
+            product['shops'].append({'code': row['shop_code'], 'name': row['label'],
+                'url': _http_url(raw.get('shop_url')), 'admin_url': _http_url(raw.get('shop_admin_url'))})
         editor = (await db.execute(text('SELECT data,updated_at FROM product_editor_overrides WHERE product_id=:product_id'), params)).mappings().first()
+        data = editor['data'] or {} if editor else {}
         if editor:
             data = editor['data'] or {}
             price = data.get('variant', {}).get('sale_price_gross')
             if price is not None:
                 prices.append({'source': 'hub_sale', 'label': 'Hub', 'price': str(price), 'currency': 'EUR',
                                'vat_included': True, 'observed_at': serial(editor['updated_at'])})
+        image_sources = await rows(db, """SELECT g.main_image_url AS image_url FROM products p
+            JOIN product_groups g ON g.id=p.group_id WHERE p.id=:product_id
+            UNION ALL SELECT COALESCE(sp.images->0->>'url',sp.images->>0) AS image_url
+            FROM product_supply_sources ps JOIN supplier_products sp ON sp.id=ps.supplier_product_id
+            WHERE ps.product_id=:product_id ORDER BY image_url""", params)
+        images = [data.get('common', {}).get('image_url'), *(row.get('image_url') for row in observed.values()),
+                  *(row['image_url'] for row in image_sources)]
+        product['image_url'] = next((url for value in images if (url := _http_url(value))), None)
         sales = (await rows(db, """SELECT COALESCE(SUM(-quantity) FILTER(WHERE movement_type='SALE_OUT'),0) AS sold_quantity,
             COALESCE(SUM(quantity) FILTER(WHERE movement_type='RETURN_IN'),0) AS returned_quantity,
             COALESCE(SUM(-quantity),0) AS net_quantity, MIN(created_at) AS since
@@ -142,7 +243,8 @@ async def trace(db, *, code='', product_id=None, invoice_page=1, movement_page=1
         LIMIT :limit OFFSET :offset""", params)
     if await db.scalar(text('SELECT EXISTS(SELECT 1 FROM uploaded_invoices WHERE NOT is_parsed)')):
         warnings.append('invoice_index_incomplete')
-    return {'code': code, 'matches': matches, 'matches_truncated': truncated, 'product': product,
+    feeds = await feed_matches(db, code, selected, params['barcodes'])
+    return {'feed_matches': feeds, 'code': code, 'matches': matches, 'matches_truncated': truncated, 'product': product,
             'stocks': stocks, 'prices': prices, 'sales': sales, 'sales_documents': document_sales, 'movements': movements,
             'invoices': {'items': invoice_rows, 'total': int(total or 0), 'page': invoice_page, 'page_size': PAGE_SIZE},
             'warnings': warnings, 'upgates_calls': 0}

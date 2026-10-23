@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { accessRevision, subscribeAccess } from '../api/access';
 import { InvoiceArchiveFilters } from '../api/invoiceArchive';
-import { getInvoiceCalendar, invoiceCalendarQuery, InvoiceCalendarItem, InvoiceCalendarResult } from '../api/invoiceCalendar';
+import { getInvoiceCalendar, invoiceCalendarQuery, InvoiceCalendarItem, InvoiceCalendarResult, InvoiceCalendarTotal } from '../api/invoiceCalendar';
 import { invoiceMoney } from '../pages/invoiceArchiveUi';
+import { todayDate } from '../utils/format';
 import './invoiceCalendar.css';
 
 export type InvoiceCalendarView = 'week' | 'month' | 'year';
@@ -20,11 +21,6 @@ function monthStart(value: Date, offset = 0) {
   const result = new Date(value.valueOf()); result.setUTCDate(1); result.setUTCMonth(result.getUTCMonth() + offset); return result;
 }
 function monday(value: Date) { return dayOffset(value, -((value.getUTCDay() + 6) % 7)); }
-function todayDate() {
-  const pieces = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Bratislava', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
-  const part = (type: string) => pieces.find(piece => piece.type === type)?.value;
-  return `${part('year')}-${part('month')}-${part('day')}`;
-}
 export function calendarPeriod(anchor: string, view: InvoiceCalendarView) {
   const value = parsedDate(anchor);
   if (!value) throw new Error('Invalid calendar date');
@@ -96,7 +92,7 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
     to={`/invoices/${item.id}`} className={`calendar-invoice-link ${item.is_overdue ? 'overdue' : item.payment_status}${compact ? ' compact' : ''}`}
     title={`${item.invoice_number || item.original_filename} · ${item.supplier_name || item.shop_name || '—'} · ${fullDate(item.due_date)}`}>
     <strong>{item.invoice_number || item.original_filename}</strong>
-    {!compact && <><span>{item.supplier_name || item.shop_name || '—'}</span><span className="calendar-invoice-amount">{invoiceMoney(item.gross_amount, item.currency, language)}</span>{status(item)}</>}
+    {!compact && <><span>{item.supplier_name || item.shop_name || '—'}</span><span className="calendar-invoice-amount">{t('invoiceCalendar.remaining')}: {invoiceMoney(item.outstanding_amount, item.currency, language)}<small>{t('invoiceArchive.total_amount')}: {invoiceMoney(item.gross_amount, item.currency, language)}</small></span>{status(item)}</>}
   </Link>;
   const monthDays = (month: Date) => Array.from({ length: 42 }, (_, index) => dayOffset(monday(monthStart(month)), index));
   const dayCell = (date: Date, month: number | null) => {
@@ -112,6 +108,11 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
     </div>;
   };
   const chosenItems = grouped.get(selectedDay) || [];
+  const totals = (values: InvoiceCalendarTotal[]) => values.length ? values.map(value => <span className="calendar-total" key={value.currency || 'unknown'}>
+    <strong>{invoiceMoney(value.outstanding_amount, value.currency, language)}</strong>
+    {!value.currency && <small>{t('invoiceArchive.unknownCurrency')}</small>}
+    {value.unknown_count > 0 && <small className="calendar-unknown-total">{t('invoiceCalendar.unknownTotal', { count: value.unknown_count })}</small>}
+  </span>) : <span className="muted">{t('invoiceCalendar.noPayments')}</span>;
   return <section className="invoice-due-calendar panel" aria-labelledby={titleId} data-testid="invoice-calendar">
     <div className="calendar-title-row"><div><h2 id={titleId}>{t('invoiceCalendar.title')}</h2><p className="muted small">{t('invoiceCalendar.help')}</p></div>
       <div className="calendar-views" aria-label={t('invoiceCalendar.view')}>
@@ -134,10 +135,23 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
       {error !== 'limit' && <button type="button" onClick={() => setRetry(value => value + 1)}>{t('invoiceCalendar.retry')}</button>}</div>}
     {!loading && !error && <>
       <div className="calendar-result-count" role="status" data-testid="calendar-count">{t('invoiceCalendar.count', { count: data?.total || 0 })}</div>
+      <section className="calendar-payment-summary" data-testid="calendar-payment-summary">
+        <h3>{t('invoiceCalendar.periodTotal')}</h3><div className="calendar-totals">{totals(data?.totals || [])}</div>
+        <p className="muted small">{t('invoiceCalendar.summaryHelp')}</p>
+      </section>
+      {view !== 'year' && <section className="calendar-week-planning" data-testid="calendar-week-planning"><h3>{t('invoiceCalendar.weekPlanning')}</h3>
+        <p className="muted small">{t('invoiceCalendar.weekScope')}</p>
+        {(data?.weeks || []).map(week => <details key={week.from} data-testid={`calendar-week-${week.from}`}>
+          <summary><span>{fullDate(week.from)} – {fullDate(week.to)}</span><span className="calendar-totals">{totals(week.totals)}</span></summary>
+          <div className="calendar-selected-invoices">{(data?.items || []).filter(item => week.invoice_ids.includes(item.id)).map(item => invoiceLink(item))}</div>
+          {!week.invoice_ids.length && <p className="muted small">{t('invoiceCalendar.emptyDay')}</p>}
+        </details>)}
+      </section>}
       <div className="calendar-legend">{['paid', 'unpaid', 'overdue', 'unknown'].map(value => <span key={value} className={`calendar-status ${value}`}>{t(`invoiceArchive.status.${value}`)}</span>)}</div>
       {view === 'year' ? <div className="calendar-year" data-testid="calendar-year-grid">
         {Array.from({ length: 12 }, (_, index) => { const month = monthStart(parsedDate(`${anchor.slice(0, 4)}-01-01`)!, index); return <section className="calendar-mini-month" key={index}>
           <h3><button type="button" onClick={() => { setAnchor(calendarDate(month)); setSelectedDay(calendarDate(month)); setView('month'); }}>{dateLabel(calendarDate(month), language, { month: 'long' })}</button></h3>
+          <div className="calendar-month-totals" data-testid={`calendar-month-total-${index + 1}`}>{totals(data?.months?.find(value => value.from.slice(0, 7) === calendarDate(month).slice(0, 7))?.totals || [])}</div>
           <div className="calendar-mini-grid">{weekdays.map((day, position) => <span className="calendar-mini-weekday" key={position}>{day}</span>)}
             {monthDays(month).map(date => { const key = calendarDate(date), items = grouped.get(key) || [], inMonth = date.getUTCMonth() === index; return inMonth
               ? <button type="button" key={key} data-testid={`calendar-mini-${key}`} onClick={() => chooseDay(key)}

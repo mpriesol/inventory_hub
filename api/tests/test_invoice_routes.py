@@ -30,8 +30,8 @@ class InvoiceRouteTests(unittest.TestCase):
             yield self.db
 
         app = FastAPI()
-        app.include_router(routes.router)
         app.include_router(archive_routes.router)
+        app.include_router(routes.router)
         app.include_router(shop_routes.router)
         app.dependency_overrides[get_session] = session
         self.client = TestClient(app)
@@ -44,10 +44,20 @@ class InvoiceRouteTests(unittest.TestCase):
                         "amount": "30.01", "kind": "payment", "paid_at": "2026-02-01T12:30:00Z",
                         "note": "Synthetic operator note"}
 
+    def test_automatic_archive_status_is_private_and_does_not_hit_invoice_id_route(self):
+        with patch('inventory_hub.services.invoice_archive_worker.status', return_value={'items': []}) as status:
+            response = self.client.get('/invoices/archive-status', headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'items': []})
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        status.assert_called_once_with()
+        self.assertEqual(self.sessions, [])
+
     def test_every_archive_and_finance_route_authenticates_before_database(self):
         requests = [
             ("GET", "/invoices", None), ("GET", "/invoices/suppliers", None),
             ("GET", "/invoices/supplier-options", None),
+            ("GET", "/invoices/archive-status", None),
             ("GET", "/invoices/stats", None), ("GET", "/invoices/1", None),
             ("GET", "/invoices/1/download", None),
             ("GET", f"/invoices/1/payment-operations/{self.request_id}", None),

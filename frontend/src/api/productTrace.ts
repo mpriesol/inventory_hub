@@ -12,7 +12,7 @@ export interface TraceInvoice {
 export interface TracePage<T> { items: T[]; total: number; page: number; page_size: number }
 export interface ProductTrace {
   code: string; matches: TraceMatch[]; matches_truncated?: boolean;
-  product: (TraceMatch & { brand: string | null; eans: string[]; card_url: string }) | null;
+  product: (TraceMatch & { brand: string | null; eans: string[]; card_url: string; image_url: string | null; shops: { code: string; name: string; url: string | null; admin_url: string | null }[] }) | null;
   stocks: { warehouse_code: string; warehouse_name: string; on_hand: Decimal; reserved: Decimal; quarantined: Decimal; available: Decimal; confirmed: boolean }[];
   prices: { source: string; label: string; price: Decimal; currency: string | null; vat_included: boolean | null; observed_at: string | null; source_invoice_unit?: string | null }[];
   invoices: TracePage<TraceInvoice>;
@@ -23,6 +23,10 @@ export interface ProductTrace {
     monthly: { month: string; unit: string | null; sold: Decimal; returned: Decimal; net: Decimal }[];
   } | null;
   movements: TracePage<Movement>;
+  feed_matches?: { items: { id: number; supplier_code: string; supplier_name: string; supplier_sku: string; manufacturer_sku: string | null;
+    name: string; brand: string | null; eans: string[]; image_url: string | null; purchase_price: Decimal; purchase_currency: string | null;
+    recommended_price: Decimal; catalog_currency: string | null; supplier_availability_text: string | null; stock_qty: Decimal;
+    is_active: boolean; last_seen_at: string | null; hub_product_id: number | null; hub_sku: string | null; catalog_url: string }[]; truncated: boolean };
   warnings: string[];
 }
 export function getProductTrace(filters: { code?: string; product_id?: number; invoice_page?: number; movement_page?: number }, signal?: AbortSignal) {

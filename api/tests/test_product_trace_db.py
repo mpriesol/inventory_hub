@@ -138,3 +138,59 @@ class ProductTraceDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual(result['movements']['total'], 0)
         self.assertEqual(result['invoices']['total'], 7)
         await self.assert_no_inventory_effects()
+
+    async def test_feed_only_codes_names_and_secondary_eans_keep_supplier_ownership(self):
+        async with self.sessions() as db:
+            for supplier in (self.supplier_id, self.other_supplier_id):
+                await db.execute(text('''INSERT INTO supplier_products
+                    (supplier_id,supplier_sku,manufacturer_sku,name,ean,attributes,purchase_price,purchase_currency,images)
+                    VALUES (:supplier,'000-SUP','M-1','Žltý plášť 100%_','PRIMARY',
+                    '{"search_name":"zlty plast 100%_","catalog":{"eans":["PRIMARY","0001234500000"]}}',7.2,'CZK',
+                    '["https://images.example.test/feed.jpg"]')'''), {'supplier': supplier})
+            await db.commit()
+        for query in ('000-SUP', 'M-1', '0001234500000', 'zlty plast', '100%_'):
+            with self.subTest(query=query):
+                result = await self.lookup(code=query)
+                self.assertIsNone(result['product'])
+                self.assertEqual(result['matches'], [])
+                self.assertEqual({row['supplier_code'] for row in result['feed_matches']['items']}, {'archive-fixture', 'archive-other'})
+                self.assertTrue(all(row['hub_product_id'] is None for row in result['feed_matches']['items']))
+                self.assertTrue(all(row['purchase_currency'] == 'CZK' for row in result['feed_matches']['items']))
+        self.assertEqual((await self.lookup(code='1234500000'))['feed_matches']['items'], [], 'EAN leading zeros are significant')
+        async with self.sessions() as db:
+            await db.execute(text('''INSERT INTO product_supply_sources(product_id,supplier_product_id)
+                SELECT :product,id FROM supplier_products WHERE supplier_id=:supplier'''),
+                {'product': self.product_id, 'supplier': self.supplier_id})
+            await db.commit()
+        explicit = await self.lookup(product_id=self.product_id)
+        self.assertEqual([row['hub_product_id'] for row in explicit['feed_matches']['items']], [self.product_id])
+        self.assertEqual(explicit['product']['image_url'], 'https://images.example.test/feed.jpg')
+        self.assertEqual(await self.scalar('SELECT count(*) FROM products'), 1)
+        await self.assert_no_inventory_effects()
+
+    async def test_shop_variant_uses_own_image_links_and_matching_price_currency(self):
+        import json
+        from unittest.mock import patch
+        content = {'prices': [{'language': 'cs', 'price_with_vat': '999'}],
+            'images': [{'url': 'https://images.example.test/parent.jpg'}],
+            'variants': [{'code': 'LEAF', 'prices': [{'language': 'sk', 'price_with_vat': '12.34'}],
+                         'image': 'https://images.example.test/leaf.jpg',
+                         'admin_url': 'https://admin.example.test/leaf',
+                         'descriptions': [{'language': 'sk', 'url': 'https://shop.example.test/leaf'}]}]}
+        async with self.sessions() as db:
+            await db.execute(text('''INSERT INTO shop_products
+                (shop_id,product_id,external_code,parent_code,is_variant,shop_price)
+                VALUES (:shop,:product,'LEAF','PARENT',true,12.34)'''),
+                {'shop': self.shop_id, 'product': self.product_id})
+            await db.execute(text('''INSERT INTO shop_product_content(shop_id,external_code,data)
+                VALUES (:shop,'PARENT',CAST(:content AS jsonb))'''), {'shop': self.shop_id, 'content': json.dumps(content)})
+            await db.commit()
+        with patch('inventory_hub.services.product_trace.saved_shop_options', return_value={'languages': [{'code': 'sk', 'currency': 'EUR'}]}):
+            result = await self.lookup(product_id=self.product_id)
+        self.assertEqual(result['product']['image_url'], 'https://images.example.test/leaf.jpg')
+        self.assertEqual(result['product']['shops'][0]['url'], 'https://shop.example.test/leaf')
+        self.assertEqual(result['product']['shops'][0]['admin_url'], 'https://admin.example.test/leaf')
+        price = next(row for row in result['prices'] if row['source'] == 'shop')
+        self.assertEqual((price['price'], price['currency'], price['vat_included']), ('12.34', 'EUR', True))
+        self.assertEqual(result['upgates_calls'], 0)
+        await self.assert_no_inventory_effects()

@@ -541,7 +541,16 @@ async def resolve_supplier(db, supplier_code):
     return supplier
 
 
-async def archive_after_upload(supplier_code, result, invoice_number=None):
+async def archive_after_upload(supplier_code, result, invoice_number=None, *, queued=False):
+    from inventory_hub.services.invoice_archive_worker import enqueue_upload
+    queue_path = None if queued or not settings.USE_POSTGRES else enqueue_upload(supplier_code, result, invoice_number)
+    report = await _archive_upload(supplier_code, result, invoice_number)
+    if queue_path is not None and report['status'] == 'completed':
+        queue_path.unlink(missing_ok=True)
+    return report
+
+
+async def _archive_upload(supplier_code, result, invoice_number=None):
     """Finish file-first uploads; a DB outage leaves an explicit recoverable state."""
     if not settings.USE_POSTGRES:
         return {'status': 'disabled'}
@@ -574,6 +583,6 @@ async def archive_after_refresh(supplier_code):
     try:
         async with get_session_context() as db:
             report = await reconcile_supplier(db, InvoiceReconcileInput(supplier_code=supplier_code, limit=200))
-            return {'status': 'completed' if not report['conflicts'] else 'attention', **report}
+            return {'status': 'pending' if report['next_after_key'] else 'attention' if report['conflicts'] else 'completed', **report}
     except (InvoiceArchiveError, HTTPException, SQLAlchemyError, OSError, ValueError) as error:
         return {'status': 'pending', 'code': getattr(error, 'code', 'invoice_archive_unavailable')}

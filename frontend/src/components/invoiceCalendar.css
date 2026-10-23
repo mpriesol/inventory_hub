@@ -57,3 +57,15 @@
 .calendar-mini-count { position: absolute; right: 1px; top: 0; font-size: .5rem; color: var(--color-text-secondary); }
 @media (max-width: 1050px) { .calendar-year { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) { .invoice-due-calendar { padding: .8rem; } .calendar-year { grid-template-columns: 1fr; } .calendar-toolbar { gap: .6rem; } .calendar-toolbar h3 { order: -1; width: 100%; } }
+.calendar-payment-summary { padding: 1rem; margin: 1rem 0; background: var(--color-bg-secondary); border-radius: .6rem; }
+.calendar-totals { display: flex; flex-wrap: wrap; gap: .8rem 1.5rem; }
+.calendar-total { display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
+.calendar-total small, .calendar-invoice-amount small { display: block; font-size: .75rem; font-weight: normal; }
+.calendar-unknown-total { color: var(--color-warning); }
+.calendar-week-planning { margin: 1rem 0; }
+.calendar-week-planning details { border-bottom: 1px solid var(--color-border-subtle); padding: .7rem 0; }
+.invoice-due-calendar .calendar-week-planning summary { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: space-between; color: var(--color-text-primary); cursor: pointer; }
+.calendar-week-planning summary::before { content: '+'; color: var(--color-accent); }
+.calendar-week-planning details[open] summary::before { content: '−'; }
+.calendar-week-planning summary > span:first-of-type { flex: 1; }
+.calendar-month-totals { font-size: .8rem; padding: .4rem 0 .7rem; text-align: center; min-height: 2.5rem; }

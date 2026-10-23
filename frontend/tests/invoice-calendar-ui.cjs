@@ -20,6 +20,7 @@ const i18n = require('../src/i18n/index.ts').default;
 const { unlockHub } = require('../src/api/access.ts');
 const { invoiceArchiveDefaults } = require('../src/api/invoiceArchive.ts');
 const { InvoiceDueCalendar, calendarPeriod, moveCalendar } = require('../src/components/InvoiceDueCalendar.tsx');
+const { todayDate } = require('../src/utils/format.ts');
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const root = createRoot(document.getElementById('root'));
 const element = id => document.querySelector(`[data-testid="${id}"]`);
@@ -58,10 +59,14 @@ global.fetch = async (path, options = {}) => {
   if (mode === 'failed' || mode === 'limit') return { ok: false, status: mode === 'limit' ? 409 : 502,
     json: async () => ({ detail: { code: mode === 'limit' ? 'invoice_calendar_range_too_large' : 'request_failed' } }) };
   if (mode === 'deferred') return new Promise(resolve => { release = () => resolve(reply({ items: [{ ...documents[0], invoice_number: 'STALE-RESULT' }], total: 1 })); });
-  return reply({ range_from: url.searchParams.get('range_from'), range_to: url.searchParams.get('range_to'), items, total: items.length, limit: 5000 });
+  const totals = [{currency:'EUR',outstanding_amount:'125.37',unknown_count:1,invoice_count:2}, {currency:'CZK',outstanding_amount:'0.00',unknown_count:0,invoice_count:1}];
+  return reply({ range_from: url.searchParams.get('range_from'), range_to: url.searchParams.get('range_to'), items, total: items.length, limit: 5000,
+    totals, weeks:[{from:'2024-02-26',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}],
+    months:[{from:'2024-02-01',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}] });
 };
 
 (async () => {
+  assert.equal(todayDate(new Date('2024-02-29T23:30:00Z')), '2024-03-01', 'Payment defaults use the Slovak business date');
   assert.deepEqual(calendarPeriod('2024-02-29', 'month'), { from: '2024-02-01', to: '2024-02-29' });
   assert.deepEqual(calendarPeriod('2025-12-31', 'week'), { from: '2025-12-29', to: '2026-01-04' });
   assert.deepEqual(calendarPeriod('2024-02-29', 'year'), { from: '2024-01-01', to: '2024-12-31' });
@@ -72,6 +77,12 @@ global.fetch = async (path, options = {}) => {
   assert.equal(calls.at(-1).url.searchParams.get('supplier_code'), 'exact-vendor');
   assert.equal(calls.at(-1).url.searchParams.get('range_to'), '2024-02-29');
   assert.equal(required('calendar-main-grid').querySelectorAll('.calendar-day').length, 42);
+  assert(required('calendar-payment-summary').textContent.includes('125.37 EUR'));
+  assert(required('calendar-payment-summary').textContent.includes('0.00 CZK'));
+  assert(required('calendar-payment-summary').textContent.includes(i18n.t('invoiceCalendar.unknownTotal', {count:1})), 'Unknown settlements are visible alongside confirmed sums');
+  const week = required('calendar-week-2024-02-26');
+  await act(async()=>{week.querySelector('summary').click(); await tick();});
+  assert(week.open); assert(week.querySelector('a[href="/invoices/101"]'));
   assert(required('calendar-day-2024-01-29').getAttribute('aria-label').includes('Open this month'));
   assert(!required('calendar-day-2024-01-29').getAttribute('aria-label').includes('0 invoices'), 'Unqueried adjacent month days do not claim zero invoices');
   assert(document.querySelector('a[href="/invoices/101"]').classList.contains('unknown'));
@@ -85,6 +96,7 @@ global.fetch = async (path, options = {}) => {
   assert.equal(required('calendar-main-grid').querySelectorAll('.calendar-day').length, 7);
   await click('calendar-view-year');
   assert.equal(document.querySelectorAll('.calendar-mini-month').length, 12);
+  assert(required('calendar-month-total-2').textContent.includes('125.37 EUR'), 'Year overview includes each monthly payment sum');
   assert.equal(calls.at(-1).url.searchParams.get('range_to'), '2024-12-31');
   await date('2024-10-15');
   await click('calendar-mini-2024-02-29');

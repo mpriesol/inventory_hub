@@ -486,3 +486,23 @@ class InvoiceArchiveDatabaseTests(InvoiceDatabaseCase):
         report = await self.reconcile()
         self.assertEqual((report["created"], len(report["conflicts"])), (0, 1))
         self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoices"), 1)
+
+    async def test_worker_completes_more_than_one_refresh_batch_without_duplicate_or_stock(self):
+        from inventory_hub.services import invoice_archive_worker as worker
+        folder = self.index([{'number': f'AUTO-{index:03}', 'csv_path': 'invoices/csv/shared.csv'} for index in range(205)])
+        (folder / 'csv').mkdir()
+        (folder / 'csv/shared.csv').write_text('SCM;QTY\nSYNTHETIC;1\n')
+
+        @asynccontextmanager
+        async def session_context():
+            async with self.sessions() as db:
+                yield db
+                await db.commit()
+
+        with patch.object(worker, 'get_session_context', session_context):
+            for expected in (100, 200, 205, 205):
+                await worker.process_supplier('archive-fixture')
+                self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), expected)
+        self.assertEqual(worker.status(), {'items': []})
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 205)
+        await self.assert_no_inventory_effects()
