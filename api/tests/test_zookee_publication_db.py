@@ -161,6 +161,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.sessions() as db:
                 mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-10'],
                     ShopProduct.shop_id == self.shops['biketrek']))
+                mapping.external_product_id = '11'
                 mapping.external_variant_id = '23'; await db.commit()
             self.assertTrue(await service.cycle(), 'Repair makes the same fresh observation eligible without a failed-attempt loop')
             self.assertFalse(await service.cycle())
@@ -207,6 +208,7 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.link_sibling_source(db)
             second=await db.get(Product,self.products['BIKE-10'])
             mapping=await db.scalar(select(ShopProduct).where(ShopProduct.product_id==second.id,ShopProduct.shop_id==self.shops['biketrek']))
+            mapping.external_product_id='11'
             mapping.external_variant_id='23';await db.commit()
         remotes={'BIKE-2':copy.deepcopy(self.remote),'BIKE-10':copy.deepcopy(self.remote)}
         remotes['BIKE-10']['identity'].update(code='BIKE-10',variant_code='BIKE-10',variant_id=23)

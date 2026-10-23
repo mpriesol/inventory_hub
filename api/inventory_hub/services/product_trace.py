@@ -35,12 +35,12 @@ async def trace(db, *, code='', product_id=None, invoice_page=1, movement_page=1
         SELECT DISTINCT p.id, p.sku, COALESCE(o.data #>> '{common,name}', p.name) AS name,
                p.item_type, p.stock_unit
         FROM products p LEFT JOIN product_editor_overrides o ON o.product_id = p.id
-        WHERE (:code <> '' AND (p.sku = :code OR EXISTS (
-            SELECT 1 FROM product_identifiers i WHERE i.product_id = p.id AND i.value = :code
+        WHERE (CAST(:code AS text) <> '' AND (p.sku = CAST(:code AS text) OR EXISTS (
+            SELECT 1 FROM product_identifiers i WHERE i.product_id = p.id AND i.value = CAST(:code AS text)
             AND i.identifier_type IN ('ean','upc','unverified_barcode','internal_sku'))
             OR EXISTS (SELECT 1 FROM uploaded_invoice_lines l
                 WHERE l.matched_product_id = p.id AND l.barcode_values @> ARRAY[CAST(:code AS text)])))
-           OR (:code = '' AND p.id = :product_id)
+           OR (CAST(:code AS text) = '' AND p.id = :product_id)
         ORDER BY p.sku, p.id LIMIT 101
     """, params)
     truncated = len(matches) > 100

@@ -17,8 +17,8 @@ class ProductTraceDatabaseTests(InvoiceDatabaseCase):
                 {'supplier': self.supplier_id,'name': number})
             await db.execute(text('''INSERT INTO uploaded_invoice_lines
                 (invoice_id,line_number,ean,barcode_values,product_name,quantity,unit,unit_price,total_price,matched_product_id)
-                VALUES (:invoice,1,:code,ARRAY[CAST(:code AS text)],'Evidence item',:quantity,'pack',0,0,:product)'''),
-                {'invoice': invoice,'code': code,'quantity': quantity,'product': product})
+                VALUES (:invoice,1,CAST(:code AS text),ARRAY[CAST(:code AS text)],'Evidence item',:quantity,'pack',0,0,:product)'''),
+                {'invoice': invoice,'code': code,'quantity': Decimal(quantity),'product': product})
             await db.commit()
             return invoice
 
@@ -64,7 +64,7 @@ class ProductTraceDatabaseTests(InvoiceDatabaseCase):
                 await db.execute(text('''INSERT INTO stock_movements
                     (idempotency_key,product_id,warehouse_id,movement_type,quantity,balance_after,created_by)
                     VALUES (:key,:p,:w,CAST(:kind AS movement_type),:qty,0,'fixture')'''),
-                    {'key': kind,'p': self.product_id,'w': warehouse,'kind': kind,'qty': qty})
+                    {'key': kind,'p': self.product_id,'w': warehouse,'kind': kind,'qty': Decimal(qty)})
             await db.commit()
         await self.insert_invoice(product=self.product_id, quantity='99')
         result = await self.lookup(code='ARCHIVE-1')
