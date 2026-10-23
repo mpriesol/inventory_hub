@@ -109,7 +109,7 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
   };
   const chosenItems = grouped.get(selectedDay) || [];
   const totals = (values: InvoiceCalendarTotal[]) => values.length ? values.map(value => <span className="calendar-total" key={value.currency || 'unknown'}>
-    <strong>{invoiceMoney(value.outstanding_amount, value.currency, language)}</strong>
+    <strong>{value.outstanding_amount === null ? `${t('invoiceCalendar.unknownAmount')}${value.currency ? ` · ${value.currency}` : ''}` : invoiceMoney(value.outstanding_amount, value.currency, language)}</strong>
     {!value.currency && <small>{t('invoiceArchive.unknownCurrency')}</small>}
     {value.unknown_count > 0 && <small className="calendar-unknown-total">{t('invoiceCalendar.unknownTotal', { count: value.unknown_count })}</small>}
   </span>) : <span className="muted">{t('invoiceCalendar.noPayments')}</span>;

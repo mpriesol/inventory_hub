@@ -23,7 +23,9 @@ def payment_summary(items):
             group['unknown_count'] += 1
         else:
             group['outstanding_amount'] += max(Decimal(item['outstanding_amount']), Decimal('0.00'))
-    return [{**groups[key], 'outstanding_amount': format(groups[key]['outstanding_amount'], '.2f')}
+    return [{**groups[key], 'outstanding_amount': None
+             if groups[key]['unknown_count'] == groups[key]['invoice_count']
+             else format(groups[key]['outstanding_amount'], '.2f')}
             for key in sorted(groups, key=lambda value: value or '')]
 
 

@@ -4789,10 +4789,11 @@
     "hide": "Hide calendar and payment plan",
     "periodTotal": "Remaining payments in the selected period",
     "remaining": "Remaining",
-    "unknownTotal": "Payment unverified for {{count}} documents",
+    "unknownTotal": "Documents with unverified payments: {{count}}",
     "noPayments": "No documents in this period",
     "summaryHelp": "Known remaining amounts grouped by due date. Unverified payments are excluded; credits do not reduce other invoice payments. Currencies are kept separate.",
     "weekPlanning": "Weekly payment plan",
-    "weekScope": "Monday to Sunday, restricted to the selected month in month view. Select a row to show invoices."
+    "weekScope": "Monday to Sunday, restricted to the selected month in month view. Select a row to show invoices.",
+    "unknownAmount": "Payment amount unverified"
   }
 }
