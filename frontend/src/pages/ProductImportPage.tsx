@@ -385,6 +385,9 @@ export function ProductImportPage() {
         {skuRow && <ImportSkuIdentityDialog row={skuRow} draft={draft} onDirtyChange={setModalDirty} onClose={() => setSkuRow(null)} onApply={value => {
           let next = stageImportValue(rows, changesRef.current, skuRow, 'sku_identity', value);
           if (value && value.brand !== skuRow.values.brand) next = stageImportValue(rows, next, skuRow, 'brand', value.brand);
+          if (value?.code_kind === 'manufacturer' && skuRow.values.item_type !== 'service'
+              && !skuRow.hub_product_id && !skuRow.expected_hub_product_id)
+            next = stageImportValue(rows, next, skuRow, 'manufacturer_code', value.source_code);
           generation.current++; replaceChanges(next); setNotice(''); setSkuRow(null);
         }} />}
         {identityReviewOpen && <ImportIdentityReviewPanel draft={draft} onChanged={value => { accept(value); setNotice(''); }} onClose={() => setIdentityReviewOpen(false)} />}

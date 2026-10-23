@@ -12,7 +12,10 @@ export function ImportSkuIdentityDialog({ row, draft, onApply, onClose, onDirtyC
 }) {
   const { t } = useTranslation();
   const suppliedIdentity = row.values.sku_identity;
-  const initial = useRef(suppliedIdentity && (suppliedIdentity.code_kind === 'manufacturer' || row.values.item_type === 'service')
+  const manufacturerChanged = suppliedIdentity?.code_kind === 'manufacturer' && row.values.item_type !== 'service'
+    && !row.hub_product_id && !row.expected_hub_product_id
+    && (suppliedIdentity.brand !== row.values.brand || suppliedIdentity.source_code !== row.values.manufacturer_code);
+  const initial = useRef(suppliedIdentity && !manufacturerChanged && (suppliedIdentity.code_kind === 'manufacturer' || row.values.item_type === 'service')
     ? suppliedIdentity : { ...emptySkuIdentity(row.values.brand, row.values.manufacturer_code), supplier_id: draft.supplier_id });
   const [value, setValue] = useState(initial.current), [preview, setPreview] = useState<SkuPreview | null>(null);
   const panel = useRef<HTMLDivElement>(null);
