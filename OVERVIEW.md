@@ -330,7 +330,7 @@ Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
 
 1. Push do `main` s aspoň jednou zmenou mimo `**/*.md` a `docs/**`, alebo ručne spustený workflow na `main`, zostaví API a frontend paralelne. Obrazy používajú oddelené cache `api` a `frontend`. Bežné nasadenie publikuje do GHCR tagy `main` a `sha-<commit>`.
 2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
-3. Pripraví Compose overlay pre chránený súbor `ai-content.env`; jeho vytvorenie neznamená vyplnené AI prístupy.
+3. Pripraví Compose overlay pre chránený súbor `ai-content.env` a pripojenie Caddy do existujúcej externej siete `sps-proxy`; jeho vytvorenie neznamená vyplnené AI prístupy. Pred ďalšími krokmi overí existenciu siete a platnosť zlúčenej Compose konfigurácie.
 4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `033` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
 5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
 
@@ -339,6 +339,8 @@ Workflow je serializovaný s vypnutým rušením rozbehnutého nasadenia. Zmeny 
 Actions súhrn zobrazuje namerané časy zostavenia a nasadenia; deploy log samostatne meria sťahovanie, migrácie, reštart, pripravenosť a čistenie. Každá migrácia vypíše aj vlastný čas. Východiskové meranie a interpretácia sú v [CI a nasadzovaní](docs/ci-deployment.md). Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
 
 [infra/docker-compose.prod.yml](infra/docker-compose.prod.yml) je referencia. Server používa vlastný `docker-compose.yml` a deploy pridáva `docker-compose.ai-content.yml`; ich celý aktuálny obsah nebol touto kontrolou repozitára overený. Pred manuálnym zásahom over nasadené súbory a oprávnenia. Starý návod cez `docker compose down` a `up -d` nevystihoval tento postup a nie je štandardným krokom bežného nasadenia.
+
+Oprava SPS z 23. 10. 2026 pridáva do generovaného overlayu aj referencie sieť `sps-proxy` iba pre Caddy, popri jeho pôvodnej sieti Hubu. Samostatná SPS služba poskytuje alias `sps-receiver`. Po kontrole Hubu deployment overí aj verejné `/sps/healthz` pred čistením obrazov. Pri ručnom obnovení Caddy treba použiť rovnaký overlay; samotné `docker network connect` neprežije vytvorenie náhradného kontajnera. Podrobnosti a hranice overenia sú v [CI a nasadzovaní](docs/ci-deployment.md#sps-proxy-network-23-october-2026).
 
 | Referenčná položka | Význam |
 | --- | --- |
