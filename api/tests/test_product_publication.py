@@ -25,6 +25,19 @@ def local():
 
 
 class ProductPublicationPureTests(TestCase):
+    def test_unverified_mapping_is_blocked_before_publication_transport(self):
+        from inventory_hub.services.product_publication import target
+        for variant, parent, leaf in ((False, None, None), (True, None, '20'), (True, '10', None)):
+            row = {'sku': 'LOCAL-CARD', 'shops': [{'shop_code': 'biketrek', 'mapped': True,
+                'mapping': {'code': 'REMOTE', 'variant_code': 'REMOTE' if variant else None,
+                    'parent_code': 'PARENT' if variant else None, 'is_variant': variant,
+                    'external_product_id': parent, 'external_variant_id': leaf}}]}
+            with self.subTest(variant=variant, parent=parent, leaf=leaf), \
+                    patch.object(source, 'read_remote') as transport:
+                with self.assertRaisesRegex(editor.EditorError, 'identity_unverified'):
+                    target(row, 'biketrek')
+                transport.assert_not_called()
+
     def test_explicit_remote_mapping_can_have_different_code_from_hub_sku(self):
         from inventory_hub.services.product_publication import target
         row = {'sku': 'LOCAL-CARD', 'shops': [{'shop_code': 'biketrek', 'mapped': True,

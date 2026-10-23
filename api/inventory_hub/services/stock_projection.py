@@ -83,6 +83,8 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
         elif (not isinstance(parent, str) or not parent or parent != parent.strip()
               or len(parent) > 100 or any(ord(char) < 32 or ord(char) == 127 for char in parent)):
             reject("mapping_invalid")
+        elif not getattr(mapping, "external_product_id", None) or (mapping.is_variant and not getattr(mapping, "external_variant_id", None)):
+            reject("mapping_unverified")
         else:
             row["target"] = {"parent_code": parent, "variant_code": code if mapping.is_variant else None, "code": code}
             for field, key in (("external_product_id", "product_id"), ("external_variant_id", "variant_id")):

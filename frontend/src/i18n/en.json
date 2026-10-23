@@ -1742,7 +1742,8 @@
       "stock_projection_quantity_invalid": "On-hand and reserved quantities are invalid. Stock review is needed.",
       "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
       "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
-      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish.",
+      "stock_projection_mapping_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link."
     },
     "origins": {
       "cash-register": "Cash register",
@@ -2095,7 +2096,8 @@
       "stock_publication_retry_later": "The shop requires a pause before another attempt. Wait until it ends; changing settings does not shorten it.",
       "stock_publication_observation_changed": "The batch state changed during verification. Load the saved result and review it before continuing.",
       "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
-      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish.",
+      "stock_publication_identity_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link."
     },
     "baselineTitle": "Starting balance for regular transfers",
     "baselineHelp": "Hub reads only the selected items again. It saves a starting balance only when shop quantities match confirmed available stock in Hub. Resolve any differences during maintenance first. This step does not change shop quantities or enable automation.",
@@ -3011,7 +3013,8 @@
       "product_publication_still_sending": "The request may still be running. Resolution is available after at least five minutes.",
       "product_publication_readback_mismatch": "Readback did not confirm all desired values. Sending is not repeated.",
       "product_publication_connection_missing": "The shop connection is not configured.",
-      "product_publication_write_unconfirmed": "The shop did not confirm the write. Read the saved result."
+      "product_publication_write_unconfirmed": "The shop did not confirm the write. Read the saved result.",
+      "stock_publication_identity_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link."
     }
   },
   "fifoCostSync": {
@@ -3174,7 +3177,9 @@
       "stock_tracking_historical_layer": "This purchase layer belongs to historical inventory.",
       "order_stock_stock_unconfirmed": "The item has no confirmed stock tracking. Confirm a physical count or new receipt first.",
       "fifo_cost_stock_unconfirmed": "Cost is not published: the item or issue belongs to unconfirmed or historical inventory.",
-      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items."
+      "fifo_cost_unit_unsupported": "Purchase-cost publication does not support services or metre-based items.",
+      "fifo_cost_mapping_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link.",
+      "stock_publication_identity_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link."
     },
     "remoteValues": "Values sent to Upgates",
     "remoteWithVat": "Upgates unit prices are in EUR including VAT. Conversion uses each line’s VAT rate. FIFO costs above exclude VAT.",
@@ -3948,7 +3953,8 @@
       "product_links_variant_still_exists": "The old variant still exists in the shop. Resolve the duplicate first.",
       "product_links_replacement_identity_missing": "The old variant link is missing an exact native ID or code. Refresh the original link from the shop first.",
       "product_links_replacement_not_allowed": "Only a deleted variant may be replaced with a standalone product.",
-      "product_links_replacement_in_use": "This link has a pending or dependent operation. Complete or resolve it first."
+      "product_links_replacement_in_use": "This link has a pending or dependent operation. Complete or resolve it first.",
+      "product_links_identity_in_use": "An update for this product is still sending or has an uncertain result. Resolve the original operation first; the link will remain unchanged."
     },
     "reasons": {
       "attributes_missing": "Variant attributes are unavailable in the shop response.",
@@ -3977,7 +3983,8 @@
       "mapping_identity_changed": "The shop product code or identifier has changed.",
       "unmapped_sku_collision": "Multiple cards have the same SKU ignoring letter case.",
       "assigned_product_changed": "The code and identifiers do not belong to the selected card.",
-      "replaces_deleted_variant": "The link will move from the verified deleted variant to this standalone product."
+      "replaces_deleted_variant": "The link will move from the verified deleted variant to this standalone product.",
+      "native_identity_verification": "Confirmation will add the verified shop IDs to the existing link. The stock card and quantities will be preserved."
     },
     "allAlreadyLinked": "All selected cards are already linked to {{shop}}.",
     "done": "Done",

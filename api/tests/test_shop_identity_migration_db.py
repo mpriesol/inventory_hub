@@ -67,10 +67,34 @@ class ShopIdentityMigrationTests(unittest.IsolatedAsyncioTestCase):
         row = await self.db.fetchrow('SELECT external_product_id,external_variant_id FROM shop_products')
         self.assertEqual(tuple(row), (None, '11'))
 
-    async def test_duplicate_native_owners_abort_the_entire_upgrade(self):
+    async def test_duplicate_native_owners_become_unverified_without_deleting_evidence(self):
         await self.db.execute('''INSERT INTO shop_products(shop_id,product_id,external_id,external_code,is_variant)
-            VALUES($1,$2,'11','A',false),($1,$3,'11','B',false)''', self.shop, self.ids[0], self.ids[1])
+            VALUES($1,$2,'11','A',false),($1,$3,'11','B',false),($1,$4,'12','C',false)''',
+            self.shop, self.ids[0], self.ids[1], self.ids[2])
+        await self.apply()
+        rows = await self.db.fetch('SELECT external_id,external_product_id FROM shop_products ORDER BY product_id')
+        self.assertEqual([tuple(row) for row in rows], [('11', None), ('11', None), ('12', '12')])
+        # An explicit later verification establishes only one owner. Re-running
+        # migration never restores the other conflicting legacy claim.
+        await self.db.execute("UPDATE shop_products SET external_product_id='11' WHERE product_id=$1", self.ids[0])
+        await self.apply()
+        self.assertIsNone(await self.db.fetchval('SELECT external_product_id FROM shop_products WHERE product_id=$1', self.ids[1]))
         with self.assertRaises(asyncpg.UniqueViolationError):
-            await self.apply()
-        self.assertFalse(await self.db.fetchval("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='shop_products' AND column_name='external_product_id')"))
-        self.assertEqual(await self.db.fetchval('SELECT count(*) FROM shop_products'), 2)
+            await self.db.execute("UPDATE shop_products SET external_product_id='11' WHERE product_id=$1", self.ids[1])
+        self.assertEqual(await self.db.fetchval('SELECT count(*) FROM shop_products'), 3)
+
+    async def test_duplicate_variant_owners_lose_both_native_ids_and_keep_every_row(self):
+        await self.db.execute('''INSERT INTO shop_products(shop_id,product_id,external_id,external_code,variant_code,parent_code,is_variant)
+            VALUES($1,$2,'11','POS','A','POS',true),($1,$3,'11','POS','B','POS',true),
+                  ($1,$4,'11','SIMPLE',NULL,NULL,false)''', self.shop, *self.ids)
+        await self.db.execute('INSERT INTO shop_product_content(shop_id,external_code,data) VALUES($1,$2,$3::jsonb)',
+            self.shop, 'POS', json.dumps({'code': 'POS', 'product_id': 7,
+                'variants': [{'code': 'A', 'variant_id': 11}, {'code': 'B', 'variant_id': 11}]}))
+        await self.apply()
+        rows = await self.db.fetch('SELECT external_id,external_product_id,external_variant_id FROM shop_products ORDER BY product_id')
+        self.assertEqual([tuple(row) for row in rows], [('11', None, None), ('11', None, None), ('11', '11', None)])
+        await self.db.execute("UPDATE shop_products SET external_product_id='7',external_variant_id='11' WHERE product_id=$1", self.ids[0])
+        with self.assertRaises(asyncpg.UniqueViolationError):
+            await self.db.execute("UPDATE shop_products SET external_product_id='7',external_variant_id='11' WHERE product_id=$1", self.ids[1])
+        await self.apply()
+        self.assertIsNone(await self.db.fetchval('SELECT external_variant_id FROM shop_products WHERE product_id=$1', self.ids[1]))

@@ -294,10 +294,6 @@ async def _replacement_mappings(db, shop, manual, *, expected=None):
         raise LinkError('product_links_replacement_identity_missing') from None
     from inventory_hub.db_models_ext import ShopOrder, ShopOrderItem
     from inventory_hub.stock_native_models import StockNativeOrder, StockNativeEvent
-    from inventory_hub.stock_sync_models import StockSyncItem
-    from inventory_hub.stock_publication_models import StockPublicationBatch, StockPublicationItem
-    from inventory_hub.services.merchandising_write_guard import require_target_available
-    from inventory_hub.services.catalog import CatalogError
     for row in rows:
         native = await db.scalar(select(StockNativeOrder.order_id).join(StockNativeEvent,
             StockNativeEvent.id == StockNativeOrder.event_id).where(StockNativeOrder.shop_id == shop.id,
@@ -307,20 +303,30 @@ async def _replacement_mappings(db, shop, manual, *, expected=None):
                 ShopOrderItem.stock_managed.is_(True), ShopOrder.stock_state.in_(('pending', 'reserved'))).limit(1))
         if native is not None or active is not None:
             raise LinkError('product_links_replacement_in_use')
-        sku = await db.scalar(select(Product.sku).where(Product.id == row.product_id))
-        pending = await db.scalar(select(StockSyncItem.id).where(StockSyncItem.shop_id == shop.id,
-            StockSyncItem.sku == sku, StockSyncItem.status.in_(('sending', 'uncertain'))).limit(1))
-        maintenance = await db.scalar(select(StockPublicationItem.id).join(StockPublicationBatch,
-            StockPublicationBatch.id == StockPublicationItem.batch_id).where(StockPublicationBatch.shop_id == shop.id,
-            StockPublicationItem.sku == sku, StockPublicationItem.status.in_(('sending', 'uncertain'))).limit(1))
-        if pending is not None or maintenance is not None:
-            raise LinkError('product_links_replacement_in_use')
-        try:
-            for parent in {row.parent_code, manual[row.product_id]['code']}:
-                await require_target_available(db, shop.code, parent)
-        except CatalogError:
-            raise LinkError('product_links_replacement_in_use') from None
+        await _require_mapping_write_available(db, shop, row,
+            {row.parent_code, manual[row.product_id]['code']}, 'product_links_replacement_in_use')
     return mappings
+
+
+async def _require_mapping_write_available(db, shop, mapping, parents, error_code):
+    """Keep unresolved remote intents attached to their original local identity."""
+    from inventory_hub.stock_sync_models import StockSyncItem
+    from inventory_hub.stock_publication_models import StockPublicationBatch, StockPublicationItem
+    from inventory_hub.services.merchandising_write_guard import require_target_available
+    from inventory_hub.services.catalog import CatalogError
+    sku = await db.scalar(select(Product.sku).where(Product.id == mapping.product_id))
+    pending = await db.scalar(select(StockSyncItem.id).where(StockSyncItem.shop_id == shop.id,
+        StockSyncItem.sku == sku, StockSyncItem.status.in_(('sending', 'uncertain'))).limit(1))
+    maintenance = await db.scalar(select(StockPublicationItem.id).join(StockPublicationBatch,
+        StockPublicationBatch.id == StockPublicationItem.batch_id).where(StockPublicationBatch.shop_id == shop.id,
+        StockPublicationItem.sku == sku, StockPublicationItem.status.in_(('sending', 'uncertain'))).limit(1))
+    if pending is not None or maintenance is not None:
+        raise LinkError(error_code)
+    try:
+        for parent in parents:
+            await require_target_available(db, shop.code, parent)
+    except CatalogError:
+        raise LinkError(error_code) from None
 
 
 async def _rows(db, shop, facts, choices, replacements=None):
@@ -365,9 +371,21 @@ async def _rows(db, shop, facts, choices, replacements=None):
             mapping = mappings[0]
             expected_parent = remote['parent_code'] if remote['is_variant'] else None
             if (not mapping.is_listed or mapping.is_variant != remote['is_variant']
-                    or mapping_code(mapping) != remote['code'] or str(mapping.native_id) != remote['external_id']
+                    or mapping_code(mapping) != remote['code']
+                    or mapping.native_id is not None and str(mapping.native_id) != remote['external_id']
+                    or mapping.external_product_id is not None and mapping.external_product_id != remote['parent_id']
                     or (remote['is_variant'] and mapping.parent_code != expected_parent)):
                 row['errors'].append('existing_mapping_differs')
+            elif mapping.native_id is None or mapping.external_product_id is None:
+                # Completing an existing row is an explicit reviewed link, never
+                # an implicit code-only publication or a new competing mapping.
+                try:
+                    await _require_mapping_write_available(db, shop, mapping,
+                        {remote['parent_code']}, 'product_links_identity_in_use')
+                except LinkError as error:
+                    row['errors'].append(error.code)
+                row['unverified_mapping'] = _mapping(mapping)
+                row['warnings'].append('native_identity_verification')
             else:
                 row['status'] = 'already_linked'
         try:
@@ -684,6 +702,9 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     checked = await _rows(db, shop, facts, choices, replacements)
     if any(item['status'] not in ('ready', 'already_linked') for item in checked):
         raise LinkError('product_links_identity_changed')
+    verified_before = {item['product_id']: item.get('unverified_mapping') for item in selected}
+    if any(item.get('unverified_mapping') != verified_before[item['product_id']] for item in checked):
+        raise LinkError('product_links_identity_changed')
     if await _source_call(source.current_fingerprint(shop_code)) != fingerprint:
         raise LinkError('source_connection_changed')
     await _cache_metadata(db, shop.id, [item['remote'] for item in checked])
@@ -692,6 +713,16 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
         pid, remote = item['product_id'], item['remote']
         if item['status'] == 'already_linked':
             existing.append(pid)
+            continue
+        if item.get('unverified_mapping'):
+            original = item['unverified_mapping']
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.id == original['id'])
+                .with_for_update().execution_options(populate_existing=True))
+            if _mapping(mapping) != original:
+                raise LinkError('product_links_identity_changed')
+            mapping.external_product_id = remote['parent_id']
+            mapping.external_variant_id = remote['external_id'] if remote['is_variant'] else None
+            linked.append(pid)
             continue
         if pid in replacements:
             mapping = await db.get(ShopProduct, replacements[pid]['id'])

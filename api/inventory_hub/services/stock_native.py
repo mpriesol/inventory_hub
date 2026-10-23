@@ -118,7 +118,11 @@ async def _identities(db, shop_id, value, *, bind=False):
         aliases = await order_sku_aliases.load(db, shop, index, native)
     for line in native:
         mapping = mappings.get(line["product_id"])
-        if mapping is None:
+        identifiers = (() if mapping is None else
+                       (mapping.external_product_id, mapping.external_variant_id) if mapping.is_variant else
+                       (mapping.external_product_id,))
+        if not identifiers or any(not isinstance(value, str) or not value.isascii() or not value.isdigit()
+                                  or not 1 <= int(value) <= 9007199254740991 for value in identifiers):
             raise NativeError("stock_native_identity_unknown")
         code = mapping.external_code
         alias_proof = None

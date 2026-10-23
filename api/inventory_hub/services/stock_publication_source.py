@@ -60,6 +60,8 @@ def _target(value, *, frozen=False):
     target["variant_code"] = _code(variant) if variant is not None else None
     if (variant is None and target["parent_code"] != target["code"]) or (variant is not None and variant != target["code"]):
         raise _invalid_target()
+    if not _identifier(value.get("product_id")) or (variant is not None and not _identifier(value.get("variant_id"))):
+        raise SourceError("stock_publication_identity_unverified", 409)
     if frozen and set(value) != IDENTITY_KEYS:
         raise _invalid_target()
     if "product_id" in value:

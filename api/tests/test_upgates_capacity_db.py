@@ -79,7 +79,8 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 db.add(product)
                 await db.flush()
                 db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, is_listed=listed,
-                    external_code='ALIAS-REMOTE' if code == 'ALIAS' else code, is_variant=False))
+                    external_code='ALIAS-REMOTE' if code == 'ALIAS' else code, is_variant=False,
+                    external_product_id=str(1000 + product.id)))
                 db.add(StockBalance(product_id=product.id, warehouse_id=self.warehouse_id,
                     qty_on_hand=quantity, qty_reserved=0, qty_quarantined=0, avg_cost=1, total_value=quantity))
                 if confirmed:
@@ -156,13 +157,21 @@ class CapacityDatabaseTests(unittest.IsolatedAsyncioTestCase):
                         external_code=code,
                         is_variant=variant,
                         parent_code='PARENT' if variant else None,
+                        external_product_id='9000' if variant else str(1000 + product.id),
+                        external_variant_id=str(1000 + product.id) if variant else None,
                         is_listed=True))
             await db.commit()
+            native_ids = {mapping.external_code: (int(mapping.external_product_id),
+                int(mapping.external_variant_id) if mapping.external_variant_id else None)
+                for mapping in (await db.scalars(select(ShopProduct).where(
+                    ShopProduct.shop_id == self.shop_id, ShopProduct.external_product_id.is_not(None)))).all()}
         before = await self.snapshot()
         expected = [
-            {'code': code, 'parent_code': code, 'variant_code': None}
+            {'code': code, 'parent_code': code, 'variant_code': None,
+             'product_id': native_ids[code][0], 'variant_id': None}
             for code in ('VALID', 'ZERO', 'UNVERIFIED', 'EXTRA-0')
-        ] + [{'code': f'VARIANT-{index}', 'parent_code': 'PARENT', 'variant_code': f'VARIANT-{index}'}
+        ] + [{'code': f'VARIANT-{index}', 'parent_code': 'PARENT', 'variant_code': f'VARIANT-{index}',
+              'product_id': native_ids[f'VARIANT-{index}'][0], 'variant_id': native_ids[f'VARIANT-{index}'][1]}
              for index in range(4)]
         async with self.sessions() as db:
             staged = Product(sku='UNCOMMITTED-SAMPLE', name='Uncommitted sample')

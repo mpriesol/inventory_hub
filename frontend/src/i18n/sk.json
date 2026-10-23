@@ -1742,7 +1742,8 @@
       "stock_projection_quantity_invalid": "Fyzické a rezervované množstvá nie sú platné. Je potrebná kontrola skladu.",
       "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
       "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
-      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie.",
+      "stock_projection_mapping_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu."
     },
     "origins": {
       "cash-register": "Pokladňa",
@@ -2095,7 +2096,8 @@
       "stock_publication_retry_later": "E-shop vyžaduje prestávku pred ďalším pokusom. Počkaj na jej skončenie; zmena nastavení ju neskráti.",
       "stock_publication_observation_changed": "Počas overovania sa stav dávky zmenil. Načítaj uložený výsledok a skontroluj ho pred ďalším krokom.",
       "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
-      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie.",
+      "stock_publication_identity_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu."
     },
     "baselineTitle": "Počiatočný stav pre pravidelný prenos",
     "baselineHelp": "Hub znova načíta iba vybrané položky. Počiatočný stav uloží, iba ak sú množstvá v e-shope zhodné s potvrdenými voľnými zásobami Hubu. Pri rozdiele treba najprv zosúladiť zásoby počas údržby. Tento krok nemení množstvá v e-shope ani nezapína automatiku.",
@@ -3011,7 +3013,8 @@
       "product_publication_still_sending": "Požiadavka ešte môže prebiehať. Overenie ukončenia je dostupné najskôr po piatich minútach.",
       "product_publication_readback_mismatch": "Spätné čítanie nepotvrdilo všetky požadované údaje. Odoslanie sa neopakuje.",
       "product_publication_connection_missing": "Pripojenie e-shopu nie je nakonfigurované.",
-      "product_publication_write_unconfirmed": "E-shop nepotvrdil zápis. Použite kontrolu uloženého výsledku."
+      "product_publication_write_unconfirmed": "E-shop nepotvrdil zápis. Použite kontrolu uloženého výsledku.",
+      "stock_publication_identity_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu."
     }
   },
   "fifoCostSync": {
@@ -3174,7 +3177,9 @@
       "stock_tracking_historical_layer": "Táto nákupná vrstva patrí do historickej evidencie.",
       "order_stock_stock_unconfirmed": "Položka ešte nemá potvrdenú skladovú evidenciu. Najprv potvrďte inventúru alebo nový príjem.",
       "fifo_cost_stock_unconfirmed": "Cena sa neodošle: položka alebo výdaj patria do nepotvrdenej či historickej evidencie.",
-      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky."
+      "fifo_cost_unit_unsupported": "Prenos nákupných nákladov nepodporuje služby ani metrové položky.",
+      "fifo_cost_mapping_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu.",
+      "stock_publication_identity_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu."
     },
     "remoteValues": "Hodnoty odosielané do Upgates",
     "remoteWithVat": "Jednotkové ceny v Upgates sú v EUR s DPH. Prepočet používa DPH konkrétnej položky. FIFO náklady vyššie sú bez DPH.",
@@ -3949,7 +3954,8 @@
       "product_links_variant_still_exists": "Pôvodný variant v e-shope stále existuje. Najprv vyriešte duplicitu.",
       "product_links_replacement_identity_missing": "Pôvodnej variantovej väzbe chýba overené natívne ID alebo kód. Najprv obnovte pôvodnú väzbu z e-shopu.",
       "product_links_replacement_not_allowed": "Nahradiť možno len vymazaný variant samostatným produktom.",
-      "product_links_replacement_in_use": "Prepojenie má otvorenú alebo závislú operáciu. Najprv ju dokončite alebo vyriešte."
+      "product_links_replacement_in_use": "Prepojenie má otvorenú alebo závislú operáciu. Najprv ju dokončite alebo vyriešte.",
+      "product_links_identity_in_use": "Pre produkt prebieha odosielanie alebo zostáva nejasný výsledok zápisu. Najprv vyriešte pôvodnú operáciu; prepojenie sa zatiaľ nezmení."
     },
     "reasons": {
       "attributes_missing": "Parametre variantu nie sú v odpovedi e-shopu dostupné.",
@@ -3978,7 +3984,8 @@
       "mapping_identity_changed": "Kód alebo identifikátor e-shopového produktu sa zmenil.",
       "unmapped_sku_collision": "Viac kariet má rovnaký SKU bez ohľadu na veľkosť písmen.",
       "assigned_product_changed": "Kód a identifikátory nepatria vybranej karte.",
-      "replaces_deleted_variant": "Prepojenie sa presunie z overene vymazaného variantu na tento samostatný produkt."
+      "replaces_deleted_variant": "Prepojenie sa presunie z overene vymazaného variantu na tento samostatný produkt.",
+      "native_identity_verification": "Potvrdením doplníte overené ID e-shopu do existujúceho prepojenia. Skladová karta a zásoby zostanú zachované."
     },
     "allAlreadyLinked": "Všetky vybrané karty sú už prepojené s {{shop}}.",
     "done": "Hotovo",

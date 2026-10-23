@@ -2,6 +2,7 @@
 import copy
 import json
 import unittest
+from zlib import crc32
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
@@ -13,18 +14,21 @@ FINGERPRINT = connection_fingerprint(BASE, 'synthetic-reader')
 
 
 def target(code, variant=False):
+    native_id = 100 + crc32(code.encode('utf-8'))
     return {'code': code, 'parent_code': 'UMBRELLA' if variant else code,
-            'variant_code': code if variant else None}
+            'variant_code': code if variant else None,
+            'product_id': 90 if variant else native_id,
+            'variant_id': native_id if variant else None}
 
 
 def page(targets):
     variant = targets[0]['variant_code'] is not None
     rows = []
     for index, selected in enumerate(targets):
-        row = {'code': selected['code'], 'product_id': 90 if variant else 100 + index, 'stock': 4,
+        row = {'code': selected['code'], 'product_id': selected['product_id'], 'stock': 4,
                'availability': 'SKLADOM', 'can_add_to_basket_yn': True}
         if variant:
-            row.update(product_code=selected['parent_code'], variant_id=200 + index)
+            row.update(product_code=selected['parent_code'], variant_id=selected['variant_id'])
         else:
             row.update(variants_exists_yn=False, variants=[], set_yn=False)
         rows.append(row)
@@ -138,7 +142,8 @@ class StockSyncBatchTests(unittest.IsolatedAsyncioTestCase):
             await self.read(targets, [body])
 
     async def test_duplicate_remote_ids_or_inconsistent_parent_identity_are_rejected(self):
-        for variant, changes in ((False, {'product_id': 100}), (True, {'variant_id': 200}),
+        for variant, changes in ((False, {'product_id': target('A')['product_id']}),
+                                 (True, {'variant_id': target('A', True)['variant_id']}),
                                  (True, {'product_id': 91})):
             targets = [target('A', variant), target('B', variant)]
             body = page(targets)

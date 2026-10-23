@@ -15,6 +15,13 @@ def main():
         with connection.cursor() as cursor:
             cursor.execute('SELECT pg_advisory_xact_lock(691432130)')
             cursor.execute(sql.read_text(encoding='utf-8'))
+        for notice in connection.notices:
+            # Only fixed migration counts, never arbitrary server messages/data.
+            for label in ('shop_identity_unverified_standalone_rows=', 'shop_identity_unverified_variant_rows='):
+                if label in notice:
+                    count = notice.split(label, 1)[1].strip()
+                    if count.isdigit():
+                        print(label + count, flush=True)
     print('Shop identity migration 030 ready')
 
 

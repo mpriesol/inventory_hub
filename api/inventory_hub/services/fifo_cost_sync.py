@@ -204,6 +204,8 @@ async def product_target(db, shop_id, product_id, sku):
     mapping = await one(db, ShopProduct, (ShopProduct.shop_id == shop_id) & (ShopProduct.product_id == product_id))
     if mapping is None or not mapping.is_listed:
         raise CostSyncError('fifo_cost_mapping_missing')
+    if not mapping.external_product_id or (mapping.is_variant and not mapping.external_variant_id):
+        raise CostSyncError('fifo_cost_mapping_unverified')
     code = mapping.external_code
     parent = mapping.parent_code if mapping.is_variant else mapping.external_code
     if not code or code != code.strip() or not parent:

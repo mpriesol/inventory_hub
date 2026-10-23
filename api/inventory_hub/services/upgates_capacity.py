@@ -306,10 +306,16 @@ async def _sample_targets(db, shop_code):
         if counts[kind] >= 4:
             continue
         try:
+            native_product = mapping.external_product_id
+            native_variant = mapping.external_variant_id
+            if not native_product or (mapping.is_variant and not native_variant):
+                continue
             target = stock_sync.source.transport._target({'code': code,
                 'parent_code': mapping.parent_code if mapping.is_variant else code,
-                'variant_code': code if mapping.is_variant else None})
-        except stock_sync.source.SourceError:
+                'variant_code': code if mapping.is_variant else None,
+                'product_id': int(native_product),
+                'variant_id': int(native_variant) if mapping.is_variant else None})
+        except (stock_sync.source.SourceError, ValueError, TypeError):
             continue
         targets.append(target)
         counts[kind] += 1

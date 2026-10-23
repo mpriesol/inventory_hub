@@ -72,12 +72,28 @@ priestoroch. Číselné ID produktu a variantu sa môžu zhodovať bez kolízie.
 Pravidelné skladové projekcie, FIFO nákupné ceny a produktové publikovanie
 používajú kód explicitnej väzby; nemusia sa zhodovať s interným SKU. Cieľ sa
 pred zápisom stále overuje podľa natívnej identity. Existujúce SKU sa nemenia.
+Samostatný produkt musí mať overené natívne ID produktu; variant musí mať
+natívne ID rodiča aj variantu. Bez nich sa nepublikujú zásoby, nákupné ceny ani
+produktové úpravy a neviaže sa automatický natívny účinok objednávky. Samotný
+kód produktu tieto kontroly nenahrádza.
+
+Chýbajúce ID na inak rovnakej väzbe doplní bežný postup **Náhľad → Prepojiť**.
+Náhľad upozorní na overenie natívnej identity. Potvrdenie znovu načíta presný
+vzdialený cieľ, skontroluje pôvodnú lokálnu väzbu a doplní jej ID pod spoločným
+zámkom a unikátnymi indexmi. Zachová ID riadku, sklad aj ceny. Dve karty s tým
+istým vzdialeným kódom zostávajú konfliktom; náhľad nesmie zvoliť jednu za
+obsluhu. Doplnenie ID je zablokované, kým má daná karta alebo rodič odosielaný
+či neistý skladový, cenový alebo produktový zápis; najprv sa vyrieši jeho
+pôvodná operácia. Táto kontrola sa opakuje pri potvrdení prepojenia.
 
 Migrácia prevedie staré variantové kódy na jednotný význam `external_code`.
 Natívne ID rodiča doplní iba z presného uloženého rodiča s jediným zodpovedajúcim
 variantom. Chýbajúci dôkaz zostáva `NULL`; neodvodzuje sa z číselnej podobnosti
-alebo názvu. Neúplný variantový kód alebo duplicitné natívne vlastníctvo migráciu
-zastavia v transakcii a vyžadujú opravu konkrétnych väzieb. Opakované spustenie
+alebo názvu. Neúplný variantový kód migráciu zastaví v transakcii. Ak staré riadky
+prisudzujú rovnaké natívne ID viacerým kartám, migrácia ponechá všetky riadky aj
+pôvodný `external_id` ako dôkaz, ale vyprázdni normalizované ID všetkých
+konfliktných vlastníkov. Nevyberá víťaza. Unikátne indexy potom chránia nové
+overované vlastníctvo. Počet takto označených riadkov je v protokole migrácie. Opakované spustenie
 neprepíše neskôr overené údaje starými stĺpcami.
 
 Staré fyzické stĺpce `external_id` a `variant_code` sa pri aditívnej migrácii
