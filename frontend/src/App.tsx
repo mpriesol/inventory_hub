@@ -5,6 +5,7 @@ import { RequireHubSession } from './components/RequireHubSession';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
 import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
+import { ProductTracePage } from './pages/ProductTracePage';
 import { ProductImportPage } from './pages/ProductImportPage';
 import { FeedMappingPage } from './pages/FeedMappingPage';
 import { SlogerProbePage } from './pages/SlogerProbePage';
@@ -65,6 +66,7 @@ const router = createBrowserRouter(createRoutesFromElements(
           <Route path="/products" element={<Navigate to="/stock" replace />} />
           <Route path="/products/:sku" element={<ProductDetailPage />} />
           <Route path="/product-import" element={<ProductImportPage />} />
+          <Route path="/product-trace" element={<ProductTracePage />} />
 
           {/* Suppliers */}
           <Route path="/suppliers" element={<SuppliersPage />} />

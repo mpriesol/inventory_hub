@@ -1,0 +1,111 @@
+"""Pure archive parsing, exact amounts and private original-document handling."""
+from decimal import Decimal
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from fastapi import HTTPException
+from pydantic import ValidationError
+
+from inventory_hub.invoice_archive_types import ArchiveLine, ArchiveMetadata
+from inventory_hub.services import invoice_archive as service
+from inventory_hub.file_access import stored_document_path
+
+
+class InvoiceArchiveTests(unittest.TestCase):
+    def test_source_hash_ignores_payment_observations_and_local_card_links(self):
+        header = ArchiveMetadata(invoice_number='INV-1', currency='EUR', total_with_vat='12.30')
+        row = ArchiveLine(line_number=1, quantity='1', unit_price='10', ean='5901234123457')
+        later = header.model_copy(update={'source_paid_amount': Decimal('12.30'), 'source_payment_status': 'paid'})
+        linked = row.model_copy(update={'matched_product_id': 12})
+        self.assertEqual(service.source_hash(header, [row]), service.source_hash(later, [linked]))
+        changed = header.model_copy(update={'total_with_vat': Decimal('12.31')})
+        self.assertNotEqual(service.source_hash(header, [row]), service.source_hash(changed, [row]))
+
+    def test_unknown_money_and_zero_tax_are_not_defaults(self):
+        metadata = ArchiveMetadata()
+        self.assertIsNone(metadata.invoice_number)
+        self.assertIsNone(metadata.currency)
+        self.assertIsNone(metadata.total_amount)
+        self.assertEqual(ArchiveLine(line_number=1, quantity='1', unit_price='0', vat_rate='0').unit_price, Decimal(0))
+        for value in ('NaN', 'Infinity', '1.001', 1.2, True):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                ArchiveMetadata(total_amount=value)
+
+    def test_compound_barcodes_keep_original_and_index_valid_gtin_only(self):
+        row = ArchiveLine(line_number=1, quantity='1', ean='5901234123457;4006381333931;broken')
+        values = service.barcode_values(row)
+        self.assertIn('5901234123457', values)
+        self.assertIn('05901234123457', values)
+        self.assertNotIn('broken', values)
+
+    def test_normalized_csv_preserves_quantity_cost_and_unknown_vat(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'invoice.csv'
+            path.write_text('SCM;TITLE;QTY;PRICE;EAN\n00001;Source title;2,5;1,2500;5901234123457\n')
+            rows = service._csv_lines(path)
+            self.assertEqual((rows[0].supplier_sku, rows[0].quantity, rows[0].unit_price),
+                             ('00001', Decimal('2.5'), Decimal('1.2500')))
+            self.assertIsNone(rows[0].vat_rate)
+            self.assertIsNone(rows[0].total_price_with_vat)
+            path.write_text('SCM;QTY;PRICE\nX;invalid;1\n')
+            with self.assertRaises((ValidationError, service.InvoiceArchiveError)):
+                service._csv_lines(path)
+
+    def test_original_is_content_addressed_and_allowed_by_private_download_boundary(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            content = b'%PDF-1.4\nSynthetic original\n%%EOF'
+            first = service._file(root, 'shops', 'test-shop', {'filename': 'faktura.pdf', 'content': content})
+            again = service._file(root, 'shops', 'test-shop', {'filename': 'renamed.pdf', 'content': content})
+            self.assertEqual(first['file_path'], again['file_path'])
+            self.assertEqual(stored_document_path(root, first['file_path']).read_bytes(), content)
+            with self.assertRaises(HTTPException):
+                service._file(root, 'suppliers', 'test', {'path': '/etc/passwd'})
+
+    def test_generic_upload_date_is_not_treated_as_invoice_date(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / 'suppliers/test/invoices/csv/INV.csv'
+            path.parent.mkdir(parents=True)
+            path.write_text('SCM;QTY;PRICE\nA;1;2\n')
+            metadata, rows, files = service._indexed_document(root, 'test', 'INV', {
+                'number': 'INV', 'issue_date': '2026-01-01', 'csv_path': 'invoices/csv/INV.csv'})
+            self.assertIsNone(metadata['invoice_date'])
+            self.assertIsNone(metadata['currency'])
+            self.assertEqual(files[0]['role'], 'original')
+
+    def test_manual_csv_upload_indexes_exact_barcodes_and_preserves_unknown_totals(self):
+        with TemporaryDirectory() as folder, patch.object(service.settings, 'INVENTORY_DATA_ROOT', folder):
+            metadata, rows = service.parse_uploaded_document('test', 'source.csv',
+                b'SCM;QTY;PRICE;EAN\n0001;2;1.25;5901234123457\n')
+            self.assertEqual(metadata, {})
+            self.assertEqual((rows[0].supplier_sku, rows[0].quantity, rows[0].ean),
+                             ('0001', Decimal('2'), '5901234123457'))
+            self.assertIsNone(rows[0].vat_rate)
+
+    def test_manual_supported_pdf_upload_reuses_validated_source_parser(self):
+        from inventory_hub.adapters import sk_profi_bike_invoice
+        parsed = SimpleNamespace(number='2026/1', issue_date=None, due_date=None,
+            gross=Decimal('12.30'), net=Decimal('10.00'), vat=Decimal('2.30'), lines=[SimpleNamespace(
+                number=1, sku='0001', title='Original title', qty=Decimal('1'), price=Decimal('10'),
+                ean='5901234123457', vat=Decimal('23'), net=Decimal('10'), gross=Decimal('12.30'))])
+        original = b'%PDF-1.4\nSynthetic original\n%%EOF'
+        with patch.object(sk_profi_bike_invoice, 'parse_invoice_pdf', return_value=parsed) as parser:
+            metadata, rows = service.parse_uploaded_document('sk-profi-bike', 'invoice.pdf', original)
+            parser.assert_called_once_with(original)
+        self.assertEqual((metadata['invoice_number'], metadata['total_with_vat']), ('2026/1', Decimal('12.30')))
+        self.assertEqual(rows[0].ean, '5901234123457')
+
+    def test_manual_unsupported_or_invalid_document_keeps_original_without_invented_lines(self):
+        self.assertEqual(service.parse_uploaded_document('other', 'invoice.pdf', b'%PDF-1.4\n%%EOF'), ({}, []))
+        with TemporaryDirectory() as folder, patch.object(service.settings, 'INVENTORY_DATA_ROOT', folder):
+            self.assertEqual(service.parse_uploaded_document('test', 'invalid.csv', b'QTY;PRICE\nwrong;1\n'),
+                             ({'parse_error': 'invoice_parse_failed'}, []))
+
+
+if __name__ == '__main__':
+    unittest.main()

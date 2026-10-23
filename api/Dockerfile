@@ -52,6 +52,7 @@ COPY infra/db-init/029_sku_policy.sql /app/inventory_hub/migrations/029_sku_poli
 COPY infra/db-init/030_shop_identity.sql /app/inventory_hub/migrations/030_shop_identity.sql
 COPY infra/db-init/031_item_units.sql /app/inventory_hub/migrations/031_item_units.sql
 COPY infra/db-init/032_supplier_authority.sql /app/inventory_hub/migrations/032_supplier_authority.sql
+COPY infra/db-init/033_invoice_archive.sql /app/inventory_hub/migrations/033_invoice_archive.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

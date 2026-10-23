@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 from sqlalchemy import select
 from inventory_hub.db_models import ProductIdentifier
+from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.product_editor_models import ProductEditorPublication
 from inventory_hub.product_editor_types import PublicationPreviewRequest, PublicationResolveRequest
 from inventory_hub.services import product_publication as service
@@ -18,6 +19,12 @@ import test_product_editor_db as fixtures
 class PublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await fixtures.ProductEditorDatabaseTests.asyncSetUp(self)
+        async with self.transaction() as db:
+            mapping = await db.scalar(select(ShopProduct).where(
+                ShopProduct.product_id == self.products['BIKE-2'],
+                ShopProduct.shop_id == self.shops['biketrek']))
+            mapping.external_product_id = '11'
+            mapping.external_variant_id = '22'
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
             await raw.driver_connection.execute((self.sql_root / '005_ai_content.sql').read_text())

@@ -54,7 +54,7 @@ class OrderSkuAliasDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 external_code='SKU-A',
                 parent_code='PARENT' if variant else None,
                 is_variant=variant,
-                external_product_id=None if variant else '100',
+                external_product_id='100',
                 external_variant_id='990' if variant else None)
             db.add(row)
             await db.commit()

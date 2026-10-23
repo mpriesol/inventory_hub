@@ -14,6 +14,7 @@ import {
   Globe,
   FileText,
   ClipboardList,
+  Search,
 } from 'lucide-react';
 
 import { accessRevision, hubUser, subscribeAccess } from '../../api/access';
@@ -31,6 +32,7 @@ const navigation: NavItem[] = [
   { id: 'invoices', nameKey: 'nav.invoices', href: '/invoices', icon: FileText, badge: null },
   { id: 'receiving', nameKey: 'nav.receiving', href: '/receiving', icon: PackageCheck, badge: null },
   { id: 'stock', nameKey: 'nav.stock', href: '/stock', icon: BarChart3, badge: null },
+  { id: 'product-trace', nameKey: 'nav.productTrace', href: '/product-trace', icon: Search, badge: null },
   { id: 'product-import', nameKey: 'nav.productImport', href: '/product-import', icon: Package, badge: null },
   { id: 'stock-history', nameKey: 'nav.stockHistory', href: '/stock/movements', icon: ClipboardList, badge: null },
   { id: 'order-audit', nameKey: 'nav.orderAudit', href: '/orders', icon: ClipboardList, badge: null },

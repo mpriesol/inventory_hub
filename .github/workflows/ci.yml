@@ -118,6 +118,11 @@ jobs:
       - name: Check unified product import interactions
         run: node frontend/tests/product-import-ui.cjs
 
+      - name: Check invoice archive and product trace interactions
+        run: |
+          node frontend/tests/invoices-ui.cjs
+          node frontend/tests/product-trace-ui.cjs
+
       - name: Check import identity review interactions
         run: node frontend/tests/product-import-identity-ui.cjs
 

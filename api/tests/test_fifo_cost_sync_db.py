@@ -83,6 +83,7 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 external_code='SKU-A',
                 parent_code='POS-xTrek',
                 is_variant=True,
+                external_product_id='90',
                 external_variant_id='91'))
 
     async def asyncTearDown(self):
@@ -318,7 +319,7 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 db.add(other)
                 await db.flush()
                 db.add(ShopProduct(shop_id=self.shop_id, product_id=other.id, external_code='OTHER',
-                    parent_code='POS-xTrek', is_variant=True, external_variant_id='91'))
+                    parent_code='POS-xTrek', is_variant=True, external_product_id='90', external_variant_id='91'))
                 await db.flush()
 
     async def test_activation_cutoff_uses_issue_date_not_original_creation(self):

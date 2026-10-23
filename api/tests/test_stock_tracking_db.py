@@ -44,7 +44,7 @@ class StockTrackingDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 starts_at=fixture.NOW, revision=1, status_actions={}, status_hash="a" * 64, statuses=[]))
             for sku, product_id in self.products.items():
                 db.add(ShopProduct(shop_id=self.shop_id, product_id=product_id, external_code=sku,
-                    is_variant=False))
+                    is_variant=False, external_product_id=str(1000 + product_id)))
 
     async def old_receipt(self):
         """Represent a pre-019 receipt, including its original FIFO layers."""

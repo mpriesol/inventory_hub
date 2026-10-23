@@ -2,6 +2,8 @@
 -- Old external_id/variant_code columns are retained as migration evidence only;
 -- runtime readers and writers use the normalized fields below.
 DO $$
+DECLARE
+    unverified_count bigint;
 BEGIN
     -- The conversion is performed once. Re-running upgrades must never copy
     -- stale legacy columns over a mapping subsequently verified by the app.
@@ -49,6 +51,35 @@ BEGIN
           AND c.data->>'code' = sp.external_code AND c.data->>'product_id' ~ '^[1-9][0-9]*$'
           AND length(c.data->>'product_id') <= 100
           AND c.data->'variants' = '[]'::jsonb;
+
+        -- Conflicting legacy claims are evidence, not verified ownership. Keep
+        -- every row and its original external_id, but certify neither owner.
+        -- Explicit reviewed linking can later establish one unique native leaf.
+        WITH conflicts AS (
+            SELECT shop_id, external_product_id
+            FROM shop_products
+            WHERE NOT is_variant AND external_product_id IS NOT NULL
+            GROUP BY shop_id, external_product_id HAVING count(*) > 1
+        )
+        UPDATE shop_products sp SET external_product_id = NULL
+        FROM conflicts c
+        WHERE NOT sp.is_variant AND sp.shop_id = c.shop_id
+          AND sp.external_product_id = c.external_product_id;
+        GET DIAGNOSTICS unverified_count = ROW_COUNT;
+        RAISE NOTICE 'shop_identity_unverified_standalone_rows=%', unverified_count;
+
+        WITH conflicts AS (
+            SELECT shop_id, external_variant_id
+            FROM shop_products
+            WHERE is_variant AND external_variant_id IS NOT NULL
+            GROUP BY shop_id, external_variant_id HAVING count(*) > 1
+        )
+        UPDATE shop_products sp SET external_product_id = NULL, external_variant_id = NULL
+        FROM conflicts c
+        WHERE sp.is_variant AND sp.shop_id = c.shop_id
+          AND sp.external_variant_id = c.external_variant_id;
+        GET DIAGNOSTICS unverified_count = ROW_COUNT;
+        RAISE NOTICE 'shop_identity_unverified_variant_rows=%', unverified_count;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'shop_products'::regclass
                    AND conname = 'chk_shop_products_identity_shape') THEN

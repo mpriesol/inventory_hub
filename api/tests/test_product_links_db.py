@@ -366,6 +366,66 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(mapping.shop_price), "49.99")
         self.assertEqual(len(await self.mappings()), 1)
 
+    async def test_explicit_link_completes_unverified_identity_without_replacing_mapping_or_stock(self):
+        self.remote[0] = leaf('SHARED-A', 101, eans=[EAN_A], parent_code='REMOTE-FAMILY')
+        async with self.transaction() as db:
+            mapping = ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='SHARED-A',
+                parent_code='REMOTE-FAMILY', is_variant=True, shop_stock='123', shop_price='49.99')
+            db.add(mapping)
+            await db.flush()
+            mapping_id = mapping.id
+        before = await self.snapshot()
+        preview = await self.preview(self.request(product_ids=[self.ids[0]]))
+        self.assertEqual(preview['rows'][0]['status'], 'ready')
+        self.assertIn('native_identity_verification', preview['rows'][0]['warnings'])
+        self.assertEqual(preview['rows'][0]['unverified_mapping']['id'], mapping_id)
+        result = await self.apply(preview, [self.ids[0]])
+        self.assertEqual(await self.apply(preview, [self.ids[0]]), result)
+        mappings = await self.mappings()
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual((mappings[0].id, mappings[0].external_product_id, mappings[0].external_variant_id),
+                         (mapping_id, '800', '101'))
+        self.assertEqual((str(mappings[0].shop_stock), str(mappings[0].shop_price)), ('123.000', '49.99'))
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_unverified_identity_changed_after_preview_is_not_completed(self):
+        async with self.transaction() as db:
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='SHARED-A'))
+        preview = await self.preview(self.request(product_ids=[self.ids[0]]))
+        async with self.transaction() as db:
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.ids[0]))
+            mapping.external_product_id = '101'
+        with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed'):
+            await self.apply(preview, [self.ids[0]])
+
+    async def test_uncertain_publication_blocks_unverified_identity_completion(self):
+        from inventory_hub.product_editor_models import ProductEditorPublication
+        async with self.transaction() as db:
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code='SHARED-A'))
+        preview = await self.preview(self.request(product_ids=[self.ids[0]]))
+        self.assertEqual(preview['rows'][0]['status'], 'ready')
+        async with self.transaction() as db:
+            db.add(ProductEditorPublication(id=str(uuid4()), product_id=self.ids[0], shop_id=self.shop_id,
+                state='uncertain', document={'identity': {'parent_code': 'SHARED-A'}}))
+        blocked = await self.preview(self.request(product_ids=[self.ids[0]]))
+        self.assertEqual(blocked['rows'][0]['status'], 'conflict')
+        self.assertIn('product_links_identity_in_use', blocked['rows'][0]['errors'])
+        with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed'):
+            await self.apply(preview, [self.ids[0]])
+        mapping = (await self.mappings())[0]
+        self.assertIsNone(mapping.external_product_id)
+        self.assertIsNone(mapping.external_variant_id)
+
+    async def test_duplicate_unverified_code_owners_cannot_select_an_arbitrary_card(self):
+        async with self.transaction() as db:
+            for product_id in self.ids[:2]:
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=product_id, external_code='SHARED-A'))
+        preview = await self.preview(self.request(product_ids=[self.ids[0]]))
+        self.assertEqual(preview['rows'][0]['status'], 'conflict')
+        with self.assertRaises(service.LinkError):
+            await self.apply(preview, [self.ids[0]])
+        self.assertTrue(all(mapping.external_product_id is None for mapping in await self.mappings()))
+
     async def test_new_variant_link_supplies_navigation_without_creating_an_exportable_family(self):
         self.remote[0] = leaf("SHARED-A", 101, eans=[EAN_A], parent_code="REMOTE-FAMILY",
             shop_url=SHOP_URL, shop_admin_url=ADMIN_URL, raw_barcodes=[EAN_A, "legacy-note"],

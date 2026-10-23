@@ -2,9 +2,26 @@
 from copy import deepcopy
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock, Mock
 
 from inventory_hub.services import stock_native as service, order_stock_source as source
 from test_order_stock import raw_line, raw_order, raw_page
+
+
+class NativeMappingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unverified_mapping_cannot_bind_order_native_evidence(self):
+        for variant, parent, leaf in ((False, None, None), (True, None, '20'),
+                                      (True, '101', None), (True, '101', 'None')):
+            mapping = SimpleNamespace(id=1, product_id=7, external_code='SKU-A', parent_code='POS' if variant else None,
+                is_variant=variant, external_product_id=parent, external_variant_id=leaf,
+                native_id=leaf if variant else parent)
+            db = SimpleNamespace(scalars=AsyncMock(return_value=Mock(all=lambda: [mapping])))
+            value = {'lines': [{'native': True, 'product_id': 7, 'code': 'SKU-A',
+                'native_product_id': 101, 'native_option_set_id': 202 if variant else None}]}
+            with self.subTest(variant=variant, parent=parent, leaf=leaf):
+                with self.assertRaisesRegex(service.NativeError, 'stock_native_identity_unknown'):
+                    await service._identities(db, 1, value, bind=True)
+                self.assertNotIn('mapping', value['lines'][0])
 
 
 class NativeFactsTests(unittest.TestCase):

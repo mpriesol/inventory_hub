@@ -14,8 +14,8 @@ from inventory_hub.services.upgates import UpgatesClient
 
 BASE = "https://stock-test.invalid/api/v2"
 FINGERPRINT = source.connection_fingerprint(BASE, "reader")
-SIMPLE = {"code": "SKU-1", "parent_code": "SKU-1", "variant_code": None}
-VARIANT = {"code": "SKU-1", "parent_code": "POS-UMBRELLA", "variant_code": "SKU-1"}
+SIMPLE = {"code": "SKU-1", "parent_code": "SKU-1", "variant_code": None, "product_id": 41}
+VARIANT = {"code": "SKU-1", "parent_code": "POS-UMBRELLA", "variant_code": "SKU-1", "product_id": 41, "variant_id": 71}
 
 
 def identity(variant=False):
@@ -72,6 +72,17 @@ class StockPublicationSourceTests(IsolatedAsyncioTestCase):
         client.session.get.assert_not_called()
         client.session.post.assert_not_called()
         return result, client
+
+    async def test_unverified_targets_cannot_open_client_or_perform_network_io(self):
+        for complete in (identity(), identity(True)):
+            for key in ("product_id", "variant_id") if complete["variant_code"] else ("product_id",):
+                target = {name: value for name, value in complete.items() if name != key}
+                with self.subTest(target=target), patch.object(source, "_client") as client:
+                    with self.assertRaisesRegex(source.SourceError, "identity_unverified"):
+                        await source.read_stock("biketrek", target, FINGERPRINT)
+                    with self.assertRaisesRegex(source.SourceError, "identity_unverified"):
+                        await source.write_stock_once("biketrek", target, "3", FINGERPRINT)
+                    client.assert_not_called()
 
     async def test_standalone_read_uses_exact_simple_detail_and_forces_safe_transport(self):
         result, client = await self.read()

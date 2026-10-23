@@ -63,7 +63,10 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     starts_at=datetime.now(timezone.utc), revision=1, status_actions={}, status_hash="a" * 64, statuses=[]))
                 for product in products:
                     parent = "xTrek" if shop_code == "biketrek" else "NORMAL-" + product.sku
-                    db.add(ShopProduct(shop_id=self.shops[shop_code], product_id=product.id, external_code=product.sku, parent_code=parent, is_variant=True))
+                    db.add(ShopProduct(shop_id=self.shops[shop_code], product_id=product.id,
+                        external_code=product.sku, parent_code=parent, is_variant=True,
+                        external_product_id='9000' if shop_code == 'biketrek' else str(10000 + product.id),
+                        external_variant_id=str(20000 + product.id)))
             await db.commit()
 
     async def asyncTearDown(self):

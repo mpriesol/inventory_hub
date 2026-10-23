@@ -54,6 +54,16 @@ produktom aj pokladňovým variantom. Konflikt sa vyrieši ponechaním samostatn
 produktu a odstránením duplicitného variantu v e-shope. Migrácia samotná živé
 produkty neodstraňuje. Neúplné alebo rozporné väzby vyžadujú overenie.
 
+Migrácia 030 pri duplicitných starých nárokoch na rovnaké natívne ID ponechá
+všetky riadky a pôvodné identifikátory ako dôkaz. Normalizované ID všetkých
+konfliktných vlastníkov zostanú `NULL`; žiadna karta sa nevyberie automaticky.
+Unikátne indexy chránia následné overené prepojenie. Bez úplných natívnych ID
+sa zastaví publikovanie zásob, cien a produktových úprav aj automatické
+viazanie natívneho skladového účinku objednávky. Existujúci postup náhľadu a
+potvrdenia prepojenia môže po čerstvom overení doplniť chýbajúce ID do rovnakej
+väzby. Konflikt viacerých kariet s rovnakým predajným kódom vyžaduje explicitné
+vyriešenie, nie odhad vlastníka.
+
 ## Množstvá a nákupné ceny
 
 ```mermaid

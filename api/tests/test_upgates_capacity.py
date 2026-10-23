@@ -197,7 +197,9 @@ class CapacityCatalogSampleTests(unittest.IsolatedAsyncioTestCase):
             for index in range(4):
                 code = '\U0001f6b2' * 98 + ('V' if variant else 'P') + str(index)
                 targets.append({'code': code, 'parent_code': 'PARENT' if variant else code,
-                                'variant_code': code if variant else None})
+                                'variant_code': code if variant else None,
+                                'product_id': 90 if variant else 100 + index,
+                                'variant_id': 200 + index if variant else None})
         return targets
 
     async def test_success_reports_counts_without_returning_raw_product_data(self):

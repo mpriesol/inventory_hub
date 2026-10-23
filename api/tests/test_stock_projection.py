@@ -17,7 +17,7 @@ def product(identifier=1, sku="SKU-A", **changes):
 def mapping(identifier=1, product_id=1, code="SKU-A", parent="NORMAL-PARENT", **changes):
     return Row(**{"id": identifier, "product_id": product_id, "is_variant": True,
                   "external_code": code, "parent_code": parent,
-                  "is_listed": True, **changes})
+                  "is_listed": True, "external_product_id": "50", "external_variant_id": str(identifier) if changes.get("is_variant", True) else None, **changes})
 
 
 def balance(product_id=1, on_hand="7", reserved="3", evidence=True, quarantined="0"):
@@ -71,7 +71,7 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
         row = result["rows"][0]
         self.assertEqual((row["qty_on_hand"], row["qty_reserved"], row["qty_available"]), ("7", "3", "4"))
         self.assertTrue(row["quantity_known"])
-        self.assertEqual(row["target"], {"parent_code": "NORMAL-PARENT", "variant_code": "SKU-A", "code": "SKU-A"})
+        self.assertEqual(row["target"], {"parent_code": "NORMAL-PARENT", "variant_code": "SKU-A", "code": "SKU-A", "product_id": 50, "variant_id": 1})
         self.assertFalse(result["external_write_enabled"])
         self.assertEqual(result["warehouse"]["id"], 21)
         self.assertEqual(len(db.calls), 6)
@@ -106,6 +106,16 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
             "variant_code": "REMOTE-LEAF", "product_id": 50, "variant_id": 51})
         self.assertEqual(row["qty_available"], "4")
 
+    async def test_incomplete_native_mapping_never_produces_publishable_stock(self):
+        for values in ({"external_product_id": None}, {"external_variant_id": None},
+                       {"external_product_id": None, "external_variant_id": None}):
+            with self.subTest(values=values):
+                row = (await service.preview(ReadOnlyDB(mappings=[mapping(**values)]), "biketrek", ["SKU-A"]))["rows"][0]
+                self.assertEqual(row["errors"], ["stock_projection_mapping_unverified"])
+                self.assertFalse(row["quantity_known"])
+                self.assertIsNone(row["target"])
+                self.assertIsNone(row["qty_available"])
+
     async def test_code_collision_outside_selection_or_malformed_mapping_is_blocked(self):
         for mappings, reason in (([mapping(), mapping(2, 99, "sku-a")], "mapping_ambiguous"),
                                  ([mapping(code="REMOTE-LEAF"), mapping(2, 99, "remote-leaf")], "mapping_ambiguous"),
@@ -133,7 +143,7 @@ class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["sku"] for row in rows], ["sku-a", "SKU-A"])
         self.assertEqual(rows[0]["errors"], ["stock_projection_product_missing"])
         self.assertIsNone(rows[0]["qty_on_hand"])
-        self.assertEqual(rows[1]["target"], {"parent_code": "SKU-A", "variant_code": None, "code": "SKU-A"})
+        self.assertEqual(rows[1]["target"], {"parent_code": "SKU-A", "variant_code": None, "code": "SKU-A", "product_id": 50})
 
     async def test_inactive_product_or_unlisted_mapping_has_no_publishable_quantity(self):
         for db, reason in ((ReadOnlyDB(products=[product(is_active=False)]), "product_inactive"),

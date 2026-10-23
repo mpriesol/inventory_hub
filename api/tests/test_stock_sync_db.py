@@ -88,7 +88,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(OrderCollectionSettings(shop_id=shop.id,enabled=True,revision=1,
                 target_fingerprint=order_collection.target_fingerprint('biketrek'),cursor_at=self.clock,
                 reconcile_cursor_at=self.clock,last_completed_at=self.clock,next_poll_at=self.clock))
-            db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code='SKU-A', parent_code='xTrek', is_variant=True))
+            db.add(ShopProduct(shop_id=shop.id, product_id=product.id, external_code='SKU-A', parent_code='xTrek',
+                is_variant=True, external_product_id='90', external_variant_id='91'))
             db.add(StockBalance(product_id=product.id,warehouse_id=warehouse.id,qty_on_hand=7,qty_reserved=2,qty_quarantined=1,avg_cost=3,total_value=21))
             from stock_tracking_fixture import confirmed_inventory
             db.add(confirmed_inventory(product.id, warehouse.id))
@@ -161,7 +162,11 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.remote_identities[code]={'code':code,'parent_code':'xTrek' if variant else code,
                     'variant_code':code if variant else None,'product_id':90 if variant else 1000+len([v for v in self.remote_identities.values() if v['variant_id'] is None]),
                     'variant_id':91+len([v for v in self.remote_identities.values() if v['variant_id'] is not None]) if variant else None}
-                db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, is_variant=variant, external_code=code, parent_code='xTrek' if variant else None))
+                identity = self.remote_identities[code]
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, is_variant=variant,
+                    external_code=code, parent_code='xTrek' if variant else None,
+                    external_product_id=str(identity['product_id']),
+                    external_variant_id=str(identity['variant_id']) if variant else None))
                 db.add(StockBalance(product_id=product.id,warehouse_id=self.warehouse_id,
                     qty_on_hand=4,qty_reserved=0,qty_quarantined=0,avg_cost=1,total_value=4))
                 db.add(confirmed_inventory(product.id,self.warehouse_id))
@@ -574,7 +579,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.session() as db:
                 product=Product(sku=code,name=code);db.add(product);await db.flush()
                 product_id=product.id
-                db.add(ShopProduct(shop_id=self.shop_id, product_id=product_id, external_code=code, is_variant=False))
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=product_id, external_code=code,
+                    is_variant=False, external_product_id=str(10000 + product_id)))
             run=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=[code,'SKU-A']))
             async def opened_during_failed_batch(*args):
                 self.assertFalse(self.io_session.in_transaction())
@@ -1025,7 +1031,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_balance_is_skipped_never_published_as_zero(self):
         async with self.session() as db:
             p=Product(sku='UNKNOWN',name='Unknown');db.add(p);await db.flush()
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=p.id, external_code='UNKNOWN', is_variant=False))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=p.id, external_code='UNKNOWN',
+                is_variant=False, external_product_id=str(10000 + p.id)))
         await self.invoke('configure',self.config())
         row=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['UNKNOWN']))
         await self.invoke('process_run',row['id'])
@@ -1047,7 +1054,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_full_pass_advances_beyond_first_batch(self):
         async with self.session() as db:
             product=Product(sku='UNKNOWN',name='Unknown');db.add(product);await db.flush()
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code='UNKNOWN', is_variant=False))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=product.id, external_code='UNKNOWN',
+                is_variant=False, external_product_id=str(10000 + product.id)))
         await self.invoke('configure',self.config(batch_size=1))
         row=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True))
         await self.invoke('process_run',row['id'])
@@ -1062,7 +1070,8 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.invoke('configure',self.config())
         async with self.session() as db:
             second=await db.scalar(select(Shop).where(Shop.code=='xtrek'))
-            db.add(ShopProduct(shop_id=second.id, product_id=self.product_id, external_code='SKU-A', is_variant=False))
+            db.add(ShopProduct(shop_id=second.id, product_id=self.product_id, external_code='SKU-A',
+                is_variant=False, external_product_id='190'))
         with self.assertRaises(service.SyncError) as raised:
             await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True))
         self.assertEqual(raised.exception.code,'stock_sync_authority_changed')

@@ -109,7 +109,8 @@ class StockAdjustmentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             db.add(OrderStockPolicy(shop_id=self.shop_id, warehouse_id=self.warehouse_id, starts_at=fixture.NOW,
                 revision=1, status_actions={}, status_hash="a" * 64, statuses=[]))
-            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.products['SKU-A'], external_code='SKU-A', parent_code='xTrek', is_variant=True))
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.products['SKU-A'], external_code='SKU-A',
+                parent_code='xTrek', is_variant=True, external_product_id='90', external_variant_id='91'))
         prepared = await self.prepare(self.payload("0"))
         self.assertTrue(prepared["preview"]["initial_zero_count"])
         self.assertIsNone(prepared["preview"]["before_quantity"])

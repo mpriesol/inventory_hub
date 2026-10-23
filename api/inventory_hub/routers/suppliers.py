@@ -710,9 +710,12 @@ async def upload_invoice(
             if supplier == "zookee":
                 from inventory_hub.adapters.zookee_invoice import parse_invoice_pdf
                 kwargs["parser"] = parse_invoice_pdf
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number, **kwargs,
             )
+            from inventory_hub.services.invoice_archive import archive_after_upload
+            result['archive'] = await archive_after_upload(supplier, result, invoice_number)
+            return result
         except InvoiceParseError as error:
             raise HTTPException(422, detail=str(error)) from None
         except InvoiceConflictError as error:
@@ -737,14 +740,19 @@ async def upload_invoice(
         filename = _sanitize_filename(file.filename)
 
     target_path = target_dir / filename
-    if target_path.exists():
-        ts = datetime.now().strftime('%Y%m%d%H%M%S')
-        stem = Path(filename).stem
-        filename = f"{stem}_{ts}{ext}"
-        target_path = target_dir / filename
-
     content = await file.read()
-    target_path.write_bytes(content)
+    replayed_file = target_path.exists() and target_path.read_bytes() == content
+    if target_path.exists():
+        if not replayed_file:
+            if invoice_number:
+                raise HTTPException(409, detail={'code': 'invoice_source_changed'})
+            ts = datetime.now().strftime('%Y%m%d%H%M%S')
+            stem = Path(filename).stem
+            filename = f"{stem}_{ts}{ext}"
+            target_path = target_dir / filename
+
+    if not replayed_file:
+        target_path.write_bytes(content)
 
     csv_path = None
 
@@ -772,13 +780,17 @@ async def upload_invoice(
         csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
         _update_invoice_index_map(supplier, filename, csv_path, None)
 
-    return {
+    result = {
         "success": True,
         "filename": filename,
         "path": str(target_path.relative_to(DATA_ROOT)),
         "csv_path": csv_path,
-        "size_bytes": len(content)
+        "size_bytes": len(content),
+        "replayed": replayed_file,
     }
+    from inventory_hub.services.invoice_archive import archive_after_upload
+    result['archive'] = await archive_after_upload(supplier, result, invoice_number)
+    return result
 
 
 def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_path: Optional[Path]) -> None:
@@ -846,7 +858,11 @@ def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_p
         entry["raw_path"] = str(raw_path.relative_to(DATA_ROOT))
 
     # Add/update entry
-    data[invoice_id] = entry
+    # A repeated upload must not reset receiving progress or saved notes.
+    existing_key = invoice_id if invoice_id in data else next((key for key, old in data.items()
+        if isinstance(old, dict) and old.get('number') == stem), invoice_id)
+    existing = data.get(existing_key)
+    data[existing_key] = {**entry, **existing} if isinstance(existing, dict) else entry
 
     # Save index
     index_path.parent.mkdir(parents=True, exist_ok=True)
