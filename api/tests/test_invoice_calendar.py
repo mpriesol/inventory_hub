@@ -36,6 +36,14 @@ class InvoiceCalendarTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(row['from'], row['to'], row['invoice_ids']) for row in months],
                          [('2025-12-31', '2025-12-31', [0]), ('2026-01-01', '2026-01-06', [1, 2, 3])])
 
+    def test_all_unverified_payments_never_report_zero_due(self):
+        unknown = {'currency': 'EUR', 'outstanding_amount': None}
+        self.assertIsNone(service.payment_summary([unknown, unknown])[0]['outstanding_amount'])
+        paid = {'currency': 'EUR', 'outstanding_amount': '0.00'}
+        self.assertEqual(service.payment_summary([paid])[0]['outstanding_amount'], '0.00')
+        mixed = service.payment_summary([unknown, paid])[0]
+        self.assertEqual((mixed['outstanding_amount'], mixed['unknown_count']), ('0.00', 1))
+
     def query(self, **changes):
         return InvoiceCalendarQuery.model_validate({"range_from": "2024-01-01", "range_to": "2024-12-31", **changes})
 

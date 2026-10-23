@@ -59,7 +59,7 @@ global.fetch = async (path, options = {}) => {
   if (mode === 'failed' || mode === 'limit') return { ok: false, status: mode === 'limit' ? 409 : 502,
     json: async () => ({ detail: { code: mode === 'limit' ? 'invoice_calendar_range_too_large' : 'request_failed' } }) };
   if (mode === 'deferred') return new Promise(resolve => { release = () => resolve(reply({ items: [{ ...documents[0], invoice_number: 'STALE-RESULT' }], total: 1 })); });
-  const totals = [{currency:'EUR',outstanding_amount:'125.37',unknown_count:1,invoice_count:2}, {currency:'CZK',outstanding_amount:'0.00',unknown_count:0,invoice_count:1}];
+  const totals = [{currency:'EUR',outstanding_amount:'125.37',unknown_count:1,invoice_count:2}, {currency:'CZK',outstanding_amount:'0.00',unknown_count:0,invoice_count:1}, {currency:'USD',outstanding_amount:null,unknown_count:2,invoice_count:2}];
   return reply({ range_from: url.searchParams.get('range_from'), range_to: url.searchParams.get('range_to'), items, total: items.length, limit: 5000,
     totals, weeks:[{from:'2024-02-26',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}],
     months:[{from:'2024-02-01',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}] });
@@ -79,6 +79,8 @@ global.fetch = async (path, options = {}) => {
   assert.equal(required('calendar-main-grid').querySelectorAll('.calendar-day').length, 42);
   assert(required('calendar-payment-summary').textContent.includes('125.37 EUR'));
   assert(required('calendar-payment-summary').textContent.includes('0.00 CZK'));
+  assert(required('calendar-payment-summary').textContent.includes(i18n.t('invoiceCalendar.unknownAmount') + ' · USD'));
+  assert(!required('calendar-payment-summary').textContent.includes('0.00 USD'), 'All-unverified amounts must not look like zero payments due');
   assert(required('calendar-payment-summary').textContent.includes(i18n.t('invoiceCalendar.unknownTotal', {count:1})), 'Unknown settlements are visible alongside confirmed sums');
   const week = required('calendar-week-2024-02-26');
   await act(async()=>{week.querySelector('summary').click(); await tick();});
