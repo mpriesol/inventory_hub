@@ -407,6 +407,26 @@ def validate_rows(document):
                 if (row.get('sku_preview') or {}).get('status') in ('blocked', 'conflict') else []))
 
 
+def mapped_manufacturer_identity(row, supplier):
+    """Only an explicitly confirmed shared mapping proves a manufacturer code.
+
+    Native field names and supplier codes are not manufacturer-code evidence.
+    Keep the original mapping value tied to the frozen source and edited row.
+    """
+    values, source = row['values'], row['source']
+    proof = (source.get('mapping_provenance') or {}).get('fields', {}).get('manufacturer_code') or {}
+    code = values.get('manufacturer_code')
+    if (not values.get('brand') or values['brand'] != source.get('brand')
+            or not code or source.get('manufacturer_code') != code
+            or proof.get('manufacturer_code_confirmed') is not True or proof.get('value') != code
+            or proof.get('scope') != 'feed' or not proof.get('source')
+            or type(proof.get('revision')) is not int or proof['revision'] <= 0):
+        return None
+    return {'brand': values['brand'], 'source_code': code, 'code_kind': 'manufacturer',
+            'source_ref': f"feed-mapping:{supplier}:{source.get('feed_key', 'products')}:{proof['revision']}:{proof['source']}",
+            'leaf_confirmed': True}
+
+
 async def prepare_sku_rows(db, draft, document):
     """Preview the same allocation policy for feed and invoice preparations.
 
@@ -430,14 +450,24 @@ async def prepare_sku_rows(db, draft, document):
             row['sku_preview'] = {'status': 'conflict', 'reasons': ['assigned_product_changed']}
             continue
         identity = values.get('sku_identity')
-        # Ordinary supplier leaf codes are sufficient; a missing MPN is not an
-        # exception. The registry supplies the brand prefix automatically.
-        if not identity and not product_id and not expected and values['brand'] and values['supplier_code']:
-            identity = {'brand': values['brand'], 'source_code': values['supplier_code'],
-                'code_kind': 'supplier', 'supplier_id': supplier_id,
-                'source_ref': 'supplier:' + draft.supplier + ':leaf:' + values['supplier_code'],
-                'leaf_confirmed': False}
+        # New manufacturer SKUs use the manufacturer's concrete product code.
+        # A supplier's own catalogue number remains a separate scoped alias.
+        if not product_id and not expected and (not identity or row.get('provenance', {}).get('sku_identity') == 'feed_mapping'):
+            identity = mapped_manufacturer_identity(row, draft.supplier)
+            if identity:
+                values['sku_identity'] = identity
+                row.setdefault('provenance', {})['sku_identity'] = 'feed_mapping'
+            elif row.get('provenance', {}).get('sku_identity') == 'feed_mapping':
+                values['sku_identity'] = None
+                row['provenance'].pop('sku_identity', None)
         item = SkuIdentityInput.model_validate(identity) if identity else None
+        if (item and item.code_kind == 'manufacturer' and item.leaf_confirmed
+                and not product_id and not expected and row.get('provenance', {}).get('sku_identity') != 'feed_mapping'):
+            # The operator's explicit manufacturer identity corrects the
+            # unverified feed display field; it never changes supplier_code.
+            values['manufacturer_code'] = item.source_code
+            row['manual_fields'] = sorted(set(row.get('manual_fields', [])) | {'manufacturer_code'})
+            row.setdefault('provenance', {})['manufacturer_code'] = 'manual'
         result = await preview_sku(db, item, sku=values['code'],
             barcodes=values['eans'], supplier_id=supplier_id,
             supplier_sku=values['supplier_code'], expected_product_id=expected,
@@ -703,6 +733,8 @@ async def patch_rows(db, draft, request):
     assert_editable(draft)
     document = deepcopy(draft.document)
     rows = {r['id']: r for r in document['rows']}
+    before_identity_fields = {id: (r['values'].get('brand'), r['values'].get('manufacturer_code')) for id, r in rows.items()}
+    supplied_identities = {p.id for p in request.rows if 'sku_identity' in p.values}
     if len({p.id for p in request.rows}) != len(request.rows) or any(p.id not in rows for p in request.rows):
         raise CatalogError('import_row_not_selected', 'Edits must identify distinct selected products', 422)
     # Conflicting edits to a shared family field are rejected rather than choosing the last row.
@@ -741,6 +773,11 @@ async def patch_rows(db, draft, request):
                 target['values'][key] = value
                 target['manual_fields'] = sorted(set(target['manual_fields']) | {key})
                 target['provenance'][key] = 'manual'
+    for id, row in rows.items():
+        if (not row.get('hub_product_id') and not row.get('expected_hub_product_id') and id not in supplied_identities
+                and before_identity_fields[id] != (row['values'].get('brand'), row['values'].get('manufacturer_code'))
+                and row['values'].get('sku_identity') and row.get('provenance', {}).get('sku_identity') != 'feed_mapping'):
+            row['values']['sku_identity'] = {**row['values']['sku_identity'], 'leaf_confirmed': False}
     if replaced_ai:
         jobs = (await db.scalars(select(AiJob).where(AiJob.id.in_(replaced_ai)).with_for_update())).all()
         for job in jobs:

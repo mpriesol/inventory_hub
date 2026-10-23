@@ -25,10 +25,10 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
   const namespaceKind = selectedBrand?.kind;
   useEffect(() => {
     if (!simplified || !namespaceKind) return;
-    const codeKind = namespaceKind === 'service' || namespaceKind === 'unbranded' ? namespaceKind
-      : value.code_kind === 'service' || value.code_kind === 'unbranded' ? (context.supplier_id || value.supplier_id ? 'supplier' : 'manufacturer') : value.code_kind;
+    const codeKind = context.item_type === 'service' && (namespaceKind === 'service' || namespaceKind === 'unbranded')
+      ? namespaceKind : 'manufacturer';
     if (value.code_kind !== codeKind) onChange({ ...value, code_kind: codeKind, leaf_confirmed: false });
-  }, [simplified, namespaceKind, value.code_kind, context.supplier_id, value.supplier_id]);
+  }, [simplified, namespaceKind, value.code_kind, context.item_type]);
   useEffect(() => {
     const abort = new AbortController();
     getSkuBrands(abort.signal).then(result => { if (!abort.signal.aborted) { setBrands(result.brands); setError(''); } })
@@ -50,7 +50,10 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
     return () => { abort.abort(); window.clearTimeout(timer); };
   }, [signature, disabled, loadAttempt, previewEnabled, simplified]);
   function change(patch: Partial<SkuIdentityInput>) {
-    setError(''); onChange({ ...value, ...patch, ...(context.supplier_id ? { supplier_id: context.supplier_id } : {}) });
+    const identityChanged = (['brand', 'source_code', 'code_kind'] as const).some(key => key in patch && patch[key] !== value[key]);
+    setError(''); onChange({ ...value, ...patch,
+      ...(simplified && identityChanged ? { source_ref: '', leaf_confirmed: false } : {}),
+      ...(context.supplier_id ? { supplier_id: context.supplier_id } : {}) });
   }
   async function saveBrand() {
     if (registerBusy || !allowRegistryWrites) return;
@@ -73,11 +76,11 @@ export function SkuIdentityForm({ value, onChange, onPreview, context = {}, disa
     <div className="sku-identity-grid">
       <label>{c('brand')}<input data-testid="sku-brand" list={`${id}-brands`} autoComplete="off" value={value.brand} maxLength={100} onChange={event => change({ brand: event.target.value, leaf_confirmed: false })} /><datalist id={`${id}-brands`}>{brands.map(brand => <option key={brand.id} value={brand.name}>{brand.code} · {c(`brandKinds.${brand.kind}`)}</option>)}</datalist>{selectedBrand && <small>{selectedBrand.code} · {selectedBrand.name}</small>}</label>
       {!simplified && <label>{c('codeKind')}<select data-testid="sku-code-kind" value={value.code_kind} onChange={event => change({ code_kind: event.target.value as SkuIdentityInput['code_kind'], leaf_confirmed: false })}>{(['manufacturer', 'supplier', 'gtin', 'service', 'unbranded'] as const).map(kind => <option key={kind} value={kind} disabled={kind === 'supplier' && !context.supplier_id && !value.supplier_id}>{c(`codeKinds.${kind}`)}</option>)}</select></label>}
-      <label>{c('sourceCode')}<input data-testid="sku-source-code" value={value.source_code} maxLength={97} autoComplete="off" onChange={event => change({ source_code: event.target.value, leaf_confirmed: false })} /><small>{c('preserveCode')}</small></label>
+      <label>{c(context.item_type === 'service' ? 'serviceCode' : value.code_kind === 'manufacturer' ? 'sourceCode' : 'existingIdentityCode')}<input data-testid="sku-source-code" value={value.source_code} maxLength={97} autoComplete="off" onChange={event => change({ source_code: event.target.value, leaf_confirmed: false })} /><small>{c('preserveCode')}</small></label>
       {!simplified && <label>{c('sourceRef')}<input data-testid="sku-source-ref" value={value.source_ref} maxLength={1000} onChange={event => change({ source_ref: event.target.value })} placeholder={c('sourceRefHint')} /></label>}
     </div>
     {!simplified && value.code_kind !== 'manufacturer' && <p className="sku-exception">{c(`exceptions.${value.code_kind}`)}</p>}
-    {!simplified && <label className="sku-leaf-confirm"><input data-testid="sku-leaf-confirmed" type="checkbox" checked={value.leaf_confirmed} onChange={event => change({ leaf_confirmed: event.target.checked })} /><span>{c('leafConfirmed')}</span></label>}
+    <label className="sku-leaf-confirm"><input data-testid="sku-leaf-confirmed" type="checkbox" checked={value.leaf_confirmed} onChange={event => change({ leaf_confirmed: event.target.checked, ...(simplified && event.target.checked && (!value.source_ref || ['operator:manufacturer-code', 'operator:service-code'].includes(value.source_ref)) ? { source_ref: context.item_type === 'service' ? 'operator:service-code' : 'operator:manufacturer-code' } : {}) })} /><span>{c(context.item_type === 'service' ? 'serviceConfirmed' : value.code_kind === 'manufacturer' ? 'leafConfirmed' : 'existingIdentityConfirmed')}</span></label>
     {!!value.brand && !selectedBrand && allowRegistryWrites && <div className="sku-brand-register"><Button type="button" variant="ghost" size="sm" data-testid="sku-register-toggle" onClick={() => setRegister(!register)}>{c('registerBrand')}</Button>{register && <div>
       <p>{c('registerHelp')}</p><label>{c('aliasTarget')}<select data-testid="sku-alias-target" value={aliasTarget} onChange={event => setAliasTarget(event.target.value)}><option value="">{c('newBrand')}</option>{brands.map(brand => <option key={brand.id} value={brand.id}>{brand.name} · {brand.code}</option>)}</select></label>
       {!aliasTarget && <div className="sku-identity-grid"><label>{c('brandCode')}<input data-testid="sku-register-code" value={registerCode} maxLength={2} pattern="[A-Z]{2}" onChange={event => setRegisterCode(event.target.value.toUpperCase())} /></label><label>{c('brandKind')}<select value={registerKind} onChange={event => setRegisterKind(event.target.value as SkuBrand['kind'])}>{(['brand', 'service', 'unbranded'] as const).map(kind => <option key={kind} value={kind}>{c(`brandKinds.${kind}`)}</option>)}</select></label></div>}

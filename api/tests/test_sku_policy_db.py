@@ -176,12 +176,30 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await service.create_brand(db, BrandCreate(name="Unbranded parts", code="NB", kind="unbranded", source_ref="Fixture documented catalogue"))
             result = await service.preview_sku(db, SkuIdentityInput(**evidence(
                 brand="Unbranded parts", source_code="PART-01", code_kind="unbranded")))
-            self.assertEqual((result["status"], result["sku"]), ("new", "NB-PART-01"))
+            self.assertEqual((result["status"], result["reasons"]), ("blocked", ["sku_manufacturer_code_required"]))
+
+    async def test_new_physical_cards_require_confirmed_manufacturer_code_but_existing_cards_keep_sku(self):
+        async with self.transaction() as db:
+            for kind, code in (("supplier", "SUP-77"), ("gtin", "5901234123457")):
+                item = SkuIdentityInput(**evidence(code_kind=kind, source_code=code, supplier_id=self.first))
+                result = await service.preview_sku(db, item)
+                self.assertEqual((result["status"], result["reasons"]), ("blocked", ["sku_manufacturer_code_required"]))
+            unverified = SkuIdentityInput(**evidence(leaf_confirmed=False, source_ref=""))
+            result = await service.preview_sku(db, unverified)
+            self.assertEqual(result["reasons"], ["sku_manufacturer_code_unverified"])
+            old = await self.add_product(db, sku="OLD-SHOP-SKU", brand=None, barcode="4006381333931")
+            found = await service.preview_sku(db, None, barcodes=["4006381333931"])
+            self.assertEqual((found["status"], found["product_id"], found["sku"]), ("existing", old.id, "OLD-SHOP-SKU"))
+            incomplete = SkuIdentityInput(brand='Unregistered feed name', source_code='unverified supplier field',
+                                          code_kind='manufacturer')
+            found = await service.preview_sku(db, incomplete, barcodes=['4006381333931'])
+            self.assertEqual((found['status'], found['product_id'], found['sku']), ('existing', old.id, 'OLD-SHOP-SKU'))
+            self.assertIsNone(old.brand)
 
     async def test_two_brands_with_same_raw_code_receive_distinct_automatic_skus(self):
         async with self.transaction() as db:
-            first = SkuIdentityInput(brand="Topeak", source_code="00042", code_kind="supplier", supplier_id=self.first)
-            other = SkuIdentityInput(brand="Shimano", source_code="00042", code_kind="supplier", supplier_id=self.second)
+            first = SkuIdentityInput(**evidence(source_code="00042"))
+            other = SkuIdentityInput(**evidence(brand="Shimano", source_code="00042"))
             one = await service.preview_sku(db, first)
             two = await service.preview_sku(db, other)
             self.assertEqual((one["status"], one["sku"]), ("new", "TP-00042"))
@@ -190,10 +208,11 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(ProductIdentifier(product_id=card.id, identifier_type=IdentifierType.supplier_sku,
                 supplier_id=self.first, value="00042"))
             await db.flush()
-            same = await service.preview_sku(db, first)
+            await service.record_sku_identity(db, card, first)
+            same = await service.preview_sku(db, first, supplier_id=self.first, supplier_sku="00042")
             self.assertEqual((same["status"], same["sku"], same["product_id"]), ("existing", "TP-00042", card.id))
-            self.assertIsNone(await service.record_sku_identity(db, card, first))
-            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSkuIdentity)), 0)
+            await service.record_sku_identity(db, card, first)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSkuIdentity)), 1)
 
     async def test_new_raw_sku_alone_cannot_bypass_automatic_prefix_allocation(self):
         async with self.transaction() as db:

@@ -489,7 +489,7 @@ async def reconcile_supplier(db, payload, *, source_keys=None):
     """Bounded, explicit index import; individual bad documents remain visible."""
     if not isinstance(payload, InvoiceReconcileInput):
         payload = InvoiceReconcileInput.model_validate(payload)
-    supplier = await _supplier(db, payload.supplier_code)
+    supplier = await resolve_supplier(db, payload.supplier_code)
     entries = _index_entries(Path(settings.INVENTORY_DATA_ROOT), supplier.code)
     if source_keys is not None:
         entries = [(key, entry) for key, entry in entries if key in source_keys]
@@ -523,7 +523,8 @@ async def reconcile_supplier(db, payload, *, source_keys=None):
     return report
 
 
-async def _supplier(db, supplier_code):
+async def resolve_supplier(db, supplier_code):
+    """Resolve a shared archive owner, creating only a configured supplier row."""
     supplier = await db.scalar(select(Supplier).where(Supplier.code == supplier_code))
     if supplier is None:
         # Configuration-only suppliers can archive invoices before their first
@@ -554,7 +555,7 @@ async def archive_after_upload(supplier_code, result, invoice_number=None):
                 if not report['scanned']:
                     raise InvoiceArchiveError('invoice_index_entry_missing', 404)
                 return {'status': 'completed' if not report['conflicts'] else 'attention', **report}
-            supplier = await _supplier(db, supplier_code)
+            supplier = await resolve_supplier(db, supplier_code)
             number = invoice_number or Path(result['filename']).stem
             path = _source_path(Path(settings.INVENTORY_DATA_ROOT), supplier_code, result['path'])
             saved = await ingest_invoice(db, direction='purchase', source_kind='supplier', source_key=number,

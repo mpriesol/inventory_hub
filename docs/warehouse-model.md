@@ -21,7 +21,7 @@ erDiagram
 | Tabuľka / pole | Význam a pravidlo |
 | --- | --- |
 | `products.id` | Nemenné interné ID konkrétnej predajnej alebo servisnej položky. Referencia pre sklad, doklady a väzby. |
-| `products.sku` | Jednoznačný kód pre obsluhu; existujúce kódy zostávajú. Nové SKU automaticky skladá Hub zo značkového prefixu a presného kódu konkrétneho výrobku/variantu. |
+| `products.sku` | Jednoznačný kód pre obsluhu; existujúce kódy zostávajú. Nové SKU automaticky skladá Hub zo značkového prefixu a presného kódu konkrétneho výrobku/variantu prideleného výrobcom, nie dodávateľom. |
 | `products.item_type` | `stock` alebo `service`. Služba môže mať kód aj e-shopovú väzbu, ale nevytvára fyzickú zásobu. |
 | `products.stock_unit` | `pcs`, `pair`, `pack`, `m`. Pár/balenie je jedna kompletná predajná jednotka. |
 | `product_identifiers` | `product_id`, typ, presná hodnota a pri dodávateľskom kóde aj `supplier_id`. Úvodné nuly a význam identifikátora zostávajú zachované. |
@@ -30,8 +30,11 @@ erDiagram
 | `shop_products` | Najviac jeden riadok pre dvojicu `shop_id`, `product_id`. Výslovná väzba nesie natívne ID a kód konkrétnej predajnej položky. |
 | `shop_product_content` | Obnoviteľný obsah načítaný z e-shopu. Neurčuje vlastníctvo produktu ani fyzické množstvo. |
 
-Čiarový kód, MPN, dodávateľský kód a SKU nie sú zameniteľné. Chýbajúce MPN
-neblokuje obyčajnú kartu. Dva rozporné dôkazy identity sa nesmú vyriešiť
+Čiarový kód, MPN, dodávateľský kód a SKU nie sú zameniteľné. Podľa spresnenia
+z 23. 10. sa nové fyzické SKU skladá z dvojpísmenovej predpony výrobcu a
+potvrdeného kódu konkrétneho výrobku u výrobcu. Dodávateľský kód ani GTIN
+ho nenahrádzajú. Existujúca karta a overený import produktu už existujúceho
+v e-shope zachovávajú pôvodné SKU aj bez nového výrobného kódu. Dva rozporné dôkazy identity sa nesmú vyriešiť
 automatickým spojením kariet. Zhodný text kódu u dvoch dodávateľov sám osebe
 neznamená rovnaký výrobok. Značkové prefixy rozlišujú rovnaké kódy rôznych
 značiek; nenahrádzajú kontrolu identity a kolízie v cieľovom e-shope. Obsluha

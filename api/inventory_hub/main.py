@@ -50,6 +50,7 @@ from inventory_hub.database import init_db, close_db, check_db_health
 from inventory_hub.routers.invoices_unified import router as invoices_unified_router
 from inventory_hub.routers.invoice_archive import router as invoice_archive_router
 from inventory_hub.routers.invoice_export import router as invoice_export_router
+from inventory_hub.routers.invoice_calendar import router as invoice_calendar_router
 from inventory_hub.routers.product_trace import router as product_trace_router
 from inventory_hub.routers.shop_invoice_sync import router as shop_invoice_sync_router
 
@@ -175,6 +176,7 @@ app.include_router(suppliers_router)
 app.include_router(logs_router)
 app.include_router(logs_global_router)
 app.include_router(imports_router)
+app.include_router(invoice_calendar_router)
 app.include_router(invoices_unified_router)
 app.include_router(invoice_archive_router)
 app.include_router(invoice_export_router)

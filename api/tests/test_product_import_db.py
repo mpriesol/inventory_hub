@@ -127,7 +127,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(code, result['items'][0]['codes'])
             self.assertEqual((await service.history(db, '%_unlikely_literal'))['items'], [])
 
-    async def test_new_card_automatically_prefixes_supplier_leaf_without_mpn_proof(self):
+    async def test_new_card_does_not_allocate_from_supplier_code_or_unverified_mpn(self):
         from inventory_hub.services.sku_policy import create_brand
         from inventory_hub.sku_policy_types import BrandCreate
         async with self.sessions() as db:
@@ -135,19 +135,49 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
         draft = await self.create(approve_identity=False)
         row = draft['rows'][0]
-        self.assertEqual(row['values']['code'], 'TT-' + row['values']['supplier_code'])
         self.assertIsNone(row['values']['sku_identity'])
-        draft = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{
-            'id': row['id'], 'values': {'manufacturer_code': '', 'target_shops': []}}])
-        self.assertEqual(draft['rows'][0]['hub_errors'], [])
+        self.assertIn('sku_identity_required', row['hub_errors'])
+        with self.assertRaises(catalog.CatalogError):
+            await self.mutate(draft, service.save)
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        self.assertEqual(self.client.sent, [])
+
+    async def test_confirmed_manufacturer_mapping_uses_manufacturer_code_and_keeps_supplier_alias(self):
+        from inventory_hub.services import feed_mapping
+        from inventory_hub.feed_mapping_types import MappingDefinition, MappingSave
+        from inventory_hub.services.sku_policy import create_brand
+        from inventory_hub.sku_policy_types import BrandCreate
+        from inventory_hub.sku_policy_models import ProductSkuIdentity
+        self.write_feed(xml_item(extra='<MFG_ITEM_CODE>00042-M</MFG_ITEM_CODE>'))
+        async with self.sessions() as db:
+            await create_brand(db, BrandCreate(name='TEST', code='TT', source_ref='Synthetic brand registration'))
+            await feed_mapping.save_mapping(db, 'paul-lange', MappingSave(expected_revision=0,
+                definition=MappingDefinition.model_validate({'bindings': [{'target': 'manufacturer_code',
+                    'source': 'MFG_ITEM_CODE', 'manufacturer_code_confirmed': True}]})))
+            await catalog.refresh_catalog(db, 'paul-lange')
+            page = await catalog.catalog_page(db, 'paul-lange')
+            self.ids = [item.product.id for item in page.items]
+            await db.commit()
+        draft = await self.create(approve_identity=False)
+        row = draft['rows'][0]
+        self.assertEqual(row['values']['code'], 'TT-00042-M')
+        self.assertEqual(row['values']['supplier_code'], 'A-001')
+        self.assertEqual(row['values']['sku_identity']['code_kind'], 'manufacturer')
+        self.assertTrue(row['values']['sku_identity']['leaf_confirmed'])
         saved = await self.mutate(draft, service.save)
         replay = await self.mutate(saved, service.save)
         self.assertEqual(saved['rows'][0]['hub_product_id'], replay['rows'][0]['hub_product_id'])
         async with self.sessions() as db:
             card = await db.get(Product, saved['rows'][0]['hub_product_id'])
-            self.assertEqual(card.sku, 'TT-' + row['values']['supplier_code'])
-            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 1)
+            self.assertEqual(card.sku, 'TT-00042-M')
+            proof = await db.scalar(select(ProductSkuIdentity).where(ProductSkuIdentity.product_id == card.id))
+            self.assertEqual((proof.code_kind, proof.source_code), ('manufacturer', '00042-M'))
             self.assertEqual(await db.scalar(select(func.count()).select_from(ProductSupplySource)), 1)
+            alias = await db.scalar(select(ProductIdentifier).where(ProductIdentifier.product_id == card.id,
+                ProductIdentifier.identifier_type == IdentifierType.supplier_sku))
+            self.assertEqual(alias.value, 'A-001')
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
         self.assertEqual(self.client.sent, [])
 
@@ -171,6 +201,26 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
             self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
         self.assertEqual(self.client.sent, [])
+
+    async def test_editing_manufacturer_code_requires_new_confirmation_before_new_card_save(self):
+        draft = await self.create()
+        row = draft['rows'][0]
+        changed = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{
+            'id': row['id'], 'values': {'manufacturer_code': 'CORRECTED-00042'}}])
+        current = changed['rows'][0]
+        self.assertEqual(current['values']['manufacturer_code'], 'CORRECTED-00042')
+        self.assertFalse(current['values']['sku_identity']['leaf_confirmed'])
+        self.assertIn('sku_manufacturer_code_unverified', current['hub_errors'])
+        with self.assertRaises(catalog.CatalogError):
+            await self.mutate(changed, service.save)
+        confirmed = {**current['values']['sku_identity'], 'source_code': 'CORRECTED-00042', 'leaf_confirmed': True}
+        changed = await self.mutate(changed, service.patch_rows, DraftPatch, rows=[{
+            'id': row['id'], 'values': {'sku_identity': confirmed}}])
+        saved = await self.mutate(changed, service.save)
+        async with self.sessions() as db:
+            card = await db.get(Product, saved['rows'][0]['hub_product_id'])
+            self.assertEqual(card.sku, 'PL-CORRECTED-00042')
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
 
     async def test_category_refresh_preserves_manual_cells_and_reads_inactive_categories(self):
         original = await self.create()

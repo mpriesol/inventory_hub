@@ -1,69 +1,93 @@
 # Identita produktov a automatické SKU
 
+Rozhodnutie vlastníka z 23. 10. 2026: nové fyzické produkty používajú presne
+`<dvojpísmenová predpona výrobcu>-<kód výrobku u výrobcu>`. Napríklad výrobné
+kódy `00042` pod značkami Topeak a Shimano vytvoria `TP-00042` a `SH-00042`.
+Register výrobcu zaručuje jedinečnosť dvojpísmenovej predpony. Hub nepoužíva
+číselný rad, náhodnú príponu ani dlhší prefix pri kolízii.
+
 Jedna konkrétna predajná jednotka má jednu kartu Hubu s interným `products.id`.
-Toto ID a cudzie kľúče spájajú sklad, dodávateľské ponuky, e-shopy a doklady.
-Pre nové karty systém automaticky zostaví SKU ako
-`<registrovaná skratka značky>-<presný kód predajnej položky>`. Obsluha nemusí
-vymýšľať jedinečné SKU ani ručne dopĺňať prefix. Napríklad rovnaký kód `00042`
-pod značkami Topeak a Shimano vytvorí návrhy `TP-00042` a `SH-00042`.
+Cudzie kľúče spájajú sklad, ponuky dodávateľov, e-shopy a doklady. Existujúca
+karta si ponechá SKU. Aj produkt, ktorý už existuje v e-shope a až teraz sa
+preberá do Hubu cez overený Upgates import, si ponechá svoj pôvodný kód.
+Bežná aktualizácia značky alebo pripojenie ďalšieho dodávateľa ho neprečísluje.
 
-Existujúca jednoznačne identifikovaná karta si vždy ponechá pôvodné SKU.
-Pridanie dodávateľa, úprava názvu značky ani nové pravidlo neprečíslujú históriu.
+## Výrobný a dodávateľský kód
 
-## Kód konkrétnej položky
+| Údaj | Význam |
+| --- | --- |
+| Kód výrobku u výrobcu | Presný kód konkrétneho výrobku, variantu a predajného balenia vydaný výrobcom. Zdroj nového SKU. |
+| Kód dodávateľa | Vlastný katalógový kód ponuky konkrétneho dodávateľa. Ukladá sa samostatne a páruje iba v rozsahu dodávateľa. |
+| EAN / UPC / GTIN | Čiarový identifikátor na dohľadanie a overenie identity. Nenahrádza výrobný kód pri pridelení nového SKU. |
+| Rodičovský kód | Označuje rodinu variantov. Nie je kódom konkrétnej skladovej jednotky. |
 
-MPN nie je povinný. Použiť možno skutočný dodávateľský kód konkrétnej predajnej
-položky v rozsahu daného dodávateľa, overený GTIN alebo výslovne zadaný kód
-konkrétneho výrobku. Rodičovský kód spoločný viacerým variantom nie je skladovou
-identitou. Názvy polí vo feede nie sú automatickým dôkazom overeného MPN.
+Rovnaký výrobok môže mať u dvoch dodávateľov rôzne kódy. Zhodný dodávateľský
+kód sám osebe nepreukazuje rovnaký výrobok. Názov poľa `MPN`, `SKU` alebo
+`manufacturer_code` automaticky nepotvrdzuje jeho význam. Kódy zostávajú
+textom, vrátane úvodných núl, interpunkcie a veľkosti písmen.
 
-Bežná príprava z katalógu alebo príjemky automaticky použije značku a dodávateľský
-kód vybraného riadka. Pri chýbajúcej značke alebo kóde ich treba doplniť.
-Neznáma značka potrebuje jednorazovú registráciu skratky alebo priradenie aliasu.
-Register garantuje jedinečnosť dvojpísmenovej skratky; nepovoľuje dve značky pod
-rovnakou skratkou. Kód zostáva textom vrátane úvodných núl a veľkosti písmen.
+## Automatické vytvorenie z feedu
 
-Systém pred uložením kontroluje existujúce SKU, overené EAN/UPC, dodávateľsky
-obmedzené identifikátory a aktuálne databázové väzby. Rozporné dôkazy sú konflikt.
-Rovnaký kód u dvoch dodávateľov sám osebe nepreukazuje rovnaký výrobok.
-Prefix znižuje kolízie medzi značkami, ale nenahrádza kontrolu jedinečnosti.
-Pri skutočnej kolízii sa karta nevytvorí a systém nepridá odhadnutú príponu ani
-poradové číslo; treba opraviť značku, kód alebo výslovné prepojenie existujúcej karty.
+V spoločnom mapovaní dodávateľa sa osobitne mapujú **Kód dodávateľa** (`code`)
+a **Kód výrobku u výrobcu** (`manufacturer_code`). Pri výrobnom poli treba
+raz potvrdiť, že obsahuje kód konkrétneho variantu a balenia vydaný výrobcom.
+API ukladá `manufacturer_code_confirmed=true` na príslušnej väzbe mapovania.
 
-## Bežný postup
+Potvrdená väzba vyžaduje skutočné zdrojové pole. Nie je prípustná vygenerovaná
+konštanta, predvolená náhrada ani prepis kódu transformáciami; dovolené je iba
+odstránenie okrajových medzier. Potvrdenie patrí spoločnému mapovaniu, nie
+obsahovej odchýlke jedného e-shopu. Revízia, cesta poľa a presná načítaná hodnota
+ostávajú v existujúcom `mapping_provenance.fields.manufacturer_code`.
 
-1. Vyber položky z katalógu/príjemky alebo otvor **Nová skladová karta**.
-2. Skontroluj značku a kód konkrétneho výrobku. Systém zobrazí pridelené SKU alebo
-   existujúcu kartu. Nepovinný MPN ani text dôkazu nie sú podmienkou základnej karty.
-3. Ulož kartu do Hubu. Nevyžaduje hotový e-shopový popis, predajnú cenu ani DPH
-   a nevytvára zásobu.
-4. Potvrď fyzický príjem alebo samostatné publikovanie do vybraných e-shopov.
+Bežný refresh rovnakého mapovania zachová potvrdenie. Chýbajúce zdrojové pole
+neprevezme starý/neoverený údaj ako nový dôkaz. Príprava skontroluje zhodu
+pôvodného zdroja, potvrdenej hodnoty a aktuálneho riadka; úprava výrobného kódu
+alebo značky nemôže potichu použiť staré potvrdenie. Zmena zdroja, cieľa alebo
+transformácie v editore zruší potvrdenie mapovania.
 
-Služba musí mať výslovné `item_type=service`; prefix ani kategória tento typ
-nenahrádzajú. Môže používať bežnú značku alebo registrovaný priestor služby.
-Priestor služby sa odmietne pri karte typu `stock`. Jednotky a prepočty balenia
-sú súčasťou skladového modelu, nie pravidla číslovania.
+Z potvrdeného výrobného kódu a registrovanej značky Hub automaticky pripraví
+SKU a uloží dôkaz identity pri vytvorení karty. Obsluha nezadáva SKU pre každý
+výrobok a nestará sa o jeho jedinečnosť. Dodávateľský kód sa nezmení a cez
+`product_supply_sources` zostáva naviazaný na svoju ponuku.
 
-## API a dôkazy
+## Ručné overenie a existujúce produkty
+
+Bez potvrdeného výrobného poľa možno pri príprave novej karty skontrolovať
+výrobcu, opraviť výrobný kód a výslovne potvrdiť konkrétny variant/balenie.
+Jednoduchý formulár uchová operátorské potvrdenie; nevydáva ho za dokumentáciu
+výrobcu. Úprava výrobného kódu pred založením vyžaduje nové potvrdenie.
+Chýbajúci výrobný kód blokuje iba nové fyzické pridelenie. Existujúcu kartu
+možno dohľadať nezávislou jednoznačnou väzbou, overeným čiarovým kódom alebo
+existujúcim SKU aj bez nového výrobného dôkazu.
+
+Overený produktový import z Upgates je samostatný postup na prevzatie produktov,
+ktoré už v e-shope existujú. Vytvorí prípadnú chýbajúcu Hub kartu s pôvodným
+vzdialeným kódom a uloží natívne produktové/variantové ID. Nie je to pridelenie
+nového výrobného SKU. Katalógový `shop_matches` zo starej cache sám osebe nie je
+pokyn na vytvorenie alebo premenovanie karty. Už obsadený cieľ pri publikovaní
+musí prejsť existujúcimi kontrolami; Hub ho neprepíše novým kódom.
+
+Služba musí mať výslovné `item_type=service`. Používa existujúci registrovaný
+servisný kód a dvojpísmenový priestor služby; nepotrebuje vymysleného výrobcu.
+Nevytvára fyzické množstvo, rezerváciu ani FIFO. Typ služby sa nesmie použiť
+ako obchádzka pre fyzický tovar bez výrobného kódu.
+
+## API a kontrola zápisu
 
 `POST /api/sku-policy/preview` prijíma `sku_identity` so značkou, presným
-`source_code`, `code_kind` a pri dodávateľskom kóde aj `supplier_id`. Prijíma tiež
-`item_type`, čiarové kódy a dodávateľský kontext. Vracia stav `new`, `existing`,
-`blocked` alebo `conflict`, výsledné SKU a ID existujúcej karty. Samotné `sku`
-bez `sku_identity` slúži na vyhľadanie existujúcej karty, nie na obídenie prideľovania.
+`source_code` a významom kódu. Pre nové fyzické produkty musí byť
+`code_kind=manufacturer`, `leaf_confirmed=true` a neprázdny `source_ref`.
+Dodávateľské a GTIN identity zostávajú použiteľné na overenie historickej karty,
+nevytvoria však nové fyzické SKU. Samotný text `sku` slúži na vyhľadanie
+existujúcej karty, nie na obídenie pravidla.
 
-`source_ref` je nepovinný pôvod údaja a `leaf_confirmed` je predvolene `false`.
-Zadanie prevádzkového kódu preto nepredstiera overenie MPN. Existujúce výslovne
-potvrdené dôkazy sa naďalej kontrolujú a uchovávajú; nový záznam v
-`product_sku_identities` vznikne iba pri `leaf_confirmed=true` s neprázdnym
-`source_ref`. Bežné väzby držia karta, overené identifikátory a cudzie kľúče.
+Náhľad je čítací. Založenie zopakuje kontrolu pod spoločným
+`IDENTITY_WRITE_LOCK`; UUID chráni opakované uloženie po výpadku. Pridanie
+ponuky a aliasu je atomické. Konflikt značky, výrobného kódu, čiarového kódu
+alebo vlastníka zastaví zápis. Pôvodné dôkazy, skladové pohyby a FIFO ostávajú.
 
-Ručné založenie a import zopakujú kontrolu pod spoločným `IDENTITY_WRITE_LOCK`.
-UUID chráni opakované uloženie po výpadku. Dodávateľský alias a skutočná ponuka
-sa prepájajú atomicky cez `product_supply_sources`. Faktúrový alias bez ponuky
-nevytvára vymyslený produkt feedu. Založenie karty nemení pohyby, FIFO ani e-shop.
-
-Upgates používa jedinečný `code` pre produkty aj varianty; platí to pre POST aj
-PUT. Hub preto overuje obsadenosť kódov vrátane rodičov samostatne v BIKETREK
-aj xTrek a opakuje kontrolu pred odoslaním. [Oficiálna referencia](https://docs.upgates.com/api-reference/produkty).
-Interné databázové ID túto požiadavku API nenahrádza.
+Nové produkty používajú rovnaké pridelené Hub SKU v BIKETREK aj xTrek.
+Existujúce overené e-shopové mapovania môžu mať vlastné pôvodné kódy.
+Pred odoslaním sa kontroluje obsadenosť produktových aj variantových kódov
+samostatne v každom cieľovom e-shope. Pridelenie alebo uloženie karty samo
+nevytvára zásobu, e-shopový produkt ani fyzický príjem.

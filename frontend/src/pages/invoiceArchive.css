@@ -68,3 +68,17 @@
   .invoice-archive .chart-row { grid-template-columns: 65px minmax(25px,1fr) 105px; }
   .invoice-archive .panel { padding: .8rem; }
 }
+
+.invoice-archive .invoice-view-tools { display: flex; justify-content: flex-end; }
+.invoice-archive .invoice-dropzone { display: flex; gap: 1rem; align-items: center; padding: 1rem 1.15rem; border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-bg-secondary); }
+.invoice-archive .invoice-dropzone > div { flex: 1; min-width: 0; }
+.invoice-archive .invoice-dropzone > svg { color: var(--color-accent); flex-shrink: 0; }
+.invoice-archive .invoice-dropzone.dragging { border-color: var(--color-accent); background: var(--color-accent-subtle); }
+.invoice-archive .invoice-dropzone.disabled { opacity: .6; }
+.invoice-archive .upload-selected { display: flex; align-items: flex-start; flex-direction: column; gap: .35rem; min-width: 0; }
+.invoice-archive .upload-selected strong { overflow-wrap: anywhere; font-size: .85rem; }
+.invoice-archive .sort-header { padding: 0; border: 0; border-radius: 0; background: transparent; font: inherit; color: inherit; justify-content: flex-start; }
+.invoice-archive th.amount .sort-header { margin-left: auto; }
+.invoice-archive .sort-header span { color: var(--color-text-tertiary); }
+.invoice-archive th[aria-sort=ascending] .sort-header, .invoice-archive th[aria-sort=descending] .sort-header { color: var(--color-accent); }
+@media (max-width: 600px) { .invoice-archive .invoice-dropzone { flex-wrap: wrap; } .invoice-archive .invoice-dropzone > button { width: 100%; } }

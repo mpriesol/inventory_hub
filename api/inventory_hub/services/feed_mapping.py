@@ -36,7 +36,7 @@ PRICE_FIELDS = {"prices.purchase_net", "prices.purchase_gross", "prices.retail_n
 NUMERIC_FIELDS = {"supplier_stock", "supplier_stock_min", "supplier_stock_external"}
 LIST_FIELDS = {"images", "eans", "parameters", "variant_attributes"}
 FIELDS = TEXT_FIELDS | PRICE_FIELDS | NUMERIC_FIELDS | LIST_FIELDS | {"prices.currency", "supplier_external_available"}
-SHOP_FORBIDDEN = {"code", "group_code", "group_name", "eans", "supplier_stock", "supplier_stock_min", "supplier_stock_external",
+SHOP_FORBIDDEN = {"code", "manufacturer_code", "group_code", "group_name", "eans", "supplier_stock", "supplier_stock_min", "supplier_stock_external",
                   "supplier_stock_raw", "supplier_stock_external_raw", "supplier_external_available", "availability"}
 
 
@@ -63,6 +63,8 @@ def validate_definition(definition: MappingDefinition, shop: str = ""):
         raise ValueError("Choose the target shop before configuring category mappings")
     for binding in definition.bindings:
         key = binding.target
+        if shop and binding.manufacturer_code_confirmed:
+            raise ValueError("Confirm manufacturer identity in the shared supplier mapping, not a shop content override")
         if key not in FIELDS and not key.startswith(("parameter:", "meta:")):
             raise ValueError(f"Unsupported destination field: {key}")
         if key.startswith(("parameter:", "meta:")):
@@ -220,6 +222,12 @@ def apply_definition(product: CatalogProduct | None, raw: dict, definition: Mapp
         if not values:
             if target in ("code", "name") and not data.get(target):
                 raise ValueError(f"Required source is missing: {target}")
+            if target == "manufacturer_code":
+                # A previous/native display value is not proof that the mapped
+                # manufacturer field exists in this source observation.
+                fields[target] = {"scope": shop or "feed", "revision": revision,
+                                  "source": binding.source, "manufacturer_code_confirmed": False,
+                                  "missing_source": True}
             continue
         if target in ("parameters", "variant_attributes"):
             if binding.constant is not None:
@@ -278,6 +286,12 @@ def apply_definition(product: CatalogProduct | None, raw: dict, definition: Mapp
         fields[target] = {"scope": shop or "feed", "revision": revision, "source": binding.source,
                           "constant": binding.constant is not None,
                           "transforms": [t.model_dump(by_alias=True, exclude_none=True) for t in binding.transforms]}
+        if target == "manufacturer_code":
+            if binding.manufacturer_code_confirmed:
+                from inventory_hub.sku_policy_types import SkuIdentityInput
+                SkuIdentityInput.code_text(data[target])
+            fields[target].update({"manufacturer_code_confirmed": binding.manufacturer_code_confirmed,
+                                   "value": data[target]})
         if binding.param_match_name is not None:
             fields[target].update({"param_match_name": binding.param_match_name,
                                   "param_name_path": binding.param_name_path,

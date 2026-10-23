@@ -142,6 +142,112 @@ class ShopInvoiceSourceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue('upstream_status' not in values or type(values['upstream_status']) is int)
                 self.assertTrue('operation' not in values or values['operation'] in ('list', 'pdf'))
 
+    async def test_rejected_parameters_use_only_exact_error_properties_from_sent_list_query(self):
+        messages = [
+            {'object': 'private object', 'property': name, 'message': 'private body and credentials', 'level': level}
+            for name, level in (('page', 'error'), ('creation_time_to', 'fatal_error'),
+                                ('creation_time_from', 'error'), ('page', 'error'),
+                                ('creation_time_from=private', 'error'), ('private', 'error'))
+        ]
+        for status in (400, 422):
+            with self.subTest(status=status):
+                response = Response({'messages': messages}, status=status)
+                _, session = self.client(response)
+                with self.assertRaises(source.SourceError) as caught:
+                    await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+                self.assertEqual(caught.exception.diagnostics(), {'upstream_status': status, 'operation': 'list',
+                    'rejected_parameters': ['creation_time_from', 'creation_time_to', 'page']})
+                self.assertEqual(str(caught.exception), 'invoice_source_http_failed')
+                self.assertNotIn('private', json.dumps(caught.exception.diagnostics()))
+                self.assertEqual(len(session.calls), 1)
+                self.assertTrue(response.closed and session.closed)
+
+    async def test_ambiguous_property_shapes_or_message_text_do_not_name_rejected_parameters(self):
+        response = Response({'messages': [
+            {'property': 'private', 'message': 'creation_time_from is invalid', 'level': 'error'},
+            {'property': 'query.page', 'level': 'error'}, {'property': ' page ', 'level': 'error'},
+            {'property': ['creation_time_to'], 'level': 'error'}, {'property': 'page', 'level': 'warning'},
+            {'property': 'creation_time_from', 'level': 'info'}, {'property': 'creation_time_to'},
+        ]}, status=400)
+        self.client(response)
+        with self.assertRaises(source.SourceError) as caught:
+            await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+        self.assertEqual(caught.exception.diagnostics(), {'upstream_status': 400, 'operation': 'list'})
+        # An exact name for a parameter not sent by this call is not evidence.
+        response = Response({'messages': [{'property': 'page', 'level': 'error'}]}, status=400)
+        self.assertEqual(source._rejected_parameters(response, {'creation_time_from': 'unused'}), [])
+
+    async def test_invalid_error_json_keeps_original_http_failure_without_diagnostics(self):
+        bodies = (b'not JSON private text', b'{"messages":{"property":"page","level":"error"}}',
+            b'{"messages":[{"property":"private","property":"page","level":"error"}]}',
+            b'{"messages":[{"property":"page","level":"error"}],"private":NaN}',
+            b'{"messages":[{"property":"page","level":"error"}]} trailing',
+            b'{"nested":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}')
+        for body in bodies:
+            with self.subTest(body_size=len(body)):
+                response = Response(body, status=400)
+                _, session = self.client(response)
+                with self.assertRaises(source.SourceError) as caught:
+                    await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+                self.assertEqual(caught.exception.diagnostics(), {'upstream_status': 400, 'operation': 'list'})
+                self.assertEqual(str(caught.exception), 'invoice_source_http_failed')
+                self.assertTrue(response.closed and session.closed)
+
+    async def test_error_body_byte_time_and_read_failures_preserve_original_http_error(self):
+        valid = b'{"messages":[{"property":"page","level":"error"}]}'
+        response = Response(valid, status=400, headers={'Content-Length': str(source.MAX_ERROR_BYTES + 1)})
+        with patch.object(response, 'iter_content', side_effect=AssertionError('Oversized body must not be read')):
+            self.assertEqual(source._rejected_parameters(response, {'page': 1}), [])
+        emitted = []
+        response = Response(valid + b' ' * source.MAX_ERROR_BYTES, status=400)
+        original_stream = response.iter_content
+
+        def bounded_stream(size):
+            for chunk in original_stream(size):
+                emitted.append(len(chunk))
+                yield chunk
+
+        with patch.object(response, 'iter_content', side_effect=bounded_stream):
+            self.assertEqual(source._rejected_parameters(response, {'page': 1}), [])
+        self.assertLessEqual(sum(emitted), source.MAX_ERROR_BYTES)
+        response = Response(valid, status=400)
+        with patch.object(source, 'monotonic', side_effect=[0, source.MAX_ERROR_READ_SECONDS + 1]):
+            self.assertEqual(source._rejected_parameters(response, {'page': 1}), [])
+        response = Response(valid, status=400)
+        self.client(response)
+        with patch.object(response, 'iter_content', side_effect=requests.ConnectionError('private stream error')):
+            with self.assertRaises(source.SourceError) as caught:
+                await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+        self.assertEqual(str(caught.exception), 'invoice_source_http_failed')
+        self.assertEqual(caught.exception.diagnostics(), {'upstream_status': 400, 'operation': 'list'})
+        self.assertTrue(response.closed)
+
+    async def test_other_status_pdf_and_non_json_failures_do_not_read_error_bodies(self):
+        body = {'messages': [{'property': 'page', 'level': 'error'}]}
+        for status, pdf, content_type in ((403, False, 'application/json'), (500, False, 'application/json'),
+                                         (400, True, 'application/json'), (400, False, 'text/html')):
+            with self.subTest(status=status, pdf=pdf, content_type=content_type):
+                response = Response(body, content_type=content_type, status=status)
+                self.client(response)
+                with patch.object(response, 'iter_content', side_effect=AssertionError('Body must not be inspected')):
+                    with self.assertRaises(source.SourceError) as caught:
+                        if pdf:
+                            await source.read_pdf('biketrek', 'PRIVATE-INVOICE', FINGERPRINT)
+                        else:
+                            await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 1)
+                self.assertNotIn('rejected_parameters', caught.exception.diagnostics())
+
+    def test_rejected_parameter_constructor_is_an_allowlist_with_http_and_operation_context(self):
+        values = ['private', 'page', {'property': 'creation_time_to'}, 'creation_time_from', 'page']
+        error = source.SourceError('invoice_source_http_failed', upstream_status=400, operation='list',
+                                   rejected_parameters=values)
+        self.assertEqual(error.rejected_parameters, ['creation_time_from', 'page'])
+        for status, operation in ((400, 'pdf'), (403, 'list'), (None, 'list')):
+            with self.subTest(status=status, operation=operation):
+                error = source.SourceError('invoice_source_http_failed', upstream_status=status,
+                                           operation=operation, rejected_parameters=['page'])
+                self.assertEqual(error.rejected_parameters, [])
+
     async def test_local_budget_denial_has_operation_without_inventing_upstream_http_status(self):
         _, session = self.client(source.AdmissionDenied(19))
         with self.assertRaises(source.SourceError) as caught:

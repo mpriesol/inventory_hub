@@ -47,6 +47,7 @@ class InvoiceRouteTests(unittest.TestCase):
     def test_every_archive_and_finance_route_authenticates_before_database(self):
         requests = [
             ("GET", "/invoices", None), ("GET", "/invoices/suppliers", None),
+            ("GET", "/invoices/supplier-options", None),
             ("GET", "/invoices/stats", None), ("GET", "/invoices/1", None),
             ("GET", "/invoices/1/download", None),
             ("GET", f"/invoices/1/payment-operations/{self.request_id}", None),
@@ -82,14 +83,17 @@ class InvoiceRouteTests(unittest.TestCase):
         for status in (400, 403, 429):
             code = 'invoice_source_rate_limited' if status == 429 else 'invoice_source_http_failed'
             error = SourceError(code, 429 if status == 429 else 502, 37 if status == 429 else None,
-                                upstream_status=status, operation='list')
+                                upstream_status=status, operation='list', rejected_parameters=['creation_time_to', 'private'])
             error.url = 'https://private.invalid/PRIVATE-INVOICE-001'
             error.body = 'private customer and credential details'
             with self.subTest(status=status), patch.object(shop_invoice_sync, 'refresh', AsyncMock(side_effect=error)):
                 response = self.client.post('/invoices/sync/shop/biketrek', headers=self.headers,
                     json={'date_from': '2026-10-01', 'date_to': '2026-10-23'})
                 self.assertEqual(response.status_code, 429 if status == 429 else 502)
-                self.assertEqual(response.json(), {'detail': {'code': code, 'upstream_status': status, 'operation': 'list'}})
+                expected = {'code': code, 'upstream_status': status, 'operation': 'list'}
+                if status == 400:
+                    expected['rejected_parameters'] = ['creation_time_to']
+                self.assertEqual(response.json(), {'detail': expected})
                 self.assertEqual(response.headers['cache-control'], 'no-store')
                 if status == 429:
                     self.assertEqual(response.headers['retry-after'], '37')

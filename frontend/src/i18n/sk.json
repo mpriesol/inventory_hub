@@ -38,7 +38,7 @@
   },
   "nav": {
     "dashboard": "Prehľad",
-    "invoices": "Archív faktúr",
+    "invoices": "Faktúry",
     "receiving": "Príjem",
     "stock": "Sklad",
     "products": "Produkty",
@@ -3369,7 +3369,7 @@
       "suffix": "Pridať text na koniec"
     },
     "targets": {
-      "code": "Kód dodávateľa",
+      "code": "Interný kód položky u dodávateľa",
       "name": "Názov produktu",
       "description": "Dlhý popis",
       "short_description": "Krátky popis",
@@ -3389,7 +3389,7 @@
       "prices_discount_gross": "Akciová cena s DPH",
       "prices_currency": "Mena",
       "prices_vat_percent": "DPH (%)",
-      "manufacturer_code": "Kód výrobcu",
+      "manufacturer_code": "Kód výrobku od výrobcu (pre nové SKU)",
       "parameters": "Zoznam parametrov",
       "url": "Odkaz dodávateľa",
       "group_code": "Kód skupiny variantov",
@@ -3491,7 +3491,8 @@
     "parameterWarnings": {
       "upgates_parameter_registry_unavailable": "Zoznam parametrov Upgates momentálne nie je dostupný.",
       "upgates_parameter_registry_truncated": "Zoznam Upgates prekročil limit; zobrazujeme iba načítané parametre."
-    }
+    },
+    "manufacturerCodeConfirmed": "Potvrdzujem, že toto pole obsahuje kód výrobku od výrobcu pre konkrétny variant a balenie; nie interný kód dodávateľa."
   },
   "productImport": {
     "productPreview": "Náhľad produktu",
@@ -3599,11 +3600,11 @@
     "imagesHelp": "Každá URL obrázka na samostatný riadok; prvý obrázok je hlavný.",
     "fields": {
       "code": "Kód produktu",
-      "supplier_code": "Kód dodávateľa",
+      "supplier_code": "Interný kód položky u dodávateľa",
       "group_name": "Názov rodiny",
       "name": "Názov",
       "brand": "Značka",
-      "manufacturer_code": "Zdrojové pole MPN (neoverené)",
+      "manufacturer_code": "Kód výrobku od výrobcu (pre nové SKU)",
       "eans": "EAN",
       "images": "Obrázky",
       "description_html": "Dlhý popis (HTML)",
@@ -4195,19 +4196,19 @@
   },
   "skuPolicy": {
     "title": "Automatické SKU",
-    "help": "SKU vytvoríme automaticky zo skratky značky a kódu konkrétneho tovaru. Existujúca karta si ponechá svoj kód. Prepojenia a kolízie skontroluje Hub.",
-    "brand": "Značka alebo evidenčná kategória",
+    "help": "Nové SKU skladového tovaru tvorí dvojpísmenová predpona výrobcu a jeho presný kód výrobku. Kód dodávateľa sa eviduje samostatne. Existujúce SKU zostávajú zachované.",
+    "brand": "Výrobca alebo evidenčná kategória služby",
     "codeKind": "Význam zdrojového kódu",
-    "sourceCode": "Kód konkrétnej predajnej jednotky",
+    "sourceCode": "Kód výrobku od výrobcu",
     "sourceRef": "Doklad alebo zdroj overenia",
     "sourceRefHint": "URL výrobcu, pole feedu alebo číslo dokladu a riadok",
     "preserveCode": "Zachovajte pôvodný zápis vrátane úvodných núl.",
-    "leafConfirmed": "Overil(a) som, že kód označuje práve tento variant a balenie, nie iba rodičovskú skupinu.",
+    "leafConfirmed": "Overil(a) som, že ide o kód výrobcu tohto konkrétneho variantu a balenia, nie o interný kód dodávateľa ani rodičovskej skupiny.",
     "sourceValues": "Pôvodné údaje zdroja",
     "supplierCode": "Kód položky u dodávateľa",
-    "sourceManufacturer": "Pole kódu výrobcu (zatiaľ neoverené)",
+    "sourceManufacturer": "Kód výrobku od výrobcu zo zdroja",
     "groupCode": "Skupina v príprave",
-    "sourceHelp": "Význam týchto polí sa môže líšiť. Rovnaká hodnota ešte nepotvrdzuje kód výrobcu.",
+    "sourceHelp": "Kód dodávateľa a kód výrobku od výrobcu sú samostatné identifikátory. Zhodný text sám nepotvrdzuje ich význam.",
     "registerBrand": "Doplniť značku alebo iný zápis",
     "registerHelp": "Najprv skontrolujte, či nejde o iný zápis existujúcej značky. Skratka musí byť jedinečná; staré SKU sa tým nemenia.",
     "aliasTarget": "Patrí tento zápis k existujúcej značke?",
@@ -4218,7 +4219,7 @@
     "saveAlias": "Pridať overený zápis",
     "saveBrand": "Uložiť do registra",
     "checking": "Overujem identitu…",
-    "completeFields": "Vyberte značku a kód konkrétneho tovaru, alebo vyhľadajte existujúcu kartu pomocou EAN.",
+    "completeFields": "Vyberte výrobcu a overte jeho kód konkrétneho výrobku, alebo vyhľadajte existujúcu kartu podľa EAN.",
     "existingCard": "Použije sa existujúca karta č. {{id}}. Jej SKU zostane zachované.",
     "candidates": "Dotknuté karty: {{ids}}. Skontrolujte ich v sklade a opravte rozporné podklady.",
     "apply": "Použiť návrh SKU",
@@ -4241,14 +4242,14 @@
     },
     "codeKinds": {
       "manufacturer": "Kód výrobcu konkrétneho variantu (MPN)",
-      "supplier": "Výnimka: doložený kód dodávateľa",
-      "gtin": "Výnimka: overený GTIN predajnej jednotky",
+      "supplier": "Kód dodávateľa na vyhľadanie existujúcej karty",
+      "gtin": "GTIN na vyhľadanie existujúcej karty",
       "service": "Existujúci doložený kód služby",
       "unbranded": "Existujúci doložený kód neznačkového tovaru"
     },
     "exceptions": {
-      "supplier": "Použite iba po overení, že výrobok nemá použiteľný MPN. Podklad musí uviesť vybraného dodávateľa a konkrétny variant. Rovnaký kód iného dodávateľa nie je zhoda.",
-      "gtin": "Použite iba overený GTIN tohto variantu a balenia. V podklade uveďte, prečo nemožno použiť kód výrobcu.",
+      "supplier": "Dodávateľský kód sa používa iba v rozsahu vybraného dodávateľa. Nové SKU z neho nevznikne; zadajte kód výrobcu.",
+      "gtin": "GTIN pomáha vyhľadať existujúcu kartu. Pri novom tovare zadajte samostatný kód výrobku od výrobcu.",
       "service": "Vyberte evidenčnú kategóriu Služby a existujúci doložený kód služby. Nevytvárajte kód výrobcu ani poradovú príponu.",
       "unbranded": "Vyberte evidenčnú kategóriu Neznačkový tovar a doložený stabilný kód konkrétnej položky. Ak taký kód neexistuje, prípad zostáva nevyriešený."
     },
@@ -4256,7 +4257,7 @@
       "registryUnavailable": "Register sa nepodarilo načítať alebo uložiť. Skúste znova.",
       "previewUnavailable": "Overenie identity sa nepodarilo. Skontrolujte presný zápis polí bez okrajových medzier a skúste znova.",
       "identity_conflict": "Identifikátory označujú odlišné karty alebo nejednoznačný variant. Skontrolujte uvedené karty a podklady; nová karta sa nevytvorí.",
-      "sku_identity_required": "Nová karta potrebuje značku a kód konkrétneho tovaru. SKU zostaví Hub.",
+      "sku_identity_required": "Nová skladová karta potrebuje registrovaného výrobcu a overený kód jeho konkrétneho výrobku.",
       "sku_brand_unregistered": "Značka nie je v registri. Vyberte existujúci zápis alebo ju doplňte s jedinečnou skratkou.",
       "sku_leaf_not_confirmed": "Potvrďte konkrétny variant a balenie až po overení zdrojového kódu.",
       "sku_namespace_kind_mismatch": "Druh kódu nezodpovedá registru. Pre služby alebo neznačkový tovar vyberte príslušnú evidenčnú kategóriu.",
@@ -4292,10 +4293,16 @@
       "sku_code_required": "Nová karta potrebuje značku a kód konkrétneho tovaru. SKU zostaví Hub.",
       "sku_invalid": "Skontrolujte SKU: najviac 100 znakov, bez riadiacich znakov a oddeľovačov.",
       "sku_code_invalid": "Skontrolujte SKU: najviac 100 znakov, bez riadiacich znakov a oddeľovačov.",
-      "sku_item_type_conflict": "Servisná značka vyžaduje typ karty Služba."
+      "sku_item_type_conflict": "Servisná značka vyžaduje typ karty Služba.",
+      "sku_manufacturer_code_required": "Nové SKU používa kód výrobku od výrobcu. Kód dodávateľa alebo EAN slúži na vyhľadanie a prepojenie existujúcej karty.",
+      "sku_manufacturer_code_unverified": "Potvrďte kód výrobcu tohto konkrétneho variantu alebo použite potvrdené mapovanie výrobného kódu vo feede."
     },
     "newCardName": "Názov pre novú kartu",
-    "lookupExisting": "Vyhľadať existujúcu kartu podľa SKU"
+    "lookupExisting": "Vyhľadať existujúcu kartu podľa SKU",
+    "serviceConfirmed": "Overil(a) som presný evidenčný kód tejto služby.",
+    "serviceCode": "Evidenčný kód služby",
+    "existingIdentityCode": "Kód existujúcej identity",
+    "existingIdentityConfirmed": "Overil(a) som pôvod a konkrétny variant tejto existujúcej identity."
   },
   "skuMigration": {
     "title": "Náhľad zmeny SKU",
@@ -4538,7 +4545,7 @@
     "unit": "Jednotka"
   },
   "invoiceArchive": {
-    "title": "Archív faktúr",
+    "title": "Faktúry",
     "subtitle": "Dodávateľské faktúry, doklady z e-shopov a prehľad úhrad na jednom mieste.",
     "direction": "Druh evidencie",
     "directionLabels": {
@@ -4646,8 +4653,14 @@
     "syncFailed": "Výsledok sťahovania sa nepodarilo potvrdiť.",
     "syncListOperation": "Zoznam faktúr v e-shope",
     "syncPdfOperation": "Stiahnutie originálu PDF",
+    "syncRejectedParameters": "E-shop odmietol: {{parameters}}.",
+    "syncParameterLabels": {
+      "creation_time_from": "začiatok obdobia vytvorenia dokladov",
+      "creation_time_to": "koniec obdobia vytvorenia dokladov",
+      "page": "stranu zoznamu"
+    },
     "syncUncertain": "Obnovte archív a zopakujte tú istú dávku. Existujúce zdrojové doklady sa znovu nevytvoria.",
-    "back": "Späť na archív",
+    "back": "Späť na faktúry",
     "detailTitle": "Detail faktúry",
     "notFound": "Faktúra nebola nájdená.",
     "downloadOriginal": "Stiahnuť originál",
@@ -4715,6 +4728,45 @@
     "reconcileNext": "Spracovať ďalšiu dávku",
     "reconcileResult": "Skontrolované: {{scanned}} · Pridané: {{created}} · Už uložené: {{existing}} · Konflikty: {{conflicts}}",
     "reconcileDone": "Kontrola dostupných záznamov dodávateľa je dokončená. Prípadné konflikty sú uvedené vyššie.",
-    "reconcileFailed": "Zaradenie dokladov sa nepotvrdilo. Obnovte archív a zopakujte tú istú dávku."
+    "reconcileFailed": "Zaradenie dokladov sa nepotvrdilo. Obnovte archív a zopakujte tú istú dávku.",
+    "addInvoice": "Pridať faktúru",
+    "showSummary": "Prehľad a grafy",
+    "hideSummary": "Skryť prehľad a grafy",
+    "supplierSearch": "Text dodávateľa",
+    "allSuppliers": "Všetci dodávatelia",
+    "dropFile": "Pretiahnite sem faktúru alebo jej sken",
+    "scanHelp": "PDF, fotografia alebo sken JPG/PNG. Originál sa uloží; automatické rozpoznávanie skenov zatiaľ nie je dostupné.",
+    "chooseFile": "Vybrať súbor",
+    "changeFile": "Zmeniť súbor",
+    "noFile": "Nie je vybraný súbor",
+    "dropOneFile": "Pridajte jednu faktúru naraz.",
+    "unsupportedFile": "Tento formát nepodporujeme. Vyberte PDF, obrázok alebo podporovaný dokument.",
+    "fileSizeLimit": "Súbor musí byť neprázdny a mať najviac 50 MiB.",
+    "sortColumn": "Zoradiť: {{column}} · {{order}}"
+  },
+  "invoiceCalendar": {
+    "title": "Kalendár splatností",
+    "help": "Splatnosti všetkých faktúr zodpovedajúcich použitým filtrom. Kliknutím na faktúru otvoríte jej detail.",
+    "view": "Zobrazenie kalendára",
+    "week": "Týždeň",
+    "month": "Mesiac",
+    "year": "Rok",
+    "previous": "Predchádzajúce obdobie",
+    "next": "Nasledujúce obdobie",
+    "today": "Dnes",
+    "date": "Dátum",
+    "loading": "Načítavam splatnosti…",
+    "failed": "Kalendár sa nepodarilo načítať. Zobrazené údaje by nemuseli byť úplné.",
+    "tooMany": "Vo zvolenom období je viac než 5 000 faktúr. Vyberte kratšie obdobie alebo konkrétneho dodávateľa; neúplný kalendár nezobrazujeme.",
+    "count_one": "{{count}} faktúra",
+    "count_few": "{{count}} faktúry",
+    "count_many": "{{count}} faktúry",
+    "count_other": "{{count}} faktúr",
+    "more": "+ {{count}}",
+    "selectedDay": "Faktúry vybraného dňa",
+    "emptyDay": "V tento deň nie sú podľa použitých filtrov žiadne splatné faktúry.",
+    "noDueDate": "Faktúry bez dátumu splatnosti zostávajú v tabuľke; v kalendári ich nemožno zaradiť. Neoverená úhrada neznamená neuhradenú faktúru.",
+    "retry": "Skúsiť znovu",
+    "openMonth": "Zobraziť tento mesiac"
   }
 }

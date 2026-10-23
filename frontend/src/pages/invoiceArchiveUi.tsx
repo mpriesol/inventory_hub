@@ -34,6 +34,11 @@ export function invoiceSourceDiagnostic(value: unknown, t: TFunction): string {
   if (diagnostic?.operation !== 'list' && diagnostic?.operation !== 'pdf') return '';
   const label = t(diagnostic.operation === 'list' ? 'invoiceArchive.syncListOperation' : 'invoiceArchive.syncPdfOperation');
   const status = diagnostic.upstream_status;
-  return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+  const summary = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
     ? `${label} (HTTP ${status})` : label;
+  if (diagnostic.operation !== 'list' || status !== 400 && status !== 422 || !Array.isArray(diagnostic.rejected_parameters)) return summary;
+  const parameters = (['creation_time_from', 'creation_time_to', 'page'] as const)
+    .filter(name => diagnostic.rejected_parameters?.includes(name))
+    .map(name => t(`invoiceArchive.syncParameterLabels.${name}`));
+  return parameters.length ? `${summary}. ${t('invoiceArchive.syncRejectedParameters', { parameters: parameters.join(', ') })}` : summary;
 }

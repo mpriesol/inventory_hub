@@ -88,3 +88,23 @@ Fill in `target_code` in the first file using assignable codes from the shop exp
 Successful import reports new, changed, unchanged and blank rows. Review assignments in the ordinary visual click/drag editor and use **Uložiť mapovanie**; loading a file never saves or publishes anything itself. Bindings, parameters and other settings remain unchanged. Saving still uses the existing server revision check, including changes made by another operator while the spreadsheet was being edited. Parent/inactive product categories follow the same policy as graphical mapping. No new API, migration or remote shop write is added.
 
 In the advanced editor, each picker and its branches also mount their options only while open. The graphical click/drag workbench remains available alongside CSV. Reverting this UI release retains all mappings because the persisted definition is unchanged.
+
+## Manufacturer product codes and supplier catalogue codes
+
+The shared `code` destination is the supplier's own catalogue identifier.
+`manufacturer_code` is a separate manufacturer-issued concrete variant/package
+code. New physical SKU allocation uses the latter with the registered two-letter
+manufacturer prefix; existing Hub and verified imported shop SKUs stay unchanged.
+
+A `manufacturer_code` field binding can explicitly assert
+`manufacturer_code_confirmed=true`. This requires an actual source path, no
+constant/default, and trim-only transforms. It is permitted only in the shared
+supplier mapping. The saved provenance retains the mapping revision, field path,
+confirmation and exact value. Regular refreshes of that same binding preserve the
+confirmation; a missing field invalidates its evidence rather than certifying a
+retained display value. Editing the binding's source, target or transforms in the
+UI clears confirmation. Unconfirmed native field names never imply manufacturer
+proof. The import preparation checks the source/provenance/value agreement before
+using this evidence; otherwise an operator must confirm the concrete code or link
+an independently identified existing card. Supplier aliases remain scoped to their
+supplier and never become manufacturer codes by fallback.
