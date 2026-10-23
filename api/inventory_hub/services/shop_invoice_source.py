@@ -183,7 +183,7 @@ def _page(shop_code, date_from, date_to, page):
     try:
         payload = _get(client, 'invoices', params={
             'creation_time_from': datetime.combine(date_from, time.min, CREATION_TIME_ZONE).isoformat(),
-            'creation_time_to': datetime.combine(date_to, time.max, CREATION_TIME_ZONE).isoformat(),
+            'creation_time_to': datetime.combine(date_to, time.max, CREATION_TIME_ZONE).isoformat(timespec='seconds'),
             'page': page})
         rows = payload.get('invoices')
         _need(isinstance(rows, list) and len(rows) <= 100 and all(isinstance(row, dict) for row in rows),

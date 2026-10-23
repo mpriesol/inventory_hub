@@ -68,11 +68,51 @@ class ShopInvoiceSourceTests(unittest.IsolatedAsyncioTestCase):
         url, options = session.calls[0]
         self.assertEqual(url, BASE + '/invoices')
         self.assertEqual(options['params'], {'page': 1, 'creation_time_from': '2026-10-01T00:00:00+02:00',
-            'creation_time_to': '2026-10-31T23:59:59.999999+01:00'})
+            'creation_time_to': '2026-10-31T23:59:59+01:00'})
+        self.assertEqual(len(session.calls), 1)
         self.assertFalse(options['allow_redirects'])
         self.assertTrue(options['verify'])
         self.assertTrue(response.closed and session.closed)
         self.assertIsNone(client.log_dir)
+
+    async def test_strict_provider_accepts_whole_second_cutoff_on_first_get_without_fallback(self):
+        _, session = self.client()
+        responses = []
+
+        def provider(url, **options):
+            self.assertEqual(url, BASE + '/invoices')
+            params = options['params']
+            self.assertEqual(params['creation_time_from'], '2026-10-01T00:00:00+02:00')
+            self.assertEqual(params['page'], 2)
+            response = (Response({'messages': [{'property': 'creation_time_to', 'level': 'error'}]}, status=400)
+                if '.' in params['creation_time_to'] else Response(invoice_page(
+                    current_page=2, number_of_pages=3, number_of_items=3)))
+            responses.append(response)
+            return response
+
+        with patch.object(session, 'get', side_effect=provider) as get:
+            result = await source.read_page('biketrek', date(2026, 10, 1), date(2026, 10, 23), 2)
+        get.assert_called_once()
+        self.assertEqual(get.call_args.kwargs['params']['creation_time_to'], '2026-10-23T23:59:59+02:00')
+        self.assertEqual((result['page'], result['pages'], result['total']), (2, 3, 3))
+        self.assertEqual(len(result['page_token']), 64)
+        self.assertTrue(session.closed and all(response.closed for response in responses))
+
+    async def test_selected_calendar_day_bounds_keep_bratislava_dst_offsets(self):
+        periods = (
+            (date(2026, 3, 1), date(2026, 3, 31), '2026-03-01T00:00:00+01:00', '2026-03-31T23:59:59+02:00'),
+            (date(2026, 3, 29), date(2026, 3, 29), '2026-03-29T00:00:00+01:00', '2026-03-29T23:59:59+02:00'),
+            (date(2026, 10, 25), date(2026, 10, 25), '2026-10-25T00:00:00+02:00', '2026-10-25T23:59:59+01:00'),
+        )
+        for date_from, date_to, start, end in periods:
+            with self.subTest(date_from=date_from, date_to=date_to):
+                response = Response(invoice_page())
+                _, session = self.client(response)
+                await source.read_page('biketrek', date_from, date_to, 1)
+                self.assertEqual(len(session.calls), 1)
+                self.assertEqual(session.calls[0][1]['params'], {
+                    'creation_time_from': start, 'creation_time_to': end, 'page': 1})
+                self.assertTrue(response.closed and session.closed)
 
     async def test_original_pdf_uses_encoded_native_number_and_fixed_authenticated_path(self):
         response = Response(PDF, 'application/pdf')
