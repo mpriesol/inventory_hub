@@ -78,6 +78,54 @@ class InvoiceArchiveTests(unittest.TestCase):
             self.assertIsNone(metadata['currency'])
             self.assertEqual(files[0]['role'], 'original')
 
+    def test_duplicate_index_status_changes_keep_original_and_all_candidate_evidence(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            invoices = root / 'suppliers/test/invoices'
+            (invoices / 'raw').mkdir(parents=True)
+            (invoices / 'csv').mkdir()
+            original = b'%PDF-1.4\nSynthetic original\n%%EOF'
+            (invoices / 'raw/first.pdf').write_bytes(original)
+            (invoices / 'raw/copy.pdf').write_bytes(original)
+            csvs = [b'SCM;QTY;PRICE\nA;2;1.25\n', b'SCM;QTY;PRICE\r\nA;2;1.25\r\n']
+            for name, content in zip(('first.csv', 'copy.csv'), csvs):
+                (invoices / 'csv' / name).write_bytes(content)
+            entries = [
+                {'number': 'INV', 'status': 'new', 'downloaded_at': '2026-01-01',
+                 'pdf_path': 'invoices/raw/first.pdf', 'csv_path': 'invoices/csv/first.csv'},
+                {'number': 'INV', 'status': 'processed', 'note': 'Keep source note',
+                 'downloaded_at': '2026-01-02', 'pdf_path': 'invoices/raw/copy.pdf', 'csv_path': 'invoices/csv/copy.csv'},
+            ]
+            header, rows, files, evidence = service._indexed_candidates(root, 'test', 'INV', entries)
+            self.assertEqual((header.invoice_number, rows[0].quantity), ('INV', Decimal('2')))
+            self.assertIsNone(header.currency)
+            self.assertEqual([file['content'] for file in files if file['role'] == 'original'], [original])
+            self.assertEqual({file['content'] for file in files if file['role'] == 'parsed'}, set(csvs))
+            self.assertEqual([candidate['entry'] for candidate in evidence['index_candidates']], entries)
+            self.assertTrue(all(len(candidate['files']) == 2 for candidate in evidence['index_candidates']))
+            # Ingestion receives the bytes which were checked, not mutable cache paths.
+            (invoices / 'raw/copy.pdf').write_bytes(b'replaced source cache')
+            self.assertEqual(next(file['content'] for file in files if file['role'] == 'original'), original)
+
+    def test_duplicate_index_candidates_reject_changed_totals_lines_or_original_bytes(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            invoices = root / 'suppliers/test/invoices'
+            (invoices / 'raw').mkdir(parents=True)
+            (invoices / 'csv').mkdir()
+            (invoices / 'raw/original.pdf').write_bytes(b'%PDF-1.4\nOriginal\n%%EOF')
+            (invoices / 'raw/different.pdf').write_bytes(b'%PDF-1.4\nDifferent\n%%EOF')
+            (invoices / 'csv/original.csv').write_text('SCM;QTY;PRICE\nA;2;1.25\n')
+            (invoices / 'csv/different.csv').write_text('SCM;QTY;PRICE\nA;3;1.25\n')
+            entry = {'number': 'INV', 'total_with_vat': '3.08', 'currency': 'EUR',
+                     'pdf_path': 'invoices/raw/original.pdf', 'csv_path': 'invoices/csv/original.csv'}
+            for changed in ({'total_with_vat': '3.09'}, {'currency': 'CZK'},
+                            {'total_with_vat': None}, {'csv_path': 'invoices/csv/different.csv'},
+                            {'pdf_path': 'invoices/raw/different.pdf'}):
+                with self.subTest(changed=changed), self.assertRaises(service.InvoiceArchiveError) as raised:
+                    service._indexed_candidates(root, 'test', 'INV', [entry, {**entry, **changed}])
+                self.assertEqual(raised.exception.code, 'invoice_index_ambiguous')
+
     def test_manual_csv_upload_indexes_exact_barcodes_and_preserves_unknown_totals(self):
         with TemporaryDirectory() as folder, patch.object(service.settings, 'INVENTORY_DATA_ROOT', folder):
             metadata, rows = service.parse_uploaded_document('test', 'source.csv',
