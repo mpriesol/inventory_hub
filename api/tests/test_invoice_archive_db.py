@@ -284,6 +284,35 @@ class InvoiceArchiveDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoices WHERE total_with_vat IS NULL"), 2)
         await self.assert_no_inventory_effects()
 
+    async def test_reconcile_native_comma_csv_with_blank_preamble_and_supplier_mapping(self):
+        folder = self.index([
+            {"number": "NATIVE-CSV", "status": "new", "csv_path": "invoices/csv/native.csv"},
+            {"number": "NATIVE-CSV", "status": "processed", "csv_path": "invoices/csv/native.csv"},
+        ])
+        (folder.parent / "config.json").write_text(json.dumps({"adapter_settings": {"mapping": {
+            "invoice_to_canon": {"SCM": "SČM", "EAN": "EAN", "TITLE": "Názov",
+                                 "QTY": "Počet kusov", "UNIT_PRICE_EX": "Jednotková cena"}}}}))
+        (folder / "csv").mkdir()
+        original = (' \r\nSČM,EAN,Názov,Počet kusov,Jednotková cena\r\n'
+                    '00001,5901234123457,"Synthetic, part","2,5","1,2500"\r\n').encode('utf-8-sig')
+        (folder / "csv/native.csv").write_bytes(original)
+        report = await self.reconcile()
+        self.assertEqual((report["scanned"], report["created"], report["conflicts"]), (1, 1, []))
+        row = (await self.rows("SELECT supplier_sku,ean,product_name,quantity,unit_price,vat_rate,unit "
+                               "FROM uploaded_invoice_lines"))[0]
+        self.assertEqual((row["supplier_sku"], row["ean"], row["product_name"], row["quantity"], row["unit_price"]),
+                         ("00001", "5901234123457", "Synthetic, part", D("2.5"), D("1.2500")))
+        self.assertIsNone(row["vat_rate"])
+        self.assertIsNone(row["unit"])
+        header = (await self.rows("SELECT currency,total_amount,total_with_vat,vat_amount FROM uploaded_invoices"))[0]
+        self.assertTrue(all(value is None for value in header.values()))
+        original_path = await self.scalar("SELECT file_path FROM invoice_files WHERE role='original'")
+        self.assertEqual(Path(original_path).read_bytes(), original)
+        replay = await self.reconcile()
+        self.assertEqual((replay["existing"], replay["conflicts"]), (1, []))
+        self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoice_lines"), 1)
+        await self.assert_no_inventory_effects()
+
     async def test_reconcile_reports_missing_or_cross_supplier_files_and_keeps_valid_document(self):
         folder = self.index({
             "GOOD": {"number": "GOOD", "csv_path": "invoices/csv/good.csv"},
