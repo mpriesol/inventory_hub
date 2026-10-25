@@ -7,6 +7,9 @@ from unittest.mock import patch
 from sqlalchemy import func, select, text
 
 import test_receiving_db as fixture
+from test_zookee import isdoc, pdf
+from inventory_hub.adapters.sk_profi_bike_invoice import save_receiving_invoice
+from inventory_hub.adapters.zookee_invoice import parse_invoice_pdf
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, ReceivingStatus, Supplier, SupplierProduct
 from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement
 from inventory_hub.routers import receiving_db as receiving
@@ -85,20 +88,27 @@ class ReceivingBarcodesDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_and_manual_edit_keep_catalog_ean_out_of_invoice_source(self):
         async with self.sessions() as db:
-            db.add(SupplierProduct(supplier_id=self.supplier_id, supplier_sku="feed-only", name="Feed item", ean="5901234123457"))
+            supplier = Supplier(code="zookee", name="Synthetic Zookee")
+            db.add(supplier)
+            await db.flush()
+            db.add(SupplierProduct(supplier_id=supplier.id, supplier_sku="feed-only", name="Feed item", ean="5901234123457"))
             await db.commit()
-        path = Path(self.config_folder.name) / "display.csv"
-        path.write_text("SCM;TITLE;QTY;PRICE;EAN\nfeed-only;Synthetic item;3;10;\n")
-        with patch.object(receiving, "_invoice_csv_path", return_value=path):
+        root = Path(self.config_folder.name)
+        # Exercise the real PDF -> canonical CSV -> verified receiving path.
+        # The invoice deliberately has no barcode; only the catalogue does.
+        original = isdoc().replace(b">DEMO-1<", b">feed-only<").replace(
+            b"<CatalogueItemIdentification><ID>5901234123457</ID></CatalogueItemIdentification>", b"")
+        save_receiving_invoice(pdf(original), root, "zookee", parser=parse_invoice_pdf)
+        with patch.object(receiving.settings, "INVENTORY_DATA_ROOT", root):
             async with self.sessions() as db:
-                prepared = await receiving.create_session("receipt-test", receiving.CreateSessionRequest(
-                    invoice_id="receipt-test:display", warehouse_code="receipt-test"), db)
+                prepared = await receiving.create_session("zookee", receiving.CreateSessionRequest(
+                    invoice_id="zookee:9990001", warehouse_code="receipt-test"), db)
                 await db.commit()
         line = prepared["lines"][0]
         self.assertEqual((line["ean"], line["display_ean"], line["ean_source"], line["product_id"]),
                          ("", "5901234123457", "supplier_catalog", None))
         async with self.sessions() as db:
-            edited = await receiving.set_line_quantity("receipt-test", prepared["session_id"],
+            edited = await receiving.set_line_quantity("zookee", prepared["session_id"],
                 receiving.SetQtyRequest(line_index=0, received_qty="1"), db)
             self.assertEqual((edited["line"]["received_qty"], edited["line"]["display_ean"]), (1, "5901234123457"))
             await db.commit()
