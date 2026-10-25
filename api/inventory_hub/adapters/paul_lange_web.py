@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import csv, datetime as dt, hashlib, json, re
+import tempfile
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, parse_qs, urlparse
@@ -268,6 +269,7 @@ def refresh_invoices_web(data_root: Path, supplier: str, login: LoginConfig, mon
         ])
 
     downloaded = skipped = failed = 0
+    errors = []
     try:
         idx = json.loads((sup_root / "invoices" / "index.latest.json").read_text(encoding="utf-8"))
     except Exception:
@@ -278,7 +280,26 @@ def refresh_invoices_web(data_root: Path, supplier: str, login: LoginConfig, mon
         invoice_id = f"{supplier}:{filename.removesuffix('.csv')}"
 
         if out.exists():
+            previous = idx.get(invoice_id) if isinstance(idx, dict) else None
+            if (isinstance(previous, dict) and previous.get("receiving_source") == "paul_lange_download_v1"
+                    and previous.get("receiving_document_number") == filename.removesuffix('.csv')
+                    and previous.get("sha1") == _sha1(out)):
+                skipped += 1
+                continue
+            # Legacy files have no trustworthy download proof. Verify against
+            # a fresh supplier response; never overwrite the original on conflict.
+            with tempfile.TemporaryDirectory(dir=dir_csv) as verification_dir:
+                verified = Path(verification_dir) / "verified.csv"
+                ok = try_download_csv(session, login, src_url, verified, referer=list_url)
+                if not ok or not verified.is_file() or verified.read_bytes() != out.read_bytes():
+                    failed += 1
+                    errors.append("receiving_source_changed" if ok else "receiving_source_unverified")
+                    continue
             skipped += 1
+            if isinstance(previous, dict):
+                idx[invoice_id] = {**previous, "sha1": _sha1(out), "receiving_source": "paul_lange_download_v1",
+                                   "receiving_document_number": filename.removesuffix('.csv')}
+                continue
         else:
             ok = try_download_csv(session, login, src_url, out, referer=list_url)
             if ok and out.exists() and out.stat().st_size > 0:
@@ -298,12 +319,14 @@ def refresh_invoices_web(data_root: Path, supplier: str, login: LoginConfig, mon
             "status": "new",
             "sha1": _sha1(out) if out.exists() else None,
             "layout_used": "flat",
+            "receiving_source": "paul_lange_download_v1",
+            "receiving_document_number": filename.removesuffix('.csv'),
         }
 
     (sup_root / "invoices").mkdir(parents=True, exist_ok=True)
     (sup_root / "invoices" / "index.latest.json").write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return RefreshResult(downloaded=downloaded, skipped=skipped, failed=failed, pages=len(pages), log_files=[
+    return RefreshResult(downloaded=downloaded, skipped=skipped, failed=failed, pages=len(pages), errors=errors, log_files=[
         str((dir_logs / "last_invoice_list.html").relative_to(sup_root).as_posix())
     ])
 

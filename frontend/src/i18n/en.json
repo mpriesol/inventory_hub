@@ -80,6 +80,18 @@
     "openStock": "Open active inventory"
   },
   "receiving": {
+    "sourceUploadFailed": "The invoice could not be uploaded.",
+    "openExistingReceipt": "Open the original receipt",
+    "sourceErrors": {
+      "receiving_source_unverified": "The document source and purchase prices could not be verified. Upload the original invoice through a supported supplier parser or download it again from the supplier.",
+      "receiving_source_currency_unsupported": "The document is not verifiably in EUR. Receiving in another currency is not supported yet.",
+      "receiving_source_vat_unverified": "It could not be verified that purchase prices exclude VAT. Check the original document and the supplier parser settings.",
+      "receiving_source_changed": "The document differs from its verified original or the saved receipt. Resolve the difference before completing the receipt.",
+      "receiving_source_duplicate": "A receipt already exists for this document. Continue with the original receipt; no new receipt was created.",
+      "receiving_csv_invalid": "The document contains an invalid quantity, price or data structure. Correct the source or parser and upload it again.",
+      "receiving_direct_csv_unsupported": "Direct CSV uploads for receiving are restricted. Upload the original invoice through a supported supplier parser.",
+      "receiving_spreadsheet_supplier_unsupported": "Excel invoices for receiving are supported only in the verified Northfinder format. Use a supported original-invoice parser for this supplier."
+    },
     "products": {
       "mixedDrafts": "Selected items belong to different unfinished preparations. Open them with Continue preparation and create new items separately.",
       "reviewMatch": "Review match",

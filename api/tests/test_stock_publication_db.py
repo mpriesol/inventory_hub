@@ -1,3 +1,4 @@
+from receiving_source_fixture import verified_receipt
 """Maintenance publication durability in disposable localhost PostgreSQL only."""
 from current_schema_fixture import apply_current_core_schema
 import copy
@@ -542,6 +543,7 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             receipt_id = receipt.id
             db.add(ReceivingLine(session_id=receipt.id, line_number=1, product_id=self.products["SKU-A"],
                 ordered_qty=D("2"), received_qty=D("2"), unit_price=D("3"), status="matched"))
+            await verified_receipt(db, receipt)
         await self.configure()
         await self.open_hold()
         before = await self.physical_snapshot()

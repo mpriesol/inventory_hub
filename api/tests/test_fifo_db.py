@@ -1,3 +1,4 @@
+from receiving_source_fixture import verified_receipt
 """FIFO valuation and cutover invariants in isolated localhost PostgreSQL."""
 from current_schema_fixture import apply_current_core_schema
 import asyncio
@@ -105,6 +106,7 @@ class FifoDatabaseTests(unittest.IsolatedAsyncioTestCase):
             identifier = receipt.id
             db.add(ReceivingLine(session_id=identifier, line_number=1, product_id=self.products[sku],
                 ordered_qty=D(quantity), received_qty=D(quantity), unit_price=D(cost), status="matched"))
+            await verified_receipt(db, receipt)
         await self.finalize_receipt(identifier)
         return identifier
 

@@ -219,17 +219,10 @@ export async function uploadInvoice(
     url += `?invoice_number=${encodeURIComponent(invoiceNumber)}`;
   }
   
-  const res = await fetch(url, {
+  return fetchJSON(url, {
     method: 'POST',
     body: formData,
   });
-  
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Upload failed: ${res.status} ${text}`);
-  }
-  
-  return res.json();
 }
 
 /**

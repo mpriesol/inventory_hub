@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   Check, AlertCircle, Loader2, RefreshCw, Play, PlayCircle, 
   Upload, Download, ExternalLink, XCircle, CheckCircle, FileText
@@ -11,6 +11,7 @@ import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppl
 import { createReceivingSession, resumeReceiving, reopenInvoice, getActiveSession, getReceivingSummary, lookupReceivingInvoice, type ReceivingInvoiceCandidate } from '../api/receiving';
 import { API_BASE } from '../api/client';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
+import { duplicateReceivingLink, receivingSourceError } from '../features/receiving/sourceErrors';
 
 interface RefreshResult {
   ok: boolean;
@@ -94,6 +95,7 @@ export function ReceivingPage() {
   const [creating, setCreating] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicateLink, setDuplicateLink] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<FilterTab>('new');
 
   // Modal pre dokončené faktúry
@@ -119,6 +121,7 @@ export function ReceivingPage() {
     const command = scanCommand.current;
     if (!command) return;
     setScanBusy(true);
+    setDuplicateLink(null);
     try {
       let sessionId = candidate.session_id;
       if (!sessionId) {
@@ -135,14 +138,15 @@ export function ReceivingPage() {
             : { entryScan: { ...command, qty: 1 } }) },
       });
     } catch (err: any) {
-      setError(err?.message || t('receiving.lookup.openFailed'));
+      setDuplicateLink(duplicateReceivingLink(err, candidate.supplier));
+      setError(receivingSourceError(err, t) || err?.message || t('receiving.lookup.openFailed'));
     } finally { setScanBusy(false); scanLock.current = false; }
   };
 
   const findScannedInvoice = async (event: React.FormEvent) => {
     event.preventDefault();
     if (scanLock.current || !scanCode.trim()) return;
-    scanLock.current = true; setScanBusy(true); setError(null); setScanCandidates([]); setScanWarning(false);
+    scanLock.current = true; setScanBusy(true); setError(null); setDuplicateLink(null); setScanCandidates([]); setScanWarning(false);
     scanCommand.current = { code: scanCode.trim(), request_id: crypto.randomUUID() };
     try {
       const result = await lookupReceivingInvoice(scanCommand.current.code);
@@ -202,6 +206,7 @@ export function ReceivingPage() {
       try {
         setLoading(true);
         setError(null);
+        setDuplicateLink(null);
         const data = await getInvoicesIndex(supplier);
         setInvoices(buildDisplayInvoices(data.items || []));
       } catch (err) {
@@ -228,6 +233,8 @@ export function ReceivingPage() {
       setCreating(true);
     }
     setSelectedInvoice(invoice.id);
+    setError(null);
+    setDuplicateLink(null);
     
     try {
       // Recover the existing session even after browser/back/sidebar navigation.
@@ -257,7 +264,8 @@ export function ReceivingPage() {
       }
     } catch (err) {
       console.error('Failed to start/resume receiving session:', err);
-      setError('Nepodarilo sa spustiť príjem');
+      setDuplicateLink(duplicateReceivingLink(err, supplier));
+      setError(receivingSourceError(err, t) || t('receiving.lookup.openFailed'));
     } finally {
       setCreating(false);
       setResuming(false);
@@ -267,6 +275,7 @@ export function ReceivingPage() {
   const handleRefreshList = async () => {
     setLoading(true);
     setError(null);
+    setDuplicateLink(null);
     setSuccessMessage(null);
     try {
       const data = await getInvoicesIndex(supplier);
@@ -282,6 +291,7 @@ export function ReceivingPage() {
     setRefreshing(true);
     setRefreshResult(null);
     setError(null);
+    setDuplicateLink(null);
     setSuccessMessage(null);
     try {
       const result = await refreshInvoices(supplier);
@@ -309,12 +319,13 @@ export function ReceivingPage() {
     if (!file) return;
     setUploading(true);
     setError(null);
+    setDuplicateLink(null);
     try {
       await uploadInvoice(supplier, file);
       setSuccessMessage(`Faktúra ${file.name} bola nahraná`);
       await handleRefreshList();
     } catch (err: any) {
-      setError(err?.message || 'Nepodarilo sa nahrať faktúru');
+      setError(receivingSourceError(err, t) || err?.message || t('receiving.sourceUploadFailed'));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -356,7 +367,7 @@ export function ReceivingPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".csv,.xlsx,.xls,.pdf"
+            accept={supplier === 'northfinder' ? '.xlsx,.xls,.pdf' : '.pdf'}
             onChange={handleUpload}
             className="hidden"
           />
@@ -442,6 +453,7 @@ export function ReceivingPage() {
           <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <pre className="whitespace-pre-wrap text-sm font-sans">{error}</pre>
+            {duplicateLink && <Link to={duplicateLink} className="underline">{t('receiving.openExistingReceipt')}</Link>}
             {refreshResult?.log_files && refreshResult.log_files.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {refreshResult.log_files.map((logPath, i) => (

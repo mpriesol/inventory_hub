@@ -80,6 +80,18 @@
     "openStock": "Otvoriť aktívny sklad"
   },
   "receiving": {
+    "sourceUploadFailed": "Faktúru sa nepodarilo nahrať.",
+    "openExistingReceipt": "Otvoriť pôvodný príjem",
+    "sourceErrors": {
+      "receiving_source_unverified": "Pôvod a nákupné ceny dokladu sa nepodarilo overiť. Nahrajte originálnu faktúru cez podporovaný parser dodávateľa alebo ju znovu stiahnite od dodávateľa.",
+      "receiving_source_currency_unsupported": "Doklad nie je preukázateľne v EUR. Príjem v inej mene zatiaľ nie je podporovaný.",
+      "receiving_source_vat_unverified": "Nedá sa overiť, že nákupné ceny sú bez DPH. Skontrolujte originálny doklad a nastavenie parsera dodávateľa.",
+      "receiving_source_changed": "Údaje dokladu sa nezhodujú s overeným originálom alebo uloženým príjmom. Pred dokončením príjmu treba rozdiel vyriešiť.",
+      "receiving_source_duplicate": "Tento doklad už má vytvorený príjem. Pokračujte v pôvodnom príjme; nový sa nevytvoril.",
+      "receiving_csv_invalid": "Doklad obsahuje neplatné množstvo, cenu alebo štruktúru údajov. Opravte zdroj alebo parser a nahrajte ho znovu.",
+      "receiving_direct_csv_unsupported": "Priame nahrávanie CSV pre príjem je obmedzené. Nahrajte originálnu faktúru cez podporovaný parser dodávateľa.",
+      "receiving_spreadsheet_supplier_unsupported": "Excel faktúry sú pre príjem podporované iba vo overenom formáte Northfinder. Pre tohto dodávateľa použite podporovaný parser originálnej faktúry."
+    },
     "products": {
       "mixedDrafts": "Vybrané položky patria do rôznych rozpracovaných príprav. Otvorte ich cez Pokračovať v príprave a nové položky založte samostatne.",
       "reviewMatch": "Skontrolovať zhodu",

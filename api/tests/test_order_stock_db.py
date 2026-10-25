@@ -1,3 +1,4 @@
+from receiving_source_fixture import verified_receipt
 """Order reservation and issue invariants in a disposable local PostgreSQL schema."""
 from current_schema_fixture import apply_current_core_schema
 import asyncio
@@ -609,6 +610,7 @@ class OrderStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.flush()
             db.add(ReceivingLine(session_id=receipt.id, line_number=1, product_id=self.products["SKU-A"],
                                 ordered_qty=D("1"), received_qty=D("1"), unit_price=D("20"), status="received"))
+            await verified_receipt(db, receipt)
             await db.commit()
             receipt_id = receipt.id
         async def receive():

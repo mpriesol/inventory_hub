@@ -24,14 +24,15 @@ const button = text => [...document.querySelectorAll('button')].find(el => el.te
 const response = (value, status = 200) => ({ ok: status < 400, status, statusText: status === 200 ? 'OK' : 'Conflict',
   headers: { get: () => 'application/json' }, text: async () => JSON.stringify(value), json: async () => value });
 
-let candidateCount = 2, state = 'in_progress', received = 0, applied = new Map(), scans = [], creates = 0, unreadable = 0;
+let candidateCount = 2, state = 'in_progress', received = 0, applied = new Map(), scans = [], creates = 0, unreadable = 0, createError = null;
 const line = () => ({ id:41, scm:'DEMO', product_code:'DEMO', ean:'5901234123457', title:'Synthetic item', ordered_qty:3, received_qty:received, status:received?'partial':'pending' });
 const summary = () => ({ matched:0,partial:received?1:0,pending:received?0:1,overage:0,unexpected:0 });
-const candidate = n => ({ supplier:'fixture', supplier_name:'Synthetic supplier', invoice_no:'invoice-'+n, session_id:'session-'+n, status:state, invoice_date:null,
+const candidate = n => ({ supplier:'fixture', supplier_name:'Synthetic supplier', invoice_no:'invoice-'+n, session_id:createError ? null : 'session-'+n, status:state, invoice_date:null,
   lines:[{id:41,title:'Synthetic item',sku:'DEMO',line_number:1,ordered_qty:'3',received_qty:String(received)}] });
 global.fetch = async (path, options={}) => {
   if (path === '/api/suppliers') return response([{code:'fixture',name:'Synthetic supplier'}]);
   if (path.includes('/invoices/index')) return response({supplier:'fixture',count:0,invoices:[]});
+  if (path.endsWith('/active-session')) return response({has_session:false,session:null});
   if (path.includes('/receiving/lookup?')) return response({ code:'5901234123457',candidates:Array.from({length:candidateCount},(_,n)=>candidate(n+1)),unreadable_invoices:unreadable });
   if (path.endsWith('/summary')) return response({invoice_no:'invoice-1',status:state,lines:[line()],summary:summary()});
   if (path.endsWith('/resume')) {state='in_progress';return response({lines:[line()]});}
@@ -42,7 +43,10 @@ global.fetch = async (path, options={}) => {
     if(!applied.has(body.request_id)){received++;applied.set(body.request_id,true);}
     return response({request_id:body.request_id,replayed:scans.filter(s=>s.request_id===body.request_id).length>1,status:'partial',line:line(),summary:summary()});
   }
-  if (path.endsWith('/sessions') && options.method==='POST') creates++;
+  if (path.endsWith('/sessions') && options.method==='POST') {
+    creates++;
+    if (createError) return response({detail:createError},409);
+  }
   throw new Error('Unexpected request: '+path);
 };
 let navigate, location;
@@ -75,6 +79,17 @@ async function scan(){await act(async()=>{
   assert.equal(scans.length,1);
   candidateCount=0;unreadable=0;await mount();await scan();
   assert(document.body.textContent.includes(i18n.t('receiving.lookup.notFound')));
+  candidateCount=1;createError={code:'receiving_source_duplicate',session_id:73,invoice_number:'original/2026'};
+  await mount();await scan();
+  assert(document.body.textContent.includes(i18n.t('receiving.sourceErrors.receiving_source_duplicate')));
+  const originalLink=[...document.querySelectorAll('a')].find(el=>el.textContent===i18n.t('receiving.openExistingReceipt'));
+  assert.equal(originalLink?.getAttribute('href'),'/receiving/original%2F2026?supplier=fixture&session=73');
+  assert.equal(scans.length,1,'Duplicate detection must not confirm the scanned quantity');
+  createError={code:'receiving_source_currency_unsupported'};
+  await scan();
+  assert(document.body.textContent.includes(i18n.t('receiving.sourceErrors.receiving_source_currency_unsupported')));
+  assert(![...document.querySelectorAll('a')].some(el=>el.textContent===i18n.t('receiving.openExistingReceipt')),'A later source error clears the old duplicate link');
+  assert.equal(document.querySelector('input[type="file"]').accept,'.pdf','Unverified CSV upload is not offered');
   await act(async()=>{root.unmount();});
-  console.log('Receiving lookup UI: explicit invoice choice, one entry scan, remount safety, completed receipt review and incomplete lookup passed');
+  console.log('Receiving lookup UI: invoice choice, scan safety, completed receipts, incomplete lookup, source rejection and duplicate recovery passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});
