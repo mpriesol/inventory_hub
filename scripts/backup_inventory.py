@@ -2,8 +2,9 @@
 """Private pre-pilot backup and isolated restore verification on the Hub host.
 
 Never restores to production, stops services, enables writers or renames cards.
-Run only after the operator has paused every relevant writer. Backup contents
-include credentials and customer data: keep the output on protected storage.
+Creating a backup requires paused writers. --verify-existing only reads an
+existing completed backup and prints a separate result; production can keep
+running. Archives include credentials and customer data: keep them protected.
 """
 import argparse
 from datetime import datetime, timezone
@@ -11,11 +12,19 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import subprocess
 import tarfile
 import time
 from uuid import uuid4
+import zlib
+
+
+BACKUP_FILES = {"database.dump", "inventory-data.tar.gz", "deployment.tar.gz", "supplier-secrets.tar"}
+BACKUP_SCOPE = {"postgresql", "inventory_data", "deployment_files", "supplier_secrets"}
+CORE_TABLES = ("products", "product_identifiers", "shop_products", "stock_balances", "stock_movements",
+               "reservations", "fifo_layers", "fifo_allocations", "shop_orders")
 
 
 class BackupError(Exception):
@@ -59,13 +68,75 @@ def verify_files(folder, manifest):
     for name, metadata in manifest["files"].items():
         if Path(name).name != name or name in (".", ".."):
             raise BackupError("backup_invalid_filename")
+        if (not isinstance(metadata, dict) or type(metadata.get("size")) is not int or metadata["size"] <= 0
+                or not isinstance(metadata.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", metadata["sha256"])):
+            raise BackupError("backup_invalid_file_metadata")
         path = folder / name
         if path.is_symlink() or not path.is_file() or path.stat().st_size != metadata["size"] or digest(path) != metadata["sha256"]:
             raise BackupError("backup_integrity_failed")
         if name.endswith((".tar.gz", ".tar")):
             with tarfile.open(path, "r:*") as source:
-                for _member in source:
-                    pass
+                for member in source:
+                    if (member.name.startswith("/") or ".." in member.name.split("/")
+                            or not (member.isfile() or member.isdir() or member.issym() or member.islnk())):
+                        raise BackupError("backup_unsafe_archive_member")
+                    if member.issym() or member.islnk():
+                        # Lexical normalization alone misses parent traversal
+                        # through another archive symlink. Reject every parent
+                        # component instead of certifying ambiguous link chains.
+                        if ".." in member.linkname.split("/"):
+                            raise BackupError("backup_unsafe_archive_link")
+                        target = posixpath.normpath(posixpath.join(posixpath.dirname(member.name), member.linkname)
+                                                   if member.issym() else member.linkname)
+                        if target.startswith("/") or target == ".." or target.startswith("../"):
+                            raise BackupError("backup_unsafe_archive_link")
+                    if member.isfile():
+                        # Reading headers alone can miss a truncated member body.
+                        with source.extractfile(member) as stream:
+                            while stream.read(1024 * 1024):
+                                pass
+
+
+def verify_existing(folder):
+    """Recheck an immutable completed backup; never open the production database."""
+    folder = Path(folder).absolute()
+    if ".." in folder.parts or any(path.is_symlink() for path in (folder, *folder.parents)):
+        raise BackupError("backup_unsafe_directory")
+    manifest_path = folder / "manifest.json"
+    if not folder.is_dir() or manifest_path.is_symlink() or not manifest_path.is_file():
+        raise BackupError("backup_manifest_missing_or_unsafe")
+    raw = manifest_path.read_bytes()
+    manifest = json.loads(raw)
+    if (not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1
+            or manifest.get("status") != "verified" or manifest.get("phase") != "completed"
+            or manifest.get("restore_verified") is not True or manifest.get("writers_paused_operator_assertion") is not True
+            or not isinstance(manifest.get("scope"), list)
+            or any(not isinstance(scope, str) for scope in manifest["scope"])
+            or len(manifest["scope"]) != len(BACKUP_SCOPE) or set(manifest["scope"]) != BACKUP_SCOPE
+            or not isinstance(manifest.get("files"), dict) or set(manifest["files"]) != BACKUP_FILES
+            or not isinstance(manifest.get("postgres_image"), str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest["postgres_image"])):
+        raise BackupError("backup_manifest_incomplete")
+    for field in ("created_at", "verified_at"):
+        if not isinstance(manifest.get(field), str) or datetime.fromisoformat(manifest[field]).tzinfo is None:
+            raise BackupError("backup_manifest_invalid_timestamp")
+    counts = manifest.get("restored_counts")
+    if (not isinstance(counts, dict) or set(counts) != set(CORE_TABLES)
+            or any(type(count) is not int or count < 0 for count in counts.values())):
+        raise BackupError("backup_manifest_invalid_counts")
+    verify_files(folder, manifest)
+    restored = restore_check(manifest["postgres_image"], folder / "database.dump")
+    if restored != counts:
+        raise BackupError("backup_restored_counts_changed")
+    # A concurrently changed source cannot inherit this successful result.
+    verify_files(folder, manifest)
+    if manifest_path.is_symlink() or manifest_path.read_bytes() != raw:
+        raise BackupError("backup_manifest_changed")
+    return {"version": 1, "status": "verified", "restore_verified": True,
+            "source_manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            "source_created_at": manifest["created_at"], "verified_at": datetime.now(timezone.utc).isoformat(),
+            "scope": sorted(BACKUP_SCOPE), "restored_counts": restored}
 
 
 def restore_check(image, dump):
@@ -94,8 +165,7 @@ def restore_check(image, dump):
         # Required core tables and immutable history must be present/readable.
         query = "SELECT json_build_object(" + ",".join(
             "'" + table + "', (SELECT count(*) FROM " + table + ")" for table in
-            ("products", "product_identifiers", "shop_products", "stock_balances", "stock_movements",
-             "reservations", "fifo_layers", "fifo_allocations", "shop_orders")) + ")"
+            CORE_TABLES) + ")"
         result = run(["docker", "exec", name, "psql", "--username=postgres", "--dbname=inventory_hub_restore_check",
                       "--no-psqlrc", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--command", query])
         return json.loads(result)
@@ -124,7 +194,7 @@ def create_backup(compose_dir, data_dir, output_root, compose_files, *, writers_
     folder.mkdir(mode=0o700)
     manifest = {"version": 1, "created_at": datetime.now(timezone.utc).isoformat(), "status": "incomplete",
                 "writers_paused_operator_assertion": True, "restore_verified": False,
-                "scope": ["postgresql", "inventory_data", "deployment_files", "supplier_secrets"], "files": {}}
+                "scope": sorted(BACKUP_SCOPE), "files": {}}
     manifest_path = folder / "manifest.json"
     try:
         manifest["phase"] = "check_containers"
@@ -169,20 +239,30 @@ def create_backup(compose_dir, data_dir, output_root, compose_files, *, writers_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify-existing", metavar="BACKUP_DIRECTORY",
+                        help="Verify an existing completed backup without pausing or reading production; print a separate JSON result")
     parser.add_argument("--compose-dir", default="/opt/inventory-hub")
     parser.add_argument("--data-dir", default="/opt/inventory-data")
     parser.add_argument("--output-root", default="/opt/inventory-backups")
-    parser.add_argument("--compose-file", action="append", required=True,
+    parser.add_argument("--compose-file", action="append",
                         help="Every active Compose file, in the same order as deployment; repeat for overlays")
     parser.add_argument("--writers-paused", action="store_true", help="Operator confirms all DB/filesystem writers are paused")
     args = parser.parse_args()
+    if args.verify_existing and (args.compose_file or args.writers_paused):
+        parser.error("--verify-existing cannot be combined with backup creation options")
+    if not args.verify_existing and not args.compose_file:
+        parser.error("--compose-file is required when creating a backup")
     os.umask(0o077)
     try:
+        if args.verify_existing:
+            print(json.dumps(verify_existing(args.verify_existing), sort_keys=True))
+            return 0
         folder = create_backup(args.compose_dir, args.data_dir, args.output_root, args.compose_file,
                                writers_paused=args.writers_paused)
         print(json.dumps({"status": "verified", "manifest": str(folder / "manifest.json")}))
-    except (BackupError, OSError, ValueError, subprocess.SubprocessError, tarfile.TarError):
-        print(json.dumps({"status": "failed", "error": "Backup is incomplete; do not start the pilot."}))
+    except (BackupError, OSError, ValueError, EOFError, zlib.error, subprocess.SubprocessError, tarfile.TarError):
+        print(json.dumps({"status": "failed", "restore_verified": False,
+                          "error": "Backup verification failed; do not start the pilot."}))
         return 1
     return 0
 

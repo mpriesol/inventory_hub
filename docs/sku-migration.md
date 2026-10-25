@@ -218,6 +218,53 @@ archívy vyžadujú administrátorskú kontrolu pred pilotom. Celkový bod obnov
 je konzistentný len pri skutočne pozastavených všetkých writeroch; príznak
 `--writers-paused` je výslovné potvrdenie obsluhy, nie automatická detekcia.
 
+### Opätovné overenie existujúcej zálohy bez odstávky
+
+Na serveri s Dockerom a už uloženou úplnou zálohou možno spustiť:
+
+```bash
+python3 /protected-tools/backup_inventory.py \
+  --verify-existing /opt/inventory-backups/NAZOV_KONKRETNEJ_ZALOHY
+```
+
+Použiť presný existujúci adresár, nie domyslený názov ani automatický výber
+„najnovšieho“. Tento režim nepotrebuje Compose, prístup do produkčnej DB,
+`--writers-paused` ani zastavenie API. Nič neobnovuje do produkcie. Vyžaduje
+lokálne dostupný pôvodný PostgreSQL image podľa ID uloženého v manifeste;
+image nesťahuje a nenahrádza inou verziou.
+
+Pred spustením na živom hostiteľovi overiť voľný disk pre celú rozbalenú
+testovaciu DB, indexy a dočasné súbory, rezervu pamäte/CPU a prijateľnú záťaž
+disku. Izolácia siete neizoluje výkon hostiteľa. Obnovu naplánovať mimo špičky
+alebo použiť samostatný dôveryhodný Docker host s chránenou kópiou zálohy
+a rovnakým lokálnym image. Tento režim automaticky neobmedzuje prostriedky
+kontajnera a dostupnú kapacitu nepotvrdzuje.
+
+Kontrola odmietne neúplný manifest, chýbajúcu časť rozsahu alebo niektorý zo
+štyroch súborov, symlink adresára/manifestu/archívu, neplatné metadáta,
+nesúhlas SHA-256/veľkosti, nečitateľný obsah tar či cesty a odkazy unikajúce
+z archívu. Konzervatívne odmieta aj každý tar odkaz s komponentom `..`,
+vrátane niektorých inak interných odkazov: samotná lexikálna normalizácia
+nevylúči únik cez reťazec symlinkov. Taký archív vyžaduje osobitnú kontrolu,
+nie vypnutie poistky. Potom celý dump obnoví rovnakým izolovaným postupom, porovná
+počty základných tabuliek s pôvodným výsledkom a opäť overí nemennosť zdroja.
+Zdrojový manifest ani archívy neupravuje a neúspešnú pôvodnú snímku dodatočne
+neoznačí za overenú.
+
+Na štandardný výstup vypíše samostatný JSON výsledok s odtlačkom zdrojového
+manifestu, časom a počtami tabuliek; úspech má `status=verified`,
+`restore_verified=true` a návratový kód 0. Chyba má `status=failed`,
+`restore_verified=false` a nenulový návratový kód. Výsledok možno uložiť do
+nového chráneného súboru mimo pôvodnej zálohy; zachovať aj neúspešné výsledky.
+Nevypisuje obsah DB, dokumentov ani tajomstvá. Úspech overuje obnoviteľnosť
+tejto konkrétnej snímky, nie jej aktuálnosť, existenciu druhej kópie,
+pravidelné plánovanie alebo úplnú obnovu aplikácie a súborov.
+
+`api/tests/test_backup_inventory.py` používa syntetické súbory a napodobené
+Docker príkazy na kontrolu bezpečnostných podmienok. Úspech týchto testov
+nie je vykonaná kontrolná obnova produkčnej zálohy. Tú dokladá až výstup
+skutočného serverového spustenia nad vybranou zálohou.
+
 Pri návrate po neúspešnom premenovaní sa uprednostní kontrolovaná oprava
 identity vpred alebo spätné premenovanie pri zachovaní ID. Úplná obnova DB
 nie je bežný rollback SKU: mohla by stratiť novšie príjmy a objednávky. Vyžaduje
