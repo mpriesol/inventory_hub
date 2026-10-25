@@ -1,3 +1,4 @@
+from receiving_source_fixture import verified_receipt
 """Opening inventory atomicity in an isolated localhost PostgreSQL schema only."""
 from current_schema_fixture import apply_current_core_schema
 import asyncio
@@ -134,6 +135,7 @@ class OpeningStockDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.flush()
             db.add(ReceivingLine(session_id=receipt.id, line_number=1, product_id=self.first_id,
                 ordered_qty=D(quantity), received_qty=D(quantity), unit_price=D(cost), status="received"))
+            await verified_receipt(db, receipt)
             await db.commit()
             return receipt.id
 

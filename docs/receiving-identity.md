@@ -32,6 +32,32 @@ Rovnaké obmedzenie názvov a súborových ciest platí aj pre starší JSON re�
 
 Kompletná administrácia opráv identifikátorov a priraďovanie neskôr prijatej faktúry k už vykonanému príjmu zostávajú ďalšími krokmi. Chýbajúca nákupná cena vo faktúrovom príjme sa naďalej musí vyriešiť pred jeho dokončením. Samostatný príjem bez známej ceny používa existujúci postup v [dokumentácii nákupných vrstiev](fifo.md).
 
+## Overený zdroj faktúry a medzisúbor CSV
+
+Bežný postup je **pôvodný dodávateľský doklad → konkrétny parser → uložené údaje → potvrdený fyzický príjem**. CSV je medzisúbor parsera. Samotný názov súboru, stĺpec `CURRENCY=EUR` alebo údaj od klienta nepotvrdzujú menu ani cenu bez DPH.
+
+`POST /suppliers/{supplier}/upload-invoice` odmietne priamy CSV upload pred uložením súboru. Excelový doklad na príjem podporuje iba konkrétny Northfinder parser. Uchovanie iného dokumentu vo **Faktúrach** cez `/invoices/upload` je samostatná archivačná operácia; nevytvára tým overený zdroj fyzického príjmu. Nepodporované alebo nedoložené podklady sa nesmú obísť premenovaním súboru.
+
+| Zdroj | Overenie pred založením príjmu |
+| --- | --- |
+| SK Profi Bike / Zookee PDF | Pôvodné uložené PDF sa znovu overí existujúcim dodávateľským parserom. Číslo a otlačok dokladu aj normalizované CSV musia zodpovedať pôvodnému dokumentu. Zookee zachová vlastný ISDOC prepočet doložených EUR hodnôt. |
+| Northfinder XLSX | Uložený originál musí obsahovať konkrétne stĺpce množstva, jednotkovej ceny v EUR, čistého a hrubého súčtu. Overuje sa presnosť čísiel, čistý súčet množstvo × cena, hrubý súčet a zhoda s medzisúborom. Všeobecný stĺpec `Price` ani nahradenie chyby nulou nestačia. |
+| Paul Lange CSV zo sťahovania | Vyžaduje sa dôkaz dodávateľského stiahnutia vrátane čísla dokladu, zhodný otlačok obsahu a výslovne uložená konfigurácia EUR/cena bez DPH. Číslo z dôkazu musí zodpovedať indexu; predvolené hodnoty normalizácie konfigurácie tento dôkaz nenahrádzajú. |
+
+Pri starších Paul Lange súboroch bez dôkazu stiahnutia použite existujúce **obnovenie faktúr**. Adaptér porovná uložený súbor s čerstvo stiahnutým originálom. Pri zhode doplní dôkaz a zachová stav príjmu aj poznámky; pri rozdiele pôvodný súbor neprepíše a vráti konflikt. Samotné preskočenie už existujúceho súboru mu dôveryhodnosť nepridelí. Názov cieľového dokladu sa nemení.
+
+Spoločná služba `services/receiving_source.py` odmieta nečíselné, záporné, nekonečné a príliš presné hodnoty, chybné počty stĺpcov aj duplicitné hlavičky. Množstvo má najviac tri a jednotková cena štyri desatinné miesta. Chýbajúca cena zostáva `NULL`; nie je nulou a bežný fyzický faktúrový príjem ju naďalej odmietne. Výslovne doložená nulová cena bonusu zostáva povolená. Cudzia mena alebo cena s DPH sa nepreznačí na EUR bez DPH; nevymýšľa sa kurz ani daňový prepočet.
+
+Nová relácia uloží otlačok zdroja a overenú snímku faktúrových riadkov, meny a základu ceny. Kontrola duplicitného zdroja používa zámok dodávateľa a existujúci unikátny index `receiving_sessions.source_hash`. Rovnaký doložený dokument pod iným názvom nemá založiť druhý fyzický príjem; odpoveď uvedie existujúcu reláciu. Zmenený obsah rovnakého dokladu sa odmietne. Faktúrové údaje sa pred prvým zaúčtovaním porovnajú s overenou snímkou, nezávisle od prijatých množstiev a nákupného prepočtu.
+
+**Identita dokladu nie je totožná so zoznamom položiek.** Dve skutočné faktúry môžu mať rovnaké položky, množstvá aj ceny, a teda rovnaký normalizovaný CSV. Ak obe PDF príjemky majú rozdielne čísla overené z pôvodného dokladu, samotná zhoda CSV ich nezablokuje ako duplikát. Pri Paul Lange otlačok spája obsah so zdrojovo doloženým číslom dokladu zo sťahovania; premenovanie lokálneho súboru toto číslo nemení. Rozdielne overené doklady preto možno prijať samostatne, rovnaký doklad iba raz.
+
+Northfinder XLSX a historické relácie bez uloženého otlačku nemusia poskytovať porovnateľný dôkaz rozdielnych čísel dokladov. Tam zostáva zhoda obsahu konzervatívnou blokáciou možného dvojitého príjmu. Môže preto vyžadovať doloženie a vyriešenie aj pri dvoch skutočne samostatných dodávkach s totožným CSV; zmena názvu súboru ani vymyslené číslo nie sú podporovaným riešením. Táto hranica sa nesmie vykladať ako dôkaz, že rovnaké položky vždy znamenajú tú istú faktúru.
+
+Rozpracovaná staršia relácia bez otlačku musí najprv preukázať svoj pôvod z uloženého dokumentu a zhodu s už uloženými faktúrovými riadkami. Overenie sa uloží v transakcii príjmu a neprepisuje historické pohyby. Chýbajúci alebo rozporný podklad neumožní nové zaúčtovanie ani s `force=true`. Opakovanie už dokončeného príjmu naďalej vráti pôvodný výsledok bez ďalšej kontroly zdroja, pohybu alebo zmeny histórie.
+
+Stabilné chybové kódy sú `receiving_direct_csv_unsupported`, `receiving_spreadsheet_supplier_unsupported`, `receiving_csv_invalid`, `receiving_source_unverified`, `receiving_source_currency_unsupported`, `receiving_source_vat_unverified`, `receiving_source_changed` a `receiving_source_duplicate`. Nejde o aktiváciu skladu ani o nové publikovanie do e-shopov; zmena nevyžaduje migráciu databázy.
+
 ## Založenie skladových kariet z príjemky
 
 Príjemka používa ten istý zoznam produktov ako Hub. Existencia skladovej karty a počet fyzických kusov sú dve samostatné informácie. Pri položkách sa zobrazuje stav karty a **Náš sklad** v sklade danej príjemky; neoverený historický stav sa nezobrazuje ako potvrdená nula.

@@ -2,6 +2,7 @@
 // Complete suppliers management page with editor, history, and validation
 
 import { ZookeeCodeReconciliation } from '../components/ZookeeCodeReconciliation';
+import { receivingSourceError } from '../features/receiving/sourceErrors';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -455,7 +456,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
       await uploadInvoice(code, file);
       alert(`Súbor ${file.name} bol úspešne nahraný`);
     } catch (err: any) {
-      setError(err.message);
+      setError(receivingSourceError(err, t) || err.message);
     } finally {
       setUploading(false);
       if (fileInputRef.current) {
@@ -724,7 +725,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".csv,.pdf,.xlsx,.xls"
+          accept={code === 'northfinder' ? '.xlsx,.xls,.pdf' : '.pdf'}
           onChange={handleFileUpload}
           className="hidden"
         />

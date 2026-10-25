@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -50,6 +51,43 @@ REQUIRED_COLUMNS = ["SCM", "TITLE", "QTY", "PRICE"]
 
 # Optional columns to include if present
 OPTIONAL_COLUMNS = ["EAN", "CATALOG", "COLOR", "SIZE", "RRP", "TOTAL_EUR", "TOTAL_EUR_VAT", "COLOR_CODE"]
+
+
+def validated_receiving_rows(xlsx_path: Path) -> list[dict]:
+    """Read the supplier's explicit EUR/net columns, rejecting manufactured zeroes."""
+    from inventory_hub.services.receiving_source import ReceivingSourceError, decimal_value
+    try:
+        frame = pd.read_excel(xlsx_path, dtype=object, keep_default_na=False)
+    except Exception:
+        raise ReceivingSourceError("receiving_source_unverified") from None
+    required = ("Kód", "Názov", "Množstvo", "Jednotková cena v EUR", "Spolu v EUR", "Spolu v EUR s DPH")
+    if any(name not in frame.columns for name in required):
+        raise ReceivingSourceError("receiving_source_vat_unverified")
+    rows = []
+    for index, raw in frame.iterrows():
+        if not any(str(value).strip() for value in raw):
+            continue
+        line = len(rows) + 2
+        if not str(raw["Kód"]).strip():
+            raise ReceivingSourceError("receiving_csv_invalid", line_number=line, field="sku")
+        quantity = decimal_value(raw["Množstvo"], 3, "quantity", line)
+        price = decimal_value(raw["Jednotková cena v EUR"], 4, "price", line)
+        net = decimal_value(raw["Spolu v EUR"], 2, "price", line)
+        gross = decimal_value(raw["Spolu v EUR s DPH"], 2, "price", line)
+        if (quantity * price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) != net or gross < net:
+            raise ReceivingSourceError("receiving_csv_invalid", line_number=line, field="total")
+        barcode = raw.get("EAN", "")
+        if barcode == 0 or barcode == "":
+            barcode = ""
+        elif isinstance(barcode, (int, float)):
+            if not float(barcode).is_integer():
+                raise ReceivingSourceError("receiving_csv_invalid", line_number=line, field="ean")
+            barcode = str(int(barcode))
+        rows.append({"supplier_sku": str(raw["Kód"]).strip(), "description": str(raw["Názov"]).strip(),
+                     "ean": str(barcode).strip(), "ordered_qty": quantity, "unit_price": price})
+    if not rows:
+        raise ReceivingSourceError("receiving_csv_invalid", field="rows")
+    return rows
 
 
 def parse_xlsx_to_csv(
@@ -88,6 +126,7 @@ def parse_xlsx_to_csv(
     }
     
     try:
+        verified_rows = validated_receiving_rows(xlsx_path)
         # Load XLSX
         df = pd.read_excel(xlsx_path)
         logger.info(f"Loaded XLSX with {len(df)} rows, columns: {df.columns.tolist()}")
@@ -154,16 +193,18 @@ def parse_xlsx_to_csv(
             )
         
         # Convert numeric columns
-        numeric_cols = ["QTY", "PRICE", "RRP", "TOTAL_EUR", "TOTAL_EUR_VAT"]
+        numeric_cols = ["RRP", "TOTAL_EUR", "TOTAL_EUR_VAT"]
         for col in numeric_cols:
             if col in df_output.columns:
-                df_output[col] = pd.to_numeric(df_output[col], errors="coerce").fillna(0)
+                df_output[col] = pd.to_numeric(df_output[col], errors="raise")
+        df_output["QTY"] = [row["ordered_qty"] for row in verified_rows]
+        df_output["PRICE"] = [row["unit_price"] for row in verified_rows]
+        df_output["SCM"] = [row["supplier_sku"] for row in verified_rows]
+        df_output["TITLE"] = [row["description"] for row in verified_rows]
         
         # Convert EAN to string (avoid scientific notation)
         if "EAN" in df_output.columns:
-            df_output["EAN"] = df_output["EAN"].apply(
-                lambda x: str(int(x)) if pd.notna(x) and x != 0 else ""
-            )
+            df_output["EAN"] = [row["ean"] for row in verified_rows]
         
         result["rows_skipped"] = initial_rows - len(df_output)
         result["rows_parsed"] = len(df_output)
@@ -191,6 +232,7 @@ def parse_xlsx_to_csv(
         
     except Exception as e:
         result["error"] = str(e)
+        result["code"] = getattr(e, "code", "receiving_csv_invalid")
         logger.exception(f"Failed to parse XLSX: {e}")
     
     return result

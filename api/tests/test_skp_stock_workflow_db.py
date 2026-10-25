@@ -18,6 +18,8 @@ from inventory_hub.db_models_ext import ProductSupplySource, StockBalance, Stock
 from inventory_hub.fifo_models import FifoAllocation, FifoLayer
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services import stock_adjustments, product_editor
+from inventory_hub.services.receiving_source import ReceivingSource
+import hashlib
 from inventory_hub.product_editor_types import ProductCardCreateRequest
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.stock_adjustment_types import StockAdjustmentApply, StockAdjustmentPreview
@@ -57,7 +59,12 @@ class SkpStockWorkflowDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def receive_csv(self, number, content, *, scan_quantity="1"):
         path = Path(self.config_folder.name) / f"{number}.csv"
         path.write_bytes(content)
-        with patch.object(receiving, "_invoice_csv_path", return_value=path):
+        # The PDF parser itself is covered by source-validation tests. This
+        # integration fixture starts at its verified canonical checkpoint.
+        source = ReceivingSource(receiving._parse_invoice_csv(path), hashlib.sha256(content).hexdigest(),
+                                 hashlib.sha256(content).hexdigest(), number, "sk-profi-bike_pdf")
+        with patch.object(receiving, "_invoice_csv_path", return_value=path), \
+             patch.object(receiving.receiving_source, "load_source", return_value=source):
             async with self.sessions() as db:
                 prepared = await receiving.create_session("sk-profi-bike", receiving.CreateSessionRequest(
                     invoice_id=f"sk-profi-bike:{number}", warehouse_code="receipt-test"), db)

@@ -700,6 +700,11 @@ async def upload_invoice(
             detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
         )
 
+    if ext == ".csv":
+        raise HTTPException(422, detail={"code": "receiving_direct_csv_unsupported"})
+    if ext in (".xlsx", ".xls") and supplier != "northfinder":
+        raise HTTPException(422, detail={"code": "receiving_spreadsheet_supplier_unsupported"})
+
     if supplier in ("sk-profi-bike", "zookee") and ext == ".pdf":
         from inventory_hub.adapters.sk_profi_bike_invoice import (
             InvoiceConflictError, InvoiceParseError, save_receiving_invoice,
@@ -771,6 +776,10 @@ async def upload_invoice(
                 csv_path = f"suppliers/{supplier}/invoices/csv/{csv_filename}"
                 # Update index with CSV using map format
                 _update_invoice_index_map(supplier, csv_filename, csv_path, target_path)
+            else:
+                raise HTTPException(422, detail={"code": result.get("code", "receiving_csv_invalid")})
+        except HTTPException:
+            raise
         except ImportError:
             pass  # No XLSX parser available
         except Exception as e:

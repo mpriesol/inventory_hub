@@ -2,6 +2,8 @@
 import json
 import tempfile
 import unittest
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from inventory_hub import config_io
+from inventory_hub.adapters.sk_profi_bike_invoice import Invoice, InvoiceLine, save_receiving_invoice
 from inventory_hub.routers import invoices, receiving, suppliers
 from inventory_hub.settings import settings
 
@@ -39,12 +42,15 @@ class InvoiceIndexTests(unittest.TestCase):
     def read_index(self):
         return json.loads(self.index_path.read_text(encoding="utf-8"))
 
-    def upload_invoice(self):
-        response = self.client.post(
-            f"/suppliers/{self.supplier}/upload-invoice",
-            files={"file": (f"{self.number}.csv", b"SCM;TITLE;QTY\nTEST-SKU;Test;1\n", "text/csv")},
-        )
-        self.assertEqual(response.status_code, 200, response.text)
+    def seed_parser_invoice(self):
+        # Exercise index identity after a supplier parser has normalized the
+        # original document. Direct CSV upload is intentionally not receiving.
+        invoice = Invoice(self.number, date(2026, 1, 1), date(2026, 1, 15),
+            Decimal("1.00"), Decimal("0.23"), Decimal("1.23"),
+            (InvoiceLine(1, "TEST-SKU", "Test", Decimal("1"), Decimal("1.00"),
+                         Decimal("23"), Decimal("1.00"), Decimal("1.23")),))
+        save_receiving_invoice(b"synthetic source document", self.root, self.supplier,
+                               parser=lambda _content: invoice)
 
     def seed_legacy_invoice(self):
         entry = {
@@ -77,8 +83,8 @@ class InvoiceIndexTests(unittest.TestCase):
             })
         self.assertEqual(response.status_code, 200, response.text)
 
-    def test_upload_note_and_completion_keep_one_invoice(self):
-        self.upload_invoice()
+    def test_parser_import_note_and_completion_keep_one_invoice(self):
+        self.seed_parser_invoice()
         self.assertEqual(list(self.read_index()), [self.invoice_id])
         uploaded = self.read_index()[self.invoice_id]
         response = self.client.post(self.note_url, json={"note": "Receiving test"})

@@ -1,3 +1,4 @@
+from receiving_source_fixture import verified_receipt
 """Receiving ledger regressions in a guarded, disposable localhost PostgreSQL schema."""
 from current_schema_fixture import apply_current_core_schema
 import asyncio
@@ -238,6 +239,7 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     session_id=receipt.id, line_number=i,
                     status=receiving._status_for(values["received_qty"], values["ordered_qty"]), **values,
                 ))
+            await verified_receipt(db, receipt)
             await db.commit()
             return receipt.id
 

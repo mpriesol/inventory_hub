@@ -31,6 +31,7 @@ import { formatNumber, sumDecimals } from '../utils/format';
 import { ApiResponseError } from '../api/client';
 import { API_BASE } from '../api/client';
 import { CatalogApiError } from '../api/catalog';
+import { receivingSourceError } from '../features/receiving/sourceErrors';
 
 function getRawScm(line: ReceivingLine): string {
   return (line.scm || line.product_code || String(line.id || '')).trim();
@@ -264,7 +265,7 @@ export function ReceivingSessionPage() {
         const lineId = (detail as { line_id?: number }).line_id;
         setPreparationLine(typeof lineId === 'number' ? lineId : null);
         setError(t('skuPolicy.receivingPreparation'));
-      } else setError(code ? t(`stockPublication.errors.${code}`, { defaultValue: t(`fifo.errors.${code}`, { defaultValue: explanation || t('receiving.finalizeFailed') }) }) : explanation || t('receiving.finalizeFailed'));
+      } else setError(receivingSourceError(error, t) || (code ? t(`stockPublication.errors.${code}`, { defaultValue: t(`fifo.errors.${code}`, { defaultValue: explanation || t('receiving.finalizeFailed') }) }) : explanation || t('receiving.finalizeFailed')));
       setFinalizing(false);
     } finally { mutation.current = false; }
   };

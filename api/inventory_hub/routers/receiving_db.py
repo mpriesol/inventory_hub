@@ -38,6 +38,7 @@ from inventory_hub.receiving_scan_models import ReceivingScanRequest
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
 from inventory_hub.services import stock_tracking
+from inventory_hub.services import receiving_source
 from inventory_hub.services.item_units import receipt_values, validate_stock_quantity, ItemUnitError
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
@@ -69,8 +70,8 @@ def _decode_bytes_auto(b: bytes) -> str:
     except Exception:
         try:
             return b.decode("cp1250")
-        except Exception:
-            return b.decode("utf-8", errors="ignore")
+        except UnicodeDecodeError:
+            raise receiving_source.ReceivingSourceError("receiving_csv_invalid", field="encoding") from None
 
 
 def _detect_delimiter(line: str) -> str:
@@ -102,55 +103,16 @@ def _get_val(row: List[str], idx: Dict[str, int], candidates: List[str]) -> str:
     return ""
 
 
-def _parse_invoice_csv(p: Path) -> List[Dict[str, Any]]:
-    """Parse invoice CSV and return list of line dicts."""
-    if not p.is_file():
-        raise FileNotFoundError(str(p))
-
-    text = _decode_bytes_auto(p.read_bytes())
-    first_line = next((ln for ln in text.splitlines() if ln.strip()), "")
-    delim = _detect_delimiter(first_line)
-
-    r = csv.reader(io.StringIO(text), delimiter=delim)
-    headers: List[str] = []
-    for row in r:
-        if row and any(str(x or "").strip() for x in row):
-            headers = row
-            break
-
-    rows = list(r)
-    idx = _build_index(headers)
-    out: List[Dict[str, Any]] = []
-
-    for row in rows:
-        if not row or all(not str(x or "").strip() for x in row):
-            continue
-
-        ean = _get_val(row, idx, _HDR_EAN)
-        scm = _get_val(row, idx, _HDR_SCM)
-        title = _get_val(row, idx, _HDR_TITLE)
-        qty_raw = _get_val(row, idx, _HDR_QTY)
-        price_raw = _get_val(row, idx, _HDR_PRICE)
-
-        try:
-            qty = Decimal(str(qty_raw).replace(",", ".") or "0")
-        except Exception:
-            qty = Decimal("0")
-
-        try:
-            price = Decimal(str(price_raw).replace(",", ".")) if price_raw else None
-        except Exception:
-            price = None
-
-        out.append({
-            "ean": ean,
-            "supplier_sku": scm,
-            "description": title,
-            "ordered_qty": qty,
-            "unit_price": price,
-        })
-
-    return out
+def _parse_invoice_csv(p: Path, mapping=None, *, content=None) -> List[Dict[str, Any]]:
+    """Strict intermediate grammar; source provenance is checked separately."""
+    headers = {"ean": _HDR_EAN, "sku": _HDR_SCM, "title": _HDR_TITLE,
+               "quantity": _HDR_QTY, "price": _HDR_PRICE}
+    for field, key in (("ean", "EAN"), ("sku", "SCM"), ("title", "TITLE"),
+                       ("quantity", "QTY"), ("price", "UNIT_PRICE_EX")):
+        if mapping and mapping.get(key):
+            headers[field] = [mapping[key]]
+    return receiving_source.parse_csv(p.read_bytes() if content is None else content, headers=headers, normalize=_norm_hdr_name,
+        get_value=_get_val, delimiter=_detect_delimiter, decode=_decode_bytes_auto)
 
 
 def _product_code_prefix(supplier_code: str) -> str:
@@ -718,6 +680,13 @@ async def create_session(
 
     supplier = await _get_supplier(db, supplier_code)
 
+    try:
+        source = receiving_source.load_source(settings.INVENTORY_DATA_ROOT, supplier_code,
+            invoice_no, invoice_csv, _parse_invoice_csv)
+        await receiving_source.lock_supplier(db, supplier.id)
+    except receiving_source.ReceivingSourceError as error:
+        raise HTTPException(409, detail=error.detail) from None
+
     # Warehouse
     if request.warehouse_code:
         stmt = select(Warehouse).where(Warehouse.code == request.warehouse_code)
@@ -730,13 +699,20 @@ async def create_session(
 
     # Schema enforces ONE session per (supplier, invoice) via uq_receiving_invoice.
     # Active session -> resume it; completed session -> use the reopen endpoint.
-    stmt = select(ReceivingSession).where(
+    stmt = select(ReceivingSession).options(selectinload(ReceivingSession.lines)).where(
         ReceivingSession.supplier_id == supplier.id,
         ReceivingSession.invoice_number == invoice_no,
     )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing:
+        if existing.source_hash and existing.source_hash != source.source_hash:
+            raise HTTPException(409, detail={"code": "receiving_source_changed", "session_id": existing.id})
+        if receiving_source.rows_hash(source.rows) != receiving_source.rows_hash([
+                {"supplier_sku": row.supplier_sku, "ean": row.ean, "description": row.description,
+                 "ordered_qty": row.ordered_qty, "unit_price": row.unit_price}
+                for row in sorted(existing.lines, key=lambda row: row.line_number)]):
+            raise HTTPException(409, detail={"code": "receiving_source_changed", "session_id": existing.id})
         if existing.status in ACTIVE_STATUSES:
             raise HTTPException(
                 409,
@@ -748,9 +724,10 @@ async def create_session(
         )
 
     try:
-        rows = _parse_invoice_csv(invoice_csv)
-    except Exception as e:
-        raise HTTPException(400, detail=f"Failed to parse CSV: {e}")
+        await receiving_source.ensure_unique(db, supplier.id, source, settings.INVENTORY_DATA_ROOT)
+    except receiving_source.ReceivingSourceError as error:
+        raise HTTPException(409, detail=error.detail) from None
+    rows = source.rows
 
     session = ReceivingSession(
         supplier_id=supplier.id,
@@ -759,6 +736,9 @@ async def create_session(
         invoice_file_path=str(invoice_csv),
         total_lines=len(rows),
         status=ReceivingStatus.new,
+        invoice_currency="EUR", fx_rate_to_eur=Decimal("1"), vat_included=False,
+        source_hash=source.source_hash, import_source=source.adapter,
+        session_data={"receiving_source": source.snapshot()},
     )
     db.add(session)
     await db.flush()
@@ -1138,6 +1118,13 @@ async def finalize_session(
     products_created = 0
     resolved = []
     skipped = []
+
+    try:
+        await receiving_source.lock_supplier(db, supplier.id)
+        await receiving_source.validate_session(db, session, supplier_code,
+            settings.INVENTORY_DATA_ROOT, _parse_invoice_csv)
+    except receiving_source.ReceivingSourceError as error:
+        raise HTTPException(409, detail=error.detail) from None
 
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     for line in lines:
