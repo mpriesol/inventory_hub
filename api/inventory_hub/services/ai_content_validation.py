@@ -16,7 +16,7 @@ from inventory_hub.ai_content_types import Content
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.services.ai_content_rules import parameter_scope
-from inventory_hub.services.ai_parameter_mapping import parameter_mapping
+from inventory_hub.services.ai_parameter_mapping import is_neutral_title_variant, parameter_mapping
 
 ACTIVE_TAGS = {"script", "iframe", "frame", "frameset", "object", "embed", "applet",
                "svg", "math", "base", "meta", "link", "style"}
@@ -184,6 +184,11 @@ def validate_content(content: Content, context: dict, opened: list[str] | None =
         for product in context["facts"]:
             for attribute in product.get("variant_attributes", []):
                 definition = definitions.get(mapping.get(attribute["name"]))
+                # The adapter's exact title is a neutral selector, not a technical
+                # parameter. Preserve it through staging/export without requiring
+                # every category to register a fictitious technical "Variant".
+                if not definition and is_neutral_title_variant(product, context):
+                    continue
                 if not definition or definition["scope"] != "variant":
                     errors.append("ai_unregistered_variant_axis:" + attribute["name"])
                 values = parameters.get((mapping.get(attribute["name"]), product["id"]))

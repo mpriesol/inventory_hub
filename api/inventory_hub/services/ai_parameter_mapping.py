@@ -12,6 +12,19 @@ def matching_definition(name, definitions):
     return matches[0] if len(matches) == 1 else None
 
 
+def is_neutral_title_variant(product, context):
+    """Recognise Bike Brothers' exact, non-technical choice-label contract.
+
+    Older frozen jobs do not carry adapter warnings. Their supplier, family name
+    and single unchanged title-valued axis still identify this fallback. Do not
+    infer a size, colour or capacity from the title, or accept other axes here.
+    """
+    return (context.get('supplier') == 'bike-brothers'
+            and bool(product.get('group_name')) and bool(product.get('name'))
+            and product.get('variant_attributes') == [
+                {'name': 'Variant', 'value': product['name']}])
+
+
 def parameter_mapping(content, context):
     """Return a one-to-one source-axis → registry mapping and blocking diagnostics.
 
@@ -22,6 +35,7 @@ def parameter_mapping(content, context):
     definitions = [p for p in (context['resolved'].get('category') or {}).get('parameters', [])
                    if p.get('approved', True)]
     sources = {a['name'] for p in context['facts'] for a in p.get('variant_attributes', [])}
+    neutral_title = any(is_neutral_title_variant(p, context) for p in context['facts'])
     mapping, errors = {}, []
     for source in sources:
         definition = matching_definition(source, definitions)
@@ -32,7 +46,9 @@ def parameter_mapping(content, context):
             continue
         source = value.source_name
         definition = matching_definition(value.name, definitions)
-        if source not in sources or not definition or (source in mapping and mapping[source] != definition['name']):
+        if (source not in sources or not definition
+                or (neutral_title and source == 'Variant' and name_key(definition['name']) != 'variant')
+                or (source in mapping and mapping[source] != definition['name'])):
             errors.append('ai_parameter_mapping_conflict:' + value.name)
         else:
             mapping[source] = definition['name']
