@@ -70,6 +70,23 @@ class ImportIdentityUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item['values'], before)
         self.assertIn('existing_card_link_only', item['warnings'])
 
+    async def test_explicit_link_only_on_automatic_match_uses_reviewed_evidence(self):
+        from inventory_hub.services import supplier_card_links
+        item = row()
+        item['identity_decision'] = {'action': 'link', 'product_id': 91, 'link_hash': 'reviewed-hash'}
+        staged = document([item])
+        reviewed = {'rows': [{'row_id': item['id'], 'status': 'linked', 'matched_product_id': 91,
+            'decision': {'action': 'link', 'product_id': 91}, 'source': {},
+            'candidates': [{'product_id': 91, 'can_link': True}]}]}
+        with patch.object(identity, 'build', AsyncMock(return_value=(reviewed, {}))), \
+             patch.object(identity, '_inspect_choice', AsyncMock()) as inspect, \
+             patch.object(supplier_card_links, 'apply_link', AsyncMock()) as apply:
+            linked = await identity.guard_and_link(None, SimpleNamespace(), staged)
+        inspect.assert_not_awaited()
+        apply.assert_awaited_once_with(None, 91, item['id'], expected_hash='reviewed-hash')
+        self.assertEqual(linked, {item['id']: 91})
+        self.assertTrue(item['identity_link_only'])
+
 
 @unittest.skipUnless(fixture.catalog_db.TEST_URL, 'Dedicated localhost *_catalog_test database required')
 class ImportIdentityDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -151,6 +168,57 @@ class ImportIdentityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(saved['rows'][0]['hub_product_id'], original)
         async with self.sessions() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 2)
+
+    async def automatic_existing(self):
+        self.write_feed(fixture.xml_item(ean='5901234123457'))
+        await self.refresh()
+        pid, source = await self.existing()
+        async with self.sessions() as db:
+            db.add(ProductIdentifier(product_id=pid, identifier_type=IdentifierType.ean, value=source.eans[0]))
+            await db.commit()
+        return pid
+
+    async def test_automatic_match_can_explicitly_choose_link_only_and_preserves_standalone_card(self):
+        pid = await self.automatic_existing()
+        draft = await self.create()
+        reviewed = await self.review(draft)
+        self.assertEqual(reviewed['rows'][0]['status'], 'linked')
+        before = await self.business()
+        chosen = await self.choose(draft, [{'row_id': self.ids[0], 'action': 'link', 'product_id': pid}])
+        self.assertEqual(await self.business(), before)
+        self.assertEqual((await self.review(chosen))['rows'][0]['decision'], {'action': 'link', 'product_id': pid})
+        # Explicit link-only excludes the standalone card from canonical
+        # grouping, including when a supplier puts it in a variant family.
+        with patch.object(imports.catalog_import, 'canonical_products', wraps=imports.catalog_import.canonical_products) as canonical:
+            saved = await self.mutate(chosen, imports.save)
+        canonical.assert_awaited_once()
+        self.assertEqual(canonical.call_args.args[1], [])
+        self.assertEqual(saved['rows'][0]['hub_product_id'], pid)
+        self.assertEqual(saved['rows'][0]['values']['target_shops'], [])
+        after = await self.business()
+        for table in ('products', 'stock_balances', 'stock_movements', 'shop_products'):
+            self.assertEqual(after[table], before[table])
+        async with self.sessions() as db:
+            override = await db.get(ProductEditorOverride, pid)
+            self.assertEqual((override.revision, override.data['variant']['sale_price_gross']), (3, '88.00'))
+        self.assertEqual(self.client.sent, [])
+
+    async def test_automatic_match_cannot_be_created_or_redirected_and_explicit_choice_stays_fresh(self):
+        pid = await self.automatic_existing()
+        draft = await self.create()
+        for choice in ({'action': 'create'}, {'action': 'link', 'product_id': pid + 1}):
+            with self.subTest(choice=choice), self.assertRaises(CatalogError) as blocked:
+                await self.choose(draft, [{'row_id': self.ids[0], **choice}])
+            self.assertEqual(blocked.exception.code, 'import_identity_decision_invalid')
+        chosen = await self.choose(draft, [{'row_id': self.ids[0], 'action': 'link', 'product_id': pid}])
+        async with self.sessions() as db:
+            source = await db.get(SupplierProduct, self.ids[0])
+            source.is_active = False
+            await db.commit()
+        before = await self.business()
+        with self.assertRaises(CatalogError):
+            await self.mutate(chosen, imports.save)
+        self.assertEqual(await self.business(), before, 'Explicit link cannot refresh its own evidence through automatic matching')
 
     async def test_candidate_change_after_choice_requires_new_review(self):
         pid, _ = await self.existing()

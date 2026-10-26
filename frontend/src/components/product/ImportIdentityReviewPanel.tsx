@@ -35,7 +35,7 @@ export function ImportIdentityReviewPanel({ draft, onChanged, onClose }: {
       if (!mounted.current || credential !== accessRevision()) return;
       currentDraft.current = value; if (recover) changedRef.current(value);
       setReview(result); setPage(1); setUncertain(false);
-      setChoices(Object.fromEntries(result.rows.filter(row => row.decision && row.status !== 'saved' && row.status !== 'linked' && row.status !== 'conflict')
+      setChoices(Object.fromEntries(result.rows.filter(row => row.decision && row.status !== 'saved' && row.status !== 'conflict')
         .map(row => [row.row_id, { row_id: row.row_id, ...row.decision! }])));
     } catch (failure: any) { if (mounted.current && credential === accessRevision()) setError(failure.code || 'request_failed'); }
     finally { if (mounted.current && credential === accessRevision()) { busyRef.current = false; setBusy(''); } }
@@ -45,7 +45,9 @@ export function ImportIdentityReviewPanel({ draft, onChanged, onClose }: {
     const decisions = Object.values(choices).sort((a, b) => a.row_id - b.row_id);
     if (decisions.some(item => {
       const row = review.rows.find(row => row.row_id === item.row_id);
-      return !row || row.status === 'conflict' || (item.action === 'create' ? !row.can_create : !row.candidates.some(candidate => candidate.product_id === item.product_id && candidate.can_link));
+      return !row || row.status === 'saved' || row.status === 'conflict'
+        || (row.status === 'linked' && (item.action !== 'link' || item.product_id !== row.matched_product_id))
+        || (item.action === 'create' ? !row.can_create : !row.candidates.some(candidate => candidate.product_id === item.product_id && candidate.can_link));
     })) return;
     const credential = accessRevision(); busyRef.current = true; setBusy('save'); setError('');
     try {
@@ -96,6 +98,12 @@ export function ImportIdentityReviewPanel({ draft, onChanged, onClose }: {
               {candidate.errors.map(code => <p className="import-error" key={code}>{reason(code)}</p>)}
               {candidate.warnings.map(code => <p className="import-muted" key={code}>{reason(code)}</p>)}
             </div></label>)}
+          {row.status === 'linked' && row.matched_product_id != null && row.candidates.some(candidate => candidate.product_id === row.matched_product_id && candidate.can_link) &&
+            <Button data-testid={`identity-review-link-only-${row.row_id}`} variant="secondary" size="sm"
+              disabled={!!busy || uncertain || choices[row.row_id]?.action === 'link'}
+              onClick={() => choose({ row_id: row.row_id, action: 'link', product_id: row.matched_product_id! })}>
+              {c(choices[row.row_id]?.action === 'link' ? 'linkOnlySelected' : 'chooseLinkOnly')}
+            </Button>}
           {row.can_create && row.status !== 'saved' && row.status !== 'linked' && row.status !== 'conflict' && <label className="identity-review-choice"><input data-testid={`identity-review-create-${row.row_id}`} type="radio" name={`identity-row-${row.row_id}`}
             disabled={!!busy || uncertain} checked={choices[row.row_id]?.action === 'create'} onChange={() => choose({ row_id: row.row_id, action: 'create' })} />
             <span><strong>{c('createNew')}</strong><p>{c('createHelp')}</p></span></label>}

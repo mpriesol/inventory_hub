@@ -4151,6 +4151,8 @@
     "saveDraftFirst": "Save your edited draft cells first.",
     "linkOnly": "Choosing an existing card adds only its supplier link when you later save to Hub. Its SKU, name, group, prices and stock are preserved, and no shop listing is created.",
     "linkOnlyShort": "Supplier link only",
+    "chooseLinkOnly": "Use supplier link only",
+    "linkOnlySelected": "Selected: supplier link only",
     "incoming": "Incoming supplier item",
     "existing": "Existing Hub cards",
     "showAll": "Also show new and already linked items",

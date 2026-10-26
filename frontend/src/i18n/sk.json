@@ -4152,6 +4152,8 @@
     "saveDraftFirst": "Najprv uložte rozpracované bunky do prípravy.",
     "linkOnly": "Voľba existujúcej karty uloží iba dodávateľskú väzbu pri následnom uložení do Hubu. Zachová jej SKU, názov, skupinu, ceny aj sklad a nezalistuje ju v e-shopoch.",
     "linkOnlyShort": "Iba dodávateľská väzba",
+    "chooseLinkOnly": "Použiť iba dodávateľskú väzbu",
+    "linkOnlySelected": "Vybraté: iba dodávateľská väzba",
     "incoming": "Pripravovaná položka dodávateľa",
     "existing": "Existujúce karty Hubu",
     "showAll": "Zobraziť aj nové a už prepojené položky",
