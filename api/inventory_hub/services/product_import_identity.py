@@ -182,8 +182,10 @@ async def decisions(db, draft, request):
     raw_rows = {row['id']: row for row in document['rows']}
     for choice in request.decisions:
         row = by_id.get(choice.row_id)
-        if row is None or row['status'] in ('saved', 'linked', 'conflict'):
+        if row is None or row['status'] in ('saved', 'conflict'):
             raise CatalogError('import_identity_decision_invalid', 'Choose an eligible unsaved product', 422)
+        if row['status'] == 'linked' and (choice.action != 'link' or choice.product_id != row['matched_product_id']):
+            raise CatalogError('import_identity_decision_invalid', 'An identified product can only keep its verified match', 422)
         if choice.action == 'create':
             if not row['can_create']:
                 raise CatalogError('import_identity_decision_invalid', 'An identified product cannot be duplicated', 422)
@@ -246,7 +248,7 @@ async def guard_and_link(db, draft, document):
             linked[raw['id']] = raw['hub_product_id']
             continue
         automatic = row['status'] == 'linked' and row['matched_product_id'] and not raw.get('hub_product_id') \
-            and not raw.get('expected_hub_product_id')
+            and not raw.get('expected_hub_product_id') and not (choice and choice['action'] == 'link')
         if not automatic and (not choice or choice['action'] != 'link'):
             continue
         pid = row['matched_product_id'] if automatic else choice['product_id']

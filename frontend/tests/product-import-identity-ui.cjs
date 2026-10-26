@@ -52,6 +52,10 @@ function review() {
   // is contradictory; the row-level conflict must remain authoritative.
   if (reviewMode === 'conflict') { rows[0].status = 'conflict'; rows[0].can_create = false; rows[0].candidates[0].can_link = true;
     rows[0].candidates[0].errors = ['identifier_conflict']; rows[0].errors = ['identifier_conflict']; }
+  if (reviewMode === 'linked' || reviewMode === 'saved') {
+    rows[0].status = reviewMode;
+    rows[0].decision = server.rows[0].identity_decision || null;
+  }
   return { draft_id: server.id, revision: server.revision, review_hash: 'b'.repeat(64), rows };
 }
 global.fetch = async (path, init) => {
@@ -67,6 +71,7 @@ global.fetch = async (path, init) => {
   assert.equal(body.expected_revision, server.revision); assert.equal(body.review_hash, 'b'.repeat(64));
   if (decisionMode === 'conflict') return fail('import_draft_changed', 409);
   server.revision++; server.identity_review_required = false; server.identity_review_count = 0;
+  for (const decision of body.decisions) server.rows.find(row => row.id === decision.row_id).identity_decision = decision;
   if (decisionMode === 'lost') throw new TypeError('Committed draft decision response lost');
   return response(server);
 };
@@ -108,6 +113,23 @@ async function chooseAll() {
 
   server = initialDraft(); reviewMode = 'conflict'; await mount();
   assert(disabled('identity-review-link-1-501') && disabled('identity-review-create-1'), 'Conflicting identity has no apply or duplicate escape');
+  await unmount(); reviewMode = 'normal';
+
+  server = initialDraft(); reviewMode = 'linked'; const beforeLinked = decisions().length;
+  await mount();
+  await act(async () => { document.querySelector('.identity-review-toolbar input[type="checkbox"]').click(); await tick(); });
+  assert(required('identity-review-link-1-501').checked && disabled('identity-review-link-1-501'), 'Automatic match stays fixed');
+  assert(!element('identity-review-create-1'), 'Automatic match cannot create another card');
+  await click('identity-review-link-only-1');
+  assert.equal(decisions().length, beforeLinked, 'Choosing link-only has no side effect until save');
+  await click('identity-review-save');
+  assert.deepEqual(decisions().at(-1).body.decisions, [{ row_id: 1, action: 'link', product_id: 501 }]);
+  await unmount(); await mount();
+  assert(required('identity-review-link-only-1').disabled, 'Reopening retains the explicit link-only choice');
+  assert(!disabled('identity-review-save'), 'Persisted linked-row choices survive a fresh review');
+  await unmount(); reviewMode = 'saved'; await mount();
+  await act(async () => { document.querySelector('.identity-review-toolbar input[type="checkbox"]').click(); await tick(); });
+  assert(!element('identity-review-link-only-1'), 'Saved products cannot be reclassified');
   await unmount(); reviewMode = 'normal';
 
   server = initialDraft(); decisionMode = 'conflict'; const changedBefore = changed.length;
