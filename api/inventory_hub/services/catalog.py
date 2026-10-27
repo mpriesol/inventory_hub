@@ -81,8 +81,8 @@ def _source_configured(source: dict) -> bool:
 
 
 def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds: float | None = None,
-              max_size_bytes: int = 100 * 1024 * 1024) -> Path:
-    directory = config_io.supplier_path(supplier).parent / "feeds" / "xml"
+              max_size_bytes: int = 100 * 1024 * 1024, directory: Path | None = None) -> Path:
+    directory = directory if directory is not None else config_io.supplier_path(supplier).parent / "feeds" / "xml"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"catalog_{feed_key}_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{uuid4().hex[:8]}.xml"
     temporary = destination.with_suffix(".part")
@@ -99,7 +99,7 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
                     source, destination,
                     lambda child, index, size_budget, time_budget: _download(
                         supplier, child, f"{feed_key}_source_{index:02d}",
-                        max_elapsed_seconds=time_budget, max_size_bytes=size_budget),
+                        max_elapsed_seconds=time_budget, max_size_bytes=size_budget, directory=directory),
                     max_elapsed_seconds=max_elapsed_seconds, max_size_bytes=limit,
                 )
             except SlogerFeedError as error:

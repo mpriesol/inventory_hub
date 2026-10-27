@@ -91,6 +91,11 @@ Príprava produktov (15. 10. 2026) umožňuje vybrať aj neaktívne a nadradené
 
 ## Prevádzkový kontext
 
+Načítanie dodávateľských dostupností po spracovaní odstraňuje vlastnú dočasnú XML
+kópiu; importné katalógy a databázová história zostávajú uložené. Samostatný hostiteľský
+skript ponúka náhľad a explicitné čistenie starých skladových XML. Postup a hranice
+sú v [dodávateľských dostupnostiach](docs/supplier-availability.md#súbory-načítania-a-miesto-na-disku).
+
 - Repozitár: [mpriesol/inventory_hub](https://github.com/mpriesol/inventory_hub). Starý `OLD_inventory_hub` sa pri bežnej práci nepoužíva.
 - Hub: [hub.biketrek.sk](https://hub.biketrek.sk).
 - Podľa posledného zadania vlastníka je BIKETREK produkčný Upgates e-shop na [biketrek.sk](https://www.biketrek.sk); xTrek má testovaciu prevádzku na Upgates. Doména [xtrek.site](https://xtrek.site) podľa tohto zadania zatiaľ nefunguje, čo samo osebe neznamená nefunkčné API.
