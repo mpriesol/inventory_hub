@@ -91,6 +91,10 @@ Príprava produktov (15. 10. 2026) umožňuje vybrať aj neaktívne a nadradené
 
 ## Prevádzkový kontext
 
+Prehľad **Obchody** sprístupňuje existujúci náhľad a výberový import produktov
+z Upgates do Hubu. Import zachováva SKU, oddeľuje konflikty a nemení fyzické
+zásoby. ZIP export zostáva samostatným čítaním; [postup migrácie](docs/migration-export.md).
+
 Načítanie dodávateľských dostupností po spracovaní odstraňuje vlastnú dočasnú XML
 kópiu; importné katalógy a databázová história zostávajú uložené. Samostatný hostiteľský
 skript ponúka náhľad a explicitné čistenie starých skladových XML. Postup a hranice

@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Construction } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
+import { UpgatesImportModal } from '../components/UpgatesImportModal';
 
 interface PlaceholderPageProps {
   title: string;
@@ -88,6 +89,7 @@ export function SuppliersPage() {
 
 export function ShopsPage() {
   const { t } = useTranslation();
+  const [pullShop, setPullShop] = useState<string | null>(null);
   return <div className="space-y-6"><h1 className="text-2xl font-semibold">{t('shopsOverview.title')}</h1><p>{t('shopsOverview.help')}</p>
     <div className="grid md:grid-cols-2 gap-6">{['biketrek', 'xtrek'].map(shop => <section key={shop} className="rounded-xl border p-6 space-y-4" style={{ borderColor: 'var(--color-border-subtle)' }}>
       <h2 className="text-xl font-semibold">{shop === 'biketrek' ? 'BIKETREK' : 'xTrek'}</h2>
@@ -97,8 +99,10 @@ export function ShopsPage() {
       <Link className="block" to={`/stock/publication?shop=${shop}`}>{t('shopsOverview.stock')}</Link>
       <Link className="block" to="/product-import">{t('nav.productImport')}</Link>
       <a className="block" href={`/api/migration/catalog-export?shop_code=${shop}&refresh=true`}>{t('shopsOverview.catalogExport')}</a>
+      <Button variant="secondary" onClick={() => setPullShop(shop)}>{t('upgatesImport.title', { shop: shop === 'biketrek' ? 'BIKETREK' : 'xTrek' })}</Button>
     </section>)}</div>
     <Link to="/settings/stock">{t('stockSettings.title')}</Link>
+    {pullShop && <UpgatesImportModal shop={pullShop} onClose={() => setPullShop(null)} onImported={() => {}} />}
   </div>;
 }
 
