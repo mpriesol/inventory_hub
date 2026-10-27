@@ -29,3 +29,10 @@ samostatné pozorovania. Existujúce operátorské opravy sú v osobitnej tabuľ
 Samotné stiahnutie nezakladá karty, neprepája produkty, nemení zásoby,
 neaktivuje synchronizáciu ani autoritu skladu. Atomer prevzatie, párovanie,
 riešenie konfliktov a následné zápisy sú samostatné kroky migračnej analýzy.
+
+V rovnakom prehľade **Obchody** je aj tlačidlo **Stiahnuť z Upgates**. Otvára
+existujúci produktový importer: najprv načíta náhľad, oddelí konflikty identity
+a umožní vybrať skupiny na import do Hubu. Až potvrdenie importu vytvorí karty
+alebo doplní overené väzby. Zachová existujúce kódy e-shopu a nemení fyzický sklad.
+Voľba obnovy existujúcich údajov je predvolene vypnutá. Tento importer nespracúva
+Atomer XML a nepovažuje pokladničné varianty za samostatne potvrdené zásoby.
