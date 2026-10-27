@@ -50,6 +50,40 @@ Rovnaká služba uloží dodávateľské pozorovania aj pri príprave importu, a
 
 ## Pre vývojárov
 
+### Súbory načítania a miesto na disku
+
+Načítanie dostupnosti používa samostatný dočasný adresár `feeds/xml/availability-*`.
+Po úplnom spracovaní, chybe sťahovania alebo chybe parsera sa jeho súbory odstránia.
+Lokálny zdroj sa iba kopíruje; pôvodný súbor sa nemení. Bežné katalógové importy
+naďalej ukladajú trvalé snapshoty. Dostupnosti odovzdávajú workeru spracované fakty
+a veľkosť zdroja, nie cestu na súbor. Prijaté pozorovania, pôvodné skladové hodnoty
+a diagnostika riadkov sa naďalej uchovávajú v PostgreSQL. Úplné XML dostupnosti sa
+po novom nearchivuje. Násilné ukončenie procesu môže ponechať dočasný adresár;
+táto oprava spätne nemaže existujúce súbory ani databázovú históriu.
+
+Staršie verzie ponechávali pri každom načítaní nové `catalog_stock_*.xml`. Hostiteľský
+skript `scripts/prune_availability_xml.py` najprv iba vypíše presne vybrané súbory
+a ich celkovú veľkosť. Vyžaduje čitateľné konfigurácie dodávateľov; chybné konfigurácie
+čistenie zastavia. Zachová posledných aspoň 72 hodín, dve najnovšie kópie bez ohľadu
+na vek a súbory označené ako lokálne zdroje v konfiguráciách všetkých dodávateľov.
+Rozpozná aj kontajnerové cesty s rovnakou časťou `suppliers/...`. Nenasleduje symbolické
+odkazy na súbory a odmietne symbolicky presmerovaný cieľový adresár.
+
+```bash
+python3 scripts/prune_availability_xml.py --supplier schindler
+python3 scripts/prune_availability_xml.py --supplier schindler --apply
+df -h /
+```
+
+`--apply` nezvratne odstráni iba vypísané staré XML kópie v priamom adresári daného
+dodávateľa. Zanikne možnosť stiahnuť tieto úplné historické XML; prijaté databázové
+fakty, faktúry, mapovania, katalógové snapshoty a skladové pohyby zostanú. Ak treba
+uchovať úplné historické XML, pred čistením ich zálohujte mimo zaplneného disku.
+Skript vyžaduje konkrétneho dodávateľa a rozpozná iba presný názov
+`catalog_stock_YYYYMMDDTHHMMSS_<8 hex>.xml`; nerieši ostatné feedy ani núdzové
+zvyšovanie veľkosti disku. Po čiastočnej chybe vypíše Python chybu a treba znovu
+spustiť náhľad. Samotné nasadenie skript nespúšťa.
+
 Implementované v kóde: migrácia `014_supplier_availability.sql`, ORM `supplier_availability_models.py`, služby `supplier_availability.py`, `supplier_availability_source.py`, `supplier_availability_worker.py` a chránený router. Stav nasadenia je vedený v `mvp-progress.md`; samotná prítomnosť tejto dokumentácie nedokazuje zapnutie automatizácie na produkcii.
 
 API používa existujúci operator token a `Cache-Control: no-store`:

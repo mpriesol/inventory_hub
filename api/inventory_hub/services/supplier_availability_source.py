@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from lxml import etree
 
@@ -202,8 +204,14 @@ def parse(path, supplier, cfg, feed_key, parser):
 
 def fetch(plan):
     try:
-        path = catalog._download(plan["supplier"], plan["source"], plan["feed_key"], max_elapsed_seconds=180)
-        return parse(path, plan["supplier"], plan["config"], plan["feed_key"], plan["parser"]), path.stat().st_size
+        # Availability keeps its accepted stock facts and diagnostics in the DB;
+        # unlike listing imports, no later step references the downloaded path.
+        directory = catalog.config_io.supplier_path(plan["supplier"]).parent / "feeds" / "xml"
+        directory.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix="availability-", dir=directory) as temporary:
+            path = catalog._download(plan["supplier"], plan["source"], plan["feed_key"],
+                                     max_elapsed_seconds=180, directory=Path(temporary))
+            return parse(path, plan["supplier"], plan["config"], plan["feed_key"], plan["parser"]), path.stat().st_size
     except AvailabilityError:
         raise
     except catalog.CatalogError as error:
