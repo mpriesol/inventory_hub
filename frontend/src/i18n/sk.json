@@ -4201,6 +4201,7 @@
     "stock": "Rezervácie a výdaj"
   },
   "shopsOverview": {
+    "catalogExport": "Stiahnuť migračný export katalógu a väzieb (ZIP)",
     "title": "E-shopy a prenosy údajov",
     "help": "Každý prenos má vlastný smer, rozsah a pravidlá. Zvoľte e-shop a operáciu.",
     "statusHelp": "Aktuálny stav, posledný výsledok a automatiku nájdete v detaile príslušného prenosu.",
