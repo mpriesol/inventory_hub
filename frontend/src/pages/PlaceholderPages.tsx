@@ -96,6 +96,7 @@ export function ShopsPage() {
       <Link className="block" to={`/settings/availability?shop=${shop}`}>{t('shopsOverview.availability')}</Link>
       <Link className="block" to={`/stock/publication?shop=${shop}`}>{t('shopsOverview.stock')}</Link>
       <Link className="block" to="/product-import">{t('nav.productImport')}</Link>
+      <a className="block" href={`/api/migration/catalog-export?shop_code=${shop}&refresh=true`}>{t('shopsOverview.catalogExport')}</a>
     </section>)}</div>
     <Link to="/settings/stock">{t('stockSettings.title')}</Link>
   </div>;

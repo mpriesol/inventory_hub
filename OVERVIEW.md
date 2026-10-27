@@ -1,5 +1,10 @@
 # Inventory Hub — prehľad projektu
 
+Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
+ZIP spája čerstvý katalóg vybraného Upgates pripojenia s konzistentným lokálnym
+snímkom kariet, identít, väzieb a skladových podkladov. Nevykonáva import ani
+prevzatie autority; xTrek Upgates sa výslovne odlišuje od Atomeru.
+
 [Zjednodušený dátový model](docs/warehouse-model.md) používa interné `products.id` a výslovné databázové väzby. Podľa zadania vlastníka z 23. 10. nové fyzické produkty dostávajú SKU `<dvojpísmenová predpona výrobcu>-<kód výrobku u výrobcu>`. Kód dodávateľa je samostatný údaj a nesmie ho nahradiť. Potvrdené mapovanie výrobného kódu vo feede umožní automatické prideľovanie; bez takého podkladu treba overiť výrobcu a konkrétny kód pri príprave novej karty. Existujúce Hub aj e-shopové SKU zostávajú, vrátane kariet prevzatých existujúcim Upgates importom. Jedinečnosť prefixov a cieľové kolízie kontroluje systém. Základná karta môže predchádzať e-shopovému obsahu, cenám aj fyzickému príjmu; služby majú výslovný neskladový typ a vlastné servisné kódy. Podrobnosti sú v [politike SKU](docs/sku-policy.md).
 
 Migrácie **030–032** dopĺňajú jednoznačné natívne ID produktov/variantov e-shopov, typ karty a skladovú jednotku, výslovný prepočet nákupného balenia pri príjme a jednotné dodávateľské väzby. Jedna Hub karta má najviac jednu reprezentáciu v jednom e-shope. Servisná karta nevytvára fyzickú zásobu ani FIFO. Nasadenie neaktivuje skladovú autoritu a samo neodstraňuje živé pokladňové varianty.

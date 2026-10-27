@@ -209,6 +209,8 @@ if settings.USE_POSTGRES:
     app.include_router(opening_stock_router)
     from inventory_hub.routers.upgates_sync import router as upgates_sync_router
     app.include_router(upgates_sync_router)
+    from inventory_hub.routers.migration_export import router as migration_export_router
+    app.include_router(migration_export_router)
     from inventory_hub.routers.order_audit import router as order_audit_router
     app.include_router(order_audit_router)
     from inventory_hub.routers.order_stock import router as order_stock_router

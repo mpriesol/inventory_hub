@@ -4200,6 +4200,7 @@
     "stock": "Reservations and issue"
   },
   "shopsOverview": {
+    "catalogExport": "Download catalog and links for migration (ZIP)",
     "title": "Shops and data transfers",
     "help": "Each transfer has its own direction, scope and rules. Choose a shop and operation.",
     "statusHelp": "Current status, last result and automation settings are shown in each transfer detail.",
