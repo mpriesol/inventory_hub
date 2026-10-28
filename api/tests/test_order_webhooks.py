@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
-from inventory_hub.order_webhook_types import WebhookConfigure
+from inventory_hub.order_webhook_types import WebhookConfigure, WebhookResolveRegistration
 from inventory_hub.routers import order_webhooks as routes
 from inventory_hub.routers.auth import install
 from inventory_hub.services import order_webhooks as service, order_webhook_credentials as credentials
@@ -228,6 +228,50 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(order, ['GET', 'persist-create', 'POST', 'persist-update', 'POST', 'persist-delete', 'POST'])
 
 
+    def test_uncertain_put_cannot_be_certified_or_replaced_after_configuration_change(self):
+        plan = {**self.plan(), 'public_base_url': 'https://new-hub.example.test/api',
+                'registration_intents': {'update': {'method': 'PUT', 'intent_id': 'old', 'payload_hash': 'a' * 64}}}
+        with patch.object(service, '_request') as request, patch.object(service, '_client') as client:
+            with self.assertRaises(service.WebhookError) as raised:
+                service.reconcile_registration(plan, Mock(), Mock(), Mock())
+        self.assertEqual(raised.exception.code, 'order_webhook_registration_uncertain')
+        client.assert_not_called()
+        request.assert_not_called()
+
+    def test_put_has_intent_before_wire_and_exact_ack_after_validated_response(self):
+        import hashlib
+        plan = self.plan()
+        name = 'inventory-hub-' + hashlib.sha256(('a' * 64).encode()).hexdigest()[:12] + '-biketrek-update'
+        old = {'id': 12, 'name': name, 'url': 'https://old.example.test/api', 'event': 'Orders.update', 'active_yn': True}
+        sequence = []
+        def request(client, method, body=None):
+            sequence.append(method)
+            return {'webhooks': [old]} if method == 'GET' else {'webhook': dict(body)}
+        def before(event, digest):
+            sequence.append('intent')
+            self.assertEqual(event, 'update')
+            self.assertEqual(len(digest), 64)
+            return 'exact-intent'
+        def after(event, intent, digest):
+            sequence.append('ack')
+            self.assertEqual(intent, 'exact-intent')
+        with patch.object(service, 'EVENTS', ('update',)), patch.object(credentials, 'load', return_value=TOKEN), \
+             patch.object(service, '_client', return_value=Mock()), patch.object(service, '_request', side_effect=request):
+            self.assertEqual(service.reconcile_registration(plan, Mock(), before, after), {'update': 12})
+        self.assertEqual(sequence, ['GET', 'intent', 'PUT', 'ack'])
+
+    def test_settlement_requires_literal_confirmation_and_specific_evidence(self):
+        body = {'shop_code': 'biketrek', 'expected_revision': 1, 'confirmed': True, 'event': 'update',
+                'intent_id': '12345678-1234-1234-1234-123456789abc', 'remote_request_finished_confirmed': True,
+                'note': 'Upgates confirmed request completion.'}
+        WebhookResolveRegistration(**body)
+        for value in (False, 1, 'true', None):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                WebhookResolveRegistration(**{**body, 'remote_request_finished_confirmed': value})
+        with self.assertRaises(ValidationError):
+            WebhookResolveRegistration(**{**body, 'note': '  short  '})
+
+
 class TargetedReadTests(unittest.TestCase):
     def test_only_notified_numbers_are_read_and_missing_membership_uses_deleted_query(self):
         from uuid import uuid4
@@ -266,7 +310,7 @@ class RegistrationCancellationTests(unittest.IsolatedAsyncioTestCase):
         import threading
         from inventory_hub.services import order_webhook_worker as worker
         started, release = threading.Event(), threading.Event()
-        def write(plan, before_create):
+        def write(plan, before_create, before_update, after_update):
             started.set()
             release.wait(timeout=2)
             return {'create': 1, 'update': 2, 'delete': 3}

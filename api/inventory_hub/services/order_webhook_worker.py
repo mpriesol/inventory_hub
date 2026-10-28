@@ -36,10 +36,22 @@ async def register(plan):
                 await service.record_create_intent(db, plan, event)
     def before_create(event):
         asyncio.run_coroutine_threadsafe(persist_intent(event), loop).result(timeout=10)
+    async def update_intent(event, payload_hash):
+        async with asyncio.timeout(5):
+            async with get_session_context() as db:
+                return await service.record_update_intent(db, plan, event, payload_hash)
+    async def confirm_intent(event, intent_id, payload_hash):
+        async with asyncio.timeout(5):
+            async with get_session_context() as db:
+                await service.confirm_update_intent(db, plan, event, intent_id, payload_hash)
+    def before_update(event, payload_hash):
+        return asyncio.run_coroutine_threadsafe(update_intent(event, payload_hash), loop).result(timeout=10)
+    def after_update(event, intent_id, payload_hash):
+        asyncio.run_coroutine_threadsafe(confirm_intent(event, intent_id, payload_hash), loop).result(timeout=10)
     # Cancellation must not release the cross-process lock while a synchronous
     # network write keeps running in its thread. Each transport call is bounded;
     # preserve the durable create intent if the process is forcibly terminated.
-    task = asyncio.create_task(asyncio.to_thread(service.reconcile_registration, plan, before_create))
+    task = asyncio.create_task(asyncio.to_thread(service.reconcile_registration, plan, before_create, before_update, after_update))
     try:
         try:
             events = await asyncio.shield(task)

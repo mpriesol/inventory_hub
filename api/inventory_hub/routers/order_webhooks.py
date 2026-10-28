@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import admin_access
 from inventory_hub.database import get_session, get_session_context
 from inventory_hub.order_collection_types import CollectionConfirmation
-from inventory_hub.order_webhook_types import WebhookConfigure
+from inventory_hub.order_webhook_types import WebhookConfigure, WebhookResolveRegistration
 from inventory_hub.routers.order_collection import NoStoreRoute
 from inventory_hub.services import order_collection, order_webhooks as service
 
@@ -43,6 +43,14 @@ async def register(payload: CollectionConfirmation, db: AsyncSession = Depends(g
 @router.post('/retry', status_code=202)
 async def retry(payload: CollectionConfirmation, db: AsyncSession = Depends(get_session)):
     return await _call(service.retry_notifications(db, payload))
+
+
+@router.post('/resolve-registration', status_code=202)
+async def resolve_registration(payload: WebhookResolveRegistration, request: Request,
+                               db: AsyncSession = Depends(get_session)):
+    principal = getattr(request.state, 'hub_user', None) or {}
+    actor = f"user:{principal['id']}" if principal.get('id') is not None else 'operator-token'
+    return await _call(service.resolve_registration(db, payload, actor))
 
 
 async def receive(request, event):

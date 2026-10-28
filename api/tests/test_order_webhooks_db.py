@@ -23,8 +23,8 @@ from inventory_hub.db_models_ext import StockMovement, Reservation
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderInboxEntry
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.order_processing_models import OrderProcessingJob
-from inventory_hub.order_webhook_models import OrderWebhookSettings, OrderWebhookEvent
-from inventory_hub.order_webhook_types import WebhookConfigure
+from inventory_hub.order_webhook_models import OrderWebhookSettings, OrderWebhookEvent, OrderWebhookResolution
+from inventory_hub.order_webhook_types import WebhookConfigure, WebhookResolveRegistration
 from inventory_hub.services import order_webhooks as service, order_collection as collection
 from inventory_hub.settings import settings
 
@@ -341,3 +341,85 @@ class OrderWebhookDatabaseTests(unittest.IsolatedAsyncioTestCase):
             row = await db.get(OrderWebhookSettings, self.shop_id)
             self.assertEqual(row.registration_intents, {})
             self.assertEqual(row.registration_status, 'registered')
+
+    async def pending_put(self):
+        async with self.transaction() as db:
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            row.registration_status, row.next_registration_at = 'pending', NOW
+            await db.flush()
+            plan = await service.start_registration(db)
+        async with self.transaction() as db:
+            intent_id = await service.record_update_intent(db, plan, 'update', 'd' * 64)
+        return plan, intent_id
+
+    async def test_put_fence_survives_config_change_and_success_cannot_hide_it(self):
+        plan, intent_id = await self.pending_put()
+        async with self.transaction() as db:
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            row.public_base_url, row.revision, row.registration_status = 'https://new-hub.example.test/api', 2, 'pending'
+            row.next_registration_at = NOW
+            await db.flush()
+            replacement = await service.start_registration(db)
+            self.assertEqual(replacement['registration_intents']['update']['intent_id'], intent_id)
+        async with self.transaction() as db:
+            await service.finish_registration(db, replacement, events={'create': 1, 'update': 2, 'delete': 3})
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            self.assertEqual(row.registration_status, 'failed')
+            self.assertEqual(row.last_error, 'order_webhook_registration_uncertain')
+            self.assertIn('update', row.registration_intents)
+
+    async def test_only_exact_put_ack_clears_its_intent_even_after_desired_config_changed(self):
+        plan, intent_id = await self.pending_put()
+        async with self.transaction() as db:
+            (await db.get(OrderWebhookSettings, self.shop_id)).revision = 2
+        async with self.transaction() as db:
+            with self.assertRaises(service.WebhookError):
+                await service.confirm_update_intent(db, plan, 'update', str(uuid4()), 'd' * 64)
+            self.assertIn('update', (await db.get(OrderWebhookSettings, self.shop_id)).registration_intents)
+            await service.confirm_update_intent(db, plan, 'update', intent_id, 'd' * 64)
+            self.assertEqual((await db.get(OrderWebhookSettings, self.shop_id)).registration_intents, {})
+
+    async def test_explicit_settlement_cas_preserves_evidence_and_requeues(self):
+        plan, intent_id = await self.pending_put()
+        async with self.transaction() as db:
+            await service.finish_registration(db, plan, error='order_webhook_registration_unverified')
+        body = {'shop_code': 'biketrek', 'expected_revision': 1, 'confirmed': True, 'event': 'update',
+                'intent_id': intent_id, 'remote_request_finished_confirmed': True,
+                'note': 'Upgates confirmed the earlier request has fully finished.'}
+        async with self.sessions() as db:
+            with self.assertRaises(service.WebhookError):
+                await service.resolve_registration(db, WebhookResolveRegistration(**{**body, 'intent_id': str(uuid4())}), 'user:42')
+            await db.rollback()
+            result = await service.resolve_registration(db, WebhookResolveRegistration(**body), 'user:42')
+            self.assertEqual(result['webhook']['registration_status'], 'pending')
+            self.assertEqual(result['webhook']['pending_mutations'], [])
+        async with self.transaction() as db:
+            evidence = await db.scalar(select(OrderWebhookResolution))
+            self.assertEqual((evidence.intent_id, evidence.payload_hash, evidence.resolved_by), (intent_id, 'd' * 64, 'user:42'))
+            self.assertEqual(evidence.evidence_note, body['note'])
+
+    async def test_post_absence_can_be_retried_only_after_explicit_settlement(self):
+        async with self.transaction() as db:
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            row.registration_status, row.next_registration_at = 'pending', NOW
+            await db.flush()
+            plan = await service.start_registration(db)
+        async with self.transaction() as db:
+            await service.record_create_intent(db, plan, 'create')
+        async with self.transaction() as db:
+            await service.finish_registration(db, plan, error='order_webhook_registration_unverified')
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            intent_id = row.registration_intents['create']['intent_id']
+            result = await service.status(db, 'biketrek')
+            self.assertEqual(result['webhook']['pending_mutations'][0]['method'], 'POST')
+        async with self.sessions() as db:
+            result = await service.resolve_registration(db, WebhookResolveRegistration(shop_code='biketrek',
+                expected_revision=1, confirmed=True, event='create', intent_id=intent_id,
+                remote_request_finished_confirmed=True, note='Upgates confirmed the create request finished without creating a webhook.'), 'user:42')
+            self.assertEqual(result['webhook']['pending_mutations'], [])
+        async with self.transaction() as db:
+            evidence = await db.scalar(select(OrderWebhookResolution))
+            self.assertEqual(evidence.method, 'POST')
+            self.assertEqual(evidence.intent_id, intent_id)
+            next_plan = await service.start_registration(db)
+            self.assertEqual(next_plan['registration_intents'], {})

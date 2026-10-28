@@ -34,3 +34,17 @@ CREATE TABLE IF NOT EXISTS order_webhook_events (
     PRIMARY KEY (shop_id, order_number)
 );
 CREATE INDEX IF NOT EXISTS ix_order_webhook_events_due ON order_webhook_events(status, next_attempt_at);
+
+-- Explicit settlement evidence is append-only through the application API.
+CREATE TABLE IF NOT EXISTS order_webhook_resolutions (
+    id BIGSERIAL PRIMARY KEY,
+    shop_id BIGINT NOT NULL REFERENCES shops(id) ON DELETE RESTRICT,
+    event VARCHAR(10) NOT NULL CHECK (event IN ('create','update','delete')),
+    intent_id VARCHAR(36) NOT NULL,
+    method VARCHAR(8) NOT NULL CHECK (method IN ('POST','PUT')),
+    payload_hash VARCHAR(64) NOT NULL,
+    settings_revision INTEGER NOT NULL,
+    evidence_note TEXT NOT NULL,
+    resolved_by VARCHAR(80) NOT NULL,
+    resolved_at TIMESTAMPTZ NOT NULL
+);

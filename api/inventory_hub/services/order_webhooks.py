@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import secrets
+from uuid import uuid4
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -20,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from inventory_hub.db_models import Shop
 from inventory_hub.order_collection_models import OrderCollectionSettings
-from inventory_hub.order_webhook_models import OrderWebhookEvent, OrderWebhookSettings
+from inventory_hub.order_webhook_models import OrderWebhookEvent, OrderWebhookSettings, OrderWebhookResolution
 from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.services import order_collection as collection
 from inventory_hub.services import order_webhook_credentials as credentials
@@ -184,7 +185,9 @@ async def status(db, shop_code):
     event_fields = ('order_number', 'event', 'notification_at', 'last_received_at', 'last_completed_at',
                     'status', 'attempts', 'last_error')
     return {'shop': {'code': shop.code, 'name': shop.name},
-        'webhook': {**{field: getattr(row, field) for field in fields}, 'secret_configured': bool(row.secret_hash)} if row else None,
+        'webhook': {**{field: getattr(row, field) for field in fields}, 'secret_configured': bool(row.secret_hash),
+            'pending_mutations': [{'event': event, **{key: value.get(key) for key in ('method', 'intent_id', 'started_at')}}
+                for event, value in (row.registration_intents or {}).items() if value.get('method') in ('POST', 'PUT')]} if row else None,
         'pending_count': health['pending_count'] if health else 0, 'review_count': health['review_count'] if health else 0,
         'collector_enabled': bool(collector and collector.enabled),
         'connection_matches': bool(row is None or row.target_fingerprint == collection.target_fingerprint(shop.code)),
@@ -293,7 +296,11 @@ def _request(client, method, payload=None):
         response.close()
 
 
-def reconcile_registration(plan, before_create):
+def reconcile_registration(plan, before_create, before_update=None, after_update=None):
+    if any(value.get('method') == 'PUT' for value in (plan.get('registration_intents') or {}).values()):
+        # A matching GET cannot prove an older timed-out PUT has finished.
+        # Keep this fence across changed desired configuration until settled.
+        raise WebhookError('order_webhook_registration_uncertain')
     token = credentials.load(plan['shop_id'], plan['secret_hash'])
     client = _client(plan['shop_code'], plan['target_fingerprint'])
     try:
@@ -331,10 +338,19 @@ def reconcile_registration(plan, before_create):
                         raise WebhookError('order_webhook_registration_uncertain')
                     before_create(event)  # Durable commit before remote POST.
                 body = {**desired, **({'id': old['id']} if old else {})}
+                intent_id, payload_hash = None, None
+                if old is not None:
+                    if before_update is None or after_update is None:
+                        raise WebhookError('order_webhook_registration_uncertain')
+                    payload_hash = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                    intent_id = before_update(event, payload_hash)
                 confirmed = _request(client, 'PUT' if old else 'POST', body).get('webhook')
             if (not isinstance(confirmed, dict) or type(confirmed.get('id')) is not int or confirmed['id'] < 1
+                    or (old is not None and confirmed['id'] != old['id'])
                     or any(confirmed.get(key) != value for key, value in desired.items())):
                 raise WebhookError('order_webhook_registration_unverified', 502)
+            if old is not None and not all(old.get(key) == value for key, value in desired.items()):
+                after_update(event, intent_id, payload_hash)
             result[event] = confirmed['id']
         return result
     except UpgatesError:
@@ -367,8 +383,61 @@ async def record_create_intent(db, plan, event):
         raise WebhookError('order_webhook_settings_changed')
     if event in (row.registration_intents or {}):
         raise WebhookError('order_webhook_registration_uncertain')
-    row.registration_intents = {**(row.registration_intents or {}), event: {'started_at': now().isoformat()}}
+    descriptor = {key: plan[key] for key in ('shop_id', 'target_fingerprint', 'public_base_url', 'secret_hash', 'enabled')}
+    descriptor['event'] = event
+    payload_hash = hashlib.sha256(json.dumps(descriptor, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    row.registration_intents = {**(row.registration_intents or {}), event: {'method': 'POST', 'intent_id': str(uuid4()),
+        'payload_hash': payload_hash, 'started_at': now().isoformat()}}
     await db.flush()
+
+
+async def record_update_intent(db, plan, event, payload_hash):
+    row = await db.get(OrderWebhookSettings, plan['shop_id'], with_for_update=True)
+    if (row is None or row.revision != plan['revision'] or row.registration_status != 'running'
+            or row.registration_attempts != plan['registration_attempts'] or event not in EVENTS):
+        raise WebhookError('order_webhook_settings_changed')
+    if any(value.get('method') == 'PUT' for value in (row.registration_intents or {}).values()):
+        raise WebhookError('order_webhook_registration_uncertain')
+    intent_id = str(uuid4())
+    row.registration_intents = {**(row.registration_intents or {}), event: {'method': 'PUT', 'intent_id': intent_id,
+        'payload_hash': payload_hash, 'started_at': now().isoformat()}}
+    await db.flush()
+    return intent_id
+
+
+async def confirm_update_intent(db, plan, event, intent_id, payload_hash):
+    row = await db.get(OrderWebhookSettings, plan['shop_id'], with_for_update=True)
+    intent = (row.registration_intents or {}).get(event) if row else None
+    if (not intent or intent.get('method') != 'PUT' or intent.get('intent_id') != intent_id
+            or intent.get('payload_hash') != payload_hash):
+        raise WebhookError('order_webhook_settings_changed')
+    # The exact old request received a validated ACK. Its completion remains
+    # valid if an operator edited desired configuration while it was in flight.
+    row.registration_intents = {key: value for key, value in row.registration_intents.items() if key != event}
+    await db.flush()
+
+
+async def resolve_registration(db, payload, actor):
+    # Do not clear evidence while the live worker can still receive an ACK.
+    # Acquire this before Shop/settings locks, matching the worker lock order.
+    if not await db.scalar(text('SELECT pg_try_advisory_xact_lock(691432235)')):
+        raise WebhookError('order_webhook_registration_busy')
+    shop = await collection._shop(db, payload.shop_code, lock=True)
+    row = await db.get(OrderWebhookSettings, shop.id, with_for_update=True)
+    if row is None or row.revision != payload.expected_revision:
+        raise WebhookError('order_webhook_settings_changed')
+    intent = (row.registration_intents or {}).get(payload.event)
+    if not intent or intent.get('method') not in ('POST', 'PUT') or intent.get('intent_id') != payload.intent_id:
+        raise WebhookError('order_webhook_settings_changed')
+    db.add(OrderWebhookResolution(shop_id=shop.id, event=payload.event, intent_id=payload.intent_id,
+        method=intent['method'], payload_hash=intent['payload_hash'], settings_revision=row.revision,
+        evidence_note=payload.note, resolved_by=actor, resolved_at=now()))
+    row.registration_intents = {key: value for key, value in row.registration_intents.items() if key != payload.event}
+    row.registration_status, row.next_registration_at, row.last_error = 'pending', now(), None
+    await db.flush()
+    result = await status(db, shop.code)
+    await db.commit()
+    return result
 
 
 async def finish_registration(db, plan, events=None, error=None):
@@ -379,6 +448,8 @@ async def finish_registration(db, plan, events=None, error=None):
             or row.registration_attempts != plan['registration_attempts']):
         return
     at = now()
+    if any(value.get('method') == 'PUT' for value in (row.registration_intents or {}).values()):
+        error = 'order_webhook_registration_uncertain'
     if error:
         row.registration_status, row.last_error = 'failed', error
         row.next_registration_at = at + timedelta(seconds=min(3600, 60 * 2 ** min(row.registration_attempts - 1, 6)))

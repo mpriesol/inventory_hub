@@ -235,3 +235,11 @@ nedodaní. Zapnutie webhookov ešte nezapína skladové zápisy do BIKETREKU ale
 xTreku: tie naďalej potrebujú potvrdenú skladovú autoritu, platné väzby a základné
 porovnanie množstiev. Podrobnosti nastavení sú v
 [objednávkovej automatike](order-automation.md#webhooky-objednávok-a-menej-častý-zber-zmien-28-10-2026).
+
+Ak sa pri zmene existujúcej registrácie stratí potvrdenie Upgates, panel ukáže
+zablokovaný pokus. Bežné obnovenie stavu ho neodblokuje: staršia požiadavka by ešte
+mohla dobehnúť a prepísať novšie nastavenie. Až po overení u Upgates, že pôvodná
+požiadavka už definitívne skončila, administrátor zaškrtne príslušné potvrdenie,
+opíše podklad a uzavrie presne tento pokus. Hub uloží auditný záznam a zopakuje
+bežné overenie registrácie. Samotný pohľad na aktuálnu URL alebo stav webhooku
+nie je dôkazom dokončenia predchádzajúcej požiadavky.

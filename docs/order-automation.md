@@ -238,3 +238,23 @@ produkcie, jej aktivačné hranice a overený živý objednávkový cyklus sa do
 osobitne. Referencie: [udalosti objednávok](https://docs.upgates.com/webhooks/orders),
 [príjem a timeouty](https://docs.upgates.com/webhooks/intro),
 [správa webhookov](https://docs.upgates.com/api-reference/webhooky).
+
+Pri úprave existujúcej registrácie sa pred PUT uloží aj jedinečné ID pokusu a
+odtlačok celého zamýšľaného zápisu. Vymaže ich iba presná overená odpoveď tohto
+pokusu. Pri prerušení, chybnej odpovedi alebo strate potvrdenia zostane PUT
+blokovaný aj po zmene nastavenia; ani zhodný GET nedokazuje, že staršia požiadavka
+už nemôže neskoro prepísať novší stav.
+
+Administrátor môže výnimočne použiť
+`POST /order-webhooks/resolve-registration` s
+`{shop_code,expected_revision,confirmed:true,event,intent_id,remote_request_finished_confirmed:true,note}`.
+Pred potvrdením musí mimo samotného GET overiť u Upgates, že pôvodná požiadavka
+už bola úplne dokončená. Panel vyžaduje osobitné potvrdenie a opis dôkazu
+(10–2000 znakov). API overí aktuálnu revíziu a presné ID zablokovaného pokusu;
+počas aktívneho workeru uzavretie nepovolí. Pridá nový záznam do
+`order_webhook_resolutions` s administrátorom, časom a pôvodným odtlačkom,
+uvoľní iba príslušný blok a zaradí nové bežné overenie registrácie. Pri neistom
+vytvorení cez POST môže bežné overenie nájsť jednoznačný vlastný webhook.
+Ak sa nevytvoril, rovnaké výslovné uzavretie preukázateľne dokončenej pôvodnej
+požiadavky umožní po novom GET bezpečne vytvoriť chýbajúci webhook. Nejde o
+automatické opakovanie neistého vytvorenia.
