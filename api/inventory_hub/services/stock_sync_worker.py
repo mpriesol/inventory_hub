@@ -8,6 +8,7 @@ from inventory_hub.db_models import Shop
 from inventory_hub.stock_sync_models import StockSyncSettings, StockSyncRun
 from inventory_hub.stock_sync_types import SyncRunInput
 from inventory_hub.services import stock_sync as service
+from inventory_hub.services import stock_sync_dirty
 
 logger = logging.getLogger(__name__)
 WORKER_LOCK = 691432116
@@ -24,6 +25,7 @@ async def cycle():
         try:
             async with get_session_context() as db:
                 await service.recover(db)
+                await stock_sync_dirty.settle(db)
                 # Create at most one due run each tick, including while another
                 # shop is running. Round-robin batches prevent a large POS
                 # umbrella catalogue from starving the other shop.
@@ -43,6 +45,9 @@ async def cycle():
                         policy.last_error = error.code
                         policy.next_run_at = max(service.now() + timedelta(seconds=60), policy.retry_after_at or service.now())
                         await db.commit()
+                # Due audits get one bounded scheduling opportunity first;
+                # otherwise a constant stream of events could starve them.
+                await stock_sync_dirty.dispatch(db)
                 identifier = await db.scalar(select(StockSyncRun.id).where(StockSyncRun.status.in_(service.ACTIVE))
                     .order_by(func.coalesce(StockSyncRun.last_batch_at, StockSyncRun.started_at), StockSyncRun.id).limit(1))
             if identifier:

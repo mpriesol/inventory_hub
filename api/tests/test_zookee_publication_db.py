@@ -12,10 +12,11 @@ from uuid import uuid4
 
 from sqlalchemy import select
 from inventory_hub import config_io
-from inventory_hub.db_models import SupplierProduct, Product, ProductIdentifier, IdentifierType, SupplierFeed, SupplierFeedRun, FeedRunStatus
+from inventory_hub.db_models import Supplier, SupplierProduct, Product, ProductIdentifier, IdentifierType, SupplierFeed, SupplierFeedRun, FeedRunStatus
 from inventory_hub.db_models_ext import ProductSupplySource, ShopProduct
 from inventory_hub.product_editor_models import ProductEditorPublication
 from inventory_hub.supplier_availability_models import SupplierAvailabilitySettings, SupplierAvailabilityObservation
+from inventory_hub.supplier_availability_delivery_models import SupplierAvailabilityDelivery
 from inventory_hub.services import supplier_availability_publication as service
 from inventory_hub.services import product_publication as publication
 from inventory_hub.services import product_publication_source as source
@@ -30,6 +31,8 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
             await raw.driver_connection.execute((self.sql_root / '015_stock_sync.sql').read_text())
+            await raw.driver_connection.execute((self.sql_root / '034_supplier_availability_delivery.sql').read_text())
+            await raw.driver_connection.execute((self.sql_root / '034_supplier_availability_delivery.sql').read_text())
         self.folder = tempfile.TemporaryDirectory()
         self.stack = ExitStack(); self.stack.enter_context(patch.object(config_io, 'DATA_ROOT', Path(self.folder.name)))
         self.policy = {'enabled':True,'shop_code':'biketrek','brands':['SENSOR','TOPEAK']}
@@ -75,6 +78,268 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             return await db.scalar(select(ProductEditorPublication).order_by(ProductEditorPublication.created_at.desc()))
 
+    async def seed_worker_observation(self, available=False, *, next_run=False):
+        self.config['feeds'] = {'sources': {'stock': {'mode': 'remote', 'remote': {'url': 'https://supplier.example.test/stock.xml'}}}}
+        config_io.supplier_path('editor-supplier').write_text(json.dumps(self.config))
+        now = service.editor.now()
+        async with self.sessions() as db:
+            feed = await db.scalar(select(SupplierFeed).where(SupplierFeed.supplier_id == self.supplier_id))
+            if feed is None:
+                feed = SupplierFeed(supplier_id=self.supplier_id, code='stock', name='Synthetic stock',
+                    feed_type='stock', source_format='xml', mapping_config={})
+                db.add(feed); await db.flush()
+                db.add(SupplierAvailabilitySettings(supplier_id=self.supplier_id, feed_key='stock', enabled=True,
+                    next_run_at=now + timedelta(days=1), last_success_at=now))
+            run = SupplierFeedRun(feed_id=feed.id, run_number=2 if next_run else 1,
+                status=FeedRunStatus.completed, started_at=now, finished_at=now)
+            db.add(run); await db.flush()
+            fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+            if fact is None:
+                fact = SupplierAvailabilityObservation(supplier_id=self.supplier_id, supplier_sku=self.sku,
+                    feed_id=feed.id, raw={})
+                db.add(fact)
+            fact.run_id, fact.available = run.id, available
+            fact.quantity, fact.quantity_kind = (7 if next_run else 5) if available else 0, 'exact'
+            fact.observed_at, fact.expires_at = now, now + timedelta(days=2)
+            await db.commit()
+        self.observation.return_value = {'fresh': True, 'available': available}
+
+    def worker_mocks(self, stack):
+        stack.enter_context(patch.object(service, 'get_session_context', self.transaction))
+        async def read_batch(*_args):
+            return {'BIKE-2': copy.deepcopy(self.remote)}
+        return stack.enter_context(patch.object(service, 'read_batch', AsyncMock(side_effect=read_batch)))
+
+    async def test_new_feed_same_boolean_and_changed_quantity_make_no_upstream_call(self):
+        await self.seed_worker_observation(True)
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            self.assertEqual(reader.await_count, 1)
+            self.writer.assert_not_awaited()
+            await self.seed_worker_observation(True, next_run=True)
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, 1, 'New timestamps/run/quantity do not dirty unchanged label')
+        async with self.sessions() as db:
+            delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+            self.assertEqual(delivery.desired, delivery.confirmed)
+            self.assertEqual(delivery.confirmed_label, 'do 5 dní')
+
+    async def test_changed_boolean_sends_once_then_confirms_new_target_state(self):
+        await self.seed_worker_observation(False)
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            self.assertEqual(self.writer.await_count, 1)
+            await self.seed_worker_observation(True, next_run=True)
+            self.assertTrue(await service.cycle())
+            calls = reader.await_count
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, calls)
+            self.assertEqual(self.writer.await_count, 2)
+        async with self.sessions() as db:
+            delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+            self.assertTrue(delivery.confirmed['available'])
+            self.assertEqual(delivery.confirmed_label, 'do 5 dní')
+
+    async def test_read_failure_retains_dirty_value_and_confirmation_until_delayed_success(self):
+        await self.seed_worker_observation(False)
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            await self.seed_worker_observation(True, next_run=True)
+            reader.side_effect = source.source.SourceError('stock_publication_source_unavailable')
+            self.assertTrue(await service.cycle())
+            async with self.sessions() as db:
+                delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+                self.assertTrue(delivery.desired['available'])
+                self.assertFalse(delivery.confirmed['available'])
+                self.assertEqual(delivery.state, 'rejected')
+                self.assertGreater(delivery.retry_at, service.editor.now())
+            self.assertFalse(await service.cycle(), 'Failure must not spin on each worker tick')
+            async with self.sessions() as db:
+                delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+                delivery.retry_at = service.editor.now() - timedelta(seconds=1)
+                await db.commit()
+            async def recovered(*args): return {'BIKE-2': copy.deepcopy(self.remote)}
+            reader.side_effect = recovered
+            self.assertTrue(await service.cycle())
+            self.assertFalse(await service.cycle())
+            self.assertEqual(self.writer.await_count, 2)
+
+    async def test_terminal_identity_failure_does_not_repeat_for_new_feed(self):
+        await self.seed_worker_observation(False)
+        self.remote['identity']['variant_id'] = 123
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            await self.seed_worker_observation(False, next_run=True)
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, 1)
+            self.writer.assert_not_awaited()
+            async with self.sessions() as db:
+                delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+                self.assertIsNone(delivery.confirmed)
+                self.assertIsNone(delivery.retry_at)
+                await service.invalidate_targets(db, [self.products['BIKE-2']], self.shops['biketrek'])
+                await db.commit()
+            self.remote['identity']['variant_id'] = 22
+            self.assertTrue(await service.cycle())
+            self.writer.assert_awaited_once()
+
+    async def test_crash_after_initial_intent_recovers_without_waiting_for_changed_feed(self):
+        await self.seed_worker_observation(False)
+        with ExitStack() as stack:
+            self.worker_mocks(stack)
+            with patch.object(service, 'validate', AsyncMock(side_effect=RuntimeError('synthetic crash'))):
+                with self.assertRaises(RuntimeError):
+                    await service.cycle()
+            self.writer.assert_not_awaited()
+            async with self.sessions() as db:
+                delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+                self.assertIsNone(delivery.confirmed)
+                self.assertIsNotNone(delivery.retry_at)
+                delivery.retry_at = service.editor.now() - timedelta(seconds=1)
+                await db.commit()
+            self.assertTrue(await service.cycle())
+            self.assertFalse(await service.cycle())
+            self.writer.assert_awaited_once()
+
+    async def test_uncertain_delivery_never_clears_on_new_feed_or_local_recheck(self):
+        await self.seed_worker_observation(False)
+        self.writer.side_effect = source.source.SourceError('product_publication_write_unconfirmed', uncertain=True)
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            calls = reader.await_count
+            await self.seed_worker_observation(True, next_run=True)
+            async with self.sessions() as db:
+                await service.invalidate_targets(db, [self.products['BIKE-2']])
+                await db.commit()
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, calls)
+            self.writer.assert_awaited_once()
+        async with self.sessions() as db:
+            delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+            self.assertEqual(delivery.state, 'uncertain')
+            self.assertIsNone(delivery.confirmed)
+
+    async def test_existing_skladom_is_protected_even_with_unconfirmed_zero_count(self):
+        await self.seed_worker_observation(False)
+        self.remote['leaf']['availability'] = 'SKLADOM'
+        with ExitStack() as stack:
+            self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            self.assertFalse(await service.cycle())
+            self.writer.assert_not_awaited()
+        self.assertEqual(self.remote['leaf']['availability'], 'SKLADOM')
+
+    async def test_expiry_sends_unknown_once_without_zero_or_unavailable_and_without_new_feed(self):
+        await self.seed_worker_observation(True)
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            self.writer.assert_not_awaited()
+            async with self.sessions() as db:
+                fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+                fact.observed_at = service.editor.now() - timedelta(days=3)
+                fact.expires_at = service.editor.now() - timedelta(days=1)
+                await db.commit()
+            self.observation.return_value = {'fresh': False, 'available': None}
+            self.assertTrue(await service.cycle())
+            calls = reader.await_count
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, calls)
+            self.writer.assert_awaited_once()
+            self.assertEqual(self.remote['leaf'], {'code': 'BIKE-2', 'stock': '0', 'availability': 'overíme'})
+        async with self.sessions() as db:
+            delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+            self.assertIsNone(delivery.confirmed['available'])
+            self.assertEqual(delivery.confirmed_label, 'overíme')
+
+    async def test_expired_supplier_keeps_skladom_even_when_quantity_is_unconfirmed_zero(self):
+        await self.seed_worker_observation(True)
+        self.remote['leaf']['availability'] = 'SKLADOM'
+        async with self.sessions() as db:
+            fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+            fact.observed_at = service.editor.now() - timedelta(days=3)
+            fact.expires_at = service.editor.now() - timedelta(days=1)
+            await db.commit()
+        self.observation.return_value = {'fresh': False, 'available': None}
+        with ExitStack() as stack:
+            self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            self.assertFalse(await service.cycle())
+            self.writer.assert_not_awaited()
+
+    async def test_two_suppliers_for_one_target_choose_one_effective_source_without_loop(self):
+        await self.seed_worker_observation(False)
+        second_config = copy.deepcopy(self.config)
+        second_config['adapter_settings']['availability']['orderable'] = 'do 2 dní'
+        path = config_io.supplier_path('other-supplier')
+        path.parent.mkdir(parents=True); path.write_text(json.dumps(second_config))
+        now = service.editor.now()
+        async with self.sessions() as db:
+            supplier = Supplier(code='other-supplier', name='Other supplier')
+            db.add(supplier); await db.flush()
+            item = SupplierProduct(supplier_id=supplier.id, supplier_sku='SECOND', name='Second offer', brand='TOPEAK')
+            feed = SupplierFeed(supplier_id=supplier.id, code='stock', name='Stock', feed_type='stock', source_format='xml', mapping_config={})
+            db.add_all([item, feed]); await db.flush()
+            db.add(ProductSupplySource(product_id=self.products['BIKE-2'], supplier_product_id=item.id,
+                priority=500, is_primary=False))
+            run = SupplierFeedRun(feed_id=feed.id, run_number=1, status=FeedRunStatus.completed, started_at=now, finished_at=now)
+            db.add(run); await db.flush()
+            db.add(SupplierAvailabilitySettings(supplier_id=supplier.id, feed_key='stock', enabled=True,
+                next_run_at=now + timedelta(days=1), last_success_at=now))
+            db.add(SupplierAvailabilityObservation(supplier_id=supplier.id, supplier_sku=item.supplier_sku,
+                feed_id=feed.id, run_id=run.id, available=True, quantity=5, quantity_kind='exact', raw={},
+                observed_at=now, expires_at=now + timedelta(days=2)))
+            await db.commit()
+        async def facts(_db, supplier, _sku):
+            return {'fresh': True, 'available': supplier == 'other-supplier'}
+        self.observation.side_effect = facts
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            calls = reader.await_count
+            for _ in range(3):
+                self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, calls)
+            self.writer.assert_awaited_once()
+        async with self.sessions() as db:
+            delivery = await db.get(SupplierAvailabilityDelivery, (self.products['BIKE-2'], self.shops['biketrek']))
+            self.assertEqual(delivery.confirmed['supplier'], 'other-supplier')
+            self.assertEqual(delivery.confirmed_label, 'do 2 dní')
+
+    async def test_migration_slows_enabled_only_without_reviving_observations(self):
+        await self.seed_worker_observation(False)
+        now = service.editor.now()
+        async with self.sessions() as db:
+            daily = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+            daily.interval_seconds, daily.freshness_seconds, daily.last_started_at = 3600, 21600, now
+            fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+            fact.observed_at, fact.expires_at = now - timedelta(days=2), now - timedelta(days=1)
+            expiry = fact.expires_at
+            extra = []
+            for code, enabled, interval, freshness in [('disabled', False, 3600, 21600), ('weekly', True, 604800, 604800), ('sloger', True, 3600, 21600)]:
+                supplier = Supplier(code=code, name=code); db.add(supplier); await db.flush()
+                db.add(SupplierAvailabilitySettings(supplier_id=supplier.id, feed_key='stock', enabled=enabled,
+                    interval_seconds=interval, freshness_seconds=freshness, next_run_at=now))
+                extra.append((supplier.id, enabled, interval, freshness))
+            await db.commit()
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            for _ in range(2):
+                await raw.driver_connection.execute((self.sql_root / '034_supplier_availability_delivery.sql').read_text())
+        async with self.sessions() as db:
+            daily = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+            self.assertEqual((daily.interval_seconds, daily.freshness_seconds, daily.revision), (86400, 172800, 2))
+            self.assertGreaterEqual(daily.next_run_at, now + timedelta(days=1))
+            self.assertEqual((await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))).expires_at, expiry)
+            for supplier_id, enabled, interval, freshness in extra:
+                row = await db.get(SupplierAvailabilitySettings, supplier_id)
+                self.assertEqual((row.enabled, row.interval_seconds, row.freshness_seconds), (enabled, interval, freshness))
+
     async def test_exact_variant_availability_only_and_repeated_send(self):
         record = await self.prepare()
         self.assertEqual(record.state, 'completed', record.document); self.assertEqual(self.writer.await_count, 1)
@@ -91,9 +356,11 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await publication.send(db, record.id)
         self.assertEqual(self.writer.await_count, 1)
 
-    async def test_expired_source_and_wrong_remote_id_never_send(self):
+    async def test_unknown_source_sends_only_unknown_label_and_wrong_remote_id_never_sends(self):
         self.observation.return_value = {'fresh':False,'available':None}
-        record = await self.prepare(); self.assertEqual(record.state, 'rejected'); self.writer.assert_not_awaited()
+        record = await self.prepare(); self.assertEqual(record.state, 'completed'); self.writer.assert_awaited_once()
+        self.assertEqual(self.remote['leaf']['availability'], 'overíme')
+        self.writer.reset_mock()
         self.observation.return_value = {'fresh':True,'available':False}
         self.remote['identity']['variant_id'] = 123
         record = await self.prepare(); self.assertEqual(record.state, 'rejected'); self.writer.assert_not_awaited()

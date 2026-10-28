@@ -154,7 +154,9 @@ jobs:
         run: node frontend/tests/order-stock-ui.cjs
 
       - name: Check order collection and stock draft interactions
-        run: node frontend/tests/order-collection-ui.cjs
+        run: |
+          node frontend/tests/order-collection-ui.cjs
+          node frontend/tests/order-webhooks-ui.cjs
 
       - name: Check stock automation settings interactions
         run: node frontend/tests/stock-settings-ui.cjs

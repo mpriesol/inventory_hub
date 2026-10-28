@@ -39,6 +39,9 @@ MIGRATIONS = (
     "item_units_migrate",             # 031
     "supplier_authority_migrate",     # 032
     "invoice_archive_migrate",        # 033
+    "supplier_availability_delivery_migrate",  # 034
+    "order_webhooks_migrate",         # 035
+    "stock_sync_dirty_migrate",       # 036
 )
 
 

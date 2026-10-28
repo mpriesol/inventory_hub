@@ -2595,7 +2595,7 @@
     "interval": "Interval načítania (sekundy)",
     "rangeSeconds": "{{min}} až {{max}} sekúnd.",
     "freshness": "Platnosť údajov (sekundy)",
-    "freshnessHelp": "Aspoň taká dlhá ako interval. Po uplynutí sa dostupnosť označí „overíme“.",
+    "freshnessHelp": "Pri automatike aspoň o hodinu dlhšia než interval; odporúčané 172800 sekúnd (48 hodín) pri dennom načítaní. Starý alebo chýbajúci údaj zostáva neoverený.",
     "coverage": "Upozorniť pri poklese počtu položiek pod (%)",
     "coverageHelp": "Porovnáva sa s posledným úplným načítaním. Aj pri menšom súbore sa prijmú platné položky; chýbajúce sa neprepíšu nulami.",
     "supplierAuto": "Pravidelne načítavať tento zdroj",
@@ -2782,7 +2782,9 @@
       "supplier_availability_no_usable_rows": "Žiadna položka nemá použiteľný údaj o dostupnosti. Rozbaľte zoznam preskočených položiek.",
       "supplier_availability_run_not_found": "Záznam načítania už nie je dostupný. Obnovte prehľad.",
       "stock_projection_unit_unsupported": "Táto operácia e-shopu podporuje celé kusy, páry alebo balenia. Karty v metroch nie sú podporované ani prepočítavané.",
-      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie."
+      "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie.",
+      "stock_sync_order_notifications_pending": "Prijaté objednávkové oznámenia ešte čakajú na načítanie alebo kontrolu. Najprv dokončite ich spracovanie v prehľade objednávok.",
+      "stock_sync_order_webhook_not_ready": "Registrácia objednávkových oznámení nie je aktuálne overená. Skontrolujte pripojenie a obnovte registráciu v prehľade objednávok."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
@@ -2953,14 +2955,15 @@
     "previousPage": "Predchádzajúce",
     "nextPage": "Ďalšie",
     "failurePage": "{{from}}–{{to}} z {{total}}",
-    "autoEnabled": "Automatické načítanie každých {{minutes}} minút.",
+    "autoEnabled": "Automatické načítanie každých {{hours}} hodín.",
     "configChanged": "Nastavenia sa medzitým zmenili. Kliknite na Načítať / obnoviť prehľad a skontrolujte ich znova.",
     "feedNames": {
       "stock": "Skladové dostupnosti",
       "products": "Produktový feed"
     },
     "advancedSettings": "Rozšírené nastavenia",
-    "scopedPublication": "Dostupnosť → {{shop}} · {{brands}}. Overené: {{completed}}, na kontrolu: {{uncertain}}, odmietnuté: {{rejected}}."
+    "scopedPublication": "Dostupnosť → {{shop}} · {{brands}}. Overené: {{completed}}, na kontrolu: {{uncertain}}, odmietnuté: {{rejected}}.",
+    "dailyChangesOnly": "Automatické feedy sa načítavajú najviac raz denne. E-shopu sa odosielajú iba zmenené dostupnosti; posledný potvrdený stav sa sleduje samostatne pre každý produkt a e-shop."
   },
   "productPublication": {
     "intro": "Vyberte uložený produkt a polia. Najprv sa načíta a ukáže zmena; e-shop sa zmení až po potvrdení odoslania.",
@@ -4813,5 +4816,78 @@
     "weekPlanning": "Plán úhrad po týždňoch",
     "weekScope": "Pondelok až nedeľa, v mesačnom pohľade iba dni vybraného mesiaca. Kliknutím na riadok zobrazíte faktúry.",
     "unknownAmount": "Suma úhrady neoverená"
+  },
+  "orderWebhooks": {
+    "title": "Okamžité oznámenia objednávok",
+    "load": "Načítať nastavenie oznámení",
+    "help": "Upgates oznámi vytvorenie, zmenu alebo vymazanie objednávky. Hub načíta dotknutú objednávku a odovzdá ju existujúcemu spracovaniu. Zmenené SKU potom čakajú na prenos do povolených e-shopov.",
+    "scope": "Zapnutie oznámení nemení pravidlá rezervácií a výdajov ani skladovú autoritu. Tie zostávajú v samostatných nastaveniach. Občasná kontrola objednávok dopĺňa prípadné nedoručené oznámenia.",
+    "adminRequired": "Tieto integračné nastavenia spravuje administrátor.",
+    "uncertain": "Odpoveď sa nepodarilo overiť. Najprv načítajte nastavenie oznámení; uloženie ani registráciu automaticky neopakujeme.",
+    "requestFailed": "Nastavenie alebo výsledok oznámení sa nepodarilo overiť. Načítajte aktuálny stav a skontrolujte pripojenie.",
+    "collectionRequired": "Najprv nastavte a zapnite načítanie objednávok vyššie. Oznámenia ho samy nezapnú.",
+    "connectionRequired": "Pripojenie e-shopu sa zmenilo alebo nie je pripravené. Pred zapnutím oznámení skontrolujte jeho nastavenie.",
+    "enabled": "Príjem oznámení zapnutý",
+    "disabled": "Príjem oznámení vypnutý",
+    "baseUrl": "Verejná HTTPS adresa API Hubu",
+    "baseUrlHelp": "Adresa API Hubu dostupná z Upgates, zvyčajne zakončená /api. Bez prihlasovacích údajov alebo parametrov. Prístup k oznámeniam zabezpečuje Hub.",
+    "catchupInterval": "Záložná kontrola objednávok (sekundy)",
+    "catchupHelp": "Odporúčané: 3600 sekúnd (raz za hodinu). Oznámenia sa spracúvajú priebežne; táto kontrola dohľadáva vynechané zmeny. Rozsah 300–86400 sekúnd.",
+    "enableLabel": "Prijímať objednávkové oznámenia z tohto e-shopu",
+    "unsaved": "Máte neuložené zmeny. Uloženie aktualizuje aj registráciu oznámení v Upgates.",
+    "saved": "Nastavenie alebo požiadavka je uložená. Registrácia a spracovanie pokračujú na pozadí; výsledok zobrazí opätovné načítanie.",
+    "save": "Uložiť nastavenie oznámení",
+    "register": "Overiť / obnoviť registráciu v Upgates",
+    "pending": "Oznámenia čakajúce na spracovanie",
+    "review": "Oznámenia vyžadujúce kontrolu",
+    "lastReceived": "Posledné prijatie",
+    "registeredAt": "Registrácia overená",
+    "lastCompleted": "Posledné dokončené načítanie",
+    "retry": "Znovu načítať neúspešné oznámenia",
+    "events": "Posledné oznámenia",
+    "event": "Udalosť",
+    "state": "Spracovanie",
+    "registration": {
+      "pending": "Registrácia čaká",
+      "running": "Registrácia prebieha",
+      "registered": "Registrácia overená",
+      "failed": "Registrácia vyžaduje kontrolu",
+      "disabled": "Registrácia vypnutá"
+    },
+    "eventsNames": {
+      "create": "Nová objednávka",
+      "update": "Zmena objednávky",
+      "delete": "Vymazanie objednávky"
+    },
+    "states": {
+      "pending": "Čaká",
+      "running": "Načítava sa",
+      "completed": "Načítané",
+      "retry": "Čaká na opakovanie",
+      "review": "Vyžaduje kontrolu"
+    },
+    "errors": {
+      "order_webhook_settings_changed": "Nastavenie medzitým zmenil iný používateľ. Načítajte aktuálny stav.",
+      "order_webhook_collection_required": "Najprv nastavte a zapnite načítanie objednávok pre tento e-shop.",
+      "order_webhook_connection_missing": "Chýba použiteľné pripojenie k Upgates.",
+      "order_webhook_target_changed": "Pripojenie e-shopu sa zmenilo. Overte nastavenie a registráciu.",
+      "order_webhook_invalid_request": "Skontrolujte HTTPS adresu API Hubu a interval záložnej kontroly.",
+      "order_webhook_secret_unavailable": "Hub nemá dostupný zabezpečený prístup pre oznámenia. Skontrolujte integračné nastavenie na serveri.",
+      "order_webhook_registration_ambiguous": "Registráciu nemožno jednoznačne overiť. Skontrolujte registrované oznámenia pred ďalším pokusom.",
+      "order_webhook_source_unavailable": "Upgates sa nepodarilo načítať. Zachované oznámenia čakajú na opakovanie alebo kontrolu.",
+      "order_webhook_access_denied": "Prístup bol odmietnutý. Skontrolujte oprávnenia API používateľa v Upgates.",
+      "hub_admin_required": "Tieto nastavenia môže meniť len administrátor.",
+      "order_webhook_registration_unverified": "Upgates nepotvrdil registráciu v očakávanom formáte. Overte pripojenie a oprávnenia; registrácia čaká na kontrolu.",
+      "order_webhook_interrupted": "Predchádzajúce spracovanie bolo prerušené. Uložená požiadavka čaká na bezpečné pokračovanie.",
+      "order_webhook_order_not_found": "Objednávka sa v odpovedi Upgates nenašla. Skontrolujte ju pred opakovaním načítania.",
+      "order_webhook_source_behind": "Upgates zatiaľ vrátil staršiu verziu objednávky než prijaté oznámenie. Uložené oznámenie zostáva čakajúce.",
+      "order_webhook_registration_uncertain": "Výsledok pôvodnej požiadavky na registráciu nie je potvrdený. Obnovte overenie existujúcich registrácií. Ak zostáva neistota, overte ukončenie pôvodnej požiadavky v Upgates pred použitím obnovy nižšie.",
+      "order_webhook_registration_busy": "Registráciu práve spracúva Hub. Načítajte aktuálny stav a skúste uložiť overenie po dokončení spracovania."
+    },
+    "resolutionTitle": "Overenie nedokončenej registrácie",
+    "resolutionHelp": "Použite až po overení v Upgates alebo u jeho podpory, že pôvodná požiadavka sa už nemôže vykonať neskôr. Samotné zobrazenie aktuálneho nastavenia to nepotvrdzuje. Hub uloží dôkaz, znova načíta registrácie a dokončí uložené nastavenie.",
+    "resolutionNote": "Ako ste overili ukončenie pôvodnej požiadavky (10–2000 znakov)",
+    "resolutionConfirm": "Overil som, že pôvodná požiadavka v Upgates je ukončená a už sa nemôže dodatočne vykonať.",
+    "resolutionSubmit": "Uložiť overenie a obnoviť kontrolu registrácie"
   }
 }

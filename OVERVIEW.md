@@ -1,5 +1,26 @@
 # Inventory Hub — prehľad projektu
 
+## Denné dostupnosti a objednávkové webhooky (28. 10. 2026)
+
+Migrácie **034–036** a príslušné služby obmedzujú dodávateľské načítanie na
+najviac raz denne a uchovávajú požadovanú a potvrdenú dostupnosť podľa karty a
+cieľového e-shopu. Nový identický feed sám nevyvolá ďalšie produktové API volania.
+Existujúce zapnuté kratšie intervaly sa spomalia; vypnuté a týždenné zdroje sa
+neaktivujú ani nezrýchlia. Dodávateľské údaje nevytvárajú vlastnú zásobu.
+
+Prehľad objednávok obsahuje správu troch Upgates webhookov. Samostatne
+autentizované oznámenie sa najprv trvalo uloží, potom sa načíta aktuálna dotknutá
+objednávka a použije existujúce spracovanie rezervácií a výdajov. Pravidelný
+inkrementálny kontrolný zber zachytáva zmeškané oznámenia. Zmeny skladu a natívnych
+účinkov budia prenos vybraných SKU cez existujúci protokol rozdielov; úspech
+jedného e-shopu nepotvrdzuje druhý cieľ ani novšiu zmenu. Neisté zápisy zostávajú
+blokované. Podrobnosti: [objednávky](docs/order-automation.md),
+[dostupnosti](docs/supplier-availability.md), [prenos zásob](docs/stock-sync.md).
+
+Nasadenie kódu samo nezapína webhooks, zber objednávok, lokálnu automatiku ani
+skladovú autoritu. Aktivácia spoločných vlastných zásob naďalej vyžaduje
+zosúladenie a pilot; xTrek Atomer nie je týmto pripojený ako živý Upgates kanál.
+
 Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
 ZIP spája čerstvý katalóg vybraného Upgates pripojenia s konzistentným lokálnym
 snímkom kariet, identít, väzieb a skladových podkladov. Nevykonáva import ani

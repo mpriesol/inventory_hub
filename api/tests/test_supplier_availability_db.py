@@ -63,7 +63,8 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps(self.config))
         async with self.transaction() as db:
-            await service.configure(db, "paul-lange", SupplierAvailabilityInput(expected_revision=0, feed_key="stock"))
+            await service.configure(db, "paul-lange", SupplierAvailabilityInput(expected_revision=0, feed_key="stock",
+                interval_seconds=3600, freshness_seconds=21600))
             self.supplier_id = await db.scalar(select(SupplierAvailabilitySettings.supplier_id))
             self.products = []
             for index in (1, 2):
@@ -584,7 +585,8 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         config_io.save_supplier("sloger", {"name": "Sloger", "adapter_settings": {
             "availability": {"orderable": "do 2-4 dní", "unknown": "overíme"}}})
         async with self.transaction() as db:
-            await service.configure(db, "sloger", SupplierAvailabilityInput(expected_revision=0, feed_key="b2b"))
+            await service.configure(db, "sloger", SupplierAvailabilityInput(expected_revision=0, feed_key="b2b",
+                interval_seconds=3600, freshness_seconds=21600))
             supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == "sloger"))
             ids = []
             for index in range(count + 1):

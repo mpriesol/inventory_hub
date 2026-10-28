@@ -2595,7 +2595,7 @@
     "interval": "Refresh interval (seconds)",
     "rangeSeconds": "{{min}} to {{max}} seconds.",
     "freshness": "Data validity (seconds)",
-    "freshnessHelp": "Must cover the refresh interval. Expired availability becomes “overíme” (we will check).",
+    "freshnessHelp": "For automatic refresh, at least one hour longer than the interval; 172800 seconds (48 hours) is recommended for daily refresh. Stale or missing data remains unverified.",
     "coverage": "Warn when item count drops below (%)",
     "coverageHelp": "Compared with the last complete refresh. Valid items in smaller feeds are still accepted; missing items are never replaced with zeroes.",
     "supplierAuto": "Refresh this source automatically",
@@ -2782,7 +2782,9 @@
       "supplier_availability_no_usable_rows": "No items contain usable availability. Open the skipped items list for details.",
       "supplier_availability_run_not_found": "This refresh record is no longer available. Reload the overview.",
       "stock_projection_unit_unsupported": "This shop operation supports whole pieces, pairs or packs. Metre cards are not supported or converted.",
-      "stock_projection_item_not_stocked": "A service has no physical inventory to publish."
+      "stock_projection_item_not_stocked": "A service has no physical inventory to publish.",
+      "stock_sync_order_notifications_pending": "Received order notifications await fetching or review. Complete their processing in the order inbox first.",
+      "stock_sync_order_webhook_not_ready": "Order notification registration is not currently verified. Check the connection and restore registration in the order inbox."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",
@@ -2953,14 +2955,15 @@
     "previousPage": "Previous",
     "nextPage": "Next",
     "failurePage": "{{from}}–{{to}} of {{total}}",
-    "autoEnabled": "Automatic refresh every {{minutes}} minutes.",
+    "autoEnabled": "Automatic refresh every {{hours}} hours.",
     "configChanged": "Settings have changed elsewhere. Reload the overview and review them again.",
     "feedNames": {
       "stock": "Stock availability",
       "products": "Product feed"
     },
     "advancedSettings": "Advanced settings",
-    "scopedPublication": "Availability → {{shop}} · {{brands}}. Verified: {{completed}}, needs review: {{uncertain}}, rejected: {{rejected}}."
+    "scopedPublication": "Availability → {{shop}} · {{brands}}. Verified: {{completed}}, needs review: {{uncertain}}, rejected: {{rejected}}.",
+    "dailyChangesOnly": "Scheduled feeds refresh at most once daily. Only changed availability is sent to a shop; the last confirmed state is tracked separately for each product and shop."
   },
   "productPublication": {
     "intro": "Choose a saved product and fields. Review the proposed change first; the shop changes only after you confirm sending.",
@@ -4810,5 +4813,78 @@
     "weekPlanning": "Weekly payment plan",
     "weekScope": "Monday to Sunday, restricted to the selected month in month view. Select a row to show invoices.",
     "unknownAmount": "Payment amount unverified"
+  },
+  "orderWebhooks": {
+    "title": "Immediate order notifications",
+    "load": "Load notification settings",
+    "help": "Upgates notifies the Hub when an order is created, changed or deleted. The Hub fetches the affected order and passes it to existing processing. Changed SKUs then wait for transfer to enabled shops.",
+    "scope": "Enabling notifications keeps reservation rules, issue rules and stock authority under their separate settings. Periodic order checks recover notifications that did not arrive.",
+    "adminRequired": "An administrator manages these integration settings.",
+    "uncertain": "The response could not be verified. Load notification settings first; saving or registration is never retried automatically by this page.",
+    "requestFailed": "Notification settings or results could not be verified. Load the current state and check the connection.",
+    "collectionRequired": "Configure and enable order collection above first. Notifications do not enable it automatically.",
+    "connectionRequired": "The shop connection has changed or is not ready. Check it before enabling notifications.",
+    "enabled": "Notification reception enabled",
+    "disabled": "Notification reception disabled",
+    "baseUrl": "Public HTTPS Hub API address",
+    "baseUrlHelp": "The Hub API address Upgates can reach, usually ending in /api. No credentials or query parameters. The Hub secures notification access.",
+    "catchupInterval": "Fallback order check (seconds)",
+    "catchupHelp": "Recommended: 3600 seconds (hourly). Notifications are processed as they arrive; this check recovers missed changes. Range: 300–86400 seconds.",
+    "enableLabel": "Receive order notifications from this shop",
+    "unsaved": "You have unsaved changes. Saving also updates notification registration in Upgates.",
+    "saved": "The settings or request are saved. Registration and processing continue in the background; reload to view the result.",
+    "save": "Save notification settings",
+    "register": "Verify / restore registration in Upgates",
+    "pending": "Notifications awaiting processing",
+    "review": "Notifications requiring review",
+    "lastReceived": "Last received",
+    "registeredAt": "Registration verified",
+    "lastCompleted": "Last completed fetch",
+    "retry": "Fetch failed notifications again",
+    "events": "Recent notifications",
+    "event": "Event",
+    "state": "Processing",
+    "registration": {
+      "pending": "Registration queued",
+      "running": "Registration in progress",
+      "registered": "Registration verified",
+      "failed": "Registration requires review",
+      "disabled": "Registration disabled"
+    },
+    "eventsNames": {
+      "create": "New order",
+      "update": "Order changed",
+      "delete": "Order deleted"
+    },
+    "states": {
+      "pending": "Pending",
+      "running": "Fetching",
+      "completed": "Fetched",
+      "retry": "Awaiting retry",
+      "review": "Needs review"
+    },
+    "errors": {
+      "order_webhook_settings_changed": "Someone changed these settings. Load the current state.",
+      "order_webhook_collection_required": "Configure and enable order collection for this shop first.",
+      "order_webhook_connection_missing": "A usable Upgates connection is missing.",
+      "order_webhook_target_changed": "The shop connection changed. Verify its settings and registration.",
+      "order_webhook_invalid_request": "Check the HTTPS Hub API address and fallback check interval.",
+      "order_webhook_secret_unavailable": "The Hub cannot access the notification credential. Check the integration configuration on the server.",
+      "order_webhook_registration_ambiguous": "Registration cannot be verified unambiguously. Review the registered notifications before retrying.",
+      "order_webhook_source_unavailable": "Upgates could not be fetched. Stored notifications await a retry or review.",
+      "order_webhook_access_denied": "Access was denied. Check the API user permissions in Upgates.",
+      "hub_admin_required": "Only an administrator can change these settings.",
+      "order_webhook_registration_unverified": "Upgates did not confirm registration in the expected format. Check the connection and permissions; registration awaits review.",
+      "order_webhook_interrupted": "Previous processing was interrupted. The saved request awaits safe continuation.",
+      "order_webhook_order_not_found": "The order was not found in the Upgates response. Review it before fetching again.",
+      "order_webhook_source_behind": "Upgates returned an order version older than the notification. The saved notification remains pending.",
+      "order_webhook_registration_uncertain": "The original registration request is unconfirmed. Check existing registrations again. If uncertainty remains, verify that the original Upgates request finished before using recovery below.",
+      "order_webhook_registration_busy": "The Hub is processing registration. Load the current state and save your evidence after processing finishes."
+    },
+    "resolutionTitle": "Resolve an unconfirmed registration request",
+    "resolutionHelp": "Use only after verifying in Upgates or with its support that the original request cannot execute later. Viewing the current setting alone does not confirm this. The Hub records the evidence, checks registrations again and completes the saved configuration.",
+    "resolutionNote": "How you verified that the original request finished (10–2000 characters)",
+    "resolutionConfirm": "I verified that the original Upgates request has finished and cannot execute later.",
+    "resolutionSubmit": "Save evidence and resume registration checks"
   }
 }

@@ -22,6 +22,13 @@ def now():
     return datetime.now(timezone.utc)
 
 
+def schedule_values(enabled, interval, freshness):
+    """Legacy short automated schedules become daily; slower/manual stays intact."""
+    if enabled and interval < 86400:
+        return 86400, max(freshness, 172800)
+    return interval, freshness
+
+
 def _feed_keys(cfg):
     feeds = cfg.get("feeds") or {}
     sources = feeds.get("sources") if isinstance(feeds, dict) else None
@@ -52,8 +59,8 @@ def public(supplier, cfg, settings=None):
         "revision": settings.revision if settings else 0, "enabled": bool(settings and settings.enabled and not manual_only),
         "manual_only": manual_only, "source_kind": "b2b" if manual_only else "feed",
         "refresh_scope": "hub_products" if manual_only else "supplier_catalog", "refresh_progress": None, "latest_run": None,
-        "interval_seconds": settings.interval_seconds if settings else 3600,
-        "freshness_seconds": settings.freshness_seconds if settings else 21600,
+        "interval_seconds": settings.interval_seconds if settings else 86400,
+        "freshness_seconds": settings.freshness_seconds if settings else 172800,
         "min_coverage_percent": settings.min_coverage_percent if settings else 100,
         "availability": normalize_supplier_availability((cfg.get("adapter_settings") or {}).get("availability")),
         "publication": (cfg.get("adapter_settings") or {}).get("availability_publication"),
@@ -158,11 +165,12 @@ async def configure(db, supplier, payload):
         row.last_item_count, row.last_success_at = 0, None
     for key in ("enabled", "feed_key", "interval_seconds", "freshness_seconds", "min_coverage_percent"):
         setattr(row, key, getattr(payload, key))
+    row.interval_seconds, row.freshness_seconds = schedule_values(row.enabled, row.interval_seconds, row.freshness_seconds)
     row.revision += 1
     row.next_run_at = now()
     row.last_error = None
     # SupplierFeed is the registry; only this workflow's settings activate automation.
-    feed.fetch_interval_min = max(1, payload.interval_seconds // 60)
+    feed.fetch_interval_min = max(1, row.interval_seconds // 60)
     await db.flush()
     return public(supplier, cfg, row)
 
@@ -190,6 +198,11 @@ async def start_run(db, supplier_id):
     if not locked:
         return None
     row = await db.get(SupplierAvailabilitySettings, supplier_id, with_for_update=True)
+    if row and row.enabled and supplier.code != "sloger" and row.interval_seconds < 86400:
+        row.interval_seconds, row.freshness_seconds = schedule_values(True, row.interval_seconds, row.freshness_seconds)
+        row.revision += 1
+        if row.manual_requested_at is None and row.last_started_at is not None:
+            row.next_run_at = max(row.next_run_at, row.last_started_at + timedelta(seconds=row.interval_seconds))
     if not row or row.running_run_id or row.next_run_at > now() or (
             (not row.enabled or supplier.code == "sloger") and row.manual_requested_at is None):
         return None

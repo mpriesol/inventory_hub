@@ -11,7 +11,7 @@ from inventory_hub.services import supplier_availability as service
 from inventory_hub.services import supplier_links
 from inventory_hub.services.supplier_availability_source import AvailabilityError
 from inventory_hub.supplier_availability_types import (
-    SupplierAvailabilityInput, SupplierAvailabilityRunInput, SupplierLinkReconcileInput,
+    SupplierAvailabilityInput, SupplierAvailabilityRunInput, SupplierLinkReconcileInput, SupplierAvailabilityRecheckInput,
 )
 
 router = APIRouter(prefix="/supplier-availability", tags=["supplier-availability"], route_class=NoStoreRoute,
@@ -54,6 +54,12 @@ async def run_failures(supplier: SupplierCode, run_id: Annotated[int, Path(gt=0)
 @router.post("/{supplier}/run", status_code=202)
 async def run(supplier: SupplierCode, payload: SupplierAvailabilityRunInput, db: AsyncSession = Depends(get_session)):
     return await _call(service.request_run(db, supplier, payload))
+
+
+@router.post("/{supplier}/publication/recheck", status_code=202)
+async def recheck(supplier: SupplierCode, payload: SupplierAvailabilityRecheckInput, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services.supplier_availability_publication import request_recheck
+    return await _call(request_recheck(db, supplier, payload))
 
 
 @router.post("/{supplier}/links/reconcile")

@@ -237,7 +237,9 @@ async def start_run(db, shop_id):
         row.next_poll_at = now() + timedelta(seconds=values["retry_max_seconds"])
         return None
     at = now()
-    values = configuration["values"]
+    from inventory_hub.services.order_webhooks import effective_poll_interval
+    values = dict(configuration["values"])
+    values["poll_interval_seconds"] = await effective_poll_interval(db, shop_id, values["poll_interval_seconds"])
     manual = row.manual_requested_at is not None
     reconcile_due = row.last_reconciled_at is None or at - row.last_reconciled_at >= timedelta(hours=values["reconcile_interval_hours"])
     # Delta scans take every other turn while a multi-window reconciliation is in progress.
@@ -294,9 +296,22 @@ async def check_run(db, run_id):
 
 async def save_page(db, run_id, entries):
     row, run, policy = await _running(db, run_id)
+    await save_entries(db, run.shop_id, policy, entries)
+    run.pages += 1
+    run.observed_count += len(entries)
+    row.entries_seen = run.observed_count
+    await db.flush()
+
+
+async def save_entries(db, shop_id, policy, entries):
+    """Merge authoritative headers while the caller holds collection settings.
+
+    Shared by full scans and targeted webhook reconciliation. This updates no
+    collection coverage cursor and performs no stock operation.
+    """
     at = now()
     if entries:
-        existing = (await db.scalars(select(OrderInboxEntry).where(OrderInboxEntry.shop_id == run.shop_id,
+        existing = (await db.scalars(select(OrderInboxEntry).where(OrderInboxEntry.shop_id == shop_id,
             or_(OrderInboxEntry.source_uuid.in_([entry["uuid"] for entry in entries]),
                 OrderInboxEntry.order_number.in_([entry["order_number"] for entry in entries]))))).all()
         by_uuid = {entry.source_uuid: entry for entry in existing}
@@ -315,7 +330,7 @@ async def save_page(db, run_id, entries):
             review_reason = ("stock_native_historical_change" if created < policy.starts_at else
                              "order_collection_deleted" if data["deleted"] else None)
             if old is None:
-                old = OrderInboxEntry(shop_id=run.shop_id, source_uuid=identifier, order_number=number,
+                old = OrderInboxEntry(shop_id=shop_id, source_uuid=identifier, order_number=number,
                     created_at=created, updated_at=updated, deleted=data["deleted"], origin=data["origin"],
                     status_id=data["status_id"], observation_hash=digest, observed_at=at, last_seen_at=at,
                     review_reason=review_reason)
@@ -323,6 +338,13 @@ async def save_page(db, run_id, entries):
                 by_uuid[identifier], by_number[number] = old, old
             else:
                 old.last_seen_at = at
+                if data["deleted"]:
+                    # Targeted deleted-order reads establish current deletion
+                    # membership even when Upgates retains an older update time.
+                    # This is a review barrier, never a synthetic stock return.
+                    old.deleted = True
+                    if old.review_reason not in ("order_collection_identity_conflict", "order_collection_source_conflict"):
+                        old.review_reason = "order_collection_deleted"
                 if created != old.created_at:
                     old.review_reason = "order_collection_identity_conflict"
                 elif updated < old.updated_at:
@@ -338,9 +360,6 @@ async def save_page(db, run_id, entries):
                 elif created < policy.starts_at and old.review_reason not in (
                         "order_collection_identity_conflict", "order_collection_source_conflict"):
                     old.review_reason = "stock_native_historical_change"
-    run.pages += 1
-    run.observed_count += len(entries)
-    row.entries_seen = run.observed_count
     await db.flush()
 
 
@@ -357,6 +376,13 @@ async def complete_run(db, run_id):
     row.last_completed_at, row.last_error, row.failure_count, row.retry_after_at = at, None, 0, None
     row.next_poll_at = max(at, row.last_started_at + timedelta(seconds=60)) if row.manual_requested_at else at + timedelta(seconds=run.configuration_snapshot["poll_interval_seconds"])
     run.status, run.completed_at = "completed", at
+    if run.mode == "reconcile":
+        # Reconciliation must not consume the hourly webhook catch-up slot.
+        # Its next pass is an immediate delta, then the ordinary interval resumes.
+        from inventory_hub.order_webhook_models import OrderWebhookSettings
+        webhook = await db.get(OrderWebhookSettings, run.shop_id)
+        if webhook and webhook.enabled and webhook.registration_status == "registered":
+            row.next_poll_at = max(at, row.retry_after_at or at)
 
 
 async def fail_run(db, run_id, code, retry_after=None):

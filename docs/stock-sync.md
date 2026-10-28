@@ -38,7 +38,13 @@ Pre ďalší prenos platí `rozdiel = (lokálne množstvo − uložené lokálne
 
 Natívna evidencia sa opiera o presné skladové identity a systémový typ stavu, nie o názov stavu či lokálnu obchodnú politiku. Neznáme identity, necelé množstvá, nepodporované zostavy, zmazané objednávky a nepreukázané storno či opätovné otvorenie sa nesmú odhadovať. Taký prípad vyžaduje kontrolu a podľa potreby údržbové zosúladenie. Inkrementálny zber zachytí aj nové zmeny objednávok vytvorených pred začiatkom lokálnej skladovej evidencie: dolná hranica dátumu vytvorenia je rok 1900, hranica poslednej zmeny zostáva inkrementálna. Historické zmeny sa tým automaticky nezaúčtujú do skladu.
 
-Pravidelná synchronizácia pracuje s oneskorením načítania objednávok. Nejde o okamžitú spoločnú pokladňovú rezerváciu medzi oboma e-shopmi. Kontrola aktuálnosti znižuje riziko starej projekcie, ale nedokazuje, že tesne pred odoslaním nevznikla nová objednávka. Kratší interval načítania objednávok a prenosu znižuje túto medzeru. Hub kontroluje čerstvé dokončené načítanie, kurzor objednávok a chýbajúce alebo nedokončené spracovanie na všetkých zúčastnených kanáloch.
+Pravidelná synchronizácia pracuje s oneskorením načítania objednávok. Nejde o okamžitú spoločnú pokladňovú rezerváciu medzi oboma e-shopmi. Kontrola aktuálnosti znižuje riziko starej projekcie, ale nedokazuje, že tesne pred odoslaním nevznikla nová objednávka. Hub kontroluje zber objednávok a chýbajúce alebo nedokončené spracovanie na všetkých zúčastnených kanáloch.
+
+Bez výslovne aktivovaných webhookov zostáva pôvodná kontrola veku dokončeného načítania aj kurzora, predvolene 900 sekúnd. Režim webhookov vyžaduje registráciu pre presný cieľ e-shopu overenú počas posledných šiestich hodín, zapnutý bezchybný zber a dokončený inkrementálny kontrolný priechod po registrácii. Samotné prijatie oznámenia nemení kurzor ani čas úplného načítania. Pravidelná kontrola registrácie a kontrolný zber naďalej používajú API.
+
+Pri webhookoch je prípustný vek kontrolného priechodu ohraničený jeho dokončením plus nastavený interval kontrolného zberu, dva časové limity priechodu a 60 sekúnd pre plánovač. Pri predvolenej hodinovej kontrole a 180-sekundovom limite je hranica 67 minút. Rezerva pokrýva prípadný historický kontrolný priechod bezprostredne nasledovaný inkrementálnym. Historická kontrola sama túto lehotu neobnoví. Neoverená registrácia, prekročená lehota alebo chyba zberu prenos zastaví.
+
+Každé známe nespracované, opakované alebo na kontrolu odložené oznámenie blokuje publikovanie zásob spoločného skladu aj po vypnutí webhookov. Po jeho prevedení na aktuálny záznam objednávky naďalej platia kontroly lokálneho spracovania, rezervácií a natívnych účinkov. Ticho na webhooku nedokazuje úplnosť; zmeškanú udalosť zachytáva kontrolný zber. Nasadenie tejto cesty nezapína webhooks, automatické skladové spracovanie ani oprávnenie odosielať zásoby. Údržbové vytvorenie kontrolného bodu naďalej vyžaduje úplný zber po otvorení uzáveru.
 
 ### Čakajúca objednávka a skladové spracovanie
 
@@ -49,6 +55,25 @@ Po novom príjme alebo uvoľnení rezervácie inej objednávky môže pribudnú�
 Vratku alebo storno po pôvodnom výdaji možno výslovne uzavrieť cez skladovú výnimku v prehľade objednávok, ak sa vydaný obsah nezmenil a obsluha overila evidenciu. Uzavretie má vlastný nemenný audit a nevytvára príjem ani nový výdaj. Pri zmene podkladu, politiky alebo nastavení oprávnenia je potrebná nová kontrola. Postup je v [objednávkovej príručke](order-workflows.md#po-výdaji).
 
 ## Prenášané údaje
+
+Migrácia **036** pridáva `stock_sync_dirty`: zmena voľnej vlastnej zásoby alebo
+natívneho účinku objednávky uloží v rovnakej transakcii podnet pre každé už
+povolené prepojenie e-shopu a skladu. Spracovateľ pripraví prenos najviac 100
+dotknutých SKU bez čakania na bežný interval. Použije existujúci `delta_v1`,
+rovnaké kontroly autority, podkladov a neistých zápisov. Zber hlavičiek objednávok
+sám tento rad nevytvára; podnet vzniká až pri zmene skladových údajov.
+
+Každý cieľ má vlastnú generáciu podnetu. Úspešný výsledok potvrdí iba generáciu
+priradenú konkrétnemu priechodu; novšia zmena počas API volania zostane čakajúca.
+Neistý výsledok zachová pôvodný priechod a jeho blokáciu až do výslovného
+vyhodnotenia. Trvalé chyby nespúšťajú opakovanie každých pár sekúnd. Automatický
+prenos vybraných SKU neposúva termín pravidelnej kontroly celého katalógu;
+kontrola po termíne dostane prednosť, aby ju časté objednávky neodkladali.
+Prebiehajúci priechod a spoločný limit API môžu ovplyvniť výsledné oneskorenie.
+
+Migrácia neprepisuje skladové množstvá, neaktivuje autoritu a nevytvára podnety
+spätne. Vypnuté alebo neautorizované kanály zostávajú vypnuté. Nasadenie je
+príprava mechanizmu; reálna aktivácia vyžaduje pôvodné podmienky pilotu.
 
 Vlastné voľné množstvo je fyzické množstvo mínus rezervácie mínus karanténa. Zásoby dodávateľa sa doň nepripočítavajú. Dostupnosť sa vyhodnotí pri každom priechode:
 

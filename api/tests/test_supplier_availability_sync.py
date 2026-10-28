@@ -17,7 +17,7 @@ from inventory_hub.routers.supplier_availability import router
 from inventory_hub.services import supplier_availability as service
 from inventory_hub.services.supplier_availability_source import AvailabilityError, configuration, observation, parse, quantity
 from inventory_hub.settings import settings
-from inventory_hub.supplier_availability_types import SupplierAvailabilityInput
+from inventory_hub.supplier_availability_types import SupplierAvailabilityInput, SupplierAvailabilityRecheckInput
 
 
 class SupplierFactsTests(unittest.TestCase):
@@ -99,6 +99,18 @@ class SupplierFactsTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValidationError):
                 SupplierAvailabilityInput(**{"expected_revision": 0, **change})
 
+    def test_daily_defaults_and_legacy_normalization_keep_disabled_and_weekly_values(self):
+        defaults = SupplierAvailabilityInput(expected_revision=0)
+        self.assertEqual((defaults.interval_seconds, defaults.freshness_seconds), (86400, 172800))
+        self.assertEqual(service.schedule_values(True, 3600, 21600), (86400, 172800))
+        self.assertEqual(service.schedule_values(False, 3600, 21600), (3600, 21600))
+        self.assertEqual(service.schedule_values(True, 604800, 604800), (604800, 604800))
+
+    def test_explicit_recheck_is_bounded_and_cannot_smuggle_nonphysical_identity(self):
+        for ids in ([], [0], [-1], [True], ['1'], [1, 1], list(range(1, 102))):
+            with self.subTest(ids=ids), self.assertRaises(ValidationError):
+                SupplierAvailabilityRecheckInput(expected_revision=1, product_ids=ids)
+
     def test_live_supplier_expiry_is_visible_without_invalidating_editor_metadata(self):
         from inventory_hub.services.product_editor import _make_row
         facts = {"id": 1, "sku": "SKU", "name": "Name", "brand": None, "image_url": None,
@@ -127,7 +139,7 @@ class SupplierRoutesTests(unittest.TestCase):
              patch.object(service, "request_run", AsyncMock(return_value={"queued": True})), \
              patch.object(service, "source_observation", AsyncMock(return_value={"status": "not_loaded"})) as observation_read:
             for method, url in (("GET", "/supplier-availability"), ("GET", "/supplier-availability/paul-lange/runs/1/failures"), ("GET", "/supplier-availability/northfinder/observation?sku=103404-281-103"), ("PUT", "/supplier-availability/paul-lange"),
-                                ("POST", "/supplier-availability/paul-lange/run")):
+                                ("POST", "/supplier-availability/paul-lange/run"), ("POST", "/supplier-availability/paul-lange/publication/recheck")):
                 response = client.request(method, url, json={"expected_revision": 0})
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.headers["cache-control"], "no-store")

@@ -72,8 +72,8 @@ The entire release workflow uses a common concurrency group with
 not interrupted by a newer run. Do not use cancellation to speed up deployment.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes twenty-nine upgrade
-modules, `005` through `033`, in their existing order. Each module retains its
+temporary API container. Its explicit list invokes thirty-two upgrade
+modules, `005` through `036`, in their existing order. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The first failure stops the runner and prevents the service restart. Already
 committed migrations remain applied. No schema SQL is changed by this optimization.
@@ -82,6 +82,17 @@ model changes add `030_shop_identity.sql`, `031_item_units.sql` and
 `032_supplier_authority.sql`; they retain historical data and leave publication
 authority switches unchanged. After new unit/identity writes, recovery uses a
 compatible forward fix, not old writers that ignore these fields.
+
+Migrations 034–036 add supplier delivery checkpoints, authenticated order
+notifications and a per-target stock wakeup queue. Migration 034 slows existing
+enabled sub-daily supplier schedules to 86400 seconds and increases freshness for
+future observations; disabled sources, weekly schedules and existing observation
+expiry are preserved. Migrations 035/036 do not enable collectors, webhooks,
+processing or stock authority. The existing private supplier-credential mount
+also holds generated webhook credentials; preserve it in backup and recovery.
+Rollback should pause webhook settings and supplier publication, retain all new
+tables, event generations and uncertain-write evidence, then use a compatible
+forward fix. Reverting code does not undo the daily schedule migration.
 
 After successful migrations, the existing `--force-recreate` for `api`,
 `frontend-build` and `caddy` remains. Both public health routes must return HTTP

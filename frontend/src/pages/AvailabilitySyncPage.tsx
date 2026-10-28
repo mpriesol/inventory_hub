@@ -86,7 +86,8 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
   useEffect(() => { resetForm(value); }, [refreshVersion]);
   useEffect(() => { onBusy(value.supplier, operation.busy); return () => onBusy(value.supplier, false); }, [operation.busy, value.supplier]);
   const dirty = freshness !== String(baseline.freshness_seconds) || (!manualOnly && (enabled !== baseline.enabled || feed !== baseline.feed_key || interval !== String(baseline.interval_seconds) || coverage !== String(baseline.min_coverage_percent)));
-  const valid = integer(freshness, 300, 2592000) && (manualOnly || (value.feed_keys.includes(feed) && integer(interval, 300, 604800) && Number(freshness) >= Number(interval) && integer(coverage, 1, 100)));
+  const minInterval = enabled ? 86400 : 300;
+  const valid = integer(freshness, 300, 2592000) && (manualOnly || (value.feed_keys.includes(feed) && integer(interval, minInterval, 604800) && Number(freshness) >= Number(interval) + (enabled ? 3600 : 0) && integer(coverage, 1, 100)));
   const date = (stamp: string | null) => stamp ? new Date(stamp).toLocaleString(i18n.language) : '—';
   const stale = value.last_success_at ? Date.now() - new Date(value.last_success_at).getTime() > value.freshness_seconds * 1000 : true;
   const configChanged = baseline.revision !== value.revision;
@@ -128,19 +129,25 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
     {status === 'not_loaded' && !value.last_error && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
     {status === 'configuration_error' && <p role="alert">{t('availabilitySync.configurationHelp')}</p>}
     {value.publication?.enabled && <p data-testid={id('publication')}>{t('availabilitySync.scopedPublication', { shop: value.publication.shop_code, brands: value.publication.brands.join(', '), completed: value.publication.counts?.completed || 0, uncertain: value.publication.counts?.uncertain || 0, rejected: value.publication.counts?.rejected || 0 })}</p>}
-    {!manualOnly && <p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { minutes: value.interval_seconds / 60 })}</p>}
+    {!manualOnly && <><p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { hours: value.interval_seconds / 3600 })}</p><p className="opening-stock-muted">{t('availabilitySync.dailyChangesOnly')}</p></>}
     {value.latest_run && <SupplierRunResult key={value.latest_run.id} supplier={value.supplier} run={value.latest_run} />}
     <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>
     {manualOnly && <p data-testid={id('manual-help')}>{t('availabilitySync.manualB2bHelp')}</p>}
     <div className="availability-fields">
       {!manualOnly && <label>{t('availabilitySync.feed')}<select data-testid={id('feed')} value={feed} disabled={blocked} onChange={event => { setFeed(event.target.value); setSaved(false); }}>{value.feed_keys.length === 0 && <option value="">{t('availabilitySync.noFeeds')}</option>}{value.feed_keys.map(key => <option key={key} value={key}>{t(`availabilitySync.feedNames.${key}`, { defaultValue: key })}</option>)}</select></label>}
-      {!manualOnly && <label>{t('availabilitySync.interval')}<input data-testid={id('interval')} type="number" min="300" max="604800" step="1" value={interval} disabled={blocked} onChange={event => { setInterval(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.rangeSeconds', { min: 300, max: 604800 })}</small></label>}
+      {!manualOnly && <label>{t('availabilitySync.interval')}<input data-testid={id('interval')} type="number" min={minInterval} max="604800" step="1" value={interval} disabled={blocked} onChange={event => { setInterval(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.rangeSeconds', { min: minInterval, max: 604800 })}</small></label>}
     </div><details className="availability-advanced"><summary>{t('availabilitySync.advancedSettings')}</summary><div className="availability-fields">
       <label>{t('availabilitySync.freshness')}<input data-testid={id('freshness')} type="number" min="300" max="2592000" step="1" value={freshness} disabled={blocked} onChange={event => { setFreshness(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.freshnessHelp')}</small></label>
       {!manualOnly && <label>{t('availabilitySync.coverage')}<input data-testid={id('coverage')} type="number" min="1" max="100" step="1" value={coverage} disabled={blocked} onChange={event => { setCoverage(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.coverageHelp')}</small></label>}
     </div>
     </details>
-    {!manualOnly && <label className="availability-check"><input data-testid={id('enabled')} type="checkbox" checked={enabled} disabled={blocked} onChange={event => { setEnabled(event.target.checked); setSaved(false); }} />{t('availabilitySync.supplierAuto')}</label>}
+    {!manualOnly && <label className="availability-check"><input data-testid={id('enabled')} type="checkbox" checked={enabled} disabled={blocked} onChange={event => {
+      setEnabled(event.target.checked); setSaved(false);
+      if (event.target.checked) {
+        const dailyInterval = Math.max(86400, Number(interval) || 86400);
+        setInterval(String(dailyInterval)); setFreshness(String(Math.max(dailyInterval + 3600, Number(freshness) || 172800)));
+      }
+    }} />{t('availabilitySync.supplierAuto')}</label>}
     <dl className="availability-status"><div><dt>{t('availabilitySync.lastSuccess')}</dt><dd>{date(value.last_success_at)}</dd></div>{!manualOnly && <div><dt>{t('availabilitySync.nextRun')}</dt><dd>{value.enabled ? date(value.next_run_at) : t('availabilitySync.automaticOff')}</dd></div>}{manualOnly && <div><dt>{t('availabilitySync.itemCount')}</dt><dd>{value.last_item_count ?? '—'}</dd></div>}</dl>
     {value.refresh_progress && <div data-testid={id('refresh-progress')} role="status">
       <p>{t('availabilitySync.b2bProgress', value.refresh_progress)}</p>
