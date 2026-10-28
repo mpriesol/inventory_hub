@@ -5,13 +5,26 @@ Používateľský postup pre stránku **Nastavenia → Dostupnosti a prenos zás
 ## Načítanie dostupnosti dodávateľa
 
 1. Odomknite stránku existujúcim operátorským tokenom a kliknite **Načítať / obnoviť nastavenia a stav**.
-2. Vyberte nakonfigurovaný zdroj dostupnosti. Nastavte interval načítania v sekundách, v rozšírených nastaveniach platnosť údajov a prah upozornenia na menší feed.
+2. Vyberte nakonfigurovaný zdroj dostupnosti. Automatické načítanie nastavte raz denne alebo menej často; v rozšírených nastaveniach upravte platnosť údajov a prah upozornenia na menší feed.
 3. Uložte nastavenia. Pre jednorazový import stačí **Načítať dostupnosť teraz**. Pre ďalšie pravidelné importy zapnite **Pravidelne načítavať tento zdroj** a uložte zmenu.
 4. Počas čakania a načítania sa stav obnovuje automaticky. Súhrn ukáže počet položiek vo feede, prijatých, chybných a bez údaja o množstve. **Zobraziť preskočené položky** otvorí kódy, hodnoty a konkrétne dôvody. Ručné spustenie iba zaradí prácu do fronty; neznamená dokončený import.
 
-Interval je 300 až 604 800 sekúnd. Platnosť je 300 až 2 592 000 sekúnd a musí byť aspoň taká dlhá ako interval. Prah 1 až 100 % upozorní na menší zdroj; predvolené nastavenie je 100 %. Platné položky sa prijmú aj pri upozornení. Pri výrazne menšom zdroji najprv overte príčinu. Chybné alebo chýbajúce položky neprepíšu predchádzajúce údaje nulami a nepredĺžia ich platnosť. Po vypršaní ich platnosti sa použije neznáma dostupnosť.
+Predvolený automatický interval je 24 hodín a platnosť údajov 48 hodín. Automatický interval môže byť 24 hodín až 7 dní; existujúce týždenné zdroje zostávajú týždenné. Staršie zapnuté kratšie intervaly sa upravia na denné. Vypnuté zdroje ani ručné B2B čítanie Sloger sa nezapnú. Ručný refresh možno vyžiadať aj skôr. Platnosť je 300 až 2 592 000 sekúnd a musí pokrývať interval; formulár pri automatike ponechá aspoň hodinu rezervy. Prah 1 až 100 % upozorní na menší zdroj; predvolené nastavenie je 100 %. Platné položky sa prijmú aj pri upozornení. Pri výrazne menšom zdroji najprv overte príčinu. Chybné alebo chýbajúce položky neprepíšu predchádzajúce údaje nulami a nepredĺžia ich platnosť. Po vypršaní ich platnosti sa použije neznáma dostupnosť.
 
 Údaje dodávateľa nikdy nepridávajú fyzické kusy do nášho skladu. Text dostupnosti patrí do konfigurácie konkrétneho dodávateľa. Štandardný text pre dostupný tovar dodávateľa je **do 5 dní**, ak dodávateľ nemá vlastné nastavenie. Neznáma alebo zastaraná dostupnosť má text **overíme** a tovar zostáva objednateľný.
+
+Pri zapnutom prenose dodávateľských dostupností si Hub pamätá posledný potvrdený
+stav osobitne pre každú kartu a cieľový e-shop. Nový feed s rovnakou dostupnosťou
+nespôsobí nové API volanie pre daný produkt. Odosielajú sa len zmenené texty;
+nový počet kusov u dodávateľa bez zmeny dostupnosti nestačí na odoslanie. Aj
+vypršanie platnosti sa spracuje raz ako zmena na **overíme**. Existujúce
+**SKLADOM** sa v tomto režime zachová do prevzatia zásob po inventúre. Vlastné
+množstvá sa týmto prenosom nemenia.
+
+Neúspešný prenos nezmaže posledné potvrdenie ani čakajúcu zmenu. Opravená identita
+alebo politika vyvolá nové overenie; dočasná chyba pred zápisom sa opakuje
+s odstupom. Neistý zápis zostáva na osobitné vyriešenie. Podrobnosti a ohraničené
+ručné preoverenie sú v [dodávateľských dostupnostiach](supplier-availability.md#daily-refresh-and-delivery-of-changed-labels-28-october-2026).
 
 ## Prenos do BIKETREK a xTrek
 
@@ -32,10 +45,10 @@ Prenos odosiela dostupné množstvo a text dostupnosti. Vlastné voľné kusy ma
 Pri **Povoliť odosielanie zásob do tohto e-shopu** treba potvrdiť skutočné prevádzkové nastavenie:
 
 - Hub je jediný zdroj pravdy o zásobách pre oba e-shopy.
-- Nezávislé odpočty a iné zápisy zásob sú vypnuté v oboch e-shopoch aj pokladniach.
+- Natívne odpočty objednávok Upgates zostávajú zapnuté a ich účinky sú overené. Iné nezávislé integrácie zapisujúce zásoby sú vypnuté.
 - Objednávky a počiatočné stavy sú zosúladené so spoločným skladom.
 
-Tieto potvrdenia nenastavujú Upgates za vás. Absolútne množstvo z Hubu môže prepísať súbežný odpočet v e-shope. Kontroly čerstvosti objednávok obmedzujú oneskorenie, ale pravidelné načítanie objednávok nie je okamžitá rezervácia pri dokončení nákupu.
+Tieto potvrdenia nenastavujú Upgates za vás. Pravidelný protokol `delta_v1` posiela rozdiel množstva a odpočíta už vykonaný natívny účinok objednávky konkrétneho e-shopu, takže rovnaký predaj neodpočíta druhýkrát. Každé SKU potrebuje overený počiatočný kontrolný bod. Absolútne množstvo patrí iba do osobitnej potvrdenej údržby. Webhooky zrýchľujú prenos oznámených zmien; kontrolný zber zachytáva stratené oznámenia. Asynchrónny prenos nie je okamžitá spoločná rezervácia posledného kusu medzi e-shopmi. Podmienky sú v [pravidelnom prenose](stock-sync.md).
 
 Serverové povolenie zápisu je ďalšia podmienka. Ak je vypnuté, stránka to zobrazí a tlačidlo prenosu zostane nedostupné. Nasadenie kódu ani migrácia ho samy nezapnú. Pri zmene priradenia skladu alebo cieľového e-shopu môže systém vyžiadať nové potvrdenie.
 
@@ -47,7 +60,7 @@ V posledných prenosoch otvorte **Detail** a obnovujte výsledok. Počet overen�
 
 Ak sa stratí odpoveď pri uložení nastavení alebo spustení práce, najprv obnovte nastavenia a stav. Stránka zápis automaticky neopakuje. Načítanie stavu po strate odpovede môže ukázať, že sa pôvodná operácia dokončila.
 
-**Neistý zápis zásob** vyžaduje osobitný postup. Najprv treba overiť, že pôvodná vzdialená požiadavka už nemôže dobehnúť. Až potom zaškrtnite potvrdenie v detaile položky a použite **Načítať stav a uzavrieť neistotu**. Táto akcia načíta stav e-shopu a uzavrie výsledok podľa zhody; nezopakuje zápis. Samotná zhoda pri jednom načítaní bez ukončenia pôvodnej požiadavky nestačí.
+**Neistý zápis zásob** vyžaduje osobitný postup. Najprv treba overiť, že pôvodná vzdialená požiadavka už nemôže dobehnúť, a doložiť, či sa rozdiel aplikoval. Vyhodnotenie `delta_v1` vyžaduje výslovný výsledok a dôkaz; samotná zhoda aktuálneho počtu pri jednom načítaní to nedokazuje. Pôvodný zápis sa automaticky neopakuje a blokácia zostáva do vyriešenia. Podrobný postup je v [pravidelnom prenose](stock-sync.md).
 
 Obnovenie nastavení nahrádza neuložené zmeny formulára. Zmenené nastavenia a čakajúce uloženie sú označené. Token sa neukladá do adresy ani úložiska prehliadača a pri zamknutí sa odstráni z pamäte.
 

@@ -21,6 +21,10 @@ PUBLIC_ENDPOINTS = frozenset({
     ('GET', '/health'), ('HEAD', '/health'),
     ('GET', '/auth/session'), ('POST', '/auth/login'),
     ('POST', '/auth/logout'), ('POST', '/auth/token-session'),
+    # Each exact delivery route verifies its own shop-scoped Basic credential.
+    ('POST', '/webhooks/upgates/orders/create'),
+    ('POST', '/webhooks/upgates/orders/update'),
+    ('POST', '/webhooks/upgates/orders/delete'),
 })
 
 

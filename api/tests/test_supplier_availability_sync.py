@@ -99,6 +99,13 @@ class SupplierFactsTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValidationError):
                 SupplierAvailabilityInput(**{"expected_revision": 0, **change})
 
+    def test_daily_defaults_and_legacy_normalization_keep_disabled_and_weekly_values(self):
+        defaults = SupplierAvailabilityInput(expected_revision=0)
+        self.assertEqual((defaults.interval_seconds, defaults.freshness_seconds), (86400, 172800))
+        self.assertEqual(service.schedule_values(True, 3600, 21600), (86400, 172800))
+        self.assertEqual(service.schedule_values(False, 3600, 21600), (3600, 21600))
+        self.assertEqual(service.schedule_values(True, 604800, 604800), (604800, 604800))
+
     def test_live_supplier_expiry_is_visible_without_invalidating_editor_metadata(self):
         from inventory_hub.services.product_editor import _make_row
         facts = {"id": 1, "sku": "SKU", "name": "Name", "brand": None, "image_url": None,

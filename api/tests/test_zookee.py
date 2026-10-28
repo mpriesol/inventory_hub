@@ -124,7 +124,8 @@ class ZookeeCatalogTests(unittest.TestCase):
         self.assertEqual(desired_label('2', False, labels), 'SKLADOM')
         self.assertEqual(desired_label('0', True, labels), 'do 5 dní')
         self.assertEqual(desired_label('0', False, labels), 'vypredané')
-        self.assertIsNone(desired_label('0', None, labels))
+        self.assertEqual(desired_label('0', None, labels), 'overíme')
+        self.assertEqual(desired_label('0', None, labels, 'SKLADOM'), 'SKLADOM')
 
 
 class ReceivingLookupRegistrationTests(unittest.TestCase):

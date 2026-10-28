@@ -168,3 +168,65 @@ Pred merge treba overiť aspoň tieto scenáre v izolovanom PostgreSQL a synteti
 Pri návrate verzie najprv vypnúť príslušné automatické režimy/použiť pauzu a overiť výsledky rozpracovaných úloh. Aditívne tabuľky a už zaúčtované pohyby sa ponechajú. Revert kódu nesmie spätne mazať rezervácie alebo obracať ledger. Obnova starého kódu sama nenahrádza kompenzačný skladový postup.
 
 Publikovanie pridáva do `OperationalValues` dedený limit `publication_batch_size` (20, rozsah 1–100) a platnosť porovnania `publication_preview_minutes` (15 minút, rozsah 5–60). Trvalá blokácia skladu pri publikovaní pozastaví aj automatické lokálne spracovanie; prebiehajúca úloha, ktorá na ňu narazí, sa odloží do opakovania. Nejde o bežné nastavenie `processing_paused`.
+
+## Webhooky objednávok a menej častý zber zmien (28. 10. 2026)
+
+Aditívna migrácia `035_order_webhooks.sql` pridáva výslovne zapínateľné nastavenia
+`order_webhook_settings` a trvalú frontu `order_webhook_events`. Migrácia nezapína
+zber, rezervácie, výdaj ani skladovú autoritu. Administrátorské ovládanie je na
+stránke objednávkového inboxu; nastavenia a výsledky sa čítajú z Hubu. Konfigurácia
+alebo obnova registrácie zaradí osobitnú úlohu s volaniami Upgates.
+
+| API | Význam |
+| --- | --- |
+| `GET /order-webhooks/status?shop_code=...` | Uložené nastavenie, stav registrácie, počty čakajúcich/chybných oznámení a posledných 50 výsledkov. Bez čítania Upgates. |
+| `POST /order-webhooks/configure` | `{shop_code,expected_revision,confirmed:true,enabled,public_base_url,catchup_interval_seconds}`. HTTPS základ verejného Hub API napr. `https://hub.example/api`; interval 300–86400 sekúnd, predvolene 3600. Zapnutie vyžaduje už povolený kolektor rovnakého cieľa. |
+| `POST /order-webhooks/register` | `{shop_code,expected_revision,confirmed:true}` zaradí overenie a doplnenie/opravu troch vlastných registrácií. |
+| `POST /order-webhooks/retry` | Rovnaké potvrdenie zaradí chybné alebo odložené oznámenia na nové čítanie. Neodstraňuje skladové ani identitné výnimky. |
+
+Všetky tieto ovládacie cesty vyžadujú administrátora a `no-store`. Jediné výnimky
+z operator-session hranice sú presné `POST /webhooks/upgates/orders/create`,
+`update` a `delete`. Každá overuje samostatné Basic prihlasovanie: názov e-shopu
+a serverom generované 384-bitové tajomstvo. DB obsahuje iba SHA-256 odtlačok;
+verzovaný súbor s pôvodným tajomstvom ostáva na existujúcom súkromnom trvalom
+`SUPPLIER_CREDENTIALS_ROOT` s právami 0600. Bežné API, UI ani logy ho nevracajú.
+Upgates registrácia používa dokumentované prihlasovanie v HTTPS URL. Pole
+`project_name` nie je autentizácia a nepáruje skladové identity.
+
+Príjem má limit 2 MB a 5000 položiek. Uloží iba číslo objednávky, typ a čas
+udalosti, odtlačok a stav spracovania; neprijíma skladové množstvá ani osobné údaje
+ako autoritatívne fakty. HTTP 204 nasleduje až po commite. Spracovanie sa zmestí
+do vlastného dvojsekundového limitu vrátane DB; pri zlyhaní odpovie 503, aby
+Upgates mohol opakovať. Upgates považuje aj prekročenie svojho trojsekundového
+limitu za doručenie, preto zostáva nevyhnutný nezávislý úplný zber zmien.
+
+Fronta zlučuje oznámenia podľa `(shop_id, order_number)`. Rovnaké a staršie
+udalosti neobnovia dokončenú úlohu. Novšia generácia zostane čakajúca aj po
+neskorom výsledku staršej požiadavky. Samostatný worker s PostgreSQL poradným
+zámkom číta najviac 100 dotknutých čísel objednávok naraz, overí členstvo odpovede,
+UUID a aktuálne metadáta a použije spoločné `order_collection.save_entries`.
+Chýbajúce aktívne objednávky overí aj v zmazaných. Zmazanie zostáva na kontrolu;
+nikdy nevytvorí automatickú vratku. Po reštarte sa nedokončené čítanie obnoví.
+Dočasné chyby majú rastúci odklad, po ôsmich pokusoch zostanú viditeľné na kontrolu.
+Spracovateľ inboxu ďalej používa úplný čerstvý zdroj a existujúce aktivačné hranice.
+
+Registrátor pred každým zápisom načíta aktuálne webhooky cez existujúce API
+prístupy. Stabilné názvy patriace danej inštalácii umožnia po prerušení nájsť
+už vytvorený hook; nejasné duplicity zastavia registráciu. Cudzie webhooky sa
+nemenia. Zodpovedajúce registrácie sa znova nezapisujú. Pri vypnutí sa vlastné
+hooky deaktivujú, nevymazávajú. Overenie registrácie prebieha raz za hodinu;
+upstream údaj o úspešnom doručení nenahrádza lokálny príjem.
+
+Úspešne registrovaný webhookový režim používa nastavený interval úplného delta
+zberu, predvolene raz za hodinu. Pri neoverenej registrácii zostáva pôvodné
+pravidelné čítanie. Po kontrolnej rekonciliácii nasleduje delta okamžite, aby sa
+hodinový interval nepredĺžil striedaním dvoch režimov. Webhook sám nikdy neposunie
+`cursor_at` ani `last_completed_at` kolektora. Podmienky úplnosti pred publikovaním
+zásob sú opísané v [pravidelnom prenose](stock-sync.md); známe čakajúce alebo
+nevyriešené oznámenia ostávajú blokujúcim podkladom.
+
+Tento kontrakt opisuje implementáciu a syntetické testy. Registrácia konkrétnej
+produkcie, jej aktivačné hranice a overený živý objednávkový cyklus sa dokladujú
+osobitne. Referencie: [udalosti objednávok](https://docs.upgates.com/webhooks/orders),
+[príjem a timeouty](https://docs.upgates.com/webhooks/intro),
+[správa webhookov](https://docs.upgates.com/api-reference/webhooky).

@@ -117,7 +117,6 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
     peers = await channels(db, warehouse.id)
     if check_authority and policy and policy.authorized and policy.authority_snapshot != peers:
         result.append('stock_sync_authority_changed')
-    cutoff = now() - timedelta(seconds=values['max_order_age_seconds'])
     oldest = None
     if check_authority and policy and policy.protocol == 'delta_v1':
         from inventory_hub.stock_delta_models import StockSyncCheckpoint
@@ -128,11 +127,11 @@ async def blockers(db, shop, warehouse, policy, values, *, check_authority=True)
         if peer['warehouse_id'] != warehouse.id or not peer['target']:
             result.append('stock_sync_channel_not_configured')
             continue
-        collector = await one(db, OrderCollectionSettings, OrderCollectionSettings.shop_id == peer['shop_id'])
-        if (collector is None or not collector.enabled or collector.target_fingerprint != peer['target']
-                or collector.last_error or collector.last_completed_at is None or collector.last_completed_at < cutoff
-                or collector.cursor_at < cutoff):
-            result.append('stock_sync_orders_stale')
+        from inventory_hub.services.order_readiness import collection_blockers
+        discovery_errors = await collection_blockers(db, peer['shop_id'], peer['target'],
+                                                     values['max_order_age_seconds'], at=now())
+        if discovery_errors:
+            result.extend(discovery_errors)
             continue
         config = await stock_settings.effective(db, peer['shop_id'])
         if not config['processing_ready'] or config['automation_starts_at'] is None:
@@ -259,7 +258,7 @@ async def configure(db, payload):
     return result
 
 
-async def enqueue(db, payload, *, automatic=False):
+async def enqueue(db, payload, *, automatic=False, wakeups=None):
     shop, warehouse, policy, _, values = await scope(db, payload.shop_code, True)
     reasons = await blockers(db, shop, warehouse, policy, values)
     if reasons:
@@ -269,7 +268,7 @@ async def enqueue(db, payload, *, automatic=False):
     active = await db.scalar(select(Run).where(Run.shop_id == shop.id, Run.status.in_(ACTIVE)).limit(1))
     selected = sorted(payload.skus) if payload.skus else None
     if active:
-        if active.selected_skus != selected:
+        if wakeups is not None or active.selected_skus != selected:
             raise SyncError('stock_sync_run_busy')
         result = await run_dto(db, active, True)
         await db.commit()
@@ -286,6 +285,9 @@ async def enqueue(db, payload, *, automatic=False):
     db.add(row)
     policy.last_started_at, policy.last_error = now(), None
     await db.flush()
+    if wakeups is not None:
+        from inventory_hub.services.stock_sync_dirty import bind
+        await bind(db, row, wakeups)
     result = await run_dto(db, row, True)
     await db.commit()
     return result
@@ -336,7 +338,9 @@ async def finish(db, run, policy, values, error=None):
     run.status = 'uncertain' if summary['uncertain'] else 'failed' if error else 'partial' if summary['failed'] or summary['skipped'] else 'completed'
     run.completed_at, run.error = now(), error
     policy.last_completed_at, policy.last_error = now(), error or ('stock_sync_items_need_review' if run.status != 'completed' else None)
-    policy.next_run_at = max(now() + timedelta(seconds=values['interval_seconds']), policy.retry_after_at or now())
+    # Event runs must not continually postpone the independent periodic audit.
+    if run.trigger != 'automatic' or run.selected_skus is None:
+        policy.next_run_at = max(now() + timedelta(seconds=values['interval_seconds']), policy.retry_after_at or now())
     await db.commit()
 
 

@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI):
             print("  Falling back to JSON-based storage")
     worker = None
     collection_worker = None
+    webhook_worker = None
     processing_worker = None
     publication_worker = None
     supplier_availability_worker = None
@@ -89,6 +90,8 @@ async def lifespan(app: FastAPI):
         worker = asyncio.create_task(run(), name="ai-content-queue")
         from inventory_hub.services.order_collection_worker import run as collect_orders
         collection_worker = asyncio.create_task(collect_orders(), name="order-collection")
+        from inventory_hub.services.order_webhook_worker import run as receive_orders
+        webhook_worker = asyncio.create_task(receive_orders(), name="order-webhooks")
         from inventory_hub.services.order_processing_worker import run as process_orders
         processing_worker = asyncio.create_task(process_orders(), name="order-processing")
         from inventory_hub.services.stock_publication_worker import run as publish_stock
@@ -118,7 +121,7 @@ async def lifespan(app: FastAPI):
         publication_worker.cancel()
         with suppress(asyncio.CancelledError):
             await publication_worker
-    for background_worker in (supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker):
+    for background_worker in (supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker):
         if background_worker:
             background_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -217,6 +220,9 @@ if settings.USE_POSTGRES:
     app.include_router(order_stock_router)
     from inventory_hub.routers.order_collection import router as order_collection_router
     app.include_router(order_collection_router)
+    from inventory_hub.routers.order_webhooks import router as order_webhooks_router, ingress_router as order_webhooks_ingress
+    app.include_router(order_webhooks_router)
+    app.include_router(order_webhooks_ingress)
     from inventory_hub.routers.stock_settings import router as stock_settings_router
     app.include_router(stock_settings_router)
     from inventory_hub.routers.stock_publication import router as stock_publication_router

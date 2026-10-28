@@ -146,6 +146,71 @@ Parser `bike-brothers` používa samostatne nakonfigurovaný úplný API export.
 
 ## Scoped supplier-to-shop labels
 
-[Zookee](zookee.md) introduces optional supplier/brand/shop `availability_publication` configuration. It uses the supplier worker and the existing durable editor publisher. It sends availability labels only, retains positive shop-stock priority and does not activate central stock authority. Unknown/stale source data does not create an unavailable label. Existing publication history/uncertain-write recovery applies. The configured scope and result totals appear on the availability settings screen.
+[Zookee](zookee.md) introduces optional supplier/brand/shop `availability_publication` configuration. It uses the supplier worker and the existing durable editor publisher. It sends availability labels only, retains positive shop-stock priority and does not activate central stock authority. Unknown/stale source data uses the configured `unknown` label (normally **overíme**), never zero stock or a confirmed unavailable claim. Existing publication history/uncertain-write recovery applies. The configured scope and result totals appear on the availability settings screen.
 
 Optional `existing_card_matching` broadens only the explicitly requested manual supplier-link repair to same-brand listed products in one configured shop, using exact cached supplier codes/native leaf identity or unique verified barcodes. Automatic feed refresh keeps its prior narrow identity discovery. See the detailed matching, configuration and rollback rules in the supplier document.
+
+## Daily refresh and delivery of changed labels (28 October 2026)
+
+Automatic feed downloads now run at most once per 24-hour scheduled interval. New
+settings default to `interval_seconds=86400`, `freshness_seconds=172800` and remain
+disabled. Migration **034** slows existing enabled non-Sloger intervals shorter
+than a day to a day, increases their future observation TTL to at least two days,
+and updates the matching `supplier_feeds.fetch_interval_min` registry. Disabled
+sources retain their settings; weekly sources remain weekly. The manual-only
+Sloger rule is unchanged. An explicit manual refresh may still run sooner.
+
+Existing observation expiry is never extended by the migration or by saving a
+longer TTL. Expired data becomes fresh only after another successful read. A
+failed daily download retains the old observation until its original expiry.
+Saving enabled legacy short intervals normalizes them to a day and the same
+minimum two-day TTL. Credentials, source URLs, parsers, publication policies and
+availability texts stay in their existing filesystem configuration; the scheduler
+and delivery results are in PostgreSQL.
+
+`supplier_availability_deliveries` stores one desired semantic context and the
+last confirmed context/label **per Hub card and target shop**. A new feed run ID,
+timestamp or changed supplier quantity with the same effective availability does
+not trigger an Upgates read or write. The context contains effective availability,
+exact supplier/target identity, label policy and connection fingerprint. A changed
+mapping, policy, or locally refreshed own-stock/availability snapshot causes a new
+check. There is no automatic full-catalogue Upgates read for each daily feed.
+
+Multiple eligible supplier policies for one card/shop use the same fresh-source
+preference as the product projection: confirmed available first, then confirmed
+unavailable, then unknown; primary source, configured priority and source ID break
+ties. Exactly one source wins and the winner is checked again before sending.
+Competing unchanged suppliers cannot repeatedly overwrite each other's labels.
+
+Expiry is itself a semantic change. A previously supplier-orderable label becomes
+the configured **overíme** once when its evidence expires; subsequent checks make
+no upstream calls until the effective state changes. Supplier publication preserves
+an existing **SKLADOM** label even when its imported quantity is zero/unconfirmed,
+as well as positive exact shop quantities. Retiring that pre-inventory promise
+belongs to the separately activated central-stock workflow. This publisher never
+sends quantities, prices or product content.
+
+The existing `ProductEditorPublication` record remains the audit and uncertain-write
+fence. A successful readback or already-matching exact remote label advances the
+confirmation. A failed request keeps the previous confirmation and the pending
+desired value. Safe pre-write network/rate-limit or changed-preview failures retry
+no earlier than one day later; permanent identity/shape failures require corrected
+inputs or an explicit recheck. A crash before the send claim leaves a five-minute
+safe preview retry. Sending/uncertain intents are never repeated automatically,
+even if another feed arrives, another target succeeds, or a recheck is requested.
+Explicit settlement through the existing publication recovery is adopted locally.
+
+Operators can queue a bounded recheck after correcting a remote-only problem via
+`POST /supplier-availability/{supplier}/publication/recheck`, body
+`{"expected_revision": 1, "product_ids": [123]}` (1–100 distinct positive Hub IDs).
+It checks the supplier revision and configured target, queues local work only, and
+returns a `queued` count. It cannot release an uncertain intent. Ordinary feed
+refreshes do not silently reset permanent publication failures.
+
+Migration 034 is replay-safe and leaves all stock authority flags, stock movements
+and historical publications untouched. Rollback is a compatible forward fix or
+disabling the affected publication policy; keep delivery/audit tables. Reverting
+to old publication code would restore run-ID-driven repeated checks. Tests cover
+unchanged fresh feeds, changed quantity/boolean, expiry, protected **SKLADOM**,
+multiple sources, crash/retry/uncertain states and migration boundaries. These are
+code/test claims; deployment and a live delivery pilot are reported separately.

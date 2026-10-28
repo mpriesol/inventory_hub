@@ -14,6 +14,7 @@ CORE_MIGRATIONS = (
     "030_shop_identity.sql",
     "031_item_units.sql",
     "032_supplier_authority.sql",
+    "035_order_webhooks.sql",
 )
 
 

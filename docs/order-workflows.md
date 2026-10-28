@@ -208,3 +208,30 @@ Označenia aktuálne pokrývajú pracovné stránky objednávok, skladových nas
 - jednotná backendová telemetria skutočných požiadaviek, chybových pokusov a času/zdroja zostatku API kvóty.
 
 Tieto zostávajúce časti sa týmto dokumentom neoznačujú za hotové. UI testy kontrolujú klasifikáciu akcií spolu s volanými endpointmi a potlačenie dvojitého odoslania. `frontend/tests/receiving-scan-ui.cjs` overuje desať rýchlych skenov rovnakého kódu, rôzne UUID, stratenú odpoveď po možnom uložení, opakovanie presného payloadu aj obnovu po opätovnom otvorení stránky. Doplnené regresie overujú poškodené HTTP 200 odpovede, nesprávne UUID, neplatný súhrn, oneskorené počiatočné načítanie, nekladné množstvo a prepnutie toho istého komponentu medzi dvoma príjmami počas požiadavky. Každá návšteva príjmu má vlastný kontext fronty; stará odpoveď nesmie blokovať ani prepísať novú. Testy používajú syntetické odpovede; rozloženie v reálnom prehliadači tým nie je overené.
+
+## Rýchle oznámenia z Upgates
+
+V objednávkovom inboxe je administrátorský panel **Webhooky objednávok**. Najprv
+načítajte jeho uložený stav. Zapnutie vyžaduje existujúce pravidlá a zapnutý zber
+objednávok; samo ich nevytvára. Zadajte verejný HTTPS základ Hub API (spravidla
+adresa Hubu doplnená o `/api`) a interval záložného zberu zmien, predvolene
+3600 sekúnd. Uloženie zaradí registráciu vytvorenia, úpravy a zmazania objednávky.
+Tajomstvo vytvorí a spravuje server, do formulára ho nevkladáte.
+
+Po obnovení stavu skontrolujte výsledok registrácie. Bežné načítanie panela
+nevolá Upgates. Obnova registrácie načíta tri vlastné registrácie a doplní alebo
+upraví iba chýbajúce/nezhodné; cudzích webhookov sa nedotkne. Vypnutie ich
+zaradí na deaktiváciu. Chybu deaktivácie možno opraviť tlačidlom obnovenia aj pri
+vypnutom webhookovom režime.
+
+Nová objednávka alebo zmena vyvolá trvalé oznámenie, po ktorom Hub načíta aktuálnu
+objednávku a použije rovnaké pravidlá rezervácie, storna a výdaja ako doteraz.
+Opakované oznámenie sa neprekladá na ďalší odpočet kusov. Panel zobrazuje čakajúce
+udalosti a chyby; po odstránení problému možno opakovať ich čítanie. Zmazanie
+objednávky ani neznáme dáta automaticky nevracajú tovar na sklad.
+
+Oznámenia zrýchľujú reakciu. Hodinový kontrolný zber zostáva poistkou pri ich
+nedodaní. Zapnutie webhookov ešte nezapína skladové zápisy do BIKETREKU alebo
+xTreku: tie naďalej potrebujú potvrdenú skladovú autoritu, platné väzby a základné
+porovnanie množstiev. Podrobnosti nastavení sú v
+[objednávkovej automatike](order-automation.md#webhooky-objednávok-a-menej-častý-zber-zmien-28-10-2026).

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { OrderExceptionPanel } from '../components/orders/OrderExceptionPanel';
+import { OrderWebhooksPanel } from '../components/orders/OrderWebhooksPanel';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { CollectionRun, CollectionStockPreview, configureCollection, getCollectionRuns, getCollectionStatus,
   getOrderInbox, getOrderProcessingJobs, OrderCollectionStatus, OrderInbox, OrderProcessingJob, OrderProcessingJobs, previewCollectionStock, refreshCollection } from '../api/orderCollection';
@@ -33,18 +34,19 @@ export function OrdersInboxPage() {
   const [resolutionSelection, setResolutionSelection] = useState<{ job: OrderProcessingJob; revision: number; shop: string } | null>(null);
   const resolutionJob = resolutionSelection?.revision === revision && resolutionSelection.shop === shop ? resolutionSelection.job : null;
   const [resolutionBusy, setResolutionBusy] = useState(false), [resolutionActive, setResolutionActive] = useState(false);
+  const [webhooksBusy, setWebhooksBusy] = useState(false);
   const generation = useRef(0);
   const stockGeneration = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const busyRef = useRef<Operation>(null);
   const mutation = useRef(false);
-  const writing = busy === 'configure' || busy === 'refresh' || resolutionBusy;
-  const activityBlocked = !!busy || resolutionBusy;
+  const writing = busy === 'configure' || busy === 'refresh' || resolutionBusy || webhooksBusy;
+  const activityBlocked = !!busy || resolutionBusy || webhooksBusy;
 
   function reset() {
     generation.current += 1; stockGeneration.current += 1; controller.current?.abort(); controller.current = null;
     setLoaded(null); setStockLoaded(null); setSkuText(''); setConfirmed(false); setError(''); setUncertain(false);
-    setRefreshQueued(false); setBusy(null); busyRef.current = null; setResolutionSelection(null); setResolutionBusy(false); setResolutionActive(false);
+    setRefreshQueued(false); setBusy(null); busyRef.current = null; setResolutionSelection(null); setResolutionBusy(false); setResolutionActive(false); setWebhooksBusy(false);
   }
   useEffect(() => { reset(); setToken(''); return () => { generation.current += 1; stockGeneration.current += 1; controller.current?.abort(); }; }, [revision]);
   function report(value: unknown) {
@@ -139,6 +141,7 @@ export function OrdersInboxPage() {
         </>}
       </section>
       {view && <>
+        <OrderWebhooksPanel key={`${revision}:${shop}`} shop={shop} blocked={!!busy || resolutionBusy} onBusy={setWebhooksBusy} />
         <section className="opening-stock-panel"><h2>{t('orderCollection.inbox')}</h2><p className="opening-stock-muted">{t('orderCollection.inboxHelp')}</p>
           {!view.inbox.entries.length ? <p>{t('orderCollection.noOrders')}</p> : <div className="opening-stock-table-scroll"><table><thead><tr>{['orderNumber', 'origin', 'statusId', 'updatedAt', 'observedAt', 'review', 'stockState', 'action'].map(key => <th key={key}>{t(`orderCollection.${key}`)}</th>)}</tr></thead><tbody>{view.inbox.entries.map(entry => <tr key={entry.id}>
             <td>{entry.order_number}</td><td>{t(`orderCollection.origins.${entry.origin}`, { defaultValue: entry.origin || '—' })}</td><td>{entry.status_id ?? t('orderCollection.unknown')}</td><td>{date(entry.updated_at)}</td><td>{date(entry.last_seen_at)}</td>

@@ -55,6 +55,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                          '025_stock_native.sql','026_stock_delta.sql'):
                 await connection.execute((root/name).read_text())
             await apply_current_core_schema(connection)
+            await connection.execute((root/'036_stock_sync_dirty.sql').read_text())
         finally:
             await connection.close()
         self.engine=create_async_engine(TEST_URL.replace('postgresql://','postgresql+asyncpg://',1),poolclass=NullPool,
@@ -421,6 +422,195 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(service.SyncError):
             await self.invoke('configure',ShopSyncInput(shop_code='biketrek',expected_revision=0,enabled=True,authorized=True,confirmed=True))
         service.source.write_delta_once.assert_not_awaited()
+
+    async def enable_dirty_sync(self):
+        await self.invoke('configure',self.config())
+        async with self.session() as db:
+            policy=await db.get(StockSyncSettings,self.shop_id)
+            policy.enabled=True
+            policy.next_run_at=self.clock+timedelta(hours=1)
+
+    async def dirty_row(self):
+        from inventory_hub.stock_sync_dirty_models import StockSyncDirty
+        async with self.session() as db:
+            return await db.get(StockSyncDirty,(self.shop_id,self.product_id,self.warehouse_id))
+
+    async def dispatch_dirty(self):
+        from inventory_hub.services import stock_sync_dirty
+        async with self.session() as db:
+            # The test's frozen application clock precedes PostgreSQL now() by
+            # milliseconds. Make the trigger-created wakeup due explicitly.
+            await db.execute(text('UPDATE stock_sync_dirty SET next_attempt_at = :at WHERE run_id IS NULL'),
+                             {'at':self.clock})
+            self.assertTrue(await stock_sync_dirty.dispatch(db))
+        return (await self.dirty_row()).run_id
+
+    async def test_dirty_stock_trigger_is_transactional_and_disabled_without_authority(self):
+        from inventory_hub.stock_sync_dirty_models import StockSyncDirty
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+        self.assertIsNone(await self.dirty_row())
+        await self.enable_dirty_sync()
+        async with self.sessions() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+            await db.flush()
+            self.assertIsNotNone(await db.get(StockSyncDirty,(self.shop_id,self.product_id,self.warehouse_id)))
+            await db.rollback()
+        self.assertIsNone(await self.dirty_row(),'Rolled-back stock must not leave a wakeup')
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.avg_cost=Decimal('99')
+        self.assertIsNone(await self.dirty_row(),'Cost-only edits do not publish stock')
+
+    async def test_dirty_dispatch_does_not_wait_for_full_catalogue_schedule(self):
+        from inventory_hub.services import stock_sync_dirty
+        await self.enable_dirty_sync()
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+        identifier=await self.dispatch_dirty()
+        async with self.session() as db:
+            run=await db.get(StockSyncRun,identifier)
+            self.assertEqual(run.selected_skus,['SKU-A'])
+        await self.invoke('process_run',identifier)
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+            self.assertFalse(await stock_sync_dirty.dispatch(db))
+        row=await self.dirty_row()
+        self.assertEqual(row.generation,row.acknowledged_generation)
+        self.assertIsNone(row.run_id)
+        self.assertEqual(self.remote['stock'],'5')
+        async with self.session() as db:
+            policy=await db.get(StockSyncSettings,self.shop_id)
+            self.assertEqual(policy.next_run_at,self.clock+timedelta(hours=1),
+                             'An event run must not postpone the periodic reconciliation')
+
+    async def test_due_periodic_reconciliation_is_not_starved_by_dirty_events(self):
+        from inventory_hub.services import stock_sync_worker
+        await self.enable_dirty_sync()
+        async with self.session() as db:
+            policy=await db.get(StockSyncSettings,self.shop_id)
+            policy.next_run_at=self.clock-timedelta(seconds=1)
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+            await db.flush()
+            await db.execute(text('UPDATE stock_sync_dirty SET next_attempt_at = :at'),{'at':self.clock})
+        with patch.object(stock_sync_worker.database,'_engine',self.engine), \
+             patch.object(stock_sync_worker,'get_session_context',self.session), \
+             patch.object(service,'process_run',AsyncMock()):
+            self.assertTrue(await stock_sync_worker.cycle())
+        async with self.session() as db:
+            run=await db.scalar(select(StockSyncRun).where(StockSyncRun.status=='queued'))
+            self.assertIsNone(run.selected_skus,'A due full reconciliation gets bounded priority')
+        self.assertIsNone((await self.dirty_row()).run_id)
+
+    async def test_dirty_ack_does_not_erase_a_change_arriving_during_publication(self):
+        from inventory_hub.services import stock_sync_dirty
+        await self.enable_dirty_sync()
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+        identifier=await self.dispatch_dirty()
+        async def received_during_put(*args):
+            result=await self.write_remote(*args)
+            async with self.session() as db:
+                balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+                balance.qty_on_hand+=2
+            return result
+        service.source.write_delta_once.side_effect=received_during_put
+        await self.invoke('process_run',identifier)
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+        row=await self.dirty_row()
+        self.assertGreater(row.generation,row.acknowledged_generation)
+        service.source.write_delta_once.side_effect=self.write_remote
+        second=await self.dispatch_dirty()
+        await self.invoke('process_run',second)
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+        row=await self.dirty_row()
+        self.assertEqual(row.generation,row.acknowledged_generation)
+        self.assertEqual(self.remote['stock'],'7')
+
+    async def test_dirty_ambiguous_write_retains_intent_and_original_fence(self):
+        from inventory_hub.services import stock_sync_dirty
+        await self.enable_dirty_sync()
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+        identifier=await self.dispatch_dirty()
+        service.source.write_delta_once.side_effect=service.source.SourceError(
+            'stock_publication_write_unconfirmed',uncertain=True)
+        await self.invoke('process_run',identifier)
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+            self.assertFalse(await stock_sync_dirty.dispatch(db))
+        row=await self.dirty_row()
+        self.assertEqual(row.acknowledged_generation,0)
+        self.assertEqual(row.run_id,identifier)
+        service.source.write_delta_once.assert_awaited_once()
+
+    async def test_dirty_confirmation_is_independent_for_each_shop(self):
+        from inventory_hub.services import stock_sync_dirty
+        from inventory_hub.stock_sync_dirty_models import StockSyncDirty
+        await self.enable_dirty_sync()
+        async with self.session() as db:
+            peer=await db.scalar(select(Shop).where(Shop.code=='xtrek'))
+            peer_id=peer.id
+            db.add(StockSyncSettings(shop_id=peer_id,warehouse_id=self.warehouse_id,revision=1,
+                enabled=True,authorized=True,protocol='delta_v1'))
+            db.add(ShopProduct(shop_id=peer_id,product_id=self.product_id,external_code='PEER-A',
+                external_product_id='200',is_variant=False))
+            await db.flush()
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand+=1
+            await db.flush()
+            rows=(await db.scalars(select(StockSyncDirty))).all()
+            self.assertEqual({r.shop_id for r in rows},{self.shop_id,peer_id})
+            run=StockSyncRun(id=str(uuid4()),shop_id=self.shop_id,warehouse_id=self.warehouse_id,
+                target_fingerprint=order_collection.target_fingerprint('biketrek'),settings_revision=1,
+                protocol='delta_v1',trigger='automatic',status='completed',selected_skus=['SKU-A'],
+                started_at=self.clock,completed_at=self.clock)
+            db.add(run)
+            await db.flush()
+            db.add(StockSyncItem(run_id=run.id,shop_id=self.shop_id,warehouse_id=self.warehouse_id,
+                sku='SKU-A',status='verified',verified_at=self.clock))
+            own=next(r for r in rows if r.shop_id==self.shop_id)
+            own.run_id,own.dispatched_generation,own.dispatched_sku=run.id,own.generation,'SKU-A'
+            own.next_attempt_at=self.clock
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+            own=await db.get(StockSyncDirty,(self.shop_id,self.product_id,self.warehouse_id))
+            peer=await db.get(StockSyncDirty,(peer_id,self.product_id,self.warehouse_id))
+            self.assertEqual(own.acknowledged_generation,own.generation)
+            self.assertEqual(peer.acknowledged_generation,0)
+            self.assertGreater(peer.generation,peer.acknowledged_generation)
+
+    async def test_dirty_native_order_runs_without_repeating_own_shop_deduction(self):
+        from inventory_hub.services import stock_sync_dirty
+        async with self.session() as db:
+            balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
+            balance.qty_on_hand,balance.qty_reserved,balance.total_value=5,0,15
+        self.remote.update(stock='4',availability='SKLADOM')
+        await self.checkpoint(local=4)
+        # Authorize after the order policy has its final status rules.
+        statuses=order_stock_source._statuses(STATUSES)
+        async with self.session() as db:
+            policy=await db.get(OrderStockPolicy,self.shop_id)
+            policy.status_actions,policy.status_hash,policy.statuses=dict(ACTIONS),statuses['status_hash'],statuses['statuses']
+        await self.enable_dirty_sync()
+        await self.processed_order(quantity='2')
+        identifier=await self.dispatch_dirty()
+        await self.invoke('process_run',identifier)
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+        self.assertEqual(self.remote['stock'],'2')
+        service.source.read_many.assert_not_awaited()
+        service.source.write_delta_once.assert_not_awaited()
+        row=await self.dirty_row()
+        self.assertEqual(row.generation,row.acknowledged_generation)
 
     async def test_manual_write_uses_free_stock_and_preserves_ledger(self):
         row=await self.prepare()
