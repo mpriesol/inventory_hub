@@ -137,7 +137,9 @@ def desired_label(remote_stock, available, labels, current_label=None):
     # Preserve own stock priority using the existing shop's exact quantity;
     # this mode deliberately does not assume Hub authority over that quantity.
     stock = transport.source._quantity(remote_stock)
-    if int(stock) > 0 or str(current_label or '').strip().casefold() == 'skladom':
+    if str(current_label or '').strip().casefold() == 'skladom':
+        return current_label
+    if int(stock) > 0:
         return 'SKLADOM'
     if available is True:
         return labels.get('orderable')

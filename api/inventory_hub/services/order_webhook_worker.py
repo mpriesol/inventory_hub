@@ -29,9 +29,26 @@ async def process_batch(plan):
 
 
 async def register(plan):
+    loop = asyncio.get_running_loop()
+    async def persist_intent(event):
+        async with asyncio.timeout(5):
+            async with get_session_context() as db:
+                await service.record_create_intent(db, plan, event)
+    def before_create(event):
+        asyncio.run_coroutine_threadsafe(persist_intent(event), loop).result(timeout=10)
+    # Cancellation must not release the cross-process lock while a synchronous
+    # network write keeps running in its thread. Each transport call is bounded;
+    # preserve the durable create intent if the process is forcibly terminated.
+    task = asyncio.create_task(asyncio.to_thread(service.reconcile_registration, plan, before_create))
     try:
-        async with asyncio.timeout(180):
-            events = await asyncio.to_thread(service.reconcile_registration, plan)
+        try:
+            events = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                pass
+            raise
         async with get_session_context() as db:
             await service.finish_registration(db, plan, events=events)
     except asyncio.CancelledError:

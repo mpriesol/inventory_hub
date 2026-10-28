@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS order_webhook_settings (
     catchup_interval_seconds INTEGER NOT NULL DEFAULT 3600 CHECK (catchup_interval_seconds BETWEEN 300 AND 86400),
     registration_status VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (registration_status IN ('pending','running','registered','failed','disabled')),
     registered_events JSONB NOT NULL DEFAULT '{}',
+    registration_intents JSONB NOT NULL DEFAULT '{}',
     registered_at TIMESTAMPTZ,
     registration_checked_at TIMESTAMPTZ,
     next_registration_at TIMESTAMPTZ NOT NULL,

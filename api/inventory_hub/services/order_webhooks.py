@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert
 from inventory_hub.db_models import Shop
 from inventory_hub.order_collection_models import OrderCollectionSettings
 from inventory_hub.order_webhook_models import OrderWebhookEvent, OrderWebhookSettings
+from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.services import order_collection as collection
 from inventory_hub.services import order_webhook_credentials as credentials
 from inventory_hub.services.order_collection_source import (
@@ -118,15 +119,17 @@ async def authenticate(db, authorization):
 async def accept(db, shop, settings, rows):
     at = now()
     # Deterministic key order avoids inversions between simultaneous batches.
-    # A duplicate delivery remains complete; changed hints supersede in-flight
-    # generations, whose late results cannot clear the new work.
+    # Identical pending hints coalesce. Upgates has no delivery ID and second-
+    # precision timestamps: an identical hint during/after a read can represent
+    # another same-second edit, so it must wake a new current-state read.
     for offset in range(0, len(rows), 500):
         values = [{**row, 'shop_id': shop.id, 'generation': 1, 'status': 'pending', 'attempts': 0,
                    'next_attempt_at': at, 'last_received_at': at} for row in rows[offset:offset + 500]]
         statement = insert(OrderWebhookEvent).values(values)
         newer = or_(statement.excluded.notification_at > OrderWebhookEvent.notification_at,
             and_(statement.excluded.notification_at == OrderWebhookEvent.notification_at,
-                 statement.excluded.notification_hash != OrderWebhookEvent.notification_hash))
+                 or_(statement.excluded.notification_hash != OrderWebhookEvent.notification_hash,
+                     OrderWebhookEvent.status.in_(['running', 'completed']))))
         # At the same instant deletion dominates a delayed create/update hint.
         newer = and_(newer, or_(statement.excluded.notification_at > OrderWebhookEvent.notification_at,
                                OrderWebhookEvent.event != 'delete', statement.excluded.event == 'delete'))
@@ -290,7 +293,7 @@ def _request(client, method, payload=None):
         response.close()
 
 
-def reconcile_registration(plan):
+def reconcile_registration(plan, before_create):
     token = credentials.load(plan['shop_id'], plan['secret_hash'])
     client = _client(plan['shop_code'], plan['target_fingerprint'])
     try:
@@ -312,6 +315,8 @@ def reconcile_registration(plan):
             desired = {'name': name, 'url': f'{credential_base}/webhooks/upgates/orders/{event}',
                        'event': f'Orders.{event}', 'active_yn': plan['enabled']}
             if not matches and not plan['enabled']:
+                if event in (plan.get('registration_intents') or {}):
+                    raise WebhookError('order_webhook_registration_uncertain')
                 continue
             old = matches[0] if matches else None
             if old is not None and (type(old.get('id')) is not int or old['id'] < 1):
@@ -319,6 +324,12 @@ def reconcile_registration(plan):
             if old and all(old.get(key) == value for key, value in desired.items()):
                 confirmed = old
             else:
+                if old is None:
+                    # A GET that does not yet show a timed-out POST is not proof
+                    # it failed. Never submit another create after that boundary.
+                    if event in (plan.get('registration_intents') or {}):
+                        raise WebhookError('order_webhook_registration_uncertain')
+                    before_create(event)  # Durable commit before remote POST.
                 body = {**desired, **({'id': old['id']} if old else {})}
                 confirmed = _request(client, 'PUT' if old else 'POST', body).get('webhook')
             if (not isinstance(confirmed, dict) or type(confirmed.get('id')) is not int or confirmed['id'] < 1
@@ -346,7 +357,18 @@ async def start_registration(db):
     row.registration_status, row.registration_attempts = 'running', row.registration_attempts + 1
     await db.flush()
     return {field: getattr(row, field) for field in ('shop_id', 'enabled', 'revision', 'target_fingerprint',
-        'secret_hash', 'public_base_url', 'registration_attempts')} | {'shop_code': shop.code}
+        'secret_hash', 'public_base_url', 'registration_attempts', 'registration_intents')} | {'shop_code': shop.code}
+
+
+async def record_create_intent(db, plan, event):
+    row = await db.get(OrderWebhookSettings, plan['shop_id'], with_for_update=True)
+    if (row is None or row.revision != plan['revision'] or row.registration_status != 'running'
+            or row.registration_attempts != plan['registration_attempts'] or event not in EVENTS):
+        raise WebhookError('order_webhook_settings_changed')
+    if event in (row.registration_intents or {}):
+        raise WebhookError('order_webhook_registration_uncertain')
+    row.registration_intents = {**(row.registration_intents or {}), event: {'started_at': now().isoformat()}}
+    await db.flush()
 
 
 async def finish_registration(db, plan, events=None, error=None):
@@ -363,6 +385,7 @@ async def finish_registration(db, plan, events=None, error=None):
     else:
         row.registration_status = 'registered' if row.enabled else 'disabled'
         row.registered_events, row.last_error = events, None
+        row.registration_intents = {key: value for key, value in (row.registration_intents or {}).items() if key not in events}
         row.registered_at = row.registered_at or at
         row.registration_checked_at = at
         row.next_registration_at = at + timedelta(seconds=REGISTRATION_CHECK_SECONDS)
@@ -479,6 +502,14 @@ async def finish_batch(db, plan, entries=None, error=None, retry_after=None):
             row.status, row.last_error, row.last_completed_at = 'completed', None, at
     if accepted:
         await collection.save_entries(db, shop.id, policy, accepted)
+        # Same-second quantity edits may retain identical header metadata.
+        # Wake already-known jobs explicitly; the processor still fetches the
+        # complete current order and applies its policy/idempotency guards.
+        # Shop FOR UPDATE serializes this with job claims/completion. Advancing
+        # generation invalidates an older in-flight full-order read.
+        await db.execute(update(OrderProcessingJob).where(OrderProcessingJob.shop_id == shop.id,
+            OrderProcessingJob.order_number.in_([item['order_number'] for item in accepted])).values(
+                generation=OrderProcessingJob.generation + 1, status='pending', next_attempt_at=at))
         settings.last_completed_at = at
     # No collection cursor/last_completed update: one observed order cannot
     # establish that no other notification was lost.

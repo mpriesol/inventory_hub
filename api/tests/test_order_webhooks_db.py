@@ -22,6 +22,7 @@ from inventory_hub.db_models import Shop, Warehouse
 from inventory_hub.db_models_ext import StockMovement, Reservation
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderInboxEntry
 from inventory_hub.order_stock_models import OrderStockPolicy
+from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.order_webhook_models import OrderWebhookSettings, OrderWebhookEvent
 from inventory_hub.order_webhook_types import WebhookConfigure
 from inventory_hub.services import order_webhooks as service, order_collection as collection
@@ -118,13 +119,12 @@ class OrderWebhookDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             return await service.start_batch(db)
 
-    async def test_duplicate_and_older_delivery_keep_completed_generation(self):
+    async def test_older_delivery_ignored_but_identical_completed_hint_requires_new_read(self):
         await self.accept(hint())
         plan = await self.claim()
         current = entry()
         async with self.transaction() as db:
             await service.finish_batch(db, plan, entries={'A': current})
-        await self.accept(hint())
         await self.accept(hint(offset=-60))
         async with self.transaction() as db:
             row = await db.get(OrderWebhookEvent, (self.shop_id, 'A'))
@@ -136,6 +136,11 @@ class OrderWebhookDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(collector.last_completed_at, START)
             self.assertEqual((await service.delivery_health(db, self.shop_id))['pending_count'], 0)
         self.assertIsNone(await self.claim())
+        await self.accept(hint())
+        await self.accept(hint())  # Coalesce while the new read is still pending.
+        async with self.transaction() as db:
+            row = await db.get(OrderWebhookEvent, (self.shop_id, 'A'))
+            self.assertEqual((row.generation, row.status), (2, 'pending'))
 
     async def test_new_generation_survives_stale_inflight_completion(self):
         await self.accept(hint())
@@ -297,3 +302,42 @@ class OrderWebhookDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(task, return_exceptions=True)
         async with self.transaction() as db:
             self.assertIsNotNone(await db.get(OrderWebhookEvent, (self.shop_id, 'A')))
+
+    async def test_same_second_notification_wakes_existing_full_order_job(self):
+        current = entry()
+        await self.accept(hint())
+        plan = await self.claim()
+        async with self.transaction() as db:
+            await service.finish_batch(db, plan, entries={'A': current})
+            inbox = await db.scalar(select(OrderInboxEntry))
+            db.add(OrderProcessingJob(shop_id=self.shop_id, inbox_id=inbox.id, source_uuid=inbox.source_uuid,
+                order_number='A', observation_hash=inbox.observation_hash, generation=1, status='running',
+                next_attempt_at=NOW + timedelta(days=1), attempts=1))
+        await self.accept(hint())  # Same timestamp/status can be a second quantity edit.
+        plan = await self.claim()
+        async with self.transaction() as db:
+            await service.finish_batch(db, plan, entries={'A': current})
+            job = await db.scalar(select(OrderProcessingJob))
+            self.assertEqual((job.generation, job.status, job.next_attempt_at), (2, 'pending', NOW))
+            inbox = await db.scalar(select(OrderInboxEntry))
+            self.assertEqual(job.observation_hash, inbox.observation_hash)
+
+    async def test_create_intent_survives_restart_and_is_cleared_only_when_verified(self):
+        async with self.transaction() as db:
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            row.registration_status, row.next_registration_at = 'pending', NOW
+            await db.flush()
+            plan = await service.start_registration(db)
+        async with self.transaction() as db:
+            await service.record_create_intent(db, plan, 'create')
+        async with self.transaction() as db:
+            await service.recover(db)
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            self.assertIn('create', row.registration_intents)
+            next_plan = await service.start_registration(db)
+            self.assertIn('create', next_plan['registration_intents'])
+        async with self.transaction() as db:
+            await service.finish_registration(db, next_plan, events={'create': 10, 'update': 11, 'delete': 12})
+            row = await db.get(OrderWebhookSettings, self.shop_id)
+            self.assertEqual(row.registration_intents, {})
+            self.assertEqual(row.registration_status, 'registered')

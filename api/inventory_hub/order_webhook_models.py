@@ -17,6 +17,7 @@ class OrderWebhookSettings(Base):
     catchup_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
     registration_status: Mapped[str] = mapped_column(String(16), nullable=False, default='pending')
     registered_events: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    registration_intents: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     registration_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_registration_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

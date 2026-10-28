@@ -4877,7 +4877,8 @@
       "order_webhook_registration_unverified": "Upgates did not confirm registration in the expected format. Check the connection and permissions; registration awaits review.",
       "order_webhook_interrupted": "Previous processing was interrupted. The saved request awaits safe continuation.",
       "order_webhook_order_not_found": "The order was not found in the Upgates response. Review it before fetching again.",
-      "order_webhook_source_behind": "Upgates returned an order version older than the notification. The saved notification remains pending."
+      "order_webhook_source_behind": "Upgates returned an order version older than the notification. The saved notification remains pending.",
+      "order_webhook_registration_uncertain": "Creation of the Upgates notification is unconfirmed. Verify registration again; the Hub checks existing notifications first and does not automatically repeat creation."
     }
   }
 }

@@ -4880,7 +4880,8 @@
       "order_webhook_registration_unverified": "Upgates nepotvrdil registráciu v očakávanom formáte. Overte pripojenie a oprávnenia; registrácia čaká na kontrolu.",
       "order_webhook_interrupted": "Predchádzajúce spracovanie bolo prerušené. Uložená požiadavka čaká na bezpečné pokračovanie.",
       "order_webhook_order_not_found": "Objednávka sa v odpovedi Upgates nenašla. Skontrolujte ju pred opakovaním načítania.",
-      "order_webhook_source_behind": "Upgates zatiaľ vrátil staršiu verziu objednávky než prijaté oznámenie. Uložené oznámenie zostáva čakajúce."
+      "order_webhook_source_behind": "Upgates zatiaľ vrátil staršiu verziu objednávky než prijaté oznámenie. Uložené oznámenie zostáva čakajúce.",
+      "order_webhook_registration_uncertain": "Výsledok vytvorenia oznámenia v Upgates nie je potvrdený. Obnovte overenie registrácie; Hub najprv preverí existujúce oznámenia a vytvorenie automaticky nezopakuje."
     }
   }
 }

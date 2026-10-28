@@ -200,9 +200,13 @@ do vlastného dvojsekundového limitu vrátane DB; pri zlyhaní odpovie 503, aby
 Upgates mohol opakovať. Upgates považuje aj prekročenie svojho trojsekundového
 limitu za doručenie, preto zostáva nevyhnutný nezávislý úplný zber zmien.
 
-Fronta zlučuje oznámenia podľa `(shop_id, order_number)`. Rovnaké a staršie
-udalosti neobnovia dokončenú úlohu. Novšia generácia zostane čakajúca aj po
-neskorom výsledku staršej požiadavky. Samostatný worker s PostgreSQL poradným
+Fronta zlučuje oznámenia podľa `(shop_id, order_number)`. Rovnaké čakajúce
+udalosti sa zlúčia a staršie sa ignorujú. Upgates neposiela jednoznačné ID
+doručenia; rovnaký čas a stav môžu znamenať druhú zmenu položiek v tej istej
+sekunde. Preto rovnaké oznámenie počas alebo po čítaní vyvolá nové overenie a
+prebudí aj existujúcu spracovateľskú úlohu. Novšia generácia zostane čakajúca aj
+po neskorom výsledku staršej požiadavky. Opakované overenie nevytvára druhý
+skladový účinok vďaka idempotentnému spracovateľovi. Samostatný worker s PostgreSQL poradným
 zámkom číta najviac 100 dotknutých čísel objednávok naraz, overí členstvo odpovede,
 UUID a aktuálne metadáta a použije spoločné `order_collection.save_entries`.
 Chýbajúce aktívne objednávky overí aj v zmazaných. Zmazanie zostáva na kontrolu;
@@ -212,7 +216,11 @@ Spracovateľ inboxu ďalej používa úplný čerstvý zdroj a existujúce aktiv
 
 Registrátor pred každým zápisom načíta aktuálne webhooky cez existujúce API
 prístupy. Stabilné názvy patriace danej inštalácii umožnia po prerušení nájsť
-už vytvorený hook; nejasné duplicity zastavia registráciu. Cudzie webhooky sa
+už vytvorený hook; nejasné duplicity zastavia registráciu. Pred každým vytvorením
+sa uloží trvalý zámer. Po neistom výsledku ďalšie čítanie môže potvrdiť existujúci
+hook, ale jeho neprítomnosť neoprávňuje opakovať POST: výsledok zostane viditeľne
+neistý. Zrušenie workeru počká na dokončenie sieťového vlákna pred uvoľnením
+spoločného zámku. Cudzie webhooky sa
 nemenia. Zodpovedajúce registrácie sa znova nezapisujú. Pri vypnutí sa vlastné
 hooky deaktivujú, nevymazávajú. Overenie registrácie prebieha raz za hodinu;
 upstream údaj o úspešnom doručení nenahrádza lokálny príjem.

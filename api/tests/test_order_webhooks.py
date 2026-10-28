@@ -184,8 +184,8 @@ class RegistrationTests(unittest.TestCase):
             return {'webhook': row}
         with patch.object(credentials, 'load', return_value=TOKEN), patch.object(service, '_client', return_value=Mock()), \
              patch.object(service, '_request', side_effect=request):
-            first = service.reconcile_registration(self.plan())
-            second = service.reconcile_registration(self.plan())
+            first = service.reconcile_registration(self.plan(), lambda event: None)
+            second = service.reconcile_registration(self.plan(), lambda event: None)
         self.assertEqual(first, {'create': 1, 'update': 2, 'delete': 3})
         self.assertEqual(second, first)
         self.assertEqual(calls, ['GET', 'POST', 'POST', 'POST', 'GET'])
@@ -197,9 +197,35 @@ class RegistrationTests(unittest.TestCase):
         with patch.object(credentials, 'load', return_value=TOKEN), patch.object(service, '_client', return_value=Mock()), \
              patch.object(service, '_request', return_value={'webhooks': [{'id': 1, 'name': name}, {'id': 2, 'name': name}]}) as request:
             with self.assertRaises(service.WebhookError) as raised:
-                service.reconcile_registration(self.plan())
+                service.reconcile_registration(self.plan(), lambda event: None)
         self.assertEqual(raised.exception.code, 'order_webhook_registration_ambiguous')
         self.assertEqual(request.call_count, 1)
+
+
+    def test_uncertain_create_absence_never_repeats_post(self):
+        plan = {**self.plan(), 'registration_intents': {'create': {'started_at': NOW.isoformat()}}}
+        with patch.object(credentials, 'load', return_value=TOKEN), patch.object(service, '_client', return_value=Mock()), \
+             patch.object(service, '_request', return_value={'webhooks': []}) as request:
+            before = Mock()
+            with self.assertRaises(service.WebhookError) as raised:
+                service.reconcile_registration(plan, before)
+        self.assertEqual(raised.exception.code, 'order_webhook_registration_uncertain')
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[1], 'GET')
+        before.assert_not_called()
+
+    def test_create_intent_is_durable_before_first_network_write(self):
+        order = []
+        def request(client, method, body=None):
+            order.append(method)
+            if method == 'GET':
+                return {'webhooks': []}
+            self.assertEqual(order[-2], 'persist-' + body['event'].split('.')[-1])
+            return {'webhook': {**body, 'id': len(order)}}
+        with patch.object(credentials, 'load', return_value=TOKEN), patch.object(service, '_client', return_value=Mock()), \
+             patch.object(service, '_request', side_effect=request):
+            service.reconcile_registration(self.plan(), lambda event: order.append('persist-' + event))
+        self.assertEqual(order, ['GET', 'persist-create', 'POST', 'persist-update', 'POST', 'persist-delete', 'POST'])
 
 
 class TargetedReadTests(unittest.TestCase):
@@ -232,3 +258,31 @@ class TargetedReadTests(unittest.TestCase):
         with patch.object(service, '_fetch_page', return_value=reply), patch.object(service, 'now', return_value=NOW):
             with self.assertRaises(CollectionSourceError):
                 service._fetch_current(plan)
+
+
+class RegistrationCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_waits_for_network_thread_before_releasing_worker_scope(self):
+        import asyncio
+        import threading
+        from inventory_hub.services import order_webhook_worker as worker
+        started, release = threading.Event(), threading.Event()
+        def write(plan, before_create):
+            started.set()
+            release.wait(timeout=2)
+            return {'create': 1, 'update': 2, 'delete': 3}
+        with patch.object(service, 'reconcile_registration', side_effect=write), \
+             patch.object(service, 'finish_registration', AsyncMock()) as finish:
+            task = asyncio.create_task(worker.register({'shop_id': 1}))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 1))
+                task.cancel()
+                await asyncio.sleep(0.02)
+                self.assertFalse(task.done())
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                finish.assert_not_awaited()
+            finally:
+                release.set()
+                if not task.done():
+                    await asyncio.gather(task, return_exceptions=True)
