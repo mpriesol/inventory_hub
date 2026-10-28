@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { accessRevision, hubUnlocked, hubUser } from '../../api/access';
-import { configureOrderWebhooks, getOrderWebhookStatus, OrderWebhookStatus, registerOrderWebhooks, retryOrderWebhooks } from '../../api/orderWebhooks';
+import { configureOrderWebhooks, getOrderWebhookStatus, OrderWebhookMutation, OrderWebhookStatus, registerOrderWebhooks, resolveOrderWebhookRegistration, retryOrderWebhooks } from '../../api/orderWebhooks';
 import { Button } from '../ui/Button.new';
 import { ActionScope } from '../ui/ActionScope';
 
@@ -25,6 +25,12 @@ function checkedStatus(value: OrderWebhookStatus, shop: string) {
         || !validBaseUrl(value.webhook.public_base_url)
         || !['pending', 'running', 'registered', 'failed', 'disabled'].includes(value.webhook.registration_status)
         || !Number.isSafeInteger(value.webhook.catchup_interval_seconds)))) throw new Error('Invalid webhook status');
+  const mutations = value.webhook?.pending_mutations;
+  if (mutations !== undefined && (!Array.isArray(mutations) || mutations.length > 3
+      || new Set(mutations.map(item => item?.event)).size !== mutations.length
+      || mutations.some(item => !item || !['create', 'update', 'delete'].includes(item.event)
+        || !['POST', 'PUT'].includes(item.method) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.intent_id)
+        || !Number.isFinite(Date.parse(item.started_at))))) throw new Error('Invalid webhook recovery state');
   return value;
 }
 
@@ -38,6 +44,7 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
   const [interval, setInterval] = useState('3600'), [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false), [uncertain, setUncertain] = useState(false), [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [resolutions, setResolutions] = useState<Record<string, { note: string; finished: boolean }>>({});
   const active = useRef(false), generation = useRef(0), controller = useRef<AbortController | null>(null);
   const text = (key: string) => t(`orderWebhooks.${key}`);
   const date = (value?: string | null) => value ? new Date(value).toLocaleString(i18n.language) : '—';
@@ -53,12 +60,22 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
   const registrationBusy = ['pending', 'running'].includes(settings?.registration_status || '');
   useEffect(() => () => { generation.current++; controller.current?.abort(); onBusy(false); }, []);
 
-  async function run(kind: 'load' | 'save' | 'register' | 'retry') {
+  function resolutionReady(mutation: OrderWebhookMutation) {
+    const value = resolutions[mutation.intent_id];
+    return !!value?.finished && value.note.trim().length >= 10 && value.note.trim().length <= 2000
+      && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value.note);
+  }
+  function editResolution(id: string, changes: Partial<{ note: string; finished: boolean }>) {
+    setResolutions(previous => ({ ...previous, [id]: { note: '', finished: false, ...previous[id], ...changes } }));
+  }
+  async function run(kind: 'load' | 'save' | 'register' | 'retry' | 'resolve', mutation?: OrderWebhookMutation) {
     if (active.current || blocked || operator || !hubUnlocked()) return;
     if (kind !== 'load' && (!status || uncertain)) return;
     if (kind === 'save' && (!valid || (enabled && !ready))) return;
     if (kind === 'register' && (!settings || dirty || !status?.connection_matches || registrationBusy)) return;
     if (kind === 'retry' && (!settings?.enabled || dirty || !ready || registrationBusy)) return;
+    if (kind === 'resolve' && (!mutation || !settings || dirty || !resolutionReady(mutation)
+        || !settings.pending_mutations?.some(item => item.intent_id === mutation.intent_id && item.event === mutation.event))) return;
     const context = generation.current, credential = accessRevision();
     const abort = new AbortController(); controller.current = abort;
     const current = () => context === generation.current && credential === accessRevision() && !abort.signal.aborted;
@@ -68,11 +85,13 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
         : kind === 'save' ? configureOrderWebhooks({ shop_code: shop, expected_revision: settings?.revision ?? null,
           confirmed: true, enabled, public_base_url: baseUrl.trim(), catchup_interval_seconds: Number(interval) })
         : kind === 'register' ? registerOrderWebhooks(shop, settings!.revision)
+        : kind === 'resolve' ? resolveOrderWebhookRegistration(shop, settings!.revision, mutation!, resolutions[mutation!.intent_id].note.trim())
         : retryOrderWebhooks(shop, settings!.revision)), shop);
       if (current()) {
         setStatus(result); setEnabled(result.webhook?.enabled ?? false);
         setBaseUrl(result.webhook?.public_base_url ?? `${window.location.origin}/api`);
         setInterval(String(result.webhook?.catchup_interval_seconds ?? 3600)); setUncertain(false);
+        setResolutions({});
         setSaved(kind !== 'load');
       }
     } catch (value) {
@@ -108,6 +127,18 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
         <dl className="opening-stock-summary"><div><dt>{text('pending')}</dt><dd data-testid="order-webhooks-pending">{status.pending_count}</dd></div><div><dt>{text('review')}</dt><dd data-testid="order-webhooks-review">{status.review_count}</dd></div><div><dt>{text('lastReceived')}</dt><dd>{date(settings.last_received_at)}</dd></div></dl>
         <p className="opening-stock-muted">{text('registeredAt')}: {date(settings.registered_at)} · {text('lastCompleted')}: {date(settings.last_completed_at)}</p>
         {settings.last_error && <p className="opening-stock-errors" role="alert">{t(`orderWebhooks.errors.${settings.last_error}`, { defaultValue: text('requestFailed') })}</p>}
+        {!!settings.pending_mutations?.length && <section data-testid="order-webhooks-resolutions" className="opening-stock-notice">
+          <h3>{text('resolutionTitle')}</h3><p>{text('resolutionHelp')}</p>
+          {settings.pending_mutations.map(mutation => <div key={mutation.intent_id} data-testid={`order-webhooks-resolution-${mutation.event}`}>
+            <p><strong>{text(`eventsNames.${mutation.event}`)}</strong> · {date(mutation.started_at)}</p>
+            <label>{text('resolutionNote')}<textarea data-testid={`order-webhooks-resolution-${mutation.event}-note`} rows={2} maxLength={2000} disabled={locked || uncertain || dirty}
+              value={resolutions[mutation.intent_id]?.note || ''} onChange={event => editResolution(mutation.intent_id, { note: event.target.value })} /></label>
+            <div className="opening-stock-confirmations"><label><input data-testid={`order-webhooks-resolution-${mutation.event}-finished`} type="checkbox" checked={resolutions[mutation.intent_id]?.finished || false}
+              disabled={locked || uncertain || dirty} onChange={event => editResolution(mutation.intent_id, { finished: event.target.checked })} />{text('resolutionConfirm')}</label></div>
+            <span className="action-control"><Button data-testid={`order-webhooks-resolution-${mutation.event}-submit`} variant="secondary"
+              disabled={locked || uncertain || dirty || !resolutionReady(mutation)} onClick={() => run('resolve', mutation)}>{text('resolutionSubmit')}</Button><ActionScope effects={['hub-write', 'queued-upgates', 'upgates-read', 'upgates-write']} shop={shop} calls={{ kind: 'variable' }} /></span>
+          </div>)}
+        </section>}
         {status.review_count > 0 && <span className="action-control"><Button data-testid="order-webhooks-retry" variant="secondary" disabled={locked || uncertain || dirty || !settings.enabled || !ready || registrationBusy} onClick={() => run('retry')}>{text('retry')}</Button><ActionScope effects={['hub-write', 'queued-upgates', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span>}
         {status.events.length > 0 && <details><summary>{text('events')}</summary><div className="opening-stock-table-scroll"><table><thead><tr><th>{t('orderCollection.orderNumber')}</th><th>{text('event')}</th><th>{text('state')}</th><th>{text('lastReceived')}</th><th>{t('orderCollection.runError')}</th></tr></thead><tbody>{status.events.map(event => <tr key={event.order_number}><td>{event.order_number}</td><td>{text(`eventsNames.${event.event}`)}</td><td>{t(`orderWebhooks.states.${event.status}`, { defaultValue: event.status })}</td><td>{date(event.last_received_at)}</td><td>{event.last_error ? t(`orderWebhooks.errors.${event.last_error}`, { defaultValue: text('requestFailed') }) : '—'}</td></tr>)}</tbody></table></div></details>}
       </>}

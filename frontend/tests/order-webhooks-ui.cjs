@@ -25,7 +25,8 @@ const element = suffix => document.querySelector(`[data-testid="order-webhooks-$
 async function click(suffix) { assert(element(suffix), `Missing ${suffix}`); await act(async () => { element(suffix).click(); await tick(); }); }
 async function input(suffix, value) {
   await act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(element(suffix), value);
+    const prototype = element(suffix).tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element(suffix), value);
     element(suffix).dispatchEvent(new dom.window.Event('input', { bubbles: true })); await tick();
   });
 }
@@ -56,6 +57,12 @@ global.fetch = async (path, init = {}) => {
       last_received_at: null, last_completed_at: null, last_error: null, next_registration_at: null,
       registration_attempts: 0, registered_events: {}, secret_configured: true };
     if (mode === 'lost-write') return new Promise((resolve, reject) => { pending = () => reject(new TypeError('Synthetic lost response')); });
+  } else if (path.endsWith('/resolve-registration')) {
+    assert.deepEqual(Object.keys(body).sort(), ['confirmed', 'event', 'expected_revision', 'intent_id', 'note', 'remote_request_finished_confirmed', 'shop_code']);
+    assert.equal(body.remote_request_finished_confirmed, true); assert(body.note.trim().length >= 10);
+    assert(webhook.pending_mutations.some(item => item.event === body.event && item.intent_id === body.intent_id), 'Recovery uses the current exact pending request');
+    webhook = { ...webhook, registration_status: 'pending', pending_mutations: webhook.pending_mutations.filter(item => item.intent_id !== body.intent_id) };
+    if (mode === 'lost-resolution') return new Promise((resolve, reject) => { pending = () => reject(new TypeError('Synthetic lost resolution response')); });
   } else if (path.endsWith('/register')) webhook = { ...webhook, registration_status: 'pending' };
   else if (path.endsWith('/retry')) reviewCount = 0;
   else assert.fail('Unexpected endpoint');
@@ -102,6 +109,31 @@ async function render() { await act(async () => { root.render(React.createElemen
   await click('load'); assert(!element('register').disabled, 'Failed remote deactivation can be retried with collection paused');
   await click('register'); assert.equal(calls.at(-1).path, '/api/order-webhooks/register');
   assert.equal(webhook.enabled, false, 'Retrying registration does not reactivate notification reception');
+  assert(!element('resolutions'), 'Routine setup has no exceptional recovery form');
+  webhook = { ...webhook, registration_status: 'failed', pending_mutations: [
+    { event: 'create', method: 'POST', intent_id: '00000000-0000-4000-8000-000000000001', started_at: '2026-10-28T15:01:00Z' },
+    { event: 'update', method: 'PUT', intent_id: '00000000-0000-4000-8000-000000000002', started_at: '2026-10-28T15:02:00Z' },
+  ] };
+  await click('load'); assert(element('resolutions'));
+  assert(element('resolution-create-submit').disabled);
+  await click('resolution-create-finished');
+  await input('resolution-create-note', 'short'); assert(element('resolution-create-submit').disabled, 'Confirmation without sufficient evidence cannot release a pending request');
+  await input('resolution-create-note', '  Upgates support confirmed the original request has finished.  ');
+  await click('resolution-create-finished'); assert(element('resolution-create-submit').disabled, 'Evidence without explicit finished confirmation cannot release a pending request');
+  await click('resolution-create-finished'); assert(!element('resolution-create-submit').disabled);
+  const beforeResolution = writes().length; mode = 'lost-resolution';
+  await act(async () => { element('resolution-create-submit').click(); element('resolution-create-submit').click(); await tick(); });
+  assert.equal(writes().length, beforeResolution + 1, 'Double recovery confirmation sends only one request');
+  assert.equal(calls.at(-1).body.note, 'Upgates support confirmed the original request has finished.');
+  await act(async () => { pending(); await tick(); });
+  assert(element('resolution-create-submit').disabled && element('resolution-update-note').disabled, 'Lost recovery response blocks further mutations');
+  const beforeResolutionRead = writes().length; mode = 'normal'; await click('load');
+  assert.equal(writes().length, beforeResolutionRead, 'Recovery confirmation response is resolved by GET, never replayed');
+  assert(!element('resolution-create-submit') && element('resolution-update-submit').disabled, 'A resolved POST cannot be confirmed again and remaining PUT requires its own evidence');
+  await input('resolution-update-note', 'Upgates confirmed that the pending update completed.'); await click('resolution-update-finished');
+  await click('resolution-update-submit');
+  assert.equal(calls.at(-1).body.event, 'update'); assert.equal(calls.at(-1).body.intent_id, '00000000-0000-4000-8000-000000000002');
+  assert(!element('resolutions'), 'The recovery panel disappears after all exact requests have been resolved');
   const beforeWait = calls.length; await tick(); assert.equal(calls.length, beforeWait, 'UI never polls or registers automatically');
   mode = 'pending-read'; await click('load'); const stale = pending, staleRequest = calls.at(-1);
   shop = 'xtrek'; await render(); assert(staleRequest.signal.aborted);

@@ -4881,7 +4881,13 @@
       "order_webhook_interrupted": "Predchádzajúce spracovanie bolo prerušené. Uložená požiadavka čaká na bezpečné pokračovanie.",
       "order_webhook_order_not_found": "Objednávka sa v odpovedi Upgates nenašla. Skontrolujte ju pred opakovaním načítania.",
       "order_webhook_source_behind": "Upgates zatiaľ vrátil staršiu verziu objednávky než prijaté oznámenie. Uložené oznámenie zostáva čakajúce.",
-      "order_webhook_registration_uncertain": "Výsledok vytvorenia oznámenia v Upgates nie je potvrdený. Obnovte overenie registrácie; Hub najprv preverí existujúce oznámenia a vytvorenie automaticky nezopakuje."
-    }
+      "order_webhook_registration_uncertain": "Výsledok pôvodnej požiadavky na registráciu nie je potvrdený. Obnovte overenie existujúcich registrácií. Ak zostáva neistota, overte ukončenie pôvodnej požiadavky v Upgates pred použitím obnovy nižšie.",
+      "order_webhook_registration_busy": "Registráciu práve spracúva Hub. Načítajte aktuálny stav a skúste uložiť overenie po dokončení spracovania."
+    },
+    "resolutionTitle": "Overenie nedokončenej registrácie",
+    "resolutionHelp": "Použite až po overení v Upgates alebo u jeho podpory, že pôvodná požiadavka sa už nemôže vykonať neskôr. Samotné zobrazenie aktuálneho nastavenia to nepotvrdzuje. Hub uloží dôkaz, znova načíta registrácie a dokončí uložené nastavenie.",
+    "resolutionNote": "Ako ste overili ukončenie pôvodnej požiadavky (10–2000 znakov)",
+    "resolutionConfirm": "Overil som, že pôvodná požiadavka v Upgates je ukončená a už sa nemôže dodatočne vykonať.",
+    "resolutionSubmit": "Uložiť overenie a obnoviť kontrolu registrácie"
   }
 }
