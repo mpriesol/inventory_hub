@@ -85,13 +85,14 @@ def build_remote_export(shop_code, dataset, *, client=None):
     output = tempfile.TemporaryFile(mode="w+b")
     path, key, identity = SOURCES[dataset]
     started = datetime.now(timezone.utc)
-    count, byte_count, pages, seen = 0, 0, [], set()
+    count, byte_count, pages, seen = 0, 0, [], {}
     try:
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
             # Upgates documents InStock as the default filter: request every type.
             filters = [{"type": value} for value in ("OnRequest", "NotAvailable", "InStock", "Custom")] if dataset == "availabilities" else [{}]
             for filters_index, filters_value in enumerate(filters):
                 expected, subtotal, page = None, 0, 1
+                filter_seen = set()
                 while True:
                     params = {**filters_value, "page": page}
                     if path.startswith("products"):
@@ -128,9 +129,12 @@ def build_remote_export(shop_code, dataset, *, client=None):
                             if isinstance(identifier, bool) or not isinstance(identifier, (str, int)) or str(identifier) == "":
                                 raise ExportError("upgates_export_missing_identity")
                             identifier = str(identifier)
-                            if identifier in seen:
+                            if identifier in filter_seen:
                                 raise ExportError("upgates_export_duplicate_identity")
-                            seen.add(identifier)
+                            if identifier in seen and seen[identifier] != row:
+                                raise ExportError("upgates_export_identity_changed_between_filters")
+                            filter_seen.add(identifier)
+                            seen[identifier] = row
                         subtotal += len(rows)
                         if last and subtotal != items:
                             raise ExportError("upgates_export_incomplete_count")
@@ -149,9 +153,11 @@ def build_remote_export(shop_code, dataset, *, client=None):
                     page += 1
             archive.writestr("manifest.json", json_line({"schema_version": 1, "shop": shop_code,
                 "dataset": dataset, "endpoint": path, "started_at": started,
-                "completed_at": datetime.now(timezone.utc), "count": count, "pages": pages,
+                "completed_at": datetime.now(timezone.utc), "count": count,
+                "unique_count": len(seen) if identity else count, "pages": pages,
                 "complete": True, "read_only": True, "decimal_encoding": "string",
                 "notes": ["Separate GET observations; not a global freeze.",
+                    "Identical overlap across availability filters is preserved in pages and counted once in unique_count.",
                     "No upstream or local catalog, stock or settings writes.",
                     "Page files preserve the returned collection; decimals are exact strings."]}))
         output.seek(0)
