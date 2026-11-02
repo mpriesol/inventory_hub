@@ -22,6 +22,9 @@ skladovú autoritu. Aktivácia spoločných vlastných zásob naďalej vyžaduje
 zosúladenie a pilot; xTrek Atomer nie je týmto pripojený ako živý Upgates kanál.
 
 Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
+Samostatný `GET /api/migration/upgates-export` dopĺňa úplné API sekcie katalógu,
+parametre a číselníky cez uložené napojenie. Kontroluje stránkovanie a natívne ID;
+nemení katalóg ani sklad a nepotrebuje databázovú migráciu.
 ZIP spája čerstvý katalóg vybraného Upgates pripojenia s konzistentným lokálnym
 snímkom kariet, identít, väzieb a skladových podkladov. Nevykonáva import ani
 prevzatie autority; xTrek Upgates sa výslovne odlišuje od Atomeru.
