@@ -31,6 +31,7 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
   const context = useRef(0), busyRef = useRef(false), dialog = useRef<HTMLElement | null>(null);
   const shopName = shop === 'biketrek' ? 'BIKETREK' : 'xTrek';
   const unresolved = uncertain || !!operation && lockedStates.has(operation.state);
+  const atomerOperation = operation?.workflow === 'atomer_content';
   const errorText = (code: string) => t(`productPublication.errors.${code}`, { defaultValue: t('productPublication.failed') });
   const remember = (value: ProductPublication) => { setOperation(value); setHistory(items => [value, ...items.filter(item => item.id !== value.id)]); setConfirmed(false); setUncertain(false); };
   useEffect(() => {
@@ -60,6 +61,7 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
   }, []);
   async function act(kind: 'preview' | 'send' | 'read' | 'resolve') {
     if (busyRef.current) return;
+    if (operation?.workflow === 'atomer_content') return;
     if (kind !== 'preview' && !operation) return;
     if (kind === 'send' && (!confirmed || operation?.state !== 'ready' || unresolved)) return;
     const generation = context.current, revision = accessRevision(); busyRef.current = true; setBusy(true); setError('');
@@ -77,13 +79,19 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
     <header><div><h2>{t('productEditor.uploadTo', { shop: shopName })}</h2><p className="product-editor-muted">{t('productPublication.intro')}</p></div><button type="button" data-testid="publication-close" aria-label={t('productEditor.closeDetail')} disabled={busy} onClick={onClose}><X size={20} /></button></header>
     <div className="product-editor-detail-body">
       <label>{t('productPublication.product')}<select data-testid="publication-product" value={productId} disabled={busy} onChange={event => setProductId(Number(event.target.value))}>{rows.map(item => <option key={item.id} value={item.id}>{item.sku} · {item.common.name}</option>)}</select></label>
-      {!mapped ? <div className="product-editor-alert"><p>{t('productPublication.notMapped', { shop: shopName })}</p><Link data-testid="publication-create" to="/suppliers" onClick={onClose}>{t('productPublication.createProduct')}</Link></div> : <>
+      {!mapped ? <div className="product-editor-alert"><p>{t('productPublication.notMapped', { shop: shopName })}</p><Link data-testid="publication-create" to="/suppliers" onClick={onClose}>{t('productPublication.createProduct')}</Link></div> : !atomerOperation && <>
         <fieldset className="product-publication-fields" disabled={busy || unresolved || !!operation && operation.state === 'ready'}><legend>{t('productPublication.fields')}</legend>{fields.map(field => <label key={field}><input data-testid={`publication-field-${field}`} type="checkbox" checked={selectedFields.includes(field)} onChange={event => setSelectedFields(previous => event.target.checked ? [...previous, field] : previous.filter(item => item !== field))} />{t(`productPublication.fieldsLabel.${field}`)}</label>)}</fieldset>
         <p className="product-editor-muted">{t('productPublication.fieldHelp')}</p>
         {!operation || !['ready', 'sending', 'uncertain'].includes(operation.state) ? <div className="product-editor-scoped-action"><Button data-testid="publication-preview" disabled={busy || !selectedFields.length} onClick={() => act('preview')}>{t('productPublication.preview')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></div> : null}
       </>}
       {error && <p role="alert" className="product-editor-error">{errorText(error)}</p>}
-      {operation && <div data-testid="publication-preview-result" className="product-editor-alert">
+      {operation && atomerOperation && <div data-testid="publication-atomer-result" className="product-editor-alert">
+        <strong>{t(`productPublication.states.${operation.state}`, { defaultValue: operation.state })}</strong>
+        <p>{t('productPublication.atomerFamily', { code: operation.source_code || operation.id })}</p>
+        <p>{t('productPublication.atomerHelp')}</p>
+        <Link data-testid="publication-atomer-open" to="/migration/atomer" onClick={onClose}>{t('productPublication.atomerOpen')}</Link>
+      </div>}
+      {operation && !atomerOperation && <div data-testid="publication-preview-result" className="product-editor-alert">
         <strong>{t(`productPublication.states.${operation.state}`, { defaultValue: operation.state })}</strong>
         <p className="product-editor-muted">{row.sku} · {shopName} · {t('productPublication.operation', { id: operation.id })}</p>
         {operation.state === 'ready' && <p>{t('productPublication.expires', { date: new Date(operation.expires_at).toLocaleString() })}</p>}
@@ -92,7 +100,10 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
         {operation.state === 'ready' && !uncertain && <><label className="product-publication-confirm"><input type="checkbox" data-testid="publication-confirm" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} />{t('productPublication.confirm', { shop: shopName })}</label><div className="product-publication-actions"><div className="product-editor-scoped-action"><Button data-testid="publication-send" disabled={busy || !confirmed} onClick={() => act('send')}>{t('productPublication.send', { shop: shopName })}</Button><ActionScope effects={['upgates-write', 'upgates-read', 'hub-write']} shop={shop} /></div><Button data-testid="publication-new-preview" variant="ghost" disabled={busy} onClick={() => { setOperation(null); setConfirmed(false); }}>{t('productPublication.changeFields')}</Button></div></>}
         {unresolved && <><p>{t('productPublication.uncertain')}</p><div className="product-editor-scoped-action"><Button data-testid="publication-recover" variant="secondary" disabled={busy} onClick={() => act('read')}>{t('productPublication.readResult')}</Button><ActionScope effects={['hub-read']} /></div>{lockedStates.has(operation.state) && <details className="product-publication-resolution"><summary>{t('productPublication.resolve')}</summary><p>{t('productPublication.resolveHelp')}</p><label><input type="checkbox" data-testid="publication-settled" checked={settled} disabled={busy} onChange={event => setSettled(event.target.checked)} />{t('productPublication.settled')}</label><label>{t('productPublication.note')}<textarea data-testid="publication-resolution-note" value={note} maxLength={1000} disabled={busy} onChange={event => setNote(event.target.value)} /></label><div className="product-editor-scoped-action"><Button data-testid="publication-resolve" variant="secondary" disabled={busy || !settled || note.trim().length < 10} onClick={() => act('resolve')}>{t('productPublication.resolve')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} /></div></details>}</>}
       </div>}
-      {history.length > 0 && <details><summary>{t('productPublication.history')}</summary><ul className="product-publication-history">{history.map(item => <li key={item.id}><button type="button" disabled={busy || unresolved && item.id !== operation?.id} data-testid={`publication-history-${item.id}`} onClick={() => { setOperation(item); setConfirmed(false); setUncertain(false); setSettled(false); setNote(''); }}>{t(`productPublication.states.${item.state}`, { defaultValue: item.state })} · {item.created_at ? new Date(item.created_at).toLocaleString() : item.id}</button></li>)}</ul></details>}
+      {history.length > 0 && <details><summary>{t('productPublication.history')}</summary><ul className="product-publication-history">{history.map(item => <li key={item.id}>{item.workflow === 'atomer_content' ? <>
+        <span>{t('productPublication.atomerFamily', { code: item.source_code || item.id })} · {t(`productPublication.states.${item.state}`, { defaultValue: item.state })}</span>{' '}
+        <Link data-testid={`publication-atomer-history-${item.id}`} to="/migration/atomer" onClick={onClose}>{t('productPublication.atomerOpen')}</Link>
+      </> : <button type="button" disabled={busy || unresolved && item.id !== operation?.id} data-testid={`publication-history-${item.id}`} onClick={() => { setOperation(item); setConfirmed(false); setUncertain(false); setSettled(false); setNote(''); }}>{t(`productPublication.states.${item.state}`, { defaultValue: item.state })} · {item.created_at ? new Date(item.created_at).toLocaleString() : item.id}</button>}</li>)}</ul></details>}
     </div>
   </section></div>;
 }

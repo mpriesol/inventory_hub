@@ -68,6 +68,10 @@ v archíve nie sú dokončenou funkčnou migráciou.
 
 ## Následný postup a návrat
 
+Prvá implementovaná obsahová etapa je opísaná v
+[importe obsahu z Atomeru](atomer-content-import.md). Používa existujúci denník
+vybraných polí a nemení zásoby; stav živého pilotu sa overuje samostatne.
+
 Najprv vyriešiť konkrétne identity a povinné medzery. Potom rozšíriť existujúce
 adaptéry/importné koncepty o Atomer provenienciu; nepísať paralelný importer.
 Pilot má obsahovať samostatný produkt, variantovú rodinu, zmenený kód,

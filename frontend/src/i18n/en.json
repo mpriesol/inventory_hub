@@ -3030,7 +3030,10 @@
       "product_publication_connection_missing": "The shop connection is not configured.",
       "product_publication_write_unconfirmed": "The shop did not confirm the write. Read the saved result.",
       "stock_publication_identity_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link."
-    }
+    },
+    "atomerFamily": "Whole-card content import: {{code}}",
+    "atomerHelp": "This operation belongs to the Atomer content import and may update shared text for the complete variant family. Review and recovery are handled in its dedicated import screen.",
+    "atomerOpen": "Open Atomer content import"
   },
   "fifoCostSync": {
     "title": "Purchase costs in shops",
@@ -4886,5 +4889,73 @@
     "resolutionNote": "How you verified that the original request finished (10–2000 characters)",
     "resolutionConfirm": "I verified that the original Upgates request has finished and cannot execute later.",
     "resolutionSubmit": "Save evidence and resume registration checks"
+  },
+  "atomerContent": {
+    "title": "Import content from Atomer",
+    "subtitle": "Controlled transfer of selected text to existing xTrek Upgates cards.",
+    "back": "← Shops",
+    "scope": "Only long descriptions and selected SEO text are transferred. Prices, stock, availability, orderability, variants and galleries are not sent. Review each card and send it individually.",
+    "prepareTitle": "Source and card selection",
+    "selectionHelp": "Upload the complete buyers XML. For a variant, enter the Atomer family code and the SKU of one existing Hub card from that family. Cards must already be correctly linked to xTrek Upgates. Select up to 10 cards per batch.",
+    "file": "Buyers XML (100 MiB maximum)",
+    "sourceCode": "{{number}}. Atomer card or family code",
+    "hubSku": "{{number}}. Existing Hub card SKU",
+    "addRow": "Add card",
+    "removeRow": "Remove last card",
+    "fields": {
+      "long_description": "Long HTML description",
+      "seo_title": "SEO title",
+      "seo_description": "SEO description"
+    },
+    "preview": "Prepare preview",
+    "retryPreview": "Recover the same preview",
+    "recoverPreview": "Read the original preview result",
+    "newSelection": "Prepare another selection",
+    "previewRecovery": "The selection and original request IDs are retained. If the response is lost, read the saved result or recover the same preview. This does not send content to the shop.",
+    "previewReady": "Preview saved. Text is sent only by using the button for the individual card.",
+    "checksum": "Source SHA-256",
+    "results": "Previews and saved results",
+    "history": "Load history",
+    "download": "Download results",
+    "empty": "No previews have been loaded yet.",
+    "operation": "Operation",
+    "field": "Field",
+    "before": "Currently in xTrek",
+    "after": "Proposed value",
+    "send": "Send selected text to xTrek",
+    "readResult": "Read saved result",
+    "states": {
+      "ready": "Ready for review",
+      "sending": "Sending",
+      "uncertain": "Result needs verification",
+      "completed": "Verified in shop",
+      "noop": "No changes – values already match",
+      "rejected": "Stopped before writing",
+      "resolved": "Original request settlement verified"
+    },
+    "protectedChanges": "Observed changes outside selected text",
+    "expired": "This preview has expired. Prepare a new preview using current values.",
+    "uncertain": "The send result is unconfirmed. Do not create another batch for this card; read the original operation result first.",
+    "resolve": "Resolve an uncertain result",
+    "resolveHelp": "Use only after checking in Upgates or with support that the original request can no longer complete. Matching readback alone is insufficient. This action does not send the text again.",
+    "note": "How request settlement was verified (10–1000 characters)",
+    "settled": "I verified that the original request can no longer perform another write.",
+    "resolveSubmit": "Save verification and read current state",
+    "errors": {
+      "generic": "The operation could not be completed ({{code}}).",
+      "request_failed": "The response could not be received. Recover the original operation.",
+      "file_size": "Select a non-empty XML file up to 100 MiB.",
+      "product_publication_mapping_missing": "This card has no verified xTrek link. Link it through the stock card detail first.",
+      "product_publication_expired": "The preview expired. Prepare a new preview.",
+      "product_publication_remote_changed": "Shop data changed after the preview. Prepare a new preview.",
+      "product_publication_inflight": "Another operation for this card is active or unresolved. Finish it first.",
+      "product_publication_missing": "The saved operation was not found yet. Recover the same preview with the original selection.",
+      "product_publication_still_sending": "The request may still be running. Read its result later."
+    },
+    "rollbackPreview": "Preview restoring original text",
+    "retryRollback": "Recover the same restore preview",
+    "rollbackOf": "Restore text from operation",
+    "rollbackHelp": "Restoring text first creates a new preview. Identity and current values must still match the original result. Sending it is a separate action after review.",
+    "preflightStopped": "The request was stopped before sending. Prepare a new preview with current data."
   }
 }

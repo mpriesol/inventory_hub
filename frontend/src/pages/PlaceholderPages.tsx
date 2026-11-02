@@ -98,6 +98,7 @@ export function ShopsPage() {
       <Link className="block" to={`/settings/availability?shop=${shop}`}>{t('shopsOverview.availability')}</Link>
       <Link className="block" to={`/stock/publication?shop=${shop}`}>{t('shopsOverview.stock')}</Link>
       <Link className="block" to="/product-import">{t('nav.productImport')}</Link>
+      {shop === 'xtrek' && <Link className="block" to="/migration/atomer">{t('atomerContent.title')}</Link>}
       <a className="block" href={`/api/migration/catalog-export?shop_code=${shop}&refresh=true`}>{t('shopsOverview.catalogExport')}</a>
       <Button variant="secondary" onClick={() => setPullShop(shop)}>{t('upgatesImport.title', { shop: shop === 'biketrek' ? 'BIKETREK' : 'xTrek' })}</Button>
     </section>)}</div>
