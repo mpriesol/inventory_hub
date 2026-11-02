@@ -67,7 +67,27 @@ def summary(record):
         'before': document['before'], 'after': document['after'], 'payload': document['payload'],
         'expires_at': document['expires_at'], 'error': document.get('error'),
         'observed': document.get('observed'), 'resolution_note': document.get('resolution_note'),
-        'price_basis': 'base_list_price_incl_vat', 'keeps_discounts': True}
+        'price_basis': 'base_list_price_incl_vat', 'keeps_discounts': True,
+        **({key: document.get(key) for key in ('workflow', 'source_code', 'hub_sku', 'source_sha256',
+             'no_op', 'protected_changes', 'rollback_of')} if document.get('workflow') == 'atomer_content' else {})}
+
+
+def _transport(document):
+    if document.get('workflow') == 'atomer_content':
+        from inventory_hub.services import atomer_content_source
+        return atomer_content_source
+    return transport
+
+
+def _matches(remote, document, expected):
+    selected = _transport(document)
+    observed = selected.field_values(remote, document['fields'], remote['options'])
+    if remote['options'] != document['options']:
+        return False
+    if document.get('workflow') == 'atomer_content':
+        from inventory_hub.services.atomer_content import protected_changes
+        return selected.compare_values(observed, expected) and not protected_changes(remote, document)
+    return observed == expected
 
 
 async def _lock(db, product_id, shop_id):
@@ -142,6 +162,7 @@ async def preview(db, product_id, request):
 async def send(db, identifier):
     record = await _get(db, identifier)
     product_id, shop_id, document = record.product_id, record.shop_id, deepcopy(record.document)
+    selected = _transport(document)
     if record.state != 'ready':
         return summary(record)  # repeated browser requests never send another PUT
     await db.rollback()
@@ -150,9 +171,9 @@ async def send(db, identifier):
     if fingerprint(document['shop_code']) != document['fingerprint']:
         raise ERROR('product_publication_target_changed')
     try:
-        remote = await transport.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
+        remote = await selected.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
             prices='sale_price_gross' in document['fields'])
-        if remote['options'] != document['options'] or transport.field_values(remote, document['fields'], remote['options']) != document['before']:
+        if not _matches(remote, document, document['before']):
             raise ERROR('product_publication_remote_changed')
     except transport.source.SourceError as exc:
         raise ERROR(exc.code, exc.status) from None
@@ -163,11 +184,15 @@ async def send(db, identifier):
     await _inflight(db, product_id, shop_id, identifier)
     # Freeze source state under the same identity lock used by import/save.
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': editor.IDENTITY_WRITE_LOCK})
-    current = await editor.detail(db, product_id)
-    current_shop, _ = target(current, document['shop_code'])
-    await _assert_mapping(db, current, current_shop, shop_id)
-    if source_signature(current, document['shop_code']) != document['signature']:
-        raise ERROR('product_editor_changed')
+    if document.get('workflow') == 'atomer_content':
+        from inventory_hub.services.atomer_content import validate_local
+        await validate_local(db, record, document)
+    else:
+        current = await editor.detail(db, product_id)
+        current_shop, _ = target(current, document['shop_code'])
+        await _assert_mapping(db, current, current_shop, shop_id)
+        if source_signature(current, document['shop_code']) != document['signature']:
+            raise ERROR('product_editor_changed')
     from inventory_hub.services.merchandising_write_guard import require_target_available
     if document.get('workflow') == 'supplier_availability':
         from inventory_hub.services.supplier_availability_publication import validate
@@ -181,16 +206,19 @@ async def send(db, identifier):
     error, state, observed = None, 'uncertain', None
     try:
         # Re-check after the durable fence closes the cross-request stale-read race.
-        remote = await transport.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
+        remote = await selected.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
             prices='sale_price_gross' in document['fields'])
-        if remote['options'] != document['options'] or transport.field_values(remote, document['fields'], remote['options']) != document['before']:
+        if not _matches(remote, document, document['before']):
             state, error = 'rejected', 'product_publication_remote_changed'
         else:
-            await transport.write_once(document['shop_code'], document['identity'], document['fingerprint'], document['payload'])
-            remote = await transport.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
+            await selected.write_once(document['shop_code'], document['identity'], document['fingerprint'], document['payload'])
+            remote = await selected.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
                 prices='sale_price_gross' in document['fields'])
-            observed = transport.field_values(remote, document['fields'], document['options'])
-            if observed == document['after'] and remote['options'] == document['options']:
+            observed = selected.field_values(remote, document['fields'], document['options'])
+            if document.get('workflow') == 'atomer_content':
+                from inventory_hub.services.atomer_content import protected_changes
+                document['protected_changes'] = protected_changes(remote, document)
+            if _matches(remote, document, document['after']):
                 state = 'completed'
             else:
                 error = 'product_publication_readback_mismatch'
@@ -203,7 +231,11 @@ async def send(db, identifier):
     if record.state != 'sending':
         return summary(record)
     if state == 'completed':
-        await _record_receipt(db, product_id, identifier, document)
+        if document.get('workflow') == 'atomer_content':
+            from inventory_hub.services.atomer_content import record_receipt
+            await record_receipt(db, document, remote)
+        else:
+            await _record_receipt(db, product_id, identifier, document)
     record.state, record.updated_at = state, editor.now()
     record.document = {**document, 'error': error, 'observed': observed}
     await db.commit()
@@ -217,20 +249,28 @@ async def resolve(db, identifier, request):
     if record.state == 'sending' and editor.now() - record.updated_at < timedelta(minutes=5):
         raise ERROR('product_publication_still_sending')
     document, product_id = deepcopy(record.document), record.product_id
+    selected = _transport(document)
     await db.rollback()
     try:
-        remote = await transport.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
+        remote = await selected.read_remote(document['shop_code'], document['identity'], document['fingerprint'],
             prices='sale_price_gross' in document['fields'])
-        observed = transport.field_values(remote, document['fields'], document['options'])
+        observed = selected.field_values(remote, document['fields'], document['options'])
     except transport.source.SourceError as exc:
         raise ERROR(exc.code, exc.status) from None
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': editor.IDENTITY_WRITE_LOCK})
     record = await _get(db, identifier, lock=True)
     if record.state not in ('sending', 'uncertain'):
         return summary(record)
-    matches = observed == document['after'] and remote['options'] == document['options']
+    matches = _matches(remote, document, document['after'])
+    if document.get('workflow') == 'atomer_content':
+        from inventory_hub.services.atomer_content import protected_changes
+        document['protected_changes'] = protected_changes(remote, document)
     if matches:
-        await _record_receipt(db, product_id, identifier, document)
+        if document.get('workflow') == 'atomer_content':
+            from inventory_hub.services.atomer_content import record_receipt
+            await record_receipt(db, document, remote)
+        else:
+            await _record_receipt(db, product_id, identifier, document)
     record.state = 'completed' if matches else 'resolved'
     record.updated_at = editor.now()
     record.document = {**document, 'observed': observed, 'resolution_note': request.note,

@@ -486,6 +486,29 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(element('publication-settled')); await click('publication-settled'); await input('publication-resolution-note', 'Original remote request has been settled by support');
   await click('publication-resolve'); assert.equal(publicationWrites, sent, 'Resolving a settled remote request reads and records without resending');
   await click('publication-close'); publicationMode = 'valid';
+
+  const atomerPendingId = '15ff7e86-fd6d-4bb7-8c4f-a5cb8b8e02ed';
+  const atomerReadyId = '7c9e0ab3-7877-4caa-9b83-7e6bdc4b8403';
+  const atomerAnchorId = [...publications.values()].at(-1).product_id;
+  const atomerRecord = { product_id: atomerAnchorId, shop_code: 'xtrek', workflow: 'atomer_content', source_code: 'WHOLE-FAMILY',
+    revision: rows.get(atomerAnchorId).revision, fields: ['long_description'], before: { long_description: '<p>Before</p>' },
+    after: { long_description: '<p>After</p>' }, expires_at: '2026-12-31T12:00:00Z', error: null };
+  publications.set(atomerReadyId, { ...atomerRecord, id: atomerReadyId, state: 'ready' });
+  publications.set(atomerPendingId, { ...atomerRecord, id: atomerPendingId, state: 'uncertain' });
+  if (!required(`select-${atomerAnchorId}`).checked) await click(`select-${atomerAnchorId}`);
+  await click('upload-xtrek');
+  assert(required('publication-atomer-result').textContent.includes('WHOLE-FAMILY'), 'Family content is labelled by its actual source card, not the anchor leaf SKU');
+  assert.equal(required('publication-atomer-open').getAttribute('href'), '/migration/atomer');
+  assert(cannotUse('publication-preview') && cannotUse('publication-send') && cannotUse('publication-resolve'), 'An unresolved Atomer family retains the fence without exposing ordinary leaf controls');
+  assert(!element('publication-field-name'), 'Ordinary leaf field selection is not shown for a family operation');
+  assert(required(`publication-atomer-history-${atomerReadyId}`).closest('li').textContent.includes('WHOLE-FAMILY'), 'Ready family records remain visible with dedicated navigation');
+  assert(!element(`publication-history-${atomerReadyId}`), 'A ready Atomer operation cannot be selected into generic send controls');
+  await act(async () => i18n.changeLanguage('en'));
+  assert(required('publication-atomer-result').textContent.includes('Whole-card content import: WHOLE-FAMILY'));
+  assert.equal(publicationWrites, sent, 'Opening family history performs no shop write');
+  await act(async () => i18n.changeLanguage('sk'));
+  await click('publication-close');
+  publications.delete(atomerPendingId); publications.delete(atomerReadyId);
   await click('columns'); await click('column-attributes'); await click('column-ean'); await click('columns');
 
   await edit(1, 'name', 'Local conflict draft'); await edit(2, 'brand', 'Saved second brand'); conflictId = 1;

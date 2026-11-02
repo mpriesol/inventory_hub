@@ -3030,7 +3030,10 @@
       "product_publication_connection_missing": "Pripojenie e-shopu nie je nakonfigurované.",
       "product_publication_write_unconfirmed": "E-shop nepotvrdil zápis. Použite kontrolu uloženého výsledku.",
       "stock_publication_identity_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu."
-    }
+    },
+    "atomerFamily": "Import obsahu celej karty: {{code}}",
+    "atomerHelp": "Táto operácia patrí importu obsahu z Atomeru a môže meniť spoločné texty celej variantovej rodiny. Jej kontrola a prípadná obnova sa vykonávajú v samostatnom prehľade importu.",
+    "atomerOpen": "Otvoriť import obsahu z Atomeru"
   },
   "fifoCostSync": {
     "title": "Nákupné ceny v e-shopoch",
@@ -4889,5 +4892,73 @@
     "resolutionNote": "Ako ste overili ukončenie pôvodnej požiadavky (10–2000 znakov)",
     "resolutionConfirm": "Overil som, že pôvodná požiadavka v Upgates je ukončená a už sa nemôže dodatočne vykonať.",
     "resolutionSubmit": "Uložiť overenie a obnoviť kontrolu registrácie"
+  },
+  "atomerContent": {
+    "title": "Import obsahu z Atomeru",
+    "subtitle": "Kontrolovaný prenos vybraných textov do existujúcich kariet xTrek Upgates.",
+    "back": "← E-shopy",
+    "scope": "Prenášajú sa iba dlhé popisy a vybrané SEO texty. Ceny, zásoby, dostupnosti, objednateľnosť, varianty a galérie sa neodosielajú. Každú kartu skontrolujte v náhľade a odošlite samostatne.",
+    "prepareTitle": "Zdroj a výber kariet",
+    "selectionHelp": "Nahrajte úplný buyers XML. Pri variante zadajte kód celej rodiny z Atomeru a SKU jednej jej existujúcej karty v Hube. Karty musia byť už správne prepojené s xTrek Upgates. Jedna dávka môže mať najviac 10 kariet.",
+    "file": "Buyers XML (najviac 100 MiB)",
+    "sourceCode": "{{number}}. Kód karty alebo rodiny v Atomeri",
+    "hubSku": "{{number}}. SKU existujúcej karty v Hube",
+    "addRow": "Pridať kartu",
+    "removeRow": "Odobrať poslednú kartu",
+    "fields": {
+      "long_description": "Dlhý HTML popis",
+      "seo_title": "SEO titulok",
+      "seo_description": "SEO popis"
+    },
+    "preview": "Pripraviť náhľad",
+    "retryPreview": "Obnoviť rovnaký náhľad",
+    "recoverPreview": "Načítať výsledok pôvodného náhľadu",
+    "newSelection": "Pripraviť ďalší výber",
+    "previewRecovery": "Výber a pôvodné požiadavky zostávajú zachované. Pri strate odpovede načítajte uložený výsledok alebo obnovte ten istý náhľad. Do e-shopu sa tým nič neposiela.",
+    "previewReady": "Náhľad je uložený. Texty sa do e-shopu odošlú až tlačidlom pri konkrétnej karte.",
+    "checksum": "SHA-256 zdroja",
+    "results": "Náhľady a uložené výsledky",
+    "history": "Načítať históriu",
+    "download": "Stiahnuť výsledky",
+    "empty": "Zatiaľ nie sú načítané žiadne náhľady.",
+    "operation": "Operácia",
+    "field": "Pole",
+    "before": "Aktuálne v xTrek",
+    "after": "Navrhovaná hodnota",
+    "send": "Odoslať vybrané texty do xTrek",
+    "readResult": "Načítať uložený výsledok",
+    "states": {
+      "ready": "Pripravené na kontrolu",
+      "sending": "Odosiela sa",
+      "uncertain": "Výsledok treba overiť",
+      "completed": "Overené v e-shope",
+      "noop": "Bez zmien – hodnoty už zodpovedajú",
+      "rejected": "Zastavené pred zápisom",
+      "resolved": "Overené ukončenie požiadavky"
+    },
+    "protectedChanges": "Zmeny pozorované mimo vybraných textov",
+    "expired": "Platnosť náhľadu vypršala. Pripravte nový náhľad s aktuálnymi hodnotami.",
+    "uncertain": "Výsledok odoslania nie je potvrdený. Neodosielajte novú dávku pre túto kartu; najprv načítajte výsledok pôvodnej operácie.",
+    "resolve": "Vyriešiť nejasný výsledok",
+    "resolveHelp": "Použite až po overení v Upgates alebo u podpory, že pôvodná požiadavka už nemôže dobehnúť. Zhoda pri spätnom čítaní sama osebe nestačí. Táto akcia neodosiela texty znovu.",
+    "note": "Ako bolo overené ukončenie požiadavky (10–1000 znakov)",
+    "settled": "Overil som, že pôvodná požiadavka už nemôže vykonať ďalší zápis.",
+    "resolveSubmit": "Uložiť overenie a načítať aktuálny stav",
+    "errors": {
+      "generic": "Operáciu sa nepodarilo dokončiť ({{code}}).",
+      "request_failed": "Odpoveď sa nepodarilo získať. Použite obnovenie pôvodnej operácie.",
+      "file_size": "Vyberte neprázdny XML súbor s veľkosťou najviac 100 MiB.",
+      "product_publication_mapping_missing": "Karta ešte nemá overené prepojenie s xTrek. Najprv ju pripojte cez detail skladovej karty.",
+      "product_publication_expired": "Náhľad vypršal. Pripravte nový náhľad.",
+      "product_publication_remote_changed": "Údaje v e-shope sa od náhľadu zmenili. Pripravte nový náhľad.",
+      "product_publication_inflight": "Pre túto kartu prebieha iná alebo nevyriešená operácia. Najprv ju dokončite.",
+      "product_publication_missing": "Uložená operácia sa zatiaľ nenašla. Obnovte rovnaký náhľad s pôvodným výberom.",
+      "product_publication_still_sending": "Odosielanie ešte môže prebiehať. Načítajte jeho výsledok neskôr."
+    },
+    "rollbackPreview": "Pripraviť návrat pôvodných textov",
+    "retryRollback": "Obnoviť rovnaký náhľad návratu",
+    "rollbackOf": "Návrat textov operácie",
+    "rollbackHelp": "Návrat sa najprv zobrazí ako nový náhľad. Povolí sa iba pri nezmenenej identite a hodnotách, ktoré stále zodpovedajú pôvodnému výsledku. Odosiela sa samostatne po kontrole.",
+    "preflightStopped": "Požiadavka bola zastavená pred odoslaním. Pripravte nový náhľad s aktuálnymi údajmi."
   }
 }
