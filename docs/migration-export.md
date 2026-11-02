@@ -70,3 +70,10 @@ Referencie: [produktové API sekcie](https://docs.upgates.com/api-reference/prod
 [kategórie](https://docs.upgates.com/api-reference/kategorie),
 [parametre](https://docs.upgates.com/api-reference/parametry),
 [dostupnosti](https://docs.upgates.com/api-reference/dostupnosti).
+
+Ak API vráti tú istú dostupnosť pri viacerých filtroch typu, totožné záznamy
+zostávajú v pôvodných stránkach. Manifest rozlišuje počet pozorovaných riadkov
+`count` a jedinečných identít `unique_count`; analýza ich nesmie sčítať.
+Duplicitné ID v jednej filtrovanej kolekcii alebo zmenený obsah rovnakého ID
+medzi filtrami export stále zastaví. Takto sa zachová dôkaz aj pri API, ktoré
+vracia prekrývajúce sa výsledky filtrov.

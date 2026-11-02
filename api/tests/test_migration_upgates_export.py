@@ -70,6 +70,17 @@ class RemoteExportTests(unittest.TestCase):
         output.close()
         self.assertEqual([c.args[2]["type"] for c in read.call_args_list], list(values))
 
+    def test_identical_availability_filter_overlap_is_preserved_but_counted(self):
+        result, _ = self.build([page([{"id": 1, "type": "InStock"}], key="availabilities")] * 4, "availabilities")
+        with result, zipfile.ZipFile(result) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["count"], 4)
+            self.assertEqual(manifest["unique_count"], 1)
+            self.assertEqual(len(manifest["pages"]), 4)
+        with self.assertRaisesRegex(service.ExportError, "identity_changed_between_filters"):
+            self.build([page([{"id": 1, "type": "InStock"}], key="availabilities"),
+                        page([{"id": 1, "type": "Custom"}], key="availabilities")], "availabilities")
+
     def test_config_allowlist_excludes_secrets(self):
         output, _ = self.build([{"config": {"prices_with_vat_yn": True, "password": "MUST-NOT-EXPORT"},
                                 "unrelated": "MUST-NOT-EXPORT"}], "config")
