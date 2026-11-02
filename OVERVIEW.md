@@ -22,6 +22,7 @@ skladovú autoritu. Aktivácia spoločných vlastných zásob naďalej vyžaduje
 zosúladenie a pilot; xTrek Atomer nie je týmto pripojený ako živý Upgates kanál.
 
 Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
+Pravidlá analytickej etapy a otvorené podmienky prechodu sú v [xTrek migračnom audite](docs/xtrek-atomer-migration-audit.md).
 Samostatný `GET /api/migration/upgates-export` dopĺňa úplné API sekcie katalógu,
 parametre a číselníky cez uložené napojenie. Kontroluje stránkovanie a natívne ID;
 nemení katalóg ani sklad a nepotrebuje databázovú migráciu.
