@@ -20,12 +20,13 @@ router = APIRouter(prefix='/migration/atomer-content', tags=['migration'], route
 
 
 @router.post('/preview')
-async def preview(selection: Annotated[str, Form(max_length=20000)],
+async def preview(selection: Annotated[str, Form(max_length=100000)],
                   source_file: UploadFile = File(...), db: AsyncSession = Depends(get_session)):
     try:
         request = AtomerContentBatch.model_validate_json(selection)
         snapshot = await asyncio.to_thread(parse_selected, source_file.file,
                                           [item.source_code for item in request.items])
+        snapshot.update(parameter_names=request.parameter_names, formatting=request.formatting)
     except ValidationError:
         raise HTTPException(422, detail={'code': 'atomer_content_invalid_selection'}) from None
     except AtomerSourceError as exc:

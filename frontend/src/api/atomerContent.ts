@@ -1,6 +1,6 @@
 import { hubRequest, hubUpload } from './access';
 
-export const ATOMER_CONTENT_FIELDS = ['long_description', 'seo_title', 'seo_description'] as const;
+export const ATOMER_CONTENT_FIELDS = ['long_description', 'seo_title', 'seo_description', 'parameters'] as const;
 export type AtomerContentField = typeof ATOMER_CONTENT_FIELDS[number];
 export interface AtomerContentItem {
   request_id: string; source_code: string; hub_sku: string; fields: AtomerContentField[];
@@ -18,10 +18,10 @@ export interface AtomerContentPreview {
   items: { source_code: string; hub_sku: string; publication?: AtomerContentPublication; error?: { code: string } }[];
 }
 const base = '/api/migration/atomer-content';
-export function previewAtomerContent(file: File, items: AtomerContentItem[]) {
+export function previewAtomerContent(file: File, items: AtomerContentItem[], parameterNames: Record<string, string> = {}, formatting: 'original' | 'upgates' = 'original') {
   const body = new FormData();
   body.append('source_file', file);
-  body.append('selection', JSON.stringify({ items }));
+  body.append('selection', JSON.stringify({ items, parameter_names: parameterNames, formatting }));
   return hubUpload<AtomerContentPreview>(`${base}/preview`, body);
 }
 export const atomerContentHistory = (signal?: AbortSignal) => hubRequest<{ items: AtomerContentPublication[] }>(`${base}/publications`, undefined, signal);

@@ -15,7 +15,8 @@ from inventory_hub.services.product_identity import barcode_keys
 from inventory_hub.services.product_publication_source import plain
 
 
-FIELDS = frozenset(("long_description", "seo_title", "seo_description"))
+TEXT_FIELDS = frozenset(("long_description", "seo_title", "seo_description"))
+FIELDS = TEXT_FIELDS | {'parameters'}
 MISSING = {"missing": True}
 OPERATIONAL_FIELDS = frozenset((
     "stock", "stocks", "stock_position", "availability", "availability_id", "availability_type",
@@ -41,9 +42,11 @@ def _fields(fields):
 
 
 def _target(identity):
-    allowed = source.IDENTITY_KEYS | {"ean", "full_family"}
+    allowed = source.IDENTITY_KEYS | {"ean", "full_family", "parameters_yn"}
     if not isinstance(identity, dict) or set(identity) - allowed:
         raise _error("invalid_target", 422)
+    if 'parameters_yn' in identity and identity['parameters_yn'] is not True:
+        raise _error('invalid_target', 422)
     return source._target({key: value for key, value in identity.items() if key in source.IDENTITY_KEYS})
 
 
@@ -113,8 +116,27 @@ def _read(client, identity):
     if "ean" in identity and _value(anchor, "ean") != identity["ean"]:
         raise _error()
     _descriptions(parent)
+    if identity.get('parameters_yn'):
+        details = source._request(client, 'get', 'products/parameters', params={
+            'codes': target['parent_code'], 'page': 1, 'current_page_items': 100})
+        detail = source._one(details, 'products')
+        if detail.get('code') != parent['code'] or detail.get('product_id') != parent['product_id']:
+            raise _error('identity_changed')
+        # This first parameter stage is deliberately limited to standalone cards.
+        if parent.get('variants') or detail.get('variants'):
+            raise _error('parameters_standalone_required', 422)
+        from inventory_hub.services.ai_content_update import parameter_rows
+        from inventory_hub.services.atomer_parameters import canonical_parameters
+        from inventory_hub.adapters.atomer_content import AtomerSourceError
+        from inventory_hub.services.catalog import CatalogError
+        try:
+            parent['parameters'] = canonical_parameters(parameter_rows(detail))
+        except (AtomerSourceError, CatalogError):
+            raise _error('parameters_unavailable', 502) from None
     frozen = {**target, "variant_id": target.get("variant_id"),
               "ean": _value(anchor, "ean"), "full_family": family}
+    if identity.get('parameters_yn'):
+        frozen['parameters_yn'] = True
     return plain({"identity": frozen, "parent": parent, "options": None})
 
 
@@ -136,9 +158,14 @@ def field_values(remote, fields, options=None):
     _fields(fields)
     description = _descriptions(remote["parent"])
     if any(field in description and description[field] is not None
-           and not isinstance(description[field], str) for field in fields):
+           and not isinstance(description[field], str) for field in fields if field in TEXT_FIELDS):
         raise _error("descriptions_unavailable", 502)
-    return {field: _value(description, field) for field in fields}
+    values = {field: _value(description, field) for field in fields if field in TEXT_FIELDS}
+    if 'parameters' in fields:
+        if remote['identity'].get('parameters_yn') is not True or 'parameters' not in remote['parent']:
+            raise _error('parameters_unavailable', 502)
+        values['parameters'] = deepcopy(remote['parent']['parameters'])
+    return values
 
 
 def compare_values(before, after):
@@ -150,6 +177,14 @@ def compare_values(before, after):
         if key not in FIELDS:
             return False
         if before[key] == after[key]:
+            continue
+        if key == 'parameters':
+            from inventory_hub.services.atomer_parameters import canonical_parameters
+            try:
+                if canonical_parameters(before[key]) != canonical_parameters(after[key]):
+                    return False
+            except AtomerSourceError:
+                return False
             continue
         if key != "long_description" or not isinstance(before[key], str) or not isinstance(after[key], str):
             return False
@@ -165,8 +200,13 @@ def build_patch(values, remote, fields):
     _fields(fields)
     if not isinstance(values, dict) or set(values) != set(fields):
         raise _error("invalid_fields", 422)
-    payload = {"products": [{"code": remote["identity"]["parent_code"],
-                              "descriptions": [{"language": "sk", **deepcopy(values)}]}]}
+    product = {'code': remote['identity']['parent_code']}
+    texts = {key: deepcopy(value) for key, value in values.items() if key in TEXT_FIELDS}
+    if texts:
+        product['descriptions'] = [{'language': 'sk', **texts}]
+    if 'parameters' in fields:
+        product['parameters'] = deepcopy(values['parameters'])
+    payload = {'products': [product]}
     _validate_payload(payload, remote["identity"])
     return {"payload": payload, "before": field_values(remote, fields), "after": deepcopy(values)}
 
@@ -189,6 +229,8 @@ def protected_observation(remote, fields=None):
         if row["language"] == "sk":
             for key in fields:
                 row.pop(key, None)
+    if 'parameters' in fields:
+        parent.pop('parameters', None)
     parent["descriptions"] = sorted(parent["descriptions"], key=lambda row: row["language"])
     if isinstance(parent.get("variants"), list):
         parent["variants"] = sorted(parent["variants"], key=lambda row: row["code"])
@@ -264,21 +306,28 @@ def _validate_payload(payload, identity):
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         raise _error("invalid_payload", 422)
     row = rows[0]
-    if set(row) != {"code", "descriptions"} or row["code"] != target["parent_code"]:
-        raise _error("invalid_payload", 422)
-    descriptions = row["descriptions"]
-    if not isinstance(descriptions, list) or len(descriptions) != 1 or not isinstance(descriptions[0], dict):
-        raise _error("invalid_payload", 422)
-    description = descriptions[0]
-    fields = list(set(description) - {"language"})
-    _fields(fields)
-    if description.get("language") != "sk":
+    if (set(row) - {'code', 'descriptions', 'parameters'} or row.get('code') != target['parent_code']
+            or not ({'descriptions', 'parameters'} & set(row))):
         raise _error("invalid_payload", 422)
     # Reuse source validation at the final write boundary: the frozen journal
     # cannot broaden HTML or field-size rules when it is sent or recovered.
     from inventory_hub.adapters.atomer_content import source_values, AtomerSourceError
     try:
-        source_values({"rows": [description]}, fields)
+        if 'descriptions' in row:
+            descriptions = row['descriptions']
+            if (not isinstance(descriptions, list) or len(descriptions) != 1
+                    or not isinstance(descriptions[0], dict)):
+                raise _error('invalid_payload', 422)
+            description = descriptions[0]
+            fields = list(set(description) - {'language'})
+            if description.get('language') != 'sk' or not fields or set(fields) - TEXT_FIELDS:
+                raise _error('invalid_payload', 422)
+            source_values({'rows': [description]}, fields)
+        if 'parameters' in row:
+            from inventory_hub.services.atomer_parameters import canonical_parameters
+            if identity.get('parameters_yn') is not True or frozen.get('variants') or not row['parameters']:
+                raise _error('invalid_payload', 422)
+            canonical_parameters(row['parameters'])
     except AtomerSourceError:
         raise _error("invalid_payload", 422) from None
 

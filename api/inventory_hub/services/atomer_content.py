@@ -104,8 +104,13 @@ def protected_changes(remote, document):
 
 async def preview(db, item, snapshot):
     identifier = str(item.request_id)
-    input_hash = editor._digest({'source_sha256': snapshot['sha256'],
-        'hub_sku': item.hub_sku, 'source_code': item.source_code, 'fields': sorted(item.fields)})
+    inputs = {'source_sha256': snapshot['sha256'],
+        'hub_sku': item.hub_sku, 'source_code': item.source_code, 'fields': sorted(item.fields)}
+    if 'parameters' in item.fields:
+        inputs['parameter_names'] = snapshot.get('parameter_names', {})
+    if snapshot.get('formatting', 'original') != 'original':
+        inputs['formatting'] = snapshot['formatting']
+    input_hash = editor._digest(inputs)
     prior = await _replay(db, identifier, input_hash)
     if prior is not None:
         return prior
@@ -113,7 +118,11 @@ async def preview(db, item, snapshot):
     if group is None:
         raise ERROR('atomer_content_source_missing', 422)
     try:
-        values = source_values(group, item.fields)
+        text_fields = [key for key in item.fields if key in transport.TEXT_FIELDS]
+        values = source_values(group, text_fields) if text_fields else {}
+        if snapshot.get('formatting') == 'upgates' and 'long_description' in values:
+            from inventory_hub.services.atomer_parameters import format_for_upgates
+            values['long_description'] = format_for_upgates(values['long_description'])
     except AtomerSourceError as exc:
         raise ERROR(exc.code, 422) from None
     products = list(await db.scalars(select(Product).where(func.lower(Product.sku) == item.hub_sku.lower())))
@@ -122,6 +131,8 @@ async def preview(db, item, snapshot):
     product_id = products[0].id
     row = await editor.detail(db, product_id)
     shop, identity = publications.target(row, 'xtrek')
+    if 'parameters' in item.fields:
+        identity['parameters_yn'] = True
     shop_id = await db.scalar(select(Shop.id).where(Shop.code == 'xtrek', Shop.is_active.is_(True)))
     if shop_id is None:
         raise ERROR('atomer_content_shop_missing', 422)
@@ -132,6 +143,10 @@ async def preview(db, item, snapshot):
     try:
         remote = await transport.read_remote('xtrek', identity, frozen_fingerprint)
         evidence = transport.verify_source(group, remote)
+        if 'parameters' in item.fields:
+            from inventory_hub.services.atomer_parameters import source_parameters
+            values['parameters'] = source_parameters(group, snapshot.get('parameter_names', {}),
+                                                     remote['parent']['parameters'])
         patch = transport.build_patch(values, remote, item.fields)
         # The first pilot requires an observed, restorable original value for
         # every selected field. Unknown/null/empty originals need a separate
@@ -139,6 +154,8 @@ async def preview(db, item, snapshot):
         transport.build_patch(patch['before'], remote, item.fields)
     except transport.source.SourceError as exc:
         raise ERROR(exc.code, exc.status) from None
+    except AtomerSourceError as exc:
+        raise ERROR(exc.code, 422) from None
     facts = await family_facts(db, shop_id, remote, product_id)
     signature = editor._digest(facts)
     await db.rollback()
@@ -162,7 +179,9 @@ async def preview(db, item, snapshot):
         'input_hash': input_hash, 'family_signature': signature, 'family_facts': facts,
         'source_code': item.source_code, 'hub_sku': item.hub_sku, 'source_sha256': snapshot['sha256'],
         'source': {'size_bytes': snapshot['size_bytes'], 'total_rows': snapshot['total_rows'],
-                   'group': deepcopy(group), 'identity_evidence': evidence},
+                   'group': deepcopy(group), 'identity_evidence': evidence,
+                   'parameter_names': deepcopy(snapshot.get('parameter_names', {})),
+                   'formatting': snapshot.get('formatting', 'original')},
         'remote_before': remote, 'protected_before': transport.protected_observation(remote, item.fields),
         'no_op': no_op, 'observed': patch['before'] if no_op else None, **patch}
     record = ProductEditorPublication(id=identifier, product_id=product_id, shop_id=shop_id,

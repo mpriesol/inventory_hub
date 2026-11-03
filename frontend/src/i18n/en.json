@@ -4892,9 +4892,9 @@
   },
   "atomerContent": {
     "title": "Import content from Atomer",
-    "subtitle": "Controlled transfer of selected text to existing xTrek Upgates cards.",
+    "subtitle": "Controlled transfer of selected source data to existing xTrek Upgates products.",
     "back": "← Shops",
-    "scope": "Only long descriptions and selected SEO text are transferred. Prices, stock, availability, orderability, variants and galleries are not sent. Review each card and send it individually.",
+    "scope": "Only selected source data is transferred. Parameters require a reviewed name mapping and a standalone product. Formatting preserves the wording. This write does not change prices, stock, availability, orderability, variants or galleries. Review and send each proposal separately.",
     "prepareTitle": "Source and card selection",
     "selectionHelp": "Upload the complete buyers XML. For a variant, enter the Atomer family code and the SKU of one existing Hub card from that family. Cards must already be correctly linked to xTrek Upgates. Select up to 10 cards per batch.",
     "file": "Buyers XML (100 MiB maximum)",
@@ -4905,7 +4905,8 @@
     "fields": {
       "long_description": "Long HTML description",
       "seo_title": "SEO title",
-      "seo_description": "SEO description"
+      "seo_description": "SEO description",
+      "parameters": "Parameters (standalone products)"
     },
     "preview": "Prepare preview",
     "retryPreview": "Recover the same preview",
@@ -4922,7 +4923,7 @@
     "field": "Field",
     "before": "Currently in xTrek",
     "after": "Proposed value",
-    "send": "Send selected text to xTrek",
+    "send": "Send selected data to xTrek",
     "readResult": "Read saved result",
     "states": {
       "ready": "Ready for review",
@@ -4950,12 +4951,20 @@
       "product_publication_remote_changed": "Shop data changed after the preview. Prepare a new preview.",
       "product_publication_inflight": "Another operation for this card is active or unresolved. Finish it first.",
       "product_publication_missing": "The saved operation was not found yet. Recover the same preview with the original selection.",
-      "product_publication_still_sending": "The request may still be running. Read its result later."
+      "product_publication_still_sending": "The request may still be running. Read its result later.",
+      "parameter_mapping": "Upload a valid reviewed mapping of parameter IDs to their exact names.",
+      "atomer_source_parameter_mapping_required": "A source parameter has no unambiguous name mapping.",
+      "atomer_source_parameter_translation_conflict": "An existing parameter has other languages and requires separate review.",
+      "atomer_content_parameters_standalone_required": "This stage transfers parameters only for standalone products.",
+      "atomer_source_parameters_standalone_required": "This stage transfers parameters only for standalone products.",
+      "atomer_content_parameters_unavailable": "The complete product parameters could not be verified through the API."
     },
-    "rollbackPreview": "Preview restoring original text",
+    "rollbackPreview": "Prepare original data restoration",
     "retryRollback": "Recover the same restore preview",
     "rollbackOf": "Restore text from operation",
     "rollbackHelp": "Restoring text first creates a new preview. Identity and current values must still match the original result. Sending it is a separate action after review.",
-    "preflightStopped": "The request was stopped before sending. Prepare a new preview with current data."
+    "preflightStopped": "The request was stopped before sending. Prepare a new preview with current data.",
+    "parameterMap": "Reviewed parameter names from the audit (JSON)",
+    "formatting": "Adapt presentation to Upgates; preserve the exact wording"
   }
 }
