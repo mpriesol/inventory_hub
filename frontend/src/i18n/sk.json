@@ -4895,9 +4895,9 @@
   },
   "atomerContent": {
     "title": "Import obsahu z Atomeru",
-    "subtitle": "Kontrolovaný prenos vybraných textov do existujúcich kariet xTrek Upgates.",
+    "subtitle": "Kontrolovaný prenos vybraných údajov do existujúcich kariet xTrek Upgates.",
     "back": "← E-shopy",
-    "scope": "Prenášajú sa iba dlhé popisy a vybrané SEO texty. Ceny, zásoby, dostupnosti, objednateľnosť, varianty a galérie sa neodosielajú. Každú kartu skontrolujte v náhľade a odošlite samostatne.",
+    "scope": "Prenášajú sa iba vybrané údaje zo zdroja. Parametre vyžadujú overené mapovanie názvov a samostatný produkt. Formátovanie nemení znenie textu. Ceny, zásoby, dostupnosti, objednateľnosť, varianty a galérie sa týmto zápisom nemenia. Každý návrh skontrolujte a odošlite samostatne.",
     "prepareTitle": "Zdroj a výber kariet",
     "selectionHelp": "Nahrajte úplný buyers XML. Pri variante zadajte kód celej rodiny z Atomeru a SKU jednej jej existujúcej karty v Hube. Karty musia byť už správne prepojené s xTrek Upgates. Jedna dávka môže mať najviac 10 kariet.",
     "file": "Buyers XML (najviac 100 MiB)",
@@ -4908,7 +4908,8 @@
     "fields": {
       "long_description": "Dlhý HTML popis",
       "seo_title": "SEO titulok",
-      "seo_description": "SEO popis"
+      "seo_description": "SEO popis",
+      "parameters": "Parametre (samostatné produkty)"
     },
     "preview": "Pripraviť náhľad",
     "retryPreview": "Obnoviť rovnaký náhľad",
@@ -4925,7 +4926,7 @@
     "field": "Pole",
     "before": "Aktuálne v xTrek",
     "after": "Navrhovaná hodnota",
-    "send": "Odoslať vybrané texty do xTrek",
+    "send": "Odoslať vybrané údaje do xTrek",
     "readResult": "Načítať uložený výsledok",
     "states": {
       "ready": "Pripravené na kontrolu",
@@ -4953,12 +4954,20 @@
       "product_publication_remote_changed": "Údaje v e-shope sa od náhľadu zmenili. Pripravte nový náhľad.",
       "product_publication_inflight": "Pre túto kartu prebieha iná alebo nevyriešená operácia. Najprv ju dokončite.",
       "product_publication_missing": "Uložená operácia sa zatiaľ nenašla. Obnovte rovnaký náhľad s pôvodným výberom.",
-      "product_publication_still_sending": "Odosielanie ešte môže prebiehať. Načítajte jeho výsledok neskôr."
+      "product_publication_still_sending": "Odosielanie ešte môže prebiehať. Načítajte jeho výsledok neskôr.",
+      "parameter_mapping": "Nahrajte platnú overenú mapu ID parametrov na ich presné názvy.",
+      "atomer_source_parameter_mapping_required": "Chýba jednoznačné mapovanie niektorého zdrojového parametra.",
+      "atomer_source_parameter_translation_conflict": "Existujúci parameter má ďalšie jazyky; vyžaduje osobitné overenie.",
+      "atomer_content_parameters_standalone_required": "Táto etapa prenáša parametre iba samostatných produktov.",
+      "atomer_source_parameters_standalone_required": "Táto etapa prenáša parametre iba samostatných produktov.",
+      "atomer_content_parameters_unavailable": "Úplné parametre produktu sa nepodarilo overiť cez API."
     },
-    "rollbackPreview": "Pripraviť návrat pôvodných textov",
+    "rollbackPreview": "Pripraviť návrat pôvodných údajov",
     "retryRollback": "Obnoviť rovnaký náhľad návratu",
     "rollbackOf": "Návrat textov operácie",
     "rollbackHelp": "Návrat sa najprv zobrazí ako nový náhľad. Povolí sa iba pri nezmenenej identite a hodnotách, ktoré stále zodpovedajú pôvodnému výsledku. Odosiela sa samostatne po kontrole.",
-    "preflightStopped": "Požiadavka bola zastavená pred odoslaním. Pripravte nový náhľad s aktuálnymi údajmi."
+    "preflightStopped": "Požiadavka bola zastavená pred odoslaním. Pripravte nový náhľad s aktuálnymi údajmi.",
+    "parameterMap": "Overené názvy parametrov z auditu (JSON)",
+    "formatting": "Prispôsobiť formátovanie Upgates; zachovať presné znenie"
   }
 }

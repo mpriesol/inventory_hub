@@ -8,7 +8,7 @@ import { ATOMER_CONTENT_FIELDS, AtomerContentField, AtomerContentItem, AtomerCon
 import './OpeningStockPage.css';
 
 type Selection = { source_code: string; hub_sku: string };
-type Frozen = { file: File; items: AtomerContentItem[] };
+type Frozen = { file: File; items: AtomerContentItem[]; parameterNames: Record<string, string>; formatting: 'original' | 'upgates' };
 const emptySelection = (): Selection => ({ source_code: '', hub_sku: '' });
 const valueText = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
 const errorCode = (value: unknown) => (value as { code?: string })?.code || 'request_failed';
@@ -23,7 +23,9 @@ export function AtomerContentMigration() {
   const revision = useSyncExternalStore(subscribeAccess, accessRevision);
   const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<Selection[]>([emptySelection()]);
-  const [fields, setFields] = useState<AtomerContentField[]>([...ATOMER_CONTENT_FIELDS]);
+  const [fields, setFields] = useState<AtomerContentField[]>(ATOMER_CONTENT_FIELDS.filter(field => field !== 'parameters'));
+  const [parameterNames, setParameterNames] = useState<Record<string, string>>({});
+  const [formatting, setFormatting] = useState(false);
   const [frozen, setFrozen] = useState<Frozen | null>(null);
   const [preview, setPreview] = useState<AtomerContentPreview | null>(null);
   const [publications, setPublications] = useState<AtomerContentPublication[]>([]);
@@ -35,12 +37,14 @@ export function AtomerContentMigration() {
   const [settled, setSettled] = useState<Record<string, boolean>>({});
   const [rollbackRequests, setRollbackRequests] = useState<Record<string, string>>({});
   const busyRef = useRef<string | null>(null), generation = useRef(0), fileInput = useRef<HTMLInputElement>(null);
+  const mappingRead = useRef(0);
   const locked = !!frozen || !!busy;
   const selectionBlocked = rows.some(row => publications.some(record => record.source_code === row.source_code.trim()
     && (['sending', 'uncertain'].includes(record.state) || unknown[record.id])));
   const valid = !!file && file.size > 0 && file.size <= MAX_BYTES && fields.length > 0 && rows.length <= 10
     && rows.every(row => row.source_code.trim() && row.hub_sku.trim())
-    && new Set(rows.map(row => row.source_code.trim())).size === rows.length && !selectionBlocked;
+    && new Set(rows.map(row => row.source_code.trim())).size === rows.length && !selectionBlocked
+    && (!fields.includes('parameters') || Object.keys(parameterNames).length > 0);
   function message(code: string) { return t(`atomerContent.errors.${code}`, { defaultValue: t('atomerContent.errors.generic', { code }) }); }
   function accept(record: AtomerContentPublication) {
     if (record.workflow !== 'atomer_content' || record.shop_code !== 'xtrek') throw new Error('Unexpected publication scope');
@@ -72,8 +76,8 @@ export function AtomerContentMigration() {
     });
   }
   useEffect(() => {
-    generation.current += 1; busyRef.current = null; setBusy(null); setFile(null); setFrozen(null); setPreview(null);
-    setRows([emptySelection()]); setFields([...ATOMER_CONTENT_FIELDS]); setPublications([]); setUnknown({}); setNotSent({}); setNotes({}); setSettled({}); setRollbackRequests({}); setError('');
+    generation.current += 1; mappingRead.current += 1; busyRef.current = null; setBusy(null); setFile(null); setFrozen(null); setPreview(null);
+    setRows([emptySelection()]); setFields(ATOMER_CONTENT_FIELDS.filter(field => field !== 'parameters')); setParameterNames({}); setFormatting(false); setPublications([]); setUnknown({}); setNotSent({}); setNotes({}); setSettled({}); setRollbackRequests({}); setError('');
     if (fileInput.current) fileInput.current.value = '';
     if (hubUnlocked()) void history();
     return () => { generation.current += 1; };
@@ -86,9 +90,10 @@ export function AtomerContentMigration() {
   }, [busy, frozen, preview]);
   async function prepare() {
     if (busyRef.current || (!frozen && !valid)) return;
-    const input = frozen || { file: file!, items: rows.map(row => ({ request_id: crypto.randomUUID(), source_code: row.source_code.trim(), hub_sku: row.hub_sku.trim(), fields: [...fields] })) };
+    const input = frozen || { file: file!, parameterNames, formatting: formatting ? 'upgates' as const : 'original' as const,
+      items: rows.map(row => ({ request_id: crypto.randomUUID(), source_code: row.source_code.trim(), hub_sku: row.hub_sku.trim(), fields: [...fields] })) };
     setFrozen(input);
-    await run('preview', () => previewAtomerContent(input.file, input.items), result => {
+    await run('preview', () => previewAtomerContent(input.file, input.items, input.parameterNames, input.formatting), result => {
       setPreview(result);
       result.items.forEach(item => { if (item.publication) accept(item.publication); });
     }, caught => {
@@ -101,6 +106,20 @@ export function AtomerContentMigration() {
   function newSelection() {
     if (busyRef.current || (frozen && !preview)) return;
     setFrozen(null); setPreview(null); setError('');
+  }
+  async function readParameterMap(selected: File | null) {
+    const read = ++mappingRead.current, credential = accessRevision();
+    setParameterNames({});
+    if (!selected) return;
+    try {
+      if (!selected.size || selected.size > 100000) throw new Error('Invalid mapping');
+      const mapping: unknown = JSON.parse(await selected.text());
+      if (read !== mappingRead.current || credential !== accessRevision()) return;
+      if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping) || !Object.keys(mapping).length
+          || Object.entries(mapping).some(([key, value]) => !/^PROPERTY_\d+$/.test(key)
+            || typeof value !== 'string' || !value.trim() || value !== value.trim() || value.length > 255)) throw new Error('Invalid mapping');
+      setParameterNames(mapping as Record<string, string>); setError('');
+    } catch { if (read === mappingRead.current && credential === accessRevision()) setError('parameter_mapping'); }
   }
   async function recoverPreview() {
     if (!frozen) return;
@@ -151,6 +170,8 @@ export function AtomerContentMigration() {
         <div className="opening-stock-actions"><Button variant="secondary" disabled={rows.length >= 10} onClick={() => setRows(current => [...current, emptySelection()])}>{t('atomerContent.addRow')}</Button>
           {rows.length > 1 && <Button variant="ghost" onClick={() => setRows(current => current.slice(0, -1))}>{t('atomerContent.removeRow')}</Button>}</div>
         <div className="opening-stock-confirmations">{ATOMER_CONTENT_FIELDS.map(field => <label key={field}><input type="checkbox" checked={fields.includes(field)} onChange={event => setFields(current => event.target.checked ? ATOMER_CONTENT_FIELDS.filter(value => current.includes(value) || value === field) : current.filter(value => value !== field))} />{t(`atomerContent.fields.${field}`)}</label>)}</div>
+        {fields.includes('parameters') && <label>{t('atomerContent.parameterMap')}<input type="file" accept=".json,application/json" onChange={event => void readParameterMap(event.target.files?.[0] || null)} /></label>}
+        <div className="opening-stock-confirmations"><label><input type="checkbox" checked={formatting} onChange={event => setFormatting(event.target.checked)} />{t('atomerContent.formatting')}</label></div>
       </fieldset>
       {frozen && !preview && <p role="status">{t('atomerContent.previewRecovery')}</p>}
       {!frozen && selectionBlocked && <p role="alert" className="opening-stock-warnings">{t('atomerContent.uncertain')}</p>}

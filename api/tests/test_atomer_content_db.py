@@ -38,6 +38,80 @@ SOURCE_HTML = (
 @unittest.skipUnless(os.environ.get('CATALOG_TEST_DATABASE_URL'),
                      'Requires isolated localhost *_catalog_test database')
 class AtomerContentDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def standalone_parameters(self, stack):
+        from test_atomer_parameters import parameter
+        async with self.transaction() as db:
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops['xtrek'],
+                ShopProduct.product_id == self.products['BIKE-2']))
+            mapping.is_variant = False; mapping.parent_code = None; mapping.external_variant_id = None
+        parent = self.parent()
+        parent.update(code='BIKE-2', variants_exists_yn=False, variants=[], ean='5901234123457')
+        parent['parameters'] = [parameter(value='180 x 60 x 0'), parameter('Extra', 'Keep English', 'en')]
+        snapshot = self.snapshot()
+        row = snapshot['groups']['REAL-FRAMES']['rows'][0]
+        row.update(parent_code='', raw_xml='<PRODUCT><PROPERTIES><PROPERTY_1>180 x 60 x 0,8 cm</PROPERTY_1></PROPERTIES></PRODUCT>')
+        snapshot['groups'] = {'BIKE-2': {'source_code': 'BIKE-2', 'rows': [row]}}
+        snapshot.update(parameter_names={'PROPERTY_1': 'Rozmer'}, formatting='upgates')
+        item = self.item(source_code='BIKE-2', fields=['long_description', 'parameters'])
+        stack.enter_context(patch.object(publications, 'fingerprint', return_value='a' * 64))
+        client = SimpleNamespace(session=SimpleNamespace(close=Mock()))
+        stack.enter_context(patch.object(transport.source, '_client', return_value=client))
+        writes = []
+        def request(_client, method, path, *, params=None, payload=None):
+            if method == 'get':
+                self.assertEqual(params['codes'], 'BIKE-2')
+                if path == 'products/parameters':
+                    result = {'code': 'BIKE-2', 'product_id': 501, 'parameters_new': copy.deepcopy(parent['parameters'])}
+                else:
+                    self.assertEqual(path, 'products')
+                    result = {key: copy.deepcopy(value) for key, value in parent.items() if key != 'parameters'}
+                return {'current_page': 1, 'current_page_items': 1, 'number_of_items': 1,
+                        'number_of_pages': 1, 'products': [result]}
+            self.assertEqual((method, path), ('put', 'products'))
+            product = payload['products'][0]
+            self.assertEqual(set(product), {'code', 'descriptions', 'parameters'})
+            self.assertEqual(product['code'], 'BIKE-2')
+            writes.append(copy.deepcopy(payload))
+            next(row for row in parent['descriptions'] if row['language'] == 'sk').update(product['descriptions'][0])
+            parent['parameters'] = copy.deepcopy(product['parameters'])
+            return {'products': [{'code': 'BIKE-2', 'product_id': 501, 'updated_yn': True}]}
+        stack.enter_context(patch.object(transport.source, '_request', side_effect=request))
+        return item, snapshot, parent, writes
+
+    async def test_standalone_parameters_publish_noop_and_rollback_keep_stock_and_extras(self):
+        from inventory_hub.services.atomer_parameters import canonical_parameters
+        with ExitStack() as stack:
+            item, snapshot, parent, writes = await self.standalone_parameters(stack)
+            before_local = await self.protected_local_state()
+            original = canonical_parameters(parent['parameters'])
+            ready = await self.prepare(item, snapshot)
+            self.assertEqual(ready['state'], 'ready')
+            completed = await self.send(ready['id'])
+            self.assertEqual(completed['state'], 'completed')
+            self.assertEqual(completed['protected_changes'], {})
+            self.assertIn('180 x 60 x 0,8 cm', json.dumps(completed['observed']['parameters']))
+            self.assertIn('Keep English', json.dumps(completed['observed']['parameters']))
+            noop = await self.prepare(item.model_copy(update={'request_id': uuid4()}), snapshot)
+            self.assertTrue(noop['no_op']); self.assertEqual(len(writes), 1)
+            changed = copy.deepcopy(snapshot); changed['parameter_names']['PROPERTY_1'] = 'Different name'
+            with self.assertRaises(publications.ERROR):
+                await self.prepare(item, changed)
+            rollback = await self.rollback_preview(ready['id'])
+            restored = await self.send(rollback['id'])
+            self.assertEqual(restored['state'], 'completed')
+            self.assertEqual(canonical_parameters(parent['parameters']), original)
+            self.assertEqual(len(writes), 2)
+            self.assertEqual(before_local, await self.protected_local_state())
+
+    async def test_stale_parameter_change_rejects_before_any_put(self):
+        with ExitStack() as stack:
+            item, snapshot, parent, writes = await self.standalone_parameters(stack)
+            ready = await self.prepare(item, snapshot)
+            parent['parameters'][0]['values'][0]['descriptions'][0]['value'] = 'New manual value'
+            with self.assertRaises(publications.ERROR):
+                await self.send(ready['id'])
+            self.assertEqual(writes, [])
+
     async def asyncSetUp(self):
         await fixtures.ProductEditorDatabaseTests.asyncSetUp(self)
         async with self.transaction() as db:

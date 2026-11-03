@@ -26,6 +26,10 @@ odosielanie vybraných polí o dlhý HTML popis a SEO existujúcich xTrek kariet
 Má úplné overenie rodiny, trvalé pred/po dôkazy, no-op opakovanie a chránený
 návrat dotknutých polí. Nové produkty, sklad, ceny a dostupnosti zostávajú
 mimo tohto postupu; nasadenie samo nespúšťa pilot.
+Voliteľne prenáša aj presné parametre samostatných produktov podľa overenej
+mapy zdrojových názvov. Deterministická úprava HTML prispôsobí prezentáciu
+šablóne Upgates pri zachovaní pôvodného znenia. Galérie sa overujú samostatne;
+parametre variantov a všeobecné dopĺňanie katalógu týmto nie sú implementované.
 
 Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
 Pravidlá analytickej etapy a otvorené podmienky prechodu sú v [xTrek migračnom audite](docs/xtrek-atomer-migration-audit.md).

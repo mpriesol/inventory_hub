@@ -2,9 +2,50 @@
 
 Prvá vykonateľná etapa používa existujúci denník odosielania vybraných polí.
 Aktualizuje iba slovenský dlhý HTML popis, SEO titulok a SEO popis existujúcej
-karty v xTrek Upgates. Nevytvára produkty, varianty, väzby, skladové pohyby ani
+karty v xTrek Upgates. Rozšírenie nižšie dopĺňa parametre samostatných produktov.
+Nevytvára produkty, varianty, väzby, skladové pohyby ani
 FIFO vrstvy. Ceny, dostupnosti, objednateľnosť, aktivita, identifikátory,
-parametre, kategórie a galérie nie sú vstupom tohto odosielania.
+kategórie a galérie nie sú vstupom tohto odosielania.
+
+## Verný prenos parametrov a vzhľad textu
+
+Voliteľné pole `parameters` je určené iba samostatným produktom. Nezavádza
+varianty ani ich parametre. Názvy sa dodávajú výslovnou overenou JSON mapou
+`PROPERTY_ID → presný názov`; hodnoty sa čítajú výhradne z pôvodného vybraného
+buyers XML. Mapa je vstup importu, nie automaticky overený globálny číselník.
+Pred použitím ju treba podložiť auditom alebo priamym zdrojovým číselníkom.
+
+Čiarky, jednotky a celé pôvodné hodnoty sa zachovávajú. Napríklad
+`180 x 60 x 0,8 cm` je jedna hodnota. Existujúce hodnoty rovnakého slovenského
+parametra sa nahradia celou zdrojovou hodnotou; parametre mimo zdrojového
+výberu sa zachovajú. Pri ďalších jazykoch vybraného parametra sa náhľad odmietne,
+aby nezanikli preklady. Duplicity názvov/ID alebo chýbajúce mapovanie sú chyba.
+Postup nemení globálne typy, jednotky, filtre ani poradie definícií parametrov.
+
+Náhľad a každé ďalšie overenie načítajú úplné parametre cez samostatný
+`products/parameters` endpoint a preveria natívne ID. Príznak v zmrazenej
+identite odlišuje tento režim od starších textových operácií, ktorých pôvodné
+dôkazy a UUID zostávajú použiteľné. API payload môže obsahovať iba `code`,
+vybrané slovenské texty a overené parametre. Zásoby a ceny sa neposielajú.
+Pred/po dôkaz, blokovanie nejasných zápisov, no-op a návrat používajú rovnaký
+trvalý denník. Prvý parameterový pilot vyžaduje neprázdne obnoviteľné originály.
+
+Voľba **Prispôsobiť formátovanie Upgates** odstráni zdrojové CSS triedy a
+vlastné prezentačné štýly. Zachová slová, čísla, nadpisy, zoznamy, tabuľky aj
+významové zvýraznenia. Neprípustné HTML sa odmietne pred úpravou. Ide o
+deterministické formátovanie, bez AI prepisovania obsahu alebo SEO. Predvolený
+režim `original` zachová pôvodné správanie; `upgates` je výslovná voľba.
+
+JSON `selection` navyše podporuje `parameter_names` a `formatting`.
+Oba vstupy sa uchovajú v dôkaze a účtujú do identity požiadavky tam, kde sa
+použijú. Zmena mapy/režimu pri rovnakom UUID sa odmietne.
+
+Galérie treba samostatne porovnať vrátane obsahu súborov, poradia a dostupnosti
+na cieľovom CDN. Ak už zodpovedajú, ich opätovný upload nie je potrebný.
+Zhodný počet alebo podobný názov súboru nie je sám dôkazom zhody. Zmenšenie
+obrázka platformou treba vykázať oddelene od zámeny fotografie alebo orezu.
+Toto rozšírenie nie je úplný katalógový writer: ďalšie väzby, prechod skladu,
+adresy a nepodporované zdrojové polia zostávajú osobitné úlohy.
 
 ## Obsluha
 

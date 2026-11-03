@@ -89,7 +89,7 @@ export const getEditorSave = (id: string, signal?: AbortSignal) => hubRequest<Pr
 export type ProductPublicationField = 'name' | 'sale_price_gross' | 'visible' | 'ean' | 'attributes' | 'image_url';
 export interface ProductPublication {
   id: string; product_id: number; shop_code: string; state: string; revision: number;
-  fields: (ProductPublicationField | 'long_description' | 'seo_title' | 'seo_description')[];
+  fields: (ProductPublicationField | 'long_description' | 'seo_title' | 'seo_description' | 'parameters')[];
   workflow?: string; source_code?: string; rollback_of?: string; no_op?: boolean;
   before: Record<string, unknown>; after: Record<string, unknown>; payload?: Record<string, unknown>;
   expires_at: string; created_at?: string; error: string | { code?: string } | null;
