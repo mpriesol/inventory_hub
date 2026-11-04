@@ -3978,9 +3978,10 @@
       "product_links_mapping_missing": "The mapping no longer exists. Open product linking to check it.",
       "product_links_variant_still_exists": "The old variant still exists in the shop. Resolve the duplicate first.",
       "product_links_replacement_identity_missing": "The old variant link is missing an exact native ID or code. Refresh the original link from the shop first.",
-      "product_links_replacement_not_allowed": "Only a deleted variant may be replaced with a standalone product.",
+      "product_links_replacement_not_allowed": "Only a deleted variant link may be replaced with an existing product or variant.",
       "product_links_replacement_in_use": "This link has a pending or dependent operation. Complete or resolve it first.",
-      "product_links_identity_in_use": "An update for this product is still sending or has an uncertain result. Resolve the original operation first; the link will remain unchanged."
+      "product_links_identity_in_use": "An update for this product is still sending or has an uncertain result. Resolve the original operation first; the link will remain unchanged.",
+      "product_links_replacement_ean_mismatch": "Replacement requires exactly the same valid EANs on the stock card and the new variant or product."
     },
     "reasons": {
       "attributes_missing": "Variant attributes are unavailable in the shop response.",
@@ -4009,7 +4010,7 @@
       "mapping_identity_changed": "The shop product code or identifier has changed.",
       "unmapped_sku_collision": "Multiple cards have the same SKU ignoring letter case.",
       "assigned_product_changed": "The code and identifiers do not belong to the selected card.",
-      "replaces_deleted_variant": "The link will move from the verified deleted variant to this standalone product.",
+      "replaces_deleted_variant": "Once deletion of the original variant is verified, the link will move to the selected product or variant.",
       "native_identity_verification": "Confirmation will add the verified shop IDs to the existing link. The stock card and quantities will be preserved."
     },
     "allAlreadyLinked": "All selected cards are already linked to {{shop}}.",
@@ -4019,9 +4020,12 @@
     "barcodeAbsent": "Not provided",
     "barcodeInvalid": "{{value}} is not a valid EAN or UPC.",
     "barcodeNotRecorded": "This older preview did not retain the value.",
-    "replaceDeletedVariant": "Replace a deleted POS variant with a standalone product",
-    "replacementHelp": "First delete the duplicate POS variant in the shop. Enter the standalone product code above. The preview checks deletion and identity; confirmation retains the same Hub card.",
-    "replacementPreview": "Replace link: {{old}} → {{code}}"
+    "replaceDeletedVariant": "Replace a deleted POS variant link",
+    "replacementHelp": "Enter the new product code and, for a variant, its exact code. The preview checks deletion of the original variant, identical EANs and link ownership. Confirmation retains the same stock card. Shop deletion requires separate approval.",
+    "replacementPreview": "Replace link: {{old}} → {{code}}",
+    "hubCardId": "Stock card ID",
+    "previousParent": "Previous product",
+    "previousVariant": "Previous variant"
   },
   "supplierLinks": {
     "open": "Link a supplier product",

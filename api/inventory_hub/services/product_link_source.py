@@ -356,7 +356,7 @@ async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
     return {**result, "leaves": selected}
 
 
-def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests):
+def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests, collect_conflicts=False):
     """Verify absence by native parent ID, including renamed/archived variants.
 
     The documented simple product list includes all variants when requested.
@@ -373,7 +373,7 @@ def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests):
         for archived in ("false", "true"):
             parents.extend(reader.pages("/products/simple", "products", {
                 "product_ids": ";".join(sorted(parent_ids)), "variants_yn": "true", "archived_yn": archived}))
-        seen = set()
+        seen, existing = set(), set()
         for parent in parents:
             parent_id = _native_id(parent.get("product_id"))
             _need(parent_id in parent_ids and parent_id not in seen, "source_filter_mismatch")
@@ -392,11 +392,15 @@ def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests):
                 ids.add(native_id)
                 if leaf.get("product_id") is not None:
                     _need(_native_id(leaf["product_id"]) == parent_id, "source_filter_mismatch")
-                _need((parent_id, native_id) not in expected, "product_links_variant_still_exists", 409)
-        return {"fingerprint": reader.fingerprint, "requests": reader.requests}
+                if (parent_id, native_id) in expected:
+                    _need(collect_conflicts, "product_links_variant_still_exists", 409)
+                    existing.add((parent_id, native_id))
+        return {"fingerprint": reader.fingerprint, "requests": reader.requests,
+                "existing_mapping_ids": [row['id'] for row in mappings
+                    if (str(row['external_product_id']), str(row['external_variant_id'])) in existing]}
     finally:
         reader.close()
 
 
-async def verify_deleted_variants(shop_code, mappings, fingerprint, *, max_requests=MAX_REQUESTS):
-    return await asyncio.to_thread(_verify_deleted_variants, shop_code, mappings, fingerprint, max_requests)
+async def verify_deleted_variants(shop_code, mappings, fingerprint, *, max_requests=MAX_REQUESTS, collect_conflicts=False):
+    return await asyncio.to_thread(_verify_deleted_variants, shop_code, mappings, fingerprint, max_requests, collect_conflicts)

@@ -19,10 +19,16 @@ export interface ProductLinkRow {
   previous_mapping?: { id: number; external_code: string; external_product_id: string | null; external_variant_id: string | null; parent_code: string | null; is_variant: boolean };
   remote: ProductLinkRemote | null; warnings: string[]; errors: string[];
 }
+export interface ProductLinkReplacement {
+  product_id: number; sku: string; eans: string[];
+  previous_mapping: NonNullable<ProductLinkRow['previous_mapping']>;
+  mapping: NonNullable<ProductLinkRow['previous_mapping']>;
+}
 export interface ProductLinkBatch {
   id: string; shop_code: ProductLinkShop; status: 'prepared' | 'completed'; preview_hash: string;
   expires_at: string; rows: ProductLinkRow[];
-  result: null | { product_ids: number[]; linked_product_ids: number[]; already_linked_product_ids: number[] };
+  result: null | { product_ids: number[]; linked_product_ids: number[]; already_linked_product_ids: number[];
+    replaced_mappings?: ProductLinkReplacement[] };
 }
 export interface ProductLinkApplyBody { preview_hash: string; product_ids: number[]; confirmed: true }
 export interface ProductLinkMetadataResult {

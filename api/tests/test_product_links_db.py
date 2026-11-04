@@ -181,7 +181,7 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         mapping = (await self.mappings())[0]
         self.assertEqual((mapping.id, mapping.external_variant_id, mapping.is_variant), (mapping_id, '901', True))
 
-    async def test_uncertain_publication_blocks_replacement_before_network(self):
+    async def test_uncertain_publication_blocks_affected_row_in_preview(self):
         from inventory_hub.product_editor_models import ProductEditorPublication
         mapping_id, request = await self.replacement_fixture()
         async with self.transaction() as db:
@@ -189,10 +189,114 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 state='uncertain',
                 document={'identity': {'parent_code': 'POS-PARENT'}}))
         with patch.object(service.source, 'verify_deleted_variants', AsyncMock()) as deletion:
-            with self.assertRaisesRegex(service.LinkError, 'product_links_replacement_in_use'):
-                await self.preview(request)
+            preview = await self.preview(request)
+            self.assertEqual(preview['rows'][0]['status'], 'conflict')
+            self.assertIn('product_links_replacement_in_use', preview['rows'][0]['errors'])
             deletion.assert_not_awaited()
-        self.discover.assert_not_awaited()
+
+    async def variant_replacement_fixture(self):
+        mapping_id, request = await self.replacement_fixture()
+        self.remote[0] = leaf('NEW-LEAF', 902, eans=[EAN_A], parent_code='NEW-PARENT', parent_id='801')
+        request = self.request(product_ids=[self.ids[0]], manual_matches=[{'product_id': self.ids[0],
+            'code': 'NEW-LEAF', 'parent_code': 'NEW-PARENT', 'is_variant': True, 'replace_deleted_variant': True}])
+        return mapping_id, request
+
+    async def test_cross_parent_variant_replacement_audit_and_fresh_request_replay(self):
+        mapping_id, request = await self.variant_replacement_fixture()
+        before = await self.snapshot()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(
+                return_value={'fingerprint': self.fingerprint, 'requests': 2, 'existing_mapping_ids': []})) as deletion:
+            preview = await self.preview(request)
+            self.assertEqual(preview['rows'][0]['status'], 'ready')
+            result = await self.apply(preview, [self.ids[0]])
+            self.assertEqual(await self.apply(preview, [self.ids[0]]), result)
+            replay = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.assertEqual(replay['rows'][0]['status'], 'already_linked')
+            self.assertEqual(deletion.await_count, 2)
+        mapping = (await self.mappings())[0]
+        self.assertEqual((mapping.id, mapping.product_id, mapping.external_product_id, mapping.external_variant_id,
+            mapping.external_code, mapping.parent_code, mapping.is_variant),
+            (mapping_id, self.ids[0], '801', '902', 'NEW-LEAF', 'NEW-PARENT', True))
+        audit = result['result']['replaced_mappings'][0]
+        self.assertEqual(audit['previous_mapping']['external_variant_id'], '901')
+        self.assertEqual(audit['mapping']['external_variant_id'], '902')
+        self.assertEqual(audit['eans'], [EAN_A])
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_live_old_variant_conflict_keeps_other_rows_reviewable(self):
+        mapping_id, request = await self.variant_replacement_fixture()
+        request = request.model_copy(update={'product_ids': self.ids[:2]})
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(return_value={
+                'fingerprint': self.fingerprint, 'requests': 2, 'existing_mapping_ids': [mapping_id]})):
+            preview = await self.preview(request)
+            rows = {row['product_id']: row for row in preview['rows']}
+            self.assertEqual(rows[self.ids[0]]['status'], 'conflict')
+            self.assertIn('product_links_variant_still_exists', rows[self.ids[0]]['errors'])
+            self.assertEqual(rows[self.ids[1]]['status'], 'ready')
+            with self.assertRaisesRegex(service.LinkError, 'product_links_invalid_selection'):
+                await self.apply(preview, self.ids[:2])
+            await self.apply(preview, [self.ids[1]])
+        self.assertEqual((await self.mappings())[0].external_variant_id, '901')
+
+    async def test_new_parent_publication_is_rechecked_before_apply(self):
+        from inventory_hub.product_editor_models import ProductEditorPublication
+        mapping_id, request = await self.variant_replacement_fixture()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(
+                return_value={'fingerprint': self.fingerprint, 'requests': 2})):
+            preview = await self.preview(request)
+            async with self.transaction() as db:
+                db.add(ProductEditorPublication(id=str(uuid4()), product_id=self.ids[1], shop_id=self.shop_id,
+                    state='uncertain', document={'identity': {'parent_code': 'NEW-PARENT'}}))
+            with self.assertRaisesRegex(service.LinkError, 'product_links_replacement_in_use'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual((await self.mappings())[0].external_variant_id, '901')
+
+    async def test_reserved_order_blocks_variant_replacement_without_changing_stock(self):
+        from inventory_hub.db_models_ext import ShopOrder, ShopOrderItem
+        mapping_id, request = await self.variant_replacement_fixture()
+        async with self.transaction() as db:
+            order = ShopOrder(shop_id=self.shop_id, external_id='replacement-reserved-order',
+                order_date=datetime.now(timezone.utc), stock_state='reserved')
+            db.add(order)
+            await db.flush()
+            db.add(ShopOrderItem(order_id=order.id, product_id=self.ids[0], external_item_id='line-1',
+                external_product_code='OLD-POS', quantity=2, stock_managed=True))
+        before = await self.snapshot()
+        preview = await self.preview(request)
+        self.assertEqual(preview['rows'][0]['status'], 'conflict')
+        self.assertIn('product_links_replacement_in_use', preview['rows'][0]['errors'])
+        with self.assertRaisesRegex(service.LinkError, 'product_links_invalid_selection'):
+            await self.apply(preview, [self.ids[0]])
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_foreign_native_variant_owner_blocks_replacement(self):
+        mapping_id, request = await self.variant_replacement_fixture()
+        async with self.transaction() as db:
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[1], external_code='NEW-LEAF',
+                parent_code='NEW-PARENT', external_product_id='801', external_variant_id='902',
+                is_variant=True, is_listed=True))
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(
+                return_value={'fingerprint': self.fingerprint, 'requests': 2})):
+            preview = await self.preview(request)
+            self.assertEqual(preview['rows'][0]['status'], 'conflict')
+            with self.assertRaisesRegex(service.LinkError, 'product_links_invalid_selection'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual((await self.mappings())[0].external_variant_id, '901')
+
+    async def test_changed_target_ean_or_parent_after_preview_blocks_apply(self):
+        mapping_id, request = await self.variant_replacement_fixture()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(
+                return_value={'fingerprint': self.fingerprint, 'requests': 2})):
+            preview = await self.preview(request)
+            self.remote[0]['eans'] = [EAN_B]
+            with self.assertRaisesRegex(service.LinkError, 'product_links_remote_changed'):
+                await self.apply(preview, [self.ids[0]])
+            self.remote[0]['eans'] = [EAN_A]
+            preview = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.remote[0]['parent_id'] = '999'
+            with self.assertRaisesRegex(service.LinkError, 'product_links_remote_changed'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual((await self.mappings())[0].external_variant_id, '901')
 
     async def snapshot(self):
         async with self.sessions() as db:

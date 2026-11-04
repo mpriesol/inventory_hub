@@ -104,12 +104,19 @@ používa staré stĺpce. Obnova má použiť kompatibilnú opravu vpred.
 
 ## Nahradenie už vymazaného pokladňového variantu
 
-Pri ručnom výbere samostatného cieľového produktu možno výslovne označiť
+Pri ručnom výbere cieľového samostatného produktu alebo konkrétneho variantu
+pod iným produktom možno výslovne označiť
 `manual_matches[].replace_deleted_variant = true`. Toto nie je všeobecné
 odpojenie ani presmerovanie existujúceho živého produktu. Povoľuje iba prechod
-zo starého variantu na samostatný produkt pri zachovaní rovnakej Hub karty.
+zo starého variantu na existujúcu predajnú položku pri zachovaní rovnakej Hub karty.
+Pre variant sú povinné presné `code`, `parent_code` a `is_variant=true`.
+Rodičovský produkt s variantmi sám nie je platným cieľom. Náhľad aj potvrdenie
+vyžadujú neprázdnu, presne zhodnú množinu platných EAN cieľa a zachovanej karty;
+neplatné čiarové kódy cieľa výmenu blokujú. SKU, EAN a ID karty sa nemenia.
 
-Náhľad zobrazí `previous_mapping` a nový cieľ. Server pri náhľade aj potvrdení
+Náhľad zobrazí ID skladovej karty, jej EAN, `previous_mapping` a nový cieľ
+vrátane kódov a natívnych ID oboch produktov a variantov. EAN karty je lokálny
+podklad; vymazanému vzdialenému variantu sa nevymýšľa nový vzdialený údaj. Server pri náhľade aj potvrdení
 číta pôvodného rodiča podľa `external_product_id` cez dokumentovaný
 [`GET /products/simple`](https://docs.upgates.com/api-reference/produkty-seznamy)
 s `variants_yn=true`, osobitne pre `archived_yn=false` a `archived_yn=true`.
@@ -127,3 +134,24 @@ kontrolované zosúladenie. Uloží sa tá istá mapovacia položka, predchádza
 väzba zostáva v potvrdenom náhľade a výsledok je obnoviteľný rovnakým request ID.
 Pozorované ceny, dostupnosť a stav posledného odoslania starého cieľa sa na
 nový produkt neprenášajú.
+
+
+Rozšírenie variantových cieľov (4. 11. 2026) zachováva rovnakú transakciu a
+mapovací riadok. Kontrola rozpracovaných publikácií zahŕňa pôvodného aj nového
+rodiča a cieľový kód. Náhľad označí existujúci starý variant alebo lokálnu
+závislú operáciu ako konflikt konkrétneho riadka; ostatné riadky zostávajú
+prehľadné a potvrdiť možno iba vybranú pripravenú podmnožinu. Neúplná vzdialená
+odpoveď alebo zmena identity pri potvrdení naďalej zastaví celú vybranú transakciu.
+Mazanie v Upgates je samostatný schvaľovaný krok, tento postup ho nevykonáva.
+
+Výsledok pridáva `replaced_mappings` s `product_id`, zachovaným SKU a EAN,
+`previous_mapping` a novou `mapping`; čas a operátor zostávajú v potvrdenom
+výsledku. Rovnaké request ID vráti pôvodný výsledok bez opakovania zápisu.
+Nový náhľad už správne prepojeného cieľa vráti `already_linked`, aj keď je
+vo vstupnom riadku ešte označené `replace_deleted_variant=true`.
+
+Zmena nepotrebuje SQL migráciu a nezapína skladovú synchronizáciu. Návrat kódu
+sa robí kompatibilným revert PR; nevracia už vykonané väzby na vymazané ciele.
+Syntetické testy overujú zachovanie kariet, identifikátorov a pohybov, audit,
+opakovanie, EAN/rodičovské konflikty, vlastníctvo cieľa a nevyjasnenú publikáciu.
+Nasadenie ani tieto testy samy nepotvrdzujú dokončenie konkrétnej živej dávky.

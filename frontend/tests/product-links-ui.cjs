@@ -251,14 +251,28 @@ function clearPending() { dom.window.sessionStorage.removeItem(PRODUCT_LINK_PEND
   const mappedVariant={...rows[0],shops:[{shop_code:'biketrek',mapped:true,mapping:{is_variant:true}}]};
   await mount([mappedVariant]);
   assert(!required('product-links-replace-1').checked,'Replacing a deleted POS variant requires an explicit choice');
-  await input('product-links-parent-1','STANDALONE'); await input('product-links-variant-1','OLD-VARIANT');
-  await click('product-links-replace-1'); assert.equal(required('product-links-variant-1').value,''); assert(required('product-links-variant-1').disabled);
+  await input('product-links-parent-1','STANDALONE');
+  await click('product-links-replace-1'); assert.equal(required('product-links-variant-1').value,''); assert(!required('product-links-variant-1').disabled);
   const beforeReplacement=writes().length;
   await click('product-links-preview');
   assert.deepEqual(previews().at(-1).body.manual_matches,[{product_id:1,code:'STANDALONE',parent_code:'STANDALONE',is_variant:false,replace_deleted_variant:true}]);
   assert(required('product-links-replacement-1').textContent.includes('POS-OLD') && required('product-links-replacement-1').textContent.includes('STANDALONE'));
   assert.equal(writes().length,beforeReplacement,'Reviewing replacement does not rebind or delete products');
   applyMode='valid'; await click('product-links-apply'); assert.deepEqual(writes().at(-1).body.product_ids,[1]);
+  await unmount();clearPending();
+
+  await mount([mappedVariant]);
+  await input('product-links-parent-1','NEW-PARENT'); await input('product-links-variant-1','NEW-LEAF');
+  await click('product-links-replace-1');
+  assert.equal(required('product-links-variant-1').value,'NEW-LEAF','Replacement preserves the explicitly chosen variant');
+  await input('product-links-variant-1','NEW-LEAF-2');
+  assert(required('product-links-replace-1').checked,'Editing the target does not silently clear replacement intent');
+  await click('product-links-preview');
+  assert.deepEqual(previews().at(-1).body.manual_matches,[{product_id:1,code:'NEW-LEAF-2',parent_code:'NEW-PARENT',is_variant:true,replace_deleted_variant:true}]);
+  const replacementText = required('product-links-replacement-1').textContent;
+  assert(replacementText.includes('POS-OLD') && replacementText.includes('99') && replacementText.includes('88'));
+  assert(required('product-links-row-1').textContent.includes('999'),'New parent native ID is visible');
+  await click('product-links-apply'); assert.deepEqual(writes().at(-1).body.product_ids,[1]);
   await unmount();clearPending();
 
   await mount(Array.from({ length: 101 }, (_, index) => ({ id: index + 1, sku: 'LIMIT-' + index, common: { name: 'Limit' } })));

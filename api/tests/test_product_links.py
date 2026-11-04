@@ -31,6 +31,12 @@ def apply_body(**changes):
 
 
 class ProductLinksInputTests(unittest.TestCase):
+    def test_deleted_variant_can_target_an_explicit_variant_under_another_parent(self):
+        match = ProductLinkMatch(product_id=1, code='NEW-LEAF', parent_code='NEW-PARENT',
+                                 is_variant=True, replace_deleted_variant=True)
+        self.assertTrue(match.is_variant)
+        self.assertEqual(match.parent_code, 'NEW-PARENT')
+
     def test_selection_is_bounded_distinct_and_uses_strict_database_ids(self):
         for ids in ([], [1, 1], [0], [-1], [True], ["1"], [1.0], list(range(1, 102))):
             with self.subTest(ids=ids), self.assertRaises(ValidationError):
@@ -104,14 +110,35 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
                        "external_id": "101", "parent_id": "101", "name": "Existing remote title",
                        "eans": ["5901234123457"], "attributes": []}
 
-    async def rows(self, facts, choices, *, mappings=(), extra_products=(), extra_identifiers=()):
+    async def rows(self, facts, choices, *, mappings=(), extra_products=(), extra_identifiers=(), replacements=None):
         products = [SimpleNamespace(id=item["product_id"], sku=item["sku"], is_active=item["is_active"])
                     for item in facts.values()]
         identifiers = [SimpleNamespace(product_id=item["product_id"], value=ean,
             identifier_type=IdentifierType.ean, supplier_id=None) for item in facts.values() for ean in item["eans"]]
         index = IdentityIndex(2, [*products, *extra_products], mappings, [*identifiers, *extra_identifiers])
         with patch.object(service, "load_identity_index", AsyncMock(return_value=index)):
-            return await service._rows(SimpleNamespace(), SimpleNamespace(id=2), facts, choices)
+            return await service._rows(SimpleNamespace(), SimpleNamespace(id=2), facts, choices, replacements)
+
+    async def test_replacement_requires_exact_nonempty_valid_barcode_sets(self):
+        old = {1: {'id': 7, 'external_variant_id': '88'}}
+        remote = {**self.remote, 'is_variant': True, 'parent_code': 'NEW-PARENT', 'parent_id': '800'}
+        good = await self.rows({1: self.facts}, {1: (remote, 'manual', 1)}, replacements=old)
+        self.assertEqual(good[0]['status'], 'ready')
+        for local, target in (([], remote), (self.facts['eans'], {**remote, 'eans': []}),
+                (self.facts['eans'], {**remote, 'eans': ['4006381333931']}),
+                (self.facts['eans'], {**remote, 'eans': [*remote['eans'], '4006381333931']}),
+                (self.facts['eans'], {**remote, 'invalid_barcodes': ['invalid']})):
+            with self.subTest(local=local, target=target):
+                result = await self.rows({1: {**self.facts, 'eans': local}},
+                    {1: (target, 'manual', 1)}, replacements=old)
+                self.assertEqual(result[0]['status'], 'conflict')
+                self.assertIn('product_links_replacement_ean_mismatch', result[0]['errors'])
+
+    def test_manual_variant_target_requires_exact_parent(self):
+        remote = {**self.remote, 'is_variant': True, 'parent_code': 'ACTUAL', 'parent_id': '800'}
+        selected = service._choice(self.facts, [remote],
+            {'code': remote['code'], 'is_variant': True, 'parent_code': 'EXPECTED'})
+        self.assertEqual(selected, (None, 'manual', 0))
 
     async def test_different_codes_require_actual_barcode_or_explicit_manual_choice(self):
         choice = service._choice(self.facts, [self.remote])
