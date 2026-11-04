@@ -30,6 +30,10 @@ Voliteľne prenáša aj presné parametre samostatných produktov podľa overene
 mapy zdrojových názvov. Deterministická úprava HTML prispôsobí prezentáciu
 šablóne Upgates pri zachovaní pôvodného znenia. Galérie sa overujú samostatne;
 parametre variantov a všeobecné dopĺňanie katalógu týmto nie sú implementované.
+Ručne spúšťaný `scripts/atomer_direct_batch.py` umožňuje osobitne autorizovaný
+priamy dávkový prenos samostatných kariet s rovnakými obsahovými validátormi,
+čerstvým porovnaním a súkromným súborovým žurnálom. Nemá DB zámky ani obnovu
+cache Hubu; prevádzkové hranice a pokračovanie opisuje dokumentácia importu.
 
 Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
 Pravidlá analytickej etapy a otvorené podmienky prechodu sú v [xTrek migračnom audite](docs/xtrek-atomer-migration-audit.md).
