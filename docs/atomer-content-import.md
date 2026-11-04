@@ -136,3 +136,50 @@ zámky, nezmenený lokálny sklad/FIFO a návrat iba dotknutých polí. Databáz
 prípady používajú izolovaný localhost `*_catalog_test`, nikdy produkciu.
 Výsledok živého pilotu a súkromné snapshoty patria do odovzdania; prítomnosť
 kódu ani úspešné CI samy osebe nedokazujú dokončenú migráciu.
+
+## Jednorazový priamy dávkový prenos
+
+`scripts/atomer_direct_batch.py` je ručne spúšťaná orchestrácia existujúceho
+parsera, parameter mappera a allowlistovaného obsahového payloadu. Je určená
+iba pre výslovne povolenú migráciu existujúcich samostatných xTrek kariet.
+Nie je napojená na scheduler, UI ani produkčný startup a nevyžaduje migráciu DB.
+Nezakladá produkty, varianty alebo Hub väzby a neposiela obrázky, ceny,
+sklad, dostupnosť či aktivitu. Zdrojové znenie nemení generatívnym modelom.
+
+Vstupy sú pôvodné úplné XML, jeho očakávaný SHA-256 a auditný ZIP s
+`identity_map.jsonl` a `parameter_dictionary.json`. Historická bezkonfliktná
+identita je iba kandidát. `prepare` overí zdroj; `scan` kontroluje aktuálnu
+natívnu identitu, značku/EAN, EUR cenu s DPH, obnoviteľný obsah a poradie galérie.
+Presná bajtová/pixelová zhoda obrázkov je automaticky overiteľná; odlišné
+obrazové dáta zostávajú na samostatné posúdenie. Chýbajúce či nejednoznačné
+polia nie sú nahradené vymyslenými hodnotami.
+
+Príklad spustenia (cesty a hash sú lokálne vstupy operátora):
+
+```sh
+python scripts/atomer_direct_batch.py prepare --source /private/buyers.xml \
+  --audit /private/audit.zip --source-sha256 "$ATOMER_SHA256" \
+  --run-dir /private/atomer-run
+```
+
+Nasledujúce akcie používajú tie isté argumenty: `scan`, `apply --limit 10`
+pre prvú kontrolovanú dávku, `apply` pre ostatné pripravené položky a `verify`
+pre druhý čítací no-op priechod. Login a kľúč sa zadávajú do skrytého promptu;
+voliteľné `--credentials-stdin` prijíma jeden JSON riadok od bezpečného volajúceho.
+Údaje sa neposielajú mimo pevnej adresy xTrek API ani neukladajú do žurnálu.
+
+Čítanie a PUT používa dávky najviac 20 kariet. Pred každým PUT sa znova načíta
+živý cieľ a atomicky uloží zámer, originály a presný payload. Každá karta
+vyžaduje potvrdenie natívneho ID a úplný readback vybraných/chránených polí.
+Neisté potvrdenie, sieťová chyba po PUT alebo zmena chránených polí zastaví
+ďalšie zápisy; nie je implementované automatické opakovanie ani rollback.
+Výsledok treba vyriešiť z trvalých dôkazov, nikdy vymazaním žurnálu.
+
+Tento explicitný priamy režim nemá databázové parentové zámky Hubu, jeho
+publisher žurnál, obnovu cache ani spoločné rezervácie API kvóty. Pred spustením
+treba skontrolovať súbežné a neisté publikácie pre rovnaké karty a koordinovať
+obsahové zápisy. Súborový zámok chráni iba ten istý pracovný adresár.
+Kvóta sa sleduje zo živých hodinových a denných hlavičiek s rezervou na readback;
+čerstvé porovnanie nezaručuje atómový CAS proti inému klientovi Upgates.
+Súkromný adresár behu treba uchovať mimo Gitu, zálohovať a používať aj pri
+pokračovaní. Historické počty kandidátov nie sú počty dokončených prenosov.
