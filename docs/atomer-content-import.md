@@ -143,8 +143,9 @@ kódu ani úspešné CI samy osebe nedokazujú dokončenú migráciu.
 parsera, parameter mappera a allowlistovaného obsahového payloadu. Je určená
 iba pre výslovne povolenú migráciu existujúcich samostatných xTrek kariet.
 Nie je napojená na scheduler, UI ani produkčný startup a nevyžaduje migráciu DB.
-Nezakladá produkty, varianty alebo Hub väzby a neposiela obrázky, ceny,
-sklad, dostupnosť či aktivitu. Zdrojové znenie nemení generatívnym modelom.
+Nezakladá produkty, varianty alebo Hub väzby a neposiela obrázky,
+sklad, dostupnosť či aktivitu. Predvolený režim neposiela ani ceny;
+osobitne povolený cenový režim je opísaný nižšie. Zdrojové znenie nemení generatívnym modelom.
 
 Vstupy sú pôvodné úplné XML, jeho očakávaný SHA-256 a auditný ZIP s
 `identity_map.jsonl` a `parameter_dictionary.json`. Historická bezkonfliktná
@@ -183,3 +184,28 @@ Kvóta sa sleduje zo živých hodinových a denných hlavičiek s rezervou na re
 čerstvé porovnanie nezaručuje atómový CAS proti inému klientovi Upgates.
 Súkromný adresár behu treba uchovať mimo Gitu, zálohovať a používať aj pri
 pokračovaní. Historické počty kandidátov nie sú počty dokončených prenosov.
+
+### Výslovne schválená cena z Atomeru
+
+Ak vlastník určí Atomer ako autoritu predajnej ceny, rovnaký skript má voľbu
+`--atomer-prices-from /private/previous-run`. Použite **nový** `--run-dir`.
+Výber tvorí výhradne pôvodný `blocked_preflight/source_target_price_differs`,
+nie všetky blokované alebo už dokončené karty. Zdrojové XML sa znova overí
+hashom; výber a cenová politika sa zmrazia v novom žurnále. Voľbu treba uviesť
+aj pri `scan`, `apply` a `verify`; bežný obsahový postup v UI ceny nepovoľuje.
+
+Režim znovu preverí obsah, identitu, parametre a galériu. Spolu s obsahovým
+payloadom odošle iba `price_original` slovenského predvoleného EUR cenníka,
+cez existujúci `product_publication_source.build_patch`. Podporuje iba
+konfiguráciu cien s DPH, rovnakú zdrojovú/cieľovú DPH a ceny na celé centy.
+Akčné ceny, nenulová alebo neznáma reálna zľava a cena odvodená iným spôsobom
+zostávajú zablokované. Nerušia sa zľavy a nemenia sa `price_common` ani `price_purchase`.
+
+Pred každou dávkou sa znova overí cenová konfigurácia aj úplný pôvodný stav.
+Readback vyžaduje presnú základnú cenu, výslednú cenu s DPH aj vypočítanú cenu
+bez DPH. Iba tieto tri hodnoty zvoleného cenníka sú vyňaté z kontroly nemenných
+polí; ostatné cenníky, DPH, nákupná/bežná cena, zásoby a galérie ostávajú chránené.
+Nezhoda alebo neistý zápis zastaví proces bez automatického opakovania.
+Pri samostatnom vizuálnom schválení galérie použite `record_is_noop`, aby zhodný
+text nepreskočil potrebnú cenovú zmenu. Runtime vyžaduje Python 3.12,
+`api/requirements.txt` a Pillow na čítanie obrázkov.

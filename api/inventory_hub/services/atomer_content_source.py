@@ -1,18 +1,21 @@
 """Bounded parent-content transport using the shared Upgates connection and budget.
 
-Only three Slovak description fields may be written. A verified physical leaf
-anchors the operation, but the complete native family is frozen and rechecked.
-Stock remains an observation, never an input to this writer.
+The ordinary writer allows Slovak descriptions and verified parameters. A
+separate opt-in helper builds source-price patches for the direct migration.
+A verified physical leaf anchors the operation; the complete native family is
+frozen and rechecked. Stock remains an observation, never a write input.
 """
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
 from copy import deepcopy
+from decimal import Decimal, ROUND_HALF_UP
 
 from inventory_hub.services import stock_publication_source as source
 from inventory_hub.services.product_identity import barcode_keys
 from inventory_hub.services.product_publication_source import plain
+from inventory_hub.services import product_publication_source as publication
 
 
 TEXT_FIELDS = frozenset(("long_description", "seo_title", "seo_description"))
@@ -235,6 +238,61 @@ def protected_observation(remote, fields=None):
     if isinstance(parent.get("variants"), list):
         parent["variants"] = sorted(parent["variants"], key=lambda row: row["code"])
     return plain({"content": parent, "operations": sorted(operations, key=lambda row: row["code"])})
+
+
+SOURCE_PRICE_KEYS = ('price_original', 'price_with_vat', 'price_without_vat')
+
+
+def _source_price_row(parent, options):
+    """The explicit direct migration supports only an undiscounted SK/EUR list."""
+    if options.get('prices_with_vat') is not True or options.get('currency') != 'EUR':
+        raise _error('price_configuration_requires_review', 422)
+    languages = [row for row in parent.get('prices', []) if row.get('language') == 'sk']
+    if len(languages) != 1 or languages[0].get('currency') != 'EUR':
+        raise _error('price_unknown', 422)
+    lists = [row for row in languages[0].get('pricelists', []) if row.get('name') == options['pricelist']]
+    if len(lists) != 1:
+        raise _error('price_unknown', 422)
+    return languages[0], lists[0]
+
+
+def source_price_values(remote, options):
+    _, row = _source_price_row(remote['parent'], options)
+    return {key: format(publication.money(row.get(key)).normalize(), 'f') for key in SOURCE_PRICE_KEYS}
+
+
+def build_source_price_patch(remote, gross, source_vat, options):
+    """Separate opt-in price builder; ordinary content routes remain price-free."""
+    if remote['identity']['variant_code'] is not None or remote['parent'].get('variants'):
+        raise _error('price_variant_unsupported', 422)
+    language, row = _source_price_row(remote['parent'], options)
+    vat, gross = publication.money(source_vat), publication.money(gross)
+    if vat > 100 or vat != publication.money(language.get('vat')):
+        raise _error('price_vat_differs', 422)
+    if gross != gross.quantize(Decimal('.01')):
+        raise _error('price_precision_requires_review', 422)
+    if (row.get('price_sale') is not None or remote['parent'].get('action_currently_yn') not in (False, 0)
+            or (row.get('product_discount') is not None and publication.money(row['product_discount']) != 0)
+            or publication.money(row.get('product_discount_real')) != 0
+            or publication.money(row.get('price_original')) != publication.money(row.get('price_with_vat'))):
+        raise _error('price_discount_requires_review', 422)
+    price_remote = {'identity': remote['identity'], 'leaf': remote['parent'],
+                    'options': {**options, 'language': 'sk'}}
+    patch = publication.build_patch({'variant': {'vat_rate': vat}},
+        {'effective': {'sale_price_gross': gross}}, price_remote, ['sale_price_gross'])
+    after = {'price_original': gross, 'price_with_vat': gross,
+             'price_without_vat': (gross / (1 + vat / 100)).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)}
+    return {'payload': patch['payload'], 'options': deepcopy(options), 'source_vat': str(vat),
+            'gross': str(gross), 'before': source_price_values(remote, options),
+            'after': {key: format(value.normalize(), 'f') for key, value in after.items()}}
+
+
+def protected_except_source_price(observation, options):
+    result = deepcopy(observation)
+    _, row = _source_price_row(result['content'], options)
+    for key in SOURCE_PRICE_KEYS:
+        row.pop(key, None)
+    return result
 
 
 def _brand(value):

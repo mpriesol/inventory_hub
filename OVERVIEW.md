@@ -34,6 +34,9 @@ Ručne spúšťaný `scripts/atomer_direct_batch.py` umožňuje osobitne autoriz
 priamy dávkový prenos samostatných kariet s rovnakými obsahovými validátormi,
 čerstvým porovnaním a súkromným súborovým žurnálom. Nemá DB zámky ani obnovu
 cache Hubu; prevádzkové hranice a pokračovanie opisuje dokumentácia importu.
+Samostatná voľba `--atomer-prices-from` prenáša výslovne schválenú predajnú cenu
+z Atomeru iba pre cenové konflikty predchádzajúceho behu, v novom žurnále.
+Ostatné kontroly vrátane galérie zostávajú; akčné alebo neznáme zľavy sa neprepisujú.
 
 Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
 Pravidlá analytickej etapy a otvorené podmienky prechodu sú v [xTrek migračnom audite](docs/xtrek-atomer-migration-audit.md).
