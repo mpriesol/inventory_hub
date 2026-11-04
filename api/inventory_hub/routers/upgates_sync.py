@@ -291,10 +291,10 @@ def _family_resolution(family: dict, index) -> tuple[list, Optional[dict]]:
 
 
 def _leaf_selection(family: dict, identity, obj: dict) -> dict:
-    """Bind an explicit leaf choice to its native identity and variant axes."""
+    """Bind an explicit leaf choice to its native identity and available variant axes."""
     evidence = [family["code"], identity.code, identity.is_variant,
                 identity.external_product_id, identity.external_id,
-                sorted(identity.barcodes), obj.get("parameters"),
+                sorted(identity.barcodes), obj.get("parameters_new"), obj.get("parameters"),
                 family["payload"].get("manufacturer")]
     token = hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False,
                                      separators=(",", ":")).encode()).hexdigest()

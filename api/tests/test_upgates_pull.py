@@ -383,7 +383,7 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(before, await self.stock_snapshot())
 
     async def test_selected_leaf_native_id_axes_or_parent_change_blocks_family(self):
-        for change in ("variant_id", "parameters", "parent"):
+        for change in ("variant_id", "parameters", "parameters_new", "parent"):
             self.remote[:] = deepcopy(PRODUCTS)
             choice = await self.leaf_choice("PULL-M")
             if change == "parent":

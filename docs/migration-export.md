@@ -91,7 +91,9 @@ nevytvoria ani neobnovia. Režim možno kombinovať s `existing_only`.
 Preview obsahuje `leaves[].selection` (`code`, `token`). Import prijíma
 `leaves: [{code, token}]` bez `codes`, `all` a `update_existing`. Pred zápisom
 znovu stiahne celý katalóg a overí natívne ID, rodiča, kód, EAN, výrobcu
-a parametre oproti výberu. Chýbajúci kód odmietne celú požiadavku; zmenená
+a parametre, ak ich produktové API poskytlo. Produktové API môže parametre
+variantov vynechať; úplné porovnanie variantov používa samostatný export
+`dataset=variants`. Chýbajúci kód odmietne celú požiadavku; zmenená
 identita alebo konflikt súrodenca zastaví dotknutú rodinu. Platí pôvodný
 globálny resolver, transakčný zámok a savepoint rodiny. Opakovanie už
 prepojené položky preskočí. Fyzické zásoby a pôvodné karty sa zachovajú.

@@ -62,7 +62,7 @@ samostatným potvrdením importu. Používa existujúce kontroly identity a neme
 fyzický sklad; postup je v dokumentácii migračných podkladov.
 Voliteľný výber jednotlivých predajných položiek obmedzí pull na konkrétne
 varianty alebo samostatné produkty. Čerstvé overenie natívnej identity
-a parametrov chráni výber pred zmenou; nevybraní súrodenci sa nevytvoria.
+a poskytnutých parametrov chráni výber pred zmenou; nevybraní súrodenci sa nevytvoria.
 Nevyžaduje migráciu ani nezapisuje do Upgates.
 
 [Zjednodušený dátový model](docs/warehouse-model.md) používa interné `products.id` a výslovné databázové väzby. Podľa zadania vlastníka z 23. 10. nové fyzické produkty dostávajú SKU `<dvojpísmenová predpona výrobcu>-<kód výrobku u výrobcu>`. Kód dodávateľa je samostatný údaj a nesmie ho nahradiť. Potvrdené mapovanie výrobného kódu vo feede umožní automatické prideľovanie; bez takého podkladu treba overiť výrobcu a konkrétny kód pri príprave novej karty. Existujúce Hub aj e-shopové SKU zostávajú, vrátane kariet prevzatých existujúcim Upgates importom. Jedinečnosť prefixov a cieľové kolízie kontroluje systém. Základná karta môže predchádzať e-shopovému obsahu, cenám aj fyzickému príjmu; služby majú výslovný neskladový typ a vlastné servisné kódy. Podrobnosti sú v [politike SKU](docs/sku-policy.md).
