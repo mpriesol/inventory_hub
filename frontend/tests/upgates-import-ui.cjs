@@ -227,6 +227,30 @@ async function mount(key) {
   await click(existingOnlyCheckbox());
   assert(importButton().textContent.includes('(2)'), 'Explicitly leaving the mode restores ordinary import choices');
 
+  // Individual choices must not silently import their unselected siblings.
+  const selectionM = { code: 'VAR-M', token: 'a'.repeat(64) };
+  const selectionL = { code: 'VAR-L', token: 'b'.repeat(64) };
+  preview = { ...preview, new_products: [{ ...preview.new_products[0], leaves: [
+    { selection: selectionM, title: 'Medium', ean: '4006381333931', identity_status: 'new', product_id: '201', variant_id: '301' },
+    { selection: selectionL, title: 'Large', ean: '', identity_status: 'new', product_id: '201', variant_id: '302' },
+  ] }] };
+  await mount('selected-leaves');
+  const leavesCheckbox = () => [...document.querySelectorAll('label')].find(label => label.textContent.includes('Vybrať konkrétne varianty')).querySelector('input');
+  await click(leavesCheckbox());
+  assert(importButton().disabled, 'Entering individual mode starts with no implicit selection');
+  assert(document.body.textContent.includes('EAN: 4006381333931'));
+  assert(document.querySelector('input[aria-describedby="upgates-refresh-snapshots-help"]').disabled);
+  await enterCodeList('VAR-M');
+  await click(button('Použiť zoznam kódov'));
+  assert(importButton().textContent.includes('(1)'));
+  previewAfterImport = { ...preview, new_products: [{ ...preview.new_products[0], leaves: preview.new_products[0].leaves.slice(1) }] };
+  await click(importButton());
+  sent = requests.filter(request => request.body).at(-1);
+  assert.deepEqual(sent.body, { codes: [], leaves: [selectionM], update_existing: false, existing_only: false, include_stock: false });
+  assert(leavesCheckbox().checked && importButton().disabled, 'Reload does not select the remaining sibling');
+  await click(leavesCheckbox());
+  assert(importButton().disabled, 'Leaving individual mode does not silently select whole families');
+
   await act(async () => root.render(React.createElement(ProductDetailView, { key: 'shop-parent-codes', sku: 'SHARED-1' })));
   assert(document.body.textContent.includes('V shope biketrek: xTrek / SHARED-1'), 'The BIKETREK cash register parent is visible separately from its item');
   assert(document.body.textContent.includes('V shope xtrek: WEB-PARENT / SHARED-1'), 'Each shop shows its own parent, independent of the canonical item group');

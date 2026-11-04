@@ -90,6 +90,16 @@ class UpgatesPullEndpointTests(unittest.TestCase):
                 self.assertIn("existing_only", response.json()["detail"])
             shop.assert_not_awaited()
             fetch.assert_not_called()
+
+    def test_leaf_selection_rejects_empty_duplicate_or_expanding_scope(self):
+        leaf = {"code": "PULL-M", "token": "a" * 64}
+        with patch.object(upgates_sync, "_get_shop", AsyncMock()) as shop:
+            for options in ({"leaves": []}, {"leaves": None}, {"leaves": [leaf, leaf]},
+                            {"leaves": [leaf], "all": True}, {"leaves": [leaf], "codes": ["PULL-GROUP"]},
+                            {"leaves": [leaf], "update_existing": True}, {"leaves": [{"code": "PULL-M"}]}):
+                response = self.client.post("/shops/xtrek/upgates/products/import", json=options)
+                self.assertEqual(response.status_code, 400, options)
+            shop.assert_not_awaited()
             self.db.execute.assert_not_called()
 
 
@@ -342,6 +352,58 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
             self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
+
+    async def leaf_choice(self, code):
+        async with self.sessions() as db:
+            preview = await upgates_sync.preview_upgates_products("biketrek", False, db)
+        self.assertTrue(all(leaf["identity_status"] in ("new", "identified")
+                            for family in preview["new_products"] for leaf in family["leaves"]))
+        return next(leaf["selection"] for family in preview["new_products"] for leaf in family["leaves"]
+                    if leaf["selection"]["code"] == code)
+
+    async def test_selected_leaf_creates_only_one_card_and_replay_preserves_siblings_and_stock(self):
+        choice = await self.leaf_choice("PULL-M")
+        before = await self.stock_snapshot()
+        result = await self.pull(all=False, leaves=[choice])
+        self.assertEqual((result["created_variants"], result["conflict_count"]), (1, 0))
+        self.assertTrue(self.fetch.call_args.kwargs["force_refresh"])
+        async with self.sessions() as db:
+            self.assertEqual(list(await db.scalars(select(Product.sku))), ["PULL-M"])
+            first_mapping = dict((await db.execute(select(ShopProduct.__table__))).mappings().one())
+        replay = await self.pull(all=False, leaves=[choice])
+        self.assertEqual((replay["created_products"], replay["content_saved"]), (0, 0))
+        choice_l = await self.leaf_choice("PULL-L")
+        self.remote[1]["variants"][0]["stock"] = 999
+        await self.pull(all=False, leaves=[choice_l])
+        async with self.sessions() as db:
+            unchanged = dict((await db.execute(select(ShopProduct.__table__).where(
+                ShopProduct.external_code == "PULL-M"))).mappings().one())
+            self.assertEqual(first_mapping, unchanged)
+            self.assertEqual(set(await db.scalars(select(Product.sku))), {"PULL-M", "PULL-L"})
+        self.assertEqual(before, await self.stock_snapshot())
+
+    async def test_selected_leaf_native_id_axes_or_parent_change_blocks_family(self):
+        for change in ("variant_id", "parameters", "parameters_new", "parent"):
+            self.remote[:] = deepcopy(PRODUCTS)
+            choice = await self.leaf_choice("PULL-M")
+            if change == "parent":
+                self.remote[1]["product_id"] = 999
+            else:
+                self.remote[1]["variants"][0][change] = 999 if change == "variant_id" else [{"name": "Size", "value": "XL"}]
+            result = await self.pull(all=False, leaves=[choice])
+            self.assertEqual(result["created_products"], 0)
+            self.assertIn("remote_selection_changed", result["conflicts"][0]["reasons"])
+
+    async def test_selected_leaf_missing_or_conflicting_sibling_never_expands_scope(self):
+        choice = await self.leaf_choice("PULL-M")
+        self.remote[1]["variants"][0]["code"] = "RENAMED"
+        with self.assertRaises(upgates_sync.HTTPException) as error:
+            await self.pull(all=False, leaves=[choice])
+        self.assertEqual(error.exception.status_code, 409)
+        self.remote[:] = deepcopy(PRODUCTS)
+        self.remote[1]["variants"][1]["ean"] = self.remote[1]["variants"][0]["ean"]
+        result = await self.pull(all=False, leaves=[choice])
+        self.assertEqual((result["created_products"], result["conflict_count"]), (0, 1))
 
     async def test_existing_only_keeps_whole_family_conflict_guard(self):
         self.remote[1]["variants"] = self.remote[1]["variants"][:1]
