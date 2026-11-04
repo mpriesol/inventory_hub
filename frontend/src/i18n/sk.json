@@ -1237,6 +1237,9 @@
     "editParameter": "Prejsť na parameter"
   },
   "upgatesImport": {
+    "selectLeaves": "Vybrať konkrétne varianty alebo samostatné produkty",
+    "selectLeavesHelp": "Vyber kódy predajných položiek. Import sa obmedzí na tento výber; ostatné varianty sa nevytvoria. Najviac 2 000 položiek na dávku.",
+    "leafParent": "Produkt: {{code}}",
     "existingOnly": "Len prepojiť existujúce karty (bez vytvárania nových)",
     "existingSelection": "Existujúce karty na prepojenie: {{count}}. Nové karty: 0.",
     "noExisting": "Žiadne ďalšie existujúce karty sa nedajú jednoznačne prepojiť.",
@@ -1266,6 +1269,7 @@
     "onlyConflicts": "Na spracovanie nezostali žiadne položky bez konfliktu.",
     "resultSummary": "Vytvorené produkty: {{created}} · varianty: {{variants}} · nové prepojenia: {{linked}} · uložené údaje e-shopu: {{snapshots}}",
     "reasons": {
+      "remote_selection_changed": "Vybraná položka zmenila identitu alebo parametre. Obnov náhľad a skontroluj ju.",
       "remote_code_duplicate": "Rovnaký kód sa v e-shope opakuje.",
       "remote_id_duplicate": "Identifikátor produktu e-shopu sa opakuje.",
       "remote_barcode_duplicate": "Rovnaký čiarový kód patrí viacerým položkám e-shopu.",

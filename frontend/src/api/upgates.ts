@@ -3,6 +3,8 @@
 
 import { API_BASE, fetchJSON } from "./client";
 
+export interface UpgatesLeafSelection { code: string; token: string }
+
 export interface UpgatesNewProduct {
   key: string;
   code: string;
@@ -14,6 +16,8 @@ export interface UpgatesNewProduct {
   identity_status?: 'new' | 'identified' | 'partial';
   linkable_existing_count?: number;
   new_card_count?: number;
+  leaves?: { selection: UpgatesLeafSelection; title: string; ean: string;
+    identity_status: 'new' | 'identified'; product_id: string | null; variant_id: string | null }[];
 }
 
 export interface UpgatesIdentityConflict {
@@ -57,6 +61,7 @@ export interface UpgatesImportResult {
 export interface UpgatesImportOptions {
   updateExisting?: boolean;
   existingOnly?: boolean;
+  leaves?: UpgatesLeafSelection[];
 }
 
 export async function getUpgatesPreview(shop: string, refresh = false): Promise<UpgatesPreview> {
@@ -75,6 +80,7 @@ export async function importUpgatesProducts(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       codes,
+      ...(opts.leaves ? { leaves: opts.leaves } : {}),
       update_existing: !!opts.updateExisting,
       existing_only: !!opts.existingOnly,
       include_stock: false,

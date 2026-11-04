@@ -49,7 +49,8 @@ odoslanie blokuje.
 Vyberať možno iba položky aktuálneho náhľadu bez konfliktu. Nepoužiteľné kódy
 sa vypíšu osobitne: môžu už byť prepojené, mať konflikt alebo chýbať v náhľade.
 Ak nesedí ani jeden kód, výber zostane prázdny; neprepne sa na celý katalóg.
-Pri rodinách ide stále o výber celej zobrazenej skupiny, nie jednotlivých variantov.
+V predvolenom režime ide o výber celej zobrazenej skupiny. Pre jednotlivé
+varianty použi samostatnú voľbu uvedenú nižšie.
 Obnovenie náhľadu zruší vložený zoznam a obnoví predvolený výber náhľadu;
 ručná zmena zaškrtávacích polí zruší textový zoznam aj jeho hlásenie.
 Pred odoslaním vždy skontroluj počet a prípadné nezaradené kódy. Existujúca
@@ -78,6 +79,26 @@ Táto voľba nemení SKU, pôvodné identifikátory, fyzický sklad ani históri
 Rovnako ako bežný pull môže doplniť chýbajúci overený EAN, prázdne variantné
 parametre a uložené údaje e-shopu. Nezapisuje do Upgates. Nevyžaduje databázovú
 migráciu ani zmenu konfigurácie; rollback kódu odstráni voľbu, zachová väzby.
+
+### Výber jednotlivých predajných položiek
+
+Voľba **Vybrať konkrétne varianty alebo samostatné produkty** prepne tabuľku
+na jednotlivé neprepojené položky s kódom rodiča a EAN. Zoznam kódov v tomto
+režime označuje varianty, nie celé rodiny. Prepnutie aj obnovenie náhľadu
+vyprázdni výber. Limit je 2 000 položiek na dávku. Nevybrané varianty sa
+nevytvoria ani neobnovia. Režim možno kombinovať s `existing_only`.
+
+Preview obsahuje `leaves[].selection` (`code`, `token`). Import prijíma
+`leaves: [{code, token}]` bez `codes`, `all` a `update_existing`. Pred zápisom
+znovu stiahne celý katalóg a overí natívne ID, rodiča, kód, EAN, výrobcu
+a parametre oproti výberu. Chýbajúci kód odmietne celú požiadavku; zmenená
+identita alebo konflikt súrodenca zastaví dotknutú rodinu. Platí pôvodný
+globálny resolver, transakčný zámok a savepoint rodiny. Opakovanie už
+prepojené položky preskočí. Fyzické zásoby a pôvodné karty sa zachovajú.
+
+Nevyžaduje databázovú migráciu ani zmenu konfigurácie. Rollback kódu odstráni
+novú voľbu, ponechá vytvorené karty a väzby. Táto funkcia nemení Upgates;
+zosúladenie vzdialeného katalógu je samostatná operácia.
 
 ## Rozšírené API podklady
 

@@ -1237,6 +1237,9 @@
     "editParameter": "Go to parameter"
   },
   "upgatesImport": {
+    "selectLeaves": "Select individual variants or standalone products",
+    "selectLeavesHelp": "Select sellable item codes. Only these items will be imported; other variants will not be created. Maximum 2,000 items per batch.",
+    "leafParent": "Product: {{code}}",
     "existingOnly": "Link existing cards only (never create new cards)",
     "existingSelection": "Existing cards to link: {{count}}. New cards: 0.",
     "noExisting": "No more existing cards can be unambiguously linked.",
@@ -1266,6 +1269,7 @@
     "onlyConflicts": "No items without conflicts remain to process.",
     "resultSummary": "Products created: {{created}} · variants: {{variants}} · new links: {{linked}} · saved shop records: {{snapshots}}",
     "reasons": {
+      "remote_selection_changed": "A selected item changed identity or parameters. Refresh the preview and review it.",
       "remote_code_duplicate": "The same code occurs more than once in the shop.",
       "remote_id_duplicate": "The shop product ID occurs more than once.",
       "remote_barcode_duplicate": "The same barcode belongs to multiple shop items.",

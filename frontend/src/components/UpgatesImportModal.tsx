@@ -10,12 +10,29 @@ import {
   type UpgatesPreview,
   type UpgatesImportResult,
   type UpgatesIdentityConflict,
+  type UpgatesNewProduct,
+  type UpgatesLeafSelection,
 } from '../api/upgates';
 
 interface Props {
   shop: string;              // e.g. "biketrek"
   onClose: () => void;
   onImported: () => void;    // parent refreshes stock data
+}
+
+type ImportRow = UpgatesNewProduct & { leafSelection?: UpgatesLeafSelection; parentCode?: string; ean?: string };
+
+function selectionRows(preview: UpgatesPreview | null, leaves: boolean, existingOnly: boolean): ImportRow[] {
+  const families = preview?.new_products || [];
+  const rows: ImportRow[] = leaves ? families.flatMap(p => (p.leaves || []).map(leaf => ({
+    ...p, key: leaf.selection.code, code: leaf.selection.code,
+    title: `${p.title} – ${leaf.title}`, variants_count: 0,
+    identity_status: leaf.identity_status,
+    linkable_existing_count: leaf.identity_status === 'identified' ? 1 : 0,
+    new_card_count: leaf.identity_status === 'new' ? 1 : 0,
+    leafSelection: leaf.selection, parentCode: p.code, ean: leaf.ean,
+  }))) : families;
+  return rows.filter(p => !existingOnly || (p.linkable_existing_count ?? 0) > 0);
 }
 
 function IdentityConflicts({ title, count, conflicts }: { title: string; count: number; conflicts: UpgatesIdentityConflict[] }) {
@@ -52,9 +69,9 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [result, setResult] = useState<UpgatesImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
   const [existingOnly, setExistingOnly] = useState(false);
-  const selectableProducts = useMemo(() => (preview?.new_products || []).filter(
-    p => !existingOnly || (p.linkable_existing_count ?? 0) > 0,
-  ), [preview, existingOnly]);
+  const [selectLeaves, setSelectLeaves] = useState(false);
+  const selectableProducts = useMemo(() => selectionRows(preview, selectLeaves, existingOnly),
+    [preview, selectLeaves, existingOnly]);
   const selectedExistingCount = selectableProducts.filter(p => selected.has(p.key))
     .reduce((sum, p) => sum + (p.linkable_existing_count ?? 0), 0);
   const previewConflictCount = preview?.conflict_count ?? preview?.conflicts?.length ?? 0;
@@ -74,7 +91,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
     try {
       const data = await getUpgatesPreview(shop, refresh);
       setPreview(data);
-      setSelected(new Set(data.new_products.filter(p => !existingOnly || (p.linkable_existing_count ?? 0) > 0).map(p => p.key)));
+      setSelected(new Set(selectLeaves ? [] : selectionRows(data, false, existingOnly).map(p => p.key)));
     } catch (e: any) {
       setError(e?.message || 'Nepodarilo sa načítať produkty z Upgates');
     } finally {
@@ -119,9 +136,10 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
     setImporting(true);
     setError(null);
     try {
-      const res = await importUpgatesProducts(shop, Array.from(selected), {
+      const res = await importUpgatesProducts(shop, selectLeaves ? [] : Array.from(selected), {
         updateExisting,
         existingOnly,
+        ...(selectLeaves ? { leaves: selectableProducts.filter(p => selected.has(p.key)).map(p => p.leafSelection!) } : {}),
       });
       setResult(res);
       onImported();
@@ -280,6 +298,8 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                     </td>
                     <td className="px-2 py-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>
                       {p.code}
+                      {p.parentCode && <p className="text-xs">{t('upgatesImport.leafParent', { code: p.parentCode })}</p>}
+                      {p.ean && <p className="text-xs">EAN: {p.ean}</p>}
                     </td>
                     <td className="px-2 py-2" style={{ color: 'var(--color-text-primary)' }}>{p.title}</td>
                     <td className="px-2 py-2" style={{ color: 'var(--color-text-secondary)' }}>{p.manufacturer}</td>
@@ -309,7 +329,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               <input
                 type="checkbox"
                 checked={updateExisting}
-                disabled={loading || importing || existingOnly}
+                disabled={loading || importing || existingOnly || selectLeaves}
                 aria-describedby="upgates-refresh-snapshots-help"
                 onChange={(e) => setUpdateExisting(e.target.checked)}
               />
@@ -323,11 +343,22 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                   setExistingOnly(enabled);
                   if (enabled) setUpdateExisting(false);
                   clearCodeSelection();
-                  setSelected(new Set((preview?.new_products || []).filter(p => !enabled || (p.linkable_existing_count ?? 0) > 0).map(p => p.key)));
+                  setSelected(new Set(selectLeaves ? [] : selectionRows(preview, false, enabled).map(p => p.key)));
                 }} />
               {t('upgatesImport.existingOnly')}
             </label>
             {existingOnly && <p role="status">{t('upgatesImport.existingSelection', { count: selectedExistingCount })}</p>}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={selectLeaves} disabled={loading || importing}
+                onChange={e => {
+                  setSelectLeaves(e.target.checked);
+                  setUpdateExisting(false);
+                  clearCodeSelection();
+                  setSelected(new Set());
+                }} />
+              {t('upgatesImport.selectLeaves')}
+            </label>
+            {selectLeaves && <p role="status">{t('upgatesImport.selectLeavesHelp')}</p>}
           </div>
           <Button
             variant="primary"

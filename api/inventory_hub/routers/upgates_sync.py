@@ -24,7 +24,7 @@ Import scope (per approved design):
 Endpoints:
   GET  /shops/{shop}/upgates/products/preview
   POST /shops/{shop}/upgates/products/import
-       body: {"codes": [...] | "all": true,
+       body: {"codes": [...] | "all": true | "leaves": [{"code": "...", "token": "..."}],
               "update_existing": bool = false,
               "existing_only": bool = false,
               "include_stock": false}
@@ -33,6 +33,7 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import hashlib
 import asyncio
 from datetime import datetime
 from decimal import Decimal
@@ -289,6 +290,36 @@ def _family_resolution(family: dict, index) -> tuple[list, Optional[dict]]:
     return resolutions, conflict
 
 
+def _leaf_selection(family: dict, identity, obj: dict) -> dict:
+    """Bind an explicit leaf choice to its native identity and variant axes."""
+    evidence = [family["code"], identity.code, identity.is_variant,
+                identity.external_product_id, identity.external_id,
+                sorted(identity.barcodes), obj.get("parameters"),
+                family["payload"].get("manufacturer")]
+    token = hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode()).hexdigest()
+    return {"code": identity.code, "token": token}
+
+
+def _parse_leaf_selection(payload: dict) -> Optional[dict]:
+    if "leaves" not in payload:
+        return None
+    leaves = payload["leaves"]
+    if (not isinstance(leaves, list) or not 1 <= len(leaves) <= 2000
+            or payload.get("codes") or payload.get("all")
+            or payload.get("update_existing")):
+        raise HTTPException(400, detail="'leaves' vyžaduje 1–2000 konkrétnych položiek bez codes/all/update_existing")
+    selected = {}
+    for leaf in leaves:
+        if (not isinstance(leaf, dict) or set(leaf) != {"code", "token"}
+                or not isinstance(leaf["code"], str) or not 1 <= len(leaf["code"]) <= 100
+                or not isinstance(leaf["token"], str) or len(leaf["token"]) != 64
+                or leaf["code"] in selected):
+            raise HTTPException(400, detail="Neplatná alebo opakovaná položka v 'leaves'")
+        selected[leaf["code"]] = leaf["token"]
+    return selected
+
+
 @router.get("/{shop_code}/upgates/products/preview")
 async def preview_upgates_products(
     shop_code: str,
@@ -322,6 +353,14 @@ async def preview_upgates_products(
             "identity_status": identity_status,
             "linkable_existing_count": sum(r.status == "identified" for r in resolutions),
             "new_card_count": sum(r.product_id is None for r in resolutions),
+            "leaves": [{"selection": _leaf_selection(family, identity, obj),
+                        "title": variant_params_text(obj) or identity.code,
+                        "ean": ", ".join(identity.barcodes),
+                        "identity_status": "identified" if r.product_id is not None else "new",
+                        "product_id": identity.external_product_id,
+                        "variant_id": identity.external_id if identity.is_variant else None}
+                       for (identity, obj), r in zip(family["leaves"], resolutions)
+                       if r.status != "mapped"],
         })
     return {
         "shop": shop_code, "total_in_upgates": len(products), "already_in_db": known_count,
@@ -353,18 +392,25 @@ async def import_upgates_products(
         raise HTTPException(400, detail="'codes' musí byť zoznam produktových kódov")
     import_all = payload.get("all") is True
     update_existing = payload.get("update_existing") is True
-    if not wanted and not import_all and not update_existing:
+    selected_leaves = _parse_leaf_selection(payload)
+    if not wanted and not import_all and not update_existing and selected_leaves is None:
         raise HTTPException(400, detail="Zadaj 'codes', 'all': true alebo 'update_existing': true")
     shop = await _get_shop(db, shop_code)
-    products, _ = await asyncio.to_thread(_fetch_upgates_products, shop_code, ttl_s=IMPORT_CACHE_TTL_S)
+    products, _ = await asyncio.to_thread(_fetch_upgates_products, shop_code, ttl_s=IMPORT_CACHE_TTL_S,
+                                         force_refresh=selected_leaves is not None)
     families = _pull_families(shop.id, products)
+    if selected_leaves is not None:
+        found = {i.code for f in families for i, _ in f["leaves"]}
+        if set(selected_leaves) - found:
+            raise HTTPException(409, detail="Vybraná položka už nie je v Upgates. Obnov náhľad.")
     # Same transaction lock as catalog registration; do not race mappings across shops.
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     identities = [i for f in families for i, _ in f["leaves"]]
     index = await load_identity_index(db, shop.id, identities)
     _mark_resolved_duplicates(families, index)
     # update_existing controls refresh behavior, not the explicitly selected scope.
-    selected = [f for f in families if import_all or f["code"] in wanted or (
+    selected = [f for f in families if (selected_leaves is not None and any(
+        i.code in selected_leaves for i, _ in f["leaves"])) or import_all or f["code"] in wanted or (
         not wanted and update_existing and any(index.by_code.get(i.code.casefold()) or
                                 index.by_external_id.get((i.is_variant, i.external_id))
                                 for i, _ in f["leaves"]))]
@@ -380,6 +426,13 @@ async def import_upgates_products(
 
     for family in selected:
         resolutions, conflict = _family_resolution(family, index)
+        if selected_leaves is not None and any(
+            i.code in selected_leaves and (not i.external_product_id or not i.external_id
+                or _leaf_selection(family, i, obj)["token"] != selected_leaves[i.code])
+            for i, obj in family["leaves"]
+        ):
+            conflict = {"code": family["code"], "reasons": ["remote_selection_changed"],
+                        "candidate_product_ids": []}
         if not conflict and all(r.status == "mapped" for r in resolutions) and not update_existing:
             skipped.append({"code": family["code"], "reason": "already mapped (update_existing=false)"})
             continue
@@ -391,8 +444,14 @@ async def import_upgates_products(
         # positively identified cards. Unknown siblings must never be allocated
         # in this mode, even if the preview is stale or the caller selects all.
         leaves = list(zip(family["leaves"], resolutions))
+        if selected_leaves is not None:
+            leaves = [(leaf, r) for leaf, r in leaves
+                      if leaf[0].code in selected_leaves and r.status != "mapped"]
+            if not leaves:
+                skipped.append({"code": family["code"], "reason": "selected leaves already mapped"})
+                continue
         if existing_only:
-            stats["skipped_unresolved"] += sum(r.product_id is None for r in resolutions)
+            stats["skipped_unresolved"] += sum(r.product_id is None for _, r in leaves)
             leaves = [(leaf, r) for leaf, r in leaves
                       if r.status == "identified" and r.product_id is not None]
             if not leaves:
