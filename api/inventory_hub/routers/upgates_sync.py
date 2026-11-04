@@ -26,6 +26,7 @@ Endpoints:
   POST /shops/{shop}/upgates/products/import
        body: {"codes": [...] | "all": true,
               "update_existing": bool = false,
+              "existing_only": bool = false,
               "include_stock": false}
   GET  /shops/{shop}/upgates/status
 """
@@ -319,6 +320,8 @@ async def preview_upgates_products(
             "manufacturer": p.get("manufacturer") or "", "variants_count": len(p.get("variants") or []),
             "availability": p.get("availability") or "", "stock": p.get("stock"),
             "identity_status": identity_status,
+            "linkable_existing_count": sum(r.status == "identified" for r in resolutions),
+            "new_card_count": sum(r.product_id is None for r in resolutions),
         })
     return {
         "shop": shop_code, "total_in_upgates": len(products), "already_in_db": known_count,
@@ -340,6 +343,11 @@ async def import_upgates_products(
         raise HTTPException(400, detail=("Import produktov nemení fyzický sklad. Pošli 'include_stock': false "
                                        "alebo tento parameter vynechaj. Počiatočné zásoby vyžadujú "
                                        "samostatný overený príjem s nákupnou cenou."))
+    existing_only = payload.get("existing_only", False)
+    if not isinstance(existing_only, bool):
+        raise HTTPException(400, detail="'existing_only' musí byť boolean")
+    if existing_only and payload.get("update_existing", False) is not False:
+        raise HTTPException(400, detail="'existing_only' nemožno kombinovať s 'update_existing'")
     wanted = payload.get("codes") or []
     if not isinstance(wanted, list) or any(not isinstance(code, str) for code in wanted):
         raise HTTPException(400, detail="'codes' musí byť zoznam produktových kódov")
@@ -364,7 +372,8 @@ async def import_upgates_products(
     skipped = [{"code": code, "reason": "not found in Upgates"} for code in missing]
     conflicts = []
     stats = {"created_products": 0, "created_variants": 0, "updated_products": 0,
-             "linked_products": 0, "content_saved": 0, "stock_initialized": 0, "ean_conflicts": 0}
+             "linked_products": 0, "content_saved": 0, "stock_initialized": 0, "ean_conflicts": 0,
+             "skipped_unresolved": 0}
     now = datetime.utcnow()
     source = f"upgates:{shop_code}"
     imported_product_ids = set()
@@ -378,6 +387,17 @@ async def import_upgates_products(
             conflicts.append(conflict)
             skipped.append({"code": family["code"], "reason": ", ".join(conflict["reasons"])})
             continue
+        # Validate the complete family first, then limit writes to unlinked,
+        # positively identified cards. Unknown siblings must never be allocated
+        # in this mode, even if the preview is stale or the caller selects all.
+        leaves = list(zip(family["leaves"], resolutions))
+        if existing_only:
+            stats["skipped_unresolved"] += sum(r.product_id is None for r in resolutions)
+            leaves = [(leaf, r) for leaf, r in leaves
+                      if r.status == "identified" and r.product_id is not None]
+            if not leaves:
+                skipped.append({"code": family["code"], "reason": "no unlinked existing cards"})
+                continue
         p, code = family["payload"], family["code"]
         variants = bool(p.get("variants"))
         created_rows, mapping_rows, new_identifiers = [], [], []
@@ -389,7 +409,7 @@ async def import_upgates_products(
                 # Only ShopProduct records channel grouping; existing canonical
                 # groups stay intact and new leaves have no inferred group.
                 leaf_products = []
-                for (identity, obj), resolution in zip(family["leaves"], resolutions):
+                for (identity, obj), resolution in leaves:
                     if resolution.product_id is None:
                         title = product_title(p)
                         suffix = variant_params_text(obj) or identity.code
@@ -410,7 +430,7 @@ async def import_upgates_products(
                     .where(ProductVariantAttribute.product_id.in_(leaf_ids))))
                 manual_barcodes = dict((await db.execute(select(ProductEditorOverride.product_id,
                     ProductEditorOverride.data["variant"]["eans"]).where(ProductEditorOverride.product_id.in_(leaf_ids)))).all())
-                for (identity, obj), resolution, product in zip(family["leaves"], resolutions, leaf_products):
+                for ((identity, obj), resolution), product in zip(leaves, leaf_products):
                     params = _variant_params(obj) if variants else []
                     # An EAN-linked shop alias is not authoritative for canonical
                     # axes. Backfill only the same exact shared physical SKU.
@@ -487,7 +507,7 @@ async def import_upgates_products(
 
     from inventory_hub.services.supplier_links import reconcile_product_links
     link_reports = await reconcile_product_links(db, imported_product_ids)
-    return {"shop": shop_code, **stats, "ean_conflict_details": [], "skipped": skipped,
+    return {"shop": shop_code, **stats, "existing_only": existing_only, "ean_conflict_details": [], "skipped": skipped,
             "supplier_links": {"linked": sum(report["linked"] for report in link_reports),
                 "conflicts": [conflict for report in link_reports for conflict in report["conflicts"]]},
             "conflict_count": len(conflicts), "conflicts": conflicts,

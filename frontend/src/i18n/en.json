@@ -1237,6 +1237,11 @@
     "editParameter": "Go to parameter"
   },
   "upgatesImport": {
+    "existingOnly": "Link existing cards only (never create new cards)",
+    "existingSelection": "Existing cards to link: {{count}}. New cards: 0.",
+    "noExisting": "No more existing cards can be unambiguously linked.",
+    "cardCounts": "To link: {{linked}} · missing cards: {{created}}",
+    "skippedUnresolved": "Skipped variants or products without an existing card: {{count}}.",
     "selectCodes": "Select by product code list",
     "codeList": "Product codes - one per line",
     "codeListHelp": "Use codes from the preview. Matching preserves case, leading zeros and spaces within a code. Applying the list replaces the entire current selection; importing still requires separate confirmation.",

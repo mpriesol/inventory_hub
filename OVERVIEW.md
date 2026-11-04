@@ -149,7 +149,9 @@ Príprava produktov (15. 10. 2026) umožňuje vybrať aj neaktívne a nadradené
 
 Prehľad **Obchody** sprístupňuje existujúci náhľad a výberový import produktov
 z Upgates do Hubu. Import zachováva SKU, oddeľuje konflikty a nemení fyzické
-zásoby. ZIP export zostáva samostatným čítaním; [postup migrácie](docs/migration-export.md).
+zásoby. Voliteľný režim iba existujúcich kariet prepojí identifikované varianty
+aj zo zmiešaných skupín a chýbajúce karty nevytvára. ZIP export zostáva
+samostatným čítaním; [postup migrácie](docs/migration-export.md).
 
 Načítanie dodávateľských dostupností po spracovaní odstraňuje vlastnú dočasnú XML
 kópiu; importné katalógy a databázová história zostávajú uložené. Samostatný hostiteľský

@@ -83,7 +83,7 @@ async function mount(key) {
   assert.equal([...document.querySelectorAll('label')].some(label => label.textContent.includes('skladové zásoby')), false);
   await click(importButton());
   let sent = requests.filter(request => request.body).at(-1);
-  assert.deepEqual(sent.body, { codes: ['TEST-1'], update_existing: false, include_stock: false });
+  assert.deepEqual(sent.body, { codes: ['TEST-1'], update_existing: false, existing_only: false, include_stock: false });
   assert.equal(imported, 1);
   await click(document.querySelector('label input[type="checkbox"]'));
   await click(importButton());
@@ -120,7 +120,7 @@ async function mount(key) {
   await click(document.querySelector('label input[type="checkbox"]'));
   await click(button('Obnoviť uložené údaje e-shopu'));
   sent = requests.filter(request => request.body).at(-1);
-  assert.deepEqual(sent.body, { codes: [], update_existing: true, include_stock: false }, 'Snapshot refresh remains separate from creating products or touching physical stock');
+  assert.deepEqual(sent.body, { codes: [], update_existing: true, existing_only: false, include_stock: false }, 'Snapshot refresh remains separate from creating products or touching physical stock');
 
   preview = { ...preview, already_in_db: 5, new_count: 1, conflict_count: 0, conflicts: [],
     new_products: [{ key: 'CHANGED', code: 'CHANGED', title: 'Changed identity', manufacturer: 'Test', variants_count: 0, identity_status: 'identified' }] };
@@ -182,7 +182,7 @@ async function mount(key) {
   importResult = { ...importResult, created_products: 311, created_variants: 0, linked_products: 289, content_saved: 600, conflict_count: 0, conflicts: [], skipped: [] };
   await click(importButton());
   sent = requests.filter(request => request.body).at(-1);
-  assert.deepEqual(sent.body, { codes: batchCodes.map(code => `key:${code}`), update_existing: false, include_stock: false }, 'One request includes exactly the selected preview keys and leaves stock untouched');
+  assert.deepEqual(sent.body, { codes: batchCodes.map(code => `key:${code}`), update_existing: false, existing_only: false, include_stock: false }, 'One request includes exactly the selected preview keys and leaves stock untouched');
   assert.equal(document.getElementById('upgates-code-selection').value, '', 'Follow-up preview clears the previous pasted list');
   assert(!document.querySelector('details [role="status"]'));
   await enterCodeList('00123');
@@ -195,6 +195,37 @@ async function mount(key) {
   await click(document.querySelector('input[aria-label="Vybrať produkt: Bora 2"]'));
   assert.equal(document.getElementById('upgates-code-selection').value, '', 'Manual changes discard the now-stale list report');
   assert(importButton().textContent.includes('(2)'));
+
+  // Existing-card mode narrows a mixed family without requesting new-card creation.
+  preview = { ...preview, new_count: 2, conflict_count: 0, conflicts: [], new_products: [
+    { key: 'MIXED', code: 'MIXED', title: 'Mixed', variants_count: 3, identity_status: 'identified', linkable_existing_count: 1, new_card_count: 2 },
+    { key: 'NEW-ONLY', code: 'NEW-ONLY', title: 'New', variants_count: 1, identity_status: 'new', linkable_existing_count: 0, new_card_count: 1 },
+  ] };
+  await mount('existing-only');
+  await click(document.querySelector('label input[type="checkbox"]'));
+  const existingOnlyCheckbox = () => [...document.querySelectorAll('label')].find(label => label.textContent.includes('Len prepojiť existujúce karty')).querySelector('input');
+  await click(existingOnlyCheckbox());
+  const refreshCheckbox = document.querySelector('input[aria-describedby="upgates-refresh-snapshots-help"]');
+  assert(refreshCheckbox.disabled && !refreshCheckbox.checked, 'Existing-only mode cannot refresh already linked cards');
+  assert.equal(document.querySelectorAll('tbody tr').length, 1);
+  assert(document.body.textContent.includes('Existujúce karty na prepojenie: 1. Nové karty: 0.'));
+  await enterCodeList('NEW-ONLY');
+  await click(button('Použiť zoznam kódov'));
+  assert(importButton().disabled, 'New-only families are not selectable in existing-card mode');
+  await enterCodeList('MIXED');
+  assert(importButton().disabled);
+  await click(button('Použiť zoznam kódov'));
+  importResult = { ...importResult, created_products: 0, created_variants: 0, linked_products: 1, content_saved: 1, existing_only: true, skipped_unresolved: 2 };
+  previewAfterImport = { ...preview, new_products: preview.new_products.map(p => ({ ...p, linkable_existing_count: 0 })) };
+  await click(importButton());
+  sent = requests.filter(request => request.body).at(-1);
+  assert.deepEqual(sent.body, { codes: ['MIXED'], update_existing: false, existing_only: true, include_stock: false });
+  assert(importButton().disabled, 'Reload keeps existing-only mode and cannot select the remaining new siblings');
+  assert(existingOnlyCheckbox().checked);
+  assert(document.body.textContent.includes('Preskočené varianty alebo produkty bez existujúcej karty: 2.'));
+  assert(document.body.textContent.includes('Žiadne ďalšie existujúce karty sa nedajú jednoznačne prepojiť.'));
+  await click(existingOnlyCheckbox());
+  assert(importButton().textContent.includes('(2)'), 'Explicitly leaving the mode restores ordinary import choices');
 
   await act(async () => root.render(React.createElement(ProductDetailView, { key: 'shop-parent-codes', sku: 'SHARED-1' })));
   assert(document.body.textContent.includes('V shope biketrek: xTrek / SHARED-1'), 'The BIKETREK cash register parent is visible separately from its item');

@@ -57,6 +57,28 @@ voľba obnovy údajov zostáva samostatná; pri obyčajnom vytváraní/prepojen�
 kariet ju nechaj vypnutú. Import používa pôvodné overenie identity na serveri,
 nevytvára fyzický príjem ani nepotvrdzuje skladové množstvá.
 
+### Prepojenie iba existujúcich kariet
+
+Voľba **Len prepojiť existujúce karty (bez vytvárania nových)** zobrazí iba
+skupiny s jednoznačne nájdenou, zatiaľ neprepojenou kartou. Náhľad uvádza
+počet existujúcich kariet na prepojenie aj počet chýbajúcich kariet. V tomto
+režime sa chýbajúce karty preskočia, aj keď patria do vybranej skupiny.
+Už prepojené varianty sa neobnovujú. Po importe zostáva režim zapnutý;
+výsledok uvádza prepojenia a počet preskočených položiek bez karty.
+
+API prijíma `existing_only: true` spolu s konkrétnymi `codes` alebo `all: true`.
+Hodnota musí byť boolean a nesmie sa kombinovať s obnovou `update_existing`.
+Server najprv overí identitu celej skupiny a až potom spracuje jej jednoznačne
+identifikované neprepojené karty. Konflikt súrodenca zastaví celú skupinu;
+opakovaný import už prepojené karty nemení a nové nikdy nevytvorí. Preview
+vracia `linkable_existing_count` a `new_card_count` pre každú skupinu;
+výsledok obsahuje `existing_only` a `skipped_unresolved`.
+
+Táto voľba nemení SKU, pôvodné identifikátory, fyzický sklad ani históriu.
+Rovnako ako bežný pull môže doplniť chýbajúci overený EAN, prázdne variantné
+parametre a uložené údaje e-shopu. Nezapisuje do Upgates. Nevyžaduje databázovú
+migráciu ani zmenu konfigurácie; rollback kódu odstráni voľbu, zachová väzby.
+
 ## Rozšírené API podklady
 
 `GET /api/migration/upgates-export?shop_code=xtrek&dataset=parameters`

@@ -1237,6 +1237,11 @@
     "editParameter": "Prejsť na parameter"
   },
   "upgatesImport": {
+    "existingOnly": "Len prepojiť existujúce karty (bez vytvárania nových)",
+    "existingSelection": "Existujúce karty na prepojenie: {{count}}. Nové karty: 0.",
+    "noExisting": "Žiadne ďalšie existujúce karty sa nedajú jednoznačne prepojiť.",
+    "cardCounts": "Na prepojenie: {{linked}} · chýbajúce karty: {{created}}",
+    "skippedUnresolved": "Preskočené varianty alebo produkty bez existujúcej karty: {{count}}.",
     "selectCodes": "Vybrať podľa zoznamu kódov",
     "codeList": "Kódy produktov - jeden na riadok",
     "codeListHelp": "Použi kódy z náhľadu. Rozlišujú sa veľké a malé písmená, úvodné nuly aj medzery v kóde. Použitie zoznamu nahradí celý aktuálny výber; samotný import sa spustí až jeho potvrdením.",

@@ -51,6 +51,12 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<UpgatesImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
+  const [existingOnly, setExistingOnly] = useState(false);
+  const selectableProducts = useMemo(() => (preview?.new_products || []).filter(
+    p => !existingOnly || (p.linkable_existing_count ?? 0) > 0,
+  ), [preview, existingOnly]);
+  const selectedExistingCount = selectableProducts.filter(p => selected.has(p.key))
+    .reduce((sum, p) => sum + (p.linkable_existing_count ?? 0), 0);
   const previewConflictCount = preview?.conflict_count ?? preview?.conflicts?.length ?? 0;
   const resultConflictCount = result?.conflict_count ?? result?.conflicts?.length ?? 0;
   const codeSelectionPending = !!codeSelectionText.trim() && !codeSelectionReport;
@@ -68,7 +74,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
     try {
       const data = await getUpgatesPreview(shop, refresh);
       setPreview(data);
-      setSelected(new Set(data.new_products.map((p) => p.key)));
+      setSelected(new Set(data.new_products.filter(p => !existingOnly || (p.linkable_existing_count ?? 0) > 0).map(p => p.key)));
     } catch (e: any) {
       setError(e?.message || 'Nepodarilo sa načítať produkty z Upgates');
     } finally {
@@ -79,8 +85,8 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   useEffect(() => { loadPreview(false); /* eslint-disable-next-line */ }, [shop]);
 
   const allChecked = useMemo(
-    () => !!preview && preview.new_products.length > 0 && selected.size === preview.new_products.length,
-    [preview, selected],
+    () => selectableProducts.length > 0 && selected.size === selectableProducts.length,
+    [selectableProducts, selected],
   );
 
   const toggle = (code: string) => {
@@ -96,13 +102,13 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const toggleAll = () => {
     if (!preview || importing) return;
     clearCodeSelection();
-    setSelected(allChecked ? new Set() : new Set(preview.new_products.map((p) => p.key)));
+    setSelected(allChecked ? new Set() : new Set(selectableProducts.map((p) => p.key)));
   };
 
   const applyCodeSelection = () => {
     if (!preview || loading || importing || !codeSelectionText.trim()) return;
     const requested = new Set(codeSelectionText.split(/\r?\n/).map(code => code.trim()).filter(Boolean));
-    const matching = preview.new_products.filter(product => requested.has(product.code));
+    const matching = selectableProducts.filter(product => requested.has(product.code));
     const matchedCodes = new Set(matching.map(product => product.code));
     setSelected(new Set(matching.map(product => product.key)));
     setCodeSelectionReport({ matched: matching.length, unavailable: [...requested].filter(code => !matchedCodes.has(code)) });
@@ -115,6 +121,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
     try {
       const res = await importUpgatesProducts(shop, Array.from(selected), {
         updateExisting,
+        existingOnly,
       });
       setResult(res);
       onImported();
@@ -198,6 +205,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               style={{ borderColor: resultConflictCount ? 'var(--color-warning)' : 'var(--color-success)', color: resultConflictCount ? 'var(--color-warning)' : 'var(--color-success)' }}
             >
               {t('upgatesImport.resultSummary', { created: result.created_products ?? 0, variants: result.created_variants ?? 0, linked: result.linked_products ?? 0, snapshots: result.content_saved ?? 0 })}
+              {result.existing_only && <p>{t('upgatesImport.skippedUnresolved', { count: result.skipped_unresolved ?? 0 })}</p>}
               {result.skipped.length > 0 && (
                 <span style={{ color: 'var(--color-text-tertiary)' }}>
                   {' '}(preskočených: {result.skipped.length})
@@ -210,13 +218,13 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
 
           {!loading && !error && preview && <IdentityConflicts title={t('upgatesImport.previewConflicts')} count={previewConflictCount} conflicts={preview.conflicts || []} />}
 
-          {!loading && !error && preview && preview.new_products.length === 0 && (
+          {!loading && !error && preview && selectableProducts.length === 0 && (
             <div className="py-10 text-center text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t(previewConflictCount > 0 ? 'upgatesImport.onlyConflicts' : 'upgatesImport.noPending')}
+              {t(existingOnly ? 'upgatesImport.noExisting' : previewConflictCount > 0 ? 'upgatesImport.onlyConflicts' : 'upgatesImport.noPending')}
             </div>
           )}
 
-          {!loading && !error && preview && preview.new_products.length > 0 && (
+          {!loading && !error && preview && selectableProducts.length > 0 && (
             <>
             <details className="mb-4 rounded-lg border p-3" style={{ borderColor: 'var(--color-border-subtle)' }}>
               <summary className="cursor-pointer text-sm font-medium">{t('upgatesImport.selectCodes')}</summary>
@@ -258,7 +266,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
-                {preview.new_products.map((p) => (
+                {selectableProducts.map((p) => (
                   <tr key={p.key} className="cursor-pointer" onClick={() => toggle(p.key)}>
                     <td className="px-2 py-2">
                       <input
@@ -275,7 +283,10 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                     </td>
                     <td className="px-2 py-2" style={{ color: 'var(--color-text-primary)' }}>{p.title}</td>
                     <td className="px-2 py-2" style={{ color: 'var(--color-text-secondary)' }}>{p.manufacturer}</td>
-                    <td className="px-2 py-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>{p.identity_status ? t(`upgatesImport.identityStatus.${p.identity_status}`) : '—'}</td>
+                    <td className="px-2 py-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                      {p.identity_status ? t(`upgatesImport.identityStatus.${p.identity_status}`) : '—'}
+                      {p.linkable_existing_count !== undefined && <p>{t('upgatesImport.cardCounts', { linked: p.linkable_existing_count, created: p.new_card_count ?? 0 })}</p>}
+                    </td>
                     <td className="px-2 py-2 text-right" style={{ color: 'var(--color-text-secondary)' }}>
                       {p.variants_count || '—'}
                     </td>
@@ -298,13 +309,25 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               <input
                 type="checkbox"
                 checked={updateExisting}
-                disabled={loading || importing}
+                disabled={loading || importing || existingOnly}
                 aria-describedby="upgates-refresh-snapshots-help"
                 onChange={(e) => setUpdateExisting(e.target.checked)}
               />
               {t('upgatesImport.refreshSnapshots')}
             </label>
             <p id="upgates-refresh-snapshots-help">{t('upgatesImport.refreshSnapshotsHelp')}</p>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={existingOnly} disabled={loading || importing}
+                onChange={e => {
+                  const enabled = e.target.checked;
+                  setExistingOnly(enabled);
+                  if (enabled) setUpdateExisting(false);
+                  clearCodeSelection();
+                  setSelected(new Set((preview?.new_products || []).filter(p => !enabled || (p.linkable_existing_count ?? 0) > 0).map(p => p.key)));
+                }} />
+              {t('upgatesImport.existingOnly')}
+            </label>
+            {existingOnly && <p role="status">{t('upgatesImport.existingSelection', { count: selectedExistingCount })}</p>}
           </div>
           <Button
             variant="primary"
