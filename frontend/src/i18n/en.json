@@ -1237,6 +1237,13 @@
     "editParameter": "Go to parameter"
   },
   "upgatesImport": {
+    "selectCodes": "Select by product code list",
+    "codeList": "Product codes - one per line",
+    "codeListHelp": "Use codes from the preview. Matching preserves case, leading zeros and spaces within a code. Applying the list replaces the entire current selection; importing still requires separate confirmation.",
+    "applyCodeSelection": "Apply code list",
+    "applyCodeSelectionFirst": "Apply the entered code list before importing.",
+    "codeSelectionResult": "Selected items: {{count}}",
+    "codesUnavailable": "These codes are not among the selectable items ({{count}}). Check conflicts and existing links:",
     "productOnlyNote": "A shared item code links goods across shops even without an EAN. Parent products may differ. Physical stock and purchase costs stay unchanged.",
     "title": "Download from Upgates ({{shop}})",
     "summary": "In Upgates: {{total}} · linked to this shop: {{known}} · to process: {{pending}}",

@@ -1237,6 +1237,13 @@
     "editParameter": "Prejsť na parameter"
   },
   "upgatesImport": {
+    "selectCodes": "Vybrať podľa zoznamu kódov",
+    "codeList": "Kódy produktov - jeden na riadok",
+    "codeListHelp": "Použi kódy z náhľadu. Rozlišujú sa veľké a malé písmená, úvodné nuly aj medzery v kóde. Použitie zoznamu nahradí celý aktuálny výber; samotný import sa spustí až jeho potvrdením.",
+    "applyCodeSelection": "Použiť zoznam kódov",
+    "applyCodeSelectionFirst": "Pred importom použi vložený zoznam kódov.",
+    "codeSelectionResult": "Vybrané položky: {{count}}",
+    "codesUnavailable": "Tieto kódy nie sú medzi položkami na výber ({{count}}). Skontroluj konflikty a už existujúce prepojenia:",
     "productOnlyNote": "Spoločný kód položky prepája tovar medzi e-shopmi aj bez EAN. Nadradené produkty môžu byť rozdielne. Fyzický sklad a nákupné ceny sa nemenia.",
     "title": "Stiahnuť z Upgates ({{shop}})",
     "summary": "V Upgates: {{total}} · prepojené s týmto e-shopom: {{known}} · na spracovanie: {{pending}}",

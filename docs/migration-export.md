@@ -37,6 +37,26 @@ alebo doplní overené väzby. Zachová existujúce kódy e-shopu a nemení fyzi
 Voľba obnovy existujúcich údajov je predvolene vypnutá. Tento importer nespracúva
 Atomer XML a nepovažuje pokladničné varianty za samostatne potvrdené zásoby.
 
+### Výber presnej dávky kódov
+
+V importnom náhľade rozbaľ **Vybrať podľa zoznamu kódov**, vlož jeden kód
+z tabuľky na riadok a stlač **Použiť zoznam kódov**. Zoznam nahradí celý
+aktuálny výber. Prázdne riadky a opakovania sa ignorujú; veľkosť písmen,
+úvodné nuly a vnútorné medzery sa zachovajú. Import sa odošle až samostatným
+potvrdením tlačidlom **Importovať vybrané**. Rozpracovaný nepoužitý zoznam
+odoslanie blokuje.
+
+Vyberať možno iba položky aktuálneho náhľadu bez konfliktu. Nepoužiteľné kódy
+sa vypíšu osobitne: môžu už byť prepojené, mať konflikt alebo chýbať v náhľade.
+Ak nesedí ani jeden kód, výber zostane prázdny; neprepne sa na celý katalóg.
+Pri rodinách ide stále o výber celej zobrazenej skupiny, nie jednotlivých variantov.
+Obnovenie náhľadu zruší vložený zoznam a obnoví predvolený výber náhľadu;
+ručná zmena zaškrtávacích polí zruší textový zoznam aj jeho hlásenie.
+Pred odoslaním vždy skontroluj počet a prípadné nezaradené kódy. Existujúca
+voľba obnovy údajov zostáva samostatná; pri obyčajnom vytváraní/prepojení
+kariet ju nechaj vypnutú. Import používa pôvodné overenie identity na serveri,
+nevytvára fyzický príjem ani nepotvrdzuje skladové množstvá.
+
 ## Rozšírené API podklady
 
 `GET /api/migration/upgates-export?shop_code=xtrek&dataset=parameters`
