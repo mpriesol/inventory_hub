@@ -61,6 +61,13 @@ async function click(element) {
   assert.ok(element, 'Expected UI element');
   await act(async () => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
 }
+async function enterCodeList(value) {
+  const input = document.getElementById('upgates-code-selection');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+}
 const importButton = () => [...document.querySelectorAll('button')].find(button => button.textContent.includes('Importovať vybrané'));
 const button = text => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === text);
 async function mount(key) {
@@ -145,6 +152,49 @@ async function mount(key) {
   await click(button('Skúsiť znovu'));
   assert(document.body.textContent.includes('Na spracovanie nezostali žiadne položky bez konfliktu.'));
   assert(!requests.at(-1).path.includes('refresh=true'), 'Retrying failed preview does not accidentally pass a click event as refresh=true');
+
+  // A pasted batch replaces the default all-selection and never broadens an empty match.
+  const batchCodes = ['00123', 'Bora 2', 'Case-Code', ...Array.from({ length: 597 }, (_, i) => `BATCH-${i}`)];
+  preview = { ...preview, total_in_upgates: 604, already_in_db: 1, new_count: 602, conflict_count: 1, conflicts: [conflict],
+    new_products: [...batchCodes, 'OUTSIDE-1', 'OUTSIDE-2'].map(code => ({ key: `key:${code}`, code, title: code, manufacturer: 'Test', variants_count: 0 })) };
+  previewAfterImport = undefined;
+  await mount('bulk-code-selection');
+  assert(importButton().textContent.includes('(602)'));
+  assert(button('Použiť zoznam kódov').disabled);
+  const requestCount = requests.length;
+  await enterCodeList(` 00123 \r\nBora 2\n00123\ncase-code\nCONFLICT-1\nALREADY-LINKED\n\n`);
+  assert(importButton().disabled, 'An unapplied text list must not submit the default all-selection');
+  await click(button('Použiť zoznam kódov'));
+  assert.equal(requests.length, requestCount, 'Applying a selection performs no network write');
+  assert.deepEqual([...document.querySelectorAll('tbody input:checked')].map(input => input.getAttribute('aria-label')), ['Vybrať produkt: 00123', 'Vybrať produkt: Bora 2']);
+  assert(document.querySelector('details [role="status"]').textContent.includes('Vybrané položky: 2'));
+  assert.equal(document.querySelector('details pre').textContent, 'case-code\nCONFLICT-1\nALREADY-LINKED');
+  await enterCodeList('123\nCASE-CODE\nmissing');
+  await click(button('Použiť zoznam kódov'));
+  assert(importButton().disabled, 'No matching codes leaves an empty selection instead of all products');
+  assert.equal(document.querySelectorAll('tbody input:checked').length, 0);
+  await act(async () => i18n.changeLanguage('en'));
+  assert(document.body.textContent.includes('These codes are not among the selectable items (3)'));
+  await act(async () => i18n.changeLanguage('sk'));
+  await enterCodeList(batchCodes.join('\n'));
+  await click(button('Použiť zoznam kódov'));
+  assert(importButton().textContent.includes('(600)'));
+  importResult = { ...importResult, created_products: 311, created_variants: 0, linked_products: 289, content_saved: 600, conflict_count: 0, conflicts: [], skipped: [] };
+  await click(importButton());
+  sent = requests.filter(request => request.body).at(-1);
+  assert.deepEqual(sent.body, { codes: batchCodes.map(code => `key:${code}`), update_existing: false, include_stock: false }, 'One request includes exactly the selected preview keys and leaves stock untouched');
+  assert.equal(document.getElementById('upgates-code-selection').value, '', 'Follow-up preview clears the previous pasted list');
+  assert(!document.querySelector('details [role="status"]'));
+  await enterCodeList('00123');
+  await click(button('Použiť zoznam kódov'));
+  await click(button('Obnoviť z Upgates'));
+  assert.equal(document.getElementById('upgates-code-selection').value, '', 'Explicit refresh also resets the code list');
+  assert(importButton().textContent.includes('(602)'));
+  await enterCodeList('00123');
+  await click(button('Použiť zoznam kódov'));
+  await click(document.querySelector('input[aria-label="Vybrať produkt: Bora 2"]'));
+  assert.equal(document.getElementById('upgates-code-selection').value, '', 'Manual changes discard the now-stale list report');
+  assert(importButton().textContent.includes('(2)'));
 
   await act(async () => root.render(React.createElement(ProductDetailView, { key: 'shop-parent-codes', sku: 'SHARED-1' })));
   assert(document.body.textContent.includes('V shope biketrek: xTrek / SHARED-1'), 'The BIKETREK cash register parent is visible separately from its item');

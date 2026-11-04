@@ -46,6 +46,10 @@ nemení katalóg ani sklad a nepotrebuje databázovú migráciu.
 ZIP spája čerstvý katalóg vybraného Upgates pripojenia s konzistentným lokálnym
 snímkom kariet, identít, väzieb a skladových podkladov. Nevykonáva import ani
 prevzatie autority; xTrek Upgates sa výslovne odlišuje od Atomeru.
+Produktový importer v prehľade Obchody umožňuje nahradiť výber vložením
+presného zoznamu kódov po riadkoch, s hlásením nezaradených kódov a
+samostatným potvrdením importu. Používa existujúce kontroly identity a nemení
+fyzický sklad; postup je v dokumentácii migračných podkladov.
 
 [Zjednodušený dátový model](docs/warehouse-model.md) používa interné `products.id` a výslovné databázové väzby. Podľa zadania vlastníka z 23. 10. nové fyzické produkty dostávajú SKU `<dvojpísmenová predpona výrobcu>-<kód výrobku u výrobcu>`. Kód dodávateľa je samostatný údaj a nesmie ho nahradiť. Potvrdené mapovanie výrobného kódu vo feede umožní automatické prideľovanie; bez takého podkladu treba overiť výrobcu a konkrétny kód pri príprave novej karty. Existujúce Hub aj e-shopové SKU zostávajú, vrátane kariet prevzatých existujúcim Upgates importom. Jedinečnosť prefixov a cieľové kolízie kontroluje systém. Základná karta môže predchádzať e-shopovému obsahu, cenám aj fyzickému príjmu; služby majú výslovný neskladový typ a vlastné servisné kódy. Podrobnosti sú v [politike SKU](docs/sku-policy.md).
 

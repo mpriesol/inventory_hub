@@ -46,15 +46,24 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [codeSelectionText, setCodeSelectionText] = useState('');
+  const [codeSelectionReport, setCodeSelectionReport] = useState<{ matched: number; unavailable: string[] } | null>(null);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<UpgatesImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
   const previewConflictCount = preview?.conflict_count ?? preview?.conflicts?.length ?? 0;
   const resultConflictCount = result?.conflict_count ?? result?.conflicts?.length ?? 0;
+  const codeSelectionPending = !!codeSelectionText.trim() && !codeSelectionReport;
+
+  const clearCodeSelection = () => {
+    setCodeSelectionText('');
+    setCodeSelectionReport(null);
+  };
 
   const loadPreview = async (refresh = false) => {
     setLoading(true);
     setError(null);
+    clearCodeSelection();
     if (refresh) setResult(null);
     try {
       const data = await getUpgatesPreview(shop, refresh);
@@ -75,6 +84,8 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   );
 
   const toggle = (code: string) => {
+    if (importing) return;
+    clearCodeSelection();
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(code)) next.delete(code); else next.add(code);
@@ -83,12 +94,22 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
   };
 
   const toggleAll = () => {
-    if (!preview) return;
+    if (!preview || importing) return;
+    clearCodeSelection();
     setSelected(allChecked ? new Set() : new Set(preview.new_products.map((p) => p.key)));
   };
 
+  const applyCodeSelection = () => {
+    if (!preview || loading || importing || !codeSelectionText.trim()) return;
+    const requested = new Set(codeSelectionText.split(/\r?\n/).map(code => code.trim()).filter(Boolean));
+    const matching = preview.new_products.filter(product => requested.has(product.code));
+    const matchedCodes = new Set(matching.map(product => product.code));
+    setSelected(new Set(matching.map(product => product.key)));
+    setCodeSelectionReport({ matched: matching.length, unavailable: [...requested].filter(code => !matchedCodes.has(code)) });
+  };
+
   const handleImport = async () => {
-    if (selected.size === 0 && !updateExisting) return;
+    if (importing || loading || error || codeSelectionPending || (selected.size === 0 && !updateExisting)) return;
     setImporting(true);
     setError(null);
     try {
@@ -196,11 +217,38 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
           )}
 
           {!loading && !error && preview && preview.new_products.length > 0 && (
+            <>
+            <details className="mb-4 rounded-lg border p-3" style={{ borderColor: 'var(--color-border-subtle)' }}>
+              <summary className="cursor-pointer text-sm font-medium">{t('upgatesImport.selectCodes')}</summary>
+              <label className="mt-3 block text-sm" htmlFor="upgates-code-selection">{t('upgatesImport.codeList')}</label>
+              <p id="upgates-code-selection-help" className="my-2 text-xs">{t('upgatesImport.codeListHelp')}</p>
+              <textarea
+                id="upgates-code-selection"
+                aria-describedby="upgates-code-selection-help"
+                rows={5}
+                className="w-full rounded border p-2 text-sm"
+                style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)', fontFamily: 'var(--font-mono)' }}
+                value={codeSelectionText}
+                disabled={importing}
+                onChange={event => { setCodeSelectionText(event.target.value); setCodeSelectionReport(null); }}
+              />
+              <Button variant="secondary" size="sm" onClick={applyCodeSelection} disabled={importing || !codeSelectionText.trim()}>
+                {t('upgatesImport.applyCodeSelection')}
+              </Button>
+              {codeSelectionPending && <p className="mt-2 text-xs">{t('upgatesImport.applyCodeSelectionFirst')}</p>}
+              {codeSelectionReport && <div role="status" className="mt-2 text-sm">
+                <p>{t('upgatesImport.codeSelectionResult', { count: codeSelectionReport.matched })}</p>
+                {codeSelectionReport.unavailable.length > 0 && <>
+                  <p>{t('upgatesImport.codesUnavailable', { count: codeSelectionReport.unavailable.length })}</p>
+                  <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs">{codeSelectionReport.unavailable.join('\n')}</pre>
+                </>}
+              </div>}
+            </details>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
                   <th className="w-8 px-2 py-2">
-                    <input type="checkbox" aria-label={t('catalog.selectPage')} checked={allChecked} onChange={toggleAll} />
+                    <input type="checkbox" aria-label={t('catalog.selectPage')} checked={allChecked} onChange={toggleAll} disabled={importing} />
                   </th>
                   <th className="text-left px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>Kód</th>
                   <th className="text-left px-2 py-2 text-xs uppercase" style={{ color: 'var(--color-text-tertiary)' }}>Názov</th>
@@ -217,6 +265,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                         type="checkbox"
                         aria-label={t('catalog.selectProduct', { name: p.code })}
                         checked={selected.has(p.key)}
+                        disabled={importing}
                         onChange={() => toggle(p.key)}
                         onClick={(e) => e.stopPropagation()}
                       />
@@ -234,6 +283,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </div>
 
@@ -248,6 +298,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
               <input
                 type="checkbox"
                 checked={updateExisting}
+                disabled={loading || importing}
                 aria-describedby="upgates-refresh-snapshots-help"
                 onChange={(e) => setUpdateExisting(e.target.checked)}
               />
@@ -258,7 +309,7 @@ export function UpgatesImportModal({ shop, onClose, onImported }: Props) {
           <Button
             variant="primary"
             onClick={handleImport}
-            disabled={importing || loading || !!error || (selected.size === 0 && !updateExisting)}
+            disabled={importing || loading || !!error || codeSelectionPending || (selected.size === 0 && !updateExisting)}
           >
             <Download size={16} />
             {importing
