@@ -3979,9 +3979,10 @@
       "product_links_mapping_missing": "Prepojenie sa už nenašlo. Otvorte párovanie produktu a skontrolujte ho.",
       "product_links_variant_still_exists": "Pôvodný variant v e-shope stále existuje. Najprv vyriešte duplicitu.",
       "product_links_replacement_identity_missing": "Pôvodnej variantovej väzbe chýba overené natívne ID alebo kód. Najprv obnovte pôvodnú väzbu z e-shopu.",
-      "product_links_replacement_not_allowed": "Nahradiť možno len vymazaný variant samostatným produktom.",
+      "product_links_replacement_not_allowed": "Nahradiť možno iba väzbu na vymazaný variant existujúcim produktom alebo variantom.",
       "product_links_replacement_in_use": "Prepojenie má otvorenú alebo závislú operáciu. Najprv ju dokončite alebo vyriešte.",
-      "product_links_identity_in_use": "Pre produkt prebieha odosielanie alebo zostáva nejasný výsledok zápisu. Najprv vyriešte pôvodnú operáciu; prepojenie sa zatiaľ nezmení."
+      "product_links_identity_in_use": "Pre produkt prebieha odosielanie alebo zostáva nejasný výsledok zápisu. Najprv vyriešte pôvodnú operáciu; prepojenie sa zatiaľ nezmení.",
+      "product_links_replacement_ean_mismatch": "Výmena vyžaduje presne rovnaké platné EAN v skladovej karte aj v novom variante alebo produkte."
     },
     "reasons": {
       "attributes_missing": "Parametre variantu nie sú v odpovedi e-shopu dostupné.",
@@ -4010,7 +4011,7 @@
       "mapping_identity_changed": "Kód alebo identifikátor e-shopového produktu sa zmenil.",
       "unmapped_sku_collision": "Viac kariet má rovnaký SKU bez ohľadu na veľkosť písmen.",
       "assigned_product_changed": "Kód a identifikátory nepatria vybranej karte.",
-      "replaces_deleted_variant": "Prepojenie sa presunie z overene vymazaného variantu na tento samostatný produkt.",
+      "replaces_deleted_variant": "Po overení vymazania pôvodného variantu sa väzba presunie na vybraný produkt alebo variant.",
       "native_identity_verification": "Potvrdením doplníte overené ID e-shopu do existujúceho prepojenia. Skladová karta a zásoby zostanú zachované."
     },
     "allAlreadyLinked": "Všetky vybrané karty sú už prepojené s {{shop}}.",
@@ -4020,9 +4021,12 @@
     "barcodeAbsent": "Neuvedený",
     "barcodeInvalid": "Hodnota {{value}} nie je platný EAN alebo UPC.",
     "barcodeNotRecorded": "Hodnota nie je v tomto staršom náhľade uložená.",
-    "replaceDeletedVariant": "Nahradiť vymazaný pokladňový variant samostatným produktom",
-    "replacementHelp": "Najprv vymažte duplicitný pokladňový variant v e-shope. Zadajte kód samostatného produktu vyššie. Náhľad preverí zmazanie aj identitu a po potvrdení zachová tú istú Hub kartu.",
-    "replacementPreview": "Nahradenie prepojenia: {{old}} → {{code}}"
+    "replaceDeletedVariant": "Nahradiť väzbu na vymazaný pokladňový variant",
+    "replacementHelp": "Zadajte kód nového produktu a pri variante aj jeho presný kód. Náhľad preverí vymazanie pôvodného variantu, zhodný EAN a voľnú väzbu. Potvrdenie zachová tú istú skladovú kartu. Odstránenie v e-shope je samostatný schvaľovaný krok.",
+    "replacementPreview": "Nahradenie prepojenia: {{old}} → {{code}}",
+    "hubCardId": "ID skladovej karty",
+    "previousParent": "Pôvodný produkt",
+    "previousVariant": "Pôvodný variant"
   },
   "supplierLinks": {
     "open": "Prepojiť s dodávateľom",

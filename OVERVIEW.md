@@ -1,5 +1,15 @@
 # Inventory Hub — prehľad projektu
 
+## Výmena väzby na nový variant (4. 11. 2026)
+
+Existujúci postup [náhrady vymazaného pokladňového variantu](docs/product-links.md#nahradenie-už-vymazaného-pokladňového-variantu)
+prijíma aj presný variant pod iným produktom. Zachováva kartu, SKU, EAN,
+sklad a históriu, vyžaduje zhodný EAN a overené natívne ID a auditne zaznamená
+obe väzby. Náhľad oddeľuje konfliktné riadky; potvrdenie znovu kontroluje
+vymazanie starého variantu, vlastníctvo cieľa a rozpracované operácie oboch
+rodičov. Bez novej migrácie či automatického mazania v e-shope. Živé prepojenie
+konkrétnych kariet sa overuje samostatne po importe cieľových produktov.
+
 ## Denné dostupnosti a objednávkové webhooky (28. 10. 2026)
 
 Migrácie **034–036** a príslušné služby obmedzujú dodávateľské načítanie na
