@@ -262,6 +262,32 @@ def record_path(root, code):
     return root / 'records' / (hashlib.sha256(code.encode()).hexdigest() + '.json')
 
 
+def prepare_price_conflicts(source_file, audit_zip, root, previous_root, expected_sha):
+    """New journal, exact prior price-conflict selection, unchanged source bytes."""
+    previous_root = previous_root.resolve()
+    if previous_root == root or not (previous_root / 'sources.json').is_file():
+        raise Halt('price_run_requires_existing_separate_journal')
+    previous = prepare_sources(source_file, audit_zip, previous_root, expected_sha)
+    candidates = []
+    for row in previous['records']:
+        old = load(record_path(previous_root, row['code']))
+        if old['state'] == 'blocked_preflight' and old.get('reason') == 'source_target_price_differs':
+            if old['source_sha256'] != expected_sha or old['source_candidate'] != row or row['state'] != 'source_ready':
+                raise Halt('price_selection_source_changed')
+            candidates.append(row)
+    if not candidates:
+        raise Halt('no_prior_price_conflicts')
+    result = {**previous, 'records': candidates, 'price_policy': 'atomer',
+              'prior_journal': str(previous_root)}
+    path = root / 'sources.json'
+    if path.exists():
+        if load(path) != result:
+            raise Halt('price_run_selection_changed')
+    else:
+        save(path, result)
+    return result
+
+
 def verify_price(remote, source, options):
     rows = [row for row in remote['parent'].get('prices', []) if row.get('language') == 'sk']
     if len(rows) != 1 or rows[0].get('currency') != 'EUR':
@@ -331,18 +357,44 @@ def gallery(source, remote, root):
     return proof
 
 
-def make_record(source, remote, names, options):
+def make_record(source, remote, names, options, price_policy=None):
     if remote['parent'].get('product_id') != source['product_id']:
         raise Blocked('native_identity_changed')
     evidence = content.verify_source(source['group'], remote)
-    verify_price(remote, source, options)
+    price_patch = None
+    if price_policy == 'atomer':
+        xml = etree.fromstring(source['group']['rows'][0]['raw_xml'].encode())
+        price_patch = content.build_source_price_patch(remote, source['price_vat'], xml.findtext('VAT'), options)
+    else:
+        verify_price(remote, source, options)
     values = deepcopy(source['values'])
     values['parameters'] = source_parameters(source['group'], names, remote['parent']['parameters'])
     patch = content.build_patch(values, remote, FIELDS)
     content.build_patch(patch['before'], remote, FIELDS)  # Require restorable originals.
-    return {'code': source['code'], 'operation_id': str(uuid.uuid4()), 'created_at': now(),
+    record = {'code': source['code'], 'operation_id': str(uuid.uuid4()), 'created_at': now(),
             'state': 'prepared', 'fields': FIELDS, 'identity_evidence': evidence,
             'remote_before': remote, 'protected_before': content.protected_observation(remote, FIELDS), **patch}
+    if price_patch:
+        record['price_patch'] = price_patch
+        record['payload']['products'][0]['prices'] = deepcopy(price_patch['payload']['products'][0]['prices'])
+    return record
+
+
+def record_is_noop(record):
+    price = record.get('price_patch')
+    return content.compare_values(record['before'], record['after']) and (not price or price['before'] == price['after'])
+
+
+def revalidate_price_config(api, records):
+    data = api.request('GET', 'config')
+    languages = [row for row in data.get('languages', []) if row.get('language_id') == 'sk' and row.get('active_yn') is True]
+    lists = [row for row in data.get('pricelists', []) if row.get('default_yn') is True]
+    if (data.get('config', {}).get('prices_with_vat_yn') is not True or len(languages) != 1
+            or languages[0].get('currency_id') != 'EUR' or len(lists) != 1):
+        raise Halt('price_configuration_changed')
+    current = {'pricelist': lists[0]['name'], 'currency': 'EUR', 'prices_with_vat': True}
+    if any(row['price_patch']['options'] != current for row in records):
+        raise Halt('price_configuration_changed')
 
 
 def scan(api, sources, root):
@@ -367,7 +419,7 @@ def scan(api, sources, root):
                 try:
                     if row['target_code'] not in remote:
                         raise Blocked('target_missing_or_not_standalone')
-                    record = make_record(row, remote[row['target_code']], sources['parameter_names'], options)
+                    record = make_record(row, remote[row['target_code']], sources['parameter_names'], options, sources.get('price_policy'))
                 except Exception as exc:
                     record.update(state='blocked_preflight', reason=getattr(exc, 'code', str(exc) if isinstance(exc, Blocked) else type(exc).__name__))
             record.update(source_sha256=sources['source_sha256'], source_candidate=row)
@@ -384,7 +436,7 @@ def scan(api, sources, root):
             if any(item['result'] == 'visual_review_required' for item in proof):
                 record.update(state='gallery_review', reason='gallery_visual_review_required')
             else:
-                record['state'] = 'no_op' if content.compare_values(record['before'], record['after']) else 'ready'
+                record['state'] = 'no_op' if record_is_noop(record) else 'ready'
         except Exception as exc:
             record.update(state='blocked_gallery', reason=str(exc) if isinstance(exc, Blocked) else type(exc).__name__)
         save(record_path(root, record['code']), record)
@@ -404,7 +456,15 @@ def revalidate(record, remote):
         raise Blocked('content_changed_since_preview')
     if content.protected_observation(remote, FIELDS) != record['protected_before']:
         raise Blocked('protected_fields_changed_since_preview')
-    content._validate_payload(record['payload'], remote['identity'])
+    payload = deepcopy(record['payload'])
+    if record.get('price_patch'):
+        price = record['price_patch']
+        source = record['source_candidate']
+        xml = etree.fromstring(source['group']['rows'][0]['raw_xml'].encode())
+        rebuilt = content.build_source_price_patch(remote, source['price_vat'], xml.findtext('VAT'), price['options'])
+        if rebuilt != price or payload['products'][0].pop('prices', None) != price['payload']['products'][0]['prices']:
+            raise Blocked('price_payload_changed')
+    content._validate_payload(payload, remote['identity'])
 
 
 def validate_outcome(record, remote, acknowledged):
@@ -414,19 +474,39 @@ def validate_outcome(record, remote, acknowledged):
         return 'uncertain', 'readback_identity_changed'
     if not content.compare_values(content.field_values(remote, FIELDS), record['after']):
         return 'uncertain', 'readback_content_differs'
-    if content.protected_observation(remote, FIELDS) != record['protected_before']:
+    protected = content.protected_observation(remote, FIELDS)
+    expected_protected = record['protected_before']
+    if record.get('price_patch'):
+        price = record['price_patch']
+        try:
+            if content.source_price_values(remote, price['options']) != price['after']:
+                return 'uncertain', 'readback_price_differs'
+            protected = content.protected_except_source_price(protected, price['options'])
+            expected_protected = content.protected_except_source_price(expected_protected, price['options'])
+        except content.source.SourceError:
+            return 'uncertain', 'readback_price_unknown'
+    if protected != expected_protected:
         return 'review_after_write', 'readback_protected_fields_differ'
     return 'completed', None
 
 
 def apply(api, sources, root, limit):
     records = [load(path) for path in sorted((root / 'records').glob('*.json'))]
+    if any(row.get('price_patch') for row in records) and sources.get('price_policy') != 'atomer':
+        raise Halt('price_policy_not_enabled')
+    if sources.get('price_policy') == 'atomer':
+        selected = {row['code']: row for row in sources['records']}
+        if any(row.get('price_patch') and row.get('source_candidate') != selected.get(row['code']) for row in records):
+            raise Halt('price_selection_source_changed')
     if any(row['state'] in {'sending', 'uncertain', 'review_after_write'} for row in records):
         raise Halt('unresolved_prior_write_no_retry')
     todo = [row for row in records if row['state'] == 'ready']
     if limit:
         todo = todo[:limit]
     for batch in chunks(todo):
+        priced = [row for row in batch if row.get('price_patch')]
+        if priced:
+            revalidate_price_config(api, priced)
         if api.remaining is not None and api.remaining < 20:
             raise Halt('api_budget_reserved_for_recovery')
         before = api.read([row['code'] for row in batch])
@@ -509,12 +589,17 @@ def main():
     parser.add_argument('--run-dir', required=True, type=Path)
     parser.add_argument('--limit', type=int, default=0)
     parser.add_argument('--credentials-stdin', action='store_true')
+    parser.add_argument('--atomer-prices-from', type=Path,
+                        help='Explicitly authorize source prices for prior price conflicts in a separate journal')
     args = parser.parse_args()
     root = args.run_dir.resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = open(root / 'run.lock', 'a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    sources = prepare_sources(args.source, args.audit, root, args.source_sha256)
+    sources = (prepare_price_conflicts(args.source, args.audit, root, args.atomer_prices_from, args.source_sha256)
+               if args.atomer_prices_from else prepare_sources(args.source, args.audit, root, args.source_sha256))
+    if sources.get('price_policy') == 'atomer' and args.atomer_prices_from is None:
+        raise Halt('price_policy_flag_required')
     if args.action in {'prepare', 'summary'}:
         summary(root, sources)
         return
