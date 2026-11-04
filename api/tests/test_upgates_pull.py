@@ -80,6 +80,18 @@ class UpgatesPullEndpointTests(unittest.TestCase):
             self.assertEqual(self.db.execute.await_count, 2, "Only the shared transaction lock is acquired")
             self.db.add.assert_not_called()
 
+    def test_existing_only_invalid_modes_fail_before_network_or_writes(self):
+        with patch.object(upgates_sync, "_get_shop", AsyncMock()) as shop, \
+                patch.object(upgates_sync, "_fetch_upgates_products") as fetch:
+            for options in ({"existing_only": "true"}, {"existing_only": 1},
+                            {"existing_only": None}, {"existing_only": True, "update_existing": True}):
+                response = self.client.post("/shops/xtrek/upgates/products/import", json={"all": True, **options})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("existing_only", response.json()["detail"])
+            shop.assert_not_awaited()
+            fetch.assert_not_called()
+            self.db.execute.assert_not_called()
+
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
 
@@ -292,6 +304,53 @@ class UpgatesPullDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview["new_products"][0]["identity_status"], "partial")
         result = await self.pull()
         self.assertEqual((result["created_products"], result["created_variants"], result["conflict_count"]), (1, 1, 0))
+
+    async def test_existing_only_links_mixed_family_without_creating_unknown_sibling_and_replays(self):
+        self.remote[1]["variants"] = self.remote[1]["variants"][:1]
+        await self.pull()
+        async with self.sessions() as db:
+            before = {table: (await db.execute(text(f"SELECT * FROM {table} ORDER BY id"))).mappings().all()
+                      for table in ("products", "product_identifiers", "stock_balances", "stock_movements")}
+        self.remote[1]["variants"].append(deepcopy(PRODUCTS[1]["variants"][1]))
+        # This same-EAN alias must retain the Hub SKU and canonical attributes.
+        self.remote[1]["variants"][0]["code"] = "XT-ALIAS-M"
+        async with self.sessions() as db:
+            preview = await upgates_sync.preview_upgates_products("xtrek", False, db)
+        group = next(p for p in preview["new_products"] if p["code"] == "PULL-GROUP")
+        self.assertEqual((group["linkable_existing_count"], group["new_card_count"]), (1, 1))
+        result = await self.pull("xtrek", all=False, codes=["PULL-GROUP"], existing_only=True)
+        self.assertEqual((result["linked_products"], result["created_products"], result["created_variants"],
+                          result["skipped_unresolved"], result["conflict_count"]), (1, 0, 0, 1, 0))
+        async with self.sessions() as db:
+            for table, rows in before.items():
+                self.assertEqual((await db.execute(text(f"SELECT * FROM {table} ORDER BY id"))).mappings().all(), rows)
+            shop = await db.scalar(select(Shop).where(Shop.code == "xtrek"))
+            mapping = (await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shop.id))).one()
+            card = await db.scalar(select(Product).where(Product.sku == "PULL-M"))
+            self.assertEqual((mapping.product_id, mapping.external_code, mapping.external_product_id,
+                              mapping.external_variant_id), (card.id, "XT-ALIAS-M", "201", "301"))
+            mapping_before = (await db.execute(text("SELECT * FROM shop_products WHERE shop_id = :id"), {"id": shop.id})).mappings().all()
+        replay = await self.pull("xtrek", all=False, codes=["PULL-GROUP"], existing_only=True)
+        self.assertEqual((replay["linked_products"], replay["created_products"], replay["content_saved"]), (0, 0, 0))
+        async with self.sessions() as db:
+            self.assertEqual((await db.execute(text("SELECT * FROM shop_products WHERE shop_id = :id"), {"id": shop.id})).mappings().all(), mapping_before)
+
+    async def test_existing_only_skips_new_families_even_with_all_scope(self):
+        result = await self.pull(existing_only=True)
+        self.assertEqual((result["created_products"], result["linked_products"], result["content_saved"],
+                          result["skipped_unresolved"]), (0, 0, 0, 3))
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 0)
+
+    async def test_existing_only_keeps_whole_family_conflict_guard(self):
+        self.remote[1]["variants"] = self.remote[1]["variants"][:1]
+        await self.pull()
+        self.remote[1]["variants"].append({**deepcopy(PRODUCTS[1]["variants"][1]), "code": "PULL-M"})
+        result = await self.pull("xtrek", all=False, codes=["PULL-GROUP"], existing_only=True)
+        self.assertEqual((result["conflict_count"], result["linked_products"], result["created_products"]), (1, 0, 0))
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 2)
 
     async def test_update_existing_only_reports_changed_mapped_identity(self):
         await self.pull()

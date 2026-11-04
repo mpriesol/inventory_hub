@@ -12,6 +12,8 @@ export interface UpgatesNewProduct {
   availability: string;
   stock: number | null;
   identity_status?: 'new' | 'identified' | 'partial';
+  linkable_existing_count?: number;
+  new_card_count?: number;
 }
 
 export interface UpgatesIdentityConflict {
@@ -41,6 +43,8 @@ export interface UpgatesImportResult {
   updated_products: number;
   content_saved: number;
   linked_products?: number;
+  existing_only?: boolean;
+  skipped_unresolved?: number;
   conflict_count?: number;
   conflicts?: UpgatesIdentityConflict[];
   stock_initialized: number;
@@ -52,6 +56,7 @@ export interface UpgatesImportResult {
 
 export interface UpgatesImportOptions {
   updateExisting?: boolean;
+  existingOnly?: boolean;
 }
 
 export async function getUpgatesPreview(shop: string, refresh = false): Promise<UpgatesPreview> {
@@ -71,6 +76,7 @@ export async function importUpgatesProducts(
     body: JSON.stringify({
       codes,
       update_existing: !!opts.updateExisting,
+      existing_only: !!opts.existingOnly,
       include_stock: false,
     }),
   });
