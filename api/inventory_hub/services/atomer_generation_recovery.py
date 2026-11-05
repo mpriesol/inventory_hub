@@ -138,11 +138,12 @@ def recover_fields(doc, observation, registry):
     return product,expected,issues
 
 
-async def owned(db, doc):
+async def owned(db, doc, *, verified=False):
     for item in doc["family"]["rows"]:
         saved=await work._record(db,"item",item["code"])
         group=await work._record(db,"family","v:"+doc["family"]["parent"])
-        gen.require(saved["status"]=="working" and saved["revision"]==item["revision"]+1 and saved["scope"]!="biketrek"
+        gen.require(saved["status"]==("open" if verified else "working")
+                    and saved["revision"]==item["revision"]+(2 if verified else 1) and saved["scope"]!="biketrek"
                     and not saved["instruction"] and group["status"]=="open" and group["scope"]!="biketrek"
                     and group["revision"]==doc["family"]["family_revision"],"review_changed")
 
@@ -157,8 +158,8 @@ async def process(db, selection, mode, actor, adopt=False):
         job=await db.get(AtomerVariantRepair,gen.doc_id(selection,family),with_for_update=True)
         gen.require(job is not None and job.document["fingerprint"]==fp and job.state in ("uncertain","sending","verified"),
                     "generation_unverified")
-        if job.state!="verified":
-            await owned(db,job.document)
+        if job.state!="verified" or adopt:
+            await owned(db,job.document,verified=job.state=="verified")
         jobs.append(job)
     obs=await asyncio.to_thread(batch.read_batch,[j.document["identity"] for j in jobs],fp)
     count=sum(len(f.rows) for f in selection.families)
