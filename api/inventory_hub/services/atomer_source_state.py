@@ -10,6 +10,18 @@ from sqlalchemy import text
 from inventory_hub.services.atomer_review_targets import ReviewError
 
 
+CATALOG_CODES = ("katalogovecislo", "katalogovecislotovaru", "katalogovecislozbozi", "katcislo", "cataloguecode", "productid")
+PARENT_CODES = ("katcislorodica", "katalogovecislorodica", "katcislorodice", "parentid")
+ACTIVE_FIELDS = ("viditelny", "viditelnost", "visibility", "aktivny", "aktivni")
+BARCODES = ("ean", "eankod")
+NAMES = ("nazovtovaru", "nazevzbozi", "productname")
+BRANDS = ("vyrobca", "vyrobce", "manufacturer")
+INTERNAL_IDS = ("internecislo", "internicislo")
+FLAGS = {"akcia", "akce", "novinka", "vypredaj", "vyprodej", "sale", "tip", "odporucany", "doporuceny",
+         "odporucame", "doporucujeme", "top", "bestseller"}
+FLAG_PREFIX = re.compile(r"^(priznak|stitek|stitok|oznacenie|flag|akc(ia|e)(od|do)|novinka(od|do))")
+
+
 def flag(value):
     raw = (value or "").strip().casefold()
     if raw in ("1","true","áno","ano","yes"):
@@ -52,27 +64,59 @@ def parse_admin(data):
     else:
         raise ReviewError("invalid_admin_export",422)
     try:
-        dialect = csv.Sniffer().sniff(decoded.splitlines()[0],delimiters=";\t,")
-        reader = csv.DictReader(io.StringIO(decoded,newline=""),dialect=dialect)
-        headers = reader.fieldnames or []
-        cols = {normalized(h):h for h in headers}
-        ids = [cols[k] for k in ("katalogovecislo","katalogovecislotovaru","katalogovecislozbozi","katcislo","cataloguecode","productid","internecislo","internicislo") if k in cols]
-        active = next((cols[k] for k in ("viditelny","viditelnost","visibility","aktivny","aktivni") if k in cols),None)
-        if not ids or not active or len(headers)!=len(set(headers)) or "" in headers:
-            raise ValueError()
-        flagcols = [h for h in headers if normalized(h) in ("akcia","akce","novinka","vypredaj","vyprodej","sale","tip","odporucame","doporucujeme","top","bestseller")
-                    or re.match(r"^(priznak|stitek|stitok|oznacenie|flag|akc(ia|e)(od|do)|novinka(od|do))", normalized(h))]
-        barcode_col = next((cols[k] for k in ("ean","eankod") if k in cols),None)
-        result = {}
-        for index,row in enumerate(reader):
-            if index>=150_000 or None in row or any(v is None for v in row.values()):
-                raise ValueError()
-            # The catalog number is the buyers PRODUCT_ID. An internal row ID is a fallback only.
-            code = next(((row[k] or "").strip() for k in ids if (row[k] or "").strip()),"")
-            if not code:
+        stream = io.StringIO(decoded, newline="")
+        dialect = csv.Sniffer().sniff(stream.readline(), delimiters=";\t,")
+        stream.seek(0)
+        # A header without escaped quotes cannot reveal the quoting of multiline product descriptions.
+        reader = csv.reader(stream, delimiter=dialect.delimiter, strict=True)
+        headers = next(reader, [])
+        fields = set(CATALOG_CODES + PARENT_CODES + ACTIVE_FIELDS + BARCODES + NAMES + BRANDS + INTERNAL_IDS)
+        columns, flag_columns = {}, {}
+        for position, heading in enumerate(headers):
+            key = normalized(heading)
+            is_flag = key in FLAGS or FLAG_PREFIX.match(key)
+            if key not in fields and not is_flag:
+                # Native exports repeat characteristic names. Their original positions stay in the archive.
                 continue
-            value = {"visibility":flag(row[active]),"visibility_raw":row[active],"ean":row[barcode_col].strip() if barcode_col else "", "flags":{h:row[h] for h in flagcols}}
-            if code in result and result[code]!=value:
+            if key in columns:
+                raise ValueError()
+            columns[key] = position
+            if is_flag:
+                flag_columns[heading] = position
+
+        def field(aliases):
+            return next((columns[name] for name in aliases if name in columns), None)
+
+        catalog, internal = field(CATALOG_CODES), field(INTERNAL_IDS)
+        code_column = catalog if catalog is not None else internal
+        active, parent = field(ACTIVE_FIELDS), field(PARENT_CODES)
+        barcode, name, brand = field(BARCODES), field(NAMES), field(BRANDS)
+        if code_column is None or active is None:
+            raise ValueError()
+        result = {}
+        for index, row in enumerate(reader):
+            if not row:
+                continue
+            if index >= 150_000 or len(row) != len(headers):
+                raise ValueError()
+            code = row[code_column].strip()
+            if not any(row):
+                continue
+            # Only an explicit catalog number plus a parent column can introduce a new sellable identity.
+            parent_code = row[parent].strip() if parent is not None and catalog is not None and code else None
+            if not code and internal is not None:
+                code = row[internal].strip()
+            if parent_code in ("0", code):
+                parent_code = ""
+            ean = row[barcode].strip() if barcode is not None else ""
+            if not code or any(len(v) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in v)
+                               for v in (code, parent_code or "", ean)):
+                raise ValueError()
+            value = {"visibility": flag(row[active]), "visibility_raw": row[active], "ean": ean,
+                     "flags": {heading: row[pos] for heading, pos in flag_columns.items()}, "parent": parent_code,
+                     "name": row[name].strip() if name is not None else "",
+                     "brand": row[brand].strip() if brand is not None else ""}
+            if code in result and result[code] != value:
                 raise ValueError()
             result[code] = value
         if not result:
@@ -87,6 +131,30 @@ async def admin_index(db,digest):
         return {}
     raw = await db.scalar(text("SELECT compressed FROM atomer_review_exports WHERE sha256=:sha AND format='admin_csv'"),{"sha":digest})
     return parse_admin(zlib.decompress(raw))
+
+
+def catalog_with_admin(buyers, admin, complete=False):
+    """Keep buyers rows and add identities established by the administrative export."""
+    result = {r["code"]: r for r in buyers}
+    parents = {r["parent"] for r in buyers if r["parent"] and r["parent"] != r["code"]}
+    parents.update(item["parent"] for item in admin.values() if item["parent"])
+    if complete and (not admin or not (result.keys() | parents) <= admin.keys()
+                     or any(item["parent"] is None for item in admin.values())):
+        raise ReviewError("incomplete_admin_export", 422)
+    for code, item in admin.items():
+        parent = item["parent"]
+        original = result.get(code)
+        if original:
+            xml_parent = original["parent"] if original["parent"] != code else ""
+            eans_differ = original["ean"] and item["ean"] and original["ean"] != item["ean"]
+            if eans_differ or (parent is not None and parent != xml_parent):
+                result[code] = dict(original, conflict=True)
+        elif parent is not None and code not in parents and (parent or complete):
+            # A root in a selection may have children outside that selection.
+            result[code] = dict(code=code, parent=parent, name=item["name"], brand=item["brand"],
+                                ean=item["ean"], axes={}, duplicates=1, conflict=False,
+                                source_visibility=None, visibility_conflict=False)
+    return list(result.values())
 
 
 def add_states(source, rows, admin):

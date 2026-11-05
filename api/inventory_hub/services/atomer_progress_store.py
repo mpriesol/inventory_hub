@@ -29,13 +29,16 @@ async def latest(db):
     return (await db.execute(query)).mappings().first()
 
 
-async def refresh(db: AsyncSession, source, expected, only_if_stale=False, review_pins=None, buyers_archive=None, admin_archive=None):
+async def refresh(db: AsyncSession, source, expected, only_if_stale=False, review_pins=None, buyers_archive=None,
+                  admin_archive=None, admin_complete=False):
     await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
     if not await db.scalar(text("SELECT pg_try_advisory_xact_lock(691433137)")):
         raise ProgressError("refresh_in_progress")
     last = await latest(db)
     if (last["id"] if last else 0) != expected:
         raise ProgressError("run_changed")
+    if admin_complete and not admin_archive:
+        raise source_state.ReviewError("incomplete_admin_export", 422)
     if only_if_stale and not review_pins and not admin_archive and not source and last and datetime.now(timezone.utc) - last["checked_at"] < timedelta(days=1):
         return {"id":last["id"],"totals":last["totals"]}
     await source_state.save_archive(db,buyers_archive)
@@ -53,6 +56,13 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
         digest = last["source_sha256"]
         identities = await db.scalar(text("SELECT identities FROM atomer_progress_sources WHERE sha256=:sha"),
                                      {"sha":digest})
+    # Scope the CSV and its operator declaration to exactly the buyers snapshot they accompanied.
+    admin_sha = admin_archive[0] if admin_archive else None
+    if not admin_archive and last and digest == last["source_sha256"]:
+        admin_sha = last["admin_export_sha256"]
+        admin_complete = bool(admin_sha and last["totals"].get("admin_complete"))
+    admin = await source_state.admin_index(db, admin_sha)
+    catalog = source_state.catalog_with_admin(identities, admin, admin_complete)
     remote, bike_targets = await asyncio.to_thread(progress.remote_catalog)
     shop_ids = dict((await db.execute(select(Shop.code, Shop.id).where(Shop.code.in_(("xtrek","biketrek"))))).all())
     if set(shop_ids) != {"biketrek", "xtrek"}:
@@ -67,16 +77,15 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
         if link.shop_id == shop_ids["biketrek"]:
             bike_links[link.product_id].append(link)
     xtrek_links = [link for link in links if link.shop_id == shop_ids["xtrek"]]
-    rows = await asyncio.to_thread(progress.reconcile, identities, remote, card_index,
+    rows = await asyncio.to_thread(progress.reconcile, catalog, remote, card_index,
                                    xtrek_links, overrides, bike_links, bike_targets)
-    # Supplemental admin evidence is scoped to this buyers export. A replacement needs its own CSV.
-    admin_sha = admin_archive[0] if admin_archive else (last["admin_export_sha256"] if last and digest==last["source_sha256"] else None)
-    admin = await source_state.admin_index(db,admin_sha)
-    source_state.add_states(identities,rows,admin)
+    source_state.add_states(catalog,rows,admin)
     await review_targets.register(db,review_pins)
     pins = dict((await db.execute(text("SELECT key,identity FROM atomer_review_targets"))).all())
-    checks = review_targets.check_targets(pins,identities,remote,rows,xtrek_links,card_index.products,admin)
-    totals = {"admin_codes":len(admin),"review_targets":len(checks),"items":len(rows), "kinds":dict(Counter(r["kind"] for r in rows)),
+    checks = review_targets.check_targets(pins,catalog,remote,rows,xtrek_links,card_index.products,admin,
+                                         admin_complete=admin_complete)
+    totals = {"admin_codes":len(admin), "admin_only_items":len(catalog)-len(identities), "admin_complete":admin_complete,
+              "review_targets":len(checks),"items":len(rows), "kinds":dict(Counter(r["kind"] for r in rows)),
               "states":dict(Counter(r["state"] for r in rows)), "bike":dict(Counter(r["bike_state"] for r in rows))}
     # checked_at is the start of the consistent local snapshot. Upgates reads follow it.
     run_id = await db.scalar(text("""

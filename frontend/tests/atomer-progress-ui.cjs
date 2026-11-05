@@ -28,7 +28,7 @@ item.source_state={product:null,variant:false};
 const baseWork={revision:0,status:'open',scope:'default',decision:'undecided',note:'',instruction:'',result:''};
 let saved,extraWork={...baseWork};
 const target={key:'1/3',family_key:'v:J',name:'Jacket',code:'OLD-L',ean:'',product_id:'1',variant_id:'3',axes:{size:['L']},check:'eligible',warnings:[],card_ids:[],alternatives:[],stock:0,work:extraWork};
-const run = {id:2,checked_at:new Date().toISOString(),imported_at:new Date().toISOString(),totals:{items:1,
+const run = {id:2,checked_at:new Date().toISOString(),imported_at:new Date().toISOString(),totals:{items:1,admin_codes:4,admin_only_items:1,
   kinds:{variant:1},states:{linked:1},bike:{unlinked:1}}};
 global.fetch = async (path, init) => {
   assert.equal(init.credentials,'same-origin');
@@ -48,6 +48,19 @@ global.fetch = async (path, init) => {
   await act(async()=>root.render(React.createElement(MemoryRouter,null,React.createElement(AtomerMigrationProgress))));
   const settle=()=>act(async()=>new Promise(resolve=>setTimeout(resolve,230)));
   await settle();
+  assert.ok(document.body.textContent.includes('CSV vybraných položiek') && document.body.textContent.includes('Predajné položky iba v CSV 1'));
+  const csvInput=document.querySelector('input[accept*=".csv"]');
+  const chooseCsv=async(name)=>act(async()=>{
+    Object.defineProperty(csvInput,'files',{configurable:true,value:[new File([''],name)]});
+    csvInput.dispatchEvent(new window.Event('change',{bubbles:true}));
+  });
+  await chooseCsv('whole.csv');
+  const scopeCheck=document.querySelector('.progress-upload input[type="checkbox"]');
+  assert.equal(scopeCheck.checked,false);
+  await act(async()=>scopeCheck.click());
+  assert.equal(scopeCheck.checked,true);
+  await chooseCsv('selection.csv');
+  assert.equal(scopeCheck.checked,false);
   const toggle=document.querySelector('button[aria-expanded]');
   assert.equal(toggle.getAttribute('aria-expanded'),'false');
   assert.ok(!document.querySelector('.progress-child'));

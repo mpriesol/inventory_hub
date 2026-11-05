@@ -76,11 +76,12 @@
     "family_manages_work": "The product manages this work. Open its decision first.",
     "active_child_work": "A variant already has an active task. Finish or withdraw it first.",
     "invalid_admin_export": "The CSV needs a unique catalog code and visibility. Check the headers and duplicate rows.",
+    "incomplete_admin_export": "A complete CSV needs catalog codes, parent links and every item in the source XML. You can save a selection with the full-catalog option unchecked.",
     "export_size": "The file is empty or too large.",
     "admin_source_required": "Removal requires the complete Atomer export including hidden items."
   },
   "reasons": {
-    "duplicate_source": "Different source rows share a code.",
+    "duplicate_source": "Source records disagree for this catalog code.",
     "multiple_targets": "Several xTrek listings match.",
     "target_claimed": "Multiple Atomer codes claim this xTrek listing.",
     "kind_differs": "A variant matches a standalone product.",
@@ -203,7 +204,11 @@
     "unknown_stock": "Stock quantity is unknown.",
     "admin_absence_unknown": "Removal requires the complete Atomer export including hidden items."
   },
-  "adminFile": "Complete Atomer admin export (CSV)",
+  "adminFile": "Product export from the Atomer admin (CSV)",
+  "adminCompleteLabel": "This CSV includes the whole catalog with hidden products and variants",
+  "adminFull": "Full catalog CSV",
+  "adminPartial": "Selected catalog items CSV",
+  "adminCoverage": "Codes in CSV {{codes}} · Sellable items only in CSV {{added}}",
   "targetFile": "Removal review identities (JSON)",
   "activeAtomer": "Atomer activity",
   "parentActive": "Parent product",

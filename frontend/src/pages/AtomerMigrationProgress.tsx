@@ -23,6 +23,8 @@ export function AtomerMigrationProgress() {
   const [edit,setEdit]=useState<{subject:Subject;run:number;decision?:Decision}|null>(null);
   const [notice,setNotice]=useState('');
   const [targetFile,setTargetFile]=useState<File|null>(null), [adminFile,setAdminFile]=useState<File|null>(null);
+  const [adminComplete,setAdminComplete]=useState(false);
+  const adminInput=useRef<HTMLInputElement>(null);
   const [card,setCard] = useState('');
   const [expanded,setExpanded] = useState<Set<string>>(new Set());
   const [query,setQuery] = useState(''), [offset,setOffset] = useState(0), [revision,setRevision] = useState(0);
@@ -48,8 +50,11 @@ export function AtomerMigrationProgress() {
     if (pending || !page) return;
     setPending(true); setError('');
     try {
-      await refreshProgress(page.run?.id || 0, selected, staleOnly, applyFiles?targetFile:null, applyFiles?adminFile:null);
-      if(applyFiles){setTargetFile(null);setAdminFile(null);setNotice(m('refreshed'));}
+      await refreshProgress(page.run?.id || 0, selected, staleOnly, applyFiles?targetFile:null, applyFiles?adminFile:null, adminComplete);
+      if(applyFiles){
+        setTargetFile(null);setAdminFile(null);setAdminComplete(false);setNotice(m('refreshed'));
+        if (adminInput.current) adminInput.current.value='';
+      }
       if (selected) { setFile(null); if (input.current) input.current.value = ''; }
       setOffset(0); setRevision(n => n+1);
     } catch (e: any) {
@@ -148,7 +153,10 @@ export function AtomerMigrationProgress() {
   }
   const upload = <div className="progress-upload">
     <label>{m('file')} <input ref={input} type="file" accept=".xml,application/xml,text/xml" onChange={e=>setFile(e.target.files?.[0]||null)} /></label>
-    <label>{m('adminFile')}<input type="file" accept=".csv,text/csv" onChange={e=>setAdminFile(e.target.files?.[0]||null)}/></label>
+    <label>{m('adminFile')}<input ref={adminInput} type="file" accept=".csv,text/csv" onChange={e=>{
+      setAdminFile(e.target.files?.[0]||null);setAdminComplete(false);
+    }}/></label>
+    {adminFile && <label><input type="checkbox" checked={adminComplete} onChange={e=>setAdminComplete(e.target.checked)}/> {m('adminCompleteLabel')}</label>}
     <label>{m('targetFile')}<input type="file" accept=".json,application/json" onChange={e=>setTargetFile(e.target.files?.[0]||null)}/></label>
     <button type="button" disabled={(!file&&!targetFile&&!adminFile)||pending||!page} onClick={()=>void update(file,false,true)}>{m('useFile')}</button>
   </div>;
@@ -167,6 +175,8 @@ export function AtomerMigrationProgress() {
           [m('states.review'),run.totals.states.review||0]].map(([label,n])=><div key={label}><span>{label}</span><strong>{num(Number(n))}</strong></div>)}
       </div>
       <p className="progress-meta">{m('asOf')} {date(run.checked_at)} · {m('source')} {date(run.imported_at)} · {num(run.totals.items)} {m('codes')}</p>
+      {!!run.totals.admin_codes && <p className="progress-meta">{m(run.totals.admin_complete?'adminFull':'adminPartial')} · {
+        t('atomerProgress.adminCoverage',{codes:num(run.totals.admin_codes),added:num(run.totals.admin_only_items||0)})}</p>}
     </>}
     <section className={run?'progress-tools progress-compact-tools':'opening-stock-panel progress-tools'}>
       {run ? <><button type="button" disabled={pending || reading} onClick={()=>void update(null)}>{m('refresh')}</button>
