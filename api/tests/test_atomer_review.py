@@ -7,6 +7,19 @@ from inventory_hub.services.atomer_review_targets import check_targets, parse_ta
 
 
 class AtomerReviewSourceTests(unittest.TestCase):
+    def test_only_exact_native_parent_spelling_resolves_two_roots(self):
+        csv = ('Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný\n'
+               '1;0;P;1\n2;0;\tP;0\n3;P;A;1\n4;\tP;B;0\n')
+        admin = parse_admin(csv.encode('cp1250'))
+        result = catalog_with_admin([],admin,True)
+        self.assertTrue(admin['P']['conflict'])
+        self.assertFalse(any(x['conflict'] for x in result))
+        rows = [dict(code=x['code'],parent='P',kind='variant') for x in result]
+        add_states(result,rows,admin)
+        self.assertEqual({x['code']:x['source_state']['product'] for x in rows},{'A':True,'B':False})
+        duplicate = parse_admin((csv+'5;0;P;0\n').encode('cp1250'))
+        self.assertTrue(next(r for r in catalog_with_admin([],duplicate,True) if r['code']=='A')['conflict'])
+
     def test_native_csv_adds_hidden_variants_and_retains_parent_flags(self):
         csv = ('Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný;EAN kód;Názov tovaru;Odporúčaný;Novinka;Char. Typ;Char. Typ\n'
                '11;0;P;1;;Kabát;1;0;A;B\n'

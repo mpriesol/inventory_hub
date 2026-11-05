@@ -49,3 +49,11 @@ Náhľad prečíta celú rodinu. Potvrdenie zopakuje kontrolu, uloží pôvodné
 pošle vybrané parametre a porovná natívne ID, súrodencov a chránené polia.
 Opakovanie uloženého zámeru vykoná iba overenie. Po spracovaní obnovte prehľad.
 Rozdiely totožnosti a nejednoznačné EAN vyžadujú samostatný dôkaz a rozhodnutie.
+
+Pri doloženom prečíslovaní toho istého výrobku používa plán `operation: verified_barcode`.
+Operátor pripája dokument výrobcu alebo dodávateľa pre presnú veľkosť, starý kód, obidva GTIN
+a ID zachovanej karty. Tento postup je obmedzený na variant s nulovou zásobou, bez rezervácie
+a s jednoznačným vlastníkom. Nový GTIN sa zapíše len do xTreku a po spätnom overení aj ako
+ďalší identifikátor pôvodnej karty. Starší čiarový kód sa ponechá. Iná generácia výrobku
+vyžaduje samostatnú položku. Pri menách rodičov kolidujúcich po orezaní sa použije doslovný
+odkaz dieťaťa v pôvodnom CSV, ak identifikuje presne jeden rodičovský záznam.
