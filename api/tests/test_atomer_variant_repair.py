@@ -41,3 +41,48 @@ class SourceVariantRepair(TestCase):
         changed['variants'][1]['stock']=5
         self.assertNotEqual(p,repair.projection(changed)[0])
         self.assertEqual(a,repair.projection(changed)[1])
+
+
+import json
+from pathlib import Path
+import unittest
+from unittest.mock import AsyncMock, patch
+from sqlalchemy import text
+import test_catalog_db as fixture
+
+
+@unittest.skipUnless(fixture.TEST_URL,'Dedicated local catalog test database required')
+class RepairDatabaseTest(unittest.IsolatedAsyncioTestCase):
+    write_feed = fixture.CatalogDatabaseTests.write_feed
+    asyncSetUp = fixture.CatalogDatabaseTests.asyncSetUp
+    asyncTearDown = fixture.CatalogDatabaseTests.asyncTearDown
+
+    async def test_intent_replay_uses_readback_and_preserves_item_note(self):
+        root=Path(__file__).resolve().parents[2]/'infra/db-init'
+        async with self.engine.begin() as connection:
+            raw=await connection.get_raw_connection()
+            for name in ['037_atomer_progress.sql','038_atomer_review.sql']:
+                await raw.driver_connection.execute((root/name).read_text())
+        row=dict(code='first',target_parent='family',parent='family',variant_id='11',product_id='9',hub_id=None,
+                 target_code='first',target_ean='first',family_key='v:family',match='code_or_ean',reasons=['parameters_differ'])
+        source=dict(code='first',parent='family',axes={'PARAM_1':'Large'},conflict=False)
+        sha='c'*64
+        async with self.sessions() as db:
+            await db.execute(text("INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(:s,1,CAST(:data AS jsonb))"),
+                             dict(s=sha,data=json.dumps([source])))
+            await db.execute(text("INSERT INTO atomer_progress_runs(source_sha256,checked_at,totals) VALUES(:s,now(),'{}')"),dict(s=sha))
+            await db.execute(text("INSERT INTO atomer_progress_items VALUES(1,'first','variant','review','v:family',CAST(:d AS jsonb))"),dict(d=json.dumps(row)))
+            await db.commit()
+        plan=repair.Family(run_id=1,source_sha=sha,rows=[dict(code='first',revision=0,before={'Colour':'Blue'},names={'PARAM_1':'Size'})])
+        a,b=variant('first',11,'Blue'),variant('other',12,'Black')
+        old={'parent':{'code':'family','variants':[a,b]},'variants':[a,b]}
+        new=deepcopy(old)
+        new['variants'][0]['parameters'].append({'name':{'sk':'Size'},'values':[{'sk':'Large'}]})
+        with patch.object(repair,'read_family',side_effect=[old,new]),patch.object(repair,'send') as send, \
+                patch.object(repair,'target_fingerprint',return_value='a'*64),patch.object(repair,'require_target_available',AsyncMock()):
+            async with self.sessions() as db:
+                self.assertEqual((await repair.process(db,plan,'apply','test'))['status'],'verified')
+                self.assertEqual((await repair.process(db,plan,'apply','test'))['status'],'verified')
+                self.assertEqual(send.call_count,1)
+                self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_review_events")),2)
+                self.assertEqual(await db.scalar(text("SELECT status FROM atomer_review_work WHERE key='first'")),'open')
