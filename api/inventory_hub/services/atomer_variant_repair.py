@@ -247,7 +247,9 @@ async def check_result(db, job, actor, acknowledged=False):
         note = ('Parametre overené podľa Atomeru: '+', '.join(f'{k} = {v}' for k,v in entry['values'].items())+'.'
                 if state=='verified' else reason)
         if state=='verified' and 'new_ean' in entry:
-            note = f"EAN {entry['ean']} → {entry['new_ean']} overený v xTreku. Oba kódy sú na pôvodnej karte. "+entry['proof']
+            note = (f"EAN {entry['ean']} → {entry['new_ean']}. Oba kódy sú na pôvodnej karte. "
+                    if entry['ean'] else f"Doplnený chýbajúci EAN {entry['new_ean']} z existujúcej karty. ")
+            note += 'Overené v xTreku. '+entry['proof']
         await outcome(db,entry['code'],actor,'open' if state=='verified' else 'blocked',ref+note,'variant_'+state)
     await db.commit()
     return {'status':state,'count':len(doc['rows']),'reason':reason,'id':job.id,'retry_after':retry_after}

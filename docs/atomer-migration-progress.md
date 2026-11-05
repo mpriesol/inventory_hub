@@ -57,3 +57,5 @@ a s jednoznačným vlastníkom. Nový GTIN sa zapíše len do xTreku a po spätn
 ďalší identifikátor pôvodnej karty. Starší čiarový kód sa ponechá. Iná generácia výrobku
 vyžaduje samostatnú položku. Pri menách rodičov kolidujúcich po orezaní sa použije doslovný
 odkaz dieťaťa v pôvodnom CSV, ak identifikuje presne jeden rodičovský záznam.
+
+Voľba `fill_existing_card_barcode` dopĺňa len prázdny EAN pri existujúcej natívnej väzbe. Vyžaduje overený kód, ktorý už patrí výlučne tej istej skladovej karte, aktuálne natívne ID a zhodu s Atomerom.

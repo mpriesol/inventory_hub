@@ -22,12 +22,14 @@ class BarcodeRow(BaseModel):
     revision:int=Field(ge=0)
     before:dict[Code,Code]
     old_code:Code
-    old_ean:Code
+    old_ean:str=Field(max_length=255)
+    product_id:int|None=Field(default=None,gt=0)
+    variant_id:int|None=Field(default=None,gt=0)
     new_ean:Code
     card:int=Field(gt=0)
     manufacturer_or_supplier:HttpUrl
     evidence:str=Field(min_length=20,max_length=1200)
-    decision:Literal['same_item_supplier_recode']
+    decision:Literal['same_item_supplier_recode','fill_existing_card_barcode']
 
 
 class BarcodeFamily(BaseModel):
@@ -50,7 +52,7 @@ async def eligible_card(db,entry,*,record=False):
         raise ReviewError('recode_card_conflict')
     balance=await db.scalar(select(StockBalance.id).where(StockBalance.product_id==card,
         (StockBalance.qty_on_hand!=0)|(StockBalance.qty_reserved!=0)|(StockBalance.qty_quarantined!=0)).limit(1))
-    if balance:
+    if balance and entry['ean']:
         raise ReviewError('recode_stock_present')
     override=await db.get(ProductEditorOverride,card)
     if override and 'eans' in (override.data.get('variant') or {}):
@@ -60,7 +62,8 @@ async def eligible_card(db,entry,*,record=False):
     found=(await db.execute(select(ProductIdentifier.product_id, ProductIdentifier.value).where(
         ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES),
         func.ltrim(ProductIdentifier.value,'0').in_([old.lstrip('0'),new.lstrip('0')])))).all()
-    if any(pid!=card for pid,_ in found) or not any(barcode_keys([v])==barcode_keys([old]) for _,v in found):
+    required = old or new
+    if any(pid!=card for pid,_ in found) or not any(barcode_keys([v])==barcode_keys([required]) for _,v in found):
         raise ReviewError('recode_barcode_owner')
     if record and not any(barcode_keys([v])==barcode_keys([new]) for _,v in found):
         await ProductIdentifierService(db).add_identifier(card,new,identifier_type=ProductIdentifierService.classify_barcode(new),
@@ -68,6 +71,17 @@ async def eligible_card(db,entry,*,record=False):
 
 
 async def entry_for(db,request,row,source):
+    if request.decision=='fill_existing_card_barcode':
+        if (row['reasons']!=['different_shop_link'] or row['hub_id']!=request.card or row['target_code']
+                or request.old_ean or request.new_ean!=row['ean'] or not request.product_id or not request.variant_id
+                or not row['parent'] or request.new_ean not in verified_barcodes([request.new_ean])
+                or request.manufacturer_or_supplier.scheme!='https'):
+            raise ReviewError('recode_evidence_changed')
+        entry=dict(code=row['code'],parent=row['parent'],pid=str(request.product_id),vid=str(request.variant_id),
+                   target=request.old_code,ean='',new_ean=request.new_ean,card=request.card,revision=request.revision,
+                   before=request.before,values={},proof=str(request.manufacturer_or_supplier),evidence=request.evidence)
+        await eligible_card(db,entry)
+        return entry
     if (row['reasons']!=['ean_differs','occupied_parameters'] or not source or source['conflict'] or not row['variant_id']
             or source['parent']!=row['parent'] or source['ean']!=request.new_ean or request.new_ean!=row['ean']
             or request.old_code!=row['target_code'] or request.old_ean!=row['target_ean']
@@ -92,7 +106,7 @@ def protect_expected(protected, entries):
                 quantities=[Decimal(str(r['stock'])) for r in observations if 'stock' in r]
             except (InvalidOperation,TypeError,ValueError):
                 raise ReviewError('recode_stock_or_ean_changed') from None
-            if not quantities or any(not q.is_finite() or q!=0 for q in quantities):
+            if item['ean'] and (not quantities or any(not q.is_finite() or q!=0 for q in quantities)):
                 raise ReviewError('recode_stock_or_ean_changed')
             for observation in observations:
                 if (observation.get('ean') or '')!=item['ean']:
