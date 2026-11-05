@@ -1,5 +1,6 @@
 """Visibility and merchandising evidence, preserving explicit false and unknown."""
 import csv
+from collections import defaultdict
 import hashlib
 import io
 import re
@@ -54,17 +55,44 @@ async def save_archive(db,entry):
         """),dict(sha=digest,fmt=fmt,data=data))
 
 
+class AdminCatalog(dict):
+    def __init__(self):
+        super().__init__()
+        self.quarantined = []
+        self.quarantined_identifiers = set()
+        self.quarantined_parents = set()
+
+
+def _safe_id(value):
+    return len(value) <= 255 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def _combine_admin_rows(rows):
+    """Keep every identity as presence evidence, but expose only agreed values."""
+    combined = rows[0].copy()
+    if all(row == combined for row in rows):
+        return combined
+    combined["conflict"] = True
+    combined["internal_ids"] = sorted({row["internal_id"] for row in rows if row["internal_id"]})
+    combined["all_eans"] = sorted({row["ean"] for row in rows if row["ean"]})
+    combined["all_parents"] = sorted({row["parent"] for row in rows if row["parent"]})
+    for key in ("ean", "name", "brand", "parent", "visibility", "visibility_raw"):
+        if any(row[key] != rows[0][key] for row in rows):
+            combined[key] = None if key in ("visibility", "parent") else ""
+    combined["visibility_conflict"] = any(row["visibility"] != rows[0]["visibility"] for row in rows)
+    combined["flags"] = {k: v for k, v in rows[0]["flags"].items() if all(row["flags"].get(k) == v for row in rows)}
+    combined["has_catalog_code"] = all(row["has_catalog_code"] for row in rows)
+    return combined
+
+
 def parse_admin(data):
-    for encoding in ("utf-8-sig","cp1250"):
-        try:
-            decoded = data.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        raise ReviewError("invalid_admin_export",422)
     try:
-        stream = io.StringIO(decoded, newline="")
+        data.decode("utf-8-sig")
+        encoding = "utf-8-sig"
+    except UnicodeDecodeError:
+        encoding = "cp1250"
+    try:
+        stream = io.TextIOWrapper(io.BytesIO(data), encoding=encoding, newline="")
         dialect = csv.Sniffer().sniff(stream.readline(), delimiters=";\t,")
         stream.seek(0)
         # A header without escaped quotes cannot reveal the quoting of multiline product descriptions.
@@ -93,7 +121,7 @@ def parse_admin(data):
         barcode, name, brand = field(BARCODES), field(NAMES), field(BRANDS)
         if code_column is None or active is None:
             raise ValueError()
-        result = {}
+        result, duplicates = AdminCatalog(), {}
         for index, row in enumerate(reader):
             if not row:
                 continue
@@ -103,24 +131,36 @@ def parse_admin(data):
             if not any(row):
                 continue
             # Only an explicit catalog number plus a parent column can introduce a new sellable identity.
-            parent_code = row[parent].strip() if parent is not None and catalog is not None and code else None
-            if not code and internal is not None:
-                code = row[internal].strip()
+            has_catalog_code = bool(code and catalog is not None)
+            internal_id = row[internal].strip() if internal is not None else ""
+            parent_code = row[parent].strip() if parent is not None and catalog is not None else None
+            code = code or internal_id
             if parent_code in ("0", code):
                 parent_code = ""
             ean = row[barcode].strip() if barcode is not None else ""
-            if not code or any(len(v) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in v)
-                               for v in (code, parent_code or "", ean)):
+            if not _safe_id(internal_id):
                 raise ValueError()
-            value = {"visibility": flag(row[active]), "visibility_raw": row[active], "ean": ean,
+            if not code or not all(_safe_id(v) for v in (code, parent_code or "", ean)):
+                if not internal_id:
+                    raise ValueError()
+                # Keep the exact bytes in the archive. Never synthesize a SKU from corrupt text.
+                result.quarantined.append(internal_id)
+                result.quarantined_identifiers.update(v for v in (code, ean) if v and _safe_id(v))
+                if parent_code and _safe_id(parent_code):
+                    result.quarantined_parents.add(parent_code)
+                continue
+            value = {"internal_id": internal_id, "has_catalog_code": has_catalog_code,
+                     "visibility": flag(row[active]), "visibility_raw": row[active], "ean": ean,
                      "flags": {heading: row[pos] for heading, pos in flag_columns.items()}, "parent": parent_code,
                      "name": row[name].strip() if name is not None else "",
                      "brand": row[brand].strip() if brand is not None else ""}
-            if code in result and result[code] != value:
-                raise ValueError()
-            result[code] = value
+            if code in result:
+                duplicates.setdefault(code, [result[code]]).append(value)
+            else:
+                result[code] = value
         if not result:
             raise ValueError()
+        result.update((code, _combine_admin_rows(rows)) for code, rows in duplicates.items())
         return result
     except (ValueError,csv.Error,IndexError):
         raise ReviewError("invalid_admin_export",422) from None
@@ -133,39 +173,67 @@ async def admin_index(db,digest):
     return parse_admin(zlib.decompress(raw))
 
 
+def _admin_refs(admin):
+    """Both native IDs and catalog codes can occur in the parent column."""
+    refs = {code: code for code in admin}
+    for code, item in admin.items():
+        for native_id in item.get("internal_ids", (item.get("internal_id"),)):
+            if native_id:
+                refs[native_id] = code if refs.get(native_id, code) == code else None
+    return refs
+
+
 def catalog_with_admin(buyers, admin, complete=False):
     """Keep buyers rows and add identities established by the administrative export."""
     result = {r["code"]: r for r in buyers}
-    parents = {r["parent"] for r in buyers if r["parent"] and r["parent"] != r["code"]}
-    parents.update(item["parent"] for item in admin.values() if item["parent"])
+    refs = _admin_refs(admin)
+    xml_groups = defaultdict(set)
+    for row in buyers:
+        parent = row["parent"]
+        if parent and parent != row["code"]:
+            xml_groups[refs.get(parent, parent)].add(parent)
+    parents = set(xml_groups)
+    parents.update(refs.get(parent, parent) for parent in getattr(admin, "quarantined_parents", ()))
+    for item in admin.values():
+        for parent in item.get("all_parents", (item["parent"],)):
+            if parent:
+                parents.add(refs.get(parent, parent))
     if complete and (not admin or not (result.keys() | parents) <= admin.keys()
-                     or any(item["parent"] is None for item in admin.values())):
+                     or any(item["parent"] is None or (not item.get("has_catalog_code", True) and code not in parents)
+                            for code, item in admin.items())):
         raise ReviewError("incomplete_admin_export", 422)
     for code, item in admin.items():
         parent = item["parent"]
+        parent_key = refs.get(parent, parent)
+        groups = xml_groups.get(parent_key, set())
+        ambiguous = bool(item.get("conflict") or (parent and parent_key is None) or len(groups) > 1
+                         or (admin.get(parent_key) or {}).get("conflict"))
         original = result.get(code)
         if original:
             xml_parent = original["parent"] if original["parent"] != code else ""
             eans_differ = original["ean"] and item["ean"] and original["ean"] != item["ean"]
-            if eans_differ or (parent is not None and parent != xml_parent):
+            if ambiguous or eans_differ or (parent is not None and parent_key != refs.get(xml_parent, xml_parent)):
                 result[code] = dict(original, conflict=True)
-        elif parent is not None and code not in parents and (parent or complete):
+        elif item.get("has_catalog_code", True) and parent is not None and code not in parents and (parent or complete):
             # A root in a selection may have children outside that selection.
-            result[code] = dict(code=code, parent=parent, name=item["name"], brand=item["brand"],
-                                ean=item["ean"], axes={}, duplicates=1, conflict=False,
+            # Preserve an existing XML family key used by decisions and operator instructions.
+            group = next(iter(groups)) if len(groups) == 1 else parent_key or parent
+            result[code] = dict(code=code, parent=group, name=item["name"], brand=item["brand"],
+                                ean=item["ean"], axes={}, duplicates=1, conflict=ambiguous,
                                 source_visibility=None, visibility_conflict=False)
     return list(result.values())
 
 
 def add_states(source, rows, admin):
     by_code = {r["code"]:r for r in source}
-    def evidence(code):
+    refs = _admin_refs(admin)
+
+    def evidence(code, other):
         original = by_code.get(code) or {}
-        other = admin.get(code)
         value = original.get("source_visibility")
-        if original.get("visibility_conflict"):
+        if original.get("visibility_conflict") or other.get("visibility_conflict"):
             return None,"conflict"
-        if other is not None:
+        if other:
             if value is not None and other["visibility"] is not None and value!=other["visibility"]:
                 return None,"conflict"
             if other["visibility"] is not None:
@@ -174,10 +242,15 @@ def add_states(source, rows, admin):
 
     for row in rows:
         leaf, parent = row["code"], row["parent"] if row["kind"]=="variant" else row["code"]
-        state, origin = evidence(parent)
-        child, child_origin = evidence(leaf)
+        parent_code = refs.get(parent, parent) if row["kind"] == "variant" else leaf
+        parent_record = admin.get(parent_code) or {}
+        variant_record = admin.get(leaf) or {}
+        state, origin = evidence(parent, parent_record)
+        if parent_code is None:
+            state, origin = None, "conflict"
+        child, child_origin = evidence(leaf, variant_record)
         row["source_state"] = {"product":state,"product_origin":origin,
                                "variant":child if row["kind"]=="variant" else None,
                                "variant_origin":child_origin if row["kind"]=="variant" else "na",
-                               "product_flags":(admin.get(parent) or {}).get("flags",{}),
-                               "variant_flags":(admin.get(leaf) or {}).get("flags",{}) if row["kind"]=="variant" else {}}
+                               "product_flags":parent_record.get("flags",{}),
+                               "variant_flags":variant_record.get("flags",{}) if row["kind"]=="variant" else {}}

@@ -82,9 +82,13 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
     source_state.add_states(catalog,rows,admin)
     await review_targets.register(db,review_pins)
     pins = dict((await db.execute(text("SELECT key,identity FROM atomer_review_targets"))).all())
+    quarantined = getattr(admin, "quarantined", [])
+    conflicts = sorted(code for code, item in admin.items() if item.get("conflict"))
     checks = review_targets.check_targets(pins,catalog,remote,rows,xtrek_links,card_index.products,admin,
                                          admin_complete=admin_complete)
     totals = {"admin_codes":len(admin), "admin_only_items":len(catalog)-len(identities), "admin_complete":admin_complete,
+              "admin_conflicts":len(conflicts), "admin_conflict_examples":conflicts[:10],
+              "admin_quarantined":len(quarantined), "admin_quarantine_examples":quarantined[:10],
               "review_targets":len(checks),"items":len(rows), "kinds":dict(Counter(r["kind"] for r in rows)),
               "states":dict(Counter(r["state"] for r in rows)), "bike":dict(Counter(r["bike_state"] for r in rows))}
     # checked_at is the start of the consistent local snapshot. Upgates reads follow it.

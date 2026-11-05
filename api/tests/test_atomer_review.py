@@ -37,6 +37,65 @@ class AtomerReviewSourceTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ReviewError):
                 parse_admin(raw.encode())
 
+    def test_native_parent_alias_preserves_existing_family_and_hidden_record(self):
+        admin = parse_admin(('Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný\n'
+                             '17;0;P;1\n18;P;V;1\n19;17;H;0\n').encode())
+        _, _, buyers = parse_source(BytesIO(b'<PRODUCTS><PRODUCT><PRODUCT_ID>V</PRODUCT_ID>'
+                                            b'<PARENT_ID>17</PARENT_ID></PRODUCT></PRODUCTS>'))
+        catalog = catalog_with_admin(buyers, admin, complete=True)
+        self.assertEqual([(r['code'], r['parent'], r['conflict']) for r in catalog],
+                         [('V', '17', False), ('H', '17', False)])
+        rows = [dict(code='H', parent='17', kind='variant')]
+        add_states(catalog, rows, admin)
+        self.assertEqual((rows[0]['source_state']['product'], rows[0]['source_state']['variant']), (True, False))
+
+    def test_internal_only_root_requires_a_referencing_child_for_complete_scope(self):
+        raw = 'Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný\n17;0;;1\n'
+        with self.assertRaisesRegex(ReviewError, 'incomplete_admin_export'):
+            catalog_with_admin([], parse_admin(raw.encode()), complete=True)
+        catalog = catalog_with_admin([], parse_admin((raw+'18;17;V;0\n').encode()), complete=True)
+        self.assertEqual([(r['code'], r['parent']) for r in catalog], [('V', '17')])
+
+    def test_conflicting_parent_and_damaged_identity_are_localized(self):
+        raw = ('Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný;EAN;Akcia\n'
+               '11;0;P;1;4006381333931;1\n12;0;P;0;5901234123457;0\n13;P;V;0;;0\n'
+               '14;0;S;1;;0\n15;P;BROKEN\x00SKU;0;12345670;0\n')
+        admin = parse_admin(raw.encode())
+        catalog = catalog_with_admin([], admin, complete=True)
+        self.assertEqual([(r['code'], r['conflict']) for r in catalog], [('V', True), ('S', False)])
+        self.assertEqual(admin.quarantined, ['15'])
+        rows = [dict(code='V', parent='P', kind='variant')]
+        add_states(catalog, rows, admin)
+        state = rows[0]['source_state']
+        self.assertEqual((state['product'], state['product_origin'], state['product_flags']), (None, 'conflict', {}))
+        self.assertIs(state['variant'], False)
+        pin = dict(product_id='1', variant_id='2', code='other', parent='FP', source_parent='P',
+                   ean='5901234123457', axes={'size':['m']})
+        pins = parse_targets(BytesIO(json.dumps([pin]).encode()))
+        target = dict(pid='1', vid='2', code='other', parent='FP', ean=pin['ean'], axes={'size':['m']}, stock=0)
+        witness = dict(code='W', family_key='v:P', family_name='Family', product_id='1', variant_id='3',
+                       target_parent='FP', match='code_or_ean', reasons=[])
+        check = check_targets(pins, [], [target], [witness], [], {}, admin, admin_complete=True)[0]
+        self.assertEqual(check['check'], 'in_source')
+        self.assertIn('admin_absence_unknown', check['warnings'])
+
+    def test_ean_visibility_requires_a_unique_variant_in_the_same_family(self):
+        ean = '4006381333931'
+        pin = dict(product_id='1', variant_id='2', code='shop-sku', parent='FP', source_parent='P', ean=ean, axes={'size':['m']})
+        pins = parse_targets(BytesIO(json.dumps([pin]).encode()))
+        target = dict(pid='1', vid='2', code='shop-sku', parent='FP', ean=ean, axes={'size':['m']}, stock=0)
+        leaf = dict(code='csv-sku', family_key='v:P', family_name='Family', product_id='1', variant_id='2',
+                    target_parent='FP', match='code_or_ean', reasons=[], source_state={'variant':False,'variant_origin':'admin_csv'})
+        source = [dict(code='csv-sku', ean=ean)]
+        def visibility():
+            return check_targets(pins, source, [target], [leaf], [], {})[0]['source_state']['variant']
+        self.assertIs(visibility(), False)
+        leaf['family_key'] = 'v:other'
+        self.assertIsNone(visibility())
+        leaf['family_key'] = 'v:P'
+        source.append(dict(code='another', ean=ean))
+        self.assertIsNone(visibility())
+
     def test_hidden_variant_does_not_deactivate_parent_and_preserves_explicit_zero_flags(self):
         xml = b"<PRODUCTS><PRODUCT><PRODUCT_ID>V</PRODUCT_ID><PARENT_ID>P</PARENT_ID><VISIBILITY>0</VISIBILITY></PRODUCT></PRODUCTS>"
         _,_,src = parse_source(BytesIO(xml))

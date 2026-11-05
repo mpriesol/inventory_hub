@@ -208,6 +208,8 @@
   "keepCount": "Keep undecided variants ({{n}})",
   "keptCount": "Marked to keep · Variants confirmed {{n}}",
   "adminCompleteLabel": "This CSV includes the whole catalog with hidden products and variants",
+  "adminConflicts": "Repeated codes with different CSV records ({{n}}). Review {{codes}}.",
+  "adminQuarantine": "Rows with unreadable identifiers ({{n}}). Find them under Atomer internal IDs {{ids}}. Removal tasks remain blocked pending verification.",
   "adminFull": "Full catalog CSV",
   "adminPartial": "Selected catalog items CSV",
   "adminCoverage": "Codes in CSV {{codes}} · Sellable items only in CSV {{added}}",
