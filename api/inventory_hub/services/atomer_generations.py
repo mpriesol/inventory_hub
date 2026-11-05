@@ -218,7 +218,15 @@ def same_image(native_url, source_url):
     return bool(source) and (actual==source or actual.endswith("-"+source))
 
 
-def inspect_new(leaf, expected):
+def reports_unset_stock(leaf, stock_id):
+    warehouses = leaf.get("stocks")
+    return (type(stock_id) is int and stock_id > 0 and "stock" in leaf and leaf["stock"] is None
+            and isinstance(warehouses, list) and len(warehouses) == 1 and isinstance(warehouses[0], dict)
+            and type(warehouses[0].get("stock_id")) is int and warehouses[0]["stock_id"] == stock_id
+            and "quantity" in warehouses[0] and warehouses[0]["quantity"] is None)
+
+
+def inspect_new(leaf, expected, *, stock_unreported=False):
     if leaf.get("ean")!=expected["ean"] or leaf.get("active_yn") is not expected["visible"]:
         return "EAN alebo viditeľnosť"
     if repair.axis_values(leaf)!=expected["axes"]:
@@ -232,7 +240,7 @@ def inspect_new(leaf, expected):
         return "cena"
     if publication.money(leaf.get("weight")) != Decimal(expected["weight"]):
         return "hmotnosť"
-    if transport._quantity(leaf.get("stock"))!="0":
+    if not stock_unreported and transport._quantity(leaf.get("stock"))!="0":
         return "počiatočná zásoba novej karty"
     if leaf.get("action_currently_yn") or any(label.get("active_currently_yn") for label in leaf.get("labels") or []):
         return "príznaky variantu"
@@ -256,11 +264,17 @@ def observe(doc, obs):
     for vid, old in existing.items():
         require(axes[vid]==doc["expected_axes"][old["code"]], "generation_axis_not_confirmed")
     require(set(actual)=={v["code"] for v in existing.values()}|set(doc["additions"]), "generation_native_members_differ")
+    nested = {v['variant_id']: v for v in obs['parent']['variants']}
+    unreported = doc.get('unreported_stock') or {}
     ids, issues = {}, []
     for code, expected in doc["additions"].items():
         leaf = actual[code]
         ids[code] = leaf["variant_id"]
-        problem = inspect_new(leaf,expected)
+        stock_id = unreported.get('stock_id')
+        if unreported:
+            require(unreported['observed_ids'].get(code) == leaf['variant_id'] and reports_unset_stock(leaf, stock_id)
+                    and reports_unset_stock(nested[leaf['variant_id']], stock_id), 'generation_stock_observation_changed')
+        problem = inspect_new(leaf,expected,stock_unreported=bool(unreported))
         if problem:
             issues.append(f"{code} / {leaf['variant_id']} – {problem}")
     return ids, issues

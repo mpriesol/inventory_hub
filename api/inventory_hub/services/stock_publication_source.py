@@ -189,6 +189,11 @@ def _request(client, method, path, *, params=None, payload=None):
         except (ValueError, UnicodeError, RecursionError):
             raise SourceError("stock_publication_write_unconfirmed" if writing else "stock_publication_invalid_response",
                               uncertain=writing) from None
+    except SourceError as exc:
+        # Safe upstream telemetry for callers. Never include native bodies, URLs, or account data.
+        if response is not None:
+            exc.upstream_status = response.status_code
+        raise
     except requests.RequestException:
         raise SourceError("stock_publication_write_unconfirmed" if writing else "stock_publication_source_unavailable",
                           uncertain=writing) from None

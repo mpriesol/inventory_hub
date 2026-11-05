@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import Mock, patch
 
@@ -95,6 +95,44 @@ class NativeCreationTests(unittest.TestCase):
         with patch.object(native,'_sparse',side_effect=[[dict(code='FOREIGN')],[]]),self.assertRaises(ReviewError):
             native._read(Mock(),{'BAG':creation()},{})
 
+    def test_incremental_identity_scan_retains_previous_pages_and_recovers_after_a_failed_scan(self):
+        started = datetime.now(timezone.utc) - timedelta(hours=6)
+        first = dict(code='FIRST', product_id=1, variants=[], variants_exists_yn=False)
+        second = dict(code='SECOND', product_id=2, variants=[], variants_exists_yn=False)
+
+        def incomplete():
+            yield second
+            raise native.ExportError('partial')
+
+        with patch.object(native, '_delta_observation', None), patch.object(
+            native.catalog, 'page_rows', side_effect=[[first], incomplete(), [second]]
+        ) as pages:
+            self.assertEqual({pid for pid, _ in native._delta(Mock(), 'fp', started)}, {1})
+            checkpoint = native._delta_observation[1]
+            with self.assertRaises(native.transport.SourceError):
+                native._delta(Mock(), 'fp', started)
+            self.assertEqual(native._delta_observation[1], checkpoint)
+            self.assertEqual(set(native._delta_observation[2]), {1})
+            self.assertEqual({pid for pid, _ in native._delta(Mock(), 'fp', started)}, {1, 2})
+            self.assertEqual(pages.call_args_list[1].args[2], pages.call_args_list[2].args[2])
+            since = datetime.fromisoformat(pages.call_args_list[1].args[2]['last_update_time_from'])
+            self.assertGreater(since, started)
+            self.assertLess(since, checkpoint)
+
+    def test_source_related_aliases_and_unresolved_fields_are_verified_independently(self):
+        doc = creation()
+        doc.update(related=['SOURCE-ALIAS', 'NOT-HERE'], missing_related=['NOT-HERE'],
+                   missing_categories=['Additional'], managed_label_ids=[20, 21])
+        candidate = live(doc)
+        candidate['labels'] = [dict(label_id=85, active_currently_yn=True)]
+        result = native._family_result(doc, candidate, None)
+        self.assertTrue(result['identity_verified'])
+        self.assertFalse(result['verified_fields'])
+        self.assertEqual(result['status'], 'partial')
+        self.assertCountEqual(result['deferred'], ['missing_categories', 'missing_related'])
+        doc.update(missing_categories=[], missing_related=[])
+        self.assertEqual(native._family_result(doc, candidate, None)['status'], 'verified')
+
     def test_send_returns_hints_does_not_retry_and_rejects_stock(self):
         document=creation()
         ack=dict(products=[dict(code='BAG',product_id=101,inserted_yn=True,
@@ -171,6 +209,29 @@ class ExistingFamilyTests(unittest.TestCase):
         plans=self.plan()
         self.assertEqual(plans['BAG']['status'],'conflict')
         self.assertIn('new_existing_axis_occupied',plans['BAG']['issues'])
+
+    def test_related_backfill_on_extended_product_preserves_legacy_relations(self):
+        self.old['related'] = ['LEGACY']
+        plans = self.plan()
+        doc = {**self.doc, 'extension_plan': plans['BAG']}
+        current = deepcopy(self.old)
+        leaf = deepcopy(current['variants'][0])
+        leaf.update(code='BLACK', ean=self.addition['ean'], variant_id=303,
+                    parameters_new=self.addition['parameters'], main_yn=False)
+        current['variants'].append(leaf)
+        ids = {'BAG': dict(product_id=101, variant_ids={'BLUE': 202, 'BLACK': 303})}
+        with patch.object(native.transport, '_client', return_value=Mock()), \
+             patch.object(native, '_read', return_value={'BAG': current}), \
+             patch.object(native, '_sparse', return_value=[{'code': 'OTHER'}]), \
+             patch.object(native.transport, '_request', return_value={'products': []}) as put:
+            self.assertEqual(native.complete_related([doc], 'fp', ids)['BAG']['status'], 'sent')
+            self.assertEqual(put.call_args.kwargs['payload']['products'][0]['related'], ['LEGACY', 'OTHER'])
+            current['related'].append('OTHER')
+            self.assertEqual(native.observe([doc], 'fp', ids)['BAG']['status'], 'verified')
+            current['related'].append('MANUAL-SINCE-PREVIEW')
+            self.assertEqual(native.observe([doc], 'fp', ids)['BAG']['status'], 'conflict')
+            self.assertEqual(native.complete_related([doc], 'fp', ids)['BAG']['status'], 'conflict')
+            self.assertEqual(put.call_count, 1)
 
     def test_changed_sibling_between_preview_and_send_excludes_family(self):
         plans=self.plan()

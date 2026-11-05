@@ -73,6 +73,29 @@ class CardIdentityTest(unittest.TestCase):
         self.assertEqual(plans,{})
         self.assertEqual({v['status'] for v in results.values()},{'blocked'})
 
+    def test_placeholder_is_sku_only_and_original_is_recorded(self):
+        result=batch.barcode_subject(item('A-123','A-123'))
+        self.assertEqual(result['ean'],'')
+        self.assertEqual(result['barcode_evidence'],{'before':'A-123','type':'source_repeats_sku'})
+        with self.assertRaisesRegex(batch.CardConflict,'source_ean_unverified'):
+            batch.barcode_subject(item('A-123','bad'))
+
+    def test_independent_barcode_proof_is_pinned_to_source_and_parent(self):
+        proof=dict(before='missing_check_digit',parent='AT-PARENT',ean=OTHER,
+                   manufacturer_or_supplier='https://example.org/workbook',
+                   evidence='Exact manufacturer model and size, published GTIN.')
+        self.assertEqual(batch.barcode_subject(item(ean=proof['before']),proof)['ean'],OTHER)
+        for src in [item(ean='other-invalid'),item(ean=GTIN),{**item(ean=proof['before']),'parent':'CHANGED'}]:
+            with self.assertRaisesRegex(batch.CardConflict,'evidence_changed'):
+                batch.barcode_subject(src,proof)
+        with self.assertRaisesRegex(batch.CardConflict,'evidence_changed'):
+            batch.barcode_subject(item(ean=''),{**proof,'before':''})
+
+    def test_existing_hub_gtin_finds_bike_when_source_has_only_a_different_sku(self):
+        target=parent('LEGACY',7,[('OLD-123',8,GTIN)])
+        catalog=batch.Catalog.build(1,[target])
+        self.assertEqual(batch.choose_bike(item(ean=''),catalog,card_eans=(GTIN,)),('7','8'))
+
 
 TEST_URL=os.environ.get('CATALOG_TEST_DATABASE_URL','')
 

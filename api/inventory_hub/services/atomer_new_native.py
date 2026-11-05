@@ -201,13 +201,14 @@ def _connection(fingerprint):
         client.session.close()
 
 
-def _post(client, payload):
+def _post(client, payload, *, route='products'):
+    _check(route in ('products', 'categories'), 'new_native_route_invalid')
     encoded = json.dumps(payload,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode()
     _check(len(encoded)<=MAX_REQUEST_BYTES,'new_native_payload_limit')
     # Use the same connection and budget. Redirections cannot move authorization or payload to another host.
     try:
         started=monotonic()
-        with client.session.post(client.base_url+'/products',data=encoded,headers={'Content-Type':'application/json'},
+        with client.session.post(f'{client.base_url}/{route}',data=encoded,headers={'Content-Type':'application/json'},
                                  timeout=(5,30),verify=True,allow_redirects=False,stream=True) as response:
             if response.status_code==429:
                 raise transport.SourceError('stock_publication_rate_limited',429,
@@ -309,7 +310,14 @@ def _same_text(actual,expected,html=False):
 def _supplements(client, parents, field):
     rows=_sparse(client,parents,'products/'+field,'products','product_ids')
     observed=_by_id(rows,'product_id')
-    _check(set(observed)==set(parents),'new_native_supplement_incomplete')
+    if field == 'related':
+        # The complete, filtered related endpoint only returns products with
+        # any related/accessory/alternative/gift/set entries (Upgates v2).
+        _check(observed.keys() <= parents.keys(), 'new_native_filter_unconfirmed')
+        for pid in parents.keys() - observed.keys():
+            parents[pid]['related'] = []
+    else:
+        _check(set(observed)==set(parents),'new_native_supplement_incomplete')
     for pid,row in observed.items():
         parent=parents[pid]
         _check(row['code']==parent['code'],'new_native_identity_changed')
@@ -536,15 +544,17 @@ def complete_related(documents,fingerprint,expected_ids):
     with _connection(fingerprint) as client:
         remote=_read(client,selected,expected_ids)
         targets={c for doc in selected.values() for c in doc['payload'].get('related',[])}
-        present={p['code'] for p in _sparse(client,targets)}
+        present={p['code'] for p in _sparse(client,targets,'products/simple',filters={'variants_yn':'false'})}
         _check(present<=targets,'new_native_filter_unconfirmed')
         for code,doc in selected.items():
             parent=remote.get(code)
             current=_result(doc,parent,expected_ids[code])
-            if not current['identity_verified'] or not set(parent['related'])<=set(doc['payload'].get('related',[])):
+            planned = set(doc['payload'].get('related', []))
+            preserved = set((doc.get('extension_plan') or {}).get('before', {}).get('related', []))
+            if not current['identity_verified'] or not set(parent['related']) <= (planned | preserved):
                 result[code]=dict(status='conflict',issues=current['issues'] or ['zmenené súvisiace produkty'])
                 continue
-            wanted=set(doc['payload'].get('related',[])) & present
+            wanted=planned & present
             observed=set(parent['related'])
             added=wanted-observed
             if not added:
@@ -688,16 +698,24 @@ def _extension_result(doc,live,plan,*,allow_related=False):
     actual={v['code'] for v in live['variants']}
     # Extra legacy siblings are preserved independently of the Atomer comparison.
     scoped={**live,'variants':[v for v in live['variants'] if v['code'] in desired]}
+    previous = set(old['related'])
+    wanted_related = set(desired_root.get('related', []))
+    # Legacy relations recorded before any write are protected lower down.
+    # The full-content comparison covers all new source relations independently.
+    scoped['related'] = [code for code in live['related'] if code not in (previous - wanted_related)]
     anchor=dict(product_id=old['product_id'],variant_ids={c:v for c,v in plan['variant_ids'].items() if c in desired})
     variant_plans={v['code']:v for v in plan['payload']['variants']}
-    desired_leaves=[variant_plans.get(v['code'],v) for v in desired_root['variants'] if v['code'] in desired]
+    original_defaults = {v['code']: bool(v.get('main_yn')) for v in old['variants']}
+    desired_leaves = [
+        variant_plans.get(v['code'], {**v, 'main_yn': original_defaults.get(v['code'], False)})
+        for v in desired_root['variants'] if v['code'] in desired
+    ]
     record=_family_result({**doc,'payload':{**desired_root,'variants':desired_leaves}},scoped,anchor)
     old_protected,new_protected=_preserved(old,before),_preserved(live,before)
     if allow_related:
         # Subsequent source-linked relation work can only add approved edges.
-        previous=set(old.get('related',[]))
         current=set(live.get('related',[]))
-        if previous<=current and current<=previous|set(desired_root.get('related',[])):
+        if previous<=current and current<=previous|wanted_related:
             new_protected['parent']['related']=old_protected['parent']['related']
     if old_protected!=new_protected or actual!=expected:
         record.update(status='conflict',identity_verified=False,verified_fields=False)

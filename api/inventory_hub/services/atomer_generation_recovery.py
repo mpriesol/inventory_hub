@@ -164,6 +164,9 @@ async def process(db, selection, mode, actor, adopt=False):
         for j in jobs:
             doc=j.document
             observation=obs[doc["identity"]["product_id"]]
+            if doc.get('unreported_stock'):
+                ids, issues = gen.observe(doc, observation)
+                gen.require(not issues and ids == doc.get('observed_ids'), 'generation_native_result_changed')
             [family]=pull._pull_families(shop.id,[observation["parent"]])
             native={v["code"]:v for v in observation["variants"]}
             for identity,leaf in family["leaves"]:
@@ -177,7 +180,8 @@ async def process(db, selection, mode, actor, adopt=False):
         gen.require(len(candidates)==count,"generation_native_members_differ")
         if mode=="preview":
             return dict(status="ready",count=count)
-        result=await pull.import_upgates_products("xtrek",dict(leaves=candidates,include_stock=False),db)
+        selected = pull._parse_leaf_selection({'leaves': candidates})
+        result=await pull.register_observed_products(db, shop, [o['parent'] for o in obs.values()], selected_leaves=selected)
         gen.require(not result.get("conflicts"),"generation_card_mapping_missing")
         return dict(status="verified",count=count,reason=f"Karty: {result.get('created_variants',0)}, väzby: {result.get('linked_products',0)}")
     fresh=[j for j in jobs if j.state!="verified" and not j.document.get("correction_sent")]

@@ -12,6 +12,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
+from inventory_hub.services import atomer_conflict_resolution
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
@@ -236,8 +237,42 @@ async def catalog_engine_start(mode: Literal["preview","apply"], selection: atom
 
 @router.post("/generation-observation")
 async def observe_generation_selection(selection: atomer_generations.Selection, db: AsyncSession = Depends(get_session)):
-    from inventory_hub.services import atomer_conflict_resolution
     try:
         return await atomer_conflict_resolution.observe_generations(db, selection)
     except (ReviewError,CatalogError,SourceError) as error:
         raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
+
+
+@router.post("/review-batch/reopen/{mode}")
+async def reopen_verified_barcode_reviews(mode: Literal['preview', 'apply'], selection: atomer_family_batch.Pack,
+                                          request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_conflict_resolution.reopen_barcodes(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={"code": error.code, "retry_after": getattr(error, "retry_after", None)}) from None
+
+
+@router.post('/barcode-owners/{mode}')
+async def correct_barcode_owners(mode: Literal['preview', 'apply'], selection: atomer_conflict_resolution.OwnerSelection,
+                                 request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_conflict_resolution.repair_barcode_owners(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None
+
+
+@router.post('/card-activity')
+async def inspect_review_card_activity(selection: atomer_conflict_resolution.ReviewExposure, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_conflict_resolution.observe_card_activity(db, selection)
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={'code': error.code}) from None
+
+
+@router.post('/generation-unreported-stock/{mode}')
+async def acknowledge_unreported_stock(mode: Literal['preview', 'apply'], selection: atomer_conflict_resolution.UnreportedStock,
+                                       request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_conflict_resolution.accept_unreported_stock(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None

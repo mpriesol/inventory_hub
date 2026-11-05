@@ -208,28 +208,62 @@ def registry_options(availability_rows, label_rows=()):
             'labels':{k:next(iter(v)) for k,v in labels.items() if len(v)==1}}
 
 
+AVAILABILITY_TYPES = ('OnRequest','NotAvailable','InStock','Custom')
+
+
+def _read_option(resource, call, *args, **kwargs):
+    try:
+        return call(*args,**kwargs)
+    except (ReviewError,transport.SourceError) as exc:
+        exc.catalog_resource=resource
+        raise
+
+
+def registry_pages(client,resource,*,kind=None):
+    if resource not in ('categories','labels','availabilities') or kind is not None and (
+            resource!='availabilities' or kind not in AVAILABILITY_TYPES):
+        raise ValueError('invalid_registry_resource')
+    label=resource if kind is None else 'availabilities_'+kind
+    # These registries accept a page selector. current_page_items is native response metadata;
+    # only the product catalog endpoints document it as a request parameter.
+    return _read_option(label,batch.collect_pages,client,resource,resource,{'type':kind} if kind else {},page_size=None)
+
+
+def _optional_registry(client,resource,gaps,*,kind=None):
+    try:
+        return registry_pages(client,resource,kind=kind)
+    except transport.SourceError as exc:
+        status=getattr(exc,'upstream_status',None)
+        if status not in (400,403,404,405,422):
+            raise
+        # An unsupported collection grants no information. A source flag cannot be published
+        # without a verified label ID; known availability IDs are re-read individually below.
+        gaps[exc.catalog_resource]={'code':exc.code,'upstream_status':status}
+        return []
+
 def read_registry(client, *, availability_ids=()):
     """Fetch non-secret shop options once per catalog run. The caller manages client lifetime and quota."""
-    pricing = publication._options(client)
+    pricing = _read_option('pricing_options',publication._options,client)
     if pricing['prices_with_vat'] is not True:
         raise ReviewError('generation_price_configuration')
-    categories = batch.collect_pages(client,'categories','categories',{})
-    labels = batch.collect_pages(client,'labels','labels',{})
+    categories=registry_pages(client,'categories')
+    gaps={}
+    labels=_optional_registry(client,'labels',gaps)
     availability = []
-    for kind in ('OnRequest','NotAvailable','InStock','Custom'):
-        availability.extend(batch.collect_pages(client,'availabilities','availabilities',{'type':kind}))
+    for kind in AVAILABILITY_TYPES:
+        availability.extend(_optional_registry(client,'availabilities',gaps,kind=kind))
     seen = {a.get('id') for a in availability}
     for option in dict.fromkeys(availability_ids):
         if not _id(option):
             raise ReviewError('new_availability_unknown')
         if option not in seen:
-            detail = transport._request(client, 'get','availabilities/'+str(option))
+            detail = _read_option('availability_by_id',transport._request,client,'get','availabilities/'+str(option))
             rows = detail.get('availabilities') or []
             if (not transport._messages_ok(detail.get('messages')) or len(rows)!=1
                     or rows[0].get('id') != option):
                 raise ReviewError('new_availability_unknown')
             availability.extend(rows)
-    return {**pricing, **registry_options(availability,labels), 'category_registry':categories}
+    return {**pricing, **registry_options(availability,labels), 'category_registry':categories,'registry_gaps':gaps}
 
 
 def fetch_options(client, source_paths, category_aliases=None, availability_ids=(), contextual_roots=()):
