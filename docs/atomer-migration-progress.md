@@ -59,3 +59,12 @@ vyžaduje samostatnú položku. Pri menách rodičov kolidujúcich po orezaní s
 odkaz dieťaťa v pôvodnom CSV, ak identifikuje presne jeden rodičovský záznam.
 
 Voľba `fill_existing_card_barcode` dopĺňa len prázdny EAN pri existujúcej natívnej väzbe. Vyžaduje overený kód, ktorý už patrí výlučne tej istej skladovej karte, aktuálne natívne ID a zhodu s Atomerom.
+
+Pre viaceré rodiny možno použiť pole `packs` so skupinami `families`. Kontrola aj zápis
+používajú spoločné stránkované čítanie podľa natívnych ID. Jedna skupina obsahuje najviac
+25 rodičov a 100 vybraných variantov. Hub pred odoslaním uloží samostatnú úplnú zálohu
+každej rodiny. Aj po čiastočnej odpovedi overí rodiny jednotlivo. Obnova neistého zápisu
+vykonáva iba čítanie. Odložený zápis možno zopakovať po preukázanom lokálnom odmietnutí
+pred odoslaním a opätovnom overení pôvodného stavu.
+
+Ak ten istý presne identifikovaný variant pri doplnení chýbajúceho EAN vyžaduje aj opravu osi, voliteľné pole `names` umožní v rovnakej overenej požiadavke použiť hodnoty parametrov z uloženého zdroja Atomeru.

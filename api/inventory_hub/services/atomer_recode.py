@@ -30,6 +30,7 @@ class BarcodeRow(BaseModel):
     manufacturer_or_supplier:HttpUrl
     evidence:str=Field(min_length=20,max_length=1200)
     decision:Literal['same_item_supplier_recode','fill_existing_card_barcode']
+    names:dict[Annotated[str, Field(pattern=r"^PARAM_[0-9]+$")],Code]|None=Field(default=None,max_length=30)
 
 
 class BarcodeFamily(BaseModel):
@@ -71,6 +72,13 @@ async def eligible_card(db,entry,*,record=False):
 
 
 async def entry_for(db,request,row,source):
+    values = {}
+    if request.names is not None:
+        if (request.decision!='fill_existing_card_barcode' or not source or source['conflict']
+                or source['parent']!=row['parent'] or set(request.names)!=set(source['axes'])
+                or len(set(request.names.values()))!=len(request.names) or any(not v or len(v)>255 for v in source['axes'].values())):
+            raise ReviewError('variant_source_changed')
+        values = {request.names[k]:v for k,v in source['axes'].items()}
     if request.decision=='fill_existing_card_barcode':
         if (row['reasons']!=['different_shop_link'] or row['hub_id']!=request.card or row['target_code']
                 or request.old_ean or request.new_ean!=row['ean'] or not request.product_id or not request.variant_id
@@ -79,7 +87,7 @@ async def entry_for(db,request,row,source):
             raise ReviewError('recode_evidence_changed')
         entry=dict(code=row['code'],parent=row['parent'],pid=str(request.product_id),vid=str(request.variant_id),
                    target=request.old_code,ean='',new_ean=request.new_ean,card=request.card,revision=request.revision,
-                   before=request.before,values={},proof=str(request.manufacturer_or_supplier),evidence=request.evidence)
+                   before=request.before,values=values,proof=str(request.manufacturer_or_supplier),evidence=request.evidence)
         await eligible_card(db,entry)
         return entry
     if (row['reasons']!=['ean_differs','occupied_parameters'] or not source or source['conflict'] or not row['variant_id']

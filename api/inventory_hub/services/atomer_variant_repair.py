@@ -54,6 +54,14 @@ def digest(obj):
     return sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
+def selection_id(selection):
+    data = selection.model_dump()
+    for row in data['rows']:
+        if row.get('names',False) is None:
+            del row['names']
+    return digest(data)
+
+
 def axis_values(variant):
     result = {}
     params = variant.get('parameters')
@@ -118,15 +126,17 @@ def desired_patch(observation, selected):
         if (not leaf or leaf['code'] != entry['target'] or (leaf.get('ean') or '') != (entry['ean'] or '')
                 or before[vid] != entry['before']):
             raise ReviewError('variant_preview_changed')
+        patch = {'code':leaf['code']}
         if 'new_ean' in entry:
-            leaves.append({'code':leaf['code'],'ean':entry['new_ean']})
-            continue
-        after[vid].update(entry['values'])
+            patch['ean'] = entry['new_ean']
+        after[vid].update(entry.get('values',{}))
         if before[vid] != after[vid]:
             params = [{'descriptions':[{'language':'sk','name':name}],
                        'values':[{'descriptions':[{'language':'sk','value':value}]}]}
                       for name,value in after[vid].items()]
-            leaves.append({'code':leaf['code'],'parameters':params})
+            patch['parameters'] = params
+        if len(patch)>1:
+            leaves.append(patch)
     def key(axes):
         return tuple(sorted((' '.join(n.split()).casefold(),' '.join(v.split()).casefold()) for n,v in axes.items()))
     counts = Counter(key(a) for a in after.values())
@@ -211,11 +221,11 @@ async def select_rows(db, selection):
     return rows
 
 
-async def check_result(db, job, actor, acknowledged=False):
+async def check_result(db, job, actor, acknowledged=False, *, observation=None, commit=True):
     doc = job.document
     retry_after = None
     try:
-        remote = await asyncio.to_thread(read_family,doc['identity'],doc['fingerprint'])
+        remote = observation if observation is not None else await asyncio.to_thread(read_family,doc['identity'],doc['fingerprint'])
         protected, actual = projection(remote)
         if acknowledged and protected != doc['protected'] and protected==doc.get('before_protected') and actual==doc['before_axes']:
             state, reason = 'blocked', 'Upgates po zápise stále vracia pôvodný EAN.'
@@ -249,14 +259,33 @@ async def check_result(db, job, actor, acknowledged=False):
         if state=='verified' and 'new_ean' in entry:
             note = (f"EAN {entry['ean']} → {entry['new_ean']}. Oba kódy sú na pôvodnej karte. "
                     if entry['ean'] else f"Doplnený chýbajúci EAN {entry['new_ean']} z existujúcej karty. ")
+            if entry['values']:
+                note += 'Parametre podľa Atomeru: '+', '.join(f'{k} = {v}' for k,v in entry['values'].items())+'. '
             note += 'Overené v xTreku. '+entry['proof']
         await outcome(db,entry['code'],actor,'open' if state=='verified' else 'blocked',ref+note,'variant_'+state)
-    await db.commit()
+    if commit:
+        await db.commit()
     return {'status':state,'count':len(doc['rows']),'reason':reason,'id':job.id,'retry_after':retry_after}
 
 
+def native_identity(rows):
+    first = rows[0]
+    return {'code':first['target'],'parent_code':first['parent'],'variant_code':first['target'],
+            'product_id':int(first['pid']),'variant_id':int(first['vid'])}
+
+
+def prepare(selection, rows, identity, fingerprint, before, actor):
+    protected, axes = projection(before)
+    after, payload = desired_patch(before,rows)
+    expected = recode.protect_expected(protected,rows) if isinstance(selection,recode.BarcodeFamily) else protected
+    doc = {'identity':identity,'fingerprint':fingerprint,'rows':rows,'backup':before,'before_axes':axes,
+           'protected':expected,'before_protected':protected,'after':after,'actor':actor,
+           'run_id':selection.run_id,'source_sha':selection.source_sha}
+    return doc, payload
+
+
 async def process(db, selection, mode, actor):
-    job_id = digest(selection.model_dump())
+    job_id = selection_id(selection)
     current = await db.scalar(text("SELECT max(id) FROM atomer_progress_runs"))
     await work._lock_current_run(db,current)
     row = await db.get(AtomerVariantRepair,job_id,with_for_update=True)
@@ -295,21 +324,15 @@ async def process(db, selection, mode, actor):
     selected = await select_rows(db,selection)
     first = selected[0]
     await require_target_available(db,'xtrek',first['parent'])
-    identity = {'code':first['target'],'parent_code':first['parent'],'variant_code':first['target'],
-                'product_id':int(first['pid']),'variant_id':int(first['vid'])}
+    identity = native_identity(selected)
     fingerprint = target_fingerprint('xtrek')
     before = await asyncio.to_thread(read_family,identity,fingerprint)
-    protected, axes = projection(before)
-    after, payload = desired_patch(before,selected)
-    before_protected = protected
+    doc, payload = prepare(selection,selected,identity,fingerprint,before,actor)
     if isinstance(selection,recode.BarcodeFamily):
-        protected = recode.protect_expected(protected,selected)
         since = await db.scalar(text("SELECT checked_at FROM atomer_progress_runs WHERE id=:run"),{'run':selection.run_id})
         await asyncio.to_thread(recode.check_changed_catalog,fingerprint,since,selected)
     if mode=='preview':
         return {'status':'ready','id':job_id,'count':len(selected)}
-    doc = {'identity':identity,'fingerprint':fingerprint,'rows':selected,'backup':before,'before_axes':axes,
-           'protected':protected,'before_protected':before_protected,'after':after,'actor':actor,'run_id':selection.run_id,'source_sha':head_sha}
     job = AtomerVariantRepair(id=job_id,parent_code=first['parent'],state='sending',document=doc)
     db.add(job)
     for item in selected:

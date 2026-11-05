@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { hubRequest } from '../api/access';
 
 type Family = { operation?:'verified_barcode'; run_id:number; source_sha:string; rows:{code:string}[] };
-type Plan = { families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
+type Plan = { packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
 type Result = { retry_after?:number; status:string; count:number; reason?:string };
 const base = '/api/migration/atomer-progress';
 
@@ -18,8 +18,10 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
     try {
       if (file.size>1000000) throw Error();
       const p:Plan=JSON.parse(await file.text());
-      if (!(p.families?.length||p.blocks) || (p.families||[]).length>200 ||
-          p.families?.some(f=>f.run_id!==run||!Array.isArray(f.rows)||!f.rows.length) || (p.blocks && p.blocks.run_id!==run)) throw Error();
+      const families=[...(p.families||[]),...(p.packs||[]).flatMap(pack=>pack.families)];
+      if (!(families.length||p.blocks) || families.length>200 ||
+          p.packs?.some(pack=>!pack.families.length||pack.families.length>25) ||
+          families.some(f=>f.run_id!==run||!Array.isArray(f.rows)||!f.rows.length) || (p.blocks && p.blocks.run_id!==run)) throw Error();
       setPlan(p);
     } catch {setLog([m('invalid')]);}
   }
@@ -27,26 +29,32 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
     if (!plan||busy) return;
     setBusy(true);setLog([]);setReady(false);
     try {
-      for (const family of plan.families||[]) {
-        const {operation,...selection}=family;
-        const path=operation==='verified_barcode'?'/verified-barcodes/':'/variant-parameters/';
-        const send=()=>hubRequest<Result>(base+path+(preview?'preview':'apply'),selection);
+      const requests=(plan.families||[]).map(({operation,...selection})=>({
+        path:operation==='verified_barcode'?'/verified-barcodes/':'/variant-parameters/',
+        label:selection.rows[0].code,body:selection as unknown
+      }));
+      for (const pack of plan.packs||[]) requests.push({
+        path:'/review-batch/',label:pack.families[0].rows[0].code,
+        body:{families:pack.families.map(({operation,...family})=>family)}
+      });
+      for (const {path,label,body} of requests) {
+        const send=()=>hubRequest<Result>(base+path+(preview?'preview':'apply'),body);
         let r:Result;
         for (;;) {
           try {
             r=await send();
             if (!r.retry_after || r.status!=='uncertain') break;
-            setLog(v=>[...v,family.rows[0].code+' · '+m('rateWait')+' '+r.retry_after+' s']);
+            setLog(v=>[...v,label+' · '+m('rateWait')+' '+r.retry_after+' s']);
             await new Promise(resolve=>window.setTimeout(resolve,((r.retry_after||60)+1)*1000));
           } catch(e) {
             const err=e as {code?:string;detail?:{retry_after?:number}};
             if (err.code!=='stock_publication_rate_limited') throw e;
             const sec=Math.max(5,Math.min(86400,Number(err.detail?.retry_after)||60));
-            setLog(v=>[...v,family.rows[0].code+' · '+m('rateWait')+' '+sec+' s']);
+            setLog(v=>[...v,label+' · '+m('rateWait')+' '+sec+' s']);
             await new Promise(resolve=>window.setTimeout(resolve,(sec+1)*1000));
           }
         }
-        setLog(v=>[...v,family.rows[0].code+' · '+m(r.status)+' ('+r.count+') '+(r.reason||'')]);
+        setLog(v=>[...v,label+' · '+m(r.status)+' ('+r.count+') '+(r.reason||'')]);
         if (!['ready','verified'].includes(r.status)) return;
       }
       if (plan.blocks) {
