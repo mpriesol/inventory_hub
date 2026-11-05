@@ -35,8 +35,9 @@ class NativeCatalogObservationTests(TestCase):
         now=datetime.now(timezone.utc)
         cached={'pulled_at':now.isoformat(),'products':[parent(12,35)]}
         updated=parent(12,36); added=parent(13,78)
-        with patch.object(observe,'total',return_value=2),patch.object(observe,'page_rows',return_value=[updated,added]):
+        with patch.object(observe,'total',return_value=2),patch.object(observe,'page_rows',return_value=[updated,added]) as changes:
             self.assertEqual(observe.recent_products(None,cached,now),[updated,added])
+            self.assertNotIn('.',changes.call_args.args[2]['last_update_time_from'])
         with patch.object(observe,'total',return_value=1),patch.object(observe,'page_rows',return_value=[added]):
             self.assertIsNone(observe.recent_products(None,cached,now))
 

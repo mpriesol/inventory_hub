@@ -132,7 +132,7 @@ def check_changed_catalog(fingerprint, since, entries):
     try:
         total=None
         for page in range(1,51):
-            data=transport._request(client,'get','products',params={'last_update_time_from':since.isoformat(),
+            data=transport._request(client,'get','products',params={'last_update_time_from':since.isoformat(timespec="seconds"),
                 'page':page,'current_page_items':100})
             products=data.get('products')
             if (not isinstance(products,list) or data.get('current_page')!=page or len(products)!=data.get('current_page_items')

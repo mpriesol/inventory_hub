@@ -89,6 +89,16 @@ class RepairDatabaseTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SupplierRecodeTests(TestCase):
+    def test_supplier_link_has_a_stable_json_plan_id(self):
+        from inventory_hub.services.atomer_recode import BarcodeFamily
+        values=dict(run_id=1,source_sha='a'*64,rows=[dict(code='item',revision=0,before={'Size':'M'},
+            old_code='old',old_ean='123',new_ean='456',card=1,manufacturer_or_supplier='https://example.org/proof',
+            evidence='Supplier identifies the exact size and previous product code.',decision='same_item_supplier_recode')])
+        plan=BarcodeFamily.model_validate(values)
+        expected={**values,'rows':[{**values['rows'][0],'product_id':None,'variant_id':None}]}
+        self.assertEqual(repair.selection_id(plan),repair.digest(expected))
+        self.assertEqual(repair.selection_id(plan),repair.selection_id(BarcodeFamily.model_validate_json(plan.model_dump_json())))
+
     def test_patch_has_only_the_exact_leaf_barcode_and_checks_stock(self):
         from inventory_hub.services import atomer_recode
         a,b=variant('first',11,'Blue'),variant('other',12,'Black')
