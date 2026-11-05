@@ -66,3 +66,5 @@ používajú spoločné stránkované čítanie podľa natívnych ID. Jedna skup
 každej rodiny. Aj po čiastočnej odpovedi overí rodiny jednotlivo. Obnova neistého zápisu
 vykonáva iba čítanie. Odložený zápis možno zopakovať po preukázanom lokálnom odmietnutí
 pred odoslaním a opätovnom overení pôvodného stavu.
+
+Ak ten istý presne identifikovaný variant pri doplnení chýbajúceho EAN vyžaduje aj opravu osi, voliteľné pole `names` umožní v rovnakej overenej požiadavke použiť hodnoty parametrov z uloženého zdroja Atomeru.

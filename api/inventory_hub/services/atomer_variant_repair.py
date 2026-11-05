@@ -54,6 +54,14 @@ def digest(obj):
     return sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
+def selection_id(selection):
+    data = selection.model_dump()
+    for row in data['rows']:
+        if row.get('names',False) is None:
+            del row['names']
+    return digest(data)
+
+
 def axis_values(variant):
     result = {}
     params = variant.get('parameters')
@@ -118,15 +126,17 @@ def desired_patch(observation, selected):
         if (not leaf or leaf['code'] != entry['target'] or (leaf.get('ean') or '') != (entry['ean'] or '')
                 or before[vid] != entry['before']):
             raise ReviewError('variant_preview_changed')
+        patch = {'code':leaf['code']}
         if 'new_ean' in entry:
-            leaves.append({'code':leaf['code'],'ean':entry['new_ean']})
-            continue
-        after[vid].update(entry['values'])
+            patch['ean'] = entry['new_ean']
+        after[vid].update(entry.get('values',{}))
         if before[vid] != after[vid]:
             params = [{'descriptions':[{'language':'sk','name':name}],
                        'values':[{'descriptions':[{'language':'sk','value':value}]}]}
                       for name,value in after[vid].items()]
-            leaves.append({'code':leaf['code'],'parameters':params})
+            patch['parameters'] = params
+        if len(patch)>1:
+            leaves.append(patch)
     def key(axes):
         return tuple(sorted((' '.join(n.split()).casefold(),' '.join(v.split()).casefold()) for n,v in axes.items()))
     counts = Counter(key(a) for a in after.values())
@@ -249,6 +259,8 @@ async def check_result(db, job, actor, acknowledged=False, *, observation=None, 
         if state=='verified' and 'new_ean' in entry:
             note = (f"EAN {entry['ean']} → {entry['new_ean']}. Oba kódy sú na pôvodnej karte. "
                     if entry['ean'] else f"Doplnený chýbajúci EAN {entry['new_ean']} z existujúcej karty. ")
+            if entry['values']:
+                note += 'Parametre podľa Atomeru: '+', '.join(f'{k} = {v}' for k,v in entry['values'].items())+'. '
             note += 'Overené v xTreku. '+entry['proof']
         await outcome(db,entry['code'],actor,'open' if state=='verified' else 'blocked',ref+note,'variant_'+state)
     if commit:
@@ -273,7 +285,7 @@ def prepare(selection, rows, identity, fingerprint, before, actor):
 
 
 async def process(db, selection, mode, actor):
-    job_id = digest(selection.model_dump())
+    job_id = selection_id(selection)
     current = await db.scalar(text("SELECT max(id) FROM atomer_progress_runs"))
     await work._lock_current_run(db,current)
     row = await db.get(AtomerVariantRepair,job_id,with_for_update=True)

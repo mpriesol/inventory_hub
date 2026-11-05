@@ -101,7 +101,7 @@ async def process(db, pack, mode, actor):
     fingerprint = repairs.target_fingerprint('xtrek')
     saved, fresh, recovery, parents = {}, {}, {}, set()
     for selection in selections:
-        key = repairs.digest(selection.model_dump())
+        key = repairs.selection_id(selection)
         job = await db.get(AtomerVariantRepair,key,with_for_update=True)
         if job and job.state=='verified':
             continue
