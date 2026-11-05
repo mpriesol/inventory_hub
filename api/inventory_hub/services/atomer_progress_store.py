@@ -29,6 +29,21 @@ async def latest(db):
     return (await db.execute(query)).mappings().first()
 
 
+def apply_availability_reviews(rows,remote,outstanding):
+    if not outstanding:
+        return
+    observed={(v["pid"],v["vid"],v["code"]):v.get("availability") for v in remote}
+    expected={(pid,vid,code):label for code,pid,vid,label in outstanding}
+    for row in rows:
+        key=(row["product_id"],row["variant_id"],row["target_code"])
+        if key in expected and row["code"]==row["target_code"]:
+            actual,label=observed.get(key),expected[key]
+            if str(actual or "").casefold()!=label.casefold():
+                row["state"]="review"
+                row["reasons"]=sorted(set(row["reasons"])|{"availability_differs"})
+                row["availability_review"]={"atomer":label,"xtrek":actual}
+
+
 async def refresh(db: AsyncSession, source, expected, only_if_stale=False, review_pins=None, buyers_archive=None,
                   admin_archive=None, admin_complete=False):
     await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
@@ -79,6 +94,16 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
     xtrek_links = [link for link in links if link.shop_id == shop_ids["xtrek"]]
     rows = await asyncio.to_thread(progress.reconcile, catalog, remote, card_index,
                                    xtrek_links, overrides, bike_links, bike_targets)
+    outstanding=(await db.execute(text("""
+        SELECT DISTINCT ON (a.key) a.key,j.document->'identity'->>'product_id',
+               j.document->'observed_ids'->>a.key,a.value->>1
+        FROM atomer_variant_repairs j
+        CROSS JOIN LATERAL jsonb_each(j.document->'availability_outstanding') AS a
+        JOIN atomer_review_work w ON w.kind='item' AND w.key=a.key AND w.status='blocked'
+        WHERE j.state='blocked' AND j.document->>'source_sha'=:sha
+        ORDER BY a.key,j.updated_at DESC
+    """),{"sha":digest})).all()
+    apply_availability_reviews(rows,remote,outstanding)
     source_state.add_states(catalog,rows,admin)
     await review_targets.register(db,review_pins)
     pins = dict((await db.execute(text("SELECT key,identity FROM atomer_review_targets"))).all())

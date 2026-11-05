@@ -89,6 +89,7 @@
     "ean_differs": "The xTrek EAN differs.",
     "parent_differs": "More than one parent product matches this family.",
     "parameters_differ": "Variant parameters differ from Atomer.",
+    "availability_differs": "Variant availability differs from Atomer. The review result shows both values.",
     "occupied_parameters": "Another xTrek listing occupies these parameters.",
     "card_identity_conflict": "The inventory card identifiers disagree.",
     "multiple_cards": "Several inventory cards match.",

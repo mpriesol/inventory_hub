@@ -102,3 +102,16 @@ class GenerationTests(unittest.TestCase):
         with patch.object(gen,"observe",return_value=({"A":123},["price"])):
             with self.assertRaises(ReviewError):
                 verify_except_availability(doc,obs)
+
+    def test_refreshed_review_uses_current_exact_availability(self):
+        from inventory_hub.services.atomer_progress_store import apply_availability_reviews
+        row=dict(code="A",target_code="A",product_id="52",variant_id="21",state="linked",reasons=[])
+        observed=[dict(pid="52",vid="21",code="A",availability="Stock")]
+        expected=[("A","52","21","Five days")]
+        apply_availability_reviews([row],observed,expected)
+        self.assertEqual(row["state"],"review")
+        self.assertEqual(row["availability_review"]["xtrek"],"Stock")
+        ok=dict(row,state="linked",reasons=[])
+        observed[0]["availability"]="Five days"
+        apply_availability_reviews([ok],observed,expected)
+        self.assertEqual(ok["state"],"linked")
