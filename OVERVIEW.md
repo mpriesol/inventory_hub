@@ -500,3 +500,5 @@ Spätná kontrola nových generácií umožňuje podľa pôvodného zámeru obno
 Pri nezhode dostupnosti môže Hub doložiť kartu a presný parameter generácie, pričom riadok ostáva blokovaný do potvrdenia natívnej dostupnosti.
 
 The Atomer migration report supports audited batch acceptance of the displayed proposals and scoped availability reconciliation after a shop policy change. See [migration progress](docs/atomer-migration-progress.md).
+
+Atomer catalog migration now has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. See [migration progress](docs/atomer-migration-progress.md).

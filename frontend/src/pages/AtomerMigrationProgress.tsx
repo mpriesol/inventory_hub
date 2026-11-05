@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AtomerReviewEditor, suggestionsFor } from './AtomerReviewEditor';
+import { AtomerCatalogRun } from './AtomerCatalogRun';
 import { AtomerReviewBatch } from './AtomerReviewBatch';
 import { AtomerReviewLists } from './AtomerReviewLists';
 import { ExternalLink } from 'lucide-react';
@@ -175,6 +176,10 @@ export function AtomerMigrationProgress() {
     {error && <p role="alert" className="progress-warning">{t('atomerProgress.errors.'+error,{defaultValue:m('errors.failed')})}
       {error==='remote_read_failed' && readReason && <> <code>{readReason}</code></>}</p>}
     {run && <>
+      <AtomerCatalogRun revision={revision} onFamily={key=>{
+        setUrl({});setKind('');setState('');setCard('');setBike('');setWorkFilter('all');
+        setQuery(key.replace(/^[vs]:/,''));setOffset(0);setExpanded(new Set([key]));
+      }}/>
       <div className="progress-counts">
         {[[m('kinds.variant'),run.totals.kinds.variant||0],[m('kinds.standalone'),run.totals.kinds.standalone||0],
           [m('states.linked'),run.totals.states.linked||0],[m('bikeLinked'),run.totals.bike.linked||0],

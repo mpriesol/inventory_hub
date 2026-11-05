@@ -11,7 +11,7 @@ from inventory_hub.database import get_session
 from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
-from inventory_hub.services import atomer_proposals, atomer_review as review
+from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
@@ -211,5 +211,33 @@ async def changed_stock_policy(mode: Literal["preview","apply"],selection: Chang
                                db: AsyncSession = Depends(get_session)):
     try:
         return await atomer_generation_availability.after_stock_policy_change(db,selection,mode,_actor(request))
+    except (ReviewError,CatalogError,SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
+
+@router.get("/catalog-engine")
+async def catalog_engine_status(db: AsyncSession = Depends(get_session)):
+    return await atomer_catalog_engine.status(db)
+
+
+@router.get("/catalog-engine/family")
+async def catalog_family_status(family: str = Query(min_length=1,max_length=260),
+                                db: AsyncSession = Depends(get_session)):
+    return await atomer_catalog_engine.details(db,family)
+
+
+@router.post("/catalog-engine/{mode}")
+async def catalog_engine_start(mode: Literal["preview","apply"], selection: atomer_catalog_engine.Selection,
+                               request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_engine.process(db,selection,mode,_actor(request))
+    except (ReviewError,CatalogError,SourceError,AtomerSourceError) as error:
+        raise HTTPException(getattr(error,"status",422),detail={"code":error.code,
+            "retry_after":getattr(error,"retry_after",None)}) from None
+
+@router.post("/generation-observation")
+async def observe_generation_selection(selection: atomer_generations.Selection, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import atomer_conflict_resolution
+    try:
+        return await atomer_conflict_resolution.observe_generations(db, selection)
     except (ReviewError,CatalogError,SourceError) as error:
         raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None

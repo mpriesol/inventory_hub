@@ -3,12 +3,14 @@ import csv
 from collections import defaultdict
 import hashlib
 import io
+import json
 import re
 import unicodedata
 import zlib
 
 from sqlalchemy import text
 from inventory_hub.services.atomer_review_targets import ReviewError
+from inventory_hub.services.product_identity import verified_barcodes
 
 
 CATALOG_CODES = ("katalogovecislo", "katalogovecislotovaru", "katalogovecislozbozi", "katcislo", "cataloguecode", "productid")
@@ -69,10 +71,38 @@ def _safe_id(value):
     return len(value) <= 255 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
 
 
+def native_catalog_code(raw, parent, ean):
+    """Recover an ASCII SKU embedded as UTF-16LE only with a matching parent and valid GTIN."""
+    code = (raw or '').strip()
+    if '\x00' not in code:
+        return code
+    prefix = (parent or '').strip().removesuffix('x').removesuffix('X')
+    if len(prefix)<3 or (ean or '').strip() not in verified_barcodes([ean]):
+        return code
+    # Atomer can export a single UTF-16LE cell inside the otherwise single-byte CSV.
+    # Accept only a lossless alternating-byte encoding of an entire SKU.
+    if not re.fullmatch(r'[a-zA-Z0-9_-](?:\x00[a-zA-Z0-9._-]){3,99}\x00?', code):
+        return code
+    candidate = code[::2]
+    encoded = candidate.encode('utf-16le')
+    if code.encode('ascii') not in (encoded, encoded[:-1]) or not candidate.casefold().startswith(prefix.casefold()+'-'):
+        return code
+    return candidate
+
+
 def _combine_admin_rows(rows):
     """Keep every identity as presence evidence, but expose only agreed values."""
     combined = rows[0].copy()
     if all(row == combined for row in rows):
+        return combined
+    # A repeated physical leaf can have two administrative row numbers and galleries.
+    # Preserve both native references only when every commercial cell agrees.
+    if (combined.get("parent") and combined.get("ean") in verified_barcodes([combined.get("ean")])
+            and len({row.get("commercial_signature") for row in rows}) == 1
+            and combined.get("commercial_signature")
+            and all({k:v for k,v in r.items() if k!="internal_id"}==
+                    {k:v for k,v in combined.items() if k!="internal_id"} for r in rows)):
+        combined["internal_ids"] = sorted({row["internal_id"] for row in rows if row["internal_id"]})
         return combined
     combined["conflict"] = True
     combined["internal_ids"] = sorted({row["internal_id"] for row in rows if row["internal_id"]})
@@ -123,6 +153,7 @@ def parse_admin(data):
         barcode, name, brand = field(BARCODES), field(NAMES), field(BRANDS)
         if code_column is None or active is None:
             raise ValueError()
+        commercial = [i for i,h in enumerate(headers) if i!=internal and normalized(h)!='obrazky']
         result, duplicates = AdminCatalog(), {}
         for index, row in enumerate(reader):
             if not row:
@@ -136,10 +167,10 @@ def parse_admin(data):
             has_catalog_code = bool(code and catalog is not None)
             internal_id = row[internal].strip() if internal is not None else ""
             parent_code = row[parent].strip() if parent is not None and catalog is not None else None
-            code = code or internal_id
+            ean = row[barcode].strip() if barcode is not None else ""
+            code = native_catalog_code(code,parent_code,ean) or internal_id
             if parent_code in ("0", code):
                 parent_code = ""
-            ean = row[barcode].strip() if barcode is not None else ""
             if not _safe_id(internal_id):
                 raise ValueError()
             if not code or not all(_safe_id(v) for v in (code, parent_code or "", ean)):
@@ -151,7 +182,9 @@ def parse_admin(data):
                 if parent_code and _safe_id(parent_code):
                     result.quarantined_parents.add(parent_code)
                 continue
-            value = {"internal_id": internal_id, "has_catalog_code": has_catalog_code,
+            signature = hashlib.sha256(json.dumps([row[i] for i in commercial],ensure_ascii=False,
+                                                   separators=(',',':')).encode()).digest()
+            value = {"commercial_signature":signature.hex(), "internal_id": internal_id, "has_catalog_code": has_catalog_code,
                      "visibility": flag(row[active]), "visibility_raw": row[active], "ean": ean,
                      "flags": {heading: row[pos] for heading, pos in flag_columns.items()}, "parent": parent_code,
                      "name": row[name].strip() if name is not None else "",

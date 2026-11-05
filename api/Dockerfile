@@ -59,6 +59,7 @@ COPY infra/db-init/036_stock_sync_dirty.sql /app/inventory_hub/migrations/036_st
 COPY infra/db-init/037_atomer_progress.sql /app/inventory_hub/migrations/037_atomer_progress.sql
 COPY infra/db-init/038_atomer_review.sql /app/inventory_hub/migrations/038_atomer_review.sql
 COPY infra/db-init/039_atomer_variant_repairs.sql /app/inventory_hub/migrations/039_atomer_variant_repairs.sql
+COPY infra/db-init/040_atomer_catalog_campaign.sql /app/inventory_hub/migrations/040_atomer_catalog_campaign.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

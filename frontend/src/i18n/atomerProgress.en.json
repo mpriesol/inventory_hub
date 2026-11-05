@@ -239,6 +239,41 @@
     "blocked": "Blocked",
     "sending": "Sending",
     "uncertain": "Readback required",
-    "error": "Processing failed"
+    "error": "Processing failed",
+    "catalog": "Migration to xTrek",
+    "registered": "Registered in the Hub"
+  },
+  "engine": {
+    "title": "Migration to xTrek",
+    "verifiedLeaves": "verified sellable codes",
+    "families": "products",
+    "pending": "Pending",
+    "partial": "Partial",
+    "blocked": "Needs review",
+    "excluded": "Manual exceptions",
+    "next": "Next check",
+    "showIssues": "Products requiring review",
+    "unavailable": "Could not load the current migration status.",
+    "states": {
+      "idle": "Idle",
+      "running": "Running",
+      "waiting": "Waiting for the next batch",
+      "review": "Needs review",
+      "done": "Completed",
+      "source_changed": "Source was updated"
+    },
+    "receipts": "Results by product",
+    "product": "Product",
+    "choose": "Select a product",
+    "openProduct": "Open in catalog",
+    "awaitingProof": "This family is still being verified.",
+    "card": "Hub card",
+    "result": "Result",
+    "proof": {
+      "verified": "Verified",
+      "partial": "Partial",
+      "blocked": "Needs review",
+      "excluded": "Manual exception"
+    }
   }
 }
