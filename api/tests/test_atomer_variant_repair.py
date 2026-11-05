@@ -105,3 +105,80 @@ class SupplierRecodeTests(TestCase):
         protected['leaves']['11'][0]['stock']='1'
         with self.assertRaisesRegex(ReviewError,'stock_or_ean'):
             atomer_recode.protect_expected(protected,[row])
+
+
+class BatchReadTests(TestCase):
+    def test_read_uses_exact_parent_ids_and_rejects_an_extra_leaf(self):
+        from inventory_hub.services import atomer_family_batch as batch
+        from unittest.mock import MagicMock
+        parents=[]
+        leaves=[]
+        identities=[]
+        for pid in (1,2):
+            code=f'group-{pid}'
+            leaf=dict(variant(code+'-a',pid*10,'Blue'),product_id=pid,product_code=code)
+            parent=dict(code=code,product_id=pid,variants=[leaf],variants_exists_yn=True)
+            parents.append(parent)
+            leaves.append(leaf)
+            identities.append({'parent_code':code,'product_id':pid,'variant_id':pid*10,'code':leaf['code'],'variant_code':leaf['code']})
+        def page(key,rows):
+            return {'current_page':1,'number_of_pages':1,'current_page_items':len(rows),'number_of_items':len(rows),key:rows}
+        with patch.object(batch.transport,'_client',return_value=MagicMock()),patch.object(batch.transport,'_request',
+                side_effect=[page('products',parents),page('variants',leaves)]) as get:
+            self.assertEqual(set(batch.read_batch(identities,'fingerprint')),{1,2})
+            self.assertTrue(all(c.kwargs['params']['product_ids']=='1;2' for c in get.call_args_list))
+        with patch.object(batch.transport,'_client',return_value=MagicMock()),patch.object(batch.transport,'_request',
+                side_effect=[page('products',parents),page('variants',leaves+[dict(leaves[0],variant_id=987)])]):
+            with self.assertRaisesRegex(ReviewError,'changed'):
+                batch.read_batch(identities,'fingerprint')
+
+
+@unittest.skipUnless(fixture.TEST_URL,'Dedicated local catalog test database required')
+class BatchDatabaseTest(unittest.IsolatedAsyncioTestCase):
+    write_feed = fixture.CatalogDatabaseTests.write_feed
+    asyncSetUp = fixture.CatalogDatabaseTests.asyncSetUp
+    asyncTearDown = fixture.CatalogDatabaseTests.asyncTearDown
+
+    async def test_two_families_share_reads_and_put_but_recover_separately(self):
+        from inventory_hub.services import atomer_family_batch as batch
+        from inventory_hub.services.stock_publication_source import SourceError
+        root=Path(__file__).resolve().parents[2]/'infra/db-init'
+        async with self.engine.begin() as conn:
+            raw=await conn.get_raw_connection()
+            for name in ['037_atomer_progress.sql','038_atomer_review.sql']:
+                await raw.driver_connection.execute((root/name).read_text())
+        sha='c'*64
+        sources,items,families=[],[],[]
+        old={}
+        for pid in (1,2):
+            par,code=f'p-{pid}',f'v-{pid}'
+            vid=pid*10
+            sources.append(dict(code=code,parent=par,axes={'PARAM_1':'Large'},conflict=False))
+            items.append(dict(code=code,parent=par,target_parent=par,product_id=str(pid),variant_id=str(vid),
+                hub_id=None,target_code=code,target_ean=code,family_key='v:'+par,match='code_or_ean',reasons=['parameters_differ']))
+            leaf=dict(variant(code,vid,'Blue'),product_id=pid,product_code=par)
+            old[pid]={'parent':{'code':par,'variants':[deepcopy(leaf)]},'variants':[leaf]}
+            families.append(dict(run_id=1,source_sha=sha,rows=[dict(code=code,revision=0,before={'Colour':'Blue'},names={'PARAM_1':'Size'})]))
+        async with self.sessions() as db:
+            await db.execute(text("INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(:s,2,CAST(:data AS jsonb))"),dict(s=sha,data=json.dumps(sources)))
+            await db.execute(text("INSERT INTO atomer_progress_runs(source_sha256,checked_at,totals) VALUES(:s,now(),'{}')"),dict(s=sha))
+            for item in items:
+                await db.execute(text("INSERT INTO atomer_progress_items VALUES(1,:c,'variant','review',:f,CAST(:d AS jsonb))"),dict(c=item['code'],f=item['family_key'],d=json.dumps(item)))
+            await db.commit()
+        plan=batch.Pack(families=families)
+        new=deepcopy(old)
+        for obs in new.values(): obs['variants'][0]['parameters'].append({'name':{'sk':'Size'},'values':[{'sk':'Large'}]})
+        with patch.object(batch,'read_batch',side_effect=[old,old,SourceError('timeout'),new]) as fetch, \
+                patch.object(repair,'send') as send,patch.object(repair,'target_fingerprint',return_value='a'*64), \
+                patch.object(repair,'require_target_available',AsyncMock()):
+            async with self.sessions() as db:
+                self.assertEqual((await batch.process(db,plan,'preview','test'))['status'],'ready')
+                with self.assertRaises(SourceError):
+                    await batch.process(db,plan,'apply','test')
+                await db.rollback()
+                self.assertEqual((await batch.process(db,plan,'apply','test'))['status'],'verified')
+                self.assertEqual((await batch.process(db,plan,'apply','test'))['status'],'verified')
+                self.assertEqual(send.call_count,1)
+                self.assertEqual(len(send.call_args.args[0]['products']),2)
+                self.assertEqual(fetch.call_count,4)
+                self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_review_events")),4)

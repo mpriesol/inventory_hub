@@ -11,7 +11,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_review as review
-from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode
+from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
 from inventory_hub.services.atomer_source_state import archive
@@ -120,3 +120,11 @@ async def repair_barcodes(mode: Literal["preview","apply"], selection: atomer_re
         return await repairs.process(db,selection,mode,_actor(request))
     except (ReviewError, CatalogError, SourceError) as error:
         raise HTTPException(error.status,detail={"code":error.code, "retry_after":getattr(error,"retry_after",None)}) from None
+
+@router.post("/review-batch/{mode}")
+async def repair_batch(mode: Literal["preview","apply"], selection: atomer_family_batch.Pack,
+                       request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_family_batch.process(db,selection,mode,_actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
