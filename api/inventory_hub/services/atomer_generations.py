@@ -166,6 +166,12 @@ def image_paths(node):
     return paths
 
 
+def shipping_grams(value):
+    grams = publication.money(value) * 1000
+    require(grams == grams.to_integral_value(), "generation_weight_precision")
+    return int(grams)
+
+
 def new_leaf(row, item, evidence, parent, old_leaf, axes, options):
     node = etree.fromstring(row["raw_xml"].encode(), parser=etree.XMLParser(resolve_entities=False, no_network=True))
     state = evidence["source_state"]
@@ -186,19 +192,30 @@ def new_leaf(row, item, evidence, parent, old_leaf, axes, options):
     require(len(old_prices)==1 and publication.money(old_prices[0]["vat"])==vat, "generation_vat_changed")
     gross = publication.money(node.findtext("PRICE_VAT"))
     common = publication.money(node.findtext("PRICE_OLD") or "0")
-    weight = publication.money(node.findtext("WEIGHT"))
+    weight = shipping_grams(node.findtext("WEIGHT"))
     availability = (node.findtext("AVAILABILITY") or "").strip()
     require(gross>0 and availability and len(availability)<=80, "generation_price_or_availability_unknown")
     prices = [{"language":"sk","price_common":float(common),
                "pricelists":[{"name":options["pricelist"],"price_original":float(gross)}]}]
     images = image_paths(node)
-    payload = dict(code=item.code, ean=item.ean, active_yn=state["variant"], weight=float(weight),
-                   prices=prices, stock=0, availability=availability, parameters=parameters(axes_new))
+    payload = dict(code=item.code, ean=item.ean, active_yn=state["variant"], weight=weight,
+                   prices=prices, availability=availability, parameters=parameters(axes_new))
     if images:
         payload["images"] = [{"url":url, "position":i+1, "main_yn":i==0} for i,url in enumerate(images)]
     expected = dict(axes=axes_new, ean=item.ean, visible=state["variant"], gross=str(gross), common=str(common),
                     weight=str(weight), availability=availability, pricelist=options["pricelist"], images=images)
     return payload, expected
+
+
+def image_name(url):
+    name = PurePosixPath(urlsplit(url or "").path).name
+    # Upgates preserves the source stem while its downloader rewrites JPEG extensions.
+    return name[:-5]+".jpg" if name.lower().endswith(".jpeg") else name
+
+
+def same_image(native_url, source_url):
+    actual, source = image_name(native_url), image_name(source_url)
+    return bool(source) and (actual==source or actual.endswith("-"+source))
 
 
 def inspect_new(leaf, expected):
@@ -222,9 +239,8 @@ def inspect_new(leaf, expected):
     if expected["images"]:
         actual = leaf.get("images") or []
         for i,url in enumerate(expected["images"]):
-            name = PurePosixPath(urlsplit(url).path).name
-            matches = [img for img in actual if PurePosixPath(urlsplit(img.get("url") or "").path).name in (name,)
-                       or (img.get("url") or "").endswith("-"+name)]
+            name = image_name(url)
+            matches = [img for img in actual if same_image(img.get("url"),url)]
             if len(matches)!=1 or i==0 and not matches[0].get("main_yn"):
                 return "obrázok "+name
     return ""

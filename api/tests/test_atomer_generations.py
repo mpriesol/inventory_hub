@@ -45,9 +45,10 @@ class GenerationTests(unittest.TestCase):
         row=dict(ean=item.ean,parent_code="HELMET",manufacturer="Brand",raw_xml=raw)
         patch,expected=gen.new_leaf(row,item,evidence,dict(code="HELMET",manufacturer="Brand",active_yn=True),
             dict(prices=[dict(currency="EUR",language="sk",vat=23)]),{"Size":"M","Generácia":"Earlier"},{"pricelist":"Default"})
-        self.assertEqual(patch["stock"],0)
+        self.assertNotIn("stock",patch)
+        self.assertEqual(patch["weight"],300)
         self.assertNotIn("descriptions",patch)
-        leaf=dict(ean=item.ean,active_yn=True,stock=0,availability="Available",weight=0.3,
+        leaf=dict(ean=item.ean,active_yn=True,stock=0,availability="Available",weight=300,
             prices=[dict(currency="EUR",language="sk",price_common=24,pricelists=[dict(name="Default",price_with_vat=20)])],
             parameters=[dict(name={"sk":a},values=[{"sk":b}]) for a,b in expected["axes"].items()])
         self.assertEqual(gen.inspect_new(leaf,expected),"")
@@ -70,3 +71,21 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(missing_axes(desired,list(desired.items())),[])
         with self.assertRaises(ReviewError):
             missing_axes(desired,[("Size","XL")])
+
+    def test_restore_only_observed_parent_price_side_effect(self):
+        from inventory_hub.services.atomer_generation_recovery import check_prices
+        rows=[dict(language="sk",currency="EUR",vat=23,price_common=0,
+            pricelists=[dict(name="Default",price_original=10,price_with_vat=10,price_without_vat="8.13")])]
+        changed=deepcopy(rows)
+        changed[0]["price_common"]=30
+        changed[0]["pricelists"][0].update(price_original=20,price_with_vat=20,price_without_vat="16.26")
+        result=check_prices(rows,changed,{"NEW":{"gross":"20","common":"30"}})
+        self.assertEqual(result[0]["pricelists"][0]["price_original"],10)
+        changed[0]["vat"]=5
+        with self.assertRaises(ReviewError):
+            check_prices(rows,changed,{"NEW":{"gross":"20","common":"30"}})
+
+    def test_matching_jpeg_renames_keeps_the_complete_source_stem(self):
+        self.assertTrue(gen.same_image("https://cdn.example/abcd-12345.jpeg","https://store.example/12345.jpg"))
+        self.assertFalse(gen.same_image("https://cdn.example/abcd-012345.jpeg","https://store.example/12345.jpg"))
+        self.assertFalse(gen.same_image("https://cdn.example/abcd-12345.png","https://store.example/12345.jpg"))
