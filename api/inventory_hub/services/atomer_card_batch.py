@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Lock
+from urllib.parse import urlsplit
 
 from sqlalchemy import select, text
 
@@ -13,7 +14,9 @@ from inventory_hub.routers import upgates_sync as pull
 from inventory_hub.services import atomer_catalog_observation as observation, atomer_review as work
 from inventory_hub.services import atomer_review_targets, migration_upgates_export as export
 from inventory_hub.services import product_publication_source as publication
-from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, IdentityIndex, RemoteIdentity, barcode_keys
+from inventory_hub.services.product_identity import (
+    IDENTITY_WRITE_LOCK, IdentityIndex, RemoteIdentity, barcode_keys, verified_barcodes,
+)
 from inventory_hub.services.stock_publication_source import _client
 from inventory_hub.services.order_collection import target_fingerprint
 
@@ -21,6 +24,14 @@ SHOPS = ('xtrek', 'biketrek')
 MAX_BATCH = 2000
 _CATALOGS = {}
 _CATALOG_LOCKS = {s: Lock() for s in SHOPS}
+
+
+class ObservedCatalog(list):
+    """Pin a complete catalog to the start of its native read, also for negative lookup receipts."""
+    def __init__(self,parents,checked,fingerprint):
+        super().__init__(parents)
+        self.checked=checked
+        self.fingerprint=fingerprint
 
 
 class CardConflict(ValueError):
@@ -32,25 +43,35 @@ def require(ok, reason):
         raise CardConflict(reason)
 
 
-def _catalog(shop):
+def _catalog(shop,force_current=False):
     # A warm Hub cache can be validated with a delta and a total. Never reuse an
     # in-memory catalog after a credential-target change, even on the same shop.
     fp = target_fingerprint(shop)
     with _CATALOG_LOCKS[shop]:
         stamp = datetime.now(timezone.utc)
         old = _CATALOGS.get(shop)
-        if old and old[0] == fp and stamp - old[1] < timedelta(minutes=3):
+        if not force_current and shop=='xtrek' and old and old[0] == fp and stamp - old[1] < timedelta(minutes=3):
             return old[2]
         client = _client(shop,fp)
         try:
-            if old and old[0] == fp:
-                cache = dict(products=old[2],pulled_at=old[1].isoformat())
+            if old and old[0]==fp and timedelta(0)<=stamp-old[1]<=timedelta(hours=12):
+                # Our own watermark is the *start* of the previous native read.
+                # A warm negative BIKE lookup still needs fresh additions and tombstones.
+                indexed=observation.indexed(old[2],'product_id')
+                since=(old[1]-timedelta(seconds=2)).isoformat(timespec='seconds')
+                delta=observation.indexed(observation.page_rows(client,'products',{'last_update_time_from':since}),
+                                          'product_id')
+                indexed.update(delta)
+                parents=list(indexed.values()) if len(indexed)==observation.total(client,'products','products') else None
             else:
-                cache = pull._cache_load(shop)
-            parents = observation.recent_products(client,cache,stamp)
+                cache=pull._cache_load(shop) if old is None else None
+                if cache and cache.get('fingerprint')!=fp:
+                    cache=None
+                parents=observation.recent_products(client,cache,stamp)
             if parents is None:
                 parents = list(observation.page_rows(client,'products',{}))
-            parents = publication.plain(parents)
+                pull._cache_save(shop,publication.plain(parents),fingerprint=fp)
+            parents=ObservedCatalog(publication.plain(parents),stamp,fp)
             _CATALOGS[shop] = (fp,stamp,parents)
             return parents
         finally:
@@ -61,6 +82,13 @@ async def load_catalogs():
     """Return complete per-shop parent lists. Selected identities are always reread before use."""
     results=await asyncio.gather(*(asyncio.to_thread(_catalog,s) for s in SHOPS))
     return dict(zip(SHOPS,results))
+
+
+async def load_shop_catalog(shop):
+    """Current complete per-shop GTIN/SKU index for corrections before a native create."""
+    if shop not in SHOPS:
+        raise atomer_review_targets.ReviewError('shops_unavailable')
+    return await asyncio.to_thread(_catalog,shop,True)
 
 
 def _selected(shop, ids):
@@ -159,6 +187,25 @@ def raw_codes(lookup):
     return {str(v).strip() for v in lookup if v is not None and str(v).strip()}
 
 
+def barcode_subject(row,proof=None):
+    """Use the original SKU for placeholders. Only independent, source-pinned evidence replaces a GTIN."""
+    code,raw=row['code'],row.get('ean') or ''
+    if proof is not None:
+        ean=proof.get('ean') if isinstance(proof,dict) else None
+        url=urlsplit(str(proof.get('manufacturer_or_supplier') or '')) if isinstance(proof,dict) else None
+        card=proof.get('required_card_id') if isinstance(proof,dict) else None
+        require((raw or type(card) is int and card>0) and raw not in verified_barcodes([raw]) and isinstance(ean,str) and
+                ean in verified_barcodes([ean]) and proof.get('before')==raw and
+                proof.get('parent')==(row.get('parent') or code) and url.scheme=='https' and
+                url.hostname and not url.username and not url.password and len(str(proof.get('evidence') or ''))>=20,
+                'barcode_correction_evidence_changed')
+        return {**row,'ean':ean,'barcode_evidence':dict(proof)}
+    if raw==code and any(c.isalpha() for c in raw):
+        return {**row,'ean':'','barcode_evidence':{'before':raw,'type':'source_repeats_sku'}}
+    require(not raw or raw in verified_barcodes([raw]),'atomer_source_ean_unverified')
+    return row
+
+
 def agree_eans(source,identity):
     incoming=raw_codes([source])
     native=raw_codes(identity.barcodes)
@@ -179,7 +226,7 @@ def choose_x(row,catalog,anchor):
             'xtrek_code_or_kind_changed')
     if anchor is None:
         require((identity.parent_code or '')==(row.get('target_parent') or ''),'xtrek_parent_changed')
-        if row.get('target_ean'):
+        if row.get('target_ean') and (row.get('barcode_evidence') or {}).get('before')!=row['target_ean']:
             agree_eans(row['target_ean'],identity)
     elif identity.is_variant:
         require(identity.parent_code==row['parent'],'xtrek_parent_changed')
@@ -193,9 +240,9 @@ def choose_x(row,catalog,anchor):
     return key
 
 
-def choose_bike(row,catalog,x_identity=None,stored=None):
-    witness=raw_codes([row['code'],row.get('hub_sku'),x_identity.code if x_identity else None])
-    eans=raw_codes([row.get('ean'),*(x_identity.barcodes if x_identity else ())])
+def choose_bike(row,catalog,x_identity=None,stored=None,card_codes=(),card_eans=()):
+    witness=raw_codes([row['code'],row.get('hub_sku'),x_identity.code if x_identity else None,*card_codes])
+    eans=raw_codes([row.get('ean'),*(x_identity.barcodes if x_identity else ()),*card_eans])
     candidates=catalog.candidates(witness,eans)
     if stored:
         candidates.update(catalog.candidates([stored.external_code],[]))
@@ -212,10 +259,12 @@ def choose_bike(row,catalog,x_identity=None,stored=None):
                 (not stored.external_variant_id or stored.external_variant_id==key[1]) and
                 (not identity.is_variant or stored.parent_code==identity.parent_code),
                 'biketrek_stored_native_id_changed')
-    agree_eans(row.get('ean'),identity)
-    if x_identity:
-        for raw in x_identity.barcodes:
-            agree_eans(raw,identity)
+    for known in [row.get('ean'),*(x_identity.barcodes if x_identity else ())]:
+        if (row.get('barcode_evidence') or {}).get('before')!=known:
+            agree_eans(known,identity)
+    if barcode_keys(card_eans) and barcode_keys(identity.barcodes):
+        require(not barcode_keys(card_eans).isdisjoint(barcode_keys(identity.barcodes)),
+                'biketrek_stored_card_ean_differs')
     exact_gtin=bool(barcode_keys(eans) & barcode_keys(identity.barcodes))
     # GTIN can bridge shop-specific grouping (including old till variants).
     # Without it a variant must also have the same physical parent or an existing binding.
@@ -277,10 +326,15 @@ async def _indices(db,shops):
     identifiers=list(await db.scalars(select(ProductIdentifier)))
     mappings=list(await db.scalars(select(ShopProduct).where(ShopProduct.shop_id.in_([s.id for s in shops.values()]))))
     indexes={s:IdentityIndex(shop.id,products,[m for m in mappings if m.shop_id==shop.id],identifiers) for s,shop in shops.items()}
-    return IdentityIndex(0,products,(),identifiers),indexes
+    aliases=defaultdict(set)
+    local=IdentityIndex(0,products,(),identifiers)
+    for code,owners in local.exact_internal_sku.items():
+        for owner in owners:
+            aliases[owner].add(code)
+    return local,indexes,aliases
 
 
-async def _read_source_collisions(db, run_id, codes):
+async def _read_source_collisions(db, run_id, codes, corrections=None):
     # Compare all source rows, even those outside this batch. One canonical card may
     # never be silently claimed by two source sellables in different worker batches.
     rows=await db.execute(text("SELECT code,detail->>'ean' FROM atomer_progress_items WHERE run_id=:run"),
@@ -288,7 +342,7 @@ async def _read_source_collisions(db, run_id, codes):
     by_code,by_gtin=defaultdict(set),defaultdict(set)
     for code,ean in rows:
         by_code[code.casefold()].add(code)
-        for k in barcode_keys([ean]):
+        for k in barcode_keys([ean,(corrections or {}).get(code,{}).get('ean')]):
             by_gtin[k].add(code)
     blocked=set()
     for hits in [*by_code.values(),*by_gtin.values()]:
@@ -302,12 +356,17 @@ def _owner(resolution):
     return resolution.product_id
 
 
-def _plan(row,scope,catalogs,local,indexes,new_id):
+def _plan(row,scope,catalogs,local,indexes,new_id,aliases):
     owner=_owner(local.resolve(RemoteIdentity(0,row['code'],barcodes=(row['ean'],))))
     if row.get('hub_id') is not None:
         require(row['hub_id'] in local.products and (owner is None or owner==row['hub_id']),
                 'atomer_card_owner_changed')
         owner=row['hub_id']
+    corrected_card=(row.get('barcode_evidence') or {}).get('required_card_id')
+    if corrected_card is not None:
+        require(type(corrected_card) is int and owner==corrected_card and
+                not barcode_keys([row['ean']]).isdisjoint(barcode_keys(local.product_barcodes.get(owner,()))),
+                'confirmed_corrected_card_gtin_required')
     keys={}
     x_identity=None
     if scope!='biketrek':
@@ -320,7 +379,9 @@ def _plan(row,scope,catalogs,local,indexes,new_id):
     if scope!='xtrek':
         saved=indexes['biketrek'].by_product.get(owner,[])
         require(len(saved)<=1,'biketrek_multiple_card_links')
-        key=choose_bike(row,catalogs['biketrek'],x_identity,saved[0] if saved else None)
+        card_codes=({local.products[owner].sku}|aliases.get(owner,set())) if owner else set()
+        key=choose_bike(row,catalogs['biketrek'],x_identity,saved[0] if saved else None,
+                        card_codes,local.product_barcodes.get(owner,()))
         if key:
             keys['biketrek']=key
             _,identity,_=catalogs['biketrek'].get(key)
@@ -337,7 +398,14 @@ def _plan(row,scope,catalogs,local,indexes,new_id):
             incoming=barcode_keys([row['ean']])
             require(not incoming or not incoming.isdisjoint(barcode_keys(local.product_barcodes[owner])),
                     'atomer_card_ean_differs')
-    return {'scope':scope,'card':owner,'keys':keys}
+    proof=None
+    if scope!='xtrek' and 'biketrek' not in keys:
+        proof=dict(status='no_exact_catalog_match',
+                   skus=sorted(raw_codes([row['code'],row.get('hub_sku'),x_identity.code if x_identity else None,*card_codes])),
+                   gtins=sorted(barcode_keys([row.get('ean'),*(x_identity.barcodes if x_identity else ()),
+                                              *local.product_barcodes.get(owner,())])),
+                   indexed_leaves=len(catalogs['biketrek'].by_id))
+    return {'scope':scope,'card':owner,'keys':keys,'biketrek_check':proof}
 
 
 def _reject_collisions(plans,results):
@@ -401,7 +469,8 @@ async def _write_links(db,shop,selected,cat,results,apply):
         await links._cache_metadata(db,shop.id,saved)
 
 
-async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,include_managed=False,scopes=None):
+async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,include_managed=False,scopes=None,
+                    barcode_corrections=None):
     """Return per-code link receipts. The caller owns commit, work claim and its durable receipt.
 
     native_ids binds newly created leaves to stable product/variant IDs. An existing
@@ -412,8 +481,8 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
         raise atomer_review_targets.ReviewError('invalid_card_batch',422)
     if not actor:
         raise atomer_review_targets.ReviewError('operator_required',403)
-    native_ids=native_ids or {}; scopes=scopes or {}
-    if (set(native_ids)|set(scopes))-set(codes):
+    native_ids=native_ids or {}; scopes=scopes or {}; corrections=barcode_corrections or {}
+    if (set(native_ids)|set(scopes)|set(corrections))-set(codes) or any(not isinstance(v,dict) for v in corrections.values()):
         raise atomer_review_targets.ReviewError('invalid_card_batch',422)
     await work._lock_current_run(db,run_id)
     subjects=await _subjects(db,run_id,codes)
@@ -423,15 +492,17 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
     if set(shops)!=set(SHOPS) or set(base)!=set(SHOPS):
         raise atomer_review_targets.ReviewError('shops_unavailable')
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':IDENTITY_WRITE_LOCK})
-    local,indexes=await _indices(db,shops)
+    local,indexes,aliases=await _indices(db,shops)
     initial={s:Catalog.build(shops[s].id,base[s]) for s in SHOPS}
     results={}; usable={}; ids={s:set() for s in SHOPS}
-    duplicates=await _read_source_collisions(db,run_id,set(codes))
+    duplicates=await _read_source_collisions(db,run_id,set(codes),corrections)
     for code in codes:
         try:
             require(code in subjects,'source_subject_missing')
             require(code not in duplicates,'atomer_duplicate_physical_identity')
             row,item,family=subjects[code]
+            row=barcode_subject(row,corrections.get(code))
+            subjects[code]=(row,item,family)
             scope=effective_scope(item,family,scopes.get(code))
             states={item['status'],family['status']}
             if include_managed:
@@ -448,7 +519,11 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
                 source_owner=_owner(local.resolve(RemoteIdentity(0,code,barcodes=(row.get('ean'),))))
                 owners={i for i in (row.get('hub_id'),source_owner) if i}
                 witnesses={code,row.get('hub_sku'),row.get('target_code')}|{local.products[i].sku for i in owners if i in local.products}
-                candidates=initial['biketrek'].candidates(witnesses,[row.get('ean'),row.get('target_ean')])
+                card_gtins=set()
+                for owner in owners:
+                    witnesses.update(aliases.get(owner,()))
+                    card_gtins.update(local.product_barcodes.get(owner,()))
+                candidates=initial['biketrek'].candidates(witnesses,[row.get('ean'),row.get('target_ean'),*card_gtins])
                 for owner in owners:
                     for saved in indexes['biketrek'].by_product.get(owner,[]):
                         candidates.update(initial['biketrek'].candidates([saved.external_code],[]))
@@ -463,6 +538,8 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
     direct=dict(zip(SHOPS,fresh))
     current={}
     for s in SHOPS:
+        if isinstance(base[s],ObservedCatalog) and base[s].fingerprint!=target_fingerprint(s):
+            raise atomer_review_targets.ReviewError('target_connection_changed')
         merged={str(p['product_id']):p for p in base[s]}
         merged.update(direct[s])
         current[s]=Catalog.build(shops[s].id,list(merged.values()))
@@ -470,7 +547,7 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
     for code,scope in usable.items():
         row=subjects[code][0]
         try:
-            plan=_plan(row,scope,current,local,indexes,native_ids.get(code))
+            plan=_plan(row,scope,current,local,indexes,native_ids.get(code),aliases)
             for s,key in plan['keys'].items():
                 require(key[0] in direct[s],'native_target_requires_fresh_read')
             plans[code]=plan
@@ -481,6 +558,12 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
         card=plan['card']
         results[code]=dict(status='ready',reason='',hub_sku=local.products[card].sku if card else code,
                            card_id=card,xtrek=None,biketrek=None)
+        if plan['biketrek_check']:
+            results[code]['biketrek_check']=plan['biketrek_check']
+            if isinstance(base['biketrek'],ObservedCatalog):
+                results[code]['biketrek_check']['checked_at']=base['biketrek'].checked.isoformat()
+        if 'barcode_evidence' in subjects[code][0]:
+            results[code]['barcode_evidence']=subjects[code][0]['barcode_evidence']
         if not card:
             # Existing-card links are preflighted by _rows; a new card has no axes,
             # override or prior mapping. The ordinary import will recheck its family.

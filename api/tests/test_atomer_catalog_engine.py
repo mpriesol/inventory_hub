@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from inventory_hub.services import atomer_catalog_engine as engine
+from inventory_hub.services import atomer_catalog_fidelity as fidelity, atomer_catalog_recheck as recheck
 from inventory_hub.services.stock_publication_source import SourceError
 
 TEST_URL=os.environ.get('CATALOG_TEST_DATABASE_URL','')
@@ -24,6 +26,42 @@ def selection(**changes):
 
 
 class EngineSelectionTests(unittest.TestCase):
+    def test_apply_wakes_fixed_failure_without_bypassing_an_upstream_deadline(self):
+        waiting=dict(state='waiting',problem='stock_publication_source_unavailable',failures=4)
+        self.assertTrue(engine._wake(waiting,False))
+        self.assertTrue(engine._wake({**waiting,'state':'paused'},False))
+        self.assertTrue(engine._wake({**waiting,'problem':'registry','failures':0},True))
+        self.assertFalse(engine._wake({**waiting,'problem':'Limit Upgates. stock_publication_rate_limited'},True))
+        self.assertFalse(engine._wake({**waiting,'problem':'Čaká sa na spätnú kontrolu.','failures':0},False))
+    def test_recovery_pins_run_family_and_current_operator_revisions(self):
+        j=dict(campaign='c',family_key='v:P',stage='blocked',updated_at=datetime.now(timezone.utc))
+        group=dict(revision=0); rows={'a':dict(revision=3,status='blocked')}
+        rev=recheck.revision(j,7,rows,group)
+        self.assertNotEqual(rev,recheck.revision(j,8,rows,group))
+        self.assertNotEqual(rev,recheck.revision(j,7,{'a':dict(revision=4,status='done')},group))
+        self.assertEqual(selection(requeue={'v:P':rev}).families,['v:P'])
+        with self.assertRaises(ValidationError):
+            selection(scope='catalog',requeue={'v:P':rev})
+        with self.assertRaises(ValidationError):
+            selection(requeue={'v:another':rev})
+        for receipt in ({},{'dispatched':True}):
+            self.assertEqual(recheck.next_phase(dict(document={'payload':{}},receipt=receipt)),'observe')
+        self.assertEqual(recheck.next_phase(dict(document={'payload':{}},receipt={'dispatched':False})),'pending')
+        self.assertEqual(recheck.next_phase(dict(document={'payload':{}},receipt={'content_intent':{'pid':42}})),'updating')
+
+    def test_material_verification_anchors_aliases_and_reserves_bike_only_siblings(self):
+        g=dict(rows={'a':[],'b':[]},excluded={},blocked={},scope={'a':'default','b':'biketrek'})
+        j=dict(guards=g,receipt=dict(cards={'a':dict(evidence=dict(status='verified',card_id=12,
+                xtrek=dict(product_id=42,variant_id=43,code='existing-a')))}))
+        rows={'a':dict(detail=dict(kind='variant',target_parent='published-P',target_code='existing-a',
+                                   product_id=42,variant_id=43)),'b':dict(detail={})}
+        codes,ids=fidelity.targets(j,rows)
+        self.assertEqual(codes,{'a'})
+        self.assertEqual(ids,dict(product_id=42,product_code='published-P',variant_ids={'a':43},
+                                 variant_codes={'a':'existing-a'},allow_parent_write=False))
+        rows['a']['detail']['variant_id']=99
+        with self.assertRaises(engine.ReviewError):
+            fidelity.targets(j,rows)
     def test_large_families_are_isolated_and_boundaries_are_per_leaf(self):
         def job(n,stage='prepared'):
             return dict(leaf_count=n,stage=stage)
@@ -59,7 +97,7 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.pg=create_async_engine(TEST_URL.replace('postgresql://','postgresql+asyncpg://',1),
                     connect_args={'server_settings':{'search_path':self.schema}},poolclass=NullPool)
         root=Path(__file__).resolve().parents[2]/'infra'/'db-init'
-        for name in ('037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql'):
+        for name in ('037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql','041_atomer_catalog_content.sql'):
             await self.conn.execute((root/name).read_text())
         await self.conn.execute("""
             INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(repeat('a',64),2,'[]');
@@ -115,3 +153,32 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
             checked=await engine.status(db)
             self.assertEqual(checked['counts']['excluded'],1)
             self.assertEqual(await db.scalar(text("SELECT revision FROM atomer_review_work WHERE key='closed'")),2)
+
+    async def test_recovery_observes_an_uncertain_original_intent_and_respects_review_edits(self):
+        async with self.factory() as db:
+            await engine.process(db,selection(),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            rows,group=await engine._family(db,1,'v:P')
+            job=dict(await engine._one(db,"SELECT * FROM atomer_catalog_jobs WHERE family_key='v:P'"))
+            job['guards']=await engine._claim(db,c,job,rows,group)
+            await engine._job(db,c['id'],'v:P','sending',guards=job['guards'],document=dict(payload=dict(code='P')),
+                              receipt=dict(dispatched=True))
+            await engine._finish(db,c,job,{k:('blocked',dict(reason='Neistá odpoveď')) for k in rows})
+            await db.commit()
+            pin=(await engine.details(db,'v:P'))['recheck_revision']
+            await db.execute(text("""INSERT INTO atomer_progress_runs(source_sha256,admin_export_sha256,checked_at,totals)
+                    VALUES(repeat('a',64),repeat('b',64),now(),'{}');
+                    """))
+            await db.execute(text("""INSERT INTO atomer_progress_items(run_id,code,kind,state,family_key,detail)
+                    SELECT 2,code,kind,state,family_key,detail FROM atomer_progress_items WHERE run_id=1"""))
+            await db.commit()
+            with self.assertRaisesRegex(engine.ReviewError,'catalog_recheck_changed'):
+                await engine.process(db,selection(run_id=2,requeue={'v:P':pin}),'apply','operator')
+            await db.rollback()
+            newer=(await engine.details(db,'v:P'))['recheck_revision']
+            await engine.process(db,selection(run_id=2,requeue={'v:P':newer}),'preview','operator')
+            await engine.process(db,selection(run_id=2,requeue={'v:P':newer}),'apply','operator')
+            got=await engine._one(db,"SELECT stage,receipt FROM atomer_catalog_jobs WHERE family_key='v:P'")
+            self.assertEqual(got['stage'],'observe')
+            self.assertEqual(got['receipt']['last_recheck']['run_id'],2)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_review_events WHERE command='catalog_recheck'")),2)

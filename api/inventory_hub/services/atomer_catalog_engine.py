@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from inventory_hub import database
+from inventory_hub.services import atomer_catalog_recheck as recheck, atomer_category_restore as restore
 from inventory_hub.services import atomer_proposals as proposals, atomer_review as review
 from inventory_hub.services import atomer_variant_repair as repair
 from inventory_hub.services.atomer_review_targets import ReviewError
@@ -17,7 +18,7 @@ from inventory_hub.services.atomer_review_targets import ReviewError
 LOGGER = logging.getLogger(__name__)
 WORKER_LOCK = 691433150
 ACTIVE = ('running','waiting')
-RUNNABLE = ('pending','prepared','sending','observe','cards','related')
+RUNNABLE = ('pending','prepared','sending','observe','cards','related','fidelity','updating')
 MAX_LEAVES = 85
 MAX_GROUPS = 30
 Digest = Annotated[str, Field(pattern=r'^[a-f0-9]{64}$')]
@@ -34,6 +35,7 @@ class Selection(BaseModel):
     families: list[Token] = Field(default_factory=list,max_length=500)
     working: dict[Token,ID] = Field(default_factory=dict,max_length=500)
     categories: dict[Token,ID] = Field(default_factory=dict,max_length=2000)
+    category_restore: restore.Selection | None = None
     category_aliases: dict[Token,Token] = Field(default_factory=dict,max_length=2000)
     contextual_roots: list[Token] = Field(default_factory=list,max_length=100)
     property_names: dict[Token,Token] = Field(default_factory=dict,max_length=2000)
@@ -44,6 +46,8 @@ class Selection(BaseModel):
     # Specific trusted mappings from the native comparison and complete source,
     # optionally supplied when source numeric axis IDs cannot be named otherwise.
     named_axes: dict[Token,dict[Token,Token]] = Field(default_factory=dict,max_length=40000)
+    barcode_corrections: dict[Token,dict] = Field(default_factory=dict,max_length=4000)
+    requeue: dict[Token,Digest] = Field(default_factory=dict,max_length=300)
 
     @model_validator(mode='after')
     def bounded(self):
@@ -51,6 +55,8 @@ class Selection(BaseModel):
             raise ValueError('families_required')
         if len(set(self.families)) != len(self.families):
             raise ValueError('duplicate_family')
+        if self.requeue and (self.scope!='families' or set(self.requeue)!=set(self.families)):
+            raise ValueError('catalog_recheck_requires_exact_families')
         if any(not key.startswith(('v:','s:')) for key in self.families):
             raise ValueError('invalid_family')
         if any(not key.startswith(('item:','family:')) for key in self.working):
@@ -82,6 +88,16 @@ def _campaign_id(s):
     return sha256(f'xtrek/{s.source_sha}/{s.admin_sha}'.encode()).hexdigest()
 
 
+def _wake(c,changed):
+    if not c:
+        return False
+    if c['state']=='paused':
+        return True
+    reason=(c.get('problem') or '').casefold()
+    quota=any(marker in reason for marker in ('limit upgates','rate_limited','budget_deferred','http 429'))
+    return c['state']=='waiting' and not quota and bool(changed or c.get('failures',0))
+
+
 async def process(db,selection,mode,actor):
     if mode not in ('preview','apply'):
         raise ReviewError('catalog_mode_invalid',422)
@@ -98,10 +114,18 @@ async def process(db,selection,mode,actor):
     if not fp or current and fp!=current['shop_fingerprint']:
         raise ReviewError('target_connection_changed')
     merged=dict(current['selection']) if current else {}
-    fresh=selection.model_dump()
-    for key in ('categories','category_aliases','property_names','axis_names','brands','availability','labels','named_axes','working'):
+    fresh=selection.model_dump(exclude={'requeue'})
+    for key in ('categories','category_aliases','property_names','axis_names','brands','availability','labels','named_axes','barcode_corrections','working'):
         fresh[key]={**merged.get(key,{}),**fresh[key]}
     fresh['contextual_roots']=sorted(set(merged.get('contextual_roots',[])+fresh['contextual_roots']))
+    old_restore=merged.get('category_restore')
+    if old_restore:
+        requested=fresh.get('category_restore')
+        if requested and (requested['root_id'],requested['root_code'])!=(old_restore['root_id'],old_restore['root_code']):
+            raise ReviewError('category_restore_root_changed')
+        fresh['category_restore']={**old_restore,'paths':sorted(
+                set(old_restore['paths'])|set((requested or {}).get('paths',[])),key=lambda p:(p.count('/'),p))}
+        restore.Selection.model_validate(fresh['category_restore'])
     fresh['families']=sorted(set(merged.get('families',[])+fresh['families']))
     if merged.get('scope')=='catalog':
         fresh['scope']='catalog'
@@ -129,18 +153,39 @@ async def process(db,selection,mode,actor):
         pinned.update(await db.scalars(text('SELECT DISTINCT family_key FROM atomer_progress_items WHERE run_id=:r AND code=ANY(CAST(:keys AS text[]))'),
                                         dict(r=head['id'],keys=task_keys)))
     count=sum(r['size'] for r in entries)
+    options_changed=any(fresh.get(k)!=merged.get(k) for k in ('categories','category_aliases','contextual_roots','availability','labels'))
+    if selection.requeue:
+        if not current:
+            raise ReviewError('catalog_recheck_changed')
+        context={**current,'selection':fresh,'checked_run_id':head['id']}
+        for key,pin in selection.requeue.items():
+            job=await _one(db,'SELECT * FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f FOR UPDATE',c=cid,f=key)
+            if not job:
+                raise ReviewError('catalog_recheck_changed')
+            await recheck.reschedule(db,context,dict(job),pin,mode,actor)
+        fresh=context['selection']
     if mode=='apply':
+        wake=_wake(current,fresh!=merged or selection.requeue)
         await _exec(db,"""INSERT INTO atomer_catalog_campaigns
             (id,run_id,source_sha,admin_sha,shop_fingerprint,actor,selection,state,checked_run_id)
             VALUES(:c,:r,:s,:a,:fp,:actor,CAST(:config AS jsonb),'running',:r)
             ON CONFLICT(id) DO UPDATE SET selection=excluded.selection,
-                state=CASE WHEN atomer_catalog_campaigns.state='waiting' THEN 'waiting' ELSE 'running' END,
+                options=CASE WHEN :new_options THEN '{}'::jsonb ELSE atomer_catalog_campaigns.options END,
+                state=CASE WHEN atomer_catalog_campaigns.state='waiting' AND NOT :wake THEN 'waiting' ELSE 'running' END,
+                next_at=CASE WHEN :wake THEN now() ELSE atomer_catalog_campaigns.next_at END,
+                failures=CASE WHEN :wake THEN 0 ELSE atomer_catalog_campaigns.failures END,
+                problem=CASE WHEN :wake THEN '' ELSE atomer_catalog_campaigns.problem END,
                 updated_at=now(),checked_run_id=:r
-        """,c=cid,r=head['id'],s=selection.source_sha,a=selection.admin_sha,fp=fp,actor=actor,config=_json(fresh))
+        """,c=cid,r=head['id'],s=selection.source_sha,a=selection.admin_sha,fp=fp,actor=actor,config=_json(fresh),new_options=options_changed,wake=wake)
+        if wake:
+            await _exec(db,"""UPDATE atomer_catalog_jobs SET next_at=now(),attempts=0
+                   WHERE campaign=:c AND stage IN ('pending','fidelity') AND problem LIKE '%stock_publication_source_unavailable%'
+                   AND problem NOT ILIKE '%Limit Upgates%' AND problem NOT ILIKE '%HTTP 429%'""",c=cid)
         jobs=[dict(key=r['family_key'],size=r['size'],p=0 if r['family_key'] in pinned else r['p']) for r in entries]
         await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
             SELECT :c,j->>'key',(j->>'p')::int,(j->>'size')::int FROM jsonb_array_elements(CAST(:jobs AS jsonb)) j
-            ON CONFLICT(campaign,family_key) DO UPDATE SET priority=least(atomer_catalog_jobs.priority,excluded.priority)
+        ON CONFLICT(campaign,family_key) DO UPDATE SET priority=least(atomer_catalog_jobs.priority,excluded.priority),
+            leaf_count=excluded.leaf_count
         """,c=cid,jobs=_json(jobs))
         await db.commit()
     return dict(status='verified' if mode=='apply' else 'ready',count=count,families=len(entries),campaign_id=cid,
@@ -152,11 +197,22 @@ async def status(db):
     if not campaign:
         return dict(campaign_id=None,state='idle',counts={},family_states={},recent=[],blocked=[])
     cid=campaign['id']
-    grouped=await _rows(db,'SELECT stage,count(*) AS n,sum(leaf_count) AS leaves FROM atomer_catalog_jobs WHERE campaign=:c GROUP BY stage',c=cid)
+    grouped=await _rows(db,"""SELECT j.stage,count(DISTINCT j.family_key) AS n,count(*) AS leaves
+          FROM atomer_progress_items i JOIN atomer_catalog_jobs j ON j.campaign=:c AND j.family_key=i.family_key
+          WHERE i.run_id=:run GROUP BY j.stage""",c=cid,run=campaign['checked_run_id'])
     counts=dict(families=sum(x['n'] for x in grouped),total=sum(int(x['leaves']) for x in grouped))
-    proof=await _rows(db,'SELECT state,count(*) AS n FROM atomer_catalog_proofs WHERE campaign=:c GROUP BY state',c=cid)
+    proof_from=""" FROM atomer_catalog_proofs p JOIN atomer_progress_items i ON i.run_id=:run AND i.code=p.code
+                  AND i.family_key=p.family_key WHERE p.campaign=:c"""
+    proof=await _rows(db,'SELECT p.state,count(*) AS n'+proof_from+' GROUP BY p.state',c=cid,run=campaign['checked_run_id'])
     for state in ('verified','partial','blocked','excluded'):
         counts[state]=next((r['n'] for r in proof if r['state']==state),0)
+    scopes=await _one(db,"""SELECT count(*) FILTER(WHERE p.state='verified' AND evidence->'xtrek'->>'product_id' IS NOT NULL
+          AND evidence->>'scope' IS DISTINCT FROM 'biketrek') AS xtrek_verified,
+          count(*) FILTER(WHERE p.state='verified' AND evidence->>'scope'='biketrek') AS biketrek_only,
+          count(*) FILTER(WHERE evidence->>'card_id' IS NOT NULL AND evidence->'biketrek'->>'product_id' IS NOT NULL) AS biketrek_linked,
+          count(*) FILTER(WHERE evidence->>'verification_scope'='identity_card_and_mapped_content' AND p.state='verified') AS content_verified"""
+          +proof_from,c=cid,run=campaign['checked_run_id'])
+    counts.update(dict(scopes))
     counts['pending']=counts['total']-sum(counts[x] for x in ('verified','partial','blocked','excluded'))
     fields='family_key,stage,problem AS reason,leaf_count AS leaves,updated_at'
     recent=await _rows(db,f"SELECT {fields} FROM atomer_catalog_jobs WHERE campaign=:c AND stage<>'pending' ORDER BY updated_at DESC,family_key LIMIT 16",c=cid)
@@ -173,7 +229,14 @@ async def details(db,family_key):
         return dict(family_key=family_key,items=[])
     rows=await _rows(db,"""SELECT code,state,evidence,checked_at FROM atomer_catalog_proofs
                        WHERE campaign=:c AND family_key=:f ORDER BY code""",c=c['id'],f=family_key)
-    return dict(family_key=family_key,items=[dict(r) for r in rows])
+    j=await _one(db,'SELECT * FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f',c=c['id'],f=family_key)
+    h=await _head(db)
+    token=None
+    if j and h and j['stage'] in ('partial','blocked'):
+        current,group=await _family(db,h['id'],family_key)
+        token=recheck.revision(j,h['id'],current,group)
+    return dict(family_key=family_key,run_id=h['id'] if h else None,stage=j['stage'] if j else None,
+                recheck_revision=token,items=[dict(r) for r in rows])
 
 
 async def _job(db,c,f,stage,*,problem='',guards=None,document=None,receipt=None,delay=0,increment=False):
@@ -435,7 +498,7 @@ def _make_document(index,f,rows,g,options,selection,roots):
                            axis_names=selection['axis_names'],named_axes=selection.get('named_axes',{}))
     csv_refs={ref:index.parent_for(ref) for ref in [x.strip() for x in src.named(csv[key],'Súvisiace tovary').split(',') if x.strip()]}
     refs={ref:roots[parent] for ref,parent in csv_refs.items() if parent in roots}
-    cfg={**options,'reference_codes':{**roots,**refs},'property_names':selection.get('property_names',{}),'named_axes':selection.get('named_axes',{})}
+    cfg={**options,'reference_codes':{**roots,**refs},'property_names':selection.get('property_names',{}),'barcode_corrections':selection.get('barcode_corrections',{}),'named_axes':selection.get('named_axes',{})}
     doc=src.build(family,{k:r['detail'] for k,r in rows.items()},csv,xml,cfg,set(roots.values()))
     wanted={k for k in _selected(g) if g['scope'][k]!='biketrek'}
     product=doc['payload']
@@ -456,6 +519,8 @@ async def _prepare(db,c,jobs):
         f=j['family_key']; rows,group=await _family(db,c['checked_run_id'],f)
         if not rows:
             await _job(db,c['id'],f,'blocked',problem='Skupina chýba v súčasnom zdroji.')
+            continue
+        if j['guards'] is not None and not await _checked(db,c,[j]):
             continue
         guards=await _claim(db,c,j,rows,group) if j['guards'] is None else j['guards']
         j['guards']=guards
@@ -499,7 +564,7 @@ async def _prepare(db,c,jobs):
             ordered=sorted(variants,key=lambda v:not v.get('main_yn'))
             doc['payload']['variants']=ordered[:MAX_LEAVES]
             doc['remaining_create_variants']=ordered[MAX_LEAVES:]
-        await _job(db,c['id'],f,'prepared',document=doc)
+        await _job(db,c['id'],f,'prepared',document=doc,receipt={**j['receipt'],'dispatched':False})
 
 
 async def _checked(db,c,jobs):
@@ -513,6 +578,57 @@ async def _checked(db,c,jobs):
         else:
             checked.append(j)
     return checked
+
+
+async def _absent_in_report(db,c,jobs):
+    """A newer comparable report may have paired an SKU or GTIN under another identity."""
+    remaining=[]
+    for job in jobs:
+        records,_=await _family(db,c['checked_run_id'],job['family_key'])
+        codes=recheck.prior_codes(job['document'])
+        current=[records[k]['detail'] for k in codes if k in records]
+        if len(current)==len(codes) and all(
+                d['state'] in ('needs_both','needs_target') and not any(d.get(k) for k in
+                ('product_id','variant_id','reasons','candidates','target_code','target_ean')) for d in current):
+            remaining.append(job)
+            continue
+        reason='Aktuálny report už nepotvrdzuje voľnú identitu celej rodiny. Vytvorenie sa neodoslalo.'
+        await _job(db,c['id'],job['family_key'],job['stage'],receipt={**job['receipt'],'dispatched':False})
+        await _finish(db,c,job,{k:('blocked',dict(reason=reason)) for k in _selected(job['guards'])})
+    return remaining
+
+
+async def _updated_barcodes(db,c,jobs):
+    """A corrected GTIN was not necessarily part of the original complete report."""
+    from inventory_hub.services import atomer_card_batch as cards
+    from inventory_hub.services.product_identity import barcode_keys
+    wanted={}
+    for j in jobs:
+        doc=j['document']
+        corrected=doc.get('barcode_corrections') or {}
+        present=set((doc.get('extension') or {}).get('existing') or {})
+        for code,proof in corrected.items():
+            if code not in present:
+                for key in barcode_keys([proof['ean']]):
+                    wanted.setdefault(key,set()).add(j['family_key'])
+    if not wanted:
+        return jobs
+    # Compare every older xTrek identity, including native-only siblings. The
+    # ordinary preflight adds any catalog changes since this fresh full read.
+    live=await cards.load_shop_catalog('xtrek')
+    conflicts={k for owners in wanted.values() if len(owners)>1 for k in owners}
+    for product in live:
+        for leaf in [product,*(product.get('variants') or [])]:
+            for gtin in barcode_keys([leaf.get('ean')]):
+                conflicts.update(wanted.get(gtin,()))
+    remaining=[]
+    for j in jobs:
+        if j['family_key'] in conflicts:
+            await _finish(db,c,j,{k:('blocked',dict(reason='Doložený GTIN je už obsadený v naraz pripravenej dávke alebo v xTreku.'))
+                                  for k in _selected(j['guards'])})
+        else:
+            remaining.append(j)
+    return remaining
 
 
 async def _lock_current(db,c):
@@ -535,6 +651,7 @@ def _budget_error(e):
 async def _dispatch(db,c,jobs):
     from inventory_hub.services import atomer_new_native as native
     jobs=await _checked(db,c,jobs)
+    jobs=await _updated_barcodes(db,c,jobs)
     if not jobs:
         return
     # Extensions are journaled separately; never send an existing parent to the create endpoint.
@@ -546,6 +663,7 @@ async def _dispatch(db,c,jobs):
             await _finish(db,c,j,{k:('blocked',dict(reason=reason)) for k in _selected(j['guards'])})
         else:
             await _extend(db,c,j)
+    new=await _absent_in_report(db,c,new)
     if not new:
         return
     checked=await asyncio.to_thread(native.preflight,[j['document'] for j in new],c['shop_fingerprint'],c['checked_at'])
@@ -557,15 +675,22 @@ async def _dispatch(db,c,jobs):
             await _finish(db,c,j,{k:('blocked',dict(reason='; '.join(issues),ean=next((v.get('ean') for v in doc['payload'].get('variants',[]) if v['code']==k),doc['payload'].get('ean'))))
                                   for k in _selected(j['guards'])})
         else:
-            await _job(db,c['id'],j['family_key'],'sending')
+            await _job(db,c['id'],j['family_key'],'sending',receipt={**j['receipt'],'dispatched':True})
             selected.append(j)
     if not selected:
         return
     # The intent is durable before the outbound POST. A worker observing 'sending'
     # after a crash can only read. A definitive local quota denial can be retried.
+    send_run=c['checked_run_id']
     await db.commit()
     await _lock_current(db,c)
     selected=await _checked(db,c,selected)
+    if selected and c['checked_run_id']!=send_run:
+        # Nothing has been sent. Re-prepare against the newer run even if its
+        # work revisions are equal, including its full-catalog duplicate baseline.
+        for j in selected:
+            await _job(db,c['id'],j['family_key'],'prepared',receipt={**j['receipt'],'dispatched':False})
+        return
     if not selected:
         return
     try:
@@ -573,7 +698,7 @@ async def _dispatch(db,c,jobs):
     except Exception as err:
         if _budget_error(err) and getattr(err,'request_sent',None) is False:
             for j in selected:
-                await _job(db,c['id'],j['family_key'],'prepared')
+                await _job(db,c['id'],j['family_key'],'prepared',receipt={**j['receipt'],'dispatched':False})
             await db.commit()
             raise
         for j in selected:
@@ -581,7 +706,7 @@ async def _dispatch(db,c,jobs):
         return
     for j in selected:
         ack=result.get(j['document']['payload']['code'],{})
-        await _job(db,c['id'],j['family_key'],'observe',receipt=dict(ack=ack))
+        await _job(db,c['id'],j['family_key'],'observe',receipt={**j['receipt'],'ack':ack,'dispatched':True})
 
 
 async def _extend(db,c,j):
@@ -604,7 +729,7 @@ async def _extend(db,c,j):
     if len(_json(prepared.get('payload',{})).encode('utf-8'))>7_500_000:
         await _finish(db,c,j,{k:('blocked',dict(reason='Dávka je väčšia než overený limit rozhrania.')) for k in _selected(j['guards'])})
         return
-    await _job(db,c['id'],j['family_key'],'sending',document=doc)
+    await _job(db,c['id'],j['family_key'],'sending',document=doc,receipt={**j['receipt'],'dispatched':True})
     await db.commit()
     await _lock_current(db,c)
     if not await _checked(db,c,[j]):
@@ -647,6 +772,19 @@ async def _observe(db,c,jobs):
         summary={k:v for k,v in obs.items() if k!='native'}
         receipt={**j['receipt'],**summary}
         reason='; '.join(str(x) for x in obs.get('issues',[]) + (j['receipt'].get('ack') or {}).get('issues',[]))
+        if receipt.get('rebuild_after_observation'):
+            active={k for k in _selected(j['guards']) if _scope_of(j['guards'],k)!='biketrek'}
+            if active!=recheck.prior_codes(doc):
+                # The previous commitment is now observed. A scope revision may
+                # prohibit parent/leaf writes previously authorized by that intent.
+                why='Zmenil sa rozsah variantov od pôvodného odoslania. Stav xTrek bol načítaný, ďalší zápis je zastavený.'
+                await _job(db,c['id'],j['family_key'],j['stage'],receipt=receipt)
+                await _finish(db,c,j,{k:('partial' if obs['identity_verified'] else 'blocked',
+                            dict(reason=why,product_id=obs.get('product_id'),variants=obs.get('variants')))
+                            for k in _selected(j['guards'])})
+                continue
+            if obs['identity_verified']:
+                receipt.update(content_requested=True,rebuild_after_observation=False)
         if obs['identity_verified'] and (doc.get('remaining_create_variants') or obs.get('remaining_variants')):
             # Each completed tranche supplies its actual PID/VID anchors for the
             # next add-only request. Keep the same product and every old variant.
@@ -694,11 +832,12 @@ async def _cards(db,c,jobs):
                 native_ids[k]=(j['receipt']['product_id'],(j['receipt'].get('variants') or {}).get(k))
         codes.extend(eligible); families[j['family_key']]=(keys,rows)
     result={}
+    corrections=c['selection'].get('barcode_corrections') or {}
     for pos in range(0,len(codes),cards.MAX_BATCH):
         chunk=codes[pos:pos+cards.MAX_BATCH]
         result.update(await cards.reconcile(db,c['checked_run_id'],chunk,apply=True,actor=c['actor'],
                       native_ids={k:native_ids[k] for k in chunk if k in native_ids},include_managed=True,
-                      scopes={k:scopes[k] for k in chunk}))
+                      scopes={k:scopes[k] for k in chunk},**({'barcode_corrections':{k:corrections[k] for k in chunk if k in corrections}} if corrections else {})))
     for j in jobs:
         f=j['family_key']; keys,rows=families[f]; stored=j['receipt']; doc=j['document']
         proofs={}
@@ -721,7 +860,13 @@ async def _cards(db,c,jobs):
                 proofs[k]=('verified',receipt)
         attach={s:{'state':st,'evidence':v} for s,(st,v) in proofs.items()}
         stored={**stored,'cards':attach};j['receipt']=stored
-        if doc and stored.get('identity_verified') and not stored.get('verified_fields') and (
+        need_content=any(v.get('status')=='verified' and v.get('card_id') and v.get('scope')!='biketrek'
+                         and (v.get('xtrek') or {}).get('product_id') for _,v in proofs.values())
+        if need_content and (not doc or stored.get('content_requested')):
+            await _proofs(db,c['id'],f,{k:('partial' if st=='verified' and v.get('scope')!='biketrek' else st,v)
+                                        for k,(st,v) in proofs.items()})
+            await _job(db,c['id'],f,'fidelity',receipt={**stored,'content_requested':True})
+        elif doc and stored.get('identity_verified') and not stored.get('verified_fields') and (
             stored.get('deferred') or j['attempts']<1):
             await _proofs(db,c['id'],f,proofs)
             await _job(db,c['id'],f,'related',receipt=stored,problem='; '.join(stored.get('issues',[])),
@@ -810,31 +955,53 @@ async def _related(db,c,jobs):
             else:
                 final[code]=('partial',{**base,'reason':'; '.join(obs['issues']) or 'Natívny produkt vyžaduje kontrolu.'})
         await _job(db,c['id'],j['family_key'],'related',receipt=r)
-        await _finish(db,c,j,final)
+        if obs['identity_verified'] and not obs['verified_fields'] and any(
+                v.get('status')=='verified' and v.get('card_id') and v.get('scope')!='biketrek' for _,v in final.values()):
+            await _proofs(db,c['id'],j['family_key'],final)
+            await _job(db,c['id'],j['family_key'],'fidelity',receipt={**r,'content_requested':True})
+        else:
+            await _finish(db,c,j,final)
 
 
 async def _step(db,c):
+    from inventory_hub.services import atomer_catalog_fidelity as fidelity
+    previous_run=c['checked_run_id']
     await _lock_current(db,c)
+    if previous_run!=c['checked_run_id'] and c['selection']['scope']=='catalog':
+        await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
+             SELECT :c,family_key,min(CASE WHEN state IN ('needs_both','needs_target') THEN 1 ELSE 4 END),count(*)
+             FROM atomer_progress_items WHERE run_id=:r GROUP BY family_key
+             ON CONFLICT(campaign,family_key) DO UPDATE SET leaf_count=excluded.leaf_count""",c=c['id'],r=c['checked_run_id'])
     await _exec(db,'UPDATE atomer_catalog_campaigns SET checked_run_id=:r WHERE id=:c',r=c['checked_run_id'],c=c['id'])
+    if c['selection'].get('category_restore'):
+        c['phase']='category_restore'
+        if await restore.advance(db,c,lambda:_source(db,c),lambda:_lock_current(db,c)):
+            return True
     # Finish committed/uncertain writes before starting new work. Deferred relations
     # yield to the missing parents they depend on.
     candidates=await _rows(db,"""SELECT * FROM atomer_catalog_jobs WHERE campaign=:c
         AND stage=ANY(CAST(:stages AS text[])) AND next_at<=now()
-        ORDER BY CASE stage WHEN 'sending' THEN 0 WHEN 'observe' THEN 1 WHEN 'cards' THEN 2
+        ORDER BY CASE stage WHEN 'sending' THEN 0 WHEN 'updating' THEN 0 WHEN 'observe' THEN 1 WHEN 'cards' THEN 2
                   WHEN 'prepared' THEN 3 WHEN 'pending' THEN 5 ELSE CASE WHEN priority=0 THEN 4 ELSE 6 END END,priority,family_key LIMIT 55""",
         c=c['id'],stages=list(RUNNABLE))
     batch=_ready_batch(candidates)
     if not batch:
         next_at=await db.scalar(text("""SELECT min(next_at) FROM atomer_catalog_jobs WHERE campaign=:c
                                    AND stage=ANY(CAST(:stages AS text[]))"""),dict(c=c['id'],stages=list(RUNNABLE)))
+        if c['selection'].get('category_restore'):
+            category_at=await restore.next_retry(db,c['id'])
+            if category_at and (not next_at or category_at<next_at):
+                next_at=category_at
         if next_at:
-            await _exec(db,"UPDATE atomer_catalog_campaigns SET state='waiting',next_at=:n,problem='Čaká sa na spätnú kontrolu.',updated_at=now() WHERE id=:c",n=next_at,c=c['id'])
+            await _exec(db,"UPDATE atomer_catalog_campaigns SET state='waiting',next_at=:n,problem=coalesce(nullif(problem,''),'Čaká sa na spätnú kontrolu.'),updated_at=now() WHERE id=:c",n=next_at,c=c['id'])
         else:
             residual=await db.scalar(text("SELECT count(*) FROM atomer_catalog_jobs WHERE campaign=:c AND stage IN ('partial','blocked')"),dict(c=c['id']))
             await _exec(db,"UPDATE atomer_catalog_campaigns SET state=:s,problem=:p,updated_at=now() WHERE id=:c",
                         s='review' if residual else 'done',p=f'Zostáva {residual} rodín na kontrolu.' if residual else '',c=c['id'])
         return False
-    action={'pending':_prepare,'prepared':_dispatch,'sending':_observe,'observe':_observe,'cards':_cards,'related':_related}[batch[0]['stage']]
+    action={'pending':_prepare,'prepared':_dispatch,'sending':_observe,'observe':_observe,'cards':_cards,'related':_related,
+            'fidelity':fidelity.prepare,'updating':fidelity.observe}[batch[0]['stage']]
+    phase=c['phase']=batch[0]['stage']
     try:
         await action(db,c,batch)
     except ReviewError as exc:
@@ -847,7 +1014,11 @@ async def _step(db,c):
         await db.rollback()
         await _lock_current(db,c)
         if len(batch)>1:
-            for j in batch:
+            for candidate in batch:
+                j=dict(await _one(db,'SELECT * FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f',
+                                  c=c['id'],f=candidate['family_key']))
+                if j['stage']!=phase:
+                    continue
                 await _exec(db,"""UPDATE atomer_catalog_jobs SET receipt=receipt || jsonb_build_object('isolate',true),
                               problem=:p WHERE campaign=:c AND family_key=:f""",
                             p=exc.code,c=c['id'],f=j['family_key'])
@@ -862,19 +1033,70 @@ async def _step(db,c):
             if await _checked(db,c,[j]):
                 await _finish(db,c,j,{k:('partial' if j['receipt'].get('identity_verified') else 'blocked',
                                dict(reason=exc.code,ean=rows[k]['detail'].get('ean'))) for k in _selected(j['guards'])})
+    except Exception as error:
+        phase=batch[0]['stage']
+        quota=_budget_error(error)
+        registry_unavailable=(phase in ('pending','fidelity') and bool(getattr(error,'catalog_resource',None))
+                              and getattr(error,'status',None) in (502,503,504))
+        if not quota and not registry_unavailable:
+            raise
+        # Pause this bounded kind of work. Card verification or a different
+        # shop/read lane may still have capacity. Durable send states are kept.
+        await db.rollback()
+        await _lock_current(db,c)
+        if registry_unavailable and not quota and batch[0]['attempts']>=6:
+            reason=_diagnostic(c,error)
+            for candidate in batch:
+                j=dict(await _one(db,'SELECT * FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f',
+                                  c=c['id'],f=candidate['family_key']))
+                if j['stage']!=phase:
+                    continue
+                if j['guards'] is None:
+                    rows,group=await _family(db,c['checked_run_id'],j['family_key'])
+                    j['guards']=await _claim(db,c,j,rows,group)
+                if await _checked(db,c,[j]):
+                    await _job(db,c['id'],j['family_key'],j['stage'],guards=j['guards'])
+                    if j['receipt'].get('cards'):
+                        await fidelity.conclude(db,c,j,dict(issues=[reason]))
+                    else:
+                        await _finish(db,c,j,{k:('blocked',dict(reason=reason)) for k in _selected(j['guards'])})
+            return True
+        delay=max(15,min(86400,int(getattr(error,'retry_after',None) or (300 if quota else 30*2**min(batch[0]['attempts'],6)))))
+        label=_diagnostic(c,error)
+        await _exec(db,"""UPDATE atomer_catalog_jobs SET next_at=greatest(next_at,now()+make_interval(secs=>:delay)),
+                         problem=:problem,attempts=attempts+:inc
+                         WHERE campaign=:c AND stage=:s AND
+                         (stage<>'pending' OR priority<4 OR priority=:prio)""",
+                    c=c['id'],delay=delay,s=phase,prio=batch[0]['priority'],problem=label,inc=int(not quota))
+        await _exec(db,"""UPDATE atomer_catalog_campaigns SET state='running',failures=0,problem=:p,
+                        next_at=now(),updated_at=now() WHERE id=:c""",p=label,c=c['id'])
+        return True
     await _exec(db,"UPDATE atomer_catalog_campaigns SET state='running',failures=0,problem='',next_at=now(),updated_at=now() WHERE id=:c",c=c['id'])
     return True
 
 
-async def _record_failure(c,exc):
+def _diagnostic(c,exc):
     import re
     code=getattr(exc,'code',None) or (str(exc) if re.fullmatch(r'[a-z0-9_]{3,100}',str(exc)) else type(exc).__name__)
+    original=getattr(exc,'orig',None)
+    sqlstate=next((getattr(obj,'sqlstate',None) for obj in (original,getattr(original,'__cause__',None),exc)
+                   if re.fullmatch(r'[0-9A-Z]{5}',str(getattr(obj,'sqlstate','') or ''))),None)
+    resource=getattr(exc,'catalog_resource','')
+    if not isinstance(resource,str) or not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_./-]{0,64}',resource):
+        resource=''
+    upstream=getattr(exc,'upstream_status',None)
+    http=f'HTTP {upstream}' if type(upstream) is int and 100<=upstream<=599 else None
+    return ' · '.join(str(v) for v in (c.get('phase','campaign'),'Limit Upgates' if _budget_error(exc) else '',code,resource,http,sqlstate) if v)[:300]
+
+
+async def _record_failure(c,exc):
+    code=getattr(exc,'code',None)
     quota=_budget_error(exc)
     source_changed=code in ('catalog_source_changed','catalog_connection_changed')
     failures=c['failures']+(0 if quota else 1)
     stop=source_changed or failures>=8
     delay=getattr(exc,'retry_after',None) or (300 if quota else min(3600,10*2**min(failures,8)))
-    problem=('Limit Upgates. ' if quota else '')+str(code)
+    problem=_diagnostic(c,exc)
     progress='source_changed' if source_changed else 'paused' if stop else 'waiting'
     async with database.get_session_context() as db:
         await _exec(db,"""UPDATE atomer_catalog_campaigns SET state=:s,problem=:p,failures=:n,

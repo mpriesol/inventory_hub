@@ -66,6 +66,8 @@ async def finish_cards(db, selection, mode, actor, *, record_pending=False):
             extra = missing_axes(doc["expected_axes"][item.code],existing)
             note = (f"xTrek {family.product_id}/{vid} · karta Hub {card} · {item.code} · EAN {item.ean}. "
                     f"Generácia {item.generation}. Natívna rodina, parametre, ceny a väzba overené.")
+            if doc.get('unreported_stock'):
+                note += f" xTrek na sklade {doc['unreported_stock']['stock_id']} počet neuvádza. Karta bola prepojená bez príjmu zásob."
             status="done"
             claimed=jobs[family.parent].state!="verified"
             if item.code in pending:

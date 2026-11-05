@@ -60,6 +60,8 @@ COPY infra/db-init/037_atomer_progress.sql /app/inventory_hub/migrations/037_ato
 COPY infra/db-init/038_atomer_review.sql /app/inventory_hub/migrations/038_atomer_review.sql
 COPY infra/db-init/039_atomer_variant_repairs.sql /app/inventory_hub/migrations/039_atomer_variant_repairs.sql
 COPY infra/db-init/040_atomer_catalog_campaign.sql /app/inventory_hub/migrations/040_atomer_catalog_campaign.sql
+COPY infra/db-init/041_atomer_catalog_content.sql /app/inventory_hub/migrations/041_atomer_catalog_content.sql
+COPY infra/db-init/042_atomer_category_restore.sql /app/inventory_hub/migrations/042_atomer_category_restore.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

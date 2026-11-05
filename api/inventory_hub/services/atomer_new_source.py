@@ -69,7 +69,8 @@ def _csv(raw):
         gen.require(len(values) == len(head), 'new_admin_columns_invalid')
         # Sparse storage matters: actual files have hundreds of mostly empty
         # characteristic/caption columns. Keep duplicate nonempty headings.
-        yield tuple((k, v) for k, v in zip(head, values) if v.strip())
+        yield tuple((k, v) for k, v in zip(head, values)
+                    if v.strip() or v and k in ('Kat. číslo','Kat. číslo rodiča'))
 
 
 def csv_rows(raw, wanted):
@@ -126,9 +127,12 @@ def _same_sellable(choices):
 
 class FamilyRows(dict):
     """CSV rows for one or more selected families, with index-wide axis evidence."""
-    def __init__(self, axis_values):
+    def __init__(self, axis_values, owners=None, duplicate_ids=None, parent_aliases=None):
         super().__init__()
         self.axis_values = axis_values
+        self.owners = owners or {}
+        self.duplicate_ids = duplicate_ids or {}
+        self.parent_aliases = parent_aliases or {}
 
 
 class Catalog:
@@ -139,12 +143,19 @@ class Catalog:
         self._children = defaultdict(list)
         self._invalid = set()
         self._references = {}
+        self._duplicate_ids = {}
+        self._literal_children = {}
+        self._unwitnessed = set()
+        self._parent_aliases = {}
         self._axis_rows = []
         self.axis_values = defaultdict(set)
         self.category_paths = set()
         parents = {}
         duplicates = defaultdict(list)
         raw_parents = set()
+        spellings = {}
+        blank_roots = defaultdict(list)
+        blank_parent_rows = []
         # Use the administrative native number only to locate a parent without
         # a catalog number, exactly as the migration inventory does.
         for row in rows:
@@ -153,6 +164,12 @@ class Catalog:
             native = _code(named(row, 'Interné číslo'))
             code = catalog_code or native
             parent = _code(named(row, 'Kat. číslo rodiča'))
+            literal_code = next((v for k,v in row if k=='Kat. číslo'), '')
+            literal_parent = next((v for k,v in row if k=='Kat. číslo rodiča'), '')
+            if literal_code and not literal_code.strip() and parent == '0' and native:
+                blank_roots[literal_code].append(native)
+            if literal_parent and not parent and catalog_code:
+                blank_parent_rows.append((code,literal_parent))
             if not _valid_key(code):
                 if parent:
                     self._invalid.add(parent)
@@ -164,6 +181,7 @@ class Catalog:
                 self._invalid.add(code)
             if parent and parent != '0':
                 raw_parents.add(named(row,'Kat. číslo rodiča'))
+                spellings[code] = literal_parent
             for column,val in row:
                 if column == 'Hlavna kategória' or column.startswith('Ďalšia kategória'):
                     self.category_paths.add(val)
@@ -174,9 +192,26 @@ class Catalog:
                 if current != code:
                     self._references[native] = None
         for code, choices in duplicates.items():
+            ids = [(next((v for k,v in r if k=='Kat. číslo'), ''),
+                    next((v for k,v in r if k=='Kat. číslo rodiča'), ''),named(r,'Interné číslo')) for r in choices]
+            separate = source.separate_parent(code,ids,self._rows)
+            if separate and self._references.get(separate[1])==code:
+                spelling,alias = separate
+                for identity,row in zip(ids,choices):
+                    if identity[2]==alias:
+                        self._rows[alias]=row
+                    else:
+                        self._rows[code]=row
+                self._references[alias]=alias
+                parents[alias]=''
+                parents[code]=alias
+                self._parent_aliases[spelling]=alias
+                self._invalid.remove(code)
+                continue
             same = _same_sellable(choices)
             if same is not None:
                 self._rows[code] = same
+                self._duplicate_ids[code] = tuple(sorted({named(r,'Interné číslo') for r in choices}))
                 self._invalid.remove(code)
                 continue
             # Historical exports can contain a distinct unreferenced inactive
@@ -188,6 +223,18 @@ class Catalog:
                     and all(source.flag(named(r,'Viditeľný')) is False for r in choices if r is not candidates[0])):
                 self._rows[code] = candidates[0]
                 self._invalid.remove(code)
+        if self._parent_aliases:
+            for code, spelling in spellings.items():
+                if spelling in self._parent_aliases:
+                    parents[code]=self._parent_aliases[spelling]
+        for code, spelling in blank_parent_rows:
+            candidates = blank_roots[spelling]
+            if len(candidates)==1:
+                parents[code] = candidates[0]
+                self._literal_children[code] = candidates[0]
+                self._unwitnessed.add(candidates[0])
+            elif candidates:
+                self._invalid.update([code,*candidates])
         for code, parent in parents.items():
             if not parent:
                 continue
@@ -211,7 +258,8 @@ class Catalog:
     def parent_for(self, ref):
         key = self.canonical(ref)
         root = self._owners.get(key, key)
-        return root if root in self._rows and key not in self._invalid and root not in self._invalid else None
+        return root if (root in self._rows and key not in self._invalid and root not in self._invalid
+                        and root not in self._unwitnessed) else None
 
     def axis_inputs(self):
         """Buyers dimension values with their exact Atomer SKU, parent and barcode."""
@@ -224,9 +272,10 @@ class Catalog:
     def family(self, root):
         key = self.canonical(root)
         gen.require(key and key in self._rows, 'new_parent_source_missing')
-        gen.require(key not in self._invalid, 'new_parent_identity_ambiguous')
+        gen.require(key not in self._owners,'new_source_parent_is_sellable_child')
+        gen.require(key not in self._invalid and key not in self._unwitnessed, 'new_parent_identity_ambiguous')
         codes = self.leaves(key)
-        rows = FamilyRows(self.axis_values)
+        rows = FamilyRows(self.axis_values, self._owners, self._duplicate_ids, self._parent_aliases)
         rows[key] = self._rows[key]
         rows.update((code,self._rows[code]) for code in codes)
         parser = etree.XMLParser(no_network=True, resolve_entities=False)
@@ -251,10 +300,21 @@ class Catalog:
             parent_raw = _code(xml_source._text(node, 'PARENT_ID'))
             parent = self.canonical(parent_raw or code)
             expected_parent = self._owners.get(code, code)
-            if code in self._xml or parent != expected_parent or code not in self._rows:
+            if self._parent_aliases and any(raw.strip()==parent_raw and alias==expected_parent
+                                            for raw,alias in self._parent_aliases.items()):
+                parent=expected_parent
+            if parent != expected_parent or code not in self._rows:
                 self._invalid.update((parent, expected_parent, code))
+            elif code in self._xml:
+                prior = etree.fromstring(self._xml[code])
+                if code not in self._duplicate_ids or not _merge_xml_assets(prior, node):
+                    self._invalid.update((parent,code))
+                else:
+                    self._xml[code] = etree.tostring(prior, with_tail=False, encoding='utf-8')
             elif _valid_key(code):
                 self._xml[code] = etree.tostring(node, with_tail=False, encoding='utf-8')
+                if self._literal_children.get(code)==parent:
+                    self._unwitnessed.discard(parent)
                 attrs = node.findall('VARIANT_PARAMETERS/*')
                 axes = {a.tag:(a.text or '').strip() for a in attrs}
                 if len(axes) != len(attrs) or not all(axes.values()):
@@ -268,6 +328,27 @@ class Catalog:
             while node.getprevious() is not None:
                 del root[0]
         gen.require(count > 0, 'new_source_xml_invalid')
+
+
+def _merge_xml_assets(prior, other):
+    # Only a duplicate already proven commercially identical by the complete
+    # administrative export may contribute additional XML image references.
+    def commercial(node):
+        return [(child.tag,etree.tostring(child, method='c14n')) for child in node
+                if child.tag not in ('MAIN_IMAGE','ALTER_IMAGES')]
+    if commercial(prior)!=commercial(other):
+        return False
+    def images(node):
+        return [v for v in [node.findtext('MAIN_IMAGE'), *node.xpath('ALTER_IMAGES/IMAGE/text()')] if v]
+    known = set(images(prior))
+    extra = [v for v in dict.fromkeys(images(other)) if v not in known]
+    if extra:
+        group = prior.find('ALTER_IMAGES')
+        if group is None:
+            group = etree.SubElement(prior,'ALTER_IMAGES')
+        for value in extra:
+            etree.SubElement(group,'IMAGE').text = value
+    return True
 
 
 def read_catalog(archive, admin, source_sha, admin_sha):
@@ -284,7 +365,7 @@ def read_catalog(archive, admin, source_sha, admin_sha):
 
 def read_sources(archive, admin, selection):
     index = read_catalog(archive, admin, selection.source_sha, selection.admin_sha)
-    rows, xml = FamilyRows(index.axis_values), {}
+    rows, xml = FamilyRows(index.axis_values, index._owners, index._duplicate_ids, index._parent_aliases), {}
     for family in selection.families:
         grouped, nodes = index.family(family.parent)
         rows.update(grouped)
@@ -373,22 +454,94 @@ def safe_html(value):
     return value
 
 
-def _original(nodes, tag, column):
-    versions = {n.findtext(tag) or '' for n in nodes}
-    if len(versions) > 1:
-        # An exact plain-text match can uniquely locate the parent's original formatting.
-        normalize = lambda s: ' '.join(s.split())
-        matching = [value for value in versions if normalize(''.join(lxml_html.fragment_fromstring(
-            value or '<span/>',create_parent='div').itertext())) == normalize(column)]
-        gen.require(len(matching) == 1, 'new_variant_descriptions_differ')
-        original = matching[0]
-    elif versions:
-        original = next(iter(versions))
+def _letters(text):
+    return ''.join(text.replace('\xad','').replace('\u200b','').split())
+
+
+def _one_text_edit(tree, column):
+    # Formatted XML and current administrative text may differ in one
+    # contiguous range. Only edit an unambiguously identified HTML text node.
+    slots = tree.xpath('.//text()')
+    offsets = [(i,j) for i,s in enumerate(slots) for j,ch in enumerate(s) if _letters(ch)]
+    source_chars = [j for j,ch in enumerate(column) if _letters(ch)]
+    old = ''.join(slots[i][j] for i,j in offsets)
+    new = ''.join(column[j] for j in source_chars)
+    if not old or not new:
+        return None
+    left = 0
+    limit = min(len(old),len(new))
+    while left<limit and old[left]==new[left]:
+        left+=1
+    right = 0
+    while right<limit-left and old[-1-right]==new[-1-right]:
+        right+=1
+    before, after = offsets[left-1] if left else (0,-1), offsets[-right] if right else (len(slots)-1,len(slots[-1]))
+    start = source_chars[left-1]+1 if left else 0
+    end = source_chars[-right] if right else len(column)
+    if before[0]==after[0]:
+        item = slots[before[0]]
+        revised = item[:before[1]+1]+column[start:end]+item[after[1]:]
     else:
-        # Administrative exports contain rendered text; escape markup-looking
-        # fragments instead of interpreting a literal measurement as HTML.
-        original = html.escape(column, quote=False)
-    return safe_html(original)
+        changed = offsets[left:len(old)-right]
+        if not changed:
+            # Insert between two formatted runs without altering their
+            # original text or element layout. Prefer existing unstyled tail.
+            slot,pos = after if slots[after[0]].is_tail else (before[0],before[1]+1)
+            item = slots[slot]
+            revised = item[:pos]+column[start:end]+item[pos:]
+        elif changed[0][0]==changed[-1][0] and left+right==len(new):
+            item = slots[changed[0][0]]
+            revised = item[:changed[0][1]]+item[changed[-1][1]+1:]
+        else:
+            return None
+    setattr(item.getparent(),'tail' if item.is_tail else 'text',revised)
+    if _letters(''.join(tree.itertext()))!=new:
+        return None
+    return lxml_html.tostring(tree,encoding='unicode',method='html')[len('<div>'):-len('</div>')]
+
+
+def _original(nodes, tag, column):
+    versions = {n.findtext(tag) for n in nodes if n.findtext(tag)}
+    plain = html.escape(column, quote=False).replace('\r\n','\n').replace('\r','\n').replace('\n','<br>\n')
+    if not versions:
+        return safe_html(plain),'admin_csv_rendered_text'
+    if len(versions)==1 and not column:
+        return safe_html(next(iter(versions))),'buyers_html'
+    trees = [(v,lxml_html.fragment_fromstring(v,create_parent='div')) for v in versions]
+    wanted = _letters(column)
+    matching = [v for v,tree in trees if _letters(''.join(tree.itertext()))==wanted]
+    if matching:
+        gen.require(len(matching)==1,'new_variant_descriptions_differ')
+        return safe_html(matching[0]),'buyers_html'
+    gen.require(len(trees)==1,'new_variant_descriptions_differ')
+    original,tree = trees[0]
+    safe_html(original)
+    updated = _one_text_edit(tree,column)
+    if updated is not None:
+        return safe_html(updated),'admin_csv_in_original_html'
+    # A replacement crossing formatting boundaries cannot be styled from
+    # evidence. Keep current text and line breaks; retain both raw archives.
+    return safe_html(plain),'admin_csv_revised_text'
+
+
+def _distinct_axes(axes, rows, origins):
+    groups = defaultdict(list)
+    for code, values in axes.items():
+        groups[gen.key(values)].append(code)
+    for codes in groups.values():
+        if len(codes)<2:
+            continue
+        # Legacy hidden variants can have the same label or inherited buyer
+        # dimensions. Their literal, distinct catalog identities stay visible
+        # in the private plan and distinguish the native option. An active
+        # duplicate combination needs proof of physical identity first.
+        gen.require(all(source.flag(named(rows[c],'Viditeľný')) is False and 'Kód variantu' not in axes[c]
+                        for c in codes), 'new_axis_collision')
+        for code in codes:
+            axes[code] = {**axes[code],'Kód variantu':code}
+            origins[code] = 'hidden_duplicate_axes_with_source_sku'
+    gen.require(len({gen.key(v) for v in axes.values()})==len(axes),'new_axis_collision')
+    return axes,origins
 
 
 def _axes(family, rows, xml_rows, vocabulary):
@@ -411,9 +564,7 @@ def _axes(family, rows, xml_rows, vocabulary):
             gen.require(len(axes) == len(raw) and all(axes.values()), 'new_axis_names_required')
             resolved[code] = axes
     if len(resolved) == len(suffixes):
-        signatures = {gen.key(v) for v in resolved.values()}
-        gen.require(len(signatures) == len(resolved), 'new_axis_collision')
-        return resolved, {}
+        return _distinct_axes(resolved,rows,{})
     # The source often renders dimensions in a different order from the
     # numeric XML tags (e.g. size before colour). Derive that order from all
     # exported siblings. Decode hidden names only when exactly one complete
@@ -463,8 +614,7 @@ def _axes(family, rows, xml_rows, vocabulary):
                 resolved[code]=next(iter(candidates.values()))
     missing = set(suffixes) - set(resolved)
     if not missing:
-        gen.require(len({gen.key(a) for a in resolved.values()}) == len(resolved), 'new_axis_collision')
-        return resolved, {}
+        return _distinct_axes(resolved,rows,{})
     # Upgates permits a family to contain different sets of variant
     # parameters. Preserve every known named dimension. For leaves with no
     # proven numeric source dimension retain the original CSV variant label.
@@ -481,7 +631,7 @@ def _axes(family, rows, xml_rows, vocabulary):
         resolved[code] = axes
         used.add(gen.key(axes))
         origins[code] = 'admin_csv_variant_name' if suffix else 'admin_csv_variant_code'
-    return resolved, origins
+    return _distinct_axes(resolved,rows,origins)
 
 
 def _display_properties(parent, rows, nodes, supplied_names):
@@ -542,8 +692,9 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     row = csv_source[root]
     v = fields(row)
     # During a shared preview csv_source can contain several families.
+    owners = getattr(csv_source,'owners',{})
     children = {k:r for k,r in csv_source.items() if k != root and
-                _code(named(r,'Kat. číslo rodiča')) in (root, _code(v('Interné číslo')))}
+                (owners.get(k)==root or _code(named(r,'Kat. číslo rodiča')) in {root,_code(v('Interné číslo'))}-{''})}
     codes = set(children) or {root}
     gen.require(set(details) == codes and set(xml_rows) <= codes, 'new_source_family_changed')
     rows = {root:row, **children}
@@ -552,9 +703,11 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     gen.require(isinstance(visible,bool), 'generation_visibility_changed')
     nodes = list(xml_rows.values())
     desc = dict(language='sk',active_yn=visible,title=v('Názov tovaru'),
-                short_description=_original(nodes,'DESCRIPTION_SHORT',v('Krátky popis')),
-                long_description=_original(nodes,'DESCRIPTION_LONG',v('Dlhý popis')),
                 seo_title=v('SEO titulka'),seo_description=v('SEO popis'))
+    description_sources = {}
+    for key,tag,column in [('short_description','DESCRIPTION_SHORT','Krátky popis'),
+                           ('long_description','DESCRIPTION_LONG','Dlhý popis')]:
+        desc[key],description_sources[key]=_original(nodes,tag,v(column))
     fallback_title = False
     if not desc['title']:
         gen.require(not visible, 'new_parent_source_missing')
@@ -566,12 +719,16 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     paths = list(dict.fromkeys([v('Hlavna kategória')]+[value for key,value in row if key.startswith('Ďalšia kategória') and value]))
     main = paths[0]
     registry = options['categories']
-    contextual = options.get('category_context',{}).get(main,{})
+    contexts = options.get('category_context',{})
+    contextual = contexts.get(main,{})
     gen.require(main and type(registry.get(main)) is int and registry[main]>0, 'new_category_unmapped')
     mapped = [registry[main]]
     absent_categories=[]
     for path in paths[1:]:
         category = registry.get(path) or contextual.get(path)
+        if not category:
+            alternatives = {contexts[p][path] for p in paths if path in contexts.get(p,{})}
+            category = alternatives.pop() if len(alternatives)==1 else None
         if type(category) is int and category>0:
             if category not in mapped:
                 mapped.append(category)
@@ -582,7 +739,8 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     captions = {u:v('Popisy k obrázkom '+str(i+1)) for i,u in enumerate(source_images)}
     if nodes and not children:
         source_images = gen.image_paths(nodes[0]) + source_images
-    vat = decimal_value(v('DPH'))
+    parent_vat = decimal_value(v('DPH'))
+    vat = parent_vat
     if children:
         rates = {decimal_value(named(r,'DPH')) for r in children.values()}
         gen.require(len(rates)==1 and (vat == 0 or vat in rates), 'new_parent_variant_vat_conflict')
@@ -597,7 +755,12 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     attrs = _display_properties(row,rows,xml_rows,options.get('property_names',{}))
     if attrs:
         product['parameters'] = _params(attrs)
-    readable, expected_flags, price_differences, corrected_barcodes = {}, {}, {}, {}
+    readable, expected_flags, price_differences, corrected_barcodes, placeholders = {}, {}, {}, {}, {}
+    if children and v('Dodacia doba').strip():
+        parent_label = v('Dodacia doba').strip()
+        gen.require(parent_label.casefold() in options['availability'], 'new_availability_unknown')
+        product['availability_id'] = options['availability'][parent_label.casefold()]
+        readable[root] = parent_label
     if v('Súbory na stiahnutie') or decimal_value(v('Body navyše')) or decimal_value(v('Min. obj. množstvo')) not in (0,1):
         gen.require(False, 'new_additional_source_fields')
     related = {c.strip() for c in v('Súvisiace tovary').split(',') if c.strip()}
@@ -610,6 +773,9 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     expected_flags[root], labels = mapped_flags(row,options.get('labels',{}))
     if labels:
         product['labels'] = labels
+    default_child = None
+    if children:
+        default_child = next((code for code,r in children.items() if source.flag(named(r,'Viditeľný')) is True),next(iter(children)))
     for code, child in (children or {root:row}).items():
         cv = fields(child)
         d = details[code]
@@ -621,16 +787,26 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
                     (not children or st['variant'] is active and st['variant_origin']=='admin_csv')
                     and st['product_origin']=='admin_csv', 'new_leaf_identity_changed')
         published_ean=ean
-        if ean and ean not in verified_barcodes([ean]):
-            proof=(options.get('barcode_corrections') or {}).get(code) or {}
-            revised=proof.get('ean')
-            url=urlsplit(proof.get('manufacturer_or_supplier') or '')
-            gen.require(proof.get('before')==ean and proof.get('parent')==root and
-                        isinstance(revised,str) and revised in verified_barcodes([revised]) and
-                        url.scheme=='https' and url.hostname and not url.username and not url.password and
-                        len(str(proof.get('evidence') or ''))>=20, 'new_leaf_ean_unverified')
-            published_ean=revised
-            corrected_barcodes[code]=dict(proof)
+        proof=(options.get('barcode_corrections') or {}).get(code)
+        if proof or ean and ean not in verified_barcodes([ean]):
+            if proof:
+                revised=proof.get('ean')
+                url=urlsplit(proof.get('manufacturer_or_supplier') or '')
+                gen.require(ean not in verified_barcodes([ean]) and proof.get('before')==ean and proof.get('parent')==root and
+                            (bool(ean) or type(proof.get('required_card_id')) is int and proof['required_card_id']>0) and
+                            isinstance(revised,str) and revised in verified_barcodes([revised]) and
+                            url.scheme=='https' and url.hostname and not url.username and not url.password and
+                            len(str(proof.get('evidence') or ''))>=20, 'new_leaf_ean_unverified')
+                published_ean=revised
+                corrected_barcodes[code]=dict(proof)
+            elif ean==code and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*',ean) and re.search(r'[A-Za-z]',ean):
+                # An alphanumeric SKU repeated in the source barcode field is
+                # an alternate spelling of the same inventory code, never a
+                # GTIN. Keep the unedited cell in the private receipt.
+                placeholders[code]=ean
+                published_ean=''
+            else:
+                gen.require(False,'new_leaf_ean_unverified')
         # A missing GTIN is distinct from a malformed nonempty one. Keep an
         # empty source barcode absent, leaving exact scoped SKU identity intact.
         leaf = dict(code=code,active_yn=active,weight=grams(cv('Váha')),
@@ -661,7 +837,7 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         if labels:
             leaf['labels'] = labels
         if children:
-            leaf.update(parameters=gen.parameters(axes[code]),main_yn=code==next(iter(children)))
+            leaf.update(parameters=gen.parameters(axes[code]),main_yn=code==default_child)
             gallery = [u.strip() for u in cv('Obrázky').split('|') if u.strip()]
             child_captions = {u:cv('Popisy k obrázkom '+str(i+1)) for i,u in enumerate(gallery)}
             if n is not None:
@@ -685,6 +861,13 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
                 missing_related=absent_related,seo_keywords=v('SEO kľúčové slová'),
                 variant_axis_origins=axis_origins,missing_categories=absent_categories,
                 admin_price_changes=price_differences,title_from_code=fallback_title,barcode_corrections=corrected_barcodes,
+                source_barcode_placeholders=placeholders,
+                description_sources=description_sources,
+                variant_main_origin='first_visible_in_source_order' if default_child else None,
+                source_duplicate_ids={code:list(ids) for code,ids in getattr(csv_source,'duplicate_ids',{}).items() if code in codes},
+                source_parent_code_alias=next((dict(source_sku=raw,source_internal_id=alias,published_code=root)
+                                              for raw,alias in getattr(csv_source,'parent_aliases',{}).items() if alias==root),None),
+                parent_vat_from_leaves=({'admin_parent':str(parent_vat),'saleable':str(vat)} if parent_vat!=vat else None),
                 managed_label_ids=sorted({value for key,value in options.get('labels',{}).items()
                                           if key in FLAGS and type(value) is int and value>0}),
                 issues=[f'Chýba doplnková kategória: {path}' for path in absent_categories])

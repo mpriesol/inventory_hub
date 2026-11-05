@@ -15,7 +15,9 @@ def main():
             cursor.execute(sql.read_text(encoding='utf-8'))
             cursor.execute(sql.with_name('039_atomer_variant_repairs.sql').read_text(encoding='utf-8'))
             cursor.execute(sql.with_name('040_atomer_catalog_campaign.sql').read_text(encoding='utf-8'))
-    print('Atomer review migrations 038–040 ready')
+            cursor.execute(sql.with_name('041_atomer_catalog_content.sql').read_text(encoding='utf-8'))
+            cursor.execute(sql.with_name('042_atomer_category_restore.sql').read_text(encoding='utf-8'))
+    print('Atomer review migrations 038–042 ready')
 
 
 if __name__ == '__main__':

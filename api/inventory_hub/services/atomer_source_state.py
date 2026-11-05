@@ -62,6 +62,8 @@ class AdminCatalog(dict):
         super().__init__()
         self.exact_roots = defaultdict(lambda: defaultdict(list))
         self.parent_spellings = {}
+        self.literal_children = {}
+        self.parent_code_aliases = {}
         self.quarantined = []
         self.quarantined_identifiers = set()
         self.quarantined_parents = set()
@@ -88,6 +90,20 @@ def native_catalog_code(raw, parent, ean):
     if code.encode('ascii') not in (encoded, encoded[:-1]) or not candidate.casefold().startswith(prefix.casefold()+'-'):
         return code
     return candidate
+
+
+def separate_parent(code, identities, existing_codes):
+    """Resolve a parent and its own sellable only when their exact raw identifiers distinguish both roles."""
+    if len(identities)!=2:
+        return None
+    roots = [(raw, native) for raw, parent, native in identities if raw.strip()==code and raw!=code
+             and parent.strip() in ('','0') and native.isascii() and native.isdigit()]
+    if len(roots)!=1:
+        return None
+    spelling, alias = roots[0]
+    child = [(raw,parent,native) for raw,parent,native in identities
+             if raw==code and parent==spelling and native.isascii() and native.isdigit() and native!=alias]
+    return roots[0] if len(child)==1 and alias not in existing_codes else None
 
 
 def _combine_admin_rows(rows):
@@ -155,6 +171,9 @@ def parse_admin(data):
             raise ValueError()
         commercial = [i for i,h in enumerate(headers) if i!=internal and normalized(h)!='obrazky']
         result, duplicates = AdminCatalog(), {}
+        blank_roots = defaultdict(list)
+        blank_parent_rows = []
+        overlapping_roles = defaultdict(list)
         for index, row in enumerate(reader):
             if not row:
                 continue
@@ -189,6 +208,14 @@ def parse_admin(data):
                      "flags": {heading: row[pos] for heading, pos in flag_columns.items()}, "parent": parent_code,
                      "name": row[name].strip() if name is not None else "",
                      "brand": row[brand].strip() if brand is not None else ""}
+            if catalog is not None and parent is not None:
+                raw_code, raw_parent = row[catalog], row[parent]
+                if raw_code and not raw_code.strip() and raw_parent.strip() == "0" and internal_id:
+                    blank_roots[raw_code].append(internal_id)
+                if raw_parent and not raw_parent.strip() and has_catalog_code:
+                    blank_parent_rows.append((code, raw_parent, value))
+                if raw_code.strip() and (raw_code!=code or raw_parent.strip()==code):
+                    overlapping_roles[code].append(((raw_code,raw_parent,internal_id),value))
             # Keep literal parent references. Two different native roots can share a trimmed SKU.
             # The raw spellings establish ancestry only; inventory codes stay canonical.
             if catalog is not None and parent is not None and has_catalog_code:
@@ -203,6 +230,40 @@ def parse_admin(data):
                 result[code] = value
         if not result:
             raise ValueError()
+        parent_aliases = {}
+        for code, values in overlapping_roles.items():
+            if len(duplicates.get(code,()))!=len(values):
+                continue
+            separate = separate_parent(code,[metadata for metadata,_ in values],result)
+            if not separate:
+                continue
+            spelling, alias = separate
+            for (raw,parent,native), value in values:
+                if native==alias:
+                    result[alias] = value
+                else:
+                    value["parent"] = alias
+                    result[code] = value
+            parent_aliases[spelling] = alias
+            result.parent_code_aliases[code] = alias
+            result.parent_spellings[code] = spelling
+            del duplicates[code]
+        if parent_aliases:
+            for code, spelling in result.parent_spellings.items():
+                if spelling in parent_aliases:
+                    for value in duplicates.get(code, [result[code]]):
+                        value["parent"] = parent_aliases[spelling]
+        # A literal whitespace SKU and the same nonempty parent cell can be
+        # significant in historical catalogs. Require one explicit native
+        # parent. The buyers sibling independently corroborates this family
+        # when the two sources are joined below.
+        for code, spelling, value in blank_parent_rows:
+            candidates = blank_roots[spelling]
+            if len(candidates) == 1:
+                value["parent"] = candidates[0]
+                result.literal_children[code] = candidates[0]
+            elif candidates:
+                value["conflict"] = True
         result.update((code, _combine_admin_rows(rows)) for code, rows in duplicates.items())
         return result
     except (ValueError,csv.Error,IndexError):
@@ -238,9 +299,17 @@ def _parent_record(admin, child, key):
 
 def catalog_with_admin(buyers, admin, complete=False):
     """Keep buyers rows and add identities established by the administrative export."""
+    aliases = getattr(admin,"parent_code_aliases",{})
+    if aliases:
+        buyers = [dict(r,parent=aliases[r["parent"]]) if (r["parent"] in aliases and
+                  admin.get(r["code"],{}).get("parent")==aliases[r["parent"]]) else r for r in buyers]
     result = {r["code"]: r for r in buyers}
     refs = _admin_refs(admin)
     xml_groups = defaultdict(set)
+    literal = getattr(admin, "literal_children", {})
+    witnessed_literal_roots = {literal[r["code"]] for r in buyers if r["code"] in literal
+                               and refs.get(r["parent"],r["parent"]) == literal[r["code"]]
+                               and not r.get("conflict")}
     for row in buyers:
         parent = row["parent"]
         if parent and parent != row["code"]:
@@ -259,7 +328,8 @@ def catalog_with_admin(buyers, admin, complete=False):
         parent = item["parent"]
         parent_key = refs.get(parent, parent)
         groups = xml_groups.get(parent_key, set())
-        ambiguous = bool(item.get("conflict") or (parent and parent_key is None) or len(groups) > 1
+        ambiguous = bool(item.get("conflict") or (code in literal and parent_key not in witnessed_literal_roots)
+                         or (parent and parent_key is None) or len(groups) > 1
                          or _parent_record(admin, code, parent_key).get("conflict"))
         original = result.get(code)
         if original:

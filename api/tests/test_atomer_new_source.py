@@ -1,5 +1,5 @@
 import hashlib
-import io
+from io import BytesIO
 from types import SimpleNamespace
 import unittest
 import zlib
@@ -88,6 +88,7 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         d=document(index,'Family')
         self.assertFalse(d['payload']['active_yn'])
         self.assertEqual(d['payload']['vats'],{'sk':23})
+        self.assertEqual(d['parent_vat_from_leaves'],{'admin_parent':'0','saleable':'23'})
         self.assertEqual(d['variant_axis_origins'],{'One':'admin_csv_variant_name'})
         self.assertEqual(d['payload']['variants'][0]['parameters'],src.gen.parameters({'Variant':'Sesame'}))
 
@@ -96,14 +97,97 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         second='https://www.xtrek.sk/user/12/upload/stuff/variants/2.jpg'
         index=src.Catalog([row('Family','100'),row('One','101','Family',ean=EAN,image=first),
                            row('One','102','Family',ean=EAN,image=second)])
+        with_xml(index,node('One','Family',EAN=EAN,MAIN_IMAGE=first),node('One','Family',EAN=EAN,MAIN_IMAGE=second))
         d=document(index,'Family')
         self.assertEqual(index.leaves('Family'),('One',))
         self.assertEqual(index.parent_for('102'),'Family')
+        self.assertEqual(d['source_duplicate_ids'],{'One':['101','102']})
         self.assertEqual([r['url'] for r in d['payload']['variants'][0]['images']],[first,second])
         collision=src.Catalog([row('Family','100'),row('One','101','Family',ean=EAN),
                                row('One','102','Family',ean=EAN,price='12')])
         with self.assertRaisesRegex(ReviewError,'new_parent_identity_ambiguous'):
             collision.family('Family')
+        differing=src.Catalog([row('Family','100'),row('One','101','Family',ean=EAN),
+                               row('One','102','Family',ean=EAN)])
+        with_xml(differing,node('One','Family',EAN=EAN),node('One','Family',EAN=EAN,PRICE_VAT='12'))
+        with self.assertRaisesRegex(ReviewError,'new_parent_identity_ambiguous'):
+            differing.family('Family')
+
+    def test_unique_literal_whitespace_parent_is_corroborated_by_buyers_sibling(self):
+        raw=('Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný;Názov tovaru\n'
+             '100;0; ;1;Family\n101; ;One;1;First\n102; ;Two;0;Second\n103;0;Solo;1;Solo\n').encode()
+        proof=node('One','100')
+        index=src.Catalog(src._csv(raw))
+        with self.assertRaisesRegex(ReviewError,'new_parent_identity_ambiguous'):
+            index.family('100')
+        with_xml(index,proof)
+        self.assertEqual(index.leaves('100'),('One','Two'))
+        self.assertEqual(set(index.roots),{'100','Solo'})
+        self.assertEqual(index.parent_for('102'),'100')
+        from inventory_hub.services.atomer_progress import parse_source
+        _,_,buyers=parse_source(BytesIO(b'<PRODUCTS>'+etree.tostring(proof)+b'</PRODUCTS>'))
+        admin=src.source.parse_admin(raw)
+        result=src.source.catalog_with_admin(buyers,admin,complete=True)
+        self.assertEqual({(r['code'],r['parent']) for r in result},{('Solo',''),('One','100'),('Two','100')})
+        self.assertFalse(any(r.get('conflict') for r in result))
+        unresolved=src.source.catalog_with_admin([],admin,complete=True)
+        self.assertTrue(all(r.get('conflict') for r in unresolved if r['code'] in ('One','Two')))
+
+    def test_same_trimmed_parent_and_sellable_keep_both_hierarchy_and_sellable_sku(self):
+        i=src.Catalog([row('\tModel','100',title='Family'),row('Model','101','\tModel','Family Red',ean=EAN),
+                       row('Blue','102','\tModel','Family Blue',active=False)])
+        with_xml(i,node('Model','Model',EAN=EAN,AXES={'PARAM_1':'Red'}))
+        self.assertEqual(i.roots,('100',))
+        self.assertEqual(i.parent_for('101'),'100')
+        self.assertEqual(set(i.leaves('100')),{'Model','Blue'})
+        d=document(i,'100',names={'PARAM_1':'Color'})
+        self.assertEqual(d['source_parent_code_alias'],{'source_sku':'\tModel','source_internal_id':'100','published_code':'100'})
+        self.assertEqual({v['code'] for v in d['payload']['variants']},{'Model','Blue'})
+        with self.assertRaisesRegex(ReviewError,'new_source_parent_is_sellable_child'):
+            i.family('Model')
+        raw=('Interné číslo;Kat. číslo rodiča;Kat. číslo;Viditeľný;EAN\n'
+             '100;0;\tModel;1;\n101;\tModel;Model;1;'+EAN+'\n102;\tModel;Blue;0;\n').encode()
+        admin=src.source.parse_admin(raw)
+        buyers=[{'code':'Model','parent':'Model','ean':EAN,'source_visibility':True,'conflict':False}]
+        full=src.source.catalog_with_admin(buyers,admin,True)
+        self.assertEqual([(v['code'],v['parent'],v['conflict']) for v in full],[('Model','100',False),('Blue','100',False)])
+        self.assertEqual(buyers[0]['parent'],'Model')
+        self.assertEqual(admin['Model']['internal_id'],'101')
+        self.assertEqual(admin['100']['internal_id'],'100')
+
+    def test_duplicate_named_axes_need_distinct_hidden_sku_or_physical_review(self):
+        for active in [True,False]:
+            i=src.Catalog([row('Parent','100',title='Family'),row('RedA','101','Parent','Family Red',active=active),
+                           row('RedB','102','Parent','Family Red',active=active)])
+            with_xml(i,*[node(c,'Parent',VISIBILITY=str(int(active)),AXES={'PARAM_1':'Red'}) for c in ['RedA','RedB']])
+            if active:
+                with self.assertRaisesRegex(ReviewError,'new_axis_collision'):
+                    document(i,'Parent',names={'PARAM_1':'Color'})
+            else:
+                d=document(i,'Parent',names={'PARAM_1':'Color'})
+                for child in d['payload']['variants']:
+                    self.assertEqual(child['parameters'],src.gen.parameters({'Color':'Red','Kód variantu':child['code']}))
+
+    def test_current_admin_text_preserves_original_markup_and_falls_back_to_csv_linebreaks(self):
+        original='<p><b>Model III</b> is durable.</p>'
+        for current,expected in [('Model II is durable.','<p><b>Model II</b> is durable.</p>'),
+                                 ('Model III is very durable.','<p><b>Model III</b> is very durable.</p>')]:
+            html,origin=src._original([node('P','',DESCRIPTION_LONG=original)],'DESCRIPTION_LONG',current)
+            self.assertEqual(html,expected)
+            self.assertEqual(origin,'admin_csv_in_original_html')
+        text,origin=src._original([node('P','',DESCRIPTION_LONG='')],'DESCRIPTION_LONG','Line <one>\r\nTwo')
+        self.assertEqual(text,'Line &lt;one&gt;<br>\nTwo')
+        self.assertEqual(origin,'admin_csv_rendered_text')
+
+    def test_sibling_category_context_must_have_exactly_one_native_target(self):
+        index=src.Catalog([row('Item','100',other=[('Ďalšia kategória 1','L1'),('Ďalšia kategória 2','L2'),
+                                                    ('Ďalšia kategória 3','Wide')])])
+        cfg={'categories':{'Catalog':17,'L1':20,'L2':21},'category_context':{'L1':{'Wide':22},'L2':{'Wide':22}}}
+        d=document(index,'Item',options=cfg)
+        self.assertEqual(d['missing_categories'],[])
+        self.assertEqual(d['payload']['categories'][-1],{'category_id':22,'main_yn':False})
+        d=document(index,'Item',options={**cfg,'category_context':{'L1':{'Wide':22},'L2':{'Wide':23}}})
+        self.assertEqual(d['missing_categories'],['Wide'])
 
     def test_only_literal_referenced_parent_can_own_variants(self):
         i=src.Catalog([row('Family','100'),row('\tFamily','101',active=False),row('One','103','Family')])
@@ -135,6 +219,21 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         self.assertEqual(d['barcode_corrections']['Item'],proof)
         with self.assertRaises(ReviewError):
             document(i,'Item',options={'barcode_corrections':{'Item':{**proof,'parent':'Other'}}})
+        blank=src.Catalog([row('Item','100')])
+        with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
+            document(blank,'Item',options={'barcode_corrections':{'Item':{**proof,'before':''}}})
+        corrected=document(blank,'Item',options={'barcode_corrections':{'Item':{**proof,'before':'','required_card_id':13}}})
+        self.assertEqual(corrected['payload']['ean'],EAN)
+        self.assertEqual(corrected['barcode_corrections']['Item']['required_card_id'],13)
+
+    def test_only_alphanumeric_sku_repeated_in_barcode_is_an_unset_gtin(self):
+        i=src.Catalog([row('ABC-123','100',ean='ABC-123')])
+        d=document(i,'ABC-123')
+        self.assertNotIn('ean',d['payload'])
+        self.assertEqual(d['source_barcode_placeholders'],{'ABC-123':'ABC-123'})
+        for sku,raw in [('123','123'),('ABC-123','ABC-124')]:
+            with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
+                document(src.Catalog([row(sku,'100',ean=raw)]),sku)
 
     def test_attachment_and_active_markup_do_not_reach_remote(self):
         i=src.Catalog([row('Item','100',ean=EAN)])

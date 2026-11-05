@@ -502,3 +502,5 @@ Pri nezhode dostupnosti môže Hub doložiť kartu a presný parameter generáci
 The Atomer migration report supports audited batch acceptance of the displayed proposals and scoped availability reconciliation after a shop policy change. See [migration progress](docs/atomer-migration-progress.md).
 
 Atomer catalog migration now has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. See [migration progress](docs/atomer-migration-progress.md).
+
+Existing xTrek families use a separate native content comparison. Receipts preserve the intended update, current identifiers and the evidence needed for readback after an interrupted request.

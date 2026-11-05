@@ -281,21 +281,33 @@ class OrderWebhookDatabaseTests(unittest.IsolatedAsyncioTestCase):
         auth = 'Basic ' + base64.b64encode(('biketrek:' + token).encode()).decode()
         async with self.transaction() as db:
             (await db.get(OrderWebhookSettings, self.shop_id)).secret_hash = service.credentials.digest(token)
+        at_shop_lock = asyncio.Event()
+        resume_ingress = asyncio.Event()
         async def receive():
             async with self.transaction() as db:
-                shop, row = await service.authenticate(db, auth)
-                await service.accept(db, shop, row, hint())
+                scalar = db.scalar
+                async def observe_shop_lock(statement, *args, **kwargs):
+                    models = getattr(statement, 'column_descriptions', ())
+                    if any(field.get('entity') is Shop for field in models):
+                        sql = str(statement.compile(dialect=db.get_bind().dialect))
+                        if ' FOR ' in sql:
+                            at_shop_lock.set()
+                            await resume_ingress.wait()
+                    return await scalar(statement, *args, **kwargs)
+                with patch.object(db, 'scalar', side_effect=observe_shop_lock):
+                    shop, row = await service.authenticate(db, auth)
+                    await service.accept(db, shop, row, hint())
         task = None
         try:
             async with self.transaction() as db:
                 await db.scalar(select(Shop).where(Shop.id == self.shop_id).with_for_update())
                 task = asyncio.create_task(receive())
-                await asyncio.sleep(0.05)
-                # With the old settings->Shop-FK order this would wait for the
-                # ingress transaction while ingress waited for this Shop lock.
-                async with asyncio.timeout(0.2):
-                    await db.get(OrderWebhookSettings, self.shop_id, with_for_update=True)
-            await asyncio.wait_for(task, timeout=2)
+                await asyncio.wait_for(at_shop_lock.wait(), timeout=10)
+                # A settings lock acquired before the shop lock fails NOWAIT on
+                # PostgreSQL regardless of runner speed.
+                await db.get(OrderWebhookSettings, self.shop_id, with_for_update={'nowait': True})
+            resume_ingress.set()
+            await asyncio.wait_for(task, timeout=10)
         finally:
             if task and not task.done():
                 task.cancel()

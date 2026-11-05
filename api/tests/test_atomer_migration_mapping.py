@@ -87,3 +87,36 @@ class NativeRegistryTest(unittest.TestCase):
         request.return_value={'availabilities':[{'id':19,'descriptions':[{'language':'sk','name':'Na ceste'}]}]}
         result=mapping.read_registry(object(),availability_ids=[19])
         self.assertEqual(result['availability'],{'na ceste':19})
+
+
+class RegistryAccessTest(unittest.TestCase):
+    def test_only_documented_query_arguments_on_native_registry(self):
+        body={'current_page':1,'current_page_items':0,'number_of_pages':0,'number_of_items':0,'labels':[]}
+        with patch.object(mapping.transport,'_request',return_value=body) as get:
+            self.assertEqual(mapping.registry_pages(None,'labels'),[])
+            get.assert_called_once_with(None,'get','labels',params={'page':1})
+        paged=dict(body,availabilities=[])
+        with patch.object(mapping.transport,'_request',return_value=paged) as get:
+            mapping.registry_pages(None,'availabilities',kind='Custom')
+            get.assert_called_once_with(None,'get','availabilities',params={'page':1,'type':'Custom'})
+
+    def test_restricted_labels_never_guessed_but_unflagged_items_can_proceed(self):
+        def read(client,path,key,filters,**kwargs):
+            if path=='labels':
+                exc=mapping.transport.SourceError('stock_publication_upgates_access');exc.upstream_status=403
+                raise exc
+            return []
+        with (patch.object(mapping.publication,'_options',return_value={'prices_with_vat':True}),
+              patch.object(mapping.batch,'collect_pages',side_effect=read)):
+            result=mapping.read_registry(None)
+        self.assertFalse(result['labels']);self.assertEqual(result['registry_gaps']['labels']['upstream_status'],403)
+
+    def test_diagnostics_keep_quota_and_safe_resource_and_status(self):
+        exc=mapping.transport.SourceError('stock_publication_rate_limited',429,retry_after=92,request_sent=False)
+        exc.upstream_status=429
+        with patch.object(mapping.batch,'collect_pages',side_effect=exc):
+            with self.assertRaises(mapping.transport.SourceError) as observed:
+                mapping._optional_registry(None,'availabilities',{},kind='InStock')
+        self.assertEqual(observed.exception.catalog_resource,'availabilities_InStock')
+        self.assertEqual(observed.exception.retry_after,92)
+        with self.assertRaises(ValueError):mapping.registry_pages(None,'private/path')
