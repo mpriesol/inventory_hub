@@ -22,6 +22,8 @@ Pracovník otvorí čakajúci pokyn, prevezme ho a vykoná iba kroky v potvrdeno
 
 ## Zachovanie údajov Atomeru
 
+Hromadné ponechanie používa súkromný backendový `POST /api/migration/atomer-progress/targets/keep`. Na prvej strane nefiltrovaného zoznamu rozhodnutí s voľbou **Nerozhodnuté** vracia rozhranie `targets` presnú mapu natívnych kľúčov a revízií v poli `keep_selection`. Odošlite ju ako `revisions` spolu s príslušným `run_id`. Rovnaký postup používa tlačidlo **Ponechať nerozhodnuté varianty**. Hub zapíše rozhodnutie **Nie**, stav **Hotové** a audit pre každý variant v jednej databázovej transakcii. Už uložené ponechanie možno overiť opakovanou požiadavkou. Zmenená revízia, chýbajúci cieľ alebo aktívny pokyn zastaví celú dávku.
+
 **Aktivita v Atomeri** číta viditeľnosť zo zdroja. Rodina ukazuje stav samotného materského produktu. Po rozbalení sa ukáže stav variantu a samostatne stav jeho rodiča. Pri samostatnom produkte platí viditeľnosť jeho vlastného riadka. Chýbajúca hodnota je **Neuvedené**, protirečivé podklady sú **Rozpor v zdrojoch**. Stav rodiča sa neodvodzuje zo súčtu viditeľných variantov. Viditeľnosť neurčuje množstvo ani objednateľnosť.
 
 Do prehľadu možno nahrať pôvodný buyers XML a **export tovarov z administrácie Atomeru (CSV)**. Výber produktov stačí na doplnenie viditeľnosti a príznakov pri uvedených kódoch. Variant s katalógovým číslom a uvedeným rodičom sa zobrazí aj vtedy, keď v XML chýba. Materské riadky dopĺňajú stav rodiny. Hub ukáže počet kódov v CSV a počet predajných položiek pridaných oproti XML. Zdrojová zhoda chráni existujúci variant pri posudzovaní odstránenia.

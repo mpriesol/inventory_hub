@@ -1,5 +1,5 @@
 """Durable per-product work, exact deletion decisions and an operator-accessible AI queue."""
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -26,6 +26,13 @@ class Edit(BaseModel):
     note: str | None = Field(default=None,max_length=4000)
     instruction: str | None = Field(default=None,max_length=4000)
     result: str | None = Field(default=None,max_length=4000)
+
+
+class KeepSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: int = Field(gt=0)
+    revisions: dict[Annotated[str, Field(pattern=r"^[1-9][0-9]{0,19}/[1-9][0-9]{0,19}$")],
+                    Annotated[int, Field(ge=0, strict=True)]] = Field(min_length=1, max_length=10_000)
 
 
 async def _record(db,kind,key):
@@ -61,13 +68,55 @@ async def invalidate(db,run):
     """),{"run":run})
 
 
-async def edit(db,change: Edit,actor):
+async def _lock_current_run(db, expected_run):
     if not await db.scalar(text("SELECT pg_try_advisory_xact_lock_shared(691433137)")):
         raise ReviewError("refresh_in_progress")
     await db.execute(text("SELECT pg_advisory_xact_lock(691433138)"))
     run = await db.scalar(text("SELECT max(id) FROM atomer_progress_runs"))
-    if change.run_id != run:
+    if expected_run != run:
         raise ReviewError("run_changed")
+    return run
+
+
+async def keep_selection(db, selection: KeepSelection, actor):
+    """Record keep decisions and their audit events together for the supplied native IDs."""
+    run = await _lock_current_run(db, selection.run_id)
+    params = {"run": run, "keys": list(selection.revisions), "actor": actor}
+    rows = (await db.execute(text("""
+        SELECT c.key, w.revision, w.status, w.decision, w.instruction FROM atomer_review_checks c
+        LEFT JOIN atomer_review_work w ON w.kind='extra' AND w.key=c.key
+        WHERE c.run_id=:run AND c.key=ANY(CAST(:keys AS text[]))
+    """), params)).mappings().all()
+    if len(rows) != len(selection.revisions):
+        raise ReviewError("subject_missing", 404)
+    pending = []
+    for row in rows:
+        if row["decision"] == "no" and row["status"] == "done":
+            continue
+        if (selection.revisions[row["key"]] != (row["revision"] or 0) or row["status"] not in (None, "open")
+                or row["decision"] not in (None, "undecided") or row["instruction"]):
+            raise ReviewError("review_changed")
+        pending.append(row["key"])
+    if pending:
+        await db.execute(text("""
+            WITH saved AS (
+                INSERT INTO atomer_review_work AS w
+                    (kind,key,revision,status,scope,decision,note,instruction,result,signature,updated_by)
+                SELECT 'extra',c.key,1,'done','default','no','','','',c.detail->>'signature',:actor
+                FROM atomer_review_checks c WHERE c.run_id=:run AND c.key=ANY(CAST(:keys AS text[]))
+                ON CONFLICT (kind,key) DO UPDATE SET revision=w.revision+1, status='done', decision='no',
+                    signature=excluded.signature, updated_at=now(), updated_by=excluded.updated_by
+                RETURNING w.*
+            )
+            INSERT INTO atomer_review_events(kind,key,revision,command,actor,detail)
+            SELECT kind,key,revision,'keep',:actor,to_jsonb(saved) FROM saved
+        """), dict(params, keys=pending))
+    await db.commit()
+    return {"kept": len(rows), "changed": len(pending)}
+
+
+async def edit(db,change: Edit,actor):
+    run = await _lock_current_run(db, change.run_id)
     kind, key, command = change.kind,change.key,change.command
     params = dict(run=run,key=key)
     target = None
@@ -186,7 +235,12 @@ async def extras(db,run,search,decision,work,offset,limit):
           c.detail->>'parent', c.detail->>'source_parent', c.detail->>'product_id', c.detail->>'variant_id', c.detail->>'axes')),lower(:search))>0)"""
     total = await db.scalar(text("SELECT count(*)"+clause),params)
     rows = await db.execute(text("SELECT c.detail,to_jsonb(w)"+clause+" ORDER BY lower(c.detail->>'name'),c.detail->>'code',c.key LIMIT :limit OFFSET :offset"),params)
-    return {"total":total,"items":[dict(r,work=w or EMPTY) for r,w in rows],"run_id":run}
+    selection = {}
+    if decision == "undecided" and work == "all" and not search and offset == 0 and total <= 10_000:
+        eligible = await db.execute(text("SELECT c.key,coalesce(w.revision,0)" + clause +
+            " AND coalesce(w.status,'open')='open' AND coalesce(w.instruction,'')=''"), params)
+        selection = dict(eligible.all())
+    return {"total":total,"items":[dict(r,work=w or EMPTY) for r,w in rows],"run_id":run,"keep_selection":selection}
 
 
 async def queue(db,run,status,offset,limit):

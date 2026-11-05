@@ -46,7 +46,10 @@ export type Subject = {kind:ReviewKind; key:string; name:string; work:Work; targ
 export type ReviewEdit = {kind:ReviewKind; key:string; revision:number; run_id:number; command:Command;
   scope?:Scope; decision?:Decision; note?:string; instruction?:string; result?:string};
 export function readTargets(params:URLSearchParams,signal?:AbortSignal) {
-  return hubRequest<{total:number;run_id:number;items:Extra[]}>(base+'/targets?'+params,undefined,signal);
+  return hubRequest<{total:number;run_id:number;items:Extra[];keep_selection?:Record<string,number>}>(base+'/targets?'+params,undefined,signal);
+}
+export function keepSelection(run_id:number, revisions:Record<string,number>) {
+  return hubRequest<{kept:number;changed:number}>(base+'/targets/keep',{run_id,revisions});
 }
 export function readQueue(params:URLSearchParams,signal?:AbortSignal) {
   return hubRequest<{total:number;run_id:number;items:Subject[]}>(base+'/work?'+params,undefined,signal);

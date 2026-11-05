@@ -26,7 +26,7 @@ const item = {code:'S-1',name:'Jacket blue',parent:'J',kind:'variant',variant_la
   target_code:'S-1',shop_url:shop,shop_admin_url:admin,bike_state:'unlinked',bike:null};
 item.source_state={product:null,variant:false};
 const baseWork={revision:0,status:'open',scope:'default',decision:'undecided',note:'',instruction:'',result:''};
-let saved,extraWork={...baseWork};
+let saved,keepPayload,extraWork={...baseWork};
 const target={key:'1/3',family_key:'v:J',name:'Jacket',code:'OLD-L',ean:'',product_id:'1',variant_id:'3',axes:{size:['L']},check:'eligible',warnings:[],card_ids:[],alternatives:[],stock:0,work:extraWork};
 const run = {id:2,checked_at:new Date().toISOString(),imported_at:new Date().toISOString(),totals:{items:1,admin_codes:4,admin_only_items:1,
   kinds:{variant:1},states:{linked:1},bike:{unlinked:1}}};
@@ -36,9 +36,13 @@ global.fetch = async (path, init) => {
   filter = url.searchParams;
   const ok=value=>({ok:true,status:200,json:async()=>value});
   if(init.method==='POST'){
+    if(url.pathname.endsWith('/targets/keep')){
+      keepPayload=JSON.parse(init.body);return ok({kept:2,changed:2});
+    }
     saved=JSON.parse(init.body);return ok({...baseWork,...saved,revision:1});
   }
-  if(url.pathname.endsWith('/targets'))return ok({run_id:2,total:1,items:[target]});
+  if(url.pathname.endsWith('/targets'))return ok({run_id:2,total:1,items:[target],
+    keep_selection:filter.get('decision')==='undecided'?{'1/4':0,'1/5':2}:{}});
   if(url.pathname.endsWith('/work'))return ok({run_id:2,total:0,items:[]});
   return {ok:true,status:200,json:async()=>({run,total:1,families:1,groups:[{key:'v:J',name:'Jacket',items:[item]}]})};
 };
@@ -90,6 +94,12 @@ global.fetch = async (path, init) => {
   dialog=document.querySelector('dialog');assert.equal(dialog.querySelector('select').value,'yes');
   await act(async()=>button('Uložiť',dialog).click());await settle();
   assert.equal(saved.kind,'extra');assert.equal(saved.key,'1/3');assert.equal(saved.decision,'yes');
+  const decisionFilter=[...document.querySelectorAll('label select')].find(s=>s.parentNode.textContent.startsWith('Odstrániť?'));
+  await act(async()=>{decisionFilter.value='undecided';decisionFilter.dispatchEvent(new window.Event('change',{bubbles:true}));});
+  await settle();
+  await act(async()=>button('Ponechať nerozhodnuté varianty (2)').click());await settle();
+  assert.deepEqual(keepPayload,{run_id:2,revisions:{'1/4':0,'1/5':2}});
+  assert.equal(decisionFilter.value,'no');assert.ok(document.body.textContent.includes('Počet potvrdených variantov 2'));
   await act(async()=>button('Pokyny pre AI').click());await settle();
   assert.ok(document.body.textContent.includes('V tomto stave nie sú žiadne pokyny.'));
   await act(async()=>root.unmount());
