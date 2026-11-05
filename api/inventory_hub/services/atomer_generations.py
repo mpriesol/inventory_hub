@@ -207,6 +207,17 @@ def new_leaf(row, item, evidence, parent, old_leaf, axes, options):
     return payload, expected
 
 
+def image_name(url):
+    name = PurePosixPath(urlsplit(url or "").path).name
+    # Upgates preserves the source stem while its downloader rewrites JPEG extensions.
+    return name[:-5]+".jpg" if name.lower().endswith(".jpeg") else name
+
+
+def same_image(native_url, source_url):
+    actual, source = image_name(native_url), image_name(source_url)
+    return bool(source) and (actual==source or actual.endswith("-"+source))
+
+
 def inspect_new(leaf, expected):
     if leaf.get("ean")!=expected["ean"] or leaf.get("active_yn") is not expected["visible"]:
         return "EAN alebo viditeľnosť"
@@ -228,9 +239,8 @@ def inspect_new(leaf, expected):
     if expected["images"]:
         actual = leaf.get("images") or []
         for i,url in enumerate(expected["images"]):
-            name = PurePosixPath(urlsplit(url).path).name
-            matches = [img for img in actual if PurePosixPath(urlsplit(img.get("url") or "").path).name in (name,)
-                       or (img.get("url") or "").endswith("-"+name)]
+            name = image_name(url)
+            matches = [img for img in actual if same_image(img.get("url"),url)]
             if len(matches)!=1 or i==0 and not matches[0].get("main_yn"):
                 return "obrázok "+name
     return ""

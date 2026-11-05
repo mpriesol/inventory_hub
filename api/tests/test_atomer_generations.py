@@ -84,3 +84,8 @@ class GenerationTests(unittest.TestCase):
         changed[0]["vat"]=5
         with self.assertRaises(ReviewError):
             check_prices(rows,changed,{"NEW":{"gross":"20","common":"30"}})
+
+    def test_matching_jpeg_renames_keeps_the_complete_source_stem(self):
+        self.assertTrue(gen.same_image("https://cdn.example/abcd-12345.jpeg","https://store.example/12345.jpg"))
+        self.assertFalse(gen.same_image("https://cdn.example/abcd-012345.jpeg","https://store.example/12345.jpg"))
+        self.assertFalse(gen.same_image("https://cdn.example/abcd-12345.png","https://store.example/12345.jpg"))

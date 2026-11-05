@@ -2,8 +2,6 @@
 import asyncio
 from copy import deepcopy
 from decimal import Decimal
-from urllib.parse import urlsplit
-from pathlib import PurePosixPath
 
 from sqlalchemy import select, text
 from inventory_hub.db_models import Shop
@@ -69,10 +67,6 @@ def availability_ids(fp, required):
         client.session.close()
 
 
-def source_name(url):
-    return PurePosixPath(urlsplit(url or "").path).name
-
-
 def recover_fields(doc, observation, registry):
     protected,axes=repair.projection(observation)
     original=doc["before_protected"]
@@ -94,7 +88,7 @@ def recover_fields(doc, observation, registry):
     assets={}
     for leaf in [observation["parent"],*observation["variants"]]:
         for img in leaf.get("images") or []:
-            file=source_name(img.get("url"))
+            file=gen.image_name(img.get("url"))
             if img.get("file_id") and "-" in file:
                 assets.setdefault(file.split("-",1)[-1],img["file_id"])
     leaves,issues=[],[]
@@ -122,12 +116,12 @@ def recover_fields(doc, observation, registry):
         images=leaf.get("images") or []
         urls=exp["images"]
         missing=[u for i,u in enumerate(urls) if not any(
-            (source_name(v.get("url"))==source_name(u) or source_name(v.get("url")).endswith("-"+source_name(u)))
+            gen.same_image(v.get("url"),u)
             and (i or v.get("main_yn")) for v in images)]
         if missing:
             # A queued URL is already being fetched. The existing family file is also a verified
             # match for the source image. Be explicit about the primary image on older APIs.
-            main=source_name(urls[0])
+            main=gen.image_name(urls[0])
             if urls[0] in missing and main in assets:
                 patch["image"]={"file_id":assets[main]}
             issues.append(code+": "+str(len(missing))+" obrázkov ešte neoverených")
