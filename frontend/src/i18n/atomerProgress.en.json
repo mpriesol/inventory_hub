@@ -1,4 +1,5 @@
 {
+  "replaceSource": "Replace Atomer export",
   "bikeReasons": {
     "card_conflict": "Ambiguous inventory card",
     "incomplete_link": "Link is missing a code or native ID",
