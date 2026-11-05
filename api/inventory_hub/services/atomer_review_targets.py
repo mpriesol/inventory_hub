@@ -85,9 +85,13 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None):
                 identifiers.add(value.casefold())
                 gtins.update(barcode_keys([value]))
     families, referenced, ownership = defaultdict(set), defaultdict(list), defaultdict(list)
-    titles = {}
+    titles, parent_states, leaf_states = {}, {}, {}
     for r in rows:
         titles[r["family_key"]] = r["family_name"]
+        state = r.get("source_state") or {}
+        parent_states[r["family_key"]] = dict(product=state.get("product"),product_origin=state.get("product_origin","unknown"),
+                                               product_flags=state.get("product_flags") or {})
+        leaf_states[r["code"]] = state
         if r["product_id"] and r["variant_id"]:
             referenced[(r["product_id"],r["variant_id"])].append(r)
             if r["match"] and "parent_differs" not in r["reasons"]:
@@ -129,7 +133,15 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None):
         elif stock != 0:
             warnings.append("stock")
         signature = hashlib.sha256(json.dumps([p,check,owners,stock,alternatives,warnings],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        checks.append({**p,"key":key,"family_key":family,"name":titles.get(family) or p["source_parent"],
+        state = leaf_states.get(p["code"]) or {}
+        admin_row = (admin or {}).get(p["code"]) or {}
+        origin = state.get("variant_origin","unknown")
+        active = state.get("variant")
+        if origin=="unknown" and admin_row.get("visibility") is not None:
+            active, origin = admin_row["visibility"], "admin_csv"
+        source_state = dict(parent_states.get(family,{}),variant=active,variant_origin=origin,
+                            variant_flags=state.get("variant_flags") or admin_row.get("flags") or {})
+        checks.append({**p,"source_state":source_state,"key":key,"family_key":family,"name":titles.get(family) or p["source_parent"],
                        "check":check,"signature":signature,"warnings":warnings,"alternatives":alternatives,
                        "stock":stock,"card_ids":owners,"hub_sku":cards[owners[0]].sku if len(owners)==1 and owners[0] in cards else None,
                        "shop_url":(target or {}).get("shop_url"),"shop_admin_url":(target or {}).get("shop_admin_url")})

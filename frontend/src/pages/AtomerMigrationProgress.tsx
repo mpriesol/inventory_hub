@@ -119,6 +119,8 @@ export function AtomerMigrationProgress() {
       return r.work?.status!=='done' && ((scope!=='biketrek'&&r.state!=='linked') ||
         (scope!=='xtrek'&&(r.bike_state==='review'||(scope==='both'||scope==='biketrek')&&r.bike_state!=='linked')));
     }).length;
+    const activeVariants=g.items.filter(r=>r.source_state?.variant===true).length;
+    const knownVariants=g.items.filter(r=>r.source_state?.variant!=null).length;
     const suggestions=[...new Set(g.items.flatMap(r=>suggestionsFor(r,gw.scope)))].filter(k=>k!=='verify');
     function groupLinks(isBike:boolean) {
       const rows = g.items.filter(r=> isBike ? r.bike_state==='linked' : !!r.target_code);
@@ -133,6 +135,7 @@ export function AtomerMigrationProgress() {
         <span aria-hidden="true" className={open?'is-open':''}>▸</span><span><strong>{g.name}</strong>
         <small>{g.items[0].parent} · {m('variantsCount')} {num(n)}</small></span></button></td>
       <td>{activity(g.items[0].source_state?.product,g.items[0].source_state?.product_origin)}
+        {knownVariants>0&&<small>{m('activeVariants')} {num(activeVariants)} / {num(knownVariants)}</small>}
         {flags(g.items[0].source_state?.product_flags)}</td>
       <td>{reviewButton({kind:'family',key:g.key,name:g.name,work:gw,suggestions:suggestions.length?suggestions:['verify']})}</td>
       <td>{g.extra_count?<button type="button" className="review-count-link" onClick={()=>setUrl({view:'remove',q:g.items[0].parent})}>

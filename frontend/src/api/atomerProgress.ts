@@ -35,7 +35,7 @@ export type Scope = 'default'|'both'|'xtrek'|'biketrek';
 export type Decision = 'undecided'|'yes'|'no';
 export type Work = {revision:number; status:WorkStatus; scope:Scope; decision:Decision; note:string; instruction:string; result:string};
 export const emptyWork: Work = {revision:0,status:'open',scope:'default',decision:'undecided',note:'',instruction:'',result:''};
-export type Extra = {key:string; family_key:string; name:string; code:string; parent:string; source_parent:string; product_id:string;
+export type Extra = {source_state?:ProgressRow['source_state']; key:string; family_key:string; name:string; code:string; parent:string; source_parent:string; product_id:string;
   variant_id:string; ean:string; axes:Record<string,string[]>; check:string; warnings:string[]; alternatives:string[]; stock:number|null;
   card_ids:number[]; hub_sku:string|null; shop_url:string|null; shop_admin_url:string|null; work:Work};
 export type Command = 'save'|'done'|'reopen'|'claim'|'complete'|'block'|'retry';

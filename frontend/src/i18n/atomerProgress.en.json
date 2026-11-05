@@ -213,5 +213,7 @@
     "on": "Active",
     "off": "Inactive"
   },
-  "activityHelp": "Activity is visibility in Atomer. A missing parent record is shown as unknown."
+  "activityHelp": "Activity is visibility in Atomer. A missing parent record is shown as unknown.",
+  "activeVariants": "Active variants",
+  "variantLabel": "Variant"
 }

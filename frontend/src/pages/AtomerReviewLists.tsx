@@ -43,7 +43,7 @@ export function AtomerReviewLists({view,initialQuery,revision,onOpen}:{
     {isRemove && data?.extras.some(r=>r.warnings.includes('admin_absence_unknown')) && <p className="progress-warning">{m('warn.admin_absence_unknown')}</p>}
     {error && <p role="alert" className="progress-warning">{m('errors.failed')}</p>}
     <div className="progress-grid" aria-busy={busy}><table><thead><tr>
-      {(isRemove?[m('remoteVariant'),m('delete'),m('reviewCheck'),m('card'),m('workTitle')]:[m('subjectLabel'),m('instruction'),m('lastResult'),m('workTitle')]).map(h=><th key={h}>{h}</th>)}</tr></thead>
+      {(isRemove?[m('remoteVariant'),m('delete'),m('activeAtomer'),m('reviewCheck'),m('card'),m('workTitle')]:[m('subjectLabel'),m('instruction'),m('lastResult'),m('workTitle')]).map(h=><th key={h}>{h}</th>)}</tr></thead>
       <tbody>{isRemove?data?.extras.map(r=><tr key={r.key}>
         <td><strong>{r.name}</strong><small>{Object.values(r.axes).flat().join(' / ')}</small><small>{r.code} · EAN {r.ean||'—'}</small>
           <div className="progress-shop-links">{r.shop_url&&<a href={r.shop_url} target="_blank" rel="noreferrer">{m('web')}</a>}
@@ -52,6 +52,8 @@ export function AtomerReviewLists({view,initialQuery,revision,onOpen}:{
         <td><select aria-label={m('delete')+' '+r.code} value={r.work.decision} disabled={busy||r.work.status==='working'}
           onChange={e=>openTarget(r,e.target.value as Decision)}>
           {['undecided','no','yes'].map(k=><option value={k} key={k} disabled={k==='yes'&&r.check!=='eligible'}>{m('decision.'+k)}</option>)}</select></td>
+        <td>{m('parentActive')} · {m('activity.'+(r.source_state?.product_origin==='conflict'?'conflict':r.source_state?.product==null?'unknown':r.source_state.product?'on':'off'))}
+          <small>{m('variantLabel')} · {m('activity.'+(r.source_state?.variant_origin==='conflict'?'conflict':r.source_state?.variant==null?'unknown':r.source_state.variant?'on':'off'))}</small></td>
         <td>{m('checks.'+r.check)}{r.warnings.filter(k=>k!=='admin_absence_unknown').map(k=><small className="progress-warning" key={k}>{m('warn.'+k)}</small>)}
           {!!r.alternatives.length&&<small>{r.alternatives.join(', ')}</small>}<small>{m('stockX')} {r.stock??'—'}</small></td>
         <td>{r.card_ids.length?r.card_ids.map(n=>'#'+n).join(', '):'—'}</td>

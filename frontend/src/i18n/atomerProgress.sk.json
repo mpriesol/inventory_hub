@@ -213,5 +213,7 @@
     "on": "Aktívny",
     "off": "Neaktívny"
   },
-  "activityHelp": "Aktivita znamená viditeľnosť v Atomeri. Ak v exporte chýba materský riadok, jeho stav je „Neuvedené“."
+  "activityHelp": "Aktivita znamená viditeľnosť v Atomeri. Ak v exporte chýba materský riadok, jeho stav je „Neuvedené“.",
+  "activeVariants": "Aktívne varianty",
+  "variantLabel": "Variant"
 }
