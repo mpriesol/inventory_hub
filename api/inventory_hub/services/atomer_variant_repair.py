@@ -55,7 +55,7 @@ def digest(obj):
 
 
 def selection_id(selection):
-    data = selection.model_dump()
+    data = selection.model_dump(mode="json")
     for row in data['rows']:
         if row.get('names',False) is None:
             del row['names']
