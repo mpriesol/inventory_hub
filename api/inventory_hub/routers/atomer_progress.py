@@ -36,6 +36,7 @@ async def progress_refresh(expected_run: Annotated[int, Form(ge=0)],
                            only_if_stale: Annotated[bool, Form()] = False,
                            source_file: Annotated[UploadFile | None, File()] = None,
                            admin_file: Annotated[UploadFile | None, File()] = None,
+                           admin_complete: Annotated[bool, Form()] = False,
                            review_file: Annotated[UploadFile | None, File()] = None,
                            db: AsyncSession = Depends(get_session)):
     try:
@@ -43,7 +44,7 @@ async def progress_refresh(expected_run: Annotated[int, Form(ge=0)],
         pins = await asyncio.to_thread(parse_targets, review_file.file) if review_file else None
         buyers = await asyncio.to_thread(archive,source_file.file,"buyers") if source_file else None
         admin = await asyncio.to_thread(archive,admin_file.file,"admin_csv") if admin_file else None
-        return await refresh(db,source,expected_run,only_if_stale,pins,buyers,admin)
+        return await refresh(db,source,expected_run,only_if_stale,pins,buyers,admin,admin_complete)
     except ReviewError as error:
         raise HTTPException(error.status,detail={"code":error.code}) from None
     except AtomerSourceError as error:

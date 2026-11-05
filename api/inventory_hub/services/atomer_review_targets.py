@@ -69,7 +69,7 @@ async def register(db, pins):
         raise ReviewError("target_pin_changed")
 
 
-def check_targets(pins, source, targets, rows, links, cards, admin=None):
+def check_targets(pins, source, targets, rows, links, cards, admin=None, *, admin_complete=False):
     native = {(r["pid"],r["vid"]):r for r in targets if r["vid"]}
     code_counts = Counter(r["code"].casefold() for r in targets)
     product_codes = {r["parent"].casefold() for r in targets if r["parent"]}
@@ -98,7 +98,6 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None):
                 families[r["family_key"]].add((r["product_id"],r["target_parent"]))
     for link in links:
         ownership[(link.external_product_id,link.external_variant_id)].append(link.product_id)
-    admin_covers_source = bool(admin) and all(s["code"] in admin for s in source)
     checks = []
     for key,p in pins.items():
         ids = (p["product_id"],p["variant_id"])
@@ -124,7 +123,7 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None):
             else:
                 check = "in_source"
         stock = (target or {}).get("stock")
-        if not admin_covers_source:
+        if not admin_complete:
             warnings.append("admin_absence_unknown")
         if owners:
             warnings.append("linked")

@@ -76,11 +76,12 @@
     "family_manages_work": "O práci rozhoduje celý produkt. Najskôr otvor jeho rozhodnutie.",
     "active_child_work": "Niektorý variant má aktívny pokyn. Najskôr vyrieš alebo stiahni jeho pokyn.",
     "invalid_admin_export": "CSV musí obsahovať jednoznačné katalógové číslo a viditeľnosť. Skontroluj hlavičky a duplicitné riadky.",
+    "incomplete_admin_export": "Úplný CSV musí obsahovať katalógové čísla, väzby na rodičov a všetky položky zo zdrojového XML. Výber môžeš uložiť bez označenia úplnosti.",
     "export_size": "Súbor je prázdny alebo príliš veľký.",
     "admin_source_required": "Pred odstránením treba úplný export Atomeru vrátane skrytých položiek."
   },
   "reasons": {
-    "duplicate_source": "Odlišné riadky majú v Atomeri rovnaký kód.",
+    "duplicate_source": "Zdrojové údaje pre rovnaký kód si odporujú.",
     "multiple_targets": "V xTrek je viac možných zhôd.",
     "target_claimed": "Tú istú položku xTrek označuje viac kódov z Atomeru.",
     "kind_differs": "Jeden záznam je variant a druhý samostatný produkt.",
@@ -203,7 +204,11 @@
     "unknown_stock": "Množstvo zásob nie je známe.",
     "admin_absence_unknown": "Pred odstránením treba úplný export Atomeru vrátane skrytých položiek."
   },
-  "adminFile": "Úplný export administrácie Atomeru (CSV)",
+  "adminFile": "Export tovarov z administrácie Atomeru (CSV)",
+  "adminCompleteLabel": "CSV obsahuje celý katalóg vrátane skrytých produktov a variantov",
+  "adminFull": "CSV celého katalógu",
+  "adminPartial": "CSV vybraných položiek",
+  "adminCoverage": "Kódy v CSV {{codes}} · Predajné položky iba v CSV {{added}}",
   "targetFile": "Zoznam variantov na posúdenie (JSON)",
   "activeAtomer": "Aktivita v Atomeri",
   "parentActive": "Materský produkt",

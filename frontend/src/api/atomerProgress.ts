@@ -12,17 +12,20 @@ export type ProgressRow = {
   bike: {reason?:string; shop_url?:string|null; shop_admin_url?:string|null; code: string | null; parent: string | null; product_id: string | null; variant_id: string | null} | null;
 };
 export type ProgressRun = {id: number; checked_at: string; source_sha256: string; source_rows: number; imported_at: string;
-  totals: {items: number; review_targets?:number; kinds: Record<string,number>; states: Record<string,number>; bike: Record<string,number>}};
+  totals: {items: number; review_targets?:number; admin_codes?:number; admin_only_items?:number; admin_complete?:boolean;
+    kinds: Record<string,number>; states: Record<string,number>; bike: Record<string,number>}};
 export type ProgressFamily = {key:string; name:string; work?:Work; extra_count?:number; items:ProgressRow[]};
 export type ProgressPage = {run: ProgressRun | null; total: number; families:number; groups:ProgressFamily[]};
 const base = '/api/migration/atomer-progress';
 export function readProgress(params: URLSearchParams, signal?: AbortSignal) {
   return hubRequest<ProgressPage>(base + '?' + params, undefined, signal);
 }
-export function refreshProgress(expectedRun: number, file?: File | null, staleOnly = false, reviewFile?:File|null, adminFile?:File|null) {
+export function refreshProgress(expectedRun: number, file?: File | null, staleOnly = false, reviewFile?:File|null,
+                                adminFile?:File|null, adminComplete = false) {
   const form = new FormData();
   form.set('expected_run', String(expectedRun));
   if (adminFile) form.set('admin_file',adminFile);
+  if (adminFile && adminComplete) form.set('admin_complete','true');
   if (reviewFile) form.set('review_file',reviewFile);
   if (file) form.set('source_file', file);
   if (staleOnly) form.set('only_if_stale','true');
