@@ -12,7 +12,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
-from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity
+from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity, atomer_standalone_family
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
@@ -283,5 +283,14 @@ async def verify_source_card_brands(mode: Literal['preview', 'apply'], selection
                                    request: Request, db: AsyncSession = Depends(get_session)):
     try:
         return await atomer_brand_identity.register(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None
+
+
+@router.post('/standalone-family/{mode}')
+async def convert_standalone_family(mode: Literal['preview', 'apply'], selection: atomer_standalone_family.Family,
+                                    request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_standalone_family.process(db, selection, mode, _actor(request))
     except (ReviewError, CatalogError, SourceError) as error:
         raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None

@@ -18,14 +18,14 @@ class Pack(BaseModel):
     families: list[repairs.Family | recode.BarcodeFamily] = Field(min_length=1, max_length=25)
 
 
-def collect_pages(client, path, key, filters, *, page_size=100):
+def collect_pages(client, path, key, filters, *, page_size=100, read=None):
     records = []
     expected = None
     for page in range(1, 26):
         params = {**filters,'page':page}
         if page_size is not None:
             params['current_page_items'] = page_size
-        data = transport._request(client,'get',path,params=params)
+        data = (read or transport._request)(client,'get',path,params=params)
         rows = data.get(key)
         totals = data.get('number_of_items'), data.get('number_of_pages')
         if (not isinstance(rows,list) or not transport._messages_ok(data.get('messages'))

@@ -1,6 +1,9 @@
 """Resolve Atomer option names from SKU-aligned evidence and the selected shop's native registries."""
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
+from copy import deepcopy
 import re
+from threading import Lock
+from time import monotonic
 import unicodedata
 
 from inventory_hub.services import atomer_family_batch as batch
@@ -210,28 +213,98 @@ def registry_options(availability_rows, label_rows=()):
 
 AVAILABILITY_TYPES = ('OnRequest','NotAvailable','InStock','Custom')
 
+# Only used for the serialized campaign's planning reads. Native identity and
+# category pre-write/readback calls bypass these checkpoints. The optional shop
+# key is the connection fingerprint, never a URL, username or credential.
+_REGISTRY_TTL = 20 * 60
+_REGISTRY_PAGES = OrderedDict()
+_REGISTRY_LOCK = Lock()
+_ABSENT = object()
+
+
+def _remember(key, value):
+    with _REGISTRY_LOCK:
+        _REGISTRY_PAGES[key] = (monotonic(), deepcopy(value))
+        _REGISTRY_PAGES.move_to_end(key)
+        while len(_REGISTRY_PAGES)>128:
+            _REGISTRY_PAGES.popitem(last=False)
+
+
+def _observed(key, age=_REGISTRY_TTL):
+    with _REGISTRY_LOCK:
+        saved = _REGISTRY_PAGES.get(key)
+        if saved and monotonic()-saved[0] <= age:
+            return deepcopy(saved[1])
+    return _ABSENT
+
+
+def invalidate_categories(fingerprint):
+    with _REGISTRY_LOCK:
+        for key in tuple(_REGISTRY_PAGES):
+            if key[0]==fingerprint and key[1] in ('categories','category_snapshot'):
+                del _REGISTRY_PAGES[key]
+
+
+def remember_category_snapshot(fingerprint, rows):
+    if isinstance(fingerprint,str) and re.fullmatch('[0-9a-f]{64}', fingerprint):
+        _remember((fingerprint,'category_snapshot',()),rows)
+
+
+def recent_category_snapshot(fingerprint):
+    rows = _observed((fingerprint,'category_snapshot',()), age=30)
+    return None if rows is _ABSENT else rows
+
+
+def _planning_reader(fingerprint):
+    if not isinstance(fingerprint,str) or not re.fullmatch('[0-9a-f]{64}',fingerprint):
+        raise ValueError('invalid_registry_checkpoint')
+    def read(client, method, path, *, params=None):
+        if method!='get' or (path not in ('config','languages','pricelists','categories','labels','availabilities')
+                             and not re.fullmatch(r'availabilities/[1-9][0-9]*',path)):
+            raise ValueError('invalid_registry_resource')
+        key = (fingerprint,path,tuple(sorted((params or {}).items())))
+        previous = _observed(key)
+        if previous is not _ABSENT:
+            return previous
+        result = transport._request(client,method,path,params=params)
+        if not isinstance(result,dict) or not transport._messages_ok(result.get('messages')):
+            raise transport.SourceError('stock_publication_invalid_response')
+        _remember(key,result)
+        return result
+    return read
+
 
 def _read_option(resource, call, *args, **kwargs):
     try:
         return call(*args,**kwargs)
     except (ReviewError,transport.SourceError) as exc:
-        exc.catalog_resource=resource
+        detail = getattr(exc, 'catalog_resource', None)
+        if resource != 'pricing_options' or detail not in ('config', 'languages', 'pricelists'):
+            exc.catalog_resource = resource
         raise
 
 
-def registry_pages(client,resource,*,kind=None):
+def registry_pages(client,resource,*,kind=None,read=None):
     if resource not in ('categories','labels','availabilities') or kind is not None and (
             resource!='availabilities' or kind not in AVAILABILITY_TYPES):
         raise ValueError('invalid_registry_resource')
     label=resource if kind is None else 'availabilities_'+kind
     # These registries accept a page selector. current_page_items is native response metadata;
     # only the product catalog endpoints document it as a request parameter.
-    return _read_option(label,batch.collect_pages,client,resource,resource,{'type':kind} if kind else {},page_size=None)
+    return _read_option(label,batch.collect_pages,client,resource,resource,{'type':kind} if kind else {},
+                        page_size=None,read=read)
 
 
-def _optional_registry(client,resource,gaps,*,kind=None):
+def _optional_registry(client,resource,gaps,*,kind=None,read=None,cache_key=None):
+    label=resource if kind is None else 'availabilities_'+kind
+    key=(cache_key,'registry_gap',(label,))
+    if cache_key:
+        known=_observed(key,age=300)
+        if known is not _ABSENT:
+            gaps[label]=known
+            return []
     try:
-        return registry_pages(client,resource,kind=kind)
+        return registry_pages(client,resource,kind=kind,read=read)
     except transport.SourceError as exc:
         status=getattr(exc,'upstream_status',None)
         if status not in (400,403,404,405,422):
@@ -239,31 +312,50 @@ def _optional_registry(client,resource,gaps,*,kind=None):
         # An unsupported collection grants no information. A source flag cannot be published
         # without a verified label ID; known availability IDs are re-read individually below.
         gaps[exc.catalog_resource]={'code':exc.code,'upstream_status':status}
+        if cache_key:
+            _remember(key,gaps[exc.catalog_resource])
         return []
 
-def read_registry(client, *, availability_ids=()):
-    """Fetch non-secret shop options once per catalog run. The caller manages client lifetime and quota."""
-    pricing = _read_option('pricing_options',publication._options,client)
+def _read_registry(client,availability_ids,cache_key):
+    read = _planning_reader(cache_key) if cache_key is not None else None
+    pricing = _read_option('pricing_options',publication._options,client,read=read)
     if pricing['prices_with_vat'] is not True:
         raise ReviewError('generation_price_configuration')
-    categories=registry_pages(client,'categories')
+    categories=recent_category_snapshot(cache_key) if cache_key else None
+    if categories is None:
+        categories=registry_pages(client,'categories',read=read)
+        remember_category_snapshot(cache_key,categories)
     gaps={}
-    labels=_optional_registry(client,'labels',gaps)
+    labels=_optional_registry(client,'labels',gaps,read=read,cache_key=cache_key)
     availability = []
     for kind in AVAILABILITY_TYPES:
-        availability.extend(_optional_registry(client,'availabilities',gaps,kind=kind))
+        availability.extend(_optional_registry(client,'availabilities',gaps,kind=kind,read=read,cache_key=cache_key))
     seen = {a.get('id') for a in availability}
     for option in dict.fromkeys(availability_ids):
         if not _id(option):
             raise ReviewError('new_availability_unknown')
         if option not in seen:
-            detail = _read_option('availability_by_id',transport._request,client,'get','availabilities/'+str(option))
+            detail = _read_option('availability_by_id',read or transport._request,client,'get','availabilities/'+str(option))
             rows = detail.get('availabilities') or []
             if (not transport._messages_ok(detail.get('messages')) or len(rows)!=1
                     or rows[0].get('id') != option):
                 raise ReviewError('new_availability_unknown')
             availability.extend(rows)
     return {**pricing, **registry_options(availability,labels), 'category_registry':categories,'registry_gaps':gaps}
+
+
+def read_registry(client, *, availability_ids=(), cache_key=None):
+    """Resume bounded planning GETs after a quota pause. Invalid pages are discarded together."""
+    try:
+        return _read_registry(client,availability_ids,cache_key)
+    except (ReviewError,transport.SourceError) as exc:
+        if cache_key and (isinstance(exc,ReviewError) or exc.code in
+                          ('stock_publication_invalid_response','product_publication_price_settings_unknown')):
+            with _REGISTRY_LOCK:
+                for key in tuple(_REGISTRY_PAGES):
+                    if key[0]==cache_key:
+                        del _REGISTRY_PAGES[key]
+        raise
 
 
 def fetch_options(client, source_paths, category_aliases=None, availability_ids=(), contextual_roots=()):

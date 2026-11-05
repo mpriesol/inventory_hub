@@ -7,6 +7,7 @@ never part of a catalog payload.
 from collections import Counter, defaultdict
 import csv
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from functools import lru_cache
 from itertools import permutations
 import hashlib
 import html
@@ -151,6 +152,7 @@ class FamilyRows(dict):
         self.parent_aliases = index._parent_aliases
         self.parent_barcodes = index.parent_barcodes
         self.known_brands = index.known_brands
+        self.catalog = index
 
 
 class Catalog:
@@ -161,6 +163,7 @@ class Catalog:
         self._children = defaultdict(list)
         self._invalid = set()
         self._references = {}
+        self._gtin_owners = defaultdict(set)
         self._duplicate_ids = {}
         self._literal_children = {}
         self._unwitnessed = set()
@@ -190,6 +193,10 @@ class Catalog:
             if literal_parent and not parent and catalog_code:
                 blank_parent_rows.append((code,literal_parent))
             if not _valid_key(code):
+                # Keep presence evidence for a future malformed SKU. The
+                # opaque archive-row reference cannot become a publishable SKU.
+                for key in barcode_keys([named(row,'EAN kód')]):
+                    self._gtin_owners[key].add('unresolved-source-row:'+native)
                 if parent:
                     self._invalid.add(parent)
                 continue
@@ -269,7 +276,10 @@ class Catalog:
                 self._invalid.add(parent)
         self.roots = tuple(k for k in self._rows if not parents[k])
         self._owners = {c: r for r, children in self._children.items() for c in children}
-        self._gtin_owners = defaultdict(set)
+        self._comma_codes = defaultdict(list)
+        for code in self._rows:
+            if ',' in code:
+                self._comma_codes[code.partition(',')[0].strip()].append(code)
         self._sku_owners = defaultdict(set)
         for code,row in self._rows.items():
             self._sku_owners[code.casefold()].add(code)
@@ -286,6 +296,37 @@ class Catalog:
     def gtin_owners(self, value):
         """Every native CSV code carrying the same valid GTIN; no UPC/EAN reformatting for publication."""
         return tuple(sorted({code for key in barcode_keys([value]) for code in self._gtin_owners.get(key,())}))
+
+    def related_codes(self, row, xml, *, standalone):
+        """Resolve CSV's comma separator without splitting a real source SKU containing a comma."""
+        raw = named(row,'Súvisiace tovary')
+        words = [part.strip() for part in raw.split(',')]
+        explicit = {v.strip() for n in xml.values() for v in n.xpath('RELATED_PRODUCTS/PRODUCT_ID/text()') if v.strip()}
+        refs = set(explicit) if standalone else set()
+        unknown = []
+        cursor = 0
+        while cursor<len(words):
+            first=words[cursor]
+            options = [(code,code.count(',')+1) for code in self._comma_codes.get(first,())]
+            matched = [(code,length) for code,length in options
+                       if words[cursor:cursor+length]==[part.strip() for part in code.split(',')]]
+            if matched:
+                # Prefer a literal XML item or a single real compound SKU.
+                # Two fully valid interpretations need review before linking.
+                backed=[item for item in matched if item[0] in explicit]
+                candidates=backed or matched
+                code,length=max(candidates,key=lambda item:item[1])
+                parts=words[cursor:cursor+length]
+                if (len(candidates)>1 and not backed) or (not backed and all(self.parent_for(p) for p in parts)):
+                    unknown.append(code)
+                else:
+                    refs.add(code)
+                cursor+=length
+            else:
+                if first:
+                    refs.add(first)
+                cursor+=1
+        return sorted(refs),unknown
 
     def _index_parent_barcodes(self):
         # A family-level identifier must never be copied to a physical card.
@@ -769,14 +810,42 @@ class NoPublishableLeaves(ReviewError):
         self.deferred_leaves = deferred
 
 
-def verified_leaf_barcode(code, ean, root, corrections, *, zero_sentinel=False):
+@lru_cache(maxsize=4)
+def _corrected_gtin_owners(claims):
+    # Requests reload the same private registration from JSON. Cache by its
+    # actual SKU/GTIN contents so an edited registration is checked afresh.
+    owners = defaultdict(set)
+    for code,value in claims:
+        for normalized in barcode_keys([value]):
+            owners[normalized].add(code)
+    return owners
+
+
+def _claimed_codes(index, value):
+    return set().union(*(index.get(key, ()) for key in barcode_keys([value])))
+
+
+class CorrectedBarcodeConflict(ReviewError):
+    def __init__(self, value, source_owners, supplier_owners):
+        super().__init__('new_corrected_ean_owner_conflict')
+        self.evidence = dict(proposed_ean=value, source_owners=sorted(source_owners),
+                             supplier_owners=sorted(supplier_owners))
+
+
+def verified_leaf_barcode(code, ean, root, corrections, *, internal_id='', zero_sentinel=False):
     """Return (GTIN, supplier proof, source placeholder), or reject the exact unresolved leaf."""
     proof = corrections.get(code)
     if proof:
         revised=proof.get('ean')
         url=urlsplit(proof.get('manufacturer_or_supplier') or '')
+        pinned_admin=proof.get('required_atomer_id')
+        matches_admin=(isinstance(pinned_admin,str) and pinned_admin==internal_id and
+                       re.fullmatch(r'[1-9][0-9]{0,19}',pinned_admin))
+        pinned_card=proof.get('required_card_id')
         gen.require(ean not in verified_barcodes([ean]) and proof.get('before')==ean and proof.get('parent')==root and
-                    (bool(ean) or type(proof.get('required_card_id')) is int and proof['required_card_id']>0) and
+                    (pinned_admin is None or matches_admin) and
+                    (pinned_card is None or type(pinned_card) is int and pinned_card>0) and
+                    (bool(ean) or matches_admin or pinned_card is not None) and
                     isinstance(revised,str) and revised in verified_barcodes([revised]) and
                     url.scheme=='https' and url.hostname and not url.username and not url.password and
                     len(str(proof.get('evidence') or ''))>=20, 'new_leaf_ean_unverified')
@@ -872,9 +941,19 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     product = dict(code=root,active_yn=visible,descriptions=[desc],categories=categories,
                    prices=pricing(row,options['pricelist'],active=visible and not children),vats={'sk':float(vat)},
                    weight=shipping_weight(root,row,v('Váha'),weights),images=image_list(source_images,captions))
+    corrections = options.get('barcode_corrections') or {}
+    catalog = getattr(csv_source,'catalog',None)
     parent_barcode = getattr(csv_source,'parent_barcodes',{}).get(root)
+    claims = {}
+    if parent_barcode or any(code in corrections for code in codes):
+        claims = _corrected_gtin_owners(tuple((c,proof['ean']) for c,proof in corrections.items()
+            if isinstance(proof,dict) and isinstance(proof.get('ean'),str)))
     if parent_barcode and parent_barcode['status']=='unique_parent':
-        product['ean']=parent_barcode['raw']
+        claimed = sorted(_claimed_codes(claims,parent_barcode['raw'])-{root})
+        if claimed:
+            parent_barcode={**parent_barcode,'status':'reserved_by_supplier_leaf','owners':claimed}
+        else:
+            product['ean']=parent_barcode['raw']
     if brand:
         product['manufacturer'] = brand
     attrs = _display_properties(row,rows,xml_rows,options.get('property_names',{}))
@@ -896,13 +975,20 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         node = xml_rows.get(code)
         if node is None or not _code(node.findtext('WEIGHT')):
             unspecified_weights.append(code)
-    related = {c.strip() for c in v('Súvisiace tovary').split(',') if c.strip()}
-    if not children and nodes:
-        related.update(t.text.strip() for t in nodes[0].findall('RELATED_PRODUCTS/PRODUCT_ID') if t.text and t.text.strip())
+    if catalog:
+        related,ambiguous_refs=catalog.related_codes(row,xml_rows,standalone=not children)
+    else:
+        related={c.strip() for c in v('Súvisiace tovary').split(',') if c.strip()}
+        if not children and nodes:
+            related.update(t.text.strip() for t in nodes[0].findall('RELATED_PRODUCTS/PRODUCT_ID') if t.text and t.text.strip())
+        ambiguous_refs=[]
     references = options.get('reference_codes', {})
-    targets = {ref: references.get(ref, ref) for ref in related}
+    targets = {}
+    for ref in related:
+        owner = catalog.parent_for(ref) if catalog else ref
+        targets[ref] = references.get(ref, references.get(owner,owner))
     product['related'] = sorted({target for target in targets.values() if target in native_codes and target!=root})
-    absent_related = sorted(ref for ref, target in targets.items() if target not in native_codes)
+    absent_related = sorted({ref for ref, target in targets.items() if target not in native_codes} | set(ambiguous_refs))
     expected_flags[root], labels = mapped_flags(row,options.get('labels',{}))
     if labels:
         product['labels'] = labels
@@ -921,17 +1007,25 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         try:
             zero=(not children and code==root and cv('Kat. číslo').strip()==code and cv('Interné číslo').strip() and
                   (options.get('zero_barcode_sentinels') or {}).get(code)==cv('Interné číslo').strip())
-            published_ean,proof,placeholder=verified_leaf_barcode(code,ean,root,options.get('barcode_corrections') or {},
-                                                                  zero_sentinel=bool(zero))
+            published_ean,proof,placeholder=verified_leaf_barcode(code,ean,root,corrections,
+                                                                  internal_id=cv('Interné číslo').strip(),zero_sentinel=bool(zero))
             if proof:
+                gen.require(catalog is not None,'new_corrected_ean_global_source_missing')
+                other_sources = set(catalog.gtin_owners(published_ean))-{code}
+                if (children and parent_barcode and parent_barcode['status']=='reserved_by_supplier_leaf'
+                        and parent_barcode['owners']==[code]):
+                    other_sources.discard(root)
+                other_proposals = _claimed_codes(claims,published_ean)-{code}
+                if other_sources or other_proposals:
+                    raise CorrectedBarcodeConflict(published_ean,other_sources,other_proposals)
                 corrected_barcodes[code]=proof
             if placeholder:
                 placeholders[code]=placeholder
         except ReviewError as exc:
-            if not partial or exc.code!='new_leaf_ean_unverified':
+            if not partial or exc.code not in ('new_leaf_ean_unverified','new_corrected_ean_owner_conflict'):
                 raise
             deferred[code]=dict(reason=exc.code,source_ean=ean,source_active=active,
-                                source_internal_id=cv('Interné číslo'))
+                                source_internal_id=cv('Interné číslo'),**getattr(exc,'evidence',{}))
             continue
         # A missing GTIN is distinct from a malformed nonempty one. Keep an
         # empty source barcode absent, leaving exact scoped SKU identity intact.
@@ -985,6 +1079,8 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         next((r for r in published if r['active_yn']),published[0])['main_yn']=True
     return dict(payload=product,availability=readable,flags=expected_flags,related=sorted(related),
                 missing_related=absent_related,seo_keywords=v('SEO kľúčové slová'),
+                ambiguous_source_references=ambiguous_refs,missing_source_references=[
+                    ref for ref in absent_related if catalog and not catalog.parent_for(ref)],
                 variant_axis_origins=axis_origins,missing_categories=absent_categories,
                 admin_price_changes=price_differences,title_from_code=fallback_title,barcode_corrections=corrected_barcodes,
                 source_barcode_placeholders=placeholders,
@@ -994,7 +1090,8 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
                 shipping_weight_rounding=weights,
                 source_bonus_points=bonus,missing_source_features=[
                     f'{code} · V Atomeri má položka {points} bonusových bodov navyše. xTrek nemá zodpovedajúce produktové pole.'
-                    for code,points in bonus.items()],
+                    for code,points in bonus.items()]+[
+                    f'Nejednoznačný pôvodný odkaz na súvisiaci tovar {ref}.' for ref in ambiguous_refs],
                 variant_main_origin='first_visible_in_source_order' if published else None,
                 source_family_codes=sorted(codes),deferred_leaves=deferred,
                 source_duplicate_ids={code:list(ids) for code,ids in getattr(csv_source,'duplicate_ids',{}).items() if code in codes},

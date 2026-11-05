@@ -18,7 +18,7 @@ function nativeId(shop:Proof['evidence']['xtrek']) {
 }
 
 function problemKey(problem: string) {
-  if (/rate_limited|budget_deferred|Limit Upgates/.test(problem)) return 'quota';
+  if (/rate_limited|budget_deferred|http[_ ]429|Limit Upgates/i.test(problem)) return 'quota';
   if (/registry_binding_changed|category_mapping_changed/.test(problem)) return 'registryChanged';
   if (/source_unavailable|changes_unavailable/.test(problem)) return 'upstream';
   if (/source_changed|variant_source_changed/.test(problem)) return 'sourceChanged';

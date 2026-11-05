@@ -120,6 +120,18 @@ class DurableCategory(unittest.IsolatedAsyncioTestCase):
     async def run_once(self):
         return await restore.advance(self.db,self.c,self.source,self.lock)
 
+    async def test_recent_planning_read_cannot_prove_adoption_or_authorize_a_post(self):
+        fp=self.c['shop_fingerprint']='c'*64
+        existing=node(21,1,'Topánky',code=restore.stable_code('Topánky'),visible=False)
+        with (patch.dict(restore.mapping._REGISTRY_PAGES,clear=True),
+              patch.object(restore,'current_menu',return_value={}),
+              patch.object(restore,'_catalog_rows',return_value=self.native+[existing]) as live,
+              patch.object(restore,'_post') as post):
+            restore.mapping.remember_category_snapshot(fp,self.native)
+            await self.run_once()
+            post.assert_not_called();live.assert_called_once_with(fp)
+            self.assertEqual(self.db.ledger['Topánky']['proof']['origin'],'observed_before_send')
+
     async def test_partial_loss_and_restart_verify_or_block_without_replay(self):
         def create(intents,fp):
             self.assertEqual(self.db.commits[-1]['Topánky']['stage'],'sending')

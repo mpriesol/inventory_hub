@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 from inventory_hub.services import atomer_catalog_engine as engine
 from inventory_hub.services import atomer_catalog_fidelity as fidelity, atomer_catalog_recheck as recheck
 from inventory_hub.services import atomer_catalog_source_cards as local
+from inventory_hub.services import atomer_catalog_meter as meter
 from inventory_hub.services.stock_publication_source import SourceError
 
 TEST_URL=os.environ.get('CATALOG_TEST_DATABASE_URL','')
@@ -27,6 +28,20 @@ def selection(**changes):
 
 
 class EngineSelectionTests(unittest.TestCase):
+    def test_request_accounting_never_retains_hosts_ids_and_ignores_unrelated_work(self):
+        from datetime import timedelta
+        c=dict(phase='prepared')
+        with patch.object(meter,'targets',return_value={'test':'xtrek'}):
+            with meter.measure(c) as events:
+                meter.record('test','get','https://example.invalid/api/v2/availabilities/981?secret=test','sent')
+                meter.record('test','post','https://example.invalid/api/v2/products','deferred')
+            meter.record('test','get','https://private.invalid/api/v2/products','sent')
+        self.assertEqual(events,{('prepared','xtrek','availabilities/by_id','GET','sent'):1,
+                                 ('prepared','xtrek','products','POST','deferred'):1})
+        start=datetime(2026,11,5,19,15,tzinfo=timezone.utc)
+        self.assertEqual(meter.blocked_until(dict(hour_remaining=0,day_remaining=0,observed_hour=start.replace(minute=0)),start),
+                         start.replace(minute=0)+timedelta(hours=1,seconds=1))
+        self.assertIsNone(meter.blocked_until(dict(hour_remaining=0,day_remaining=4,observed_hour=start.replace(minute=0)),start))
     def test_local_card_evidence_preserves_raw_ean_and_isolates_a_bad_sibling(self):
         from types import SimpleNamespace
         data={k:[('Interné číslo',n),('Viditeľný','1'),('Názov tovaru',k),('EAN kód',ean),('Váha','0,25')]
@@ -135,7 +150,8 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.pg=create_async_engine(TEST_URL.replace('postgresql://','postgresql+asyncpg://',1),
                     connect_args={'server_settings':{'search_path':self.schema}},poolclass=NullPool)
         root=Path(__file__).resolve().parents[2]/'infra'/'db-init'
-        for name in ('037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql','041_atomer_catalog_content.sql','043_atomer_source_cards.sql'):
+        for name in ('024_upgates_api_budget.sql','037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql',
+                     '041_atomer_catalog_content.sql','043_atomer_source_cards.sql','045_atomer_catalog_usage.sql'):
             await self.conn.execute((root/name).read_text())
         await self.conn.execute("""
             CREATE TABLE products(id bigint PRIMARY KEY);
@@ -235,6 +251,57 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((totals['hub_cards'],totals['cards_created'],totals['cards_reused']),(1,1,0))
             self.assertEqual((totals['verified'],totals['source_card_ready'],totals['partial']),(0,1,1))
             self.assertEqual((await engine.details(db,'v:P'))['source_cards'][0]['card_id'],142)
+            await local._receipts(db,c,'v:P',{'a':dict(status='blocked',reason='owner_recheck')})
+            held=(await engine.details(db,'v:P'))['source_cards'][0]
+            self.assertEqual((held['card_id'],held['state']),(142,'blocked'))
+            self.assertEqual(held['evidence']['creation_evidence'],initial)
+
+    async def test_updated_local_evidence_only_retries_the_exact_unresolved_card(self):
+        async with self.factory() as db:
+            await engine.process(db,selection(scope='catalog'),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            await local._receipts(db,c,'v:P',{'b':dict(status='blocked',reason='atomer_source_ean_unverified')})
+            await db.execute(text("UPDATE atomer_catalog_jobs SET source_card_stage='blocked'"))
+            old = await local.blocked_reasons(db,c)
+            self.assertEqual((old[0]['leaves'], old[0]['reason']), (1,'atomer_source_ean_unverified'))
+            config = dict(barcode_corrections={'b':{'ean':'123'}},zero_barcode_sentinels={})
+            await local.retry_new_evidence(db,c['id'],config,{'b'})
+            stages = dict((await db.execute(text("SELECT family_key,source_card_stage FROM atomer_catalog_jobs"))).all())
+            self.assertEqual(stages,{'v:P':'pending','s:closed':'blocked'})
+            await local._receipts(db,c,'v:P',{'b':dict(status='blocked',reason='atomer_other_owner',
+                        source_card_input=local.input_token(config,'b'))})
+            await db.execute(text("UPDATE atomer_catalog_jobs SET source_card_stage='blocked'"))
+            await local.retry_new_evidence(db,c['id'],config,{'b'})
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_catalog_jobs WHERE source_card_stage='pending'")),0)
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_catalog_source_cards")),1)
+
+    async def test_waiting_campaign_source_cards_release_the_native_lane(self):
+        from types import SimpleNamespace
+        from inventory_hub.services import atomer_card_batch as cards
+        data={k:[('Interné číslo',str(n)),('Viditeľný','1'),('Názov tovaru',k)]
+              for n,k in enumerate(('P','a','b'),10)}
+        index=SimpleNamespace(canonical=lambda k:k,family=lambda _: (data,{}),leaves=lambda _:('a','b'),
+                   parent_for=lambda _:'P',sku_owners=lambda k:(k,),gtin_owners=lambda k:())
+        async with self.factory() as db:
+            await engine.process(db,selection(),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            async def write_cards(session,run,details,**kwargs):
+                self.assertEqual(sorted(details),['a','b'])
+                self.assertEqual(await session.scalar(text("SELECT count(*) FROM atomer_review_work WHERE status='working'")),2)
+                await session.execute(text('INSERT INTO products VALUES(142),(143)'))
+                return {k:dict(status='card_ready',action='created',card_id=pid,hub_sku=k)
+                        for k,pid in (('a',142),('b',143))}
+            with patch.object(engine,'_prepare',new=AsyncMock()) as native:
+                self.assertFalse(await engine._step(db,c))
+                native.assert_not_awaited()
+                self.assertEqual(await db.scalar(text('SELECT state FROM atomer_catalog_campaigns')),'waiting')
+                with patch.object(engine,'_source',new=AsyncMock(return_value=index)),patch.object(cards,'source_cards',side_effect=write_cards):
+                    await local.prepare(db,c,local.choose(await local.due(db,c)))
+                self.assertEqual(await db.scalar(text("SELECT source_card_stage FROM atomer_catalog_jobs")),'checked')
+                self.assertTrue(await engine._step(db,c))
+                native.assert_awaited_once()
+            counts=(await engine.status(db))['counts']
+            self.assertEqual((counts['cards_created'],counts['verified'],counts['partial']),(2,0,2))
 
     async def test_unpublished_sibling_never_gets_a_parent_card_or_a_completed_receipt(self):
         from inventory_hub.services import atomer_card_batch as cards

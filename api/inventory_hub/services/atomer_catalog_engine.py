@@ -3,6 +3,7 @@ import asyncio
 from hashlib import sha256
 import json
 import logging
+import re
 from types import SimpleNamespace
 from typing import Annotated, Literal
 
@@ -11,6 +12,7 @@ from sqlalchemy import text
 
 from inventory_hub import database
 from inventory_hub.services import atomer_catalog_recheck as recheck, atomer_category_restore as restore
+from inventory_hub.services import atomer_catalog_meter as meter
 from inventory_hub.services import atomer_proposals as proposals, atomer_review as review
 from inventory_hub.services import atomer_variant_repair as repair
 from inventory_hub.services.atomer_review_targets import ReviewError
@@ -20,7 +22,7 @@ WORKER_LOCK = 691433150
 ACTIVE = ('running','waiting')
 RUNNABLE = ('pending','prepared','sending','observe','cards','related','fidelity','updating')
 MAX_LEAVES = 85
-MAX_GROUPS = 30
+MAX_GROUPS = 80
 Digest = Annotated[str, Field(pattern=r'^[a-f0-9]{64}$')]
 Token = Annotated[str, Field(min_length=1,max_length=260)]
 ID = Annotated[int, Field(gt=0,strict=True)]
@@ -197,6 +199,12 @@ async def process(db,selection,mode,actor):
         ON CONFLICT(campaign,family_key) DO UPDATE SET priority=least(atomer_catalog_jobs.priority,excluded.priority),
             leaf_count=excluded.leaf_count
         """,c=cid,jobs=_json(jobs))
+        if current and merged.get('scope')=='catalog' and current['checked_run_id']!=head['id']:
+            await _sync_families(db,cid,head['id'])
+        if selection.barcode_corrections or selection.zero_barcode_sentinels:
+            from inventory_hub.services import atomer_catalog_source_cards as local
+            await local.retry_new_evidence(db, cid, fresh, selection.barcode_corrections.keys() |
+                                           selection.zero_barcode_sentinels.keys())
         await db.commit()
     return dict(status='verified' if mode=='apply' else 'ready',count=count,families=len(entries),campaign_id=cid,
                 reason=f"{len(entries)} rodín, {count} predajných kódov. " + ('Dávka je uložená.' if mode=='apply' else 'Pripravené na spracovanie.'))
@@ -229,11 +237,27 @@ async def status(db):
     fields='family_key,stage,problem AS reason,leaf_count AS leaves,updated_at'
     recent=await _rows(db,f"SELECT {fields} FROM atomer_catalog_jobs WHERE campaign=:c AND stage<>'pending' ORDER BY updated_at DESC,family_key LIMIT 16",c=cid)
     blocked=await _rows(db,f"SELECT {fields} FROM atomer_catalog_jobs WHERE campaign=:c AND stage IN ('blocked','partial') ORDER BY priority,updated_at DESC,family_key LIMIT 100",c=cid)
+    delayed=await _rows(db,"""SELECT stage,left(problem,260) AS reason,count(*) AS families,sum(leaf_count) AS leaves,
+                      min(next_at) AS next_retry_at,max(attempts) AS max_attempts
+              FROM atomer_catalog_jobs WHERE campaign=:c AND stage=ANY(CAST(:stages AS text[])) AND next_at>now()
+              GROUP BY stage,left(problem,260) ORDER BY min(next_at),stage LIMIT 40""",c=cid,stages=list(RUNNABLE))
+    priority=await _rows(db,"""SELECT family_key,stage,leaf_count AS leaves,problem,attempts,next_at
+              FROM atomer_catalog_jobs WHERE campaign=:c AND priority=0 AND stage=ANY(CAST(:stages AS text[]))
+              ORDER BY next_at,family_key LIMIT 25""",c=cid,stages=list(RUNNABLE))
+    clean=lambda rows:[{**r,'reason':_short_problem(r.get('reason') or r.get('problem') or '')}
+                       for r in rows]
     return dict(campaign_id=cid,state=campaign['state'],run_id=campaign['run_id'],checked_run_id=campaign['checked_run_id'],
                 updated_at=campaign['updated_at'],next_retry_at=campaign['next_at'] if campaign['state']=='waiting' else None,
                 last_problem=campaign['problem'],counts=counts,family_states={r['stage']:r['n'] for r in grouped},
                 registry_gaps=(campaign['options'] or {}).get('registry_gaps',{}),
-                recent=[dict(r) for r in recent],blocked=[dict(r) for r in blocked])
+                api_this_hour=await meter.summary(db,cid),api_windows=await meter.windows(db),
+                recent=clean(recent),blocked=clean(blocked),delayed=clean(delayed),
+                source_card_blockers=await local.blocked_reasons(db,campaign),
+                priority=[{k:v for k,v in r.items() if k!='problem'} for r in clean(priority)])
+
+
+def _short_problem(value):
+    return re.sub(r'https?://[^\s,;]+','[odkaz]',str(value),flags=re.I).replace('\n',' ')[:350]
 
 
 async def details(db,family_key):
@@ -251,6 +275,10 @@ async def details(db,family_key):
     local=await _rows(db,"""SELECT code,state,card_id,created,evidence,checked_at FROM atomer_catalog_source_cards
                 WHERE campaign=:c AND family_key=:f ORDER BY code""",c=c['id'],f=family_key)
     return dict(family_key=family_key,run_id=h['id'] if h else None,stage=j['stage'] if j else None,
+                reason=_short_problem(j['problem']) if j else None,next_at=j['next_at'] if j else None,
+                attempts=j['attempts'] if j else None,priority=j['priority'] if j else None,
+                source_card_stage=j['source_card_stage'] if j else None,
+                source_card_problem=_short_problem(j['source_card_problem']) if j else None,
                 recheck_revision=token,items=[dict(r) for r in rows],source_cards=[dict(r) for r in local])
 
 
@@ -270,7 +298,10 @@ async def _proofs(db,c,f,proofs):
     records=[dict(code=k,state=state,evidence=v) for k,(state,v) in proofs.items()]
     await _exec(db,"""INSERT INTO atomer_catalog_proofs(campaign,family_key,code,state,evidence)
         SELECT :c,:f,r->>'code',r->>'state',r->'evidence' FROM jsonb_array_elements(CAST(:rows AS jsonb)) r
-        ON CONFLICT(campaign,code) DO UPDATE SET state=excluded.state,evidence=excluded.evidence,checked_at=now()
+        ON CONFLICT(campaign,code) DO UPDATE SET family_key=excluded.family_key,state=excluded.state,evidence=excluded.evidence,checked_at=now()
+        WHERE atomer_catalog_proofs.family_key=excluded.family_key OR EXISTS(
+          SELECT 1 FROM atomer_progress_items i WHERE i.run_id=(SELECT max(id) FROM atomer_progress_runs)
+          AND i.code=excluded.code AND i.family_key=excluded.family_key)
     """,c=c,f=f,rows=_json(records))
 
 
@@ -297,7 +328,8 @@ def _blocked_work(row,kind,key,allow):
         return 'Úlohu spracúva iný pracovník.'
     if state=='blocked':
         return row.get('result') or 'Existujúca blokovaná úloha vyžaduje vyriešenie.'
-    active_save=row.get('command')=='save' or kind=='item' and row.get('command') in ('barcode_owner_verified','brand_identity_verified')
+    active_save=row.get('command')=='save' or kind=='item' and row.get('command') in (
+        'barcode_owner_verified','brand_identity_verified','standalone_family_verified')
     if state=='open' and (row.get('revision') or 0)>0 and not active_save:
         return 'Otvorená úloha bola ručne odvolaná alebo upravená.'
     if state=='queued':
@@ -428,14 +460,18 @@ def _ready_batch(jobs):
     """Choose one phase per pass, subject to the native leaf and parent limits."""
     if not jobs:
         return []
-    chosen=[]; size=0
+    chosen=[]; size=0; length=0
+    def isolated(job):
+        return job.get('receipt',{}).get('isolate') or job.get('receipt',{}).get('isolate_phase')==job['stage']
     for j in jobs:
         n=j['leaf_count']
-        if j['stage']!=jobs[0]['stage'] or len(chosen)>=MAX_GROUPS or (chosen and (j.get('receipt',{}).get('isolate') or chosen[0].get('receipt',{}).get('isolate'))):
+        if j['stage']!=jobs[0]['stage'] or len(chosen)>=MAX_GROUPS or (chosen and (isolated(j) or isolated(chosen[0]))):
             break
-        if chosen and size+n>MAX_LEAVES:
+        doc=j.get('document') or {}
+        extra=len(_json(doc.get('payload',{})).encode()) if j['stage']=='prepared' else 0
+        if chosen and (size+n>MAX_LEAVES or length+extra>7_500_000):
             break
-        chosen.append(dict(j)); size+=n
+        chosen.append(dict(j)); size+=n;length+=extra
     return chosen
 
 
@@ -458,7 +494,7 @@ def _registry(c,index):
     selection=c['selection']
     client=transport._client('xtrek',c['shop_fingerprint'])
     try:
-        reg=mapping.read_registry(client,availability_ids=selection.get('availability',{}).values())
+        reg=mapping.read_registry(client,availability_ids=selection.get('availability',{}).values(),cache_key=c['shop_fingerprint'])
     finally:
         client.session.close()
     rows=reg.pop('category_registry')
@@ -512,7 +548,8 @@ def _make_document(index,f,rows,g,options,selection,roots):
     csv,xml=index.family(key)
     family=SimpleNamespace(parent=key,brand=selection['brands'].get(key,''),buyers=bool(xml),
                            axis_names=selection['axis_names'],named_axes=selection.get('named_axes',{}))
-    csv_refs={ref:index.parent_for(ref) for ref in [x.strip() for x in src.named(csv[key],'Súvisiace tovary').split(',') if x.strip()]}
+    refs_source,_=index.related_codes(csv[key],xml,standalone=index.leaves(key)==(key,))
+    csv_refs={ref:index.parent_for(ref) for ref in refs_source}
     refs={ref:roots[parent] for ref,parent in csv_refs.items() if parent in roots}
     cfg={**options,'reference_codes':{**roots,**refs},'property_names':selection.get('property_names',{}),'barcode_corrections':selection.get('barcode_corrections',{}),'named_axes':selection.get('named_axes',{})}
     cfg['partial_barcodes']=selection.get('partial_barcodes',False)
@@ -539,7 +576,26 @@ async def _prepare(db,c,jobs):
     for j in jobs:
         f=j['family_key']; rows,group=await _family(db,c['checked_run_id'],f)
         if not rows:
-            await _job(db,c['id'],f,'blocked',problem='Skupina chýba v súčasnom zdroji.')
+            attempted=j.get('document') and j['receipt'].get('dispatched',True)
+            await _job(db,c['id'],f,'blocked' if attempted else 'excluded',problem=(
+                    'Skupina chýba v súčasnom zdroji. Overiť pôvodný zápis.' if attempted else
+                    'V aktuálnom úplnom reporte nejde o predajnú skupinu.'))
+            continue
+        if j['receipt'].get('rollover'):
+            # A restored sellable from the *same* pinned source can enter a
+            # previously completed family. Reclaim our earlier automatic work
+            # under current reviews, then observe every old intent before a new write.
+            guard=await recheck.claim_again(db,c,j,c['actor'],commands={'complete','block'})
+            receipt={**j['receipt'],'rollover':False}
+            stage=recheck.next_phase(j)
+            if stage in ('observe','updating'):
+                receipt['rebuild_after_observation']=True
+            receipt['reexpand']=True
+            j.update(guards=guard,receipt=receipt)
+            await _job(db,c['id'],f,stage,guards=guard,receipt=receipt)
+            if not _selected(guard):
+                await _finish(db,c,j,{})
+                continue
             continue
         if j['guards'] is not None and not await _checked(db,c,[j]):
             continue
@@ -674,6 +730,24 @@ def _budget_error(e):
             'budget_deferred' in str(e) or type(e).__name__=='AdmissionDenied')
 
 
+async def send_once(fn,*args):
+    # A cancelled asyncio.to_thread keeps running. Keep this worker's review
+    # and campaign locks until the underlying bounded HTTP transaction exits.
+    # Its committed intent is then observed by this or a subsequent worker.
+    task=asyncio.create_task(asyncio.to_thread(fn,*args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        raise
+
+
 async def _dispatch(db,c,jobs):
     from inventory_hub.services import atomer_new_native as native
     jobs=await _checked(db,c,jobs)
@@ -720,7 +794,7 @@ async def _dispatch(db,c,jobs):
     if not selected:
         return
     try:
-        result=await asyncio.to_thread(native.send,[j['document'] for j in selected],c['shop_fingerprint'])
+        result=await send_once(native.send,[j['document'] for j in selected],c['shop_fingerprint'])
     except Exception as err:
         if _budget_error(err) and getattr(err,'request_sent',None) is False:
             for j in selected:
@@ -761,7 +835,7 @@ async def _extend(db,c,j):
     if not await _checked(db,c,[j]):
         return
     try:
-        ack=await asyncio.to_thread(native.send_extensions,{doc['payload']['code']:prepared},c['shop_fingerprint'])
+        ack=await send_once(native.send_extensions,{doc['payload']['code']:prepared},c['shop_fingerprint'])
         if ack[doc['payload']['code']]['status']=='conflict':
             reason='; '.join(ack[doc['payload']['code']]['issues'])
             await _finish(db,c,j,{k:('blocked',dict(reason=reason)) for k in _selected(j['guards'])})
@@ -784,7 +858,8 @@ async def expand_rechecked(db,c,j,seen):
     """A fresh source proof may now permit siblings excluded from a confirmed earlier tranche."""
     if not seen.get('identity_verified') or not seen.get('product_id'):
         return False
-    old=j['document'];previous=old.get('deferred_leaves') or j['receipt'].get('catalog_deferred') or {}
+    old=j['document'];previous=set(old.get('deferred_leaves') or {})|set(j['receipt'].get('catalog_deferred') or {})
+    previous.update(j['receipt'].get('added_source_codes') or [])
     if not previous:
         return False
     rows,_=await _family(db,c['checked_run_id'],j['family_key'])
@@ -832,7 +907,8 @@ async def _observe(db,c,jobs):
         reason='; '.join(str(x) for x in obs.get('issues',[]) + (j['receipt'].get('ack') or {}).get('issues',[]))
         if receipt.get('rebuild_after_observation'):
             active={k for k in _selected(j['guards']) if _scope_of(j['guards'],k)!='biketrek'}
-            known=recheck.prior_codes(doc)|set(doc.get('deferred_leaves') or {})|set(j['receipt'].get('catalog_deferred') or {})
+            known=(recheck.prior_codes(doc)|set(doc.get('deferred_leaves') or {})|
+                   set(j['receipt'].get('catalog_deferred') or {})|set(j['receipt'].get('added_source_codes') or []))
             if active!=known:
                 # The previous commitment is now observed. A scope revision may
                 # prohibit parent/leaf writes previously authorized by that intent.
@@ -900,12 +976,15 @@ async def _cards(db,c,jobs):
     corrections=c['selection'].get('barcode_corrections') or {}
     sentinels=c['selection'].get('zero_barcode_sentinels') or {}
     exact=local.verified_sentinels(await _source(db,c),set(codes),sentinels) if sentinels.keys() & set(codes) else {}
+    pinned=[code for code in codes if (corrections.get(code) or {}).get('required_atomer_id')]
+    confirmed=local.source_ids(await _source(db,c),pinned,corrections) if pinned else {}
     for pos in range(0,len(codes),cards.MAX_BATCH):
         chunk=codes[pos:pos+cards.MAX_BATCH]
         result.update(await cards.reconcile(db,c['checked_run_id'],chunk,apply=True,actor=c['actor'],
                       native_ids={k:native_ids[k] for k in chunk if k in native_ids},include_managed=True,
                       scopes={k:scopes[k] for k in chunk},**({'barcode_corrections':{k:corrections[k] for k in chunk if k in corrections}} if corrections else {}),
-                      **({'zero_barcode_sentinels':{k:exact[k] for k in chunk if k in exact}} if exact else {})))
+                      **({'zero_barcode_sentinels':{k:exact[k] for k in chunk if k in exact}} if exact else {}),
+                      **({'confirmed_source_ids':{k:confirmed[k] for k in chunk if k in confirmed}} if confirmed else {})))
     for j in jobs:
         f=j['family_key']; keys,rows=families[f]; stored=j['receipt']; doc=j['document']
         proofs={}
@@ -991,7 +1070,7 @@ async def _related(db,c,jobs):
         if changed:
             expected={j['document']['payload']['code']:_expected(j) for j in changed}
             try:
-                await asyncio.to_thread(native.complete_related,[j['document'] for j in changed],c['shop_fingerprint'],expected)
+                await send_once(native.complete_related,[j['document'] for j in changed],c['shop_fingerprint'],expected)
             except Exception as e:
                 if _budget_error(e) and getattr(e,'request_sent',None) is False:
                     for j in changed:
@@ -1040,43 +1119,77 @@ async def _related(db,c,jobs):
             await _finish(db,c,j,final)
 
 
+async def _sync_families(db,cid,run):
+    await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
+         SELECT :c,family_key,min(CASE WHEN state IN ('needs_both','needs_target') THEN 1 ELSE 4 END),count(*)
+         FROM atomer_progress_items WHERE run_id=:r GROUP BY family_key
+         ON CONFLICT(campaign,family_key) DO UPDATE SET leaf_count=excluded.leaf_count""",c=cid,r=run)
+    await _exec(db,"""WITH expanded AS (
+           SELECT j.family_key,jsonb_agg(i.code ORDER BY i.code) AS added
+           FROM atomer_catalog_jobs j JOIN atomer_progress_items i ON i.run_id=:r AND i.family_key=j.family_key
+           WHERE j.campaign=:c AND j.stage IN ('verified','partial','blocked','excluded') AND j.guards IS NOT NULL
+             AND NOT (j.guards->'rows' ? i.code) GROUP BY j.family_key
+         ) UPDATE atomer_catalog_jobs j SET stage='pending',next_at=now(),priority=0,
+             source_card_stage='pending',source_card_next_at=now(),source_card_attempts=0,
+             receipt=j.receipt||jsonb_build_object('rollover',true,'previous_stage',j.stage,
+                                                    'added_source_codes',e.added,'added_run',CAST(:r AS bigint))
+             FROM expanded e WHERE j.campaign=:c AND j.family_key=e.family_key""",c=cid,r=run)
+
+
 async def _step(db,c):
     from inventory_hub.services import atomer_catalog_fidelity as fidelity
     from inventory_hub.services import atomer_catalog_source_cards as local
     previous_run=c['checked_run_id']
     await _lock_current(db,c)
     if previous_run!=c['checked_run_id'] and c['selection']['scope']=='catalog':
-        await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
-             SELECT :c,family_key,min(CASE WHEN state IN ('needs_both','needs_target') THEN 1 ELSE 4 END),count(*)
-             FROM atomer_progress_items WHERE run_id=:r GROUP BY family_key
-             ON CONFLICT(campaign,family_key) DO UPDATE SET leaf_count=excluded.leaf_count""",c=c['id'],r=c['checked_run_id'])
+        await _sync_families(db,c['id'],c['checked_run_id'])
     await _exec(db,'UPDATE atomer_catalog_campaigns SET checked_run_id=:r WHERE id=:c',r=c['checked_run_id'],c=c['id'])
-    if c['selection'].get('category_restore'):
-        c['phase']='category_restore'
-        if await restore.advance(db,c,lambda:_source(db,c),lambda:_lock_current(db,c)):
-            return True
+    await meter.defer_known_windows(db,c)
     # Finish committed/uncertain writes before starting new work. Deferred relations
     # yield to the missing parents they depend on.
-    candidates=await _rows(db,f"""SELECT j.* FROM atomer_catalog_jobs j WHERE campaign=:c
+    candidates=await _rows(db,f"""SELECT j.*,CASE WHEN priority=0 AND {local.NEEDS_TARGET} THEN 1 ELSE 0 END AS priority_target
+        FROM atomer_catalog_jobs j WHERE campaign=:c
         AND stage=ANY(CAST(:stages AS text[])) AND next_at<=now()
-        AND (stage<>'pending' OR source_card_stage<>'pending' OR source_card_attempts>0 OR NOT {local.ELIGIBLE})
-        ORDER BY CASE stage WHEN 'sending' THEN 0 WHEN 'updating' THEN 0 WHEN 'observe' THEN 1 WHEN 'cards' THEN 2
-                  WHEN 'prepared' THEN 3 WHEN 'pending' THEN 5 ELSE CASE WHEN priority=0 THEN 4 ELSE 6 END END,priority,family_key LIMIT 55""",
+        AND (stage<>'pending' OR receipt->>'rollover'='true' OR source_card_stage<>'pending' OR source_card_attempts>0 OR NOT {local.ELIGIBLE})
+        ORDER BY CASE WHEN stage IN ('sending','updating','observe') THEN 0 WHEN priority=0 AND {local.NEEDS_TARGET} THEN 1 ELSE 2 END,
+                 CASE stage WHEN 'sending' THEN 0 WHEN 'updating' THEN 0 WHEN 'observe' THEN 1 WHEN 'cards' THEN 2
+                  WHEN 'prepared' THEN 3 WHEN 'pending' THEN 5 ELSE CASE WHEN priority=0 THEN 4 ELSE 6 END END,priority,family_key LIMIT 85""",
         c=c['id'],run=c['checked_run_id'],stages=list(RUNNABLE))
     batch=_ready_batch(candidates)
+    category_at=None
+    if c['selection'].get('category_restore'):
+        gate=await _one(db,f"""SELECT next_category_at<=now() AS due,next_category_at,
+               EXISTS(SELECT 1 FROM atomer_catalog_jobs j WHERE j.campaign=:c AND j.priority=0
+                     AND stage IN ('pending','prepared','sending','observe') AND {local.NEEDS_TARGET}) AS priority_missing
+               FROM atomer_catalog_campaigns WHERE id=:c""",c=c['id'],run=c['checked_run_id'])
+        category_at=gate['next_category_at']
+        if gate['due'] and not gate['priority_missing'] and (not batch or batch[0]['stage'] not in ('sending','updating','observe')):
+            c['phase']='category_restore'
+            await _exec(db,"UPDATE atomer_catalog_campaigns SET next_category_at=now()+interval '5 minutes' WHERE id=:c",c=c['id'])
+            if await restore.advance(db,c,lambda:_source(db,c),lambda:_lock_current(db,c)):
+                return True
     if not batch:
         next_at=await db.scalar(text("""SELECT min(next_at) FROM atomer_catalog_jobs WHERE campaign=:c
                                    AND stage=ANY(CAST(:stages AS text[]))"""),dict(c=c['id'],stages=list(RUNNABLE)))
         if c['selection'].get('category_restore'):
-            category_at=await restore.next_retry(db,c['id'])
-            if category_at and (not next_at or category_at<next_at):
-                next_at=category_at
+            due=await restore.next_retry(db,c['id'])
+            if due and not gate['priority_missing']:
+                due=max(due,category_at)
+                if not next_at or due<next_at:
+                    next_at=due
         if next_at:
             await _exec(db,"UPDATE atomer_catalog_campaigns SET state='waiting',next_at=:n,problem=coalesce(nullif(problem,''),'Čaká sa na spätnú kontrolu.'),updated_at=now() WHERE id=:c",n=next_at,c=c['id'])
         else:
             residual=await db.scalar(text("SELECT count(*) FROM atomer_catalog_jobs WHERE campaign=:c AND stage IN ('partial','blocked')"),dict(c=c['id']))
+            uncovered=await db.scalar(text("""SELECT count(*) FROM atomer_progress_items i
+                 JOIN atomer_catalog_jobs j ON j.campaign=:c AND j.family_key=i.family_key
+                 LEFT JOIN atomer_catalog_proofs p ON p.campaign=j.campaign AND p.family_key=i.family_key AND p.code=i.code
+                 WHERE i.run_id=:r AND p.code IS NULL"""),dict(c=c['id'],r=c['checked_run_id']))
+            reason=f'Zostáva {residual} rodín na kontrolu.' if residual else ''
+            if uncovered:
+                reason=(reason+' '+f'{uncovered} predajných kódov bez overenia.').strip()
             await _exec(db,"UPDATE atomer_catalog_campaigns SET state=:s,problem=:p,updated_at=now() WHERE id=:c",
-                        s='review' if residual else 'done',p=f'Zostáva {residual} rodín na kontrolu.' if residual else '',c=c['id'])
+                        s='review' if residual or uncovered else 'done',p=reason,c=c['id'])
         return False
     action={'pending':_prepare,'prepared':_dispatch,'sending':_observe,'observe':_observe,'cards':_cards,'related':_related,
             'fidelity':fidelity.prepare,'updating':fidelity.observe}[batch[0]['stage']]
@@ -1098,9 +1211,9 @@ async def _step(db,c):
                                   c=c['id'],f=candidate['family_key']))
                 if j['stage']!=phase:
                     continue
-                await _exec(db,"""UPDATE atomer_catalog_jobs SET receipt=receipt || jsonb_build_object('isolate',true),
+                await _exec(db,"""UPDATE atomer_catalog_jobs SET receipt=receipt || jsonb_build_object('isolate_phase',CAST(:s AS text)),
                               problem=:p WHERE campaign=:c AND family_key=:f""",
-                            p=exc.code,c=c['id'],f=j['family_key'])
+                            p=exc.code,c=c['id'],f=j['family_key'],s=phase)
         else:
             j=dict(await _one(db,'SELECT * FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f',
                               c=c['id'],f=batch[0]['family_key']))
@@ -1150,6 +1263,9 @@ async def _step(db,c):
         await _exec(db,"""UPDATE atomer_catalog_campaigns SET state='running',failures=0,problem=:p,
                         next_at=now(),updated_at=now() WHERE id=:c""",p=label,c=c['id'])
         return True
+    await _exec(db,"""UPDATE atomer_catalog_jobs SET receipt=receipt-'isolate'-'isolate_phase'
+                       WHERE campaign=:c AND family_key=ANY(CAST(:keys AS text[])) AND stage<>:s
+                       AND (receipt ? 'isolate' OR receipt ? 'isolate_phase')""",c=c['id'],keys=[j['family_key'] for j in batch],s=phase)
     await _exec(db,"UPDATE atomer_catalog_campaigns SET state='running',failures=0,problem='',next_at=now(),updated_at=now() WHERE id=:c",c=c['id'])
     return True
 
@@ -1199,16 +1315,24 @@ async def cycle():
                 if not active:
                     return False
                 c=dict(active)
-                try:
-                    async with asyncio.timeout(420):
-                        return await _step(db,c)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    await db.rollback()
-                    LOGGER.warning('Atomer catalog batch deferred (%s)',type(exc).__name__)
-                    await _record_failure(c,exc)
-                    return False
+                with meter.measure(c) as events:
+                    try:
+                        async with asyncio.timeout(420):
+                            return await _step(db,c)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        await db.rollback()
+                        LOGGER.warning('Atomer catalog batch deferred (%s)',type(exc).__name__)
+                        await _record_failure(c,exc)
+                        return False
+                    finally:
+                        if events:
+                            try:
+                                async with database.get_session_context() as stats_db:
+                                    await meter.persist(stats_db,c['id'],events)
+                            except Exception as exc:
+                                LOGGER.warning('Atomer request accounting unavailable (%s)',type(exc).__name__)
         finally:
             await connection.execute(text('SELECT pg_advisory_unlock(:k)'),{'k':WORKER_LOCK})
             await connection.commit()

@@ -10,6 +10,7 @@ from inventory_hub.product_editor_models import AtomerVariantRepair, ProductEdit
 from inventory_hub.services import atomer_family_batch as batch
 from inventory_hub.services import atomer_generation_recovery as recovery
 from inventory_hub.services import atomer_generations as gen
+from inventory_hub.services import atomer_proposals as proposals
 from inventory_hub.services import atomer_recode as recode
 from inventory_hub.services import atomer_review as work
 from inventory_hub.services import atomer_variant_repair as repair
@@ -305,29 +306,60 @@ def validate_owner_pair(pair):
 
 
 def native_pair_links(cards, fingerprint):
+    """Read the exact sellables, including single leaves on large point-of-sale parents."""
     source = transport._client('biketrek', fingerprint)
+    parent_ids = {card.product_id for card in cards}
+    variants = {card.variant_id: card for card in cards if card.variant_id is not None}
+
+    def selected(path, key, filters, error):
+        try:
+            return batch.collect_pages(source, path, key, filters)
+        except transport.SourceError as exc:
+            if exc.code == 'stock_publication_invalid_response':
+                raise transport.SourceError(error, exc.status) from exc
+            raise
+
     try:
-        parents = batch.collect_pages(source, 'products', 'products', {
-            'product_ids': ';'.join(sorted({card.product_id for card in cards}))})
+        parents = selected('products', 'products', {'product_ids': ';'.join(sorted(parent_ids)), 'variants_yn': 'false'},
+                           'barcode_owner_parent_response_invalid')
+        leaves = selected('products/variants', 'variants', {'variant_codes': ';'.join(sorted(c.sku for c in variants.values()))},
+                          'barcode_owner_variant_response_invalid') if variants else []
     finally:
         source.session.close()
     by_id = {str(p.get('product_id')): p for p in parents}
-    gen.require(len(by_id) == len(parents) and set(by_id) == {c.product_id for c in cards}, 'barcode_owner_native_changed')
+    by_variant = {str(v.get('variant_id')): v for v in leaves}
+    gen.require(len(by_id) == len(parents) and set(by_id) == parent_ids and len(by_variant) == len(leaves)
+                and set(by_variant) == set(variants), 'barcode_owner_native_changed')
     result = {}
     for card in cards:
         parent = by_id[card.product_id]
+        gen.require(isinstance(parent.get('code'), str) and bool(parent['code'])
+                    and parent.get('variants_exists_yn') is (card.variant_id is not None)
+                    and transport._messages_ok(parent.get('messages')), 'barcode_owner_native_changed')
         if card.variant_id is None:
-            candidates = [parent] if not parent.get('variants') else []
+            leaf = parent
         else:
-            candidates = [v for v in parent.get('variants') or [] if str(v.get('variant_id')) == card.variant_id]
-        gen.require(len(candidates) == 1 and candidates[0].get('code') == card.sku
-                    and transport._messages_ok(candidates[0].get('messages')) and transport._messages_ok(parent.get('messages')),
+            leaf = by_variant[card.variant_id]
+            gen.require(str(leaf.get('product_id')) == card.product_id and leaf.get('product_code') == parent['code'],
+                        'barcode_owner_native_changed')
+        gen.require(leaf.get('code') == card.sku and transport._messages_ok(leaf.get('messages')),
                     'barcode_owner_native_changed')
-        leaf = candidates[0]
         result[card.id] = {'product_id': card.product_id, 'variant_id': card.variant_id, 'code': leaf['code'],
-                           'ean': leaf.get('ean'), 'parent_code': parent.get('code') if card.variant_id else None,
+                           'ean': leaf.get('ean'), 'parent_code': parent['code'] if card.variant_id else None,
                            'stock': native_stock(leaf)}
     return result
+
+
+def untouched_other_work(record, group, detail, revision, command):
+    """The other owner keeps its untouched proposal. Explicit decisions never authorize this operation."""
+    if record['revision'] != revision:
+        return False
+    if revision == 0:
+        return record['status'] == 'open' and not record['instruction'] and not command
+    if revision != 1 or record['status'] != 'queued' or command != 'approve_suggestions':
+        return False
+    scope = record['scope'] if record['scope'] != 'default' else group['scope']
+    return record['instruction'] == '\n'.join(proposals.INSTRUCTIONS[k] for k in proposals.suggestions(detail, scope))
 
 
 async def exact_pair_cards(db, pair, head, native, completed):
@@ -357,19 +389,18 @@ async def exact_pair_cards(db, pair, head, native, completed):
                     and (detail.get('ean') or '') == expected.source_before, 'barcode_owner_source_changed')
         group = await work._record(db, 'family', detail['family_key'])
         saved = await work._record(db, 'item', expected.sku)
-        gen.require(group['status'] == 'open' and group['revision'] == 0 and all(
-            not rec['note'] and not rec['instruction'] and rec['scope'] != 'biketrek' and rec['decision'] == 'undecided'
+        gen.require(group['status'] == 'open' and group['revision'] == 0 and not group['instruction'] and all(
+            not rec['note'] and rec['scope'] != 'biketrek' and rec['decision'] == 'undecided'
             for rec in (group, saved)), 'review_changed')
+        command = await db.scalar(text("SELECT command FROM atomer_review_events WHERE kind='item' AND key=:s AND revision=:rev"),
+                                  {'s': expected.sku, 'rev': saved['revision']})
         if expected.id == owner.id:
-            gen.require(detail['state'] == 'review' and set(detail.get('candidates') or []) == {owner.id, wrong.id}
+            gen.require(not saved['instruction'] and detail['state'] == 'review' and set(detail.get('candidates') or []) == {owner.id, wrong.id}
                         and saved['status'] == ('open' if completed else 'blocked')
                         and saved['revision'] == pair.revision + int(completed), 'review_changed')
-            if not completed:
-                command = await db.scalar(text("SELECT command FROM atomer_review_events WHERE kind='item' AND key=:s AND revision=:rev"),
-                                          {'s': expected.sku, 'rev': saved['revision']})
-                gen.require(command == 'review_block', 'review_changed')
+            gen.require(command == ('barcode_owner_verified' if completed else 'review_block'), 'review_changed')
         else:
-            gen.require(saved['status'] == 'open' and saved['revision'] == pair.other_revision, 'review_changed')
+            gen.require(untouched_other_work(saved, group, detail, pair.other_revision, command), 'review_changed')
     keys = {c.ean.lstrip('0') for c in (wrong, owner)}
     found = list(await db.scalars(select(ProductIdentifier).where(ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES),
         or_(ProductIdentifier.product_id.in_((wrong.id, owner.id)), func.ltrim(ProductIdentifier.value, '0').in_(keys))).with_for_update()))
