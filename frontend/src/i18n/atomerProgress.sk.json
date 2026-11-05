@@ -205,6 +205,8 @@
     "admin_absence_unknown": "Pred odstránením treba úplný export Atomeru vrátane skrytých položiek."
   },
   "adminFile": "Export tovarov z administrácie Atomeru (CSV)",
+  "keepCount": "Ponechať nerozhodnuté varianty ({{n}})",
+  "keptCount": "Odstrániť? Nie · Počet potvrdených variantov {{n}}",
   "adminCompleteLabel": "CSV obsahuje celý katalóg vrátane skrytých produktov a variantov",
   "adminFull": "CSV celého katalógu",
   "adminPartial": "CSV vybraných položiek",

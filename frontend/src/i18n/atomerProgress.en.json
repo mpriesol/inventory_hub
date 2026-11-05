@@ -205,6 +205,8 @@
     "admin_absence_unknown": "Removal requires the complete Atomer export including hidden items."
   },
   "adminFile": "Product export from the Atomer admin (CSV)",
+  "keepCount": "Keep undecided variants ({{n}})",
+  "keptCount": "Marked to keep · Variants confirmed {{n}}",
   "adminCompleteLabel": "This CSV includes the whole catalog with hidden products and variants",
   "adminFull": "Full catalog CSV",
   "adminPartial": "Selected catalog items CSV",

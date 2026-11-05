@@ -74,9 +74,20 @@ async def work(status: Literal["queued","working","blocked","done"] = "queued",
 
 @router.post("/work")
 async def save_work(change: review.Edit, request: Request, db: AsyncSession = Depends(get_session)):
-    user = getattr(request.state,"hub_user",None) or {}
-    actor = f"user:{user['id']}" if user.get("id") is not None else "operator-token"
     try:
-        return await review.edit(db,change,actor)
+        return await review.edit(db,change,_actor(request))
     except ReviewError as error:
         raise HTTPException(error.status,detail={"code":error.code}) from None
+
+
+def _actor(request):
+    user = getattr(request.state, "hub_user", None) or {}
+    return f"user:{user['id']}" if user.get("id") is not None else "operator-token"
+
+
+@router.post("/targets/keep")
+async def keep_targets(selection: review.KeepSelection, request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await review.keep_selection(db, selection, _actor(request))
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code":error.code}) from None
