@@ -2,9 +2,9 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { hubRequest } from '../api/access';
 
-type Family = { run_id:number; source_sha:string; rows:{code:string}[] };
+type Family = { operation?:'verified_barcode'; run_id:number; source_sha:string; rows:{code:string}[] };
 type Plan = { families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
-type Result = { status:string; count:number; reason?:string };
+type Result = { retry_after?:number; status:string; count:number; reason?:string };
 const base = '/api/migration/atomer-progress';
 
 export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
@@ -28,7 +28,24 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
     setBusy(true);setLog([]);setReady(false);
     try {
       for (const family of plan.families||[]) {
-        const r=await hubRequest<Result>(base+'/variant-parameters/'+(preview?'preview':'apply'),family);
+        const {operation,...selection}=family;
+        const path=operation==='verified_barcode'?'/verified-barcodes/':'/variant-parameters/';
+        const send=()=>hubRequest<Result>(base+path+(preview?'preview':'apply'),selection);
+        let r:Result;
+        for (;;) {
+          try {
+            r=await send();
+            if (!r.retry_after || r.status!=='uncertain') break;
+            setLog(v=>[...v,family.rows[0].code+' · '+m('rateWait')+' '+r.retry_after+' s']);
+            await new Promise(resolve=>window.setTimeout(resolve,((r.retry_after||60)+1)*1000));
+          } catch(e) {
+            const err=e as {code?:string;detail?:{retry_after?:number}};
+            if (err.code!=='stock_publication_rate_limited') throw e;
+            const sec=Math.max(5,Math.min(86400,Number(err.detail?.retry_after)||60));
+            setLog(v=>[...v,family.rows[0].code+' · '+m('rateWait')+' '+sec+' s']);
+            await new Promise(resolve=>window.setTimeout(resolve,(sec+1)*1000));
+          }
+        }
         setLog(v=>[...v,family.rows[0].code+' · '+m(r.status)+' ('+r.count+') '+(r.reason||'')]);
         if (!['ready','verified'].includes(r.status)) return;
       }

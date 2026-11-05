@@ -11,7 +11,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_review as review
-from inventory_hub.services import atomer_variant_repair as repairs
+from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
 from inventory_hub.services.atomer_source_state import archive
@@ -102,7 +102,7 @@ async def repair_parameters(mode: Literal["preview","apply"], selection: repairs
     try:
         return await repairs.process(db,selection,mode,_actor(request))
     except (ReviewError, CatalogError, SourceError) as error:
-        raise HTTPException(error.status,detail={"code":error.code}) from None
+        raise HTTPException(error.status,detail={"code":error.code, "retry_after":getattr(error,"retry_after",None)}) from None
 
 
 @router.post("/review-blocks")
@@ -111,3 +111,12 @@ async def block_review(selection: repairs.Blocks, request: Request, db: AsyncSes
         return await repairs.record_blocks(db,selection,_actor(request))
     except ReviewError as error:
         raise HTTPException(error.status,detail={"code":error.code}) from None
+
+
+@router.post("/verified-barcodes/{mode}")
+async def repair_barcodes(mode: Literal["preview","apply"], selection: atomer_recode.BarcodeFamily,
+                          request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await repairs.process(db,selection,mode,_actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code, "retry_after":getattr(error,"retry_after",None)}) from None

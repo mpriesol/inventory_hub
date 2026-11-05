@@ -20,7 +20,7 @@ async def require_target_available(db, shop_code, parent_code, *, publication_id
     if shop_code == "xtrek":
         inflight = select(AtomerVariantRepair.id).where(
             func.lower(AtomerVariantRepair.parent_code) == parent_code.lower(),
-            AtomerVariantRepair.state.in_(("sending", "uncertain")))
+            AtomerVariantRepair.state.in_(("sending", "uncertain", "deferred")))
         if await db.scalar(inflight.limit(1)) is not None:
             raise CatalogError("merchandising_target_inflight", "Verify the pending Atomer variant repair first.", 409)
     if availability:

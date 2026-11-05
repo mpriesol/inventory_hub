@@ -226,6 +226,7 @@
   "activeVariants": "Aktívne varianty",
   "variantLabel": "Variant",
   "batch": {
+    "rateWait": "Čaká na kapacitu API",
     "title": "Opravy položiek na kontrolu",
     "plan": "Súkromný plán opráv (JSON)",
     "preview": "Overiť plán",

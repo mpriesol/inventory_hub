@@ -86,3 +86,22 @@ class RepairDatabaseTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(send.call_count,1)
                 self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_review_events")),2)
                 self.assertEqual(await db.scalar(text("SELECT status FROM atomer_review_work WHERE key='first'")),'open')
+
+
+class SupplierRecodeTests(TestCase):
+    def test_patch_has_only_the_exact_leaf_barcode_and_checks_stock(self):
+        from inventory_hub.services import atomer_recode
+        a,b=variant('first',11,'Blue'),variant('other',12,'Black')
+        a['stock']=0
+        observed={'parent':{'code':'family','variants':[a,b]},'variants':[a,b]}
+        row=dict(vid='11',target='first',ean='first',new_ean='new',before={'Colour':'Blue'})
+        after,patch=repair.desired_patch(observed,[row])
+        self.assertEqual(patch['products'][0]['variants'],[{'code':'first','ean':'new'}])
+        protected,axes=repair.projection(observed)
+        self.assertEqual(axes,after)
+        expected=atomer_recode.protect_expected(protected,[row])
+        self.assertEqual([r['ean'] for r in expected['leaves']['11']],['new','new'])
+        self.assertEqual(protected['leaves']['11'][0]['ean'],'first')
+        protected['leaves']['11'][0]['stock']='1'
+        with self.assertRaisesRegex(ReviewError,'stock_or_ean'):
+            atomer_recode.protect_expected(protected,[row])

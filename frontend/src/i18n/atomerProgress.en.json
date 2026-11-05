@@ -226,6 +226,7 @@
   "activeVariants": "Active variants",
   "variantLabel": "Variant",
   "batch": {
+    "rateWait": "Waiting for API capacity",
     "title": "Repair reviewed items",
     "plan": "Private repair plan (JSON)",
     "preview": "Check plan",

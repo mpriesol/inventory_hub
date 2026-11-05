@@ -58,6 +58,8 @@ async def save_archive(db,entry):
 class AdminCatalog(dict):
     def __init__(self):
         super().__init__()
+        self.exact_roots = defaultdict(lambda: defaultdict(list))
+        self.parent_spellings = {}
         self.quarantined = []
         self.quarantined_identifiers = set()
         self.quarantined_parents = set()
@@ -154,6 +156,14 @@ def parse_admin(data):
                      "flags": {heading: row[pos] for heading, pos in flag_columns.items()}, "parent": parent_code,
                      "name": row[name].strip() if name is not None else "",
                      "brand": row[brand].strip() if brand is not None else ""}
+            # Keep literal parent references. Two different native roots can share a trimmed SKU.
+            # The raw spellings establish ancestry only; inventory codes stay canonical.
+            if catalog is not None and parent is not None and has_catalog_code:
+                raw_code, raw_parent = row[catalog], row[parent]
+                if raw_parent.strip() in ("", "0"):
+                    result.exact_roots[code][raw_code].append(value)
+                previous = result.parent_spellings.get(code, raw_parent)
+                result.parent_spellings[code] = raw_parent if previous == raw_parent else None
             if code in result:
                 duplicates.setdefault(code, [result[code]]).append(value)
             else:
@@ -183,6 +193,16 @@ def _admin_refs(admin):
     return refs
 
 
+def _parent_record(admin, child, key):
+    record = admin.get(key) or {}
+    if record.get("conflict") and isinstance(admin, AdminCatalog):
+        raw = admin.parent_spellings.get(child)
+        matches = admin.exact_roots.get(key, {}).get(raw, [])
+        if len(matches) == 1 and raw and raw.strip() == key:
+            return matches[0]
+    return record
+
+
 def catalog_with_admin(buyers, admin, complete=False):
     """Keep buyers rows and add identities established by the administrative export."""
     result = {r["code"]: r for r in buyers}
@@ -207,7 +227,7 @@ def catalog_with_admin(buyers, admin, complete=False):
         parent_key = refs.get(parent, parent)
         groups = xml_groups.get(parent_key, set())
         ambiguous = bool(item.get("conflict") or (parent and parent_key is None) or len(groups) > 1
-                         or (admin.get(parent_key) or {}).get("conflict"))
+                         or _parent_record(admin, code, parent_key).get("conflict"))
         original = result.get(code)
         if original:
             xml_parent = original["parent"] if original["parent"] != code else ""
@@ -243,7 +263,7 @@ def add_states(source, rows, admin):
     for row in rows:
         leaf, parent = row["code"], row["parent"] if row["kind"]=="variant" else row["code"]
         parent_code = refs.get(parent, parent) if row["kind"] == "variant" else leaf
-        parent_record = admin.get(parent_code) or {}
+        parent_record = _parent_record(admin, leaf, parent_code) if row["kind"]=="variant" else admin.get(parent_code) or {}
         variant_record = admin.get(leaf) or {}
         state, origin = evidence(parent, parent_record)
         if parent_code is None:

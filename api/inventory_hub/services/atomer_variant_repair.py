@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from inventory_hub.db_models import Shop
 from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.product_editor_models import AtomerVariantRepair
-from inventory_hub.services import atomer_review as work
+from inventory_hub.services import atomer_review as work, atomer_recode as recode
 from inventory_hub.services import stock_publication_source as transport
 from inventory_hub.services.atomer_content_source import _family
 from inventory_hub.services.atomer_review_targets import ReviewError
@@ -118,6 +118,9 @@ def desired_patch(observation, selected):
         if (not leaf or leaf['code'] != entry['target'] or (leaf.get('ean') or '') != (entry['ean'] or '')
                 or before[vid] != entry['before']):
             raise ReviewError('variant_preview_changed')
+        if 'new_ean' in entry:
+            leaves.append({'code':leaf['code'],'ean':entry['new_ean']})
+            continue
         after[vid].update(entry['values'])
         if before[vid] != after[vid]:
             params = [{'descriptions':[{'language':'sk','name':name}],
@@ -187,6 +190,9 @@ async def select_rows(db, selection):
     for requested in selection.rows:
         r = await subject(db,selection.run_id,requested.code,requested.revision)
         s = sources.get(requested.code)
+        if isinstance(requested,recode.BarcodeRow):
+            rows.append(await recode.entry_for(db,requested,r,s))
+            continue
         if (r['reasons'] != ['parameters_differ'] or not s or s['conflict'] or s['parent']!=r['parent']
                 or not r['variant_id'] or not r['target_parent'] or r.get('match')!='code_or_ean'
                 or set(s['axes'])!=set(requested.names) or len(set(requested.names.values()))!=len(s['axes'])
@@ -207,12 +213,19 @@ async def select_rows(db, selection):
 
 async def check_result(db, job, actor, acknowledged=False):
     doc = job.document
+    retry_after = None
     try:
         remote = await asyncio.to_thread(read_family,doc['identity'],doc['fingerprint'])
         protected, actual = projection(remote)
-        if protected != doc['protected']:
+        if acknowledged and protected != doc['protected'] and protected==doc.get('before_protected') and actual==doc['before_axes']:
+            state, reason = 'blocked', 'Upgates po zápise stále vracia pôvodný EAN.'
+        elif protected != doc['protected']:
             state, reason = 'uncertain', 'Zmenil sa aj chránený údaj rodiny. Porovnaj uloženú zálohu.'
         elif actual == doc['after']:
+            async with db.begin_nested():
+                for item in doc['rows']:
+                    if 'new_ean' in item:
+                        await recode.eligible_card(db,item,record=True)
             state, reason = 'verified', ''
         elif acknowledged and actual == doc['before_axes']:
             state, reason = 'blocked', 'Upgates prijal požiadavku, ale po zápise vracia pôvodné parametre.'
@@ -220,6 +233,8 @@ async def check_result(db, job, actor, acknowledged=False):
             state, reason = 'uncertain', 'Kontrolné načítanie ešte nepotvrdilo všetky očakávané parametre.'
     except (ReviewError,transport.SourceError) as exc:
         state,reason = 'uncertain', 'Overenie Upgates: '+exc.code
+        if getattr(exc,'status',None)==429:
+            retry_after=getattr(exc,'retry_after',None) or 60
     job.state = state
     job.document = {**doc,'result':reason}
     for entry in doc['rows']:
@@ -231,9 +246,13 @@ async def check_result(db, job, actor, acknowledged=False):
         ref = f"xTrek {entry['pid']}/{entry['vid']}, kód {entry['target']}, karta {entry['card'] or '—'}. "
         note = ('Parametre overené podľa Atomeru: '+', '.join(f'{k} = {v}' for k,v in entry['values'].items())+'.'
                 if state=='verified' else reason)
+        if state=='verified' and 'new_ean' in entry:
+            note = (f"EAN {entry['ean']} → {entry['new_ean']}. Oba kódy sú na pôvodnej karte. "
+                    if entry['ean'] else f"Doplnený chýbajúci EAN {entry['new_ean']} z existujúcej karty. ")
+            note += 'Overené v xTreku. '+entry['proof']
         await outcome(db,entry['code'],actor,'open' if state=='verified' else 'blocked',ref+note,'variant_'+state)
     await db.commit()
-    return {'status':state,'count':len(doc['rows']),'reason':reason,'id':job.id}
+    return {'status':state,'count':len(doc['rows']),'reason':reason,'id':job.id,'retry_after':retry_after}
 
 
 async def process(db, selection, mode, actor):
@@ -242,8 +261,31 @@ async def process(db, selection, mode, actor):
     await work._lock_current_run(db,current)
     row = await db.get(AtomerVariantRepair,job_id,with_for_update=True)
     if row:
-        if row.state in ('sending','uncertain') and mode!='preview':
+        if row.state in ('sending','uncertain'):
             return await check_result(db,row,actor)
+        if row.state=='deferred':
+            doc=row.document
+            if current!=doc['run_id']:
+                raise ReviewError('run_changed')
+            for item in doc['rows']:
+                saved=await work._record(db,'item',item['code'])
+                if saved['status']!='working' or saved['revision']!=item['revision']+1:
+                    raise ReviewError('review_changed')
+                if 'new_ean' in item:
+                    await recode.eligible_card(db,item)
+            before=await asyncio.to_thread(read_family,doc['identity'],doc['fingerprint'])
+            if projection(before)!=(doc.get('before_protected',doc['protected']),doc['before_axes']):
+                return await check_result(db,row,actor)
+            if mode=='preview':
+                return {'id':row.id,'status':'ready','count':len(doc['rows'])}
+            _,payload=desired_patch(before,doc['rows'])
+            row.state='sending'
+            await db.commit()
+            await work._lock_current_run(db,current)
+            row=await db.get(AtomerVariantRepair,job_id,with_for_update=True,populate_existing=True)
+            if row.state!='sending':
+                return await check_result(db,row,actor)
+            return await send_intent(db,row,actor,payload,doc['fingerprint'])
         return {'id':row.id,'status':row.state,'count':len(row.document['rows']),'reason':row.document.get('result','')}
     if current!=selection.run_id:
         raise ReviewError('run_changed')
@@ -259,10 +301,15 @@ async def process(db, selection, mode, actor):
     before = await asyncio.to_thread(read_family,identity,fingerprint)
     protected, axes = projection(before)
     after, payload = desired_patch(before,selected)
+    before_protected = protected
+    if isinstance(selection,recode.BarcodeFamily):
+        protected = recode.protect_expected(protected,selected)
+        since = await db.scalar(text("SELECT checked_at FROM atomer_progress_runs WHERE id=:run"),{'run':selection.run_id})
+        await asyncio.to_thread(recode.check_changed_catalog,fingerprint,since,selected)
     if mode=='preview':
         return {'status':'ready','id':job_id,'count':len(selected)}
     doc = {'identity':identity,'fingerprint':fingerprint,'rows':selected,'backup':before,'before_axes':axes,
-           'protected':protected,'after':after,'actor':actor,'run_id':selection.run_id,'source_sha':head_sha}
+           'protected':protected,'before_protected':before_protected,'after':after,'actor':actor,'run_id':selection.run_id,'source_sha':head_sha}
     job = AtomerVariantRepair(id=job_id,parent_code=first['parent'],state='sending',document=doc)
     db.add(job)
     for item in selected:
@@ -277,11 +324,20 @@ async def process(db, selection, mode, actor):
         saved = await work._record(db,'item',item['code'])
         if saved['status']!='working' or saved['revision']!=item['revision']+1:
             return await check_result(db,job,actor)
+    return await send_intent(db,job,actor,payload,fingerprint)
+
+
+async def send_intent(db,job,actor,payload,fingerprint):
     acknowledged = False
     try:
         if payload['products'][0]['variants']:
             await asyncio.to_thread(send,payload,fingerprint)
         acknowledged = True
-    except transport.SourceError:
+    except transport.SourceError as exc:
+        if exc.status==429 and exc.request_sent is False:
+            # Hub admission denied locally. Only this positive signal permits a fresh attempt.
+            job.state='deferred'
+            await db.commit()
+            raise
         pass  # A readback is authoritative even if the transport lost its acknowledgement.
     return await check_result(db,job,actor,acknowledged)
