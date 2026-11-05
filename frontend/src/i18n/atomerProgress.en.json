@@ -1,0 +1,85 @@
+{
+  "bikeReasons": {
+    "card_conflict": "Ambiguous inventory card",
+    "incomplete_link": "Link is missing a code or native ID",
+    "missing_native": "Stored ID missing from the BIKETREK catalog",
+    "changed_identity": "BIKETREK code or parent differs from the link"
+  },
+  "web": "Shop",
+  "admin": "Admin",
+  "yes": "Yes",
+  "variantsCount": "Variants",
+  "toResolve": "To resolve",
+  "verified": "Verified",
+  "productPages": "Products",
+  "cardStates": {
+    "exists": "Card exists",
+    "missing": "Card unresolved",
+    "review": "Card needs review"
+  },
+  "title": "Atomer migration status",
+  "back": "Back to shops",
+  "scope": "Each sellable Atomer code, its inventory card and links in both shops. xTrek status covers catalog identity and linking. Content and quantities are checked separately.",
+  "kind": "Item type",
+  "kinds": {
+    "variant": "Variants",
+    "standalone": "Standalone products"
+  },
+  "states": {
+    "linked": "Card and xTrek link verified",
+    "needs_link": "Link the existing card",
+    "needs_card": "xTrek match, card unresolved",
+    "needs_target": "Card exists, xTrek match unresolved",
+    "needs_both": "No confirmed card or xTrek match",
+    "review": "Needs review"
+  },
+  "bikeLinked": "Linked to BIKETREK",
+  "bikeStates": {
+    "linked": "Card has a link",
+    "unlinked": "Card without a link",
+    "no_card": "Card unresolved",
+    "review": "Link needs review"
+  },
+  "asOf": "Check started",
+  "source": "Export saved",
+  "codes": "sellable codes",
+  "file": "New Atomer export (buyers.xml)",
+  "useFile": "Load and compare export",
+  "refresh": "Refresh shops and Hub data",
+  "refreshing": "Checking the entire catalog…",
+  "emptySource": "Upload buyers.xml for the first check. Later checks can reuse the saved export.",
+  "search": "Search",
+  "searchHint": "Name, SKU, EAN or ID",
+  "all": "All",
+  "item": "Atomer item",
+  "sourceCode": "Atomer code",
+  "card": "Inventory card",
+  "record": "code and IDs",
+  "status": "xTrek status and reason",
+  "previous": "Previous",
+  "next": "Next",
+  "empty": "No matching items",
+  "errors": {
+    "failed": "The check failed. Reload the overview.",
+    "remote_read_failed": "The complete xTrek catalog could not be verified. The last completed result is displayed.",
+    "refresh_in_progress": "Another check is running. Reload the page when it completes.",
+    "source_required": "Select buyers.xml first."
+  },
+  "reasons": {
+    "duplicate_source": "Different source rows share a code.",
+    "multiple_targets": "Several xTrek listings match.",
+    "target_claimed": "Multiple Atomer codes claim this xTrek listing.",
+    "kind_differs": "A variant matches a standalone product.",
+    "brand_differs": "The xTrek brand differs.",
+    "ean_differs": "The xTrek EAN differs.",
+    "parent_differs": "More than one parent product matches this family.",
+    "parameters_differ": "Variant parameters differ from Atomer.",
+    "occupied_parameters": "Another xTrek listing occupies these parameters.",
+    "card_identity_conflict": "The inventory card identifiers disagree.",
+    "multiple_cards": "Several inventory cards match.",
+    "card_brand_differs": "The inventory card brand differs.",
+    "card_ean_differs": "The inventory card EAN differs.",
+    "different_shop_link": "The card already has a different xTrek link.",
+    "link_identity_differs": "The existing link has a different code or parent."
+  }
+}
