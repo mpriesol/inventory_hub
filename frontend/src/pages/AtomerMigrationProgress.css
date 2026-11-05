@@ -73,6 +73,10 @@
 .atomer-campaign p { margin:.45rem 0; }
 .atomer-campaign progress { width:100%; height:.5rem; accent-color:var(--color-accent); }
 .campaign-counts { font-size:.85rem; margin:.35rem 0; }
+.campaign-milestones { display:flex; flex-wrap:wrap; gap:.45rem 1.25rem; margin:.55rem 0; }
+.campaign-milestones div { display:flex; align-items:baseline; gap:.4rem; }
+.campaign-milestones dt { font-size:.85rem; }
+.campaign-milestones dd { font-variant-numeric:tabular-nums; font-weight:600; margin:0; }
 .atomer-campaign details { margin-top:.5rem; }
 
 .campaign-proof-table { max-height:24rem; overflow:auto; margin-top:.5rem; }

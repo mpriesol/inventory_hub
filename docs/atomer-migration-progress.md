@@ -103,4 +103,10 @@ The source adapter verifies visibility and commercial fields separately for pare
 
 For generation repairs the private plan also supports a read-only observation of an existing journal. It can show which upstream field changed and compare the parent and native variant stock representations before any repair.
 
-Existing xTrek families are checked by native parent and variant IDs. The worker compares mapped Atomer fields, journals any required changes and verifies the response against the protected siblings, quantities and original references. An operator can submit a fresh per-family revision token after resolving a blocked item. Private supplier corrections and optional missing category selections belong to the campaign. Category restoration checks the complete native tree, parent and source menu visibility before creation and confirms the assigned ID before the product uses it.
+### Evidence for each migration stage
+
+The source-card worker can prepare a missing sellable card from the pinned administrative export while Upgates is busy. It checks existing cards, SKU aliases, barcode ownership, shop bindings and operator decisions in a database transaction. The separate receipt records the card ID and whether that worker created or reused it. Shop verification continues against the same card. A full item receipt requires the applicable native IDs and a successful comparison of the mapped content. The dashboard counts each stage separately.
+
+For an existing xTrek product, the worker reads the native family, compares the selected Atomer fields and records the intended changes before dispatch. Readback checks the original IDs and protected siblings. When an API limit is reached the Hub records the next allowed attempt. An uncertain write goes to readback. Exact revision tokens on individual families guard reconsideration after new evidence. Supplier barcode corrections, category mappings and conflict evidence are stored with the private campaign.
+
+An explicitly selected missing category can be restored under its verified native parent after a full-tree lookup. Upgates assigns the ID and the next lookup confirms its code, parent and menu setting before product use. Manual closures, store-specific decisions and financial or quantity discrepancies retain their own status.

@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 
 from inventory_hub.services import atomer_catalog_engine as engine
 from inventory_hub.services import atomer_catalog_fidelity as fidelity, atomer_catalog_recheck as recheck
+from inventory_hub.services import atomer_catalog_source_cards as local
 from inventory_hub.services.stock_publication_source import SourceError
 
 TEST_URL=os.environ.get('CATALOG_TEST_DATABASE_URL','')
@@ -26,6 +27,19 @@ def selection(**changes):
 
 
 class EngineSelectionTests(unittest.TestCase):
+    def test_local_card_evidence_preserves_raw_ean_and_isolates_a_bad_sibling(self):
+        from types import SimpleNamespace
+        data={k:[('Interné číslo',n),('Viditeľný','1'),('Názov tovaru',k),('EAN kód',ean),('Váha','0,25')]
+              for k,n,ean in [('P','20',''),('a','21','001'),('bad','22','002')]}
+        index=SimpleNamespace(canonical=lambda k:k,family=lambda _: (data,{}),leaves=lambda _:('a','bad'),
+                 parent_for=lambda _:'P',sku_owners=lambda k:(k,),gtin_owners=lambda k:('a',) if k=='001' else ())
+        rows={k:{'detail':{'ean':v}} for k,v in [('a','001'),('bad','invalidated')]}
+        inputs,errors=local.source_details(index,'v:P',rows,rows,{})
+        self.assertEqual(list(inputs),['a'])
+        self.assertEqual(inputs['a']['source_card']['weight_g'],250)
+        self.assertEqual(inputs['a']['source_card']['native_id'],'21')
+        self.assertEqual(inputs['a']['source_card']['gtin_owners'],['a'])
+        self.assertIn('bad',errors)
     def test_apply_wakes_fixed_failure_without_bypassing_an_upstream_deadline(self):
         waiting=dict(state='waiting',problem='stock_publication_source_unavailable',failures=4)
         self.assertTrue(engine._wake(waiting,False))
@@ -82,6 +96,30 @@ class EngineSelectionTests(unittest.TestCase):
         self.assertIsNotNone(engine._blocked_work(dict(status='working',revision=3),'item','A',{'item:A':2}))
         self.assertIsNotNone(engine._blocked_work(dict(status='open',revision=4),'item','A',{}))
         self.assertIsNone(engine._blocked_work(dict(status='working',revision=3),'item','A',{'item:A':3}))
+        corrected=dict(status='open',revision=4,command='barcode_owner_verified')
+        self.assertIsNone(engine._blocked_work(corrected,'item','A',{}))
+        self.assertIsNotNone(engine._blocked_work(corrected,'family','v:A',{}))
+        self.assertIsNotNone(engine._blocked_work({**corrected,'command':'reopen'},'item','A',{}))
+
+
+class CorrectedSiblingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_validated_missing_sibling_is_only_appended_to_the_observed_pid(self):
+        fresh=dict(payload=dict(code='P',variants=[{'code':'a'},{'code':'b'}]),deferred_leaves={})
+        prior=dict(payload=dict(code='P',variants=[{'code':'a'}]),deferred_leaves={'b':{'reason':'unverified'}})
+        j=dict(family_key='v:P',document=prior,receipt={'catalog_deferred':prior['deferred_leaves']},guards={})
+        evidence=dict(identity_verified=True,product_id=41,native=dict(product_id=41,code='P',variants=[
+                                  {'code':'a','variant_id':99}]))
+        c=dict(id='c',selection={},checked_run_id=7)
+        with patch.object(engine,'_source',new=AsyncMock()),patch.object(engine,'_options',new=AsyncMock()),\
+             patch.object(engine,'_root_index',new=AsyncMock()),patch.object(engine,'_family',new=AsyncMock(return_value=({},{}))),\
+             patch.object(engine,'_make_document',return_value=fresh),patch.object(engine,'_job',new=AsyncMock()) as write:
+            self.assertTrue(await engine.expand_rechecked(None,c,j,evidence))
+            doc=write.await_args.kwargs['document']
+            self.assertEqual(write.await_args.args[-1],'prepared')
+            self.assertEqual(doc['extension'],dict(product_id=41,existing={'a':dict(product_id=41,variant_id=99)}))
+            self.assertEqual(write.await_args.kwargs['receipt']['catalog_deferred'],{})
+            with self.assertRaisesRegex(engine.ReviewError,'catalog_bound_parent_changed'):
+                await engine.expand_rechecked(None,c,j,{**evidence,'product_id':202})
 
 
 @unittest.skipUnless(TEST_URL,'Requires dedicated localhost *_catalog_test database')
@@ -97,9 +135,10 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.pg=create_async_engine(TEST_URL.replace('postgresql://','postgresql+asyncpg://',1),
                     connect_args={'server_settings':{'search_path':self.schema}},poolclass=NullPool)
         root=Path(__file__).resolve().parents[2]/'infra'/'db-init'
-        for name in ('037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql','041_atomer_catalog_content.sql'):
+        for name in ('037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql','041_atomer_catalog_content.sql','043_atomer_source_cards.sql'):
             await self.conn.execute((root/name).read_text())
         await self.conn.execute("""
+            CREATE TABLE products(id bigint PRIMARY KEY);
             INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(repeat('a',64),2,'[]');
             INSERT INTO atomer_review_exports(sha256,format,compressed) VALUES(repeat('b',64),'admin_csv','');
             INSERT INTO atomer_progress_runs(source_sha256,admin_export_sha256,checked_at,totals)
@@ -182,3 +221,40 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(got['stage'],'observe')
             self.assertEqual(got['receipt']['last_recheck']['run_id'],2)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_review_events WHERE command='catalog_recheck'")),2)
+
+    async def test_source_card_receipt_is_partial_and_idempotent_before_native_read(self):
+        async with self.factory() as db:
+            await engine.process(db,selection(),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            await db.execute(text('INSERT INTO products VALUES(142)'))
+            initial=dict(status='card_ready',action='created',created=True,card_id=142,hub_sku='a')
+            await local._receipts(db,c,'v:P',{'a':initial})
+            await local._receipts(db,c,'v:P',{'a':{**initial,'action':'reused','created':False}})
+            await db.commit()
+            totals=(await engine.status(db))['counts']
+            self.assertEqual((totals['hub_cards'],totals['cards_created'],totals['cards_reused']),(1,1,0))
+            self.assertEqual((totals['verified'],totals['source_card_ready'],totals['partial']),(0,1,1))
+            self.assertEqual((await engine.details(db,'v:P'))['source_cards'][0]['card_id'],142)
+
+    async def test_unpublished_sibling_never_gets_a_parent_card_or_a_completed_receipt(self):
+        from inventory_hub.services import atomer_card_batch as cards
+        async with self.factory() as db:
+            await engine.process(db,selection(partial_barcodes=True),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            j=dict(await engine._one(db,"SELECT * FROM atomer_catalog_jobs WHERE family_key='v:P'"))
+            rows,g=await engine._family(db,1,'v:P')
+            j['guards']=await engine._claim(db,c,j,rows,g)
+            j['document']=dict(payload=dict(code='P',variants=[{'code':'a'}]),deferred_leaves={
+                'b':dict(reason='new_leaf_ean_unverified',source_ean='wrong')})
+            j['receipt']=dict(identity_verified=True,verified_fields=True,product_id=9,variants={'a':19})
+            await engine._job(db,c['id'],'v:P','cards',guards=j['guards'],document=j['document'],receipt=j['receipt'])
+            with patch.object(cards,'reconcile',new=AsyncMock(return_value={'a':dict(status='verified',card_id=8,
+                                  xtrek=dict(product_id=9,variant_id=19),biketrek=None)})) as reconciled:
+                await engine._cards(db,c,[j])
+                self.assertEqual(reconciled.await_args.args[2],['a'])
+                self.assertEqual(reconciled.await_args.kwargs['native_ids'],{'a':(9,19)})
+            await db.commit()
+            self.assertEqual(await db.scalar(text("SELECT stage FROM atomer_catalog_jobs WHERE family_key='v:P'")),'partial')
+            proof=await engine._one(db,"SELECT state,evidence FROM atomer_catalog_proofs WHERE code='b'")
+            self.assertEqual((proof['state'],proof['evidence']['reason']),('blocked','new_leaf_ean_unverified'))
+            self.assertIsNone(proof['evidence'].get('card_id'))

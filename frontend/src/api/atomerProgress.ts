@@ -11,8 +11,9 @@ export type ProgressRow = {
   target_ean: string | null; reasons: string[]; bike_state: typeof bikeStates[number];
   bike: {reason?:string; shop_url?:string|null; shop_admin_url?:string|null; code: string | null; parent: string | null; product_id: string | null; variant_id: string | null} | null;
 };
+export type TargetMode = 'live' | 'certified_checkpoint' | 'pinned_source';
 export type ProgressRun = {id: number; checked_at: string; source_sha256: string; source_rows: number; imported_at: string;
-  totals: {items: number; review_targets?:number; admin_codes?:number; admin_only_items?:number; admin_complete?:boolean;
+  totals: {items: number; target_mode?:TargetMode; xtrek_target_snapshot?:string; xtrek_observed_at?:string; bike_observed_at?:string; local_snapshot_at?:string; review_targets?:number; admin_codes?:number; admin_only_items?:number; admin_complete?:boolean;
     admin_conflicts?:number; admin_conflict_examples?:string[]; admin_quarantined?:number; admin_quarantine_examples?:string[];
     kinds: Record<string,number>; states: Record<string,number>; bike: Record<string,number>}};
 export type ProgressFamily = {key:string; name:string; work?:Work; extra_count?:number; items:ProgressRow[]};
@@ -22,9 +23,10 @@ export function readProgress(params: URLSearchParams, signal?: AbortSignal) {
   return hubRequest<ProgressPage>(base + '?' + params, undefined, signal);
 }
 export function refreshProgress(expectedRun: number, file?: File | null, staleOnly = false, reviewFile?:File|null,
-                                adminFile?:File|null, adminComplete = false) {
+                                adminFile?:File|null, adminComplete = false, targetMode:TargetMode = 'live') {
   const form = new FormData();
   form.set('expected_run', String(expectedRun));
+  if (targetMode !== 'live') form.set('target_mode', targetMode);
   if (adminFile) form.set('admin_file',adminFile);
   if (adminFile && adminComplete) form.set('admin_complete','true');
   if (reviewFile) form.set('review_file',reviewFile);

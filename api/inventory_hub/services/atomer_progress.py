@@ -95,7 +95,7 @@ def bike_catalog(products):
             key = (pid, vid)
             if key in result:
                 raise ExportError("catalog_changed")
-            result[key] = dict(code=leaf.get("code"), parent=parent.get("code") if vid else None,
+            result[key] = dict(code=leaf.get("code"), ean=leaf.get("ean"), parent=parent.get("code") if vid else None,
                                **_navigation(parent, leaf))
     return result
 
@@ -274,7 +274,7 @@ def biketrek_link(card_id, reasons, bike_links, bike_targets):
     return "linked", evidence
 
 
-def reconcile(sources, targets, card_index, links, overrides, bike_links, bike_targets):
+def reconcile(sources, targets, card_index, links, overrides, bike_links, bike_targets, proven_brands=None):
     pairs, evidence, methods, conflicts = match_catalog(sources, targets)
     by_native, by_card = defaultdict(list), defaultdict(list)
     for link in links:
@@ -304,10 +304,13 @@ def reconcile(sources, targets, card_index, links, overrides, bike_links, bike_t
         if card:
             edit = overrides.get(card_id) or {}
             brand = (edit.get("common") or {}).get("brand") or card.brand or ""
-            if _brand(source["brand"]) and _brand(brand) and _brand(source["brand"]) != _brand(brand):
-                reasons.add("card_brand_differs")
             eans = (edit.get("variant") or {}).get("eans")
-            existing = barcode_keys(eans if isinstance(eans,list) else card_index.product_barcodes.get(card_id, set()))
+            card_eans = eans if isinstance(eans,list) else card_index.product_barcodes.get(card_id, set())
+            if _brand(source["brand"]) and _brand(brand) and _brand(source["brand"]) != _brand(brand):
+                from inventory_hub.services.atomer_brand_identity import matches
+                if not matches((proven_brands or {}).get(code), source, card, brand, card_eans, bike_links.get(card_id, []), bike_targets):
+                    reasons.add("card_brand_differs")
+            existing = barcode_keys(card_eans)
             if existing and source["gtins"] and existing.isdisjoint(source["gtins"]):
                 reasons.add("card_ean_differs")
             if by_card[card_id] and not explicit:

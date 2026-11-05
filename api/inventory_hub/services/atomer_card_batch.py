@@ -12,12 +12,14 @@ from inventory_hub.db_models import Product, ProductIdentifier, Shop
 from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.routers import upgates_sync as pull
 from inventory_hub.services import atomer_catalog_observation as observation, atomer_review as work
+from inventory_hub.services import atomer_catalog_checkpoint as checkpoint
 from inventory_hub.services import atomer_review_targets, migration_upgates_export as export
 from inventory_hub.services import product_publication_source as publication
 from inventory_hub.services.product_identity import (
     IDENTITY_WRITE_LOCK, IdentityIndex, RemoteIdentity, barcode_keys, verified_barcodes,
 )
 from inventory_hub.services.stock_publication_source import _client
+from inventory_hub.services.atomer_source_cards import source_cards
 from inventory_hub.services.order_collection import target_fingerprint
 
 SHOPS = ('xtrek', 'biketrek')
@@ -54,24 +56,8 @@ def _catalog(shop,force_current=False):
             return old[2]
         client = _client(shop,fp)
         try:
-            if old and old[0]==fp and timedelta(0)<=stamp-old[1]<=timedelta(hours=12):
-                # Our own watermark is the *start* of the previous native read.
-                # A warm negative BIKE lookup still needs fresh additions and tombstones.
-                indexed=observation.indexed(old[2],'product_id')
-                since=(old[1]-timedelta(seconds=2)).isoformat(timespec='seconds')
-                delta=observation.indexed(observation.page_rows(client,'products',{'last_update_time_from':since}),
-                                          'product_id')
-                indexed.update(delta)
-                parents=list(indexed.values()) if len(indexed)==observation.total(client,'products','products') else None
-            else:
-                cache=pull._cache_load(shop) if old is None else None
-                if cache and cache.get('fingerprint')!=fp:
-                    cache=None
-                parents=observation.recent_products(client,cache,stamp)
-            if parents is None:
-                parents = list(observation.page_rows(client,'products',{}))
-                pull._cache_save(shop,publication.plain(parents),fingerprint=fp)
-            parents=ObservedCatalog(publication.plain(parents),stamp,fp)
+            directory=pull._cache_path(shop).parent/'atomer-card-catalog-v1'
+            parents=ObservedCatalog(checkpoint.collect(client,directory,fp),stamp,fp)
             _CATALOGS[shop] = (fp,stamp,parents)
             return parents
         finally:
@@ -133,6 +119,7 @@ class Catalog:
     by_id: dict
     by_sku: dict
     by_gtin: dict
+    supplier_codes: dict
     parent_codes: set
 
     @classmethod
@@ -140,6 +127,7 @@ class Catalog:
         families=pull._pull_families(shop_id,products)
         by_id, by_sku, by_gtin = defaultdict(list), defaultdict(set), defaultdict(set)
         parent_codes=set()
+        supplier_codes=defaultdict(set)
         for fam in families:
             parent=fam['payload']
             if parent.get('variants'):
@@ -148,9 +136,11 @@ class Catalog:
                 key=(identity.external_product_id,identity.external_id if identity.is_variant else None)
                 by_id[key].append((fam,identity,leaf))
                 by_sku[identity.code.casefold()].add(key)
+                if leaf.get('code_supplier'):
+                    supplier_codes[str(leaf['code_supplier']).strip().casefold()].add(key)
                 for gtin in barcode_keys(identity.barcodes):
                     by_gtin[gtin].add(key)
-        return cls(families,by_id,by_sku,by_gtin,parent_codes)
+        return cls(families,by_id,by_sku,by_gtin,supplier_codes,parent_codes)
 
     def candidates(self,codes,eans):
         selected=set()
@@ -187,12 +177,15 @@ def raw_codes(lookup):
     return {str(v).strip() for v in lookup if v is not None and str(v).strip()}
 
 
-def barcode_subject(row,proof=None):
+def barcode_subject(row,proof=None,zero_id=None):
     """Use the original SKU for placeholders. Only independent, source-pinned evidence replaces a GTIN."""
     code,raw=row['code'],row.get('ean') or ''
     if proof is not None:
         ean=proof.get('ean') if isinstance(proof,dict) else None
-        url=urlsplit(str(proof.get('manufacturer_or_supplier') or '')) if isinstance(proof,dict) else None
+        try:
+            url=urlsplit(str(proof.get('manufacturer_or_supplier') or '')) if isinstance(proof,dict) else None
+        except ValueError:
+            raise CardConflict('barcode_correction_evidence_changed') from None
         card=proof.get('required_card_id') if isinstance(proof,dict) else None
         require((raw or type(card) is int and card>0) and raw not in verified_barcodes([raw]) and isinstance(ean,str) and
                 ean in verified_barcodes([ean]) and proof.get('before')==raw and
@@ -200,6 +193,11 @@ def barcode_subject(row,proof=None):
                 url.hostname and not url.username and not url.password and len(str(proof.get('evidence') or ''))>=20,
                 'barcode_correction_evidence_changed')
         return {**row,'ean':ean,'barcode_evidence':dict(proof)}
+    if zero_id is not None:
+        require(raw=='0' and row.get('kind')=='standalone' and row.get('family_key')=='s:'+code
+                and isinstance(zero_id,str) and zero_id.isascii() and zero_id.isdigit() and int(zero_id)>0,
+                'atomer_zero_barcode_subject_changed')
+        return {**row,'ean':'','barcode_evidence':dict(before=raw,type='source_zero_sentinel',native_id=zero_id)}
     if raw==code and any(c.isalpha() for c in raw):
         return {**row,'ean':'','barcode_evidence':{'before':raw,'type':'source_repeats_sku'}}
     require(not raw or raw in verified_barcodes([raw]),'atomer_source_ean_unverified')
@@ -249,6 +247,10 @@ def choose_bike(row,catalog,x_identity=None,stored=None,card_codes=(),card_eans=
         if stored.external_product_id and (not stored.is_variant or stored.external_variant_id):
             candidates.add(native_key((stored.external_product_id,stored.external_variant_id)))
     if not candidates:
+        hints={key for code in witness for key in catalog.supplier_codes.get(code.casefold(),())}
+        if hints:
+            ids=', '.join(f"{pid}/{vid or '-'}" for pid,vid in sorted(hints,key=lambda k:(k[0],k[1] or ''))[:5])
+            raise CardConflict('biketrek_supplier_code_requires_physical_identity ('+ids+')')
         return None
     require(len(candidates)==1,'biketrek_multiple_native_candidates')
     key=next(iter(candidates))
@@ -470,7 +472,7 @@ async def _write_links(db,shop,selected,cat,results,apply):
 
 
 async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,include_managed=False,scopes=None,
-                    barcode_corrections=None):
+                    barcode_corrections=None,zero_barcode_sentinels=None):
     """Return per-code link receipts. The caller owns commit, work claim and its durable receipt.
 
     native_ids binds newly created leaves to stable product/variant IDs. An existing
@@ -482,7 +484,8 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
     if not actor:
         raise atomer_review_targets.ReviewError('operator_required',403)
     native_ids=native_ids or {}; scopes=scopes or {}; corrections=barcode_corrections or {}
-    if (set(native_ids)|set(scopes)|set(corrections))-set(codes) or any(not isinstance(v,dict) for v in corrections.values()):
+    zero_ids=zero_barcode_sentinels or {}
+    if (set(native_ids)|set(scopes)|set(corrections)|set(zero_ids))-set(codes) or any(not isinstance(v,dict) for v in corrections.values()):
         raise atomer_review_targets.ReviewError('invalid_card_batch',422)
     await work._lock_current_run(db,run_id)
     subjects=await _subjects(db,run_id,codes)
@@ -501,7 +504,7 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
             require(code in subjects,'source_subject_missing')
             require(code not in duplicates,'atomer_duplicate_physical_identity')
             row,item,family=subjects[code]
-            row=barcode_subject(row,corrections.get(code))
+            row=barcode_subject(row,corrections.get(code),zero_ids.get(code))
             subjects[code]=(row,item,family)
             scope=effective_scope(item,family,scopes.get(code))
             states={item['status'],family['status']}
@@ -536,6 +539,33 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
         return results
     fresh=await asyncio.gather(*(asyncio.to_thread(_selected,s,ids[s]) for s in SHOPS))
     direct=dict(zip(SHOPS,fresh))
+    # A newly read xTrek barcode or an existing xTrek mapping may reveal an
+    # old BIKETREK SKU that the pinned report did not yet know.
+    x_direct=Catalog.build(shops['xtrek'].id,list(direct['xtrek'].values()))
+    additional=set()
+    for code,scope in usable.items():
+        if scope in SHOPS:
+            continue
+        row=subjects[code][0]
+        try:
+            x_key=choose_x(row,x_direct,native_ids.get(code))
+            _,identity,_=x_direct.get(x_key)
+            owner=_owner(indexes['xtrek'].resolve(identity)) or row.get('hub_id')
+            witness=raw_codes([code,identity.code,row.get('hub_sku')])
+            eans=raw_codes([row.get('ean'),*identity.barcodes])
+            if owner in local.products:
+                witness.add(local.products[owner].sku)
+                witness.update(aliases.get(owner,()))
+                eans.update(local.product_barcodes.get(owner,()))
+                for m in indexes['biketrek'].by_product.get(owner,()):
+                    if m.external_product_id:
+                        additional.add(m.external_product_id)
+            additional.update(pid for pid,vid in initial['biketrek'].candidates(witness,eans))
+        except CardConflict:
+            continue  # The complete index below records this leaf's precise reason.
+    missing=additional-set(direct['biketrek'])
+    if missing:
+        direct['biketrek'].update(await asyncio.to_thread(_selected,'biketrek',missing))
     current={}
     for s in SHOPS:
         if isinstance(base[s],ObservedCatalog) and base[s].fingerprint!=target_fingerprint(s):
@@ -558,6 +588,8 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
         card=plan['card']
         results[code]=dict(status='ready',reason='',hub_sku=local.products[card].sku if card else code,
                            card_id=card,xtrek=None,biketrek=None)
+        if card and apply:
+            results[code]['card_action']='reused'
         if plan['biketrek_check']:
             results[code]['biketrek_check']=plan['biketrek_check']
             if isinstance(base['biketrek'],ObservedCatalog):
@@ -581,8 +613,9 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
                 token=pull._leaf_selection(f,identity,leaf)
                 tokens[identity.code]=token['token']
                 canonical[identity.code]=code
+            created_ids=set()
             report=await pull.register_observed_products(db,shops[s],list(direct[s].values()),selected_leaves=tokens,
-                                                         canonical_skus=canonical)
+                                                         canonical_skus=canonical,created_ids=created_ids)
             conflicts={c['code']:','.join(c['reasons']) for c in report['conflicts']}
             new_cards={p.sku:p for p in await db.scalars(select(Product).where(Product.sku.in_(list(new))))}
             for code,key in new.items():
@@ -591,7 +624,8 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
                     results[code]=fail(conflicts.get(parent,'card_creation_unverified'))
                 else:
                     card=new_cards[code];plans[code]['card']=card.id
-                    results[code].update(card_id=card.id,hub_sku=card.sku)
+                    results[code].update(card_id=card.id,hub_sku=card.sku,
+                                         card_action='created' if card.id in created_ids else 'reused')
     for s in SHOPS:
         selected={p['card']:(code,p['keys'][s]) for code,p in plans.items() if p['card'] and s in p['keys']
                   and results[code]['status']!='blocked'}

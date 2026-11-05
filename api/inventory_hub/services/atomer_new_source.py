@@ -6,7 +6,7 @@ never part of a catalog payload.
 """
 from collections import Counter, defaultdict
 import csv
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import permutations
 import hashlib
 import html
@@ -21,7 +21,8 @@ from lxml import html as lxml_html
 
 from inventory_hub.adapters import atomer_content as xml_source
 from inventory_hub.services import atomer_generations as gen, atomer_source_state as source
-from inventory_hub.services.product_identity import verified_barcodes
+from inventory_hub.services.atomer_review_targets import ReviewError
+from inventory_hub.services.product_identity import barcode_keys, verified_barcodes
 
 FLAGS = ('Akcia', 'Novinka', 'Výpredaj', 'Odporúčaný')
 MAX_ARCHIVE = 105_000_000
@@ -42,6 +43,21 @@ def grams(value):
     number = decimal_value(value) * 1000
     gen.require(number == number.to_integral_value(), 'generation_weight_precision')
     return int(number)
+
+
+def shipping_weight(code, row, value, receipts):
+    exact = decimal_value(value)*1000
+    if exact==exact.to_integral_value():
+        return int(exact)
+    # Upgates accepts only whole shipping grams. Preserve the exact measurement
+    # in the existing display characteristic and receipt and limit rounding to
+    # an independently matching source cell explicitly expressed in grams.
+    original = named(row,'Char. Hmotnosť (g)').strip()
+    gen.require(original and decimal_value(original)==exact,'generation_weight_precision')
+    native=int(exact.quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    receipts[code]=dict(source_kg=value,source_display_grams=original,native_shipping_grams=native,
+                        method='nearest_whole_gram')
+    return native
 
 
 def named(row, field):
@@ -75,7 +91,7 @@ def _csv(raw):
 
 def csv_rows(raw, wanted):
     index = Catalog(_csv(raw))
-    result = {}
+    result = FamilyRows(index)
     for root in wanted:
         rows, _ = index.family(root)
         result.update(rows)
@@ -127,12 +143,14 @@ def _same_sellable(choices):
 
 class FamilyRows(dict):
     """CSV rows for one or more selected families, with index-wide axis evidence."""
-    def __init__(self, axis_values, owners=None, duplicate_ids=None, parent_aliases=None):
+    def __init__(self, index):
         super().__init__()
-        self.axis_values = axis_values
-        self.owners = owners or {}
-        self.duplicate_ids = duplicate_ids or {}
-        self.parent_aliases = parent_aliases or {}
+        self.axis_values = index.axis_values
+        self.owners = index._owners
+        self.duplicate_ids = index._duplicate_ids
+        self.parent_aliases = index._parent_aliases
+        self.parent_barcodes = index.parent_barcodes
+        self.known_brands = index.known_brands
 
 
 class Catalog:
@@ -150,6 +168,7 @@ class Catalog:
         self._axis_rows = []
         self.axis_values = defaultdict(set)
         self.category_paths = set()
+        self.known_brands = defaultdict(set)
         parents = {}
         duplicates = defaultdict(list)
         raw_parents = set()
@@ -185,6 +204,8 @@ class Catalog:
             for column,val in row:
                 if column == 'Hlavna kategória' or column.startswith('Ďalšia kategória'):
                     self.category_paths.add(val)
+                elif column=='Výrobca' and val.strip():
+                    self.known_brands[val.strip().casefold()].add(val.strip())
             self._rows[code] = row
             parents[code] = parent if parent not in ('', '0', code) else ''
             if native:
@@ -248,6 +269,38 @@ class Catalog:
                 self._invalid.add(parent)
         self.roots = tuple(k for k in self._rows if not parents[k])
         self._owners = {c: r for r, children in self._children.items() for c in children}
+        self._gtin_owners = defaultdict(set)
+        self._sku_owners = defaultdict(set)
+        for code,row in self._rows.items():
+            self._sku_owners[code.casefold()].add(code)
+            records = duplicates[code] if code in self._invalid and code in duplicates else [row]
+            for record in records:
+                for key in barcode_keys([named(record,'EAN kód')]):
+                    self._gtin_owners[key].add(code)
+        self.parent_barcodes = self._index_parent_barcodes()
+
+    def sku_owners(self, value):
+        """Exact source codes sharing a case-folded SKU, including hidden and non-selling roots."""
+        return tuple(sorted(self._sku_owners.get(_code(value).casefold(),())))
+
+    def gtin_owners(self, value):
+        """Every native CSV code carrying the same valid GTIN; no UPC/EAN reformatting for publication."""
+        return tuple(sorted({code for key in barcode_keys([value]) for code in self._gtin_owners.get(key,())}))
+
+    def _index_parent_barcodes(self):
+        # A family-level identifier must never be copied to a physical card.
+        # Check only original parent GTINs against every source identity, even
+        # hidden items and equivalent zero-padded barcode representations.
+        result = {}
+        for root in self._children:
+            ean = _code(named(self._rows[root],'EAN kód'))
+            if not ean:
+                continue
+            result[root] = dict(raw=ean,status='non_gtin',owners=[])
+            if ean in verified_barcodes([ean]):
+                other=sorted(set(self.gtin_owners(ean))-{root})
+                result[root].update(owners=other,status='shared_identifier' if other else 'unique_parent')
+        return result
 
     def canonical(self, ref):
         key = _code(ref)
@@ -275,7 +328,7 @@ class Catalog:
         gen.require(key not in self._owners,'new_source_parent_is_sellable_child')
         gen.require(key not in self._invalid and key not in self._unwitnessed, 'new_parent_identity_ambiguous')
         codes = self.leaves(key)
-        rows = FamilyRows(self.axis_values, self._owners, self._duplicate_ids, self._parent_aliases)
+        rows = FamilyRows(self)
         rows[key] = self._rows[key]
         rows.update((code,self._rows[code]) for code in codes)
         parser = etree.XMLParser(no_network=True, resolve_entities=False)
@@ -365,7 +418,7 @@ def read_catalog(archive, admin, source_sha, admin_sha):
 
 def read_sources(archive, admin, selection):
     index = read_catalog(archive, admin, selection.source_sha, selection.admin_sha)
-    rows, xml = FamilyRows(index.axis_values, index._owners, index._duplicate_ids, index._parent_aliases), {}
+    rows, xml = FamilyRows(index), {}
     for family in selection.families:
         grouped, nodes = index.family(family.parent)
         rows.update(grouped)
@@ -404,12 +457,27 @@ def pricing(row, pricelist, active=True):
 
 
 def image_list(urls, captions=None):
-    urls = list(dict.fromkeys(checked_image(u) for u in urls if u))
+    def path(url):
+        # Buyers and admin can refer to the same stored image by //variants/
+        # and /variants/. The original URL chosen for publication stays exact.
+        return re.sub('/+', '/', urlsplit(checked_image(url)).path)
+    labels = {}
+    for url,title in (captions or {}).items():
+        if title:
+            key = path(url)
+            gen.require(labels.get(key,title)==title,'new_source_image_caption_conflict')
+            labels[key]=title
+    seen=set()
     result = []
-    for i, url in enumerate(urls):
+    for url in (u for u in urls if u):
+        key=path(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        i = len(result)
         image = dict(url=url, main_yn=i == 0, list_yn=i == 0, position=i+1)
-        if captions and captions.get(url):
-            image['titles'] = [{'language':'sk','title':captions[url]}]
+        if key in labels:
+            image['titles'] = [{'language':'sk','title':labels[key]}]
         result.append(image)
     return result
 
@@ -524,7 +592,7 @@ def _original(nodes, tag, column):
     return safe_html(plain),'admin_csv_revised_text'
 
 
-def _distinct_axes(axes, rows, origins):
+def _distinct_axes(axes, rows, origins, held=None):
     groups = defaultdict(list)
     for code, values in axes.items():
         groups[gen.key(values)].append(code)
@@ -535,16 +603,25 @@ def _distinct_axes(axes, rows, origins):
         # dimensions. Their literal, distinct catalog identities stay visible
         # in the private plan and distinguish the native option. An active
         # duplicate combination needs proof of physical identity first.
-        gen.require(all(source.flag(named(rows[c],'Viditeľný')) is False and 'Kód variantu' not in axes[c]
-                        for c in codes), 'new_axis_collision')
+        inactive = all(source.flag(named(rows[c],'Viditeľný')) is False for c in codes)
+        if not inactive:
+            gen.require(held is not None,'new_axis_collision')
+            for code in codes:
+                held[code] = dict(reason='new_axis_collision',source_ean=named(rows[code],'EAN kód').strip(),
+                                  source_internal_id=named(rows[code],'Interné číslo').strip(),
+                                  source_active=source.flag(named(rows[code],'Viditeľný')),
+                                  source_axes=axes[code],conflicting_skus=sorted(codes))
+            continue
+        gen.require(all('Kód variantu' not in axes[c] for c in codes), 'new_axis_collision')
         for code in codes:
             axes[code] = {**axes[code],'Kód variantu':code}
             origins[code] = 'hidden_duplicate_axes_with_source_sku'
-    gen.require(len({gen.key(v) for v in axes.values()})==len(axes),'new_axis_collision')
+    available = [v for c,v in axes.items() if c not in (held or {})]
+    gen.require(len({gen.key(v) for v in available})==len(available),'new_axis_collision')
     return axes,origins
 
 
-def _axes(family, rows, xml_rows, vocabulary):
+def _axes(family, rows, xml_rows, vocabulary, held=None):
     """Keep known original axes; supply an exact source label for CSV-only variants."""
     resolved = {}
     suffixes = {}
@@ -564,7 +641,7 @@ def _axes(family, rows, xml_rows, vocabulary):
             gen.require(len(axes) == len(raw) and all(axes.values()), 'new_axis_names_required')
             resolved[code] = axes
     if len(resolved) == len(suffixes):
-        return _distinct_axes(resolved,rows,{})
+        return _distinct_axes(resolved,rows,{},held)
     # The source often renders dimensions in a different order from the
     # numeric XML tags (e.g. size before colour). Derive that order from all
     # exported siblings. Decode hidden names only when exactly one complete
@@ -614,7 +691,7 @@ def _axes(family, rows, xml_rows, vocabulary):
                 resolved[code]=next(iter(candidates.values()))
     missing = set(suffixes) - set(resolved)
     if not missing:
-        return _distinct_axes(resolved,rows,{})
+        return _distinct_axes(resolved,rows,{},held)
     # Upgates permits a family to contain different sets of variant
     # parameters. Preserve every known named dimension. For leaves with no
     # proven numeric source dimension retain the original CSV variant label.
@@ -631,7 +708,7 @@ def _axes(family, rows, xml_rows, vocabulary):
         resolved[code] = axes
         used.add(gen.key(axes))
         origins[code] = 'admin_csv_variant_name' if suffix else 'admin_csv_variant_code'
-    return _distinct_axes(resolved,rows,origins)
+    return _distinct_axes(resolved,rows,origins,held)
 
 
 def _display_properties(parent, rows, nodes, supplied_names):
@@ -686,6 +763,33 @@ def _params(attrs):
                          (values if isinstance(values,list) else [values])]) for k,values in attrs.items()]
 
 
+class NoPublishableLeaves(ReviewError):
+    def __init__(self, deferred):
+        super().__init__('new_family_has_no_verified_leaf')
+        self.deferred_leaves = deferred
+
+
+def verified_leaf_barcode(code, ean, root, corrections, *, zero_sentinel=False):
+    """Return (GTIN, supplier proof, source placeholder), or reject the exact unresolved leaf."""
+    proof = corrections.get(code)
+    if proof:
+        revised=proof.get('ean')
+        url=urlsplit(proof.get('manufacturer_or_supplier') or '')
+        gen.require(ean not in verified_barcodes([ean]) and proof.get('before')==ean and proof.get('parent')==root and
+                    (bool(ean) or type(proof.get('required_card_id')) is int and proof['required_card_id']>0) and
+                    isinstance(revised,str) and revised in verified_barcodes([revised]) and
+                    url.scheme=='https' and url.hostname and not url.username and not url.password and
+                    len(str(proof.get('evidence') or ''))>=20, 'new_leaf_ean_unverified')
+        return revised,dict(proof),None
+    if not ean or ean in verified_barcodes([ean]):
+        return ean,None,None
+    if zero_sentinel and ean=='0':
+        return '',None,ean
+    if ean==code and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*',ean) and re.search(r'[A-Za-z]',ean):
+        return '',None,ean
+    raise ReviewError('new_leaf_ean_unverified')
+
+
 def build(family, details, csv_source, xml_rows, options, native_codes):
     root = family.parent
     gen.require(root in csv_source and details, 'new_parent_source_missing')
@@ -698,7 +802,10 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     codes = set(children) or {root}
     gen.require(set(details) == codes and set(xml_rows) <= codes, 'new_source_family_changed')
     rows = {root:row, **children}
-    axes, axis_origins = _axes(family, rows, xml_rows, getattr(csv_source,'axis_values',{})) if children else ({}, {})
+    deferred = {}
+    partial = options.get('partial_barcodes') is True
+    axes, axis_origins = _axes(family, rows, xml_rows, getattr(csv_source,'axis_values',{}),
+                               deferred if partial else None) if children else ({}, {})
     visible = source.flag(v('Viditeľný'))
     gen.require(isinstance(visible,bool), 'generation_visibility_changed')
     nodes = list(xml_rows.values())
@@ -713,9 +820,23 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         gen.require(not visible, 'new_parent_source_missing')
         desc['title'] = root
         fallback_title = True
-    brand = v('Výrobca').strip() or family.brand
-    gen.require(not brand or v('Výrobca').strip() or desc['title'].split('|')[0].strip().casefold() == brand.casefold(),
-                'new_brand_unconfirmed')
+    brand = v('Výrobca').strip()
+    prefix = desc['title'].partition('|')[0].strip() if '|' in desc['title'] else ''
+    brand_source = 'admin_csv' if brand else 'absent'
+    if not brand:
+        witnessed = {_code(n.findtext('MANUFACTURER')) for n in nodes} | {named(r,'Výrobca').strip() for r in children.values()}
+        witnessed.discard('')
+        approved = getattr(family,'brand','')
+        if approved:
+            gen.require(approved.casefold()==prefix.casefold() or approved.casefold() in {b.casefold() for b in witnessed},
+                        'new_brand_unconfirmed')
+            brand, brand_source = approved,'verified_source_name'
+        elif len(witnessed)==1:
+            brand, brand_source = witnessed.pop(),'source_family'
+        elif prefix:
+            known = getattr(csv_source,'known_brands',{}).get(prefix.casefold(),set())
+            if len(known)==1:
+                brand,brand_source = next(iter(known)),'source_title_and_brand_registry'
     paths = list(dict.fromkeys([v('Hlavna kategória')]+[value for key,value in row if key.startswith('Ďalšia kategória') and value]))
     main = paths[0]
     registry = options['categories']
@@ -747,9 +868,13 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         # Non-selling placeholder parents in Atomer sometimes carry a zero
         # rate; Upgates stores the shared saleable rate at parent level.
         vat = rates.pop()
+    weights = {}
     product = dict(code=root,active_yn=visible,descriptions=[desc],categories=categories,
                    prices=pricing(row,options['pricelist'],active=visible and not children),vats={'sk':float(vat)},
-                   weight=grams(v('Váha')),images=image_list(source_images,captions))
+                   weight=shipping_weight(root,row,v('Váha'),weights),images=image_list(source_images,captions))
+    parent_barcode = getattr(csv_source,'parent_barcodes',{}).get(root)
+    if parent_barcode and parent_barcode['status']=='unique_parent':
+        product['ean']=parent_barcode['raw']
     if brand:
         product['manufacturer'] = brand
     attrs = _display_properties(row,rows,xml_rows,options.get('property_names',{}))
@@ -761,8 +886,16 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         gen.require(parent_label.casefold() in options['availability'], 'new_availability_unknown')
         product['availability_id'] = options['availability'][parent_label.casefold()]
         readable[root] = parent_label
-    if v('Súbory na stiahnutie') or decimal_value(v('Body navyše')) or decimal_value(v('Min. obj. množstvo')) not in (0,1):
+    if v('Súbory na stiahnutie') or decimal_value(v('Min. obj. množstvo')) not in (0,1):
         gen.require(False, 'new_additional_source_fields')
+    bonus = {code:named(r,'Body navyše') for code,r in rows.items() if decimal_value(named(r,'Body navyše'))}
+    unspecified_weights = []
+    for code,r in rows.items():
+        if named(r,'Váha'):
+            continue
+        node = xml_rows.get(code)
+        if node is None or not _code(node.findtext('WEIGHT')):
+            unspecified_weights.append(code)
     related = {c.strip() for c in v('Súvisiace tovary').split(',') if c.strip()}
     if not children and nodes:
         related.update(t.text.strip() for t in nodes[0].findall('RELATED_PRODUCTS/PRODUCT_ID') if t.text and t.text.strip())
@@ -773,9 +906,6 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
     expected_flags[root], labels = mapped_flags(row,options.get('labels',{}))
     if labels:
         product['labels'] = labels
-    default_child = None
-    if children:
-        default_child = next((code for code,r in children.items() if source.flag(named(r,'Viditeľný')) is True),next(iter(children)))
     for code, child in (children or {root:row}).items():
         cv = fields(child)
         d = details[code]
@@ -786,30 +916,27 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         gen.require(isinstance(active,bool) and ean == _code(d.get('ean')) and st['product'] is visible and
                     (not children or st['variant'] is active and st['variant_origin']=='admin_csv')
                     and st['product_origin']=='admin_csv', 'new_leaf_identity_changed')
-        published_ean=ean
-        proof=(options.get('barcode_corrections') or {}).get(code)
-        if proof or ean and ean not in verified_barcodes([ean]):
+        if code in deferred:
+            continue
+        try:
+            zero=(not children and code==root and cv('Kat. číslo').strip()==code and cv('Interné číslo').strip() and
+                  (options.get('zero_barcode_sentinels') or {}).get(code)==cv('Interné číslo').strip())
+            published_ean,proof,placeholder=verified_leaf_barcode(code,ean,root,options.get('barcode_corrections') or {},
+                                                                  zero_sentinel=bool(zero))
             if proof:
-                revised=proof.get('ean')
-                url=urlsplit(proof.get('manufacturer_or_supplier') or '')
-                gen.require(ean not in verified_barcodes([ean]) and proof.get('before')==ean and proof.get('parent')==root and
-                            (bool(ean) or type(proof.get('required_card_id')) is int and proof['required_card_id']>0) and
-                            isinstance(revised,str) and revised in verified_barcodes([revised]) and
-                            url.scheme=='https' and url.hostname and not url.username and not url.password and
-                            len(str(proof.get('evidence') or ''))>=20, 'new_leaf_ean_unverified')
-                published_ean=revised
-                corrected_barcodes[code]=dict(proof)
-            elif ean==code and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*',ean) and re.search(r'[A-Za-z]',ean):
-                # An alphanumeric SKU repeated in the source barcode field is
-                # an alternate spelling of the same inventory code, never a
-                # GTIN. Keep the unedited cell in the private receipt.
-                placeholders[code]=ean
-                published_ean=''
-            else:
-                gen.require(False,'new_leaf_ean_unverified')
+                corrected_barcodes[code]=proof
+            if placeholder:
+                placeholders[code]=placeholder
+        except ReviewError as exc:
+            if not partial or exc.code!='new_leaf_ean_unverified':
+                raise
+            deferred[code]=dict(reason=exc.code,source_ean=ean,source_active=active,
+                                source_internal_id=cv('Interné číslo'))
+            continue
         # A missing GTIN is distinct from a malformed nonempty one. Keep an
         # empty source barcode absent, leaving exact scoped SKU identity intact.
-        leaf = dict(code=code,active_yn=active,weight=grams(cv('Váha')),
+        weight = cv('Váha') or (_code(n.findtext('WEIGHT')) if n is not None else '')
+        leaf = dict(code=code,active_yn=active,weight=shipping_weight(code,child,weight,weights),
                     prices=pricing(child,options['pricelist'],active=active and visible))
         if published_ean:
             leaf['ean'] = published_ean
@@ -837,33 +964,39 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         if labels:
             leaf['labels'] = labels
         if children:
-            leaf.update(parameters=gen.parameters(axes[code]),main_yn=code==default_child)
+            leaf.update(parameters=gen.parameters(axes[code]),main_yn=False)
             gallery = [u.strip() for u in cv('Obrázky').split('|') if u.strip()]
             child_captions = {u:cv('Popisy k obrázkom '+str(i+1)) for i,u in enumerate(gallery)}
             if n is not None:
                 gallery = gen.image_paths(n) + gallery
-            # The legacy writer uses //variants/ in XML and /variants/ in CSV.
-            # Deduplicate by normalized resource path without changing source URLs.
-            seen = set()
-            unique = []
-            for url in gallery:
-                key = re.sub('/+', '/',urlsplit(checked_image(url)).path)
-                if key not in seen:
-                    unique.append(url)
-                    seen.add(key)
-            if unique:
-                leaf['image'] = {'url':unique[0]}
-                leaf['images'] = image_list(unique,child_captions)
+            images = image_list(gallery,child_captions)
+            if images:
+                leaf['image'] = {'url':images[0]['url']}
+                leaf['images'] = images
             product.setdefault('variants',[]).append(leaf)
         else:
             product.update(leaf)
+    if set(deferred)==codes:
+        # A zero-variant payload would make a non-selling parent appear as a
+        # new sellable. Return per-SKU evidence without producing any payload.
+        raise NoPublishableLeaves(deferred)
+    published=product.get('variants',[])
+    if published:
+        next((r for r in published if r['active_yn']),published[0])['main_yn']=True
     return dict(payload=product,availability=readable,flags=expected_flags,related=sorted(related),
                 missing_related=absent_related,seo_keywords=v('SEO kľúčové slová'),
                 variant_axis_origins=axis_origins,missing_categories=absent_categories,
                 admin_price_changes=price_differences,title_from_code=fallback_title,barcode_corrections=corrected_barcodes,
                 source_barcode_placeholders=placeholders,
                 description_sources=description_sources,
-                variant_main_origin='first_visible_in_source_order' if default_child else None,
+                manufacturer_origin=brand_source,source_manufacturer_hint=prefix if not brand else '',
+                unspecified_weights=sorted(unspecified_weights),source_parent_barcode=parent_barcode,
+                shipping_weight_rounding=weights,
+                source_bonus_points=bonus,missing_source_features=[
+                    f'{code} · V Atomeri má položka {points} bonusových bodov navyše. xTrek nemá zodpovedajúce produktové pole.'
+                    for code,points in bonus.items()],
+                variant_main_origin='first_visible_in_source_order' if published else None,
+                source_family_codes=sorted(codes),deferred_leaves=deferred,
                 source_duplicate_ids={code:list(ids) for code,ids in getattr(csv_source,'duplicate_ids',{}).items() if code in codes},
                 source_parent_code_alias=next((dict(source_sku=raw,source_internal_id=alias,published_code=root)
                                               for raw,alias in getattr(csv_source,'parent_aliases',{}).items() if alias==root),None),

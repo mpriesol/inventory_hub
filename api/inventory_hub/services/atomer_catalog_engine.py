@@ -47,6 +47,8 @@ class Selection(BaseModel):
     # optionally supplied when source numeric axis IDs cannot be named otherwise.
     named_axes: dict[Token,dict[Token,Token]] = Field(default_factory=dict,max_length=40000)
     barcode_corrections: dict[Token,dict] = Field(default_factory=dict,max_length=4000)
+    zero_barcode_sentinels: dict[Token,Token] = Field(default_factory=dict,max_length=100)
+    partial_barcodes: bool = False
     requeue: dict[Token,Digest] = Field(default_factory=dict,max_length=300)
 
     @model_validator(mode='after')
@@ -115,8 +117,16 @@ async def process(db,selection,mode,actor):
         raise ReviewError('target_connection_changed')
     merged=dict(current['selection']) if current else {}
     fresh=selection.model_dump(exclude={'requeue'})
+    if 'partial_barcodes' not in selection.model_fields_set:
+        fresh['partial_barcodes']=merged.get('partial_barcodes',False)
     for key in ('categories','category_aliases','property_names','axis_names','brands','availability','labels','named_axes','barcode_corrections','working'):
         fresh[key]={**merged.get(key,{}),**fresh[key]}
+    original=merged.get('zero_barcode_sentinels',{})
+    if any(k in original and original[k]!=v for k,v in fresh['zero_barcode_sentinels'].items()):
+        raise ReviewError('catalog_source_sentinel_changed')
+    fresh['zero_barcode_sentinels']={**original,**fresh['zero_barcode_sentinels']}
+    if len(fresh['zero_barcode_sentinels'])>100:
+        raise ReviewError('catalog_source_sentinel_selection_too_large')
     fresh['contextual_roots']=sorted(set(merged.get('contextual_roots',[])+fresh['contextual_roots']))
     old_restore=merged.get('category_restore')
     if old_restore:
@@ -193,6 +203,7 @@ async def process(db,selection,mode,actor):
 
 
 async def status(db):
+    from inventory_hub.services import atomer_catalog_source_cards as local
     campaign=await _one(db,'SELECT * FROM atomer_catalog_campaigns ORDER BY updated_at DESC LIMIT 1')
     if not campaign:
         return dict(campaign_id=None,state='idle',counts={},family_states={},recent=[],blocked=[])
@@ -213,6 +224,7 @@ async def status(db):
           count(*) FILTER(WHERE evidence->>'verification_scope'='identity_card_and_mapped_content' AND p.state='verified') AS content_verified"""
           +proof_from,c=cid,run=campaign['checked_run_id'])
     counts.update(dict(scopes))
+    counts.update(await local.counts(db,campaign))
     counts['pending']=counts['total']-sum(counts[x] for x in ('verified','partial','blocked','excluded'))
     fields='family_key,stage,problem AS reason,leaf_count AS leaves,updated_at'
     recent=await _rows(db,f"SELECT {fields} FROM atomer_catalog_jobs WHERE campaign=:c AND stage<>'pending' ORDER BY updated_at DESC,family_key LIMIT 16",c=cid)
@@ -220,6 +232,7 @@ async def status(db):
     return dict(campaign_id=cid,state=campaign['state'],run_id=campaign['run_id'],checked_run_id=campaign['checked_run_id'],
                 updated_at=campaign['updated_at'],next_retry_at=campaign['next_at'] if campaign['state']=='waiting' else None,
                 last_problem=campaign['problem'],counts=counts,family_states={r['stage']:r['n'] for r in grouped},
+                registry_gaps=(campaign['options'] or {}).get('registry_gaps',{}),
                 recent=[dict(r) for r in recent],blocked=[dict(r) for r in blocked])
 
 
@@ -235,8 +248,10 @@ async def details(db,family_key):
     if j and h and j['stage'] in ('partial','blocked'):
         current,group=await _family(db,h['id'],family_key)
         token=recheck.revision(j,h['id'],current,group)
+    local=await _rows(db,"""SELECT code,state,card_id,created,evidence,checked_at FROM atomer_catalog_source_cards
+                WHERE campaign=:c AND family_key=:f ORDER BY code""",c=c['id'],f=family_key)
     return dict(family_key=family_key,run_id=h['id'] if h else None,stage=j['stage'] if j else None,
-                recheck_revision=token,items=[dict(r) for r in rows])
+                recheck_revision=token,items=[dict(r) for r in rows],source_cards=[dict(r) for r in local])
 
 
 async def _job(db,c,f,stage,*,problem='',guards=None,document=None,receipt=None,delay=0,increment=False):
@@ -282,7 +297,8 @@ def _blocked_work(row,kind,key,allow):
         return 'Úlohu spracúva iný pracovník.'
     if state=='blocked':
         return row.get('result') or 'Existujúca blokovaná úloha vyžaduje vyriešenie.'
-    if state=='open' and (row.get('revision') or 0)>0 and row.get('command')!='save':
+    active_save=row.get('command')=='save' or kind=='item' and row.get('command') in ('barcode_owner_verified','brand_identity_verified')
+    if state=='open' and (row.get('revision') or 0)>0 and not active_save:
         return 'Otvorená úloha bola ručne odvolaná alebo upravená.'
     if state=='queued':
         instruction=row.get('instruction') or ''
@@ -499,12 +515,17 @@ def _make_document(index,f,rows,g,options,selection,roots):
     csv_refs={ref:index.parent_for(ref) for ref in [x.strip() for x in src.named(csv[key],'Súvisiace tovary').split(',') if x.strip()]}
     refs={ref:roots[parent] for ref,parent in csv_refs.items() if parent in roots}
     cfg={**options,'reference_codes':{**roots,**refs},'property_names':selection.get('property_names',{}),'barcode_corrections':selection.get('barcode_corrections',{}),'named_axes':selection.get('named_axes',{})}
+    cfg['partial_barcodes']=selection.get('partial_barcodes',False)
+    cfg['zero_barcode_sentinels']=selection.get('zero_barcode_sentinels',{})
     doc=src.build(family,{k:r['detail'] for k,r in rows.items()},csv,xml,cfg,set(roots.values()))
     wanted={k for k in _selected(g) if g['scope'][k]!='biketrek'}
+    doc['deferred_leaves']={k:v for k,v in (doc.get('deferred_leaves') or {}).items() if k in wanted}
     product=doc['payload']
     if product.get('variants'):
         product['variants']=[v for v in product['variants'] if v['code'] in wanted]
         if not product['variants']:
+            if doc['deferred_leaves']:
+                raise src.NoPublishableLeaves(doc['deferred_leaves'])
             raise ReviewError('catalog_scope_empty')
         if not any(v.get('main_yn') for v in product['variants']):
             product['variants'][0]['main_yn']=True
@@ -547,7 +568,8 @@ async def _prepare(db,c,jobs):
             doc=await asyncio.to_thread(_make_document,index,f,rows,guards,options,c['selection'],roots)
         except (ReviewError, ValueError, ArithmeticError) as err:
             code=getattr(err,'code','new_source_value_invalid')
-            await _finish(db,c,j,{k:('blocked',dict(reason=str(code),ean=rows[k]['detail']['ean'])) for k in keys})
+            held=getattr(err,'deferred_leaves',{})
+            await _finish(db,c,j,{k:('blocked',dict(ean=rows[k]['detail']['ean'],**(held.get(k) or {'reason':str(code)}))) for k in keys})
             continue
         if has_target:
             pids={rows[k]['detail']['product_id'] for k in has_target}
@@ -556,7 +578,7 @@ async def _prepare(db,c,jobs):
                 continue
             doc['extension']=dict(product_id=int(next(iter(pids))),existing={
                 k:dict(product_id=int(rows[k]['detail']['product_id']),variant_id=rows[k]['detail']['variant_id'])
-                for k in has_target})
+                for k in has_target if k not in doc.get('deferred_leaves',{})})
         elif len(doc['payload'].get('variants',[]))>MAX_LEAVES:
             # Preserve the real main variant in the initial tranche. The complete,
             # immutable planned family is reconstructed from the remaining leaves.
@@ -607,6 +629,10 @@ async def _updated_barcodes(db,c,jobs):
         doc=j['document']
         corrected=doc.get('barcode_corrections') or {}
         present=set((doc.get('extension') or {}).get('existing') or {})
+        parent=doc.get('source_parent_barcode') or {}
+        if parent.get('status')=='unique_parent' and not doc.get('extension') and parent.get('raw')==doc['payload'].get('ean'):
+            for key in barcode_keys([parent['raw']]):
+                wanted.setdefault(key,set()).add(j['family_key'])
         for code,proof in corrected.items():
             if code not in present:
                 for key in barcode_keys([proof['ean']]):
@@ -754,6 +780,38 @@ def _expected(j):
     return dict(product_id=int(pid),variant_ids=r.get('variants') or ack.get('variant_ids') or {}) if pid else None
 
 
+async def expand_rechecked(db,c,j,seen):
+    """A fresh source proof may now permit siblings excluded from a confirmed earlier tranche."""
+    if not seen.get('identity_verified') or not seen.get('product_id'):
+        return False
+    old=j['document'];previous=old.get('deferred_leaves') or j['receipt'].get('catalog_deferred') or {}
+    if not previous:
+        return False
+    rows,_=await _family(db,c['checked_run_id'],j['family_key'])
+    index=await _source(db,c);options=await _options(db,c,index);roots=await _root_index(db,c)
+    updated=await asyncio.to_thread(_make_document,index,j['family_key'],rows,j['guards'],options,c['selection'],roots)
+    desired={v['code'] for v in updated['payload'].get('variants',[])}
+    was=set(previous)
+    if not desired & was:
+        return False
+    live=seen.get('native') or {}
+    if live.get('product_id')!=seen['product_id'] or live.get('code')!=updated['payload']['code']:
+        raise ReviewError('catalog_bound_parent_changed')
+    variants={r.get('code'):r.get('variant_id') for r in live.get('variants') or []}
+    anchors={k:dict(product_id=seen['product_id'],variant_id=variants[k]) for k in desired & set(variants)}
+    if not anchors or not desired-set(anchors):
+        return False
+    if not desired-set(anchors)<=was:
+        raise ReviewError('catalog_bound_leaf_changed')
+    updated['extension']=dict(product_id=seen['product_id'],existing=anchors)
+    before={k:v for k,v in seen.items() if k not in ('native','payload','before')}
+    rec={**j['receipt'],'rebuild_after_observation':False,'reexpand':False,'last_native_read':before,
+         'catalog_deferred':updated['deferred_leaves']}
+    rec.pop('content_intent',None)
+    await _job(db,c['id'],j['family_key'],'prepared',document=updated,receipt=rec)
+    return True
+
+
 async def _observe(db,c,jobs):
     from inventory_hub.services import atomer_new_native as native
     jobs=await _checked(db,c,jobs)
@@ -774,7 +832,8 @@ async def _observe(db,c,jobs):
         reason='; '.join(str(x) for x in obs.get('issues',[]) + (j['receipt'].get('ack') or {}).get('issues',[]))
         if receipt.get('rebuild_after_observation'):
             active={k for k in _selected(j['guards']) if _scope_of(j['guards'],k)!='biketrek'}
-            if active!=recheck.prior_codes(doc):
+            known=recheck.prior_codes(doc)|set(doc.get('deferred_leaves') or {})|set(j['receipt'].get('catalog_deferred') or {})
+            if active!=known:
                 # The previous commitment is now observed. A scope revision may
                 # prohibit parent/leaf writes previously authorized by that intent.
                 why='Zmenil sa rozsah variantov od pôvodného odoslania. Stav xTrek bol načítaný, ďalší zápis je zastavený.'
@@ -784,7 +843,11 @@ async def _observe(db,c,jobs):
                             for k in _selected(j['guards'])})
                 continue
             if obs['identity_verified']:
+                if await expand_rechecked(db,c,j,obs):
+                    continue
                 receipt.update(content_requested=True,rebuild_after_observation=False)
+        if doc.get('deferred_leaves'):
+            receipt['catalog_deferred']=doc['deferred_leaves']
         if obs['identity_verified'] and (doc.get('remaining_create_variants') or obs.get('remaining_variants')):
             # Each completed tranche supplies its actual PID/VID anchors for the
             # next add-only request. Keep the same product and every old variant.
@@ -815,17 +878,19 @@ def _scope_of(guards,code):
 
 async def _cards(db,c,jobs):
     from inventory_hub.services import atomer_card_batch as cards
+    from inventory_hub.services import atomer_catalog_source_cards as local
     jobs=await _checked(db,c,jobs)
     codes=[]; native_ids={}; scopes={}; families={}
     for j in jobs:
         rows,g=await _family(db,c['checked_run_id'],j['family_key'])
         keys=_selected(j['guards'])
         eligible=[]
+        held=(j.get('document') or {}).get('deferred_leaves') or {}
         for k in keys:
             # A successfully closed earlier verification is not an authority to
             # re-open its review. Read its concrete receipt from the pinned run.
             r=rows[k]
-            if r['status']=='done':
+            if r['status']=='done' or k in held:
                 continue
             eligible.append(k);scopes[k]=_scope_of(j['guards'],k)
             if j['receipt'].get('product_id') and scopes[k]!='biketrek':
@@ -833,16 +898,28 @@ async def _cards(db,c,jobs):
         codes.extend(eligible); families[j['family_key']]=(keys,rows)
     result={}
     corrections=c['selection'].get('barcode_corrections') or {}
+    sentinels=c['selection'].get('zero_barcode_sentinels') or {}
+    exact=local.verified_sentinels(await _source(db,c),set(codes),sentinels) if sentinels.keys() & set(codes) else {}
     for pos in range(0,len(codes),cards.MAX_BATCH):
         chunk=codes[pos:pos+cards.MAX_BATCH]
         result.update(await cards.reconcile(db,c['checked_run_id'],chunk,apply=True,actor=c['actor'],
                       native_ids={k:native_ids[k] for k in chunk if k in native_ids},include_managed=True,
-                      scopes={k:scopes[k] for k in chunk},**({'barcode_corrections':{k:corrections[k] for k in chunk if k in corrections}} if corrections else {})))
+                      scopes={k:scopes[k] for k in chunk},**({'barcode_corrections':{k:corrections[k] for k in chunk if k in corrections}} if corrections else {}),
+                      **({'zero_barcode_sentinels':{k:exact[k] for k in chunk if k in exact}} if exact else {})))
     for j in jobs:
         f=j['family_key']; keys,rows=families[f]; stored=j['receipt']; doc=j['document']
         proofs={}
         for k in keys:
             r=rows[k]; detail=r['detail']
+            held=(doc or {}).get('deferred_leaves') or {}
+            if k in held:
+                local=await _one(db,"""SELECT card_id,evidence FROM atomer_catalog_source_cards WHERE campaign=:c AND code=:k
+                      AND family_key=:f AND state='card_ready'""",c=c['id'],k=k,f=f)
+                proof={'scope':_scope_of(j['guards'],k),'ean':detail.get('ean'),'status':'blocked',**held[k]}
+                if local:
+                    proof.update(card_id=local['card_id'],hub_sku=local['evidence'].get('hub_sku'))
+                proofs[k]=('blocked',proof)
+                continue
             if r['status']=='done':
                 # Explicitly preserve historical closures and show the snapshot IDs,
                 # including incomplete ones, without inventing a new verification.
@@ -965,6 +1042,7 @@ async def _related(db,c,jobs):
 
 async def _step(db,c):
     from inventory_hub.services import atomer_catalog_fidelity as fidelity
+    from inventory_hub.services import atomer_catalog_source_cards as local
     previous_run=c['checked_run_id']
     await _lock_current(db,c)
     if previous_run!=c['checked_run_id'] and c['selection']['scope']=='catalog':
@@ -979,11 +1057,12 @@ async def _step(db,c):
             return True
     # Finish committed/uncertain writes before starting new work. Deferred relations
     # yield to the missing parents they depend on.
-    candidates=await _rows(db,"""SELECT * FROM atomer_catalog_jobs WHERE campaign=:c
+    candidates=await _rows(db,f"""SELECT j.* FROM atomer_catalog_jobs j WHERE campaign=:c
         AND stage=ANY(CAST(:stages AS text[])) AND next_at<=now()
+        AND (stage<>'pending' OR source_card_stage<>'pending' OR source_card_attempts>0 OR NOT {local.ELIGIBLE})
         ORDER BY CASE stage WHEN 'sending' THEN 0 WHEN 'updating' THEN 0 WHEN 'observe' THEN 1 WHEN 'cards' THEN 2
                   WHEN 'prepared' THEN 3 WHEN 'pending' THEN 5 ELSE CASE WHEN priority=0 THEN 4 ELSE 6 END END,priority,family_key LIMIT 55""",
-        c=c['id'],stages=list(RUNNABLE))
+        c=c['id'],run=c['checked_run_id'],stages=list(RUNNABLE))
     batch=_ready_batch(candidates)
     if not batch:
         next_at=await db.scalar(text("""SELECT min(next_at) FROM atomer_catalog_jobs WHERE campaign=:c
@@ -1078,6 +1157,8 @@ async def _step(db,c):
 def _diagnostic(c,exc):
     import re
     code=getattr(exc,'code',None) or (str(exc) if re.fullmatch(r'[a-z0-9_]{3,100}',str(exc)) else type(exc).__name__)
+    if not isinstance(code,str) or not re.fullmatch(r'[A-Za-z0-9_]{1,100}',code):
+        code=type(exc).__name__
     original=getattr(exc,'orig',None)
     sqlstate=next((getattr(obj,'sqlstate',None) for obj in (original,getattr(original,'__cause__',None),exc)
                    if re.fullmatch(r'[0-9A-Z]{5}',str(getattr(obj,'sqlstate','') or ''))),None)

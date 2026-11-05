@@ -17,6 +17,22 @@ from inventory_hub.services.sku_policy import brand_key
 
 TEXT = ('title', 'short_description', 'long_description', 'seo_title', 'seo_description')
 PRICE_VALUES = ('price_original', 'price_with_vat', 'price_without_vat')
+REASONS = {
+    'existing_content_parent_identity': 'Nesedí natívne ID alebo SKU rodiča, prípadne je rodič archivovaný alebo je súpravou.',
+    'existing_content_product_type': 'Atomer a živý xTrek sa nezhodujú, či ide o samostatný produkt alebo rodinu variantov.',
+    'existing_content_leaf_anchors': 'Chýba jednoznačná väzba na natívne ID pre všetky vybrané varianty.',
+    'existing_content_parent_ean': 'EAN rodiča v Atomeri a xTreku označujú rozdielne výrobky.',
+    'existing_content_manufacturer': 'Výrobca v Atomeri nesedí so živým produktom xTrek.',
+    'existing_content_leaf_identity': 'Natívny variant sa zmenil alebo patrí inému rodičovi.',
+    'existing_content_leaf_ean': 'EAN zdrojového a natívneho variantu označujú rozdielne výrobky.',
+    'existing_content_axes_occupied': 'Výsledná kombinácia parametrov by patrila dvom rôznym natívnym variantom.',
+    'existing_content_axes_ambiguous': 'Existujúci variant nemá jednoznačnú hodnotu v každej upravovanej osi.',
+    'existing_content_parameter_ambiguous': 'Parameter má viac možných verzií názvu. Treba potvrdiť úpravu správneho parametra.',
+    'existing_content_gallery_ambiguous': 'Pôvodný obrázok zodpovedá viacerým súborom v galérii xTrek.',
+    'existing_content_siblings_changed': 'Zloženie rodiny sa po uložení zámeru zmenilo.',
+    'existing_content_protected_field_changed': 'Po zápise sa zmenil niektorý chránený údaj, sklad alebo identita variantu.',
+    'existing_content_incomplete_native_data': 'Upgates neposkytol úplné mapované údaje na jednoznačné overenie.',
+}
 
 
 def _require(condition, message):
@@ -187,7 +203,8 @@ def _field_patch(row, wanted, doc, variant, changed_parent_labels):
     patch = {}
     if row.get('active_yn') is not wanted['active_yn']:
         patch['active_yn'] = wanted['active_yn']
-    if native._numeric(row.get('weight')) != native._numeric(wanted.get('weight')):
+    if (wanted['code'] not in doc.get('unspecified_weights', ())
+            and native._numeric(row.get('weight')) != native._numeric(wanted.get('weight'))):
         patch['weight'] = wanted['weight']
     if 'availability_id' in wanted and (row.get('availability_id') != wanted['availability_id']
             or (row.get('availability') or '').casefold() != doc['availability'][wanted['code']].casefold()):
@@ -218,7 +235,10 @@ def _root_patch(live, root, doc):
         patch['manufacturer'] = root['manufacturer']
     if native._numeric((live.get('vats') or {}).get('sk')) != native._numeric(root['vats']['sk']):
         patch['vats'] = {'sk': root['vats']['sk']}
-    descriptions = _describe(live, root['descriptions'])
+    desired_text = root['descriptions']
+    if doc.get('title_from_code'):
+        desired_text = [{k: v for k, v in language.items() if k != 'title'} for language in desired_text]
+    descriptions = _describe(live, desired_text)
     if descriptions:
         patch['descriptions'] = descriptions
     categories = _categories(live['categories'], root['categories'])
@@ -260,7 +280,7 @@ def _protect_existing_price(row, patch, issues, *, tax_allowed):
 def _axis_safety(live, leaf_patches):
     if not any('parameters' in patch for patch in leaf_patches.values()):
         return
-    signatures, axes = set(), set()
+    signatures = set()
     for leaf in live['variants']:
         proposed = leaf_patches.get(leaf['code'], {}).get('parameters', leaf['parameters_new'])
         values = native._parameters(proposed)
@@ -268,12 +288,11 @@ def _axis_safety(live, leaf_patches):
         signature = native._signature(values)
         _require(signature not in signatures, 'existing_content_axes_occupied')
         signatures.add(signature)
-        axes.add(tuple(name for name, val in signature))
-    _require(len(axes) == 1, 'existing_content_axes_inconsistent')
 
 
 def _problem(reason, live=None):
-    return dict(status='conflict', issues=[reason], deferred=[], identity_verified=False,
+    return dict(status='conflict', issues=[REASONS.get(reason, reason)], reason_codes=[reason],
+                deferred=[], identity_verified=False,
                 verified_fields=False, product_id=(live or {}).get('product_id'), variants={}, native=plain(live))
 
 
@@ -297,7 +316,7 @@ def _assess(doc, live, anchors):
     try:
         _axis_safety(live, child_patches)
     except ReviewError as error:
-        issues.append(error.code)
+        issues.append(REASONS.get(error.code, error.code))
         for changes in child_patches.values():
             changes.pop('parameters', None)
     child_patches = {key: fields for key, fields in child_patches.items() if fields}
@@ -313,6 +332,9 @@ def _assess(doc, live, anchors):
         else:
             issues.append('Viac než 100 vzájomne závislých zmien kombinácií alebo predvoleného variantu.')
     issues.extend(doc.get('issues', []))
+    if doc.get('missing_source_features'):
+        deferred.append('missing_source_features')
+        issues.extend(doc['missing_source_features'])
     for field in ('missing_categories', 'missing_related'):
         missing = doc.get(field, [])
         if missing:
@@ -556,7 +578,7 @@ def _validate_patch(plan):
         _require(not root.keys() - {'code', 'variants'} and not any('main_yn' in v for v in root.get('variants', [])),
                  'existing_content_scope_changed')
     for leaf in root.get('variants', []):
-        _require(set(leaf) <= allowed | {'main_yn', 'image'} and leaf['code'] in targeted, 'existing_content_invalid_patch')
+        _require(set(leaf) <= allowed | {'image'} and leaf['code'] in targeted, 'existing_content_invalid_patch')
     # Also validate every nested key through the existing production import guard.
     from inventory_hub.services.catalog_import import _assert_payload
     _assert_payload({**root, 'active_yn': bool(root.get('active_yn'))}, expected_active=True)
@@ -571,7 +593,7 @@ def send_content(plans, fingerprint):
              'new_batch_limit')
     ids = {code: plan['anchors'] for code, plan in plans.items()}
     result, patches = {}, []
-    with native._connection(fingerprint) as client:
+    with native._before_write(fingerprint) as client:
         current = native._read(client, plans, ids)
         galleries = {p['product_id'] for p in plans.values() if _gallery_writes(p)}
         queue = _download_queue(client, galleries)

@@ -47,6 +47,11 @@
   "file": "New Atomer export (buyers.xml)",
   "useFile": "Save sources and refresh",
   "refresh": "Refresh shops and Hub data",
+  "targetModeLabel": "xTrek observation",
+  "targetLive": "Standard shop refresh",
+  "targetCertified": "Verify and save a complete xTrek snapshot",
+  "targetPinned": "Rebuild from the saved xTrek snapshot",
+  "observationTimes": "Last observation by system",
   "refreshing": "Checking the entire catalog…",
   "emptySource": "Upload buyers.xml for the first check. Later checks can reuse the saved export.",
   "search": "Search",
@@ -260,7 +265,8 @@
       "waiting": "Waiting for the next batch",
       "review": "Needs review",
       "done": "Completed",
-      "source_changed": "Source was updated"
+      "source_changed": "Source was updated",
+      "paused": "Paused"
     },
     "receipts": "Results by product",
     "product": "Product",
@@ -274,6 +280,16 @@
       "partial": "Partial",
       "blocked": "Needs review",
       "excluded": "Manual exception"
-    }
+    },
+    "problems": {
+      "quota": "The Upgates request allowance is exhausted. The Hub resumes after it resets.",
+      "registryChanged": "A category, availability or label changed in xTrek. The Hub must check its native ID again.",
+      "upstream": "The Hub is waiting for data from xTrek before it can verify the result.",
+      "sourceChanged": "The source export changed. The migration needs to reconcile the current report."
+    },
+    "hubCards": "Stock cards with a confirmed ID",
+    "cardsCreated": "Cards created",
+    "cardsReused": "Existing cards reused",
+    "nativeFamilies": "Products with a confirmed xTrek ID"
   }
 }

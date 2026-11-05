@@ -61,7 +61,10 @@ async def conclude(db,c,j,result):
     for k in engine._selected(j['guards']):
         record=receipt.get('cards',{}).get(k,{})
         old=record.get('evidence') or {}
-        if old.get('status')!='verified' or not old.get('card_id'):
+        held=(receipt.get('catalog_deferred') or {}).get(k)
+        if held:
+            proofs[k]=('partial' if old.get('card_id') else 'blocked',{**old,**held,'content_pending':True})
+        elif old.get('status')!='verified' or not old.get('card_id'):
             proofs[k]=(record.get('state','blocked'),old or dict(reason='Chýba overená identita skladovej karty.'))
         elif engine._scope_of(j['guards'],k)=='biketrek':
             proofs[k]=('verified',old)
@@ -100,9 +103,18 @@ async def prepare(db,c,jobs):
                 roots=await engine._root_index(db,c)
             guards={**j['guards'],'blocked':{**j['guards']['blocked'],**{k:'samostatná položka' for k in rows if k not in chosen}}}
             doc=await asyncio.to_thread(engine._make_document,index,j['family_key'],rows,guards,options,c['selection'],roots)
+            deferred=doc.get('deferred_leaves') or {}
+            if deferred:
+                chosen=chosen-set(deferred)
+                anchors={**anchors,'allow_parent_write':False,
+                         'variant_ids':{k:v for k,v in anchors['variant_ids'].items() if k in chosen},
+                         'variant_codes':{k:v for k,v in anchors['variant_codes'].items() if k in chosen}}
+                j['receipt']={**j['receipt'],'catalog_deferred':{**j['receipt'].get('catalog_deferred',{}),**deferred}}
         except (ReviewError,ValueError,ArithmeticError) as error:
             if getattr(error,'code',None) in ('catalog_source_changed','catalog_connection_changed','new_category_mapping_changed','new_registry_binding_changed'):
                 raise
+            if getattr(error,'deferred_leaves',{}):
+                j['receipt']={**j['receipt'],'catalog_deferred':error.deferred_leaves}
             await conclude(db,c,j,dict(issues=[getattr(error,'code','new_source_value_invalid')]))
             continue
         code=doc['payload']['code']
@@ -119,6 +131,10 @@ async def prepare(db,c,jobs):
     outbound={}
     for code,j in entries.items():
         plan=plans[code]
+        if j['receipt'].get('reexpand') and plan.get('identity_verified'):
+            if await engine.expand_rechecked(db,c,j,plan):
+                continue
+            j['receipt']={**j['receipt'],'reexpand':False}
         if plan.get('gallery_wait') and plan.get('status')=='partial' and j['attempts']<4:
             await engine._job(db,c['id'],j['family_key'],'fidelity',document=j['document'],
                        receipt={**j['receipt'],'content_result':safe_result(plan)},
@@ -182,6 +198,8 @@ async def observe(db,c,jobs):
         result=seen[code]
         if result.get('identity_verified') and (j['receipt'].get('rebuild_after_observation') or
                 result.get('tranche_verified') is True and result.get('remaining_content') is True):
+            if j['receipt'].get('rebuild_after_observation') and await engine.expand_rechecked(db,c,j,result):
+                continue
             receipt={**j['receipt'],'rebuild_after_observation':False,'content_result':safe_result(result)}
             receipt.pop('content_intent',None)
             await engine._job(db,c['id'],j['family_key'],'fidelity',receipt=receipt)

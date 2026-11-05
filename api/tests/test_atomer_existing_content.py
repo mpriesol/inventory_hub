@@ -112,7 +112,7 @@ class ExistingContentTests(unittest.TestCase):
         self.doc['payload']['variants'][0]['parameters'] = parameters({'Farba': 'Snow'})
         plan = self.prepare()
         self.assertEqual(plan['status'], 'partial')
-        self.assertIn('existing_content_axes_occupied', plan['issues'])
+        self.assertIn(content.REASONS['existing_content_axes_occupied'], plan['issues'])
         self.assertEqual(plan['payload'], {'code': 'BAG'})
 
     def test_scoped_flags_and_category_changes_preserve_native_extras(self):

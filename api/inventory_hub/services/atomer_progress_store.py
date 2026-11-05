@@ -45,13 +45,19 @@ def apply_availability_reviews(rows,remote,outstanding):
 
 
 async def refresh(db: AsyncSession, source, expected, only_if_stale=False, review_pins=None, buyers_archive=None,
-                  admin_archive=None, admin_complete=False):
+                  admin_archive=None, admin_complete=False, target_mode='live'):
     await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
     if not await db.scalar(text("SELECT pg_try_advisory_xact_lock(691433137)")):
         raise ProgressError("refresh_in_progress")
     last = await latest(db)
     if (last["id"] if last else 0) != expected:
         raise ProgressError("run_changed")
+    if target_mode not in ('live', 'certified_checkpoint', 'pinned_source'):
+        raise ProgressError('atomer_target_mode_invalid')
+    reindex = target_mode != 'live'
+    if reindex and (not last or not last['admin_export_sha256'] or source or review_pins or buyers_archive
+                    or admin_archive or admin_complete or only_if_stale):
+        raise ProgressError('atomer_reindex_requires_unchanged_pinned_sources')
     if admin_complete and not admin_archive:
         raise source_state.ReviewError("incomplete_admin_export", 422)
     if only_if_stale and not review_pins and not admin_archive and not source and last and datetime.now(timezone.utc) - last["checked_at"] < timedelta(days=1):
@@ -76,9 +82,20 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
     if not admin_archive and last and digest == last["source_sha256"]:
         admin_sha = last["admin_export_sha256"]
         admin_complete = bool(admin_sha and last["totals"].get("admin_complete"))
-    admin = await source_state.admin_index(db, admin_sha)
+    observation_times = {}
+    checked_at = await db.scalar(text("SELECT transaction_timestamp()"))
+    if reindex:
+        from inventory_hub.services import atomer_progress_target as evidence
+        identities, admin = await evidence.read_sources(db, digest, admin_sha)
+        remote, bike_targets, observed, observation_times = await evidence.read_target(db, last, digest, admin_sha, target_mode)
+        observation_times['local_snapshot_at'] = checked_at.isoformat()
+        checked_at = min(checked_at, observed)
+        if target_mode == 'pinned_source':
+            checked_at = min(checked_at, last['checked_at'])
+    else:
+        admin = await source_state.admin_index(db, admin_sha)
+        remote, bike_targets = await asyncio.to_thread(progress.remote_catalog)
     catalog = source_state.catalog_with_admin(identities, admin, admin_complete)
-    remote, bike_targets = await asyncio.to_thread(progress.remote_catalog)
     shop_ids = dict((await db.execute(select(Shop.code, Shop.id).where(Shop.code.in_(("xtrek","biketrek"))))).all())
     if set(shop_ids) != {"biketrek", "xtrek"}:
         raise ProgressError("shops_unavailable")
@@ -92,8 +109,14 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
         if link.shop_id == shop_ids["biketrek"]:
             bike_links[link.product_id].append(link)
     xtrek_links = [link for link in links if link.shop_id == shop_ids["xtrek"]]
+    proven_brands = dict((await db.execute(text("""
+        SELECT document->'item'->>'code', document->'item' FROM atomer_variant_repairs
+        WHERE state='verified' AND document->>'operation'='source_card_brand'
+          AND document->>'source_sha'=:sha AND document->>'admin_sha'=:admin
+        ORDER BY updated_at
+    """), {"sha":digest,"admin":admin_sha})).all())
     rows = await asyncio.to_thread(progress.reconcile, catalog, remote, card_index,
-                                   xtrek_links, overrides, bike_links, bike_targets)
+                                   xtrek_links, overrides, bike_links, bike_targets, proven_brands)
     outstanding=(await db.execute(text("""
         SELECT DISTINCT ON (a.key) a.key,j.document->'identity'->>'product_id',
                j.document->'observed_ids'->>a.key,a.value->>1
@@ -116,11 +139,12 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
               "admin_quarantined":len(quarantined), "admin_quarantine_examples":quarantined[:10],
               "review_targets":len(checks),"items":len(rows), "kinds":dict(Counter(r["kind"] for r in rows)),
               "states":dict(Counter(r["state"] for r in rows)), "bike":dict(Counter(r["bike_state"] for r in rows))}
-    # checked_at is the start of the consistent local snapshot. Upgates reads follow it.
+    totals.update(observation_times)
+    # A source-only reindex preserves the original native observation and its age.
     run_id = await db.scalar(text("""
         INSERT INTO atomer_progress_runs(source_sha256, checked_at, totals,admin_export_sha256)
-        VALUES (:sha, transaction_timestamp(), CAST(:totals AS jsonb),:admin_sha) RETURNING id
-    """), {"sha":digest, "totals":json.dumps(totals),"admin_sha":admin_sha})
+        VALUES (:sha, :checked_at, CAST(:totals AS jsonb),:admin_sha) RETURNING id
+    """), {"sha":digest, "totals":json.dumps(totals),"admin_sha":admin_sha, "checked_at":checked_at})
     await db.execute(text("""
         INSERT INTO atomer_progress_items(run_id, code, kind, state, family_key, detail)
         SELECT :run, d->>'code', d->>'kind', d->>'state', d->>'family_key', d
