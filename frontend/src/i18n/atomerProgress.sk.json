@@ -1,5 +1,8 @@
 {
   "replaceSource": "Nahrať podklady",
+  "snapshotTotals": "Súhrn pôvodnej kontroly katalógu",
+  "receiptRows": "Tabuľka a filtre zahŕňajú odvtedy potvrdené karty a väzby v Hube",
+  "contentPending": "Obsah ešte čaká na overenie",
   "bikeReasons": {
     "card_conflict": "Nejednoznačná karta v Hube",
     "incomplete_link": "Väzbe chýba kód alebo natívne ID",

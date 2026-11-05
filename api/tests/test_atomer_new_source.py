@@ -92,6 +92,35 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         self.assertEqual(d['variant_axis_origins'],{'One':'admin_csv_variant_name'})
         self.assertEqual(d['payload']['variants'][0]['parameters'],src.gen.parameters({'Variant':'Sesame'}))
 
+    def test_pinned_mixed_tax_new_parent_defers_only_incompatible_exact_prices(self):
+        family=row('Group','10')
+        children=[row('Taxed','11','Group',price='12.30',other=[('Bežná cena bez DPH','10')]),
+                  row('Zero','12','Group',price='8.01',vat='0',other=[('Bežná cena bez DPH','8.01')])]
+        index=src.Catalog([family,*children])
+        xml=[node('Taxed','Group',PRICE_VAT='12.30',VAT='23'),node('Zero','Group',PRICE_VAT='8.01',VAT='0')]
+        with_xml(index,*xml)
+        pin={'source_parent_id':'10','parent_rate':'23','rates':{'23':1,'0':1}}
+        cfg={'partial_vat_families':{'Group':pin}}
+        d=document(index,'Group',options=cfg)
+        self.assertEqual(d['payload']['vats'],{'sk':23.0})
+        self.assertEqual([v['code'] for v in d['payload']['variants']],['Taxed'])
+        self.assertEqual(d['source_family_codes'],['Taxed','Zero'])
+        self.assertEqual(d['partial_vat'],{**pin,'new_parent_only':True})
+        self.assertTrue(d['new_parent_only'])
+        bad=d['deferred_leaves']['Zero']
+        self.assertEqual((bad['reason'],bad['source_internal_id'],bad['source_rate'],bad['parent_rate'],
+                          bad['source_price_gross'],bad['source_price_net'],bad['buyers_rate']),
+                         ('new_variant_vat_not_representable','12','0','23','8.01','8.01','0'))
+        for invalid in ({}, {'source_parent_id':'100'}, {'parent_rate':'0'}, {'rates':{'23':2,'0':1}},
+                        {'rates':{'23':True,'0':True}}):
+            wrong={'partial_vat_families':{'Group':{**pin,**invalid}}} if invalid else {}
+            with self.assertRaisesRegex(ReviewError,'new_parent_variant_vat_conflict'):
+                document(index,'Group',options=wrong)
+        other=src.Catalog([family,*children])
+        with_xml(other,node('Taxed','Group',PRICE_VAT='12.30',VAT='23'),node('Zero','Group',PRICE_VAT='8.02',VAT='0'))
+        with self.assertRaisesRegex(ReviewError,'new_parent_variant_vat_conflict'):
+            document(other,'Group',options=cfg)
+
     def test_shared_barcode_and_commercial_fields_merge_both_verified_duplicate_assets(self):
         first='https://www.xtrek.sk/user/12/upload/stuff/variants/1.jpg'
         second='https://www.xtrek.sk/user/12/upload/stuff/variants/2.jpg'

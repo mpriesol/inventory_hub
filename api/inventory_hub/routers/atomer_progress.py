@@ -10,9 +10,11 @@ from inventory_hub.adapters.atomer_content import AtomerSourceError
 from inventory_hub.database import get_session
 from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
-from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
+from inventory_hub.services.atomer_progress_store import latest, ProgressError, refresh
+from inventory_hub.services.atomer_progress_display import page
+from inventory_hub.services import atomer_missing_native_ean as missing_native_ean
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
-from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity
+from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity, atomer_standalone_family, atomer_variant_barcode_owners
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
@@ -60,6 +62,20 @@ async def progress_refresh(expected_run: Annotated[int, Form(ge=0)],
     except ExportError as error:
         # ExportError contains only machine codes, without upstream bodies or URLs.
         raise HTTPException(502, detail={"code":"remote_read_failed","message":str(error)}) from None
+
+
+@router.post("/fill-missing-native-ean/{mode}")
+async def fill_missing_native_ean(mode: Literal["preview", "apply"], selection: missing_native_ean.Selection,
+                                  request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await missing_native_ean.process(db, selection, mode, _actor(request))
+    except (ReviewError, SourceError) as error:
+        raise HTTPException(error.status, detail={"code": error.code, "retry_after": getattr(error, "retry_after", None)}) from None
+    except ExportError as error:
+        code = str(error)
+        if code in ("upgates_export_budget_deferred", "upgates_export_http_429"):
+            raise HTTPException(429, detail={"code": "stock_publication_rate_limited", "retry_after": 60}) from None
+        raise HTTPException(502, detail={"code": code}) from None
 
 
 @router.get("/targets")
@@ -283,5 +299,23 @@ async def verify_source_card_brands(mode: Literal['preview', 'apply'], selection
                                    request: Request, db: AsyncSession = Depends(get_session)):
     try:
         return await atomer_brand_identity.register(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None
+
+
+@router.post('/standalone-family/{mode}')
+async def convert_standalone_family(mode: Literal['preview', 'apply'], selection: atomer_standalone_family.Family,
+                                    request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_standalone_family.process(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None
+
+
+@router.post('/variant-barcode-owners/{mode}')
+async def correct_variant_barcode_owners(mode: Literal['preview', 'apply'], selection: atomer_variant_barcode_owners.Selection,
+                                         request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_variant_barcode_owners.process(db, selection, mode, _actor(request))
     except (ReviewError, CatalogError, SourceError) as error:
         raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None

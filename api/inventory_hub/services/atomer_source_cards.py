@@ -1,6 +1,7 @@
 """Additive card-only preparation from a claimed leaf of the pinned full Atomer export."""
 import asyncio
 from collections import defaultdict
+from threading import Lock
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -9,6 +10,9 @@ from inventory_hub.db_models import Product, ProductIdentifier, Shop
 from inventory_hub.services import atomer_review as review
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, barcode_keys
+
+_ARCHIVE_LOCK=Lock()
+_ARCHIVE_INDEX={}
 
 
 def physical_subject(row,archived):
@@ -63,26 +67,36 @@ async def _cached_native(db,shop_ids,codes,gtins):
     return by_code,by_gtin,proven
 
 
-def _archived_targets(rows,shop_id):
+def _archived_candidates(shop,shop_id,codes,gtins):
     from inventory_hub.services import atomer_card_batch as cards
-    wanted={cards.native_key((r['product_id'],r.get('variant_id'))) for r in rows}
-    directory=cards.pull._cache_path('xtrek').parent/'atomer-card-catalog-v1'
-    parents,checked=cards.checkpoint.archived_parents(directory,cards.target_fingerprint('xtrek'),{p for p,_ in wanted})
-    observed={}
-    for pid,parent in parents.items():
-        variants=parent.get('variants') or []
-        if parent.get('set_yn') is True or parent.get('variants_exists_yn') is not bool(variants):
-            continue
-        for v in variants or [parent]:
-            vid=str(v['variant_id']) if v.get('variant_id') is not None else None
-            if (pid,vid) not in wanted or not v.get('code') or (vid is not None and
-                    (str(v.get('product_id'))!=pid or v.get('product_code')!=parent.get('code'))):
-                continue
-            raw=v.get('ean'); barcodes=raw if isinstance(raw,list) else [raw] if raw else []
-            rec=RemoteIdentity(shop_id,v['code'],bool(variants),vid or pid,parent.get('code') if variants else None,
-                               tuple(map(str,barcodes)),external_product_id=pid)
-            observed[rec]=('certified_shop_checkpoint',checked)
-    return observed
+    fp=cards.target_fingerprint(shop)
+    directory=cards.pull._cache_path(shop).parent/'atomer-card-catalog-v1'
+    with _ARCHIVE_LOCK:
+        saved=_ARCHIVE_INDEX.get(shop)
+        previous=saved[2] if saved and saved[:2]==(shop_id,fp) else None
+        parents,checked=cards.checkpoint.archived_parents(directory,fp,previous=previous,identities_only=True)
+        if not checked:
+            return {},set()
+        if parents is not None:
+            by_code,by_gtin=defaultdict(set),defaultdict(set)
+            for pid,parent in parents.items():
+                variants=parent.get('variants') or []
+                for v in variants or [parent]:
+                    vid=str(v['variant_id']) if v.get('variant_id') is not None else None
+                    raw=v.get('ean'); values=raw if isinstance(raw,list) else [raw] if raw else []
+                    spec=RemoteIdentity(shop_id,v.get('code') or '',bool(variants),vid or pid,
+                               parent.get('code') if variants else None,tuple(map(str,values)),external_product_id=pid)
+                    safe=(bool(spec.code) and parent.get('set_yn') is not True and
+                          parent.get('variants_exists_yn') is bool(variants) and (not variants or
+                          vid and str(v.get('product_id'))==pid and v.get('product_code')==parent.get('code')))
+                    entry=(spec,bool(safe))
+                    by_code[spec.code.casefold()].add(entry)
+                    for key in barcode_keys(spec.barcodes):
+                        by_gtin[key].add(entry)
+            _ARCHIVE_INDEX[shop]=(shop_id,fp,checked,by_code,by_gtin)
+        _,_,_,by_code,by_gtin=_ARCHIVE_INDEX[shop]
+        hits={entry for lookup,keyset in ((by_code,codes),(by_gtin,gtins)) for key in keyset for entry in lookup.get(key,())}
+        return {r:('certified_shop_checkpoint',checked) for r,ok in hits if ok},{r for r,ok in hits if not ok}
 
 
 def cached_target(source,shop_id,nearby,proofs):
@@ -141,10 +155,11 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
         return results
     all_eans={val for source,_ in ready.values() for val in ProductIdentifierService.gtin_equivalents(source.get('ean') or '')}
     by_code,by_gtin,cached_proofs=await _cached_native(db,[s.id for s in shops.values()],{k.casefold() for k in ready},all_eans)
-    existing=[r for r,_ in ready.values() if r['state']=='needs_card']
-    if existing:
-        for rec,witness in (await asyncio.to_thread(_archived_targets,existing,shops['xtrek'].id)).items():
-            cached_proofs[rec]=witness
+    invalid_native=set(); folded={k.casefold() for k in ready}; normalized=barcode_keys(all_eans)
+    for s in cards.SHOPS:
+        candidates,invalid=await asyncio.to_thread(_archived_candidates,s,shops[s].id,folded,normalized)
+        invalid_native.update(invalid);cached_proofs.update(candidates)
+        for rec in set(candidates)|invalid:
             by_code[rec.code.casefold()].append(rec)
             for value in barcode_keys(rec.barcodes):
                 by_gtin[value].append(rec)
@@ -197,6 +212,7 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
             nearby=set(by_code.get(code.casefold(),()))
             for gtin in gtins:
                 nearby.update(by_gtin.get(gtin,()))
+            cards.require(not nearby&invalid_native,'source_card_cached_native_kind_unverified')
             if source['state']=='needs_card':
                 target_proofs[code]=cached_target(source,shops['xtrek'].id,nearby,cached_proofs)
             physical=defaultdict(set)

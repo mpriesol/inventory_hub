@@ -1,5 +1,8 @@
 {
   "replaceSource": "Upload source files",
+  "snapshotTotals": "Catalogue snapshot totals",
+  "receiptRows": "The table and filters include subsequently confirmed Hub cards and shop links",
+  "contentPending": "Product content is awaiting verification",
   "bikeReasons": {
     "card_conflict": "Ambiguous inventory card",
     "incomplete_link": "Link is missing a code or native ID",

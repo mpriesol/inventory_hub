@@ -117,6 +117,7 @@ export function AtomerMigrationProgress() {
         {bikeRecord?.code || m('bikeStates.'+r.bike_state)}{anchors(bikeRecord?.shop_url,bikeRecord?.shop_admin_url)}
         {bikeRecord && r.bike_state==='review' && <small className="progress-issue">{m(bikeRecord.reason?'bikeReasons.'+bikeRecord.reason:'bikeStates.review')}</small>}</td>
       <td><span className={settled||scope==='biketrek'?'progress-muted':r.state==='linked'?'progress-good':'progress-issue'}>{m('states.'+r.state)}</span>
+        {r.catalog_status==='content_pending'&&<small className="progress-issue">{m('contentPending')}</small>}
         {r.reasons.map(k=><small key={k}>{m('reasons.'+k)}</small>)}</td>
     </tr>;
   }
@@ -128,7 +129,7 @@ export function AtomerMigrationProgress() {
     const haveX = g.items.filter(r=>r.state==='linked').length, haveB = g.items.filter(r=>r.bike_state==='linked').length;
     const problems = gw.status==='done'?0:g.items.filter(r=>{
       const scope=r.work?.scope&&r.work.scope!=='default'?r.work.scope:gw.scope;
-      return r.work?.status!=='done' && ((scope!=='biketrek'&&r.state!=='linked') ||
+      return r.work?.status!=='done' && ((scope!=='biketrek'&&(r.state!=='linked'||r.catalog_status==='content_pending')) ||
         (scope!=='xtrek'&&(r.bike_state==='review'||(scope==='both'||scope==='biketrek')&&r.bike_state!=='linked')));
     }).length;
     const activeVariants=g.items.filter(r=>r.source_state?.variant===true).length;
@@ -181,12 +182,14 @@ export function AtomerMigrationProgress() {
         setUrl({});setKind('');setState('');setCard('');setBike('');setWorkFilter('all');
         setQuery(key.replace(/^[vs]:/,''));setOffset(0);setExpanded(new Set([key]));
       }}/>
+      <p className="progress-meta">{m('snapshotTotals')} · {date(run.checked_at)}</p>
       <div className="progress-counts">
         {[[m('kinds.variant'),run.totals.kinds.variant||0],[m('kinds.standalone'),run.totals.kinds.standalone||0],
           [m('states.linked'),run.totals.states.linked||0],[m('bikeLinked'),run.totals.bike.linked||0],
           [m('states.review'),run.totals.states.review||0]].map(([label,n])=><div key={label}><span>{label}</span><strong>{num(Number(n))}</strong></div>)}
       </div>
       <p className="progress-meta">{m('asOf')} {date(run.checked_at)} · {m('source')} {date(run.imported_at)} · {num(run.totals.items)} {m('codes')}</p>
+      {page?.projection&&<p className="progress-meta">{m('receiptRows')} · {date(page.projection.read_at)}</p>}
       {run.totals.xtrek_observed_at && run.totals.bike_observed_at && run.totals.local_snapshot_at &&
         <p className="progress-meta">{m('observationTimes')} · xTrek {date(run.totals.xtrek_observed_at)} · BIKETREK {date(run.totals.bike_observed_at)} · Hub {date(run.totals.local_snapshot_at)}</p>}
       {!!run.totals.admin_codes && <p className="progress-meta">{m(run.totals.admin_complete?'adminFull':'adminPartial')} · {

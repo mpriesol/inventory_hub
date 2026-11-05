@@ -160,6 +160,11 @@ async def process(db, selection, mode, actor, adopt=False):
     if adopt:
         from inventory_hub.routers import upgates_sync as pull
         shop=await db.scalar(select(Shop).where(Shop.code=="xtrek"))
+        preserved=[bool(v.preserved_card) for f in selection.families for v in f.rows]
+        if any(preserved):
+            from inventory_hub.services.atomer_generation_preserved_card import attach
+            gen.require(all(preserved),'generation_mixed_card_provenance')
+            return await attach(db,selection,{j.parent_code:j for j in jobs},obs,shop,mode)
         candidates=[]
         for j in jobs:
             doc=j.document

@@ -150,10 +150,10 @@ def collect(client,directory,fp):
     raise export.ExportError('upgates_export_catalog_changed')
 
 
-def archived_parents(directory,fp,ids):
+def archived_parents(directory,fp,ids=None,previous=None,identities_only=False):
     """Read only the last certified local observations. Never triggers a shop request."""
     path=directory/(fp+'.sqlite3') if fp else None
-    if not path or not path.is_file() or not ids:
+    if not path or not path.is_file() or ids is not None and not ids:
         return {},None
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
         db.execute('BEGIN')
@@ -165,5 +165,17 @@ def archived_parents(directory,fp,ids):
                       and state.get('phase_before_delta')=='validate' and state.get('base_started')==checked)
         if not checked or state.get('phase')!='ready' and not before_delta:
             return {},None
-        rows=db.execute('SELECT id,payload FROM parents WHERE id IN ('+','.join('?' for _ in ids)+')',list(ids))
-        return {str(pid):json.loads(payload) for pid,payload in rows},checked
+        if previous==checked:
+            return None,checked
+        rows=(db.execute('SELECT id,payload FROM parents') if ids is None else
+              db.execute('SELECT id,payload FROM parents WHERE id IN ('+','.join('?' for _ in ids)+')',list(ids)))
+        parents={}
+        for pid,payload in rows:
+            parent=json.loads(payload)
+            if identities_only:
+                fields=('code','product_id','product_code','variant_id','ean')
+                variants=parent.get('variants') or []
+                parent={k:parent.get(k) for k in (*fields,'set_yn','variants_exists_yn')}
+                parent['variants']=[{k:v.get(k) for k in fields} for v in variants]
+            parents[str(pid)]=parent
+        return parents,checked

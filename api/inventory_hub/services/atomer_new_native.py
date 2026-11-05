@@ -5,22 +5,21 @@ dispatch. A POST is never replayed here, including when the acknowledgement is l
 """
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
-from threading import Lock
 from time import monotonic
 
 import requests
 
 from inventory_hub.adapters.atomer_content import AtomerSourceError, html_fingerprint
-from inventory_hub.services import atomer_catalog_observation as catalog
 from inventory_hub.services import atomer_family_batch as batch
 from inventory_hub.services.migration_upgates_export import ExportError
 from inventory_hub.services import stock_publication_source as transport
 from inventory_hub.services.atomer_generations import image_name, same_image
 from inventory_hub.services.atomer_review_targets import ReviewError
 from inventory_hub.services.product_identity import barcode_keys
+from inventory_hub.services.product_link_source import _navigation
 from inventory_hub.services.product_publication_source import plain
 from inventory_hub.services.sku_policy import brand_key
 from inventory_hub.services.upgates import _retry_after_seconds
@@ -114,43 +113,15 @@ def preflight(documents, fingerprint, checked_at):
     return _check_absent(leaves,fingerprint,checked_at)
 
 
-# A catalog run already excludes older identities. Keep only identifiers changed
-# afterwards, never native descriptions/media. A restart rebuilds from the run.
-_delta_lock = Lock()
-_delta_observation = None
-
-
-def _delta(client, fingerprint, checked_at):
-    global _delta_observation
-    key=(fingerprint,checked_at)
-    with _delta_lock:
-        observed_at=datetime.now(timezone.utc)
-        last,products=checked_at,{}
-        if _delta_observation and _delta_observation[0]==key:
-            last,products=_delta_observation[1:]
-        # Capture the lower bound before the first page, with overlap for the
-        # API's second precision and clock skew. Publish only a complete scan.
-        since=max(checked_at-timedelta(seconds=1),last-timedelta(minutes=2))
-        updated={}
-        try:
-            rows=catalog.page_rows(client,'products/simple',{'last_update_time_from':since.isoformat(timespec='seconds')})
-            for product in rows:
-                pid=product.get('product_id')
-                leaves=product.get('variants')
-                _check(_positive(pid) and pid not in updated and isinstance(leaves,list)
-                       and bool(leaves) is product.get('variants_exists_yn'),'new_native_identity_invalid')
-                entries=[]
-                for leaf in [product,*leaves]:
-                    _check(isinstance(leaf.get('code'),str),'new_native_identity_invalid')
-                    entries.append((leaf['code'],leaf.get('variant_id'),tuple(_tokens(leaf))))
-                updated[pid]=entries
-        except ExportError as exc:
-            if str(exc) in ('upgates_export_budget_deferred','upgates_export_http_429'):
-                raise transport.SourceError('stock_publication_rate_limited',429,60,request_sent=False) from None
-            raise transport.SourceError('new_native_changes_unavailable') from None
-        products.update(updated)
-        _delta_observation=(key,observed_at,products)
-        return list(products.items())
+def _delta(client, fingerprint, checked_at, interests):
+    from inventory_hub.routers.upgates_sync import _cache_path
+    from inventory_hub.services import atomer_create_delta
+    try:
+        return atomer_create_delta.candidates(client, fingerprint, checked_at, interests, _cache_path('xtrek').parent)
+    except ExportError as exc:
+        if str(exc) in ('upgates_export_budget_deferred', 'upgates_export_http_429'):
+            raise transport.SourceError('stock_publication_rate_limited', 429, 60, request_sent=False) from None
+        raise transport.SourceError('new_native_changes_unavailable', request_sent=False) from None
 
 
 def _check_absent(leaves, fingerprint, checked_at):
@@ -167,13 +138,11 @@ def _check_absent(leaves, fingerprint, checked_at):
                 problems[owner].append(f'{kind} {key}: viackrát v dávke')
     codes = [r['code'] for new in leaves.values() for r in new]
     with _connection(fingerprint) as client:
-        changed=_delta(client,fingerprint,checked_at)
+        positive = _delta(client, fingerprint, checked_at, by_token)
         selected_products=_sparse(client,codes,'products/simple')
         variants=_sparse(client,codes,'products/variants','variants','variant_codes')
         # A delta may retain a later-deleted parent's old identifiers; verify
         # its current IDs before treating an identity as occupied.
-        positive={pid for pid,entries in changed
-                  if any(token in by_token for _,_,tokens in entries for token in tokens)}
         direct=_sparse(client,positive,'products/simple',field='product_ids') if positive else []
         _check(all(p.get('product_id') in positive for p in direct),'new_native_filter_unconfirmed')
     folded = {s.casefold() for s in codes}
@@ -193,7 +162,9 @@ def _check_absent(leaves, fingerprint, checked_at):
 
 def _mark_collisions(owners,problems,leaf,pid):
     _check(isinstance(leaf.get('code'),str),'new_native_identity_invalid')
-    for token in _tokens(leaf):
+    native_tokens = set(_tokens(leaf))
+    native_tokens.update(('ean', gtin) for gtin in barcode_keys([leaf['code']]))
+    for token in native_tokens:
         for root in owners.get(token,[]):
             vid=leaf.get('variant_id')
             target=f'{pid}/{vid}' if vid else str(pid)
@@ -278,6 +249,7 @@ def send(documents, fingerprint):
         code=row['code']
         received.add(code)
         record=result[code]
+        record['inserted'] = row.get('inserted_yn') is True
         record['issues'].extend(_messages(row))
         if row.get('inserted_yn') is not True:
             record['issues'].append(code + ' · Upgates nepotvrdil vytvorenie')
@@ -554,6 +526,9 @@ def _family_result(doc,native,expected):
         issues.append('súvisiace produkty čakajú na migráciu: '+', '.join(doc['missing_related']))
     result['deferred']=sorted(set(deferred))
     result['identity_verified']=identity
+    if identity:
+        result['navigation']={code:_navigation(native,leaf) for code,leaf in
+                              (actual or {native['code']:native}).items()}
     result['verified_fields']=not issues
     result['status']='conflict' if not identity else 'partial' if issues else 'verified'
     return result
@@ -581,6 +556,9 @@ def complete_related(documents,fingerprint,expected_ids):
         present={p['code'] for p in _sparse(client,targets,'products/simple',filters={'variants_yn':'false'})}
         _check(present<=targets,'new_native_filter_unconfirmed')
         for code,doc in selected.items():
+            if doc.get('new_parent_only'):
+                result[code] = dict(status='conflict', issues=['new_source_exception_create_only'])
+                continue
             parent=remote.get(code)
             current=_result(doc,parent,expected_ids[code])
             planned = set(doc['payload'].get('related', []))
@@ -672,6 +650,7 @@ def prepare_extensions(documents,fingerprint,checked_at,expected_ids,additions):
     for code,doc in selected.items():
         before=observed.get(code)
         try:
+            _check(not doc.get('new_parent_only'), 'new_source_exception_create_only')
             new=_extension_members(doc['payload'],before,expected_ids[code],additions[code])
             leaves[code]=new
             plans[code]=dict(status='ready',before=plain(before),payload=dict(code=code,variants=new),

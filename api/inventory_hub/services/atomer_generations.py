@@ -36,12 +36,22 @@ class Existing(Strict):
     generation: repair.Token
 
 
+class PreservedCard(Strict):
+    id: int = Field(gt=0)
+    bike_link: int = Field(gt=0)
+    bike_product: str = Field(pattern=r'^[1-9][0-9]{0,19}$')
+    bike_variant: str = Field(pattern=r'^[1-9][0-9]{0,19}$')
+    bike_parent: repair.Token
+    on_hand: int = Field(ge=0)
+
+
 class Addition(Strict):
     code: repair.Token
     ean: repair.Token
     revision: int = Field(ge=0)
     names: dict[repair.Token, repair.Token] = Field(min_length=1, max_length=20)
     generation: repair.Token
+    preserved_card: PreservedCard | None = None
 
 
 class Family(Strict):
@@ -109,7 +119,7 @@ async def allowed(db, family, item, run, claimed=False):
     require(detail and set(detail["reasons"]) == {"occupied_parameters", "ean_differs"}
             and detail["ean"] == item.ean and item.ean in verified_barcodes([item.ean])
             and detail["parent"] == detail["target_parent"] == family.parent
-            and detail["product_id"] == str(family.product_id) and detail["hub_id"] is None
+            and detail["product_id"] == str(family.product_id) and detail["hub_id"] == (item.preserved_card.id if item.preserved_card else None)
             and any(e.code == detail["target_code"] and str(e.variant_id) == detail["variant_id"]
                     and e.ean == detail["target_ean"] for e in family.existing), "generation_source_changed")
     rec = await work._record(db, "item", item.code)
@@ -122,6 +132,10 @@ async def allowed(db, family, item, run, claimed=False):
 
 
 async def absent_card(db, item):
+    if item.preserved_card:
+        from inventory_hub.services.atomer_generation_preserved_card import check
+        await check(db,item)
+        return
     owner = await db.scalar(select(Product.id).where(func.lower(Product.sku) == item.code.casefold()).limit(1))
     barcode = await db.scalar(select(ProductIdentifier.product_id).where(
         ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES),
@@ -329,7 +343,7 @@ def send(products, fingerprint):
 
 def doc_id(selection, family):
     return repair.digest(dict(operation="variant_generation",phase=selection.phase,run=selection.run_id,
-                              source=selection.source_sha,family=family.model_dump(mode="json")))
+                              source=selection.source_sha,family=family.model_dump(mode="json",exclude_none=True)))
 
 
 async def process(db, selection, mode, actor):
@@ -388,6 +402,9 @@ async def process(db, selection, mode, actor):
         new, sources = {}, {}
         for item in family.rows:
             detail = await allowed(db,family,item,selection.run_id,family.parent in deferred)
+            if item.preserved_card:
+                from inventory_hub.services.atomer_generation_preserved_card import check
+                await check(db,item,read_bike=True)
             row = groups[family.parent].get(item.code)
             require(row and row["ean"]==item.ean,"generation_source_changed")
             target = detail["target_code"]
@@ -403,7 +420,7 @@ async def process(db, selection, mode, actor):
             axes[item.code] = proposed
         require(all(n==1 for n in Counter(key(a) for a in axes.values()).values()), "variant_axis_collision")
         protected, before_axes = repair.projection(before_family)
-        doc = dict(phase=selection.phase, family=family.model_dump(mode="json"),identity=identity(family),fingerprint=fp,
+        doc = dict(phase=selection.phase, family=family.model_dump(mode="json",exclude_none=True),identity=identity(family),fingerprint=fp,
                    run_id=selection.run_id,source_sha=selection.source_sha,actor=actor,backup=before_family,
                    before_protected=protected,before_axes=before_axes,expected_axes=axes,additions=new,sources=sources)
         job = jobs[family.parent]

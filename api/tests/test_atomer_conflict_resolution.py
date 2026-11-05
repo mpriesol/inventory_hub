@@ -120,6 +120,21 @@ class GenerationObservationTests(unittest.TestCase):
         self.assertFalse(check(dict(queued, instruction='Operator'), group, row, 1, 'approve_suggestions'))
         self.assertFalse(check(dict(queued, status='working', revision=2), group, row, 2, 'claim'))
 
+    def test_other_owner_must_still_belong_to_the_undelivered_machine_claim(self):
+        row={'code':'SOLO','state':'needs_target','reasons':[],'bike_state':'linked','card_state':'exists'}
+        group={'scope':'default'}
+        work={'revision':2,'status':'working','instruction':resolution.proposals.INSTRUCTIONS['targetX'],'scope':'default'}
+        job={'stage':'prepared','guards':{'own':[['item','SOLO',2]]},'receipt':{}}
+        events={1:'approve_suggestions',2:'claim'}
+        check=resolution.untouched_other_work
+        self.assertTrue(check(work,group,row,2,'claim',job,events))
+        self.assertTrue(check({**work,'revision':3,'status':'blocked'},group,row,3,'block',job,{**events,3:'block'}))
+        self.assertFalse(check(work,group,row,2,'claim',{**job,'receipt':{'dispatched':True}},events))
+        self.assertFalse(check(work,group,row,2,'claim',{**job,'guards':{'own':[['item','other',2]]}},events))
+        self.assertFalse(check(work,group,row,2,'claim',job,{1:'save',2:'claim'}))
+        self.assertFalse(check(work,group,row,2,'claim',job,{1:'approve_suggestions'}))
+        self.assertFalse(check({**work,'revision':3,'status':'blocked'},group,row,3,'block',job,events))
+
     def test_unreported_quantity_requires_explicit_null_on_exact_warehouse(self):
         from inventory_hub.services import atomer_generations as gen
         row = {'stock': None, 'stocks': [{'stock_id': 7, 'quantity': None}]}

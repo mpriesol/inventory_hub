@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 from copy import deepcopy
 from pathlib import Path
 import unittest
@@ -181,6 +182,21 @@ class CardIdentityTest(unittest.TestCase):
             self.assertEqual(pages,[1,2,2,3])
             self.assertEqual(checkpoint.collect(None,directory,'a'*64),parents)
             self.assertEqual(pages,[1,2,2,3])
+
+    def test_archived_lookup_finds_other_shop_codes_and_preserves_duplicate_owners(self):
+        fp='c'*64
+        with TemporaryDirectory() as tmp,patch.object(batch,'target_fingerprint',return_value=fp), \
+                patch.object(batch.pull,'_cache_path',return_value=Path(tmp)/'products.json'):
+            d=Path(tmp)/'atomer-card-catalog-v1';d.mkdir()
+            with sqlite3.connect(d/(fp+'.sqlite3')) as db:
+                db.execute('CREATE TABLE cursor(id INTEGER,document TEXT)')
+                db.execute('CREATE TABLE parents(id INTEGER,payload TEXT)')
+                db.execute('INSERT INTO cursor VALUES(1,?)',(json.dumps({'phase':'ready','final_started':'2026-01-01T12:00:00+00:00'}),))
+                db.executemany('INSERT INTO parents VALUES(?,?)',[(i,json.dumps(parent(f'P{i}',i,[(f'ALT-{i}',10+i,GTIN)])))
+                                for i in [1,2]])
+            for _ in range(2):
+                matches,invalid=source_cards._archived_candidates('biketrek',1,{'elsewhere'},batch.barcode_keys([GTIN]))
+                self.assertEqual({r.code for r in matches},{'ALT-1','ALT-2'});self.assertEqual(invalid,set())
 
 
 TEST_URL=os.environ.get('CATALOG_TEST_DATABASE_URL','')

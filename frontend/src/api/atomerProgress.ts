@@ -3,6 +3,7 @@ import { hubRequest, hubUpload } from './access';
 export const progressStates = ['linked','needs_link','needs_card','needs_target','needs_both','review'] as const;
 export const bikeStates = ['linked','unlinked','no_card','review'] as const;
 export type ProgressRow = {
+  catalog_status?:'card_ready'|'content_pending'|'links_verified';
   source_state?:{product:boolean|null; product_origin:string; variant:boolean|null; variant_origin:string; product_flags:Record<string,string>; variant_flags:Record<string,string>};
   work?:Work; family_key: string; family_name: string; variant_label:string; card_state:'exists'|'missing'|'review';
   shop_url:string|null; shop_admin_url:string|null; code: string; kind: 'variant' | 'standalone'; state: typeof progressStates[number]; name: string;
@@ -17,7 +18,8 @@ export type ProgressRun = {id: number; checked_at: string; source_sha256: string
     admin_conflicts?:number; admin_conflict_examples?:string[]; admin_quarantined?:number; admin_quarantine_examples?:string[];
     kinds: Record<string,number>; states: Record<string,number>; bike: Record<string,number>}};
 export type ProgressFamily = {key:string; name:string; work?:Work; extra_count?:number; items:ProgressRow[]};
-export type ProgressPage = {run: ProgressRun | null; total: number; families:number; groups:ProgressFamily[]};
+export type ProgressPage = {run: ProgressRun | null; total: number; families:number; groups:ProgressFamily[];
+  projection?:{read_at:string}};
 const base = '/api/migration/atomer-progress';
 export function readProgress(params: URLSearchParams, signal?: AbortSignal) {
   return hubRequest<ProgressPage>(base + '?' + params, undefined, signal);
