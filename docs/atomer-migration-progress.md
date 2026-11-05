@@ -35,3 +35,17 @@ Hub archivuje pôvodné súbory v súkromnej databáze vrátane opakovaných cha
 Odkaz na rodiča môže obsahovať aj jeho interné číslo z Atomeru. Pri jednoznačnej zhode Hub zaradí varianty do existujúcej rodiny a zachová jej pracovné pokyny. Opakovaný kód s rozdielnymi záznamami označí na kontrolu. Pri rozdielnych hodnotách viditeľnosti zobrazí rozpor. Riadok s poškodeným identifikátorom a čitateľným interným číslom ostane v pôvodnom archíve. Prehľad uvedie jeho interné číslo a do opravy zablokuje spracovanie odstránení. Pri odlišnom kóde v xTrek môže údaj o aktivite pochádzať z jedinečného EAN variantu v rovnakej zdrojovej rodine.
 
 Migrácia 038 pridáva súkromné tabuľky na podklady, kontroly, rozhodnutia a audit a voliteľný odkaz na CSV pri behu. Predchádzajúce behy sú čitateľné. Pri návrate aplikácie ponechajte všetky tabuľky, podklady a rozhodnutia na mieste.
+
+## Opravy parametrov variantov xTrek
+
+Operátor môže v sekcii **Opravy položiek na kontrolu** nahrať súkromný JSON plán. Pole
+`families` obsahuje objekty s `run_id`, `source_sha` a `rows`. Každý riadok určí presný
+zdrojový `code`, revíziu rozhodnutia `revision`, pôvodné pomenované osi `before` a vopred
+overené priradenie kľúča PARAM k názvu osi v `names`. Hodnoty pochádzajú z uloženého
+Atomeru. Voliteľné `blocks` obsahuje `run_id` a `items` s revíziou a konkrétnym
+dôvodom pre každý kód. Endpointy pod `/migration/atomer-progress` vyžadujú operátora.
+
+Náhľad prečíta celú rodinu. Potvrdenie zopakuje kontrolu, uloží pôvodné dáta,
+pošle vybrané parametre a porovná natívne ID, súrodencov a chránené polia.
+Opakovanie uloženého zámeru vykoná iba overenie. Po spracovaní obnovte prehľad.
+Rozdiely totožnosti a nejednoznačné EAN vyžadujú samostatný dôkaz a rozhodnutie.

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AtomerReviewEditor, suggestionsFor } from './AtomerReviewEditor';
+import { AtomerReviewBatch } from './AtomerReviewBatch';
 import { AtomerReviewLists } from './AtomerReviewLists';
 import { ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -184,7 +185,8 @@ export function AtomerMigrationProgress() {
     </>}
     <section className={run?'progress-tools progress-compact-tools':'opening-stock-panel progress-tools'}>
       {run ? <><button type="button" disabled={pending || reading} onClick={()=>void update(null)}>{m('refresh')}</button>
-        <details><summary>{m('replaceSource')}</summary>{upload}</details></> : upload}
+        <details><summary>{m('replaceSource')}</summary>{upload}</details>
+        <AtomerReviewBatch run={run.id} onSaved={()=>setRevision(v=>v+1)}/></> : upload}
       {pending && <span role="status">{m('refreshing')}</span>}
     </section>
     {page && !run && !pending && <p>{m('emptySource')}</p>}

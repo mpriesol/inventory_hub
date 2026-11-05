@@ -8,7 +8,7 @@ from sqlalchemy import func, select, text
 
 from inventory_hub.ai_content_models import AiJob
 from inventory_hub.db_models import Shop
-from inventory_hub.product_editor_models import ProductEditorPublication
+from inventory_hub.product_editor_models import AtomerVariantRepair, ProductEditorPublication
 from inventory_hub.stock_sync_models import StockSyncItem, StockSyncSettings
 from inventory_hub.fifo_cost_models import FifoCostPublication
 from inventory_hub.services.catalog import CatalogError
@@ -17,6 +17,12 @@ from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 
 async def require_target_available(db, shop_code, parent_code, *, publication_id=None, ai_job_id=None, fifo_publication_id=None, availability=False):
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    if shop_code == "xtrek":
+        inflight = select(AtomerVariantRepair.id).where(
+            func.lower(AtomerVariantRepair.parent_code) == parent_code.lower(),
+            AtomerVariantRepair.state.in_(("sending", "uncertain")))
+        if await db.scalar(inflight.limit(1)) is not None:
+            raise CatalogError("merchandising_target_inflight", "Verify the pending Atomer variant repair first.", 409)
     if availability:
         if publication_id is None:
             from inventory_hub.services.supplier_availability_publication import owns_target

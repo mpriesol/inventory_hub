@@ -490,3 +490,5 @@ Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej akt
 ## Archív faktúr a EAN prehľad
 
 Migrácia033 a nové služby sú opísané v [invoice-archive.md](docs/invoice-archive.md). Existujúce skladové a príjmové procesy zostávajú samostatné. Faktúry sa v Hube nevystavujú; dodávateľské dokumenty a Upgates originály sa archivujú pod jednoznačným zdrojom, položky sa indexujú pre EAN vyhľadanie a úhrady majú nemenný záznam s ochranou opakovania. Dodávateľské uploady aj staršie lokálne indexy sa dopĺňajú do databázy automaticky cez `invoice_archive_worker`; chránené `GET /invoices/archive-status` hlási rozpracovanie a konflikty. Kurzory sa ukladajú až po databázovom commite do `invoices/archive-state/`, bez novej migrácie a bez príjmu na sklad. Nasadenie a skutočné naplnenie archívu sa overujú oddelene.
+
+Kontrolované opravy parametrov existujúcich variantov xTrek používa [migračný prehľad](docs/atomer-migration-progress.md) a súkromný audit v migrácii 039.

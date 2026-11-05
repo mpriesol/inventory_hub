@@ -224,5 +224,19 @@
   },
   "activityHelp": "Activity is visibility in Atomer. A missing parent record is shown as unknown.",
   "activeVariants": "Active variants",
-  "variantLabel": "Variant"
+  "variantLabel": "Variant",
+  "batch": {
+    "title": "Repair reviewed items",
+    "plan": "Private repair plan (JSON)",
+    "preview": "Check plan",
+    "apply": "Apply checked plan",
+    "invalid": "Invalid plan or report version.",
+    "ready": "Ready",
+    "verified": "Verified in xTrek",
+    "toBlock": "Reasons to record",
+    "blocked": "Blocked",
+    "sending": "Sending",
+    "uncertain": "Readback required",
+    "error": "Processing failed"
+  }
 }

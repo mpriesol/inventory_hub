@@ -11,6 +11,9 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_review as review
+from inventory_hub.services import atomer_variant_repair as repairs
+from inventory_hub.services.catalog import CatalogError
+from inventory_hub.services.stock_publication_source import SourceError
 from inventory_hub.services.atomer_source_state import archive
 from inventory_hub.services.atomer_review_targets import parse_targets, ReviewError
 from inventory_hub.services.migration_upgates_export import ExportError
@@ -91,3 +94,20 @@ async def keep_targets(selection: review.KeepSelection, request: Request, db: As
         return await review.keep_selection(db, selection, _actor(request))
     except ReviewError as error:
         raise HTTPException(error.status, detail={"code":error.code}) from None
+
+
+@router.post("/variant-parameters/{mode}")
+async def repair_parameters(mode: Literal["preview","apply"], selection: repairs.Family, request: Request,
+                            db: AsyncSession = Depends(get_session)):
+    try:
+        return await repairs.process(db,selection,mode,_actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code}) from None
+
+
+@router.post("/review-blocks")
+async def block_review(selection: repairs.Blocks, request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await repairs.record_blocks(db,selection,_actor(request))
+    except ReviewError as error:
+        raise HTTPException(error.status,detail={"code":error.code}) from None

@@ -42,3 +42,12 @@ class ProductEditorPublication(Base):
     document: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AtomerVariantRepair(Base):
+    __tablename__ = "atomer_variant_repairs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    parent_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
