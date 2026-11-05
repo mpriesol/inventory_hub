@@ -43,6 +43,7 @@ MIGRATIONS = (
     "order_webhooks_migrate",         # 035
     "stock_sync_dirty_migrate",       # 036
     "atomer_progress_migrate",        # 037
+    "atomer_review_migrate",          # 038
 )
 
 

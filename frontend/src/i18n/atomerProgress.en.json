@@ -1,5 +1,5 @@
 {
-  "replaceSource": "Replace Atomer export",
+  "replaceSource": "Upload source files",
   "bikeReasons": {
     "card_conflict": "Ambiguous inventory card",
     "incomplete_link": "Link is missing a code or native ID",
@@ -45,7 +45,7 @@
   "source": "Export saved",
   "codes": "sellable codes",
   "file": "New Atomer export (buyers.xml)",
-  "useFile": "Load and compare export",
+  "useFile": "Save sources and refresh",
   "refresh": "Refresh shops and Hub data",
   "refreshing": "Checking the entire catalog…",
   "emptySource": "Upload buyers.xml for the first check. Later checks can reuse the saved export.",
@@ -64,7 +64,20 @@
     "failed": "The check failed. Reload the overview.",
     "remote_read_failed": "The complete xTrek catalog could not be verified. The last completed result is displayed.",
     "refresh_in_progress": "Another check is running. Reload the page when it completes.",
-    "source_required": "Select buyers.xml first."
+    "source_required": "Select buyers.xml first.",
+    "review_changed": "Another change was saved. Close the editor and reload before editing.",
+    "run_changed": "Catalog refreshed. Open the current detail.",
+    "invalid_transition": "Item state changed. Reload it.",
+    "invalid_targets": "The list requires unique native product and variant IDs, source and target parents, codes, EANs and attributes.",
+    "target_pin_changed": "A saved ID has a different identity. Check the original review list.",
+    "target_recheck_required": "Identity or evidence changed. Review the target again.",
+    "verify_removal_first": "Refresh the catalog to verify removal first.",
+    "working_first_reopen": "The task is in progress. Check prior effects and return it to open before editing.",
+    "family_manages_work": "The product manages this work. Open its decision first.",
+    "active_child_work": "A variant already has an active task. Finish or withdraw it first.",
+    "invalid_admin_export": "The CSV needs a unique catalog code and visibility. Check the headers and duplicate rows.",
+    "export_size": "The file is empty or too large.",
+    "admin_source_required": "Removal requires the complete Atomer export including hidden items."
   },
   "reasons": {
     "duplicate_source": "Different source rows share a code.",
@@ -82,5 +95,123 @@
     "card_ean_differs": "The inventory card EAN differs.",
     "different_shop_link": "The card already has a different xTrek link.",
     "link_identity_differs": "The existing link has a different code or parent."
-  }
+  },
+  "viewLabel": "Review sections",
+  "views": {
+    "catalog": "Products and variants",
+    "remove": "Removal decisions",
+    "ai": "AI work queue"
+  },
+  "subject": {
+    "family": "Entire product family",
+    "item": "Sellable item",
+    "extra": "xTrek variant outside the feed"
+  },
+  "subjectLabel": "Product or variant",
+  "wholeFamily": "This decision covers the entire family, including its variants.",
+  "familyManaged": "Managed by product decision",
+  "workTitle": "Next step",
+  "workFilter": "Work",
+  "workFilterValues": {
+    "open": "Open",
+    "done": "Done",
+    "all": "All"
+  },
+  "workStatus": {
+    "open": "Open",
+    "queued": "Queued for AI",
+    "working": "In progress",
+    "blocked": "Blocked",
+    "done": "Done"
+  },
+  "decision": {
+    "undecided": "Undecided",
+    "no": "No · keep",
+    "yes": "Yes · remove"
+  },
+  "delete": "Remove?",
+  "deletionHelp": "Yes approves only this xTrek variant ID. Processing requires a complete source check and a review of stock, links and orders.",
+  "scopeLabel": "Intended shops",
+  "scopes": {
+    "default": "Inherit / unspecified",
+    "both": "Both shops",
+    "xtrek": "xTrek only",
+    "biketrek": "BIKETREK only"
+  },
+  "note": "Internal note",
+  "instruction": "Instruction for AI",
+  "instructionHelp": "Saving a new instruction queues it for processing. The internal note stays with the item.",
+  "suggested": "Suggested actions",
+  "suggestions": {
+    "identity": "Verify identity",
+    "card": "Resolve stock card",
+    "linkX": "Link xTrek",
+    "targetX": "Prepare for xTrek",
+    "checkB": "Check BIKETREK link",
+    "linkB": "Link BIKETREK",
+    "verify": "Verify intended shops",
+    "inspectExtra": "Investigate first"
+  },
+  "instructions": {
+    "identity": "Compare code, EAN, parent and attributes against Atomer. Record the cause of any conflict.",
+    "card": "Check existing stock cards. For a proven identity reuse the card or create a missing one under warehouse rules.",
+    "linkX": "Verify identity and link the existing card to the exact xTrek product or variant. Verify its IDs.",
+    "targetX": "Prepare the missing xTrek item from Atomer. Verify parent and variant visibility and flags before publication.",
+    "checkB": "Check the BIKETREK native IDs, parent and code. Record the result.",
+    "linkB": "Find and verify the BIKETREK match, then link the exact variant or standalone product.",
+    "verify": "Verify the card and links in the intended shops. Record verified IDs and differences.",
+    "inspectExtra": "Check the complete Atomer source, identity, stock, orders, reservations and links for this item. Record a recommendation."
+  },
+  "close": "Close",
+  "save": "Save",
+  "saved": "Decision saved.",
+  "refreshed": "Sources saved and review refreshed.",
+  "finish": "Mark as done",
+  "reopen": "Reopen",
+  "withdraw": "Return to open",
+  "claim": "Claim task",
+  "retry": "Queue again",
+  "verifiedDone": "Confirm verified result",
+  "blocked": "Record blocker",
+  "receipt": "Verified outcome or blocker",
+  "lastResult": "Result",
+  "edit": "Review",
+  "inspect": "review",
+  "openTask": "Open task",
+  "removeIntro": "Choose an exact xTrek variant and save the decision. No closes its review. Yes queues the approved variant for pre-removal checks.",
+  "queueIntro": "Saved instructions appear here. The verified result or blocker stays with the product.",
+  "queueStatus": "Task status",
+  "emptyTargets": "No variants match this selection.",
+  "emptyQueue": "No tasks with this status.",
+  "approvedRemoval": "Approved removal review for this exact variant.",
+  "remoteVariant": "xTrek variant",
+  "reviewCheck": "Checks and issues",
+  "stockX": "xTrek stock",
+  "inAtomer": "This item exists in the source export.",
+  "checks": {
+    "eligible": "Absent from buyers.xml. xTrek identity matches.",
+    "missing": "Variant absent from xTrek",
+    "changed": "Variant identity changed",
+    "family_changed": "Unable to verify parent",
+    "ambiguous": "Ambiguous xTrek code",
+    "in_source": "Source match found. Keep and investigate."
+  },
+  "warn": {
+    "occupied": "An Atomer variant has the same attributes and a different EAN.",
+    "linked": "This variant has a stock card link.",
+    "stock": "This variant has recorded stock.",
+    "unknown_stock": "Stock quantity is unknown.",
+    "admin_absence_unknown": "Removal requires the complete Atomer export including hidden items."
+  },
+  "adminFile": "Complete Atomer admin export (CSV)",
+  "targetFile": "Removal review identities (JSON)",
+  "activeAtomer": "Atomer activity",
+  "parentActive": "Parent product",
+  "activity": {
+    "unknown": "Unknown",
+    "conflict": "Conflicting sources",
+    "on": "Active",
+    "off": "Inactive"
+  },
+  "activityHelp": "Activity is visibility in Atomer. A missing parent record is shown as unknown."
 }

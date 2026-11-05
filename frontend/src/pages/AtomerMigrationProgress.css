@@ -39,3 +39,30 @@
 .progress-upload { display:flex; align-items:end; flex-wrap:wrap; gap:.65rem; }
 .progress-compact-tools details[open] .progress-upload { padding-top:.65rem; }
 .atomer-progress button:disabled { opacity:.55; }
+.review-tabs { display:flex; gap:.4rem; flex-wrap:wrap; border-bottom:1px solid var(--color-border-strong); margin:1.1rem 0 .7rem; padding-bottom:.5rem; }
+.review-tabs button[aria-current=page], .atomer-progress .review-primary { background:var(--color-accent); color:var(--color-bg-primary); font-weight:700; }
+.atomer-progress .progress-grid th:first-child { width:24%; }
+.review-dialog { position:fixed; inset:0; margin:auto; width:min(37rem,94vw); max-height:90vh; overflow:auto; padding:1.25rem; border:1px solid var(--color-border-strong); border-radius:.75rem; background:var(--color-bg-secondary); color:var(--color-text-primary); }
+.review-dialog::backdrop { background:rgba(0,0,0,.64); }
+.review-dialog-head, .review-status-line, .review-actions, .review-suggestions { display:flex; gap:.55rem; flex-wrap:wrap; align-items:center; }
+.review-dialog-head { justify-content:space-between; flex-wrap:nowrap; align-items:flex-start; }
+.review-dialog h2 { font-size:1.25rem; margin:.15rem 0 .5rem; }
+.review-dialog small, .review-status-line, .review-empty { color:var(--color-text-secondary); }
+.review-fields { display:grid; gap:.85rem; margin:1rem 0; }
+.review-fields label { display:grid; gap:.25rem; }
+.review-fields small { font-weight:normal; }
+.review-fields textarea, .review-fields select, .review-list select { color:var(--color-text-primary); background:var(--color-bg-primary); border:1px solid var(--color-border-strong); border-radius:5px; padding:.4rem .5rem; }
+.review-fields textarea { resize:vertical; }
+.review-fields fieldset { padding:0; border:0; }
+.review-suggestions { margin-top:.3rem; }
+.review-suggestions button, .review-actions button, .review-edit { font-size:.85rem; }
+.review-status-line, .review-badge, .review-dialog small { font-size:.82rem; }
+.review-badge { color:var(--color-text-secondary); }
+.status-done { color:var(--color-success); }
+.status-blocked { color:var(--color-warning); }
+.status-queued, .status-working, .review-count-link { color:var(--color-accent); }
+.review-evidence, .review-receipt { padding:.6rem .8rem; background:var(--color-bg-tertiary); border-radius:5px; margin-top:.55rem; }
+.review-evidence div { margin-top:.2rem; }
+.review-pre, .review-receipt p { white-space:pre-wrap; overflow-wrap:anywhere; }
+.review-snippet { max-width:14rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.review-empty { padding:.7rem .4rem; }
