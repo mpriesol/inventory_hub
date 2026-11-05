@@ -494,3 +494,5 @@ Migrácia033 a nové služby sú opísané v [invoice-archive.md](docs/invoice-a
 Prehľad načítava živé parametre podľa natívnych rodičov a kontroluje úplnosť katalógu. Spoločné čítanie a zápis vybraných rodín s auditom po jednotlivých produktoch pod `/migration/atomer-progress/review-batch` a kontrolované opravy parametrov a doložených GTIN existujúcich variantov xTrek používa [migračný prehľad](docs/atomer-migration-progress.md) a súkromný audit v migrácii 039.
 
 Pri obsadenej kombinácii môže operátor rozlíšiť generácie variantov v xTreku a doplniť presné SKU z Atomeru cez ten istý súkromný migračný prehľad. Po vzniku skladových kariet možno potvrdiť väzby a uložiť overené variantové osi.
+
+Spätná kontrola nových generácií umožňuje podľa pôvodného zámeru obnoviť cenu rodiča a preniesť presné natívne ID do skladového importu.

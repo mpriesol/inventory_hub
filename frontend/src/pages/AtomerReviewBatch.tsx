@@ -4,7 +4,7 @@ import { hubRequest } from '../api/access';
 
 type Family = { operation?:'verified_barcode'; run_id:number; source_sha:string; rows:{code:string}[] };
 type GenerationSelection = { run_id:number; phase:'label'|'extend'; families:{rows:{code:string}[]}[] };
-type Plan = { generations?:GenerationSelection; finishGenerationCards?:boolean; packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
+type Plan = { generations?:GenerationSelection; finishGenerationCards?:boolean; generationRecovery?:"fields"|"adopt"; packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
 type Result = { retry_after?:number; status:string; count:number; reason?:string };
 const base = '/api/migration/atomer-progress';
 
@@ -41,7 +41,7 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
         path:'/review-batch/',label:pack.families[0].rows[0].code,
         body:{families:pack.families.map(({operation,...family})=>family)}
       });
-      if (plan.generations) requests.push({path:plan.finishGenerationCards?'/generation-cards/':'/variant-generations/',label:plan.generations.families[0].rows[0].code,body:plan.generations});
+      if (plan.generations) requests.push({path:plan.generationRecovery?'/generation-recovery/'+plan.generationRecovery+'/':plan.finishGenerationCards?'/generation-cards/':'/variant-generations/',label:plan.generations.families[0].rows[0].code,body:plan.generations});
       for (const {path,label,body} of requests) {
         const send=()=>hubRequest<Result>(base+path+(preview?'preview':'apply'),body);
         let r:Result;
