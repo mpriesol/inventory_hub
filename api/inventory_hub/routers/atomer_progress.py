@@ -11,7 +11,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_review as review
-from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations
+from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
 from inventory_hub.services.atomer_source_state import archive
@@ -138,3 +138,11 @@ async def variant_generations(mode: Literal["preview","apply"], selection: atome
     except (ReviewError, CatalogError, SourceError, AtomerSourceError) as error:
         raise HTTPException(getattr(error,"status",422),detail={"code":error.code,
             "retry_after":getattr(error,"retry_after",None)}) from None
+
+@router.post("/generation-cards/{mode}")
+async def finish_generation_cards(mode: Literal["preview","apply"], selection: atomer_generations.Selection,
+                                  request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_generation_cards.finish_cards(db,selection,mode,_actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None

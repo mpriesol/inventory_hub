@@ -62,3 +62,11 @@ class GenerationTests(unittest.TestCase):
         node=gen.etree.fromstring(b"<PRODUCT><MAIN_IMAGE>https://example.com/a.png</MAIN_IMAGE></PRODUCT>")
         with self.assertRaises(ReviewError):
             gen.image_paths(node)
+
+    def test_hub_backfill_preserves_preexisting_variant_axes(self):
+        from inventory_hub.services.atomer_generation_cards import missing_axes
+        desired={"Size":"M","Generácia":"Recent"}
+        self.assertEqual(missing_axes(desired,[("Size","M")]),[("Generácia","Recent")])
+        self.assertEqual(missing_axes(desired,list(desired.items())),[])
+        with self.assertRaises(ReviewError):
+            missing_axes(desired,[("Size","XL")])
