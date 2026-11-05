@@ -11,7 +11,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_review as review
-from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery
+from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
 from inventory_hub.services.atomer_source_state import archive
@@ -154,4 +154,33 @@ async def recover_generation_fields(action: Literal["fields","adopt"],mode: Lite
     try:
         return await atomer_generation_recovery.process(db,selection,mode,_actor(request),action=="adopt")
     except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
+
+
+@router.get("/availability-options")
+async def availability_options(kind: Literal["default","OnRequest","NotAvailable","InStock","Custom"]="default",
+                               native_id:int|None=Query(None,gt=0)):
+    return await asyncio.to_thread(atomer_generation_availability.registry,kind,native_id)
+
+
+class AvailabilityBinding(atomer_generations.Strict):
+    selection: atomer_generations.Selection
+    options: dict[repairs.Token,Annotated[int,Query(gt=0)]]
+
+
+@router.post("/generation-availability/{mode}")
+async def generation_availability(mode:Literal["preview","apply"],binding:AvailabilityBinding,request:Request,
+                                  db: AsyncSession=Depends(get_session)):
+    try:
+        return await atomer_generation_availability.bind(db,binding.selection,mode,_actor(request),binding.options)
+    except (ReviewError,CatalogError,SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
+
+
+@router.post("/generation-card-review/{mode}")
+async def record_generation_review(mode: Literal["preview","apply"], selection: atomer_generations.Selection,
+                                   request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_generation_cards.finish_cards(db,selection,mode,_actor(request),record_pending=True)
+    except (ReviewError,CatalogError,SourceError) as error:
         raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None

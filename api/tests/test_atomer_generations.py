@@ -89,3 +89,29 @@ class GenerationTests(unittest.TestCase):
         self.assertTrue(gen.same_image("https://cdn.example/abcd-12345.jpeg","https://store.example/12345.jpg"))
         self.assertFalse(gen.same_image("https://cdn.example/abcd-012345.jpeg","https://store.example/12345.jpg"))
         self.assertFalse(gen.same_image("https://cdn.example/abcd-12345.png","https://store.example/12345.jpg"))
+
+    def test_pending_availability_does_not_waive_another_field(self):
+        from unittest.mock import patch
+        from inventory_hub.services.atomer_generation_availability import verify_except_availability
+        doc=dict(additions={"A":{"availability":"Five days"}},observed_ids={"A":123})
+        obs=dict(variants=[{"code":"A","availability":"In stock"}])
+        with patch.object(gen,"observe",return_value=({"A":123},[])) as check:
+            self.assertEqual(verify_except_availability(doc,obs),{"A":("In stock","Five days")})
+            self.assertEqual(check.call_args.args[0]["additions"]["A"]["availability"],"In stock")
+            self.assertEqual(doc["additions"]["A"]["availability"],"Five days")
+        with patch.object(gen,"observe",return_value=({"A":123},["price"])):
+            with self.assertRaises(ReviewError):
+                verify_except_availability(doc,obs)
+
+    def test_refreshed_review_uses_current_exact_availability(self):
+        from inventory_hub.services.atomer_progress_store import apply_availability_reviews
+        row=dict(code="A",target_code="A",product_id="52",variant_id="21",state="linked",reasons=[])
+        observed=[dict(pid="52",vid="21",code="A",availability="Stock")]
+        expected=[("A","52","21","Five days")]
+        apply_availability_reviews([row],observed,expected)
+        self.assertEqual(row["state"],"review")
+        self.assertEqual(row["availability_review"]["xtrek"],"Stock")
+        ok=dict(row,state="linked",reasons=[])
+        observed[0]["availability"]="Five days"
+        apply_availability_reviews([ok],observed,expected)
+        self.assertEqual(ok["state"],"linked")

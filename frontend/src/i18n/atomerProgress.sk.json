@@ -89,6 +89,7 @@
     "ean_differs": "EAN sa líši od xTrek.",
     "parent_differs": "Rodina má viac možných materských produktov.",
     "parameters_differ": "Parametre variantu sa líšia od Atomeru.",
+    "availability_differs": "Dostupnosť variantu v xTreku sa líši od Atomeru. Presné hodnoty sú vo výsledku kontroly.",
     "occupied_parameters": "Rovnakú kombináciu parametrov má iná položka xTrek.",
     "card_identity_conflict": "Identifikátory skladovej karty si odporujú.",
     "multiple_cards": "Do úvahy prichádza viac kariet.",

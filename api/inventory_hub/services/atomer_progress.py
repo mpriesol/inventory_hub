@@ -120,7 +120,7 @@ def flatten_catalog(products, variants):
                     if name and values:
                         params.setdefault(_norm(name), []).extend(_norm(value) for value in values)
             leaves.append(dict(code=code or "", pid=pid, vid=vid, parent=(p.get("code") or "") if variant else "",
-                               stock=child.get("stock"), ean=child.get("ean") or "", brand=p.get("manufacturer") or "", axes=params,
+                               stock=child.get("stock"), availability=child.get("availability"), ean=child.get("ean") or "", brand=p.get("manufacturer") or "", axes=params,
                                title=next((d.get("title") for d in p.get("descriptions") or []
                                            if d.get("language") == "sk" and d.get("title")), None),
                                **_navigation(p, child)))

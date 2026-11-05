@@ -88,3 +88,5 @@ Operátor môže na presne vybranej rodine uložiť výrobcom doložené rozlí�
 Po prevzatí nových listov cez skladový import overí voľba `finishGenerationCards` natívne ID, jednoznačného vlastníka EAN a väzbu na konkrétnu skladovú kartu. Doplní chýbajúce potvrdené osi novej karty a uzavrie riadok s ID karty aj obchodu.
 
 Ak vytvorenie variantu ovplyvní cenu rodiča, samostatná obnova porovná konkrétne nové ID, pôvodné listy a uložené ceny. Upraví len preukázaný rozdiel. Hmotnosť na dopravu prevádza z kg na celé gramy a pri oprave dostupnosti posiela iba dostupnosť. Výber týchto presných ID možno odovzdať spoločnému skladovému importu.
+
+Natívny číselník dostupností sa dá prečítať cez `availability-options` pre jednotlivý dokumentovaný typ alebo konkrétne ID. Výslovne zvolené ID musí súhlasiť s názvom z Atomeru aj pri priamom overení v obchode. Ak je preukázaná iba nezhoda dostupnosti, `pendingGenerationCards` zaznamená obe ID aj obe hodnoty, uloží osi variantu a ponechá riadok blokovaný.
