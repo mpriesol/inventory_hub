@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { bikeStates, progressStates, readProgress, refreshProgress, ProgressPage, ProgressRow, ProgressFamily } from '../api/atomerProgress';
 import './OpeningStockPage.css';
@@ -53,8 +54,8 @@ export function AtomerMigrationProgress() {
   },[run?.id]);
   function filter(set: (x:string)=>void, value: string) { setOffset(0); setExpanded(new Set()); set(value); }
   const anchors = (web: string | null | undefined, admin: string | null | undefined) =>
-    <div className="progress-shop-links">{web && <a href={web} target="_blank" rel="noopener noreferrer">{m('web')} ↗</a>}
-      {admin && <a href={admin} target="_blank" rel="noopener noreferrer">{m('admin')} ↗</a>}</div>;
+    <div className="progress-shop-links">{web && <a href={web} target="_blank" rel="noopener noreferrer">{m('web')} <ExternalLink size={12} aria-hidden="true" /></a>}
+      {admin && <a href={admin} target="_blank" rel="noopener noreferrer">{m('admin')} <ExternalLink size={12} aria-hidden="true" /></a>}</div>;
   function itemRow(r: ProgressRow, child=false) {
     const shopTitle = (code: string|null, product: string|null, variant: string|null) =>
       [code, product && 'ID '+product, variant && 'ID '+variant].filter(Boolean).join(' · ');
@@ -98,6 +99,10 @@ export function AtomerMigrationProgress() {
         : <span className="progress-good">{m('verified')}</span>}</td>
       </tr>{open && g.items.map(r=>itemRow(r,true))}</React.Fragment>;
   }
+  const upload = <div className="progress-upload">
+    <label>{m('file')} <input ref={input} type="file" accept=".xml,application/xml,text/xml" onChange={e=>setFile(e.target.files?.[0]||null)} /></label>
+    <button type="button" disabled={!file || pending || !page} onClick={()=>void update(file)}>{m('useFile')}</button>
+  </div>;
   return <main className="opening-stock atomer-progress">
     <Link className="opening-stock-back" to="/shops">{m('back')}</Link>
     <header><h1>{m('title')}</h1><p>{m('scope')}</p></header>
@@ -110,10 +115,9 @@ export function AtomerMigrationProgress() {
       </div>
       <p className="progress-meta">{m('asOf')} {date(run.checked_at)} · {m('source')} {date(run.imported_at)} · {num(run.totals.items)} {m('codes')}</p>
     </>}
-    <section className="opening-stock-panel progress-tools">
-      {run && <button type="button" disabled={pending || reading} onClick={()=>void update(null)}>{m('refresh')}</button>}
-      <label>{m('file')} <input ref={input} type="file" accept=".xml,application/xml,text/xml" onChange={e=>setFile(e.target.files?.[0]||null)} /></label>
-      <button type="button" disabled={!file || pending || !page} onClick={()=>void update(file)}>{m('useFile')}</button>
+    <section className={run?'progress-tools progress-compact-tools':'opening-stock-panel progress-tools'}>
+      {run ? <><button type="button" disabled={pending || reading} onClick={()=>void update(null)}>{m('refresh')}</button>
+        <details><summary>{m('replaceSource')}</summary>{upload}</details></> : upload}
       {pending && <span role="status">{m('refreshing')}</span>}
     </section>
     {page && !run && !pending && <p>{m('emptySource')}</p>}

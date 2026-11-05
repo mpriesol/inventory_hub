@@ -1,4 +1,5 @@
 {
+  "replaceSource": "Vymeniť export Atomeru",
   "bikeReasons": {
     "card_conflict": "Nejednoznačná karta v Hube",
     "incomplete_link": "Väzbe chýba kód alebo natívne ID",
