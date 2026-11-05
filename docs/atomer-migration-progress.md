@@ -84,3 +84,5 @@ vlastníctva karty a explicitne vybraných položiek. Fyzické množstvá sa tý
 ### Generácie v jednej rodine
 
 Operátor môže na presne vybranej rodine uložiť výrobcom doložené rozlíšenie generácií. Prvá fáza doplní parameter Generácia na vymenované existujúce natívne ID. Druhá fáza pridá nové SKU z archivovaného Atomeru a zaznamená natívne ID pridelené xTrekom. Privátny plán obsahuje revízie, očakávané EAN a úplný zoznam pôvodných variantov rodiča. Obe fázy vyžadujú aktuálny náhľad. Hub zachová zálohu rodiča, pôvodné parametre, HTML zdroja a výsledok spätného čítania. Prírastky skladu z dostupnosti dodávateľa sa spracúvajú samostatne. Pri nejasnom výsledku Hub opakuje iba čítanie.
+
+Po prevzatí nových listov cez skladový import overí voľba `finishGenerationCards` natívne ID, jednoznačného vlastníka EAN a väzbu na konkrétnu skladovú kartu. Doplní chýbajúce potvrdené osi novej karty a uzavrie riadok s ID karty aj obchodu.
