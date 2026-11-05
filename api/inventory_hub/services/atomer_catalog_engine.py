@@ -88,6 +88,16 @@ def _campaign_id(s):
     return sha256(f'xtrek/{s.source_sha}/{s.admin_sha}'.encode()).hexdigest()
 
 
+def _wake(c,changed):
+    if not c:
+        return False
+    if c['state']=='paused':
+        return True
+    reason=(c.get('problem') or '').casefold()
+    quota=any(marker in reason for marker in ('limit upgates','rate_limited','budget_deferred','http 429'))
+    return c['state']=='waiting' and not quota and bool(changed or c.get('failures',0))
+
+
 async def process(db,selection,mode,actor):
     if mode not in ('preview','apply'):
         raise ReviewError('catalog_mode_invalid',422)
@@ -155,14 +165,22 @@ async def process(db,selection,mode,actor):
             await recheck.reschedule(db,context,dict(job),pin,mode,actor)
         fresh=context['selection']
     if mode=='apply':
+        wake=_wake(current,fresh!=merged or selection.requeue)
         await _exec(db,"""INSERT INTO atomer_catalog_campaigns
             (id,run_id,source_sha,admin_sha,shop_fingerprint,actor,selection,state,checked_run_id)
             VALUES(:c,:r,:s,:a,:fp,:actor,CAST(:config AS jsonb),'running',:r)
             ON CONFLICT(id) DO UPDATE SET selection=excluded.selection,
                 options=CASE WHEN :new_options THEN '{}'::jsonb ELSE atomer_catalog_campaigns.options END,
-                state=CASE WHEN atomer_catalog_campaigns.state='waiting' THEN 'waiting' ELSE 'running' END,
+                state=CASE WHEN atomer_catalog_campaigns.state='waiting' AND NOT :wake THEN 'waiting' ELSE 'running' END,
+                next_at=CASE WHEN :wake THEN now() ELSE atomer_catalog_campaigns.next_at END,
+                failures=CASE WHEN :wake THEN 0 ELSE atomer_catalog_campaigns.failures END,
+                problem=CASE WHEN :wake THEN '' ELSE atomer_catalog_campaigns.problem END,
                 updated_at=now(),checked_run_id=:r
-        """,c=cid,r=head['id'],s=selection.source_sha,a=selection.admin_sha,fp=fp,actor=actor,config=_json(fresh),new_options=options_changed)
+        """,c=cid,r=head['id'],s=selection.source_sha,a=selection.admin_sha,fp=fp,actor=actor,config=_json(fresh),new_options=options_changed,wake=wake)
+        if wake:
+            await _exec(db,"""UPDATE atomer_catalog_jobs SET next_at=now(),attempts=0
+                   WHERE campaign=:c AND stage IN ('pending','fidelity') AND problem LIKE '%stock_publication_source_unavailable%'
+                   AND problem NOT ILIKE '%Limit Upgates%' AND problem NOT ILIKE '%HTTP 429%'""",c=cid)
         jobs=[dict(key=r['family_key'],size=r['size'],p=0 if r['family_key'] in pinned else r['p']) for r in entries]
         await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
             SELECT :c,j->>'key',(j->>'p')::int,(j->>'size')::int FROM jsonb_array_elements(CAST(:jobs AS jsonb)) j

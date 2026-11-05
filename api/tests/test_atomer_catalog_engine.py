@@ -26,6 +26,13 @@ def selection(**changes):
 
 
 class EngineSelectionTests(unittest.TestCase):
+    def test_apply_wakes_fixed_failure_without_bypassing_an_upstream_deadline(self):
+        waiting=dict(state='waiting',problem='stock_publication_source_unavailable',failures=4)
+        self.assertTrue(engine._wake(waiting,False))
+        self.assertTrue(engine._wake({**waiting,'state':'paused'},False))
+        self.assertTrue(engine._wake({**waiting,'problem':'registry','failures':0},True))
+        self.assertFalse(engine._wake({**waiting,'problem':'Limit Upgates. stock_publication_rate_limited'},True))
+        self.assertFalse(engine._wake({**waiting,'problem':'Čaká sa na spätnú kontrolu.','failures':0},False))
     def test_recovery_pins_run_family_and_current_operator_revisions(self):
         j=dict(campaign='c',family_key='v:P',stage='blocked',updated_at=datetime.now(timezone.utc))
         group=dict(revision=0); rows={'a':dict(revision=3,status='blocked')}

@@ -119,6 +119,11 @@ async def prepare(db,c,jobs):
     outbound={}
     for code,j in entries.items():
         plan=plans[code]
+        if plan.get('gallery_wait') and plan.get('status')=='partial' and j['attempts']<4:
+            await engine._job(db,c['id'],j['family_key'],'fidelity',document=j['document'],
+                       receipt={**j['receipt'],'content_result':safe_result(plan)},
+                       delay=120*(1+j['attempts']),increment=True,problem='Fotografie už čakajú na spracovanie v xTreku.')
+            continue
         if plan['status']!='ready':
             await engine._job(db,c['id'],j['family_key'],'fidelity',document=j['document'])
             await conclude(db,c,j,plan)
