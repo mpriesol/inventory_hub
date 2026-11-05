@@ -1,4 +1,5 @@
 """Additive card-only preparation from a claimed leaf of the pinned full Atomer export."""
+import asyncio
 from collections import defaultdict
 
 from sqlalchemy import select, text
@@ -28,14 +29,17 @@ def physical_subject(row,archived):
     require(len(code)<=100 and code==code.strip() and code and all(ord(c)>=32 and ord(c)!=127 for c in code)
             and not (set(archived.get('gtin_owners') or ())|set(archived.get('corrected_gtin_owners') or ()))-permitted,
             'atomer_source_card_identity_not_unique')
-    require(row['state'] in ('needs_both','needs_target') and not row['reasons'] and not row.get('candidates')
-            and row.get('bike_state')!='review' and row.get('product_id') is None,'atomer_source_card_requires_review')
+    eligible=(row['state'] in ('needs_both','needs_target') and row.get('product_id') is None or
+              row['state']=='needs_card' and row.get('product_id') and not row.get('hub_id') and row.get('target_code')==code)
+    require(eligible and not row['reasons'] and not row.get('candidates') and row.get('bike_state')!='review',
+            'atomer_source_card_requires_review')
 
 
 async def _cached_native(db,shop_ids,codes,gtins):
     # Parent-level stock listings with variants are never included as individual articles.
     result=await db.execute(text("""
-        SELECT s.shop_id,s.data->>'code',s.data->>'product_id',leaf->>'code',leaf->>'variant_id',leaf->'ean'
+        SELECT s.shop_id,s.data->>'code',s.data->>'product_id',leaf->>'code',leaf->>'variant_id',leaf->'ean',
+            s.data->'variants_exists_yn',s.data->'set_yn',leaf->>'product_id',leaf->>'product_code',s.pulled_at
         FROM shop_product_content s
         CROSS JOIN LATERAL jsonb_array_elements(CASE
             WHEN jsonb_typeof(s.data->'variants')='array' AND s.data->'variants'!='[]'::jsonb
@@ -45,15 +49,56 @@ async def _cached_native(db,shop_ids,codes,gtins):
                SELECT 1 FROM regexp_split_to_table(coalesce(leaf->>'ean',''),'[^0-9]+') AS tokens(val)
                WHERE val=ANY(CAST(:gtins AS text[]))))
     """),dict(shops=shop_ids,codes=list(codes),gtins=list(gtins)))
-    by_code,by_gtin=defaultdict(list),defaultdict(list)
-    for shop,parent,pid,code,vid,ean in result:
+    by_code,by_gtin=defaultdict(list),defaultdict(list); proven={}
+    for shop,parent,pid,code,vid,ean,has_variants,is_set,leaf_pid,leaf_parent,checked in result:
         values=tuple(str(x) for x in (ean if isinstance(ean,list) else [ean]) if x)
         record=RemoteIdentity(shop,code or '',vid is not None,vid or pid,parent if vid is not None else None,
                               values,external_product_id=pid)
+        if checked and is_set is not True and (vid is None and has_variants is False and code==parent
+                 or vid and has_variants is True and leaf_pid==pid and leaf_parent==parent):
+            proven[record]=('shop_product_content',checked.isoformat())
         by_code[record.code.casefold()].append(record)
         for gtin in barcode_keys(values):
             by_gtin[gtin].append(record)
-    return by_code,by_gtin
+    return by_code,by_gtin,proven
+
+
+def _archived_targets(rows,shop_id):
+    from inventory_hub.services import atomer_card_batch as cards
+    wanted={cards.native_key((r['product_id'],r.get('variant_id'))) for r in rows}
+    directory=cards.pull._cache_path('xtrek').parent/'atomer-card-catalog-v1'
+    parents,checked=cards.checkpoint.archived_parents(directory,cards.target_fingerprint('xtrek'),{p for p,_ in wanted})
+    observed={}
+    for pid,parent in parents.items():
+        variants=parent.get('variants') or []
+        if parent.get('set_yn') is True or parent.get('variants_exists_yn') is not bool(variants):
+            continue
+        for v in variants or [parent]:
+            vid=str(v['variant_id']) if v.get('variant_id') is not None else None
+            if (pid,vid) not in wanted or not v.get('code') or (vid is not None and
+                    (str(v.get('product_id'))!=pid or v.get('product_code')!=parent.get('code'))):
+                continue
+            raw=v.get('ean'); barcodes=raw if isinstance(raw,list) else [raw] if raw else []
+            rec=RemoteIdentity(shop_id,v['code'],bool(variants),vid or pid,parent.get('code') if variants else None,
+                               tuple(map(str,barcodes)),external_product_id=pid)
+            observed[rec]=('certified_shop_checkpoint',checked)
+    return observed
+
+
+def cached_target(source,shop_id,nearby,proofs):
+    from inventory_hub.services import atomer_card_batch as cards
+    pid,vid=cards.native_key((source['product_id'],source.get('variant_id')))
+    variant=source['kind']=='variant'
+    candidates={r for r in nearby if r.shop_id==shop_id}
+    cards.require(len(candidates)==1,'source_card_cached_target_missing_or_ambiguous')
+    r=candidates.pop(); gtin=barcode_keys([source.get('ean')]); other=source.get('target_ean')
+    cards.require(r in proofs and r.code==source['code']==source.get('target_code') and
+                  r.is_variant==variant==(vid is not None) and r.external_product_id==pid and r.external_id==(vid or pid) and
+                  (not variant or r.parent_code==source.get('parent')==source.get('target_parent')) and
+                  len(gtin)==1 and gtin==barcode_keys([other])==barcode_keys(r.barcodes),
+                  'source_card_cached_target_not_exact')
+    origin,checked=proofs[r]
+    return dict(product_id=pid,variant_id=vid,sku=r.code,gtins=sorted(gtin),source=origin,observed_at=checked)
 
 
 async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_corrections=None,zero_barcode_sentinels=None):
@@ -84,16 +129,25 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
             cards.require(cards.effective_scope(item,family,scopes.get(code))!='biketrek','biketrek_only_requires_native')
             a=detail.get('source_card')
             physical_subject(row,a)
+            if row['state']=='needs_card':
+                cards.native_key((row['product_id'],row.get('variant_id')))
             if code in zero_ids:
                 cards.require(a.get('parent') is None and a['native_id']==zero_ids[code],'atomer_zero_barcode_subject_changed')
-            source=cards.barcode_subject(row,corrections.get(code),zero_ids.get(code))
+            source=cards.barcode_subject(row,corrections.get(code),zero_ids.get(code),a['native_id'])
             ready[code]=source,a
         except cards.CardConflict as err:
             results[code]=cards.fail(err)
     if not ready:
         return results
     all_eans={val for source,_ in ready.values() for val in ProductIdentifierService.gtin_equivalents(source.get('ean') or '')}
-    by_code,by_gtin=await _cached_native(db,[s.id for s in shops.values()],{k.casefold() for k in ready},all_eans)
+    by_code,by_gtin,cached_proofs=await _cached_native(db,[s.id for s in shops.values()],{k.casefold() for k in ready},all_eans)
+    existing=[r for r,_ in ready.values() if r['state']=='needs_card']
+    if existing:
+        for rec,witness in (await asyncio.to_thread(_archived_targets,existing,shops['xtrek'].id)).items():
+            cached_proofs[rec]=witness
+            by_code[rec.code.casefold()].append(rec)
+            for value in barcode_keys(rec.barcodes):
+                by_gtin[value].append(rec)
     other=defaultdict(set)
     for val,owner in (await db.execute(select(ProductIdentifier.value,ProductIdentifier.product_id).where(
                      ProductIdentifier.value.in_(set(ready)|all_eans)))).all():
@@ -102,7 +156,35 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
         SELECT source_code_fold,product_id FROM product_sku_identities WHERE source_code_fold=ANY(CAST(:codes AS text[]))
     """),dict(codes=[s.casefold() for s in ready])):
         other[code].add(owner)
-    claims={};claimed=defaultdict(set)
+    # Only this migration's own as-yet blank cards can receive a subsequently
+    # proven manufacturer's GTIN. A historic SKU match alone is insufficient.
+    prior={}
+    if corrections:
+        for code,owner,iid,raw in await db.execute(text("""
+            SELECT a.code,a.card_id,original->>'source_native_id',original->>'source_ean'
+            FROM atomer_catalog_source_cards a JOIN products p ON p.id=a.card_id
+            JOIN atomer_progress_runs original_run ON original_run.id=a.run_id
+            JOIN atomer_progress_runs current_run ON current_run.id=:run AND (original_run.id=current_run.id
+              OR original_run.source_sha256=current_run.source_sha256
+                 AND original_run.admin_export_sha256=current_run.admin_export_sha256)
+            CROSS JOIN LATERAL (VALUES (coalesce(a.evidence->'creation_evidence',a.evidence))) AS proof(original)
+            WHERE a.code=ANY(CAST(:codes AS text[])) AND a.created
+              AND original->>'status'='card_ready' AND original->>'card_id'=CAST(p.id AS text)
+              AND original->>'hub_sku'=p.sku AND original->'gtins'='[]'::jsonb
+              AND p.sku=a.code AND p.created_from_source='atomer'
+              AND NOT EXISTS (SELECT 1 FROM product_identifiers i WHERE i.product_id=p.id
+                  AND i.identifier_type IN ('ean','upc','unverified_barcode'))
+              AND NOT EXISTS (SELECT 1 FROM product_editor_overrides o WHERE o.product_id=p.id AND (o.data->'variant') ? 'eans')
+        """),dict(run=run_id,codes=list(corrections))):
+            prior[(code,owner)]=(iid,raw or '')
+    for value,owner in await db.execute(text("""
+        SELECT val,o.product_id FROM product_editor_overrides o CROSS JOIN LATERAL
+          jsonb_array_elements_text(CASE WHEN jsonb_typeof(o.data->'variant'->'eans')='array'
+                                         THEN o.data->'variant'->'eans' ELSE '[]'::jsonb END) vals(val)
+        WHERE val=ANY(CAST(:gtins AS text[]))
+    """),dict(gtins=list(all_eans))):
+        other[value].add(owner)
+    claims={};claimed=defaultdict(set);enrich=set();target_proofs={}
     for code,(source,a) in ready.items():
         try:
             ean=source.get('ean') or ''
@@ -115,6 +197,8 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
             nearby=set(by_code.get(code.casefold(),()))
             for gtin in gtins:
                 nearby.update(by_gtin.get(gtin,()))
+            if source['state']=='needs_card':
+                target_proofs[code]=cached_target(source,shops['xtrek'].id,nearby,cached_proofs)
             physical=defaultdict(set)
             for spec in nearby:
                 cards.require(spec.code and spec.external_product_id and spec.external_id,'cached_native_identity_incomplete')
@@ -131,8 +215,14 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
                 p=local.products[owner]
                 cards.require(p.is_active and p.item_type=='stock' and
                               (p.sku==code or p.created_from_source!='atomer'),'source_card_owner_unavailable')
-                cards.require(not gtins or not gtins.isdisjoint(barcode_keys(local.product_barcodes.get(owner,()))),
+                existing=barcode_keys(local.product_barcodes.get(owner,()))
+                can_add=(gtins and not existing and code in corrections and
+                         not corrections[code].get('required_card_id') and
+                         prior.get((code,owner))==(a['native_id'],a.get('ean') or ''))
+                cards.require(not gtins or not existing.isdisjoint(gtins) or can_add,
                               'existing_card_gtin_requires_verification')
+                if can_add:
+                    enrich.add(code)
                 current_links=[m for index in indexes.values() for m in index.by_product.get(owner,())]
                 cards.require(all(m.external_code and m.external_product_id and (not m.is_variant or m.external_variant_id)
                                   and not m.push_pending for m in current_links),'source_card_pending_or_incomplete_link')
@@ -151,10 +241,17 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
                 results[code]=cards.fail('one_physical_leaf_claimed_twice')
     created=set()
     for code,owner in claims.items():
-        if owner:
-            continue
         source,a=ready[code]
         try:
+            if owner:
+                if code in enrich:
+                    async with db.begin_nested():
+                        await db.execute(select(Product.id).where(Product.id==owner).with_for_update())
+                        existing=await db.scalar(select(ProductIdentifier.id).where(ProductIdentifier.product_id==owner,
+                                ProductIdentifier.identifier_type.in_(('ean','upc','unverified_barcode'))).limit(1))
+                        cards.require(existing is None,'source_card_concurrent_identity')
+                        await ProductIdentifierService(db).add_identifier(owner,source['ean'],is_primary=True)
+                continue
             async with db.begin_nested():
                 name=a.get('name') or a.get('parent_name') or code
                 brand=a.get('brand') or None
@@ -190,4 +287,8 @@ async def source_cards(db,run_id,details_by_code,*,actor,scopes=None,barcode_cor
                            source_native_id=a['native_id'],source_ean=a.get('ean') or None)
         if source.get('barcode_evidence'):
             results[code]['barcode_evidence']=source['barcode_evidence']
+        if code in target_proofs:
+            results[code]['cached_native_target']=target_proofs[code]
+        if code in enrich:
+            results[code]['gtin_added']=source['ean']
     return results

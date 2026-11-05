@@ -215,6 +215,14 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         self.assertEqual(d['missing_categories'],['Other'])
         self.assertEqual(d['seo_keywords'],'private original')
 
+    def test_related_reference_with_comma_is_one_source_code(self):
+        i=src.Catalog([row('Item','100',other=[('Súvisiace tovary','One,Model 2,5,Broken')]),
+                       row('One','200'),row('Model 2,5','300')])
+        d=document(i,'Item',options={'reference_codes':{'Model 2,5':'Remote'}})
+        self.assertEqual(d['related'],['Broken','Model 2,5','One'])
+        self.assertEqual(d['payload']['related'],['Remote'])
+        self.assertEqual(d['missing_source_references'],['Broken'])
+
     def test_malformed_ean_needs_exact_supplier_proof_and_valid_target(self):
         i=src.Catalog([row('Item','100',ean='bad')])
         with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
@@ -232,6 +240,11 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         corrected=document(blank,'Item',options={'barcode_corrections':{'Item':{**proof,'before':'','required_card_id':13}}})
         self.assertEqual(corrected['payload']['ean'],EAN)
         self.assertEqual(corrected['barcode_corrections']['Item']['required_card_id'],13)
+        pinned={**proof,'before':'','required_atomer_id':'100'}
+        self.assertEqual(document(blank,'Item',options={'barcode_corrections':{'Item':pinned}})['payload']['ean'],EAN)
+        for wrong in ('101',100,'0100'):
+            with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
+                document(blank,'Item',options={'barcode_corrections':{'Item':{**pinned,'required_atomer_id':wrong}}})
 
     def test_only_alphanumeric_sku_repeated_in_barcode_is_an_unset_gtin(self):
         i=src.Catalog([row('ABC-123','100',ean='ABC-123')])
@@ -278,6 +291,32 @@ class CompleteAtomerSourceTest(unittest.TestCase):
         d=document(i,'Group')
         self.assertNotIn('ean',d['payload'])
         self.assertEqual(d['source_parent_barcode']['owners'],['CHILD'])
+
+    def test_corrected_gtin_checks_hidden_and_equivalent_source_and_other_proposal(self):
+        old='036000291452'
+        proof={'parent':'Group','before':'x','ean':'0'+old,'manufacturer_or_supplier':'https://brand.example/item',
+               'evidence':'Manufacturer confirms this exact SKU and barcode.'}
+        rows=[row('Group','100'),row('Child','101','Group',ean='x'),row('Sibling','102','Group')]
+        options={'partial_barcodes':True,'barcode_corrections':{'Child':proof}}
+        hidden=src.Catalog([*rows,row('Hidden','150',ean=old,active=False)])
+        doc=document(hidden,'Group',options=options)
+        held=doc['deferred_leaves']['Child']
+        self.assertEqual(held['reason'],'new_corrected_ean_owner_conflict')
+        self.assertEqual(held['source_owners'],['Hidden'])
+        self.assertEqual([v['code'] for v in doc['payload']['variants']],['Sibling'])
+        # An unrelated source technical parent also blocks a supplier correction.
+        wrong=src.Catalog([*rows,row('OtherGroup','500',ean=old),row('Another','501','OtherGroup')])
+        self.assertEqual(document(wrong,'Group',options=options)['deferred_leaves']['Child']['source_owners'],['OtherGroup'])
+        ours=src.Catalog([row('Group','100',ean=old),*rows[1:]])
+        clean=document(ours,'Group',options=options)
+        self.assertEqual(clean['deferred_leaves'],{})
+        self.assertEqual(clean['source_parent_barcode']['status'],'reserved_by_supplier_leaf')
+        self.assertNotIn('ean',clean['payload'])
+        self.assertEqual(clean['payload']['variants'][0]['ean'],'0'+old)
+        options['barcode_corrections']['Other']={**proof,'parent':'Other','ean':old}
+        contested=document(ours,'Group',options=options)['deferred_leaves']['Child']
+        self.assertEqual(contested['supplier_owners'],['Other'])
+        self.assertEqual(contested['source_owners'],['Group'])
 
     def test_optional_weights_bonus_points_and_duplicate_asset_caption_keep_evidence(self):
         child=tuple((k,v) for k,v in row('A','101','Group',other=[('Body navyše','7')]) if k!='Váha')

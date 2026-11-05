@@ -130,12 +130,16 @@ def collect(client,directory,fp):
             state=json.loads(saved[0]) if saved else None
             if not state:
                 state={'phase':'pages','page':1,'base_started':_now().isoformat(),'phase_before_delta':'pages'}
+            elif state['phase']=='ready':
+                # Start a new observation window on use, not when a previous
+                # reader closed the database (which could be hours ago).
+                _begin_delta(db,state)
             if state['phase']=='certify':
                 if _certify(db,state,client):
                     result=[json.loads(r[0]) for r in db.execute('SELECT payload FROM parents ORDER BY id')]
                     # Leave a complete source-pinned checkpoint in place through cache-save or process loss.
-                    state.update(base_started=state['final_started'],base_count=len(result),phase_before_delta='validate')
-                    _begin_delta(db,state)
+                    state.update(base_started=state['final_started'],base_count=len(result),
+                                 phase='ready',phase_before_delta='validate')
                     _state(db,state)
                     db.commit()
                     return result
@@ -144,3 +148,22 @@ def collect(client,directory,fp):
             _state(db,state)
             db.commit()
     raise export.ExportError('upgates_export_catalog_changed')
+
+
+def archived_parents(directory,fp,ids):
+    """Read only the last certified local observations. Never triggers a shop request."""
+    path=directory/(fp+'.sqlite3') if fp else None
+    if not path or not path.is_file() or not ids:
+        return {},None
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+        db.execute('BEGIN')
+        stored=db.execute('SELECT document FROM cursor WHERE id=1').fetchone()
+        if not stored:
+            return {},None
+        state=json.loads(stored[0]); checked=state.get('final_started')
+        before_delta=(state.get('phase')=='delta' and state.get('page')==1 and state.get('delta_count') is None
+                      and state.get('phase_before_delta')=='validate' and state.get('base_started')==checked)
+        if not checked or state.get('phase')!='ready' and not before_delta:
+            return {},None
+        rows=db.execute('SELECT id,payload FROM parents WHERE id IN ('+','.join('?' for _ in ids)+')',list(ids))
+        return {str(pid):json.loads(payload) for pid,payload in rows},checked

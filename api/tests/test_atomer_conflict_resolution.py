@@ -65,17 +65,60 @@ class GenerationObservationTests(unittest.TestCase):
             with self.assertRaises(ReviewError):
                 resolution.validate_owner_pair(altered)
 
-    def test_native_inspection_rejects_changed_sku_even_when_id_matches(self):
+    def test_reads_only_thin_parents_and_exact_skus_for_point_of_sale_variants(self):
         from unittest.mock import MagicMock, patch
         card = resolution.PairCard(id=4, sku='ITEM', link=20, product_id='9', variant_id='15', ean='9780306406157',
                                    source_before='', source_parent='PARENT')
-        remote = {'product_id': 9, 'code': 'PARENT', 'variants': [{'variant_id': 15, 'code': 'ITEM', 'stock': None}]}
-        with patch.object(resolution.transport, '_client', return_value=MagicMock()), patch.object(resolution.batch,
-                'collect_pages', return_value=[remote]):
-            self.assertIsNone(resolution.native_pair_links([card], 'target')[4]['stock']['quantity'])
-            remote['variants'][0]['code'] = 'OTHER'
-            with self.assertRaises(ReviewError):
+        solo = card.model_copy(update={'id': 5, 'sku': 'SOLO', 'product_id': '11', 'variant_id': None})
+        parents = [{'product_id': 9, 'code': 'PARENT', 'variants_exists_yn': True},
+                   {'product_id': 11, 'code': 'SOLO', 'variants_exists_yn': False, 'stock': 1}]
+        leaf = {'variant_id': 15, 'product_id': 9, 'product_code': 'PARENT', 'code': 'ITEM', 'stock': None}
+        client = MagicMock()
+        def read(client_arg, path, key, filters):
+            self.assertIs(client_arg, client)
+            if path == 'products':
+                self.assertEqual((key, filters), ('products', {'product_ids': '11;9', 'variants_yn': 'false'}))
+                return parents
+            self.assertEqual((path, key, filters), ('products/variants', 'variants', {'variant_codes': 'ITEM'}))
+            return [leaf]
+        with patch.object(resolution.transport, '_client', return_value=client), patch.object(resolution.batch,
+                'collect_pages', side_effect=read):
+            current = resolution.native_pair_links([solo, card], 'target')
+            self.assertIsNone(current[4]['stock']['quantity'])
+            self.assertEqual(current[5]['stock']['quantity'], '1')
+            for key, changed in [('product_code','OTHER'), ('product_id',11), ('variant_id',17), ('code','OTHER')]:
+                with self.subTest(key=key), patch.dict(leaf, {key:changed}), self.assertRaises(ReviewError):
+                    resolution.native_pair_links([solo, card], 'target')
+            with patch.dict(parents[1], {'variants_exists_yn': True}), self.assertRaises(ReviewError):
+                resolution.native_pair_links([solo, card], 'target')
+
+    def test_thin_read_distinguishes_response_failure_and_preserves_capacity_signal(self):
+        from unittest.mock import MagicMock, patch
+        card = resolution.PairCard(id=4, sku='ITEM', link=20, product_id='9', variant_id=None, ean='9780306406157',
+                                   source_before='', source_parent='ITEM')
+        client = MagicMock()
+        for failure, code in [(resolution.transport.SourceError('stock_publication_invalid_response'), 'barcode_owner_parent_response_invalid'),
+                              (resolution.transport.SourceError('stock_publication_rate_limited',429,45), 'stock_publication_rate_limited')]:
+            with patch.object(resolution.transport, '_client', return_value=client), patch.object(resolution.batch,
+                    'collect_pages', side_effect=failure), self.assertRaises(resolution.transport.SourceError) as caught:
                 resolution.native_pair_links([card], 'target')
+            self.assertEqual(caught.exception.code, code)
+            if failure.status == 429:
+                self.assertEqual(caught.exception.retry_after, 45)
+        self.assertEqual(client.session.close.call_count, 2)
+
+    def test_other_owner_can_keep_its_exact_untouched_batch_proposal(self):
+        row = {'code':'SOLO', 'state':'needs_target', 'reasons':[], 'bike_state':'linked', 'card_state':'exists'}
+        group = {'scope':'default'}
+        blank = {'status':'open','revision':0,'instruction':'','scope':'default'}
+        check = resolution.untouched_other_work
+        self.assertTrue(check(blank, group, row, 0, None))
+        queued = dict(blank, status='queued', revision=1, instruction=resolution.proposals.INSTRUCTIONS['targetX'])
+        self.assertTrue(check(queued, group, row, 1, 'approve_suggestions'))
+        self.assertFalse(check(queued, group, row, 0, 'approve_suggestions'))
+        self.assertFalse(check(queued, group, row, 1, 'save'))
+        self.assertFalse(check(dict(queued, instruction='Operator'), group, row, 1, 'approve_suggestions'))
+        self.assertFalse(check(dict(queued, status='working', revision=2), group, row, 2, 'claim'))
 
     def test_unreported_quantity_requires_explicit_null_on_exact_warehouse(self):
         from inventory_hub.services import atomer_generations as gen

@@ -169,7 +169,7 @@ async def prepare(db,c,jobs):
         try:
             scoped={j['document']['payload']['code']:j['receipt']['content_intent'] for j in checked}
             # Any result, failure or disconnect is followed by independent GETs.
-            await asyncio.to_thread(native.send_content,scoped,c['shop_fingerprint'])
+            await engine.send_once(native.send_content,scoped,c['shop_fingerprint'])
         except Exception as error:
             if engine._budget_error(error) and getattr(error,'request_sent',None) is False:
                 for j in checked:

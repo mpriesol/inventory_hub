@@ -87,7 +87,9 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
             await new Promise(resolve=>window.setTimeout(resolve,(sec+1)*1000));
           }
         }
-        const resultLabel=!preview&&r.status==='verified'&&(path==='/catalog-engine/'||path==='/approved-proposals/accept/')?'registered':r.status;
+        const storedInHub=['/catalog-engine/','/approved-proposals/accept/','/source-card-brands/',
+          '/barcode-owners/','/review-batch/reopen/','/generation-unreported-stock/'].includes(path);
+        const resultLabel=!preview&&r.status==='verified'&&storedInHub?'registered':r.status;
         setLog(v=>[...v,label+' · '+m(resultLabel)+' ('+r.count+') '+(r.reason||'')]);
         if (!['ready','verified'].includes(r.status)) return;
       }

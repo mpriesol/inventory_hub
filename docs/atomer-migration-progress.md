@@ -110,3 +110,9 @@ The source-card worker can prepare a missing sellable card from the pinned admin
 For an existing xTrek product, the worker reads the native family, compares the selected Atomer fields and records the intended changes before dispatch. Readback checks the original IDs and protected siblings. When an API limit is reached the Hub records the next allowed attempt. An uncertain write goes to readback. Exact revision tokens on individual families guard reconsideration after new evidence. Supplier barcode corrections, category mappings and conflict evidence are stored with the private campaign.
 
 An explicitly selected missing category can be restored under its verified native parent after a full-tree lookup. Upgates assigns the ID and the next lookup confirms its code, parent and menu setting before product use. Manual closures, store-specific decisions and financial or quantity discrepancies retain their own status.
+
+### Retrying a product or a card
+
+The campaign status gives each delayed phase its next retry time and reason. It reports native requests separately from work postponed locally by the shop quota. Priority products can share a native create request, and an interrupted write stays in observation until its outcome is known. Category restoration has a separate retry schedule.
+
+Submitting new manufacturer evidence queues only matching unresolved or blank local cards for another check. The original creation receipt stays available across retries and reindexing the same source. A card made by the migration can receive a previously missing GTIN once the source row, official evidence, card ID and ownership checks agree. The per-family detail distinguishes the local card receipt from the later shop and content receipts.

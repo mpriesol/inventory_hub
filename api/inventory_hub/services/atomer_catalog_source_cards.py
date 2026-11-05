@@ -1,5 +1,7 @@
 """Journal exact sellable Atomer -> Hub card assignments independently of shop quotas."""
 import asyncio
+from hashlib import sha256
+import json
 import logging
 
 from sqlalchemy import text
@@ -13,10 +15,11 @@ LOGGER=logging.getLogger(__name__)
 LOCAL_LOCK=691433153
 MAX_ROWS=500
 MAX_FAMILIES=100
-# Existing targets still require a current direct shop read. This lane processes
-# only cards for source leaves for which the complete report found no xTrek target.
-ELIGIBLE="""EXISTS (SELECT 1 FROM atomer_progress_items i WHERE i.run_id=:run AND i.family_key=j.family_key
-              AND i.state IN ('needs_both','needs_target'))"""
+# A current shop read still has to confirm any link. For needs_card this lane
+# uses a source-matched cached native identity only to prepare the private card.
+SOURCE_QUERY="SELECT 1 FROM atomer_progress_items i WHERE i.run_id=:run AND i.family_key=j.family_key"
+NEEDS_TARGET=f"EXISTS ({SOURCE_QUERY} AND i.state IN ('needs_both','needs_target'))"
+ELIGIBLE=f"EXISTS ({SOURCE_QUERY} AND i.state IN ('needs_both','needs_target','needs_card'))"
 
 
 def source_details(index,family,rows,selection,corrections):
@@ -46,6 +49,25 @@ def verified_sentinels(index,codes,pins):
     return result
 
 
+def source_ids(index,codes,corrections):
+    """Independently pin a supplier's previously empty source barcode to its sellable internal ID."""
+    result={}
+    for code in codes:
+        proof=corrections.get(code) or {}
+        desired=proof.get('required_atomer_id')
+        if not isinstance(desired,str) or not desired.isascii() or not desired.isdigit() or proof.get('before')!='':
+            continue
+        parent=proof.get('parent')
+        if not parent or index.parent_for(code)!=parent or index.sku_owners(code)!=(code,) or code not in index.leaves(parent):
+            continue
+        csv,_=index.family(parent)
+        allowed={code,parent}
+        if (not src.named(csv[code],'EAN kód').strip() and src.named(csv[code],'Interné číslo').strip()==desired
+                and set(index.gtin_owners(proof.get('ean') or ''))<=allowed):
+            result[code]=desired
+    return result
+
+
 def _one_subject(index,parent,data,rows,code,corrections):
     detail=rows[code]['detail']
     source=data[code]
@@ -71,6 +93,7 @@ async def due(db,c):
     return await engine._rows(db,f"""SELECT j.campaign,j.family_key,j.leaf_count,j.stage,j.guards,
               j.source_card_attempts FROM atomer_catalog_jobs j WHERE j.campaign=:cid
               AND j.source_card_stage='pending' AND j.source_card_next_at<=now()
+              AND coalesce(j.receipt->>'rollover','false')<>'true'
               AND j.stage IN ('pending','prepared','sending','observe','cards','related','fidelity','updating')
               AND {ELIGIBLE} ORDER BY j.priority,j.family_key LIMIT :lim""",
               cid=c['id'],run=c['checked_run_id'],lim=MAX_FAMILIES)
@@ -98,8 +121,15 @@ async def _receipts(db,c,f,codes):
           SELECT :c,:f,d->>'code',:run,d->>'state',(d->>'card_id')::bigint,(d->>'created')::boolean,d->'data'
           FROM jsonb_array_elements(CAST(:records AS jsonb)) d
           ON CONFLICT(campaign,code) DO UPDATE SET family_key=excluded.family_key,run_id=excluded.run_id,state=excluded.state,
-              card_id=excluded.card_id,created=coalesce(atomer_catalog_source_cards.created,excluded.created),
-              evidence=excluded.evidence,checked_at=now()""",c=c['id'],f=f,run=c['checked_run_id'],records=engine._json(records))
+              card_id=coalesce(excluded.card_id,atomer_catalog_source_cards.card_id),
+              created=CASE WHEN excluded.card_id IS NOT NULL AND excluded.card_id IS DISTINCT FROM atomer_catalog_source_cards.card_id
+                           THEN excluded.created ELSE coalesce(atomer_catalog_source_cards.created,excluded.created) END,
+              evidence=excluded.evidence || CASE
+                WHEN atomer_catalog_source_cards.evidence ? 'creation_evidence'
+                  THEN jsonb_build_object('creation_evidence',atomer_catalog_source_cards.evidence->'creation_evidence')
+                WHEN atomer_catalog_source_cards.created AND atomer_catalog_source_cards.state='card_ready'
+                  THEN jsonb_build_object('creation_evidence',atomer_catalog_source_cards.evidence)
+                ELSE '{}'::jsonb END,checked_at=now()""",c=c['id'],f=f,run=c['checked_run_id'],records=engine._json(records))
     await engine._exec(db,"""INSERT INTO atomer_catalog_proofs(campaign,family_key,code,state,evidence)
           SELECT :c,:f,d->>'code','partial',(d->'data')||'{"verification_scope":"source_card_only","reason":"Karta bola overená v Hube. Natívna väzba čaká na overenie."}'::jsonb
           FROM jsonb_array_elements(CAST(:records AS jsonb)) d WHERE (d->>'ok')::boolean
@@ -126,7 +156,7 @@ async def prepare(db,c,jobs):
                       source_card_problem='Zmenil sa pokyn operátora.' WHERE campaign=:c AND family_key=:f""",c=c['id'],f=f)
             continue
         keys=[k for k in engine._selected(g) if engine._scope_of(g,k)!='biketrek'
-              and rows[k]['detail']['state'] in ('needs_both','needs_target')]
+              and rows[k]['detail']['state'] in ('needs_both','needs_target','needs_card')]
         pending[f]=(j,keys)
         if not keys:
             continue
@@ -147,6 +177,10 @@ async def prepare(db,c,jobs):
                          **({'zero_barcode_sentinels':zero} if zero else {})))
     for f,(j,keys) in pending.items():
         outcomes={k:result[k] for k in keys}
+        for code, outcome in outcomes.items():
+            token = input_token(c['selection'], code)
+            if token:
+                outcome['source_card_input'] = token
         await _receipts(db,c,f,outcomes)
         failures=list(dict.fromkeys(str(v.get('reason') or 'source_card_unconfirmed') for v in outcomes.values()
                                    if v.get('status')!='card_ready'))
@@ -242,3 +276,43 @@ async def counts(db,c):
               AND (w.kind='item' AND w.key=b.code OR w.kind='family' AND w.key=b.family_key))) AS manual_exclusions
         FROM actual""",c=c['id'],r=c['checked_run_id'])
     return dict(data)
+
+
+def input_token(selection, code):
+    correction = selection.get('barcode_corrections', {}).get(code)
+    sentinel = selection.get('zero_barcode_sentinels', {}).get(code)
+    if correction is None and sentinel is None:
+        return None
+    raw = json.dumps([correction, sentinel], sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+    return sha256(raw.encode()).hexdigest()
+
+
+async def retry_new_evidence(db, campaign, selection, submitted_codes):
+    # Re-enter only the local lane. prepare() checks the complete source, the
+    # claimed revision and the current owners again before touching any card.
+    tokens = {k: input_token(selection, k) for k in submitted_codes}
+    if not tokens:
+        return
+    await engine._exec(db, """
+        UPDATE atomer_catalog_jobs j
+        SET source_card_stage='pending',source_card_next_at=now(),source_card_attempts=0,source_card_problem=''
+        WHERE j.campaign=:campaign AND j.source_card_stage IN ('checked','blocked')
+          AND j.stage=ANY(CAST(:runnable AS text[]))
+          AND EXISTS (SELECT 1 FROM atomer_catalog_source_cards s
+              JOIN jsonb_each_text(CAST(:tokens AS jsonb)) t ON t.key=s.code
+              WHERE s.campaign=j.campaign AND s.family_key=j.family_key
+                AND (s.state='blocked' OR s.state='card_ready' AND coalesce(s.evidence->>'ean','')='')
+                AND s.evidence->>'source_card_input' IS DISTINCT FROM t.value)
+    """, campaign=campaign, runnable=list(engine.RUNNABLE), tokens=engine._json(tokens))
+
+
+async def blocked_reasons(db, campaign):
+    rows = await engine._rows(db, """
+        SELECT left(s.evidence->>'reason',220) AS reason,count(*) AS leaves,
+               count(DISTINCT s.family_key) AS families,min(s.family_key) AS sample_family
+        FROM atomer_catalog_source_cards s
+        JOIN atomer_progress_items i ON i.code=s.code AND i.family_key=s.family_key AND i.run_id=:run
+        WHERE s.campaign=:campaign AND s.state='blocked'
+        GROUP BY left(s.evidence->>'reason',220) ORDER BY count(*) DESC,1 LIMIT 60
+    """, campaign=campaign['id'], run=campaign['checked_run_id'])
+    return [{**r, 'reason': engine._short_problem(r['reason'] or 'source_card_unconfirmed')} for r in rows]

@@ -4,7 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 import unittest
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -49,6 +49,43 @@ class CardIdentityTest(unittest.TestCase):
             with self.assertRaisesRegex(batch.CardConflict,'multiple_native_candidates'):
                 batch.choose_bike(item(),batch.Catalog.build(1,[target]))
 
+    def test_till_sibling_duplicate_only_blocks_its_physical_owners(self):
+        till=parent('TILL',900,[('CLEAR',81,GTIN),('DUPE-A',82,OTHER),('DUPE-B',83,OTHER)])
+        # The technical parent also repeats the clean sellable's barcode.
+        till['ean']=GTIN
+        catalog=batch.Catalog.build(1,[till])
+        self.assertIn('remote_barcode_duplicate',catalog.families[0]['reasons'])
+        self.assertEqual(batch.choose_bike(item('CLEAR'),catalog),('900','81'))
+        for code in ['82','83']:
+            with self.assertRaisesRegex(batch.CardConflict,'remote_barcode_duplicate'):
+                catalog.get(('900',code))
+
+    def test_duplicate_in_other_parent_also_holds_both_selected_owners(self):
+        first=parent('TILL',900,[('FIRST',81,GTIN)])
+        second={**parent('OTHER',7,[]),'ean':GTIN}
+        catalog=batch.Catalog.build(1,[first,second])
+        for key in [('900','81'),('7',None)]:
+            with self.assertRaisesRegex(batch.CardConflict,'remote_barcode_duplicate'):
+                catalog.get(key)
+
+    def test_large_till_reads_only_the_selected_codes_and_parent_header(self):
+        large=parent('TILL',900,[(f'SKU-{i}',i,GTIN if i==83 else '') for i in range(1,110)])
+        large['last_update_time']='2026-01-01T12:00:00+01:00'
+        native={**large['variants'][82],'parameters':[{'name':'Model','value':'A'}]}
+        lookups=[]
+        def read(client,path,key,filters):
+            lookups.append((path,filters))
+            return [{**large,'variants':[]}] if path=='products' else [native]
+        with patch.object(batch,'_client',return_value=Mock()),patch.object(batch,'target_fingerprint',return_value='f'), \
+                patch('inventory_hub.services.atomer_family_batch.collect_pages',side_effect=read),patch.object(batch,'_selected') as full:
+            parents,observed=batch._read_candidates('biketrek',batch.Catalog.build(1,[large]),{('900','83')})
+        full.assert_not_called()
+        self.assertEqual(lookups,[('products',{'product_ids':'900','variants_yn':'false'}),
+                                  ('products/variants',{'variant_codes':'SKU-83'})])
+        self.assertEqual(observed,{('900','83')})
+        self.assertEqual(len(parents['900']['variants']),109)
+        self.assertEqual(parents['900']['variants'][82],native)
+
     def test_missing_ean_cannot_change_parent_or_sellable_kind_by_sku_alone(self):
         self.assertIsNone(batch.choose_bike(item(ean=''),batch.Catalog.build(1,[])))
         target=parent('TILL',900,[('AT-CODE',81,'')])
@@ -92,6 +129,11 @@ class CardIdentityTest(unittest.TestCase):
                 batch.barcode_subject(src,proof)
         with self.assertRaisesRegex(batch.CardConflict,'evidence_changed'):
             batch.barcode_subject(item(ean=''),{**proof,'before':''})
+        blank={**proof,'before':'','required_atomer_id':'123'}
+        self.assertEqual(batch.barcode_subject(item(ean=''),blank,source_id='123')['ean'],OTHER)
+        for wrong in [None,'0123','124']:
+            with self.assertRaisesRegex(batch.CardConflict,'source_id_changed'):
+                batch.barcode_subject(item(ean=''),blank,source_id=wrong)
 
     def test_single_zero_can_only_be_omitted_for_a_source_pinned_standalone(self):
         row={**item(ean='0'),'parent':None,'kind':'standalone','family_key':'s:AT-CODE'}
@@ -158,7 +200,8 @@ class AtomerCardDatabaseTest(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for name in ('001_schema.sql','004_shop_product_content.sql','007_order_stock.sql','011_fifo.sql',
                          '012_product_editor.sql','014_supplier_availability.sql','019_stock_tracking.sql',
-                         '029_sku_policy.sql','037_atomer_progress.sql','038_atomer_review.sql'):
+                         '029_sku_policy.sql','037_atomer_progress.sql','038_atomer_review.sql',
+                         '040_atomer_catalog_campaign.sql','043_atomer_source_cards.sql'):
                 await connection.execute((root/name).read_text())
             await apply_current_core_schema(connection)
             await connection.execute("INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(repeat('a',64),1,'[]')")
@@ -234,3 +277,59 @@ class AtomerCardDatabaseTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((again['action'],again['card_id']),('reused',first['card_id']))
             for table,count in [('products',1),('shop_products',0),('stock_movements',0),('stock_balances',0)]:
                 self.assertEqual(await db.scalar(text(f'SELECT count(*) FROM {table}')),count)
+
+    async def test_needs_card_requires_exact_independent_cached_native_target(self):
+        code='NEW-CODE'
+        row={**item(code,OTHER),'state':'needs_card','product_id':'718','variant_id':'98','target_parent':'AT-PARENT',
+             'target_code':code,'target_ean':OTHER,'source_state':dict(product_origin='admin_csv',product=True,
+                                                                      variant_origin='admin_csv',variant=False)}
+        source=dict(code=code,parent='AT-PARENT',name='Preserved name',native_id='396',sku_owners=[code],gtin_owners=[code],
+                    ean=OTHER,product_active=True,variant_active=False)
+        cached=parent('AT-PARENT',718,[(code,98,OTHER)]); cached['set_yn']=False
+        async with self.sessions() as db:
+            await db.execute(text('UPDATE atomer_progress_items SET detail=CAST(:r AS jsonb) WHERE code=:c'),
+                             dict(r=json.dumps(row),c=code))
+            async def check():
+                return (await batch.source_cards(db,1,{code:{**row,'source_card':source}},actor='op'))[code]
+            with patch.object(batch,'_client',side_effect=AssertionError('unexpected remote call')):
+                self.assertEqual((await check())['reason'],'source_card_cached_target_missing_or_ambiguous')
+                cached['variants'][0]['variant_id']=77
+                await db.execute(text("INSERT INTO shop_product_content(shop_id,external_code,data) "
+                                     "VALUES ((SELECT id FROM shops WHERE code='xtrek'),'AT-PARENT',CAST(:p AS jsonb))"),
+                                 dict(p=json.dumps(cached)))
+                self.assertEqual((await check())['reason'],'source_card_cached_target_not_exact')
+                cached['variants'][0]['variant_id']=98
+                await db.execute(text("UPDATE shop_product_content SET data=CAST(:p AS jsonb)"),dict(p=json.dumps(cached)))
+                ready=await check()
+            self.assertEqual((ready['status'],ready['created'],ready['gtins']),('card_ready',True,[OTHER]))
+            self.assertEqual(ready['cached_native_target']['variant_id'],'98')
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM shop_products')),0)
+
+    async def test_later_manufacturer_ean_only_enriches_generated_card_with_its_prior_receipt(self):
+        code='NEW-CODE'
+        row=item(code,'')
+        row['source_state']=dict(product_origin='admin_csv',product=True,variant_origin='admin_csv',variant=False)
+        archived=dict(code=code,parent='AT-PARENT',name='Leaf',native_id='490',sku_owners=[code],gtin_owners=[],
+                      corrected_gtin_owners=[],ean='',product_active=True,variant_active=False)
+        proof=dict(before='',parent='AT-PARENT',required_atomer_id='490',ean=OTHER,
+                   manufacturer_or_supplier='https://example.org/source',evidence='Manufacturer reports the exact SKU, size and GTIN.')
+        async with self.sessions() as db:
+            await db.execute(text('UPDATE atomer_progress_items SET detail=CAST(:row AS jsonb) WHERE code=:c'),
+                             dict(row=json.dumps(row),c=code))
+            inputs={code:{**row,'source_card':archived}}
+            async def again(proofs=None):
+                return (await batch.source_cards(db,1,inputs,actor='op',barcode_corrections=proofs))[code]
+            first=await again()
+            self.assertTrue(first['created']); self.assertEqual(first['gtins'],[])
+            self.assertEqual((await again({code:proof}))['reason'],'existing_card_gtin_requires_verification')
+            await db.execute(text("""INSERT INTO atomer_catalog_campaigns(id,run_id,source_sha,admin_sha,shop_fingerprint,actor,selection,state)
+                VALUES ('proof',1,'s','a','f','op','{}','running')"""))
+            await db.execute(text("""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
+                VALUES ('proof','v:AT-PARENT',1,1)"""))
+            await db.execute(text("""INSERT INTO atomer_catalog_source_cards(campaign,family_key,code,run_id,state,card_id,created,evidence)
+                VALUES ('proof','v:AT-PARENT',:c,1,'card_ready',:p,true,CAST(:v AS jsonb))"""),
+                dict(c=code,p=first['card_id'],v=json.dumps(first)))
+            fresh=await again({code:proof}); self.assertEqual(fresh['gtin_added'],OTHER)
+            self.assertEqual((fresh['card_id'],fresh['gtins'],fresh['created']),(first['card_id'],[OTHER],False))
+            self.assertNotIn('gtin_added',await again({code:proof}))
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM product_identifiers')),1)

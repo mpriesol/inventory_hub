@@ -504,3 +504,5 @@ The Atomer migration report supports audited batch acceptance of the displayed p
 Atomer catalog migration now has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. See [migration progress](docs/atomer-migration-progress.md).
 
 The migration records Hub card preparation separately from xTrek verification. Existing native families have a guarded content check, and unresolved writes keep their original receipt across API quota windows.
+
+The Atomer campaign records API capacity separately for each shop and phase. Verified supplier evidence can trigger a recheck of the precise card, and large BIKETREK till products support direct checks of individual sellable variants.

@@ -2,7 +2,7 @@
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from threading import Lock
 from urllib.parse import urlsplit
 
@@ -24,7 +24,6 @@ from inventory_hub.services.order_collection import target_fingerprint
 
 SHOPS = ('xtrek', 'biketrek')
 MAX_BATCH = 2000
-_CATALOGS = {}
 _CATALOG_LOCKS = {s: Lock() for s in SHOPS}
 
 
@@ -45,36 +44,30 @@ def require(ok, reason):
         raise CardConflict(reason)
 
 
-def _catalog(shop,force_current=False):
-    # A warm Hub cache can be validated with a delta and a total. Never reuse an
-    # in-memory catalog after a credential-target change, even on the same shop.
+def _catalog(shop):
+    # A persisted catalog must still pass a live delta, cardinality and read-window check.
     fp = target_fingerprint(shop)
     with _CATALOG_LOCKS[shop]:
         stamp = datetime.now(timezone.utc)
-        old = _CATALOGS.get(shop)
-        if not force_current and shop=='xtrek' and old and old[0] == fp and stamp - old[1] < timedelta(minutes=3):
-            return old[2]
         client = _client(shop,fp)
         try:
             directory=pull._cache_path(shop).parent/'atomer-card-catalog-v1'
-            parents=ObservedCatalog(checkpoint.collect(client,directory,fp),stamp,fp)
-            _CATALOGS[shop] = (fp,stamp,parents)
-            return parents
+            return ObservedCatalog(checkpoint.collect(client,directory,fp),stamp,fp)
         finally:
             client.session.close()
 
 
-async def load_catalogs():
+async def load_catalogs(shops=SHOPS):
     """Return complete per-shop parent lists. Selected identities are always reread before use."""
-    results=await asyncio.gather(*(asyncio.to_thread(_catalog,s) for s in SHOPS))
-    return dict(zip(SHOPS,results))
+    results=await asyncio.gather(*(asyncio.to_thread(_catalog,s) for s in shops))
+    return dict(zip(shops,results))
 
 
 async def load_shop_catalog(shop):
     """Current complete per-shop GTIN/SKU index for corrections before a native create."""
     if shop not in SHOPS:
         raise atomer_review_targets.ReviewError('shops_unavailable')
-    return await asyncio.to_thread(_catalog,shop,True)
+    return await asyncio.to_thread(_catalog,shop)
 
 
 def _selected(shop, ids):
@@ -111,6 +104,69 @@ def _selected(shop, ids):
         return publication.plain({str(k):v for k,v in current.items()})
     finally:
         client.session.close()
+
+
+def _large_variants(shop, families, wanted):
+    """Verify a large parent header and just the selected physical codes with their native axes."""
+    from inventory_hub.services.atomer_family_batch import collect_pages
+    codes={}
+    for pid,vid in wanted:
+        leaves=[v for v in families[pid]['variants'] if str(v.get('variant_id'))==vid]
+        if len(leaves)!=1 or not leaves[0].get('code') or ';' in leaves[0]['code'] or leaves[0]['code'] in codes:
+            raise export.ExportError('upgates_export_family_incomplete')
+        codes[leaves[0]['code']]=(pid,vid)
+    client=_client(shop,target_fingerprint(shop))
+    try:
+        headers={}
+        parents=sorted(families)
+        for i in range(0,len(parents),100):
+            group=parents[i:i+100]
+            listed=observation.indexed(collect_pages(client,'products','products',
+                {'product_ids':';'.join(group),'variants_yn':'false'}),'product_id')
+            if set(listed)!={int(v) for v in group}:
+                raise export.ExportError('upgates_export_family_incomplete')
+            for k,header in listed.items():
+                pid=str(k); cached=families[pid]
+                if (header.get('code')!=cached.get('code') or header.get('variants_exists_yn') is not True or
+                        header.get('variants') or not header.get('last_update_time') or
+                        header['last_update_time']!=cached.get('last_update_time')):
+                    raise export.ExportError('upgates_export_catalog_changed')
+                headers[pid]=header
+        fresh={}
+        ordered=sorted(codes)
+        for i in range(0,len(ordered),40):
+            group=ordered[i:i+40]
+            records=collect_pages(client,'products/variants','variants',{'variant_codes':';'.join(group)})
+            for key,leaf in observation.indexed(records,'variant_id').items():
+                code=leaf.get('code'); pid=str(leaf.get('product_id')); k=(pid,str(key))
+                if (code not in group or codes[code]!=k or k in fresh or leaf.get('product_code')!=headers[pid]['code'] or
+                        not isinstance(leaf.get('parameters'),list)):
+                    raise export.ExportError('upgates_export_family_incomplete')
+                fresh[k]=leaf
+        if set(fresh)!=wanted:
+            raise export.ExportError('upgates_export_family_incomplete')
+        # Retain certified siblings in the global uniqueness index. Only keys in
+        # `fresh` have been read separately and may be used to change a Hub link.
+        for pid,header in headers.items():
+            header['variants']=[fresh.get((pid,str(v['variant_id'])),v) for v in families[pid]['variants']]
+        return headers
+    finally:
+        client.session.close()
+
+
+def _read_candidates(shop,catalog,keys):
+    pids={pid for pid,vid in keys}
+    large={str(p['product_id']):p for f in catalog.families if (p:=f['payload']).get('product_id') is not None
+           and str(p['product_id']) in pids and len(p.get('variants') or ())>100}
+    selected={key for key in keys if key[0] in large}
+    ids=pids-large.keys()
+    parents=_selected(shop,ids) if ids else {}
+    observed={(pid,str(v['variant_id']) if v.get('variant_id') is not None else None)
+              for pid,p in parents.items() for v in p.get('variants') or [p]}
+    if large:
+        parents.update(_large_variants(shop,large,selected))
+        observed.update(selected)
+    return parents,observed
 
 
 @dataclass
@@ -162,7 +218,13 @@ class Catalog:
         if identity.is_variant:
             require(leaf.get('product_id') is not None and str(leaf['product_id'])==identity.external_product_id
                     and leaf.get('product_code')==identity.parent_code,'native_parent_changed')
-        require(not family['reasons'],','.join(sorted(family['reasons'])))
+        # The ordinary family import must hold the whole family if any two
+        # siblings share a GTIN. Here an existing card selects just one physical
+        # leaf, often in a till parent with thousands of unrelated articles.
+        reasons=family['reasons']-{'remote_barcode_duplicate'}
+        if any(self.by_gtin[gtin]!={key} for gtin in barcode_keys(identity.barcodes)):
+            reasons=reasons|{'remote_barcode_duplicate'}
+        require(not reasons,','.join(sorted(reasons)))
         return family,identity,leaf
 
 
@@ -177,7 +239,7 @@ def raw_codes(lookup):
     return {str(v).strip() for v in lookup if v is not None and str(v).strip()}
 
 
-def barcode_subject(row,proof=None,zero_id=None):
+def barcode_subject(row,proof=None,zero_id=None,source_id=None):
     """Use the original SKU for placeholders. Only independent, source-pinned evidence replaces a GTIN."""
     code,raw=row['code'],row.get('ean') or ''
     if proof is not None:
@@ -187,7 +249,11 @@ def barcode_subject(row,proof=None,zero_id=None):
         except ValueError:
             raise CardConflict('barcode_correction_evidence_changed') from None
         card=proof.get('required_card_id') if isinstance(proof,dict) else None
-        require((raw or type(card) is int and card>0) and raw not in verified_barcodes([raw]) and isinstance(ean,str) and
+        archive=proof.get('required_atomer_id') if isinstance(proof,dict) else None
+        if archive is not None:
+            require(not raw and isinstance(archive,str) and archive.isascii() and archive.isdigit() and
+                    int(archive)>0 and archive==source_id,'barcode_correction_source_id_changed')
+        require((raw or type(card) is int and card>0 or archive) and raw not in verified_barcodes([raw]) and isinstance(ean,str) and
                 ean in verified_barcodes([ean]) and proof.get('before')==raw and
                 proof.get('parent')==(row.get('parent') or code) and url.scheme=='https' and
                 url.hostname and not url.username and not url.password and len(str(proof.get('evidence') or ''))>=20,
@@ -396,6 +462,9 @@ def _plan(row,scope,catalogs,local,indexes,new_id,aliases):
     if owner:
         p=local.products[owner]
         require(p.item_type=='stock' and p.is_active,'card_not_active_stock')
+        if (row.get('barcode_evidence') or {}).get('required_atomer_id'):
+            require(not barcode_keys([row['ean']]).isdisjoint(barcode_keys(local.product_barcodes.get(owner,()))),
+                    'confirmed_corrected_card_gtin_required')
         if row['ean'] and local.product_barcodes.get(owner):
             incoming=barcode_keys([row['ean']])
             require(not incoming or not incoming.isdisjoint(barcode_keys(local.product_barcodes[owner])),
@@ -472,7 +541,7 @@ async def _write_links(db,shop,selected,cat,results,apply):
 
 
 async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,include_managed=False,scopes=None,
-                    barcode_corrections=None,zero_barcode_sentinels=None):
+                    barcode_corrections=None,zero_barcode_sentinels=None,confirmed_source_ids=None):
     """Return per-code link receipts. The caller owns commit, work claim and its durable receipt.
 
     native_ids binds newly created leaves to stable product/variant IDs. An existing
@@ -485,18 +554,11 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
         raise atomer_review_targets.ReviewError('operator_required',403)
     native_ids=native_ids or {}; scopes=scopes or {}; corrections=barcode_corrections or {}
     zero_ids=zero_barcode_sentinels or {}
-    if (set(native_ids)|set(scopes)|set(corrections)|set(zero_ids))-set(codes) or any(not isinstance(v,dict) for v in corrections.values()):
+    source_ids=confirmed_source_ids or {}
+    if (set(native_ids)|set(scopes)|set(corrections)|set(zero_ids)|set(source_ids))-set(codes) or any(not isinstance(v,dict) for v in corrections.values()):
         raise atomer_review_targets.ReviewError('invalid_card_batch',422)
     await work._lock_current_run(db,run_id)
     subjects=await _subjects(db,run_id,codes)
-    base=catalogs if catalogs is not None else await load_catalogs()
-    shops={s.code:s for s in await db.scalars(select(Shop).where(Shop.code.in_(SHOPS),Shop.is_active.is_(True),
-                                                Shop.platform=='upgates'))}
-    if set(shops)!=set(SHOPS) or set(base)!=set(SHOPS):
-        raise atomer_review_targets.ReviewError('shops_unavailable')
-    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':IDENTITY_WRITE_LOCK})
-    local,indexes,aliases=await _indices(db,shops)
-    initial={s:Catalog.build(shops[s].id,base[s]) for s in SHOPS}
     results={}; usable={}; ids={s:set() for s in SHOPS}
     duplicates=await _read_source_collisions(db,run_id,set(codes),corrections)
     for code in codes:
@@ -504,7 +566,7 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
             require(code in subjects,'source_subject_missing')
             require(code not in duplicates,'atomer_duplicate_physical_identity')
             row,item,family=subjects[code]
-            row=barcode_subject(row,corrections.get(code),zero_ids.get(code))
+            row=barcode_subject(row,corrections.get(code),zero_ids.get(code),source_ids.get(code))
             subjects[code]=(row,item,family)
             scope=effective_scope(item,family,scopes.get(code))
             states={item['status'],family['status']}
@@ -515,9 +577,25 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
             require(not row['reasons'] or (code in native_ids and
                     set(row['reasons'])<={'occupied_parameters','ean_differs'}),'atomer_review_required')
             usable[code]=scope
+        except CardConflict as err:
+            results[code]=fail(err)
+    if not usable:
+        return results
+    needed=tuple(s for s in SHOPS if any(scope not in SHOPS or scope==s for scope in usable.values()))
+    base=catalogs if catalogs is not None else await load_catalogs(needed)
+    shops={s.code:s for s in await db.scalars(select(Shop).where(Shop.code.in_(SHOPS),Shop.is_active.is_(True),
+                                                Shop.platform=='upgates'))}
+    if set(shops)!=set(SHOPS) or not set(needed)<=set(base):
+        raise atomer_review_targets.ReviewError('shops_unavailable')
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':IDENTITY_WRITE_LOCK})
+    local,indexes,aliases=await _indices(db,shops)
+    initial={s:Catalog.build(shops[s].id,base[s]) for s in needed}
+    for code,scope in list(usable.items()):
+        row=subjects[code][0]
+        try:
             if scope!='biketrek':
                 anchor=native_ids.get(code) or (row.get('product_id'),row.get('variant_id'))
-                ids['xtrek'].add(native_key(anchor)[0])
+                ids['xtrek'].add(native_key(anchor))
             if scope!='xtrek':
                 source_owner=_owner(local.resolve(RemoteIdentity(0,code,barcodes=(row.get('ean'),))))
                 owners={i for i in (row.get('hub_id'),source_owner) if i}
@@ -530,18 +608,19 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
                 for owner in owners:
                     for saved in indexes['biketrek'].by_product.get(owner,[]):
                         candidates.update(initial['biketrek'].candidates([saved.external_code],[]))
-                        if saved.external_product_id:
-                            ids['biketrek'].add(str(saved.external_product_id))
-                ids['biketrek'].update(pid for pid,vid in candidates)
+                        if saved.external_product_id and (not saved.is_variant or saved.external_variant_id):
+                            ids['biketrek'].add(native_key((saved.external_product_id,saved.external_variant_id)))
+                ids['biketrek'].update(candidates)
         except CardConflict as err:
             usable.pop(code,None);results[code]=fail(err)
     if not usable:
         return results
-    fresh=await asyncio.gather(*(asyncio.to_thread(_selected,s,ids[s]) for s in SHOPS))
-    direct=dict(zip(SHOPS,fresh))
+    fresh=await asyncio.gather(*(asyncio.to_thread(_read_candidates,s,initial[s],ids[s]) for s in needed))
+    direct={s:parents for s,(parents,_) in zip(needed,fresh)}
+    observed={s:keys for s,(_,keys) in zip(needed,fresh)}
     # A newly read xTrek barcode or an existing xTrek mapping may reveal an
     # old BIKETREK SKU that the pinned report did not yet know.
-    x_direct=Catalog.build(shops['xtrek'].id,list(direct['xtrek'].values()))
+    x_direct=Catalog.build(shops['xtrek'].id,list(direct.get('xtrek',{}).values()))
     additional=set()
     for code,scope in usable.items():
         if scope in SHOPS:
@@ -558,16 +637,23 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
                 witness.update(aliases.get(owner,()))
                 eans.update(local.product_barcodes.get(owner,()))
                 for m in indexes['biketrek'].by_product.get(owner,()):
-                    if m.external_product_id:
-                        additional.add(m.external_product_id)
-            additional.update(pid for pid,vid in initial['biketrek'].candidates(witness,eans))
+                    if m.external_product_id and (not m.is_variant or m.external_variant_id):
+                        additional.add(native_key((m.external_product_id,m.external_variant_id)))
+            additional.update(initial['biketrek'].candidates(witness,eans))
         except CardConflict:
             continue  # The complete index below records this leaf's precise reason.
-    missing=additional-set(direct['biketrek'])
+    missing=additional-observed.get('biketrek',set())
     if missing:
-        direct['biketrek'].update(await asyncio.to_thread(_selected,'biketrek',missing))
+        additions,keys=await asyncio.to_thread(_read_candidates,'biketrek',initial['biketrek'],missing)
+        for pid,addition in additions.items():
+            if pid in direct['biketrek']:
+                previous={str(v['variant_id']):v for v in direct['biketrek'][pid]['variants']}
+                addition['variants']=[previous[str(v['variant_id'])] if (pid,str(v['variant_id'])) in observed['biketrek']
+                                      else v for v in addition['variants']]
+            direct['biketrek'][pid]=addition
+        observed['biketrek'].update(keys)
     current={}
-    for s in SHOPS:
+    for s in needed:
         if isinstance(base[s],ObservedCatalog) and base[s].fingerprint!=target_fingerprint(s):
             raise atomer_review_targets.ReviewError('target_connection_changed')
         merged={str(p['product_id']):p for p in base[s]}
@@ -579,7 +665,7 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
         try:
             plan=_plan(row,scope,current,local,indexes,native_ids.get(code),aliases)
             for s,key in plan['keys'].items():
-                require(key[0] in direct[s],'native_target_requires_fresh_read')
+                require(key in observed[s],'native_target_requires_fresh_read')
             plans[code]=plan
         except CardConflict as err:
             results[code]=fail(err)

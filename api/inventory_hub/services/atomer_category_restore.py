@@ -88,7 +88,9 @@ def current_menu():
 def _catalog_rows(fingerprint):
     client=transport._client('xtrek',fingerprint)
     try:
-        return mapping.registry_pages(client,'categories')
+        rows=mapping.registry_pages(client,'categories')
+        mapping.remember_category_snapshot(fingerprint,rows)
+        return rows
     finally:
         client.session.close()
 
@@ -183,6 +185,7 @@ def _post(intents,fingerprint):
     try:
         return native._post(client,{'categories':[i['payload'] for i in intents.values()]},route='categories')
     finally:
+        mapping.invalidate_categories(fingerprint)
         client.session.close()
 
 
@@ -291,14 +294,22 @@ async def advance(db,c,load_source,lock_current):
     latest=c['selection']
     args=(plan,index.category_paths)
     bindings=(latest.get('category_aliases',{}),latest.get('categories',{}))
+    menu=await asyncio.to_thread(current_menu) if any(r['stage']=='pending' for r in due.values()) else {}
     try:
-        snapshot=await asyncio.to_thread(_catalog_rows,c['shop_fingerprint'])
+        # A complete tree read by the campaign seconds ago can identify candidate
+        # additions. It never proves adoption, a conflict, or an earlier POST.
+        snapshot=mapping.recent_category_snapshot(c['shop_fingerprint'])
+        try:
+            findings=inspect(*args,snapshot,*bindings,ledger,menu) if snapshot is not None else {}
+        except ReviewError:
+            findings={}
+        if not findings or any(findings[path][0] not in ('create','waiting') for path in due):
+            snapshot=await asyncio.to_thread(_catalog_rows,c['shop_fingerprint'])
+            findings=inspect(*args,snapshot,*bindings,ledger,menu)
     except Exception as exc:
         if await _defer(db,c,due,exc):
             return False
         raise
-    menu=await asyncio.to_thread(current_menu) if any(r['stage']=='pending' for r in due.values()) else {}
-    findings=inspect(*args,snapshot,*bindings,ledger,menu)
     changed=False; intents={}; proofs={}
     for path in plan.paths:
         if path not in due:

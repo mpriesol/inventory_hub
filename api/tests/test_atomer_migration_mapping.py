@@ -90,6 +90,47 @@ class NativeRegistryTest(unittest.TestCase):
 
 
 class RegistryAccessTest(unittest.TestCase):
+    def test_quota_between_pages_retains_only_completed_planning_reads(self):
+        fingerprint='e'*64
+        ids=iter((1,2))
+        seen=[]
+        def send(client,method,path,*,params=None):
+            page=(params or {}).get('page',1)
+            seen.append((path,page))
+            if path=='categories' and page==2 and next(ids)==1:
+                raise mapping.transport.SourceError('stock_publication_rate_limited',429,retry_after=61)
+            if path=='config':return {'config':{'prices_with_vat_yn':True}}
+            if path=='languages':return {'languages':[{'language_id':'sk','active_yn':True,'currency_id':'EUR'}]}
+            if path=='pricelists':return {'pricelists':[{'default_yn':True,'name':'Základný'}]}
+            records=[category(page,'Top menu' if page==1 else 'A',None if page==1 else 1)] if path=='categories' else []
+            return {path:records,'current_page':page,'current_page_items':len(records),
+                    'number_of_items':2 if records else 0,'number_of_pages':2 if records else 0}
+        with patch.dict(mapping._REGISTRY_PAGES,clear=True), patch.object(mapping.transport,'_request',side_effect=send):
+            with self.assertRaises(mapping.transport.SourceError):
+                mapping.read_registry(None,cache_key=fingerprint)
+            result=mapping.read_registry(None,cache_key=fingerprint)
+            self.assertEqual(len(result['category_registry']),2)
+            for path in ('config','languages','pricelists','categories'):
+                self.assertEqual(seen.count((path,1)),1)
+            self.assertEqual(seen.count(('categories',2)),2)
+            self.assertIsNotNone(mapping.recent_category_snapshot(fingerprint))
+            mapping.invalidate_categories(fingerprint)
+            self.assertIsNone(mapping.recent_category_snapshot(fingerprint))
+            self.assertFalse(any(k[1]=='categories' for k in mapping._REGISTRY_PAGES))
+
+    def test_pricing_failure_reports_only_the_failed_fixed_registry_name(self):
+        for position, resource in enumerate(('config','languages','pricelists')):
+            err=mapping.transport.SourceError('stock_publication_source_unavailable')
+            err.upstream_status=503
+            with self.subTest(resource=resource), patch.object(mapping.transport,'_request',
+                    side_effect=[{}]*position+[err]), self.assertRaises(mapping.transport.SourceError) as observed:
+                mapping.read_registry(None)
+            self.assertEqual(observed.exception.catalog_resource,resource)
+            self.assertEqual(observed.exception.upstream_status,503)
+        with patch.object(mapping.transport,'_request',return_value={}), self.assertRaises(mapping.transport.SourceError) as invalid:
+            mapping.read_registry(None)
+        self.assertEqual(invalid.exception.catalog_resource,'pricing_options')
+
     def test_only_documented_query_arguments_on_native_registry(self):
         body={'current_page':1,'current_page_items':0,'number_of_pages':0,'number_of_items':0,'labels':[]}
         with patch.object(mapping.transport,'_request',return_value=body) as get:

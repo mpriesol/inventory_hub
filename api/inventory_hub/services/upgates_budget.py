@@ -20,6 +20,7 @@ import psycopg2
 import requests
 
 from inventory_hub.settings import settings
+from inventory_hub.services import atomer_catalog_meter
 
 LOCK_WAIT_SECONDS = 1.0
 UNKNOWN_RETRY_SECONDS = 60
@@ -239,14 +240,19 @@ class BudgetSession(requests.Session):
                 raise AdmissionDenied()
             permit = acquire(self.budget_key)
         except (TypeError, ValueError):
+            atomer_catalog_meter.record(self.budget_key,method,url,'deferred')
             return _deferred(UNKNOWN_RETRY_SECONDS)
         except AdmissionDenied as error:
+            atomer_catalog_meter.record(self.budget_key,method,url,'deferred')
             return _deferred(error.retry_after)
         # Redirects may not escape the origin pool or forward API credentials.
         kwargs["allow_redirects"] = False
         try:
+            atomer_catalog_meter.record(self.budget_key,method,url,'sent')
             response = super().request(method, url, **kwargs)
             response.hub_request_sent = True
+            if response.status_code==429:
+                atomer_catalog_meter.record(self.budget_key,method,url,'http429')
             permit.observe(response.headers, response.status_code)
             if kwargs.get("stream"):
                 original_close = response.close

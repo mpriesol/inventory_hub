@@ -19,11 +19,19 @@ def _read(client, target):
     return {'identity': identity, 'leaf': row}
 
 
-def _options(client):
-    config = source._request(client, 'get', 'config').get('config') or {}
-    languages = source._request(client, 'get', 'languages').get('languages')
-    lists = source._request(client, 'get', 'pricelists').get('pricelists')
-    if not isinstance(config.get('prices_with_vat_yn'), bool) or not isinstance(languages, list) or not isinstance(lists, list):
+def _options(client, *, read=None):
+    options = {}
+    for resource in ('config', 'languages', 'pricelists'):
+        try:
+            options[resource] = (read or source._request)(client, 'get', resource).get(resource)
+        except source.SourceError as exc:
+            exc.catalog_resource = resource
+            raise
+    config = options['config'] or {}
+    languages = options['languages']
+    lists = options['pricelists']
+    if (not isinstance(config, dict) or not isinstance(config.get('prices_with_vat_yn'), bool)
+            or not isinstance(languages, list) or not isinstance(lists, list)):
         raise source.SourceError('product_publication_price_settings_unknown', 422)
     language = [v for v in languages if isinstance(v, dict) and v.get('language_id') == 'sk' and v.get('active_yn') is True]
     defaults = [v for v in lists if isinstance(v, dict) and v.get('default_yn') is True and isinstance(v.get('name'), str)]
