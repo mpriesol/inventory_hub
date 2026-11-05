@@ -1,5 +1,6 @@
 import React from 'react';
 import { AccountPage } from './pages/AccountPage';
+import { AtomerMigrationProgress } from './pages/AtomerMigrationProgress';
 import { AtomerContentMigration } from './pages/AtomerContentMigration';
 import { SessionBootstrap } from './components/SessionBootstrap';
 import { RequireHubSession } from './components/RequireHubSession';
@@ -77,6 +78,7 @@ const router = createBrowserRouter(createRoutesFromElements(
 
           {/* Shops */}
           <Route path="/shops" element={<ShopsPage />} />
+          <Route path="/migration/atomer-progress" element={<AtomerMigrationProgress />} />
           <Route path="/migration/atomer" element={<AtomerContentMigration />} />
 
           <Route path="/login" element={<AccountPage />} />

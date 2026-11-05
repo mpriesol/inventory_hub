@@ -1,0 +1,85 @@
+{
+  "bikeReasons": {
+    "card_conflict": "Nejednoznačná karta v Hube",
+    "incomplete_link": "Väzbe chýba kód alebo natívne ID",
+    "missing_native": "Uložené ID v katalógu BIKETREK chýba",
+    "changed_identity": "Kód alebo rodič v BIKETREK sa líši od väzby"
+  },
+  "web": "E-shop",
+  "admin": "Administrácia",
+  "yes": "Áno",
+  "variantsCount": "Varianty",
+  "toResolve": "Na riešenie",
+  "verified": "Overené",
+  "productPages": "Produkty",
+  "cardStates": {
+    "exists": "Karta existuje",
+    "missing": "Chýba potvrdená karta",
+    "review": "Karta na kontrolu"
+  },
+  "title": "Stav migrácie z Atomeru",
+  "back": "Späť na obchody",
+  "scope": "Každý predajný kód z exportu Atomeru, jeho skladová karta a väzby v oboch obchodoch. Stav xTrek zahŕňa overenie identity a väzby. Obsah a zásoby sa kontrolujú samostatne.",
+  "kind": "Typ položky",
+  "kinds": {
+    "variant": "Varianty",
+    "standalone": "Samostatné produkty"
+  },
+  "states": {
+    "linked": "Karta a väzba xTrek overené",
+    "needs_link": "Treba prepojiť kartu",
+    "needs_card": "Cieľ v xTrek má zhodu, chýba karta",
+    "needs_target": "Karta existuje, chýba zhoda v xTrek",
+    "needs_both": "Chýba zhoda v Hube aj v xTrek",
+    "review": "Na kontrolu"
+  },
+  "bikeLinked": "S väzbou na BIKETREK",
+  "bikeStates": {
+    "linked": "Karta má väzbu",
+    "unlinked": "Karta bez väzby",
+    "no_card": "Chýba potvrdená karta",
+    "review": "Väzba na kontrolu"
+  },
+  "asOf": "Kontrola začala",
+  "source": "Export uložený",
+  "codes": "predajných kódov",
+  "file": "Nový export Atomeru (buyers.xml)",
+  "useFile": "Načítať a porovnať export",
+  "refresh": "Obnoviť údaje obchodov a Hubu",
+  "refreshing": "Prebieha kontrola celého katalógu…",
+  "emptySource": "Na prvú kontrolu nahraj buyers.xml. Ďalšie kontroly môžu použiť uložený export.",
+  "search": "Hľadať",
+  "searchHint": "Názov, SKU, EAN alebo ID",
+  "all": "Všetky",
+  "item": "Položka z Atomeru",
+  "sourceCode": "Kód z Atomeru",
+  "card": "Skladová karta",
+  "record": "kód a ID",
+  "status": "Stav xTrek a dôvod",
+  "previous": "Predchádzajúce",
+  "next": "Ďalšie",
+  "empty": "Žiadne zodpovedajúce položky",
+  "errors": {
+    "failed": "Kontrola sa nepodarila. Skús načítať prehľad znova.",
+    "remote_read_failed": "Úplný katalóg xTrek sa nepodarilo overiť. Zobrazený je posledný dokončený prehľad.",
+    "refresh_in_progress": "Prebieha iná kontrola. Po jej dokončení obnov stránku.",
+    "source_required": "Najskôr vyber buyers.xml."
+  },
+  "reasons": {
+    "duplicate_source": "Odlišné riadky majú v Atomeri rovnaký kód.",
+    "multiple_targets": "V xTrek je viac možných zhôd.",
+    "target_claimed": "Tú istú položku xTrek označuje viac kódov z Atomeru.",
+    "kind_differs": "Jeden záznam je variant a druhý samostatný produkt.",
+    "brand_differs": "Značka sa líši od xTrek.",
+    "ean_differs": "EAN sa líši od xTrek.",
+    "parent_differs": "Rodina má viac možných materských produktov.",
+    "parameters_differ": "Parametre variantu sa líšia od Atomeru.",
+    "occupied_parameters": "Rovnakú kombináciu parametrov má iná položka xTrek.",
+    "card_identity_conflict": "Identifikátory skladovej karty si odporujú.",
+    "multiple_cards": "Do úvahy prichádza viac kariet.",
+    "card_brand_differs": "Značka skladovej karty sa líši.",
+    "card_ean_differs": "EAN skladovej karty sa líši.",
+    "different_shop_link": "Karta už má inú väzbu v xTrek.",
+    "link_identity_differs": "Kód alebo materský produkt existujúcej väzby sa líši."
+  }
+}

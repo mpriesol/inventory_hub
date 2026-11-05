@@ -6,6 +6,8 @@ import { initReactI18next } from 'react-i18next';
 
 import sk from './sk.json';
 import en from './en.json';
+import skAtomerProgress from './atomerProgress.sk.json';
+import enAtomerProgress from './atomerProgress.en.json';
 
 // Get stored language or default to Slovak
 const storedLang = typeof localStorage !== 'undefined' 
@@ -16,8 +18,8 @@ i18n
   .use(initReactI18next)
   .init({
     resources: {
-      sk: { translation: sk },
-      en: { translation: en },
+      sk: { translation: { ...sk, atomerProgress: skAtomerProgress } },
+      en: { translation: { ...en, atomerProgress: enAtomerProgress } },
     },
     lng: storedLang,
     fallbackLng: 'sk',

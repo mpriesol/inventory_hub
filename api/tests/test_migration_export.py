@@ -102,6 +102,37 @@ class ExportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
 
+
+    async def test_atomer_tracker_commits_complete_groups_and_keeps_previous_run_after_failure(self):
+        from inventory_hub.services import atomer_progress_store as store
+        from inventory_hub.services.migration_upgates_export import ExportError
+        sql = Path(__file__).resolve().parents[2] / "infra/db-init/037_atomer_progress.sql"
+        connection = await asyncpg.connect(TEST_URL)
+        try:
+            await connection.execute(f'SET search_path TO "{self.schema}"')
+            await connection.execute(sql.read_text())
+            await connection.execute(sql.read_text())
+            await connection.execute("INSERT INTO shops(code,name,platform) VALUES ('xtrek','xTrek','upgates'),('biketrek','BIKETREK','upgates') ON CONFLICT (code) DO NOTHING")
+        finally:
+            await connection.close()
+        rows = [dict(code="one", parent="F", name="Family One", ean="", brand="", axes={}, duplicates=1, conflict=False),
+                dict(code="two", parent="F", name="Family Two", ean="", brand="", axes={}, duplicates=1, conflict=False)]
+        with patch.object(store.progress, "remote_catalog", return_value=([],{})):
+            async with self.sessions() as db:
+                saved = await store.refresh(db,("a"*64,2,rows),0)
+            async with self.sessions() as db:
+                page = await store.page(db,"variant","needs_both","no_card","missing","family",0,1)
+            self.assertEqual((page["total"],page["families"],len(page["groups"][0]["items"])), (2,1,2))
+            async with self.sessions() as db:
+                with self.assertRaisesRegex(store.ProgressError,"run_changed"):
+                    await store.refresh(db,None,0)
+        with patch.object(store.progress,"remote_catalog",side_effect=ExportError("interrupted")):
+            async with self.sessions() as db:
+                with self.assertRaises(ExportError):
+                    await store.refresh(db,None,saved["id"])
+        async with self.sessions() as db:
+            self.assertEqual((await store.latest(db))["id"],saved["id"])
+
     async def test_complete_snapshot_preserves_nulls_and_never_confirms_stock(self):
         remote = [{"code": "xTrek", "variants": [{"code": "00042-X", "ean": "0012345678905", "stock": None}]}]
         async with self.sessions() as db:

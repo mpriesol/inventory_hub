@@ -214,6 +214,8 @@ if settings.USE_POSTGRES:
     app.include_router(upgates_sync_router)
     from inventory_hub.routers.migration_export import router as migration_export_router
     app.include_router(migration_export_router)
+    from inventory_hub.routers.atomer_progress import router as atomer_progress_router
+    app.include_router(atomer_progress_router)
     from inventory_hub.routers.atomer_content import router as atomer_content_router
     app.include_router(atomer_content_router)
     from inventory_hub.routers.order_audit import router as order_audit_router

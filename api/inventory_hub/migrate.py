@@ -42,6 +42,7 @@ MIGRATIONS = (
     "supplier_availability_delivery_migrate",  # 034
     "order_webhooks_migrate",         # 035
     "stock_sync_dirty_migrate",       # 036
+    "atomer_progress_migrate",        # 037
 )
 
 
