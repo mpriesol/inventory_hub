@@ -48,9 +48,11 @@ async def reschedule(db,c,candidate,expected,mode,actor):
     note={'previous_stage':candidate['stage'],'previous_problem':candidate['problem'],'run_id':c['checked_run_id'],
           'before_revision':expected,'actor':actor}
     receipt={**candidate['receipt'],'last_recheck':note,'rebuild_after_observation':stage in ('observe','updating')}
+    receipt['reexpand']=bool(candidate['receipt'].get('catalog_deferred'))
     await db.execute(text("""UPDATE atomer_catalog_jobs SET stage=:s,guards=CAST(:guards AS jsonb),
              document=CASE WHEN :s='pending' THEN NULL ELSE document END,
-             receipt=CAST(:receipt AS jsonb),attempts=0,next_at=now(),updated_at=now(),priority=0,problem=''
+             receipt=CAST(:receipt AS jsonb),attempts=0,next_at=now(),updated_at=now(),priority=0,problem='',
+             source_card_stage='pending',source_card_next_at=now(),source_card_attempts=0,source_card_problem=''
              WHERE campaign=:c AND family_key=:f"""),dict(s=stage,c=c['id'],f=family,
              guards=engine._json(guards),receipt=engine._json(receipt)))
     active=engine._selected(guards)

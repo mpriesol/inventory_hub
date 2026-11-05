@@ -167,6 +167,13 @@ class CompleteAtomerSourceTest(unittest.TestCase):
                 d=document(i,'Parent',names={'PARAM_1':'Color'})
                 for child in d['payload']['variants']:
                     self.assertEqual(child['parameters'],src.gen.parameters({'Color':'Red','Kód variantu':child['code']}))
+        mixed=src.Catalog([row('Parent','100',title='Family'),row('A','101','Parent','Family Red'),
+                           row('B','102','Parent','Family Red'),row('C','103','Parent','Family Blue')])
+        with_xml(mixed,*[node(c,'Parent',AXES={'PARAM_1':v}) for c,v in [('A','Red'),('B','Red'),('C','Blue')]])
+        doc=document(mixed,'Parent',names={'PARAM_1':'Colour'},options={'partial_barcodes':True})
+        self.assertEqual([v['code'] for v in doc['payload']['variants']],['C'])
+        self.assertEqual(doc['deferred_leaves']['A']['conflicting_skus'],['A','B'])
+        self.assertEqual(doc['deferred_leaves']['B']['source_axes'],{'Colour':'Red'})
 
     def test_current_admin_text_preserves_original_markup_and_falls_back_to_csv_linebreaks(self):
         original='<p><b>Model III</b> is durable.</p>'
@@ -235,6 +242,16 @@ class CompleteAtomerSourceTest(unittest.TestCase):
             with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
                 document(src.Catalog([row(sku,'100',ean=raw)]),sku)
 
+    def test_literal_zero_only_for_exact_pinned_standalone_identity(self):
+        i=src.Catalog([row('Item','100',ean='0')])
+        opts={'zero_barcode_sentinels':{'Item':'100'}}
+        self.assertEqual(document(i,'Item',options=opts)['source_barcode_placeholders'],{'Item':'0'})
+        with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
+            document(i,'Item',options={'zero_barcode_sentinels':{'Item':'999'}})
+        child=src.Catalog([row('Group','99'),row('Item','100','Group',ean='0')])
+        with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
+            document(child,'Group',options=opts)
+
     def test_attachment_and_active_markup_do_not_reach_remote(self):
         i=src.Catalog([row('Item','100',ean=EAN)])
         with_xml(i,node('Item','',EAN=EAN,DESCRIPTION_LONG='<img src=x onerror=alert(1)>'))
@@ -244,6 +261,66 @@ class CompleteAtomerSourceTest(unittest.TestCase):
                          '<iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe>')
         with self.assertRaises(ReviewError):
             src.safe_html('<iframe src="https://example.com/untrusted"></iframe>')
+
+    def test_parent_identifiers_are_checked_globally_including_hidden_and_equivalent_gtin(self):
+        upc='036000291452'
+        family=row('Group','100',ean=upc)
+        child=row('Child','101','Group')
+        i=src.Catalog([family,child])
+        d=document(i,'Group')
+        self.assertEqual(d['payload']['ean'],upc)
+        self.assertNotIn('ean',d['payload']['variants'][0])
+        self.assertEqual(d['source_parent_barcode']['status'],'unique_parent')
+        other=row('CHILD','200',active=False,ean='0'+upc)
+        i=src.Catalog([family,child,other])
+        self.assertEqual(i.gtin_owners(upc),('CHILD','Group'))
+        self.assertEqual(i.sku_owners('child'),('CHILD','Child'))
+        d=document(i,'Group')
+        self.assertNotIn('ean',d['payload'])
+        self.assertEqual(d['source_parent_barcode']['owners'],['CHILD'])
+
+    def test_optional_weights_bonus_points_and_duplicate_asset_caption_keep_evidence(self):
+        child=tuple((k,v) for k,v in row('A','101','Group',other=[('Body navyše','7')]) if k!='Váha')
+        empty=tuple((k,v) for k,v in row('B','102','Group',active=False) if k!='Váha')
+        collision=src.Catalog([row('Group','100'),child,empty])
+        with_xml(collision,node('A','Group',WEIGHT='0.75'))
+        d=document(collision,'Group')
+        self.assertEqual(d['source_bonus_points'],{'A':'7'})
+        self.assertTrue(d['missing_source_features'])
+        self.assertEqual(d['unspecified_weights'],['B'])
+        self.assertEqual(d['payload']['variants'][0]['weight'],750)
+        url='https://www.xtrek.sk/user/12/upload/stuff/variants/1.jpg'
+        other=url.replace('/variants/','//variants/')
+        images=src.image_list([other,url],{url:'First photo'})
+        self.assertEqual(len(images),1)
+        self.assertEqual(images[0]['url'],other)
+        self.assertEqual(images[0]['titles'],[{'language':'sk','title':'First photo'}])
+
+    def test_good_siblings_only_are_prepared_with_exact_receipts_for_deferred_leaves(self):
+        i=src.Catalog([row('Group','100'),row('Bad','101','Group',ean='396x'),
+                       row('Hidden','102','Group',active=False),row('Good','103','Group',ean=EAN)])
+        d=document(i,'Group',options={'partial_barcodes':True})
+        self.assertEqual(d['source_family_codes'],['Bad','Good','Hidden'])
+        self.assertEqual(d['deferred_leaves'],{'Bad':{'reason':'new_leaf_ean_unverified','source_ean':'396x',
+                                                      'source_active':True,'source_internal_id':'101'}})
+        self.assertEqual([(v['code'],v['main_yn'],v['active_yn']) for v in d['payload']['variants']],
+                         [('Hidden',False,False),('Good',True,True)])
+        single=src.Catalog([row('Group','100'),row('Bad','101','Group',ean='396x')])
+        with self.assertRaises(src.NoPublishableLeaves) as failed:
+            document(single,'Group',options={'partial_barcodes':True})
+        self.assertEqual(list(failed.exception.deferred_leaves),['Bad'])
+        with self.assertRaisesRegex(ReviewError,'new_leaf_ean_unverified'):
+            document(i,'Group')
+
+    def test_fractional_shipping_grams_require_matching_unaltered_public_dimension(self):
+        def weights(physical):
+            return tuple((k,v) for k,v in row('Item','100') if k!='Váha')+(('Váha','0,0737'),('Char. Hmotnosť (g)',physical))
+        d=document(src.Catalog([weights('73,7')]),'Item')
+        self.assertEqual(d['payload']['weight'],74)
+        self.assertEqual(d['payload']['parameters'],src.gen.parameters({'Hmotnosť (g)':'73,7'}))
+        self.assertEqual(d['shipping_weight_rounding']['Item']['source_display_grams'],'73,7')
+        with self.assertRaisesRegex(ReviewError,'generation_weight_precision'):
+            document(src.Catalog([weights('74')]),'Item')
 
     def test_archive_integrity_checked_before_use(self):
         d=b'data'

@@ -27,6 +27,7 @@ from inventory_hub.services.upgates import _retry_after_seconds
 
 MAX_BATCH = 100
 MAX_REQUEST_BYTES = 8_000_000
+OTHER_RELATIONS = ('accessories', 'alternative', 'gifts', 'sets')
 
 
 def _check(condition, code='new_native_invalid'):
@@ -103,6 +104,13 @@ def preflight(documents, fingerprint, checked_at):
     """The pinned full catalog run supplies baseline absence; check current namespace and all changed GTINs."""
     selected = _entries(documents)
     leaves={code:[doc['payload'],*(doc['payload'].get('variants') or [])] for code,doc in selected.items()}
+    for code, doc in selected.items():
+        # A disputed GTIN is never a search/creation key. Its exact SKU still
+        # fences an apparently new family if a legacy native sibling owns it.
+        deferred = doc.get('deferred_leaves') or {}
+        _check(isinstance(deferred, dict) and len(deferred) <= 2500, 'new_deferred_leaf_invalid')
+        for sku in deferred:
+            leaves[code].append({'code': transport._code(sku)})
     return _check_absent(leaves,fingerprint,checked_at)
 
 
@@ -199,6 +207,19 @@ def _connection(fingerprint):
         yield client
     finally:
         client.session.close()
+
+
+@contextmanager
+def _before_write(fingerprint):
+    # A provider 429 on a GET is a sent read, but categorically no write.
+    # Preserve that distinction for the journal's safe re-planning path.
+    try:
+        with _connection(fingerprint) as client:
+            yield client
+    except transport.SourceError as error:
+        error.request_sent = False
+        error.uncertain = False
+        raise
 
 
 def _post(client, payload, *, route='products'):
@@ -315,7 +336,8 @@ def _supplements(client, parents, field):
         # any related/accessory/alternative/gift/set entries (Upgates v2).
         _check(observed.keys() <= parents.keys(), 'new_native_filter_unconfirmed')
         for pid in parents.keys() - observed.keys():
-            parents[pid]['related'] = []
+            for key in ('related', *OTHER_RELATIONS):
+                parents[pid][key] = []
     else:
         _check(set(observed)==set(parents),'new_native_supplement_incomplete')
     for pid,row in observed.items():
@@ -323,7 +345,10 @@ def _supplements(client, parents, field):
         _check(row['code']==parent['code'],'new_native_identity_changed')
         if field=='related':
             _check(isinstance(row.get(field),list),'new_native_supplement_incomplete')
-            parent[field]=row[field]
+            for key in ('related', *OTHER_RELATIONS):
+                values = row.get(key, [])
+                _check(isinstance(values, list), 'new_native_supplement_incomplete')
+                parent[key] = values
             continue
         data_fields=('parameters','parameters_new') if field=='parameters' else ('labels',)
         variants=_by_id(row.get('variants') or [],'variant_id')
@@ -382,7 +407,13 @@ def _read(client,selected,expected_ids):
                    'new_native_identity_changed')
     if parents:
         for field in ('parameters','labels','related'):
-            _supplements(client,parents,field)
+            keys = ('parameters', 'parameters_new') if field == 'parameters' else (field,)
+            sparse = parents if field == 'related' else {
+                pid: parent for pid, parent in parents.items()
+                if any(not isinstance(row.get(k), list) for row in (parent, *parent['variants']) for k in keys)
+            }
+            if sparse:
+                _supplements(client, sparse, field)
     return {by_id.get(pid,p['code']):p for pid,p in parents.items()}
 
 
@@ -511,6 +542,9 @@ def _family_result(doc,native,expected):
         deferred.append('related')
         issues.append('chýbajú súvisiace produkty: '+', '.join(sorted(wanted_related-related)))
     issues.extend(str(issue)[:640] for issue in doc.get('issues') or [])
+    if doc.get('missing_source_features'):
+        deferred.append('missing_source_features')
+        issues.extend(str(detail)[:640] for detail in doc['missing_source_features'])
     unresolved_categories = doc.get('missing_categories') or doc.get('pending_categories') or []
     if unresolved_categories:
         deferred.append('missing_categories')
@@ -601,7 +635,8 @@ def _extension_members(root,native,ids,additions):
     for code in sorted(missing):
         values=_parameters(desired[code].get('parameters'))
         _check(values and all(len(v)==1 for v in values.values()),'new_axis_names_required')
-        _check(all(set(v)==set(values) for v in axes.values()),'new_existing_axis_names_differ')
+        # xTrek already has real families with different dimensionality per
+        # sibling. Identity is the full unique set of (axis, value) pairs.
         sig=_signature(values)
         _check(sig not in signatures,'new_existing_axis_occupied')
         signatures.add(sig)
@@ -619,6 +654,8 @@ def _preserved(parent,old_codes):
     derived={'last_update_time','variants_stock','variants_availability','variants_availability_id',
              'variants_availability_type','variants'}
     fields={k:v for k,v in parent.items() if k not in derived}
+    for field in OTHER_RELATIONS:
+        fields.setdefault(field, [])
     leaves={r['code']:{k:v for k,v in r.items() if k!='last_update_time'} for r in parent['variants']
             if r['code'] in old_codes}
     return plain({'parent':fields,'variants':leaves})
@@ -663,13 +700,13 @@ def send_extensions(plans,fingerprint):
     from inventory_hub.services.catalog_import import _assert_payload
     ids=_extension_anchor(plans)
     _check(sum(len(p['payload']['variants']) for p in plans.values())<=MAX_BATCH,'new_batch_limit')
-    with _connection(fingerprint) as client:
+    with _before_write(fingerprint) as client:
         now=_read(client,plans,ids)
     result,payload={},[]
     for code,plan in plans.items():
         old=plan['before']
         current=now.get(code)
-        if not current or plain(current)!=old:
+        if not current or _full_snapshot(current) != _full_snapshot(old):
             result[code]=dict(status='conflict',issues=['obsah alebo identita rodiny sa pred zápisom zmenili'])
             continue
         patch=plan['payload']
@@ -683,6 +720,15 @@ def send_extensions(plans,fingerprint):
             for entry in result.values():
                 if entry['status']=='sent':
                     entry['issues'].append(message)
+    return result
+
+
+def _full_snapshot(parent):
+    result = plain(parent)
+    # Older intents predate the independent accessory/gift/set comparison.
+    # Newly observed nonempty links still fence the family for a fresh review.
+    for field in OTHER_RELATIONS:
+        result.setdefault(field, [])
     return result
 
 

@@ -12,7 +12,7 @@ from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
-from inventory_hub.services import atomer_conflict_resolution
+from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
@@ -39,6 +39,7 @@ async def progress_page(kind: Literal["variant","standalone"] | None = None,
 @router.post("/refresh")
 async def progress_refresh(expected_run: Annotated[int, Form(ge=0)],
                            only_if_stale: Annotated[bool, Form()] = False,
+                           target_mode: Annotated[Literal['live','certified_checkpoint','pinned_source'], Form()] = 'live',
                            source_file: Annotated[UploadFile | None, File()] = None,
                            admin_file: Annotated[UploadFile | None, File()] = None,
                            admin_complete: Annotated[bool, Form()] = False,
@@ -49,7 +50,7 @@ async def progress_refresh(expected_run: Annotated[int, Form(ge=0)],
         pins = await asyncio.to_thread(parse_targets, review_file.file) if review_file else None
         buyers = await asyncio.to_thread(archive,source_file.file,"buyers") if source_file else None
         admin = await asyncio.to_thread(archive,admin_file.file,"admin_csv") if admin_file else None
-        return await refresh(db,source,expected_run,only_if_stale,pins,buyers,admin,admin_complete)
+        return await refresh(db,source,expected_run,only_if_stale,pins,buyers,admin,admin_complete,target_mode=target_mode)
     except ReviewError as error:
         raise HTTPException(error.status,detail={"code":error.code}) from None
     except AtomerSourceError as error:
@@ -274,5 +275,13 @@ async def acknowledge_unreported_stock(mode: Literal['preview', 'apply'], select
                                        request: Request, db: AsyncSession = Depends(get_session)):
     try:
         return await atomer_conflict_resolution.accept_unreported_stock(db, selection, mode, _actor(request))
+    except (ReviewError, CatalogError, SourceError) as error:
+        raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None
+
+@router.post('/source-card-brands/{mode}')
+async def verify_source_card_brands(mode: Literal['preview', 'apply'], selection: atomer_brand_identity.Selection,
+                                   request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_brand_identity.register(db, selection, mode, _actor(request))
     except (ReviewError, CatalogError, SourceError) as error:
         raise HTTPException(error.status, detail={'code': error.code, 'retry_after': getattr(error, 'retry_after', None)}) from None

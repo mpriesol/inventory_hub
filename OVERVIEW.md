@@ -503,4 +503,4 @@ The Atomer migration report supports audited batch acceptance of the displayed p
 
 Atomer catalog migration now has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. See [migration progress](docs/atomer-migration-progress.md).
 
-Existing xTrek families use a separate native content comparison. Receipts preserve the intended update, current identifiers and the evidence needed for readback after an interrupted request.
+The migration records Hub card preparation separately from xTrek verification. Existing native families have a guarded content check, and unresolved writes keep their original receipt across API quota windows.

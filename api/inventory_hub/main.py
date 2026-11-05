@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI):
             print("  Falling back to JSON-based storage")
     worker = None
     catalog_worker = None
+    source_card_worker = None
     collection_worker = None
     webhook_worker = None
     processing_worker = None
@@ -89,6 +90,8 @@ async def lifespan(app: FastAPI):
     if settings.USE_POSTGRES:
         from inventory_hub.services.atomer_catalog_engine import run as migrate_atomer_catalog
         catalog_worker = asyncio.create_task(migrate_atomer_catalog(), name="atomer-catalog")
+        from inventory_hub.services.atomer_catalog_source_cards import run as create_atomer_cards
+        source_card_worker = asyncio.create_task(create_atomer_cards(), name="atomer-source-cards")
         from inventory_hub.services.ai_content_worker import run
         worker = asyncio.create_task(run(), name="ai-content-queue")
         from inventory_hub.services.order_collection_worker import run as collect_orders
@@ -124,7 +127,7 @@ async def lifespan(app: FastAPI):
         publication_worker.cancel()
         with suppress(asyncio.CancelledError):
             await publication_worker
-    for background_worker in (catalog_worker, supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker):
+    for background_worker in (catalog_worker, source_card_worker, supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker):
         if background_worker:
             background_worker.cancel()
             with suppress(asyncio.CancelledError):

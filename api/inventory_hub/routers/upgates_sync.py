@@ -38,7 +38,6 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -60,7 +59,7 @@ from inventory_hub.services.product_identity import (
     IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes,
 )
 from inventory_hub.services.upgates import (
-    UpgatesClient, UpgatesError, UpgatesParameterError, connection_fingerprint, product_title, variant_params_text,
+    UpgatesClient, UpgatesError, UpgatesParameterError, product_title, variant_params_text,
 )
 
 router = APIRouter(prefix="/shops", tags=["upgates-sync"])
@@ -101,21 +100,16 @@ def _cache_load(shop_code: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _cache_save(shop_code: str, products: List[Dict[str, Any]], *, fingerprint: str | None = None) -> None:
+def _cache_save(shop_code: str, products: List[Dict[str, Any]]) -> None:
     path = _cache_path(shop_code)
-    temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile('w',encoding='utf-8',dir=path.parent,delete=False) as handle:
-            temporary=Path(handle.name)
-            json.dump({"pulled_at": datetime.utcnow().isoformat(),"fingerprint":fingerprint,"products":products},
-                      handle,ensure_ascii=False)
-        temporary.replace(path)
-    except (OSError,TypeError,ValueError):
+        path.write_text(json.dumps({
+            "pulled_at": datetime.utcnow().isoformat(),
+            "products": products,
+        }, ensure_ascii=False), encoding="utf-8")
+    except Exception:
         pass
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _cache_age_s(cache: Dict[str, Any]) -> Optional[int]:
@@ -141,17 +135,12 @@ def _fetch_upgates_products(
                 }
     try:
         client = UpgatesClient.from_shop(shop_code)
-        login=client.session.auth[0]
-        fingerprint=connection_fingerprint(client.base_url,login)
         if shop_code=='xtrek' and (exact_codes is not None or preview_delta):
             from inventory_hub.services.atomer_catalog_observation import selection_products
             from inventory_hub.services.migration_upgates_export import ExportError
             from inventory_hub.services.product_publication_source import plain
             try:
-                cache=_cache_load(shop_code)
-                if cache and cache.get('fingerprint')!=fingerprint:
-                    cache=None
-                products=selection_products(client,cache,exact_codes)
+                products=selection_products(client,_cache_load(shop_code),exact_codes)
                 if products is None:
                     products=list(client.iter_products())
                 else:
@@ -164,7 +153,7 @@ def _fetch_upgates_products(
             products = list(client.iter_products())
     except UpgatesError as e:
         raise HTTPException(502, detail=str(e))
-    _cache_save(shop_code, products, fingerprint=fingerprint)
+    _cache_save(shop_code, products)
     return products, {"source": "api", "pulled_at": datetime.utcnow().isoformat(), "cache_age_s": 0}
 
 
@@ -432,7 +421,7 @@ async def import_upgates_products(
 
 async def register_observed_products(db, shop, products, *, selected_leaves, wanted=(),
                                      import_all=False, update_existing=False, existing_only=False,
-                                     canonical_skus=None, shop_code=None):
+                                     canonical_skus=None, shop_code=None, created_ids=None):
     """Internal path for verified native observations; no remote reads or transaction commits."""
     shop_code = shop_code or shop.code
     canonical_skus = canonical_skus or {}
@@ -588,6 +577,8 @@ async def register_observed_products(db, shop, products, *, selected_leaves, wan
             index = await load_identity_index(db, shop.id, identities)
             continue
         for product in created_rows:
+            if created_ids is not None:
+                created_ids.add(product.id)
             index.products[product.id] = product
             index.by_sku[product.sku.casefold()].add(product.id)
         for identifier in new_identifiers:

@@ -47,6 +47,11 @@
   "file": "Nový export Atomeru (buyers.xml)",
   "useFile": "Uložiť podklady a obnoviť prehľad",
   "refresh": "Obnoviť údaje obchodov a Hubu",
+  "targetModeLabel": "Podklad pre xTrek",
+  "targetLive": "Bežná kontrola obchodov",
+  "targetCertified": "Overiť a uložiť úplný snímok xTreku",
+  "targetPinned": "Prepočítať z uloženého snímku xTreku",
+  "observationTimes": "Posledné overenie podľa systému",
   "refreshing": "Prebieha kontrola celého katalógu…",
   "emptySource": "Na prvú kontrolu nahraj buyers.xml. Ďalšie kontroly môžu použiť uložený export.",
   "search": "Hľadať",
@@ -260,7 +265,8 @@
       "waiting": "Čaká na ďalšiu dávku",
       "review": "Treba doriešiť",
       "done": "Dokončené",
-      "source_changed": "Zdroj bol aktualizovaný"
+      "source_changed": "Zdroj bol aktualizovaný",
+      "paused": "Pozastavené"
     },
     "receipts": "Výsledky po produktoch",
     "product": "Produkt",
@@ -274,6 +280,16 @@
       "partial": "Čiastočné",
       "blocked": "Na doriešenie",
       "excluded": "Ručná výnimka"
-    }
+    },
+    "problems": {
+      "quota": "Upgates vyčerpal limit požiadaviek. Hub pokračuje po jeho obnovení.",
+      "registryChanged": "V xTreku sa zmenila kategória, dostupnosť alebo príznak. Hub musí znova overiť jej ID.",
+      "upstream": "xTrek neposkytol potrebné údaje. Hub uloží výsledok po úspešnom overení.",
+      "sourceChanged": "Od začatia migrácie sa zmenil zdrojový export. Treba zosúladiť aktuálny prehľad."
+    },
+    "hubCards": "Skladové karty s potvrdeným ID",
+    "cardsCreated": "Vytvorené karty",
+    "cardsReused": "Použité existujúce karty",
+    "nativeFamilies": "Produkty s overeným ID xTrek"
   }
 }

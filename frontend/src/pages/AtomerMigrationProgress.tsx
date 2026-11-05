@@ -6,7 +6,7 @@ import { AtomerReviewBatch } from './AtomerReviewBatch';
 import { AtomerReviewLists } from './AtomerReviewLists';
 import { ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { bikeStates, progressStates, readProgress, refreshProgress, ProgressPage, ProgressRow, ProgressFamily, Work, Subject, emptyWork, Decision } from '../api/atomerProgress';
+import { bikeStates, progressStates, readProgress, refreshProgress, ProgressPage, ProgressRow, ProgressFamily, Work, Subject, emptyWork, Decision, TargetMode } from '../api/atomerProgress';
 import './OpeningStockPage.css';
 import './AtomerMigrationProgress.css';
 
@@ -25,6 +25,7 @@ export function AtomerMigrationProgress() {
   const [edit,setEdit]=useState<{subject:Subject;run:number;decision?:Decision}|null>(null);
   const [notice,setNotice]=useState('');
   const [targetFile,setTargetFile]=useState<File|null>(null), [adminFile,setAdminFile]=useState<File|null>(null);
+  const [targetMode,setTargetMode] = useState<TargetMode>('live');
   const [adminComplete,setAdminComplete]=useState(false);
   const adminInput=useRef<HTMLInputElement>(null);
   const [card,setCard] = useState('');
@@ -49,11 +50,11 @@ export function AtomerMigrationProgress() {
     return () => { window.clearTimeout(timer); controller.abort(); };
   },[kind,state,bike,card,workFilter,query,offset,revision]);
   const run = page?.run;
-  async function update(selected: File | null, staleOnly = false, applyFiles = false) {
+  async function update(selected: File | null, staleOnly = false, applyFiles = false, mode:TargetMode = 'live') {
     if (pending || !page) return;
     setPending(true); setError(''); setReadReason('');
     try {
-      await refreshProgress(page.run?.id || 0, selected, staleOnly, applyFiles?targetFile:null, applyFiles?adminFile:null, adminComplete);
+      await refreshProgress(page.run?.id || 0, selected, staleOnly, applyFiles?targetFile:null, applyFiles?adminFile:null, adminComplete, mode);
       if(applyFiles){
         setTargetFile(null);setAdminFile(null);setAdminComplete(false);setNotice(m('refreshed'));
         if (adminInput.current) adminInput.current.value='';
@@ -69,7 +70,7 @@ export function AtomerMigrationProgress() {
     } finally { setPending(false); }
   }
   useEffect(() => {
-    if (!run || auto.current === run.id || Date.now() - Date.parse(run.checked_at) < 86400000) return;
+    if (!run || (run.totals.target_mode && run.totals.target_mode !== 'live') || auto.current === run.id || Date.now() - Date.parse(run.checked_at) < 86400000) return;
     auto.current = run.id;
     void update(null,true);
   },[run?.id]);
@@ -186,6 +187,8 @@ export function AtomerMigrationProgress() {
           [m('states.review'),run.totals.states.review||0]].map(([label,n])=><div key={label}><span>{label}</span><strong>{num(Number(n))}</strong></div>)}
       </div>
       <p className="progress-meta">{m('asOf')} {date(run.checked_at)} · {m('source')} {date(run.imported_at)} · {num(run.totals.items)} {m('codes')}</p>
+      {run.totals.xtrek_observed_at && run.totals.bike_observed_at && run.totals.local_snapshot_at &&
+        <p className="progress-meta">{m('observationTimes')} · xTrek {date(run.totals.xtrek_observed_at)} · BIKETREK {date(run.totals.bike_observed_at)} · Hub {date(run.totals.local_snapshot_at)}</p>}
       {!!run.totals.admin_codes && <p className="progress-meta">{m(run.totals.admin_complete?'adminFull':'adminPartial')} · {
         t('atomerProgress.adminCoverage',{codes:num(run.totals.admin_codes),added:num(run.totals.admin_only_items||0)})}</p>}
       {!!run.totals.admin_conflicts && <p className="progress-warning">{t('atomerProgress.adminConflicts',{
@@ -194,7 +197,13 @@ export function AtomerMigrationProgress() {
         n:num(run.totals.admin_quarantined),ids:run.totals.admin_quarantine_examples?.join(', ')})}</p>}
     </>}
     <section className={run?'progress-tools progress-compact-tools':'opening-stock-panel progress-tools'}>
-      {run ? <><button type="button" disabled={pending || reading} onClick={()=>void update(null)}>{m('refresh')}</button>
+      {run ? <><label>{m('targetModeLabel')} <select value={targetMode} disabled={pending || reading}
+        onChange={e=>setTargetMode(e.target.value as TargetMode)}>
+        <option value="live">{m('targetLive')}</option>
+        <option value="certified_checkpoint" disabled={!run.totals.admin_codes}>{m('targetCertified')}</option>
+        <option value="pinned_source" disabled={!run.totals.xtrek_target_snapshot}>{m('targetPinned')}</option>
+      </select></label>
+      <button type="button" disabled={pending || reading} onClick={()=>void update(null,false,false,targetMode)}>{m('refresh')}</button>
         <details><summary>{m('replaceSource')}</summary>{upload}</details>
         <AtomerReviewBatch run={run.id} onSaved={()=>setRevision(v=>v+1)}/></> : upload}
       {pending && <span role="status">{m('refreshing')}</span>}

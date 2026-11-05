@@ -95,6 +95,16 @@ class NativeCreationTests(unittest.TestCase):
         with patch.object(native,'_sparse',side_effect=[[dict(code='FOREIGN')],[]]),self.assertRaises(ReviewError):
             native._read(Mock(),{'BAG':creation()},{})
 
+    def test_native_related_index_only_returns_parents_with_relations(self):
+        parents = {1: dict(code='A'), 2: dict(code='B')}
+        row = dict(code='B', product_id=2, related=['A'], accessories=['C'])
+        with patch.object(native, '_sparse', return_value=[row]):
+            native._supplements(Mock(), parents, 'related')
+        self.assertEqual(parents[1]['related'], [])
+        self.assertEqual(parents[2]['accessories'], ['C'])
+        with patch.object(native, '_sparse', return_value=[dict(row, product_id=3)]), self.assertRaises(ReviewError):
+            native._supplements(Mock(), parents, 'related')
+
     def test_incremental_identity_scan_retains_previous_pages_and_recovers_after_a_failed_scan(self):
         started = datetime.now(timezone.utc) - timedelta(hours=6)
         first = dict(code='FIRST', product_id=1, variants=[], variants_exists_yn=False)
