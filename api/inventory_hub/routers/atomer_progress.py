@@ -54,8 +54,9 @@ async def progress_refresh(expected_run: Annotated[int, Form(ge=0)],
         raise HTTPException(422, detail={"code":error.code}) from None
     except ProgressError as error:
         raise HTTPException(409, detail={"code":str(error)}) from None
-    except ExportError:
-        raise HTTPException(502, detail={"code":"remote_read_failed"}) from None
+    except ExportError as error:
+        # ExportError contains only machine codes, without upstream bodies or URLs.
+        raise HTTPException(502, detail={"code":"remote_read_failed","message":str(error)}) from None
 
 
 @router.get("/targets")

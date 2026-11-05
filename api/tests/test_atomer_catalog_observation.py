@@ -14,6 +14,19 @@ def parent(pid,vid):
 
 
 class NativeCatalogObservationTests(TestCase):
+    def test_read_window_uses_absolute_product_times_and_rejects_uncertain_times(self):
+        start = datetime(2026, 1, 15, 12, 30, 0, 500000, tzinfo=timezone.utc)
+        def check(value):
+            with patch.object(observe, 'page_rows', return_value=[{'last_update_time': value}]):
+                observe.verify_read_window(None, start)
+        check('2026-01-15T13:00:00+01:00')
+        for value in ('2026-01-15T13:29:59+01:00', '2026-01-15T12:30:01Z'):
+            with self.assertRaisesRegex(ExportError, 'catalog_changed'):
+                check(value)
+        for value in (None, 'unknown', '2026-01-15T13:00:00'):
+            with self.assertRaisesRegex(ExportError, 'update_time_unknown'):
+                check(value)
+
     def test_complete_current_axes_and_stable_identity_for_each_leaf(self):
         roots=[parent(12,35),parent(13,36)]
         current = deepcopy(roots)
