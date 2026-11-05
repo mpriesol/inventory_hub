@@ -59,7 +59,7 @@ def recent_products(client, cache, started):
         return None
     # The shared cache is written after the pull. Overlap the full collection window.
     since=min(pulled-timedelta(hours=2),started)
-    delta=indexed(page_rows(client,'products',{'last_update_time_from':since.isoformat()}),'product_id')
+    delta=indexed(page_rows(client,'products',{'last_update_time_from':since.isoformat(timespec="seconds")}),'product_id')
     previous.update(delta)
     if len(previous)!=total(client,'products','products'):
         return None  # Tombstone or incomplete cache. Use an entire new catalog.
@@ -132,7 +132,7 @@ def catalog(cache=None):
         leaves=list(parameter_rows(client,parents))
         # The remote API does not offer a transaction across endpoints. A concurrent edit
         # during this observation invalidates it even when all collection counts still match.
-        changed=list(page_rows(client,'products',{'last_update_time_from':(started-timedelta(seconds=1)).isoformat()}))
+        changed=list(page_rows(client,'products',{'last_update_time_from':(started-timedelta(seconds=1)).isoformat(timespec='seconds')}))
         if changed:
             raise export.ExportError('upgates_export_catalog_changed')
         return progress.flatten_catalog(parents,leaves)
