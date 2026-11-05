@@ -13,6 +13,7 @@ export type ProgressRow = {
 };
 export type ProgressRun = {id: number; checked_at: string; source_sha256: string; source_rows: number; imported_at: string;
   totals: {items: number; review_targets?:number; admin_codes?:number; admin_only_items?:number; admin_complete?:boolean;
+    admin_conflicts?:number; admin_conflict_examples?:string[]; admin_quarantined?:number; admin_quarantine_examples?:string[];
     kinds: Record<string,number>; states: Record<string,number>; bike: Record<string,number>}};
 export type ProgressFamily = {key:string; name:string; work?:Work; extra_count?:number; items:ProgressRow[]};
 export type ProgressPage = {run: ProgressRun | null; total: number; families:number; groups:ProgressFamily[]};

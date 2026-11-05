@@ -177,6 +177,10 @@ export function AtomerMigrationProgress() {
       <p className="progress-meta">{m('asOf')} {date(run.checked_at)} · {m('source')} {date(run.imported_at)} · {num(run.totals.items)} {m('codes')}</p>
       {!!run.totals.admin_codes && <p className="progress-meta">{m(run.totals.admin_complete?'adminFull':'adminPartial')} · {
         t('atomerProgress.adminCoverage',{codes:num(run.totals.admin_codes),added:num(run.totals.admin_only_items||0)})}</p>}
+      {!!run.totals.admin_conflicts && <p className="progress-warning">{t('atomerProgress.adminConflicts',{
+        n:num(run.totals.admin_conflicts),codes:run.totals.admin_conflict_examples?.join(', ')})}</p>}
+      {!!run.totals.admin_quarantined && <p className="progress-warning">{t('atomerProgress.adminQuarantine',{
+        n:num(run.totals.admin_quarantined),ids:run.totals.admin_quarantine_examples?.join(', ')})}</p>}
     </>}
     <section className={run?'progress-tools progress-compact-tools':'opening-stock-panel progress-tools'}>
       {run ? <><button type="button" disabled={pending || reading} onClick={()=>void update(null)}>{m('refresh')}</button>

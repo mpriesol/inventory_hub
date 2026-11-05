@@ -74,16 +74,25 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None, *, admi
     code_counts = Counter(r["code"].casefold() for r in targets)
     product_codes = {r["parent"].casefold() for r in targets if r["parent"]}
     identifiers, gtins = set(), set()
+    ean_codes = defaultdict(set)
     for item in source:
+        for gtin in barcode_keys([item["ean"]]):
+            ean_codes[gtin].add(item["code"])
         for val in (item["code"],item["ean"]):
             if val:
                 identifiers.add(val.casefold())
                 gtins.update(barcode_keys([val]))
     for code,item in (admin or {}).items():
-        for value in (code,item.get("ean")):
+        for value in (code, item.get("ean"), *item.get("all_eans", ())):
             if value:
                 identifiers.add(value.casefold())
                 gtins.update(barcode_keys([value]))
+        for gtin in barcode_keys([item.get("ean"), *item.get("all_eans", ())]):
+            ean_codes[gtin].add(code)
+    quarantine_gtins = barcode_keys(getattr(admin, "quarantined_identifiers", ()))
+    gtins.update(quarantine_gtins)
+    for value in getattr(admin, "quarantined_identifiers", ()):
+        identifiers.add(value.casefold())
     families, referenced, ownership = defaultdict(set), defaultdict(list), defaultdict(list)
     titles, parent_states, leaf_states = {}, {}, {}
     for r in rows:
@@ -91,7 +100,7 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None, *, admi
         state = r.get("source_state") or {}
         parent_states[r["family_key"]] = dict(product=state.get("product"),product_origin=state.get("product_origin","unknown"),
                                                product_flags=state.get("product_flags") or {})
-        leaf_states[r["code"]] = state
+        leaf_states[r["code"]] = r
         if r["product_id"] and r["variant_id"]:
             referenced[(r["product_id"],r["variant_id"])].append(r)
             if r["match"] and "parent_differs" not in r["reasons"]:
@@ -123,7 +132,7 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None, *, admi
             else:
                 check = "in_source"
         stock = (target or {}).get("stock")
-        if not admin_complete:
+        if not admin_complete or getattr(admin, "quarantined", ()):
             warnings.append("admin_absence_unknown")
         if owners:
             warnings.append("linked")
@@ -132,7 +141,15 @@ def check_targets(pins, source, targets, rows, links, cards, admin=None, *, admi
         elif stock != 0:
             warnings.append("stock")
         signature = hashlib.sha256(json.dumps([p,check,owners,stock,alternatives,warnings],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        state = leaf_states.get(p["code"]) or {}
+        leaf = leaf_states.get(p["code"]) or {}
+        if not leaf and p["code"].casefold() not in identifiers and p["ean"]:
+            pin_gtins = barcode_keys([p["ean"]])
+            candidates = {code for gtin in pin_gtins for code in ean_codes[gtin]}
+            if len(candidates) == 1 and pin_gtins.isdisjoint(quarantine_gtins):
+                candidate = leaf_states.get(next(iter(candidates))) or {}
+                if candidate.get("family_key") == family and not candidate.get("reasons"):
+                    leaf = candidate
+        state = leaf.get("source_state") or {}
         admin_row = (admin or {}).get(p["code"]) or {}
         origin = state.get("variant_origin","unknown")
         active = state.get("variant")

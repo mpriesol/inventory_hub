@@ -211,6 +211,8 @@
   "adminFull": "CSV celého katalógu",
   "adminPartial": "CSV vybraných položiek",
   "adminCoverage": "Kódy v CSV {{codes}} · Predajné položky iba v CSV {{added}}",
+  "adminConflicts": "Opakované kódy s rozdielnymi záznamami v CSV ({{n}}). Skontroluj {{codes}}.",
+  "adminQuarantine": "Riadky s nečitateľným identifikátorom ({{n}}). V Atomeri ich nájdeš pod internými číslami {{ids}}. Kým sa overia, Hub blokuje spracovanie odstránení.",
   "targetFile": "Zoznam variantov na posúdenie (JSON)",
   "activeAtomer": "Aktivita v Atomeri",
   "parentActive": "Materský produkt",
