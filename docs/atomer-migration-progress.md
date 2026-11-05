@@ -79,3 +79,8 @@ Pri sťahovaní konkrétnych variantov xTrek do skladu sa použije rovnaké dopl
 nad nedávnym katalógom. Potvrdenie navyše načíta všetkých vybraných rodičov priamo z API.
 Následne sa uplatnia obvyklé kontroly duplicít celého katalógu, pôvodného tokenu variantu,
 vlastníctva karty a explicitne vybraných položiek. Fyzické množstvá sa týmto postupom nezapisujú.
+
+
+### Generácie v jednej rodine
+
+Operátor môže na presne vybranej rodine uložiť výrobcom doložené rozlíšenie generácií. Prvá fáza doplní parameter Generácia na vymenované existujúce natívne ID. Druhá fáza pridá nové SKU z archivovaného Atomeru a zaznamená natívne ID pridelené xTrekom. Privátny plán obsahuje revízie, očakávané EAN a úplný zoznam pôvodných variantov rodiča. Obe fázy vyžadujú aktuálny náhľad. Hub zachová zálohu rodiča, pôvodné parametre, HTML zdroja a výsledok spätného čítania. Prírastky skladu z dostupnosti dodávateľa sa spracúvajú samostatne. Pri nejasnom výsledku Hub opakuje iba čítanie.

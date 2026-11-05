@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { hubRequest } from '../api/access';
 
 type Family = { operation?:'verified_barcode'; run_id:number; source_sha:string; rows:{code:string}[] };
-type Plan = { packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
+type GenerationSelection = { run_id:number; phase:'label'|'extend'; families:{rows:{code:string}[]}[] };
+type Plan = { generations?:GenerationSelection; packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
 type Result = { retry_after?:number; status:string; count:number; reason?:string };
 const base = '/api/migration/atomer-progress';
 
@@ -19,7 +20,10 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
       if (file.size>1000000) throw Error();
       const p:Plan=JSON.parse(await file.text());
       const families=[...(p.families||[]),...(p.packs||[]).flatMap(pack=>pack.families)];
-      if (!(families.length||p.blocks) || families.length>200 ||
+      const gen=p.generations;
+      if (gen && (gen.run_id!==run || !['label','extend'].includes(gen.phase) ||
+          !Array.isArray(gen.families) || !gen.families.length || gen.families.some(f=>!f.rows?.length))) throw Error();
+      if (!(families.length||p.blocks||gen) || families.length>200 ||
           p.packs?.some(pack=>!pack.families.length||pack.families.length>25) ||
           families.some(f=>f.run_id!==run||!Array.isArray(f.rows)||!f.rows.length) || (p.blocks && p.blocks.run_id!==run)) throw Error();
       setPlan(p);
@@ -37,6 +41,7 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
         path:'/review-batch/',label:pack.families[0].rows[0].code,
         body:{families:pack.families.map(({operation,...family})=>family)}
       });
+      if (plan.generations) requests.push({path:'/variant-generations/',label:plan.generations.families[0].rows[0].code,body:plan.generations});
       for (const {path,label,body} of requests) {
         const send=()=>hubRequest<Result>(base+path+(preview?'preview':'apply'),body);
         let r:Result;
