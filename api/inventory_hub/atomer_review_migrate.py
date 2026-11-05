@@ -13,7 +13,8 @@ def main():
         with connection.cursor() as cursor:
             cursor.execute('SELECT pg_advisory_xact_lock(691432138)')
             cursor.execute(sql.read_text(encoding='utf-8'))
-    print('Atomer review migration 038 ready')
+            cursor.execute(sql.with_name('039_atomer_variant_repairs.sql').read_text(encoding='utf-8'))
+    print('Atomer review migrations 038/039 ready')
 
 
 if __name__ == '__main__':
