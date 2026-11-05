@@ -496,3 +496,5 @@ Prehľad načítava živé parametre podľa natívnych rodičov a kontroluje úp
 Pri obsadenej kombinácii môže operátor rozlíšiť generácie variantov v xTreku a doplniť presné SKU z Atomeru cez ten istý súkromný migračný prehľad. Po vzniku skladových kariet možno potvrdiť väzby a uložiť overené variantové osi.
 
 Spätná kontrola nových generácií umožňuje podľa pôvodného zámeru obnoviť cenu rodiča a preniesť presné natívne ID do skladového importu.
+
+Pri nezhode dostupnosti môže Hub doložiť kartu a presný parameter generácie, pričom riadok ostáva blokovaný do potvrdenia natívnej dostupnosti.
