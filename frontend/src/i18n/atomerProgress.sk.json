@@ -1,5 +1,5 @@
 {
-  "replaceSource": "Vymeniť export Atomeru",
+  "replaceSource": "Nahrať podklady",
   "bikeReasons": {
     "card_conflict": "Nejednoznačná karta v Hube",
     "incomplete_link": "Väzbe chýba kód alebo natívne ID",
@@ -45,7 +45,7 @@
   "source": "Export uložený",
   "codes": "predajných kódov",
   "file": "Nový export Atomeru (buyers.xml)",
-  "useFile": "Načítať a porovnať export",
+  "useFile": "Uložiť podklady a obnoviť prehľad",
   "refresh": "Obnoviť údaje obchodov a Hubu",
   "refreshing": "Prebieha kontrola celého katalógu…",
   "emptySource": "Na prvú kontrolu nahraj buyers.xml. Ďalšie kontroly môžu použiť uložený export.",
@@ -64,7 +64,20 @@
     "failed": "Kontrola sa nepodarila. Skús načítať prehľad znova.",
     "remote_read_failed": "Úplný katalóg xTrek sa nepodarilo overiť. Zobrazený je posledný dokončený prehľad.",
     "refresh_in_progress": "Prebieha iná kontrola. Po jej dokončení obnov stránku.",
-    "source_required": "Najskôr vyber buyers.xml."
+    "source_required": "Najskôr vyber buyers.xml.",
+    "review_changed": "Medzičasom pribudla iná zmena. Zavri detail a načítaj prehľad znova.",
+    "run_changed": "Katalóg bol obnovený. Otvor aktuálny detail.",
+    "invalid_transition": "Stav položky sa zmenil. Načítaj ju znova.",
+    "invalid_targets": "Zoznam musí obsahovať jedinečné ID produktov a variantov, kódy, EAN, rodičov a parametre.",
+    "target_pin_changed": "Jedno z ID už má uloženú inú identitu. Skontroluj pôvodný zoznam.",
+    "target_recheck_required": "Zmenila sa identita alebo podklady. Pred ďalším krokom treba nové rozhodnutie.",
+    "verify_removal_first": "Najskôr over výsledok odstránenia obnovením katalógu.",
+    "working_first_reopen": "Pokyn už niekto spracúva. Pred zmenou ho vráť medzi otvorené a over prípadné vykonané kroky.",
+    "family_manages_work": "O práci rozhoduje celý produkt. Najskôr otvor jeho rozhodnutie.",
+    "active_child_work": "Niektorý variant má aktívny pokyn. Najskôr vyrieš alebo stiahni jeho pokyn.",
+    "invalid_admin_export": "CSV musí obsahovať jednoznačné katalógové číslo a viditeľnosť. Skontroluj hlavičky a duplicitné riadky.",
+    "export_size": "Súbor je prázdny alebo príliš veľký.",
+    "admin_source_required": "Pred odstránením treba úplný export Atomeru vrátane skrytých položiek."
   },
   "reasons": {
     "duplicate_source": "Odlišné riadky majú v Atomeri rovnaký kód.",
@@ -82,5 +95,125 @@
     "card_ean_differs": "EAN skladovej karty sa líši.",
     "different_shop_link": "Karta už má inú väzbu v xTrek.",
     "link_identity_differs": "Kód alebo materský produkt existujúcej väzby sa líši."
-  }
+  },
+  "viewLabel": "Časti prehľadu",
+  "views": {
+    "catalog": "Produkty a varianty",
+    "remove": "Na rozhodnutie o odstránení",
+    "ai": "Pokyny pre AI"
+  },
+  "subject": {
+    "family": "Celý produkt s variantmi",
+    "item": "Predajná položka",
+    "extra": "Variant xTrek mimo exportu"
+  },
+  "subjectLabel": "Produkt alebo variant",
+  "wholeFamily": "Rozhodnutie platí pre celú rodinu vrátane jej variantov.",
+  "familyManaged": "Riadi sa rozhodnutím produktu",
+  "workTitle": "Ďalší krok",
+  "workFilter": "Spracovanie",
+  "workFilterValues": {
+    "open": "Otvorené",
+    "done": "Hotové",
+    "all": "Všetky"
+  },
+  "workStatus": {
+    "open": "Otvorené",
+    "queued": "Čaká na AI",
+    "working": "Spracúva sa",
+    "blocked": "Treba vyriešiť",
+    "done": "Hotové"
+  },
+  "decision": {
+    "undecided": "Nerozhodnuté",
+    "no": "Nie · ponechať",
+    "yes": "Áno · odstrániť"
+  },
+  "delete": "Odstrániť?",
+  "deletionHelp": "„Áno“ schváli iba uvedené ID variantu v xTreku. Spracovanie vyžaduje overenie úplného zdroja, skladu, väzieb a objednávok.",
+  "scopeLabel": "Kde chceme produkt predávať",
+  "scopes": {
+    "default": "Podľa produktu / neurčené",
+    "both": "Oba obchody",
+    "xtrek": "Iba xTrek",
+    "biketrek": "Iba BIKETREK"
+  },
+  "note": "Interná poznámka",
+  "instruction": "Pokyn pre AI",
+  "instructionHelp": "Uložený nový pokyn sa zaradí na spracovanie. Samotná poznámka zostane pri položke.",
+  "suggested": "Navrhované kroky",
+  "suggestions": {
+    "identity": "Overiť identitu",
+    "card": "Vyriešiť skladovú kartu",
+    "linkX": "Prepojiť s xTrekom",
+    "targetX": "Doplniť do xTreku",
+    "checkB": "Overiť väzbu BIKETREK",
+    "linkB": "Prepojiť s BIKETREK",
+    "verify": "Overiť zvolený rozsah",
+    "inspectExtra": "Preveriť pred rozhodnutím"
+  },
+  "instructions": {
+    "identity": "Porovnaj kód, EAN, rodiča a parametre podľa Atomeru. Zapíš zistenú príčinu konfliktu.",
+    "card": "Over existujúce skladové karty. Pri jednoznačnej identite použi existujúcu kartu alebo založ chýbajúcu podľa pravidiel skladu.",
+    "linkX": "Over zhodu a prepoj existujúcu kartu s presným produktom alebo variantom v xTreku. Potvrď výsledné ID.",
+    "targetX": "Priprav chýbajúcu položku v xTreku podľa Atomeru. Over aktivitu produktu, variantu a príznaky pred zverejnením.",
+    "checkB": "Skontroluj natívne ID, rodiča a kód väzby BIKETREK. Zapíš výsledok kontroly.",
+    "linkB": "Nájdi zhodu v BIKETREK a po overení prepoj presný variant alebo samostatný produkt s kartou.",
+    "verify": "Over kartu a väzby v určených obchodoch. Zapíš overené ID a prípadný rozdiel.",
+    "inspectExtra": "Skontroluj úplný zdroj Atomeru, identitu, sklad, objednávky, rezervácie a väzbu tejto položky. Zapíš odporúčanie."
+  },
+  "close": "Zavrieť",
+  "save": "Uložiť",
+  "saved": "Rozhodnutie je uložené.",
+  "refreshed": "Podklady sú uložené a prehľad je obnovený.",
+  "finish": "Označiť ako hotové",
+  "reopen": "Znovu otvoriť",
+  "withdraw": "Vrátiť medzi otvorené",
+  "claim": "Prevziať na spracovanie",
+  "retry": "Zaradiť znova",
+  "verifiedDone": "Potvrdiť overený výsledok",
+  "blocked": "Uložiť dôvod blokovania",
+  "receipt": "Overený výsledok alebo dôvod blokovania",
+  "lastResult": "Výsledok",
+  "edit": "Riešiť",
+  "inspect": "posúdiť",
+  "openTask": "Otvoriť pokyn",
+  "removeIntro": "Vyber konkrétny variant v xTreku a ulož rozhodnutie. Pri výbere „Nie“ sa posúdenie uzavrie. „Áno“ zaradí schválený variant na kontrolu pred odstránením.",
+  "queueIntro": "Tu sa spracúvajú uložené pokyny. Výsledok kontroly alebo dôvod blokovania zostane pri produkte.",
+  "queueStatus": "Stav pokynu",
+  "emptyTargets": "Žiadne varianty pre tento výber.",
+  "emptyQueue": "V tomto stave nie sú žiadne pokyny.",
+  "approvedRemoval": "Schválené posúdenie odstránenia konkrétneho variantu.",
+  "remoteVariant": "Variant v xTreku",
+  "reviewCheck": "Kontrola a upozornenia",
+  "stockX": "Sklad v xTreku",
+  "inAtomer": "Položka je v zdrojovom exporte.",
+  "checks": {
+    "eligible": "V buyers.xml chýba. Identita v xTreku sedí.",
+    "missing": "Variant už v xTreku chýba",
+    "changed": "Identita variantu sa zmenila",
+    "family_changed": "Rodiča nemožno jednoznačne overiť",
+    "ambiguous": "Kód v xTreku je nejednoznačný",
+    "in_source": "Existuje zdrojová zhoda. Ponechať a preveriť."
+  },
+  "warn": {
+    "occupied": "Rovnaká kombinácia parametrov má v Atomeri iné EAN.",
+    "linked": "Na variant je naviazaná skladová karta.",
+    "stock": "Variant má evidované zásoby.",
+    "unknown_stock": "Množstvo zásob nie je známe.",
+    "admin_absence_unknown": "Pred odstránením treba úplný export Atomeru vrátane skrytých položiek."
+  },
+  "adminFile": "Úplný export administrácie Atomeru (CSV)",
+  "targetFile": "Zoznam variantov na posúdenie (JSON)",
+  "activeAtomer": "Aktivita v Atomeri",
+  "parentActive": "Materský produkt",
+  "activity": {
+    "unknown": "Neuvedené",
+    "conflict": "Rozpor v zdrojoch",
+    "on": "Aktívny",
+    "off": "Neaktívny"
+  },
+  "activityHelp": "Aktivita znamená viditeľnosť v Atomeri. Ak v exporte chýba materský riadok, jeho stav je „Neuvedené“.",
+  "activeVariants": "Aktívne varianty",
+  "variantLabel": "Variant"
 }

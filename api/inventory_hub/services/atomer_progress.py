@@ -8,6 +8,7 @@ from lxml import etree
 
 from inventory_hub.adapters.atomer_content import AtomerSourceError, MAX_ROWS, _preflight, _text
 from inventory_hub.services.product_link_source import _navigation
+from inventory_hub.services.atomer_source_state import flag
 from inventory_hub.services.product_identity import RemoteIdentity, barcode_keys
 from inventory_hub.services.migration_upgates_export import ExportError, build_remote_export
 
@@ -51,13 +52,16 @@ def parse_source(fileobj):
             data = dict(code=code, parent=_identifier(node, "PARENT_ID"),
                         name=_text(node, "PRODUCT_NAME"), ean=_identifier(node, "EAN"),
                         brand=_text(node, "MANUFACTURER"), axes=axes)
+            visibility = flag(_text(node, "VISIBILITY"))
             if code in by_code:
                 previous = by_code[code]
                 previous["duplicates"] += 1
+                if previous["source_visibility"] != visibility:
+                    previous["visibility_conflict"] = True
                 if any(previous[k] != value for k, value in data.items()):
                     previous["conflict"] = True
             else:
-                by_code[code] = dict(data, duplicates=1, conflict=False)
+                by_code[code] = dict(data, duplicates=1, conflict=False, source_visibility=visibility, visibility_conflict=False)
             node.clear()
             while node.getprevious() is not None:
                 del root[0]
@@ -114,7 +118,7 @@ def flatten_catalog(products, variants):
                     if name and values:
                         params.setdefault(_norm(name), []).extend(_norm(value) for value in values)
             leaves.append(dict(code=code or "", pid=pid, vid=vid, parent=(p.get("code") or "") if variant else "",
-                               ean=child.get("ean") or "", brand=p.get("manufacturer") or "", axes=params,
+                               stock=child.get("stock"), ean=child.get("ean") or "", brand=p.get("manufacturer") or "", axes=params,
                                title=next((d.get("title") for d in p.get("descriptions") or []
                                            if d.get("language") == "sk" and d.get("title")), None),
                                **_navigation(p, child)))

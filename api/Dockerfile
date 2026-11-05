@@ -57,6 +57,7 @@ COPY infra/db-init/034_supplier_availability_delivery.sql /app/inventory_hub/mig
 COPY infra/db-init/035_order_webhooks.sql /app/inventory_hub/migrations/035_order_webhooks.sql
 COPY infra/db-init/036_stock_sync_dirty.sql /app/inventory_hub/migrations/036_stock_sync_dirty.sql
 COPY infra/db-init/037_atomer_progress.sql /app/inventory_hub/migrations/037_atomer_progress.sql
+COPY infra/db-init/038_atomer_review.sql /app/inventory_hub/migrations/038_atomer_review.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

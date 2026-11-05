@@ -110,8 +110,9 @@ class ExportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         connection = await asyncpg.connect(TEST_URL)
         try:
             await connection.execute(f'SET search_path TO "{self.schema}"')
-            await connection.execute(sql.read_text())
-            await connection.execute(sql.read_text())
+            for path in (sql,sql.with_name("038_atomer_review.sql")):
+                await connection.execute(path.read_text())
+                await connection.execute(path.read_text())
             await connection.execute("INSERT INTO shops(code,name,platform) VALUES ('xtrek','xTrek','upgates'),('biketrek','BIKETREK','upgates') ON CONFLICT (code) DO NOTHING")
         finally:
             await connection.close()
@@ -132,6 +133,64 @@ class ExportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     await store.refresh(db,None,saved["id"])
         async with self.sessions() as db:
             self.assertEqual((await store.latest(db))["id"],saved["id"])
+
+    async def test_atomer_review_cas_queue_scope_refresh_and_approval(self):
+        from inventory_hub.services import atomer_progress_store as store, atomer_review as review
+        from inventory_hub.services.atomer_review_targets import ReviewError
+        root = Path(__file__).resolve().parents[2] / "infra/db-init"
+        async with self.sessions() as db:
+            for filename in ("037_atomer_progress.sql","038_atomer_review.sql"):
+                connection = await db.connection()
+                raw = await connection.get_raw_connection()
+                await raw.driver_connection.execute((root/filename).read_text())
+            await db.execute(text("INSERT INTO shops(code,name,platform) VALUES ('xtrek','X','upgates'),('biketrek','B','upgates') ON CONFLICT DO NOTHING"))
+            await db.commit()
+        src = [dict(code="kept",parent="F",name="Family",ean="",brand="",axes={},duplicates=1,conflict=False)]
+        remote = [dict(pid="2",vid="3",parent="F",code="kept",ean="",brand="",axes={}),
+                  dict(pid="2",vid="4",parent="F",code="other",ean="",brand="",axes={"size":["l"]},stock=0)]
+        pins={"2/4":dict(product_id="2",variant_id="4",parent="F",source_parent="F",code="other",ean="",axes={"size":["l"]})}
+        async def action(kind,key,revision,command,**fields):
+            async with self.sessions() as db:
+                return await review.edit(db,review.Edit(kind=kind,key=key,revision=revision,command=command,run_id=run,**fields),"tester")
+        with patch.object(store.progress,"remote_catalog",return_value=(remote,{})):
+            async with self.sessions() as db:
+                run=(await store.refresh(db,("a"*64,1,src),0,review_pins=pins))["id"]
+            await action("item","kept",0,"save",scope="xtrek",note="Internal")
+            async with self.sessions() as db:
+                self.assertEqual((await review.queue(db,run,"queued",0,20))["total"],0)
+            await action("item","kept",1,"save",instruction="Check that exact leaf")
+            with self.assertRaisesRegex(ReviewError,"review_changed"):
+                await action("item","kept",1,"done")
+            with self.assertRaisesRegex(ReviewError,"active_child_work"):
+                await action("family","v:F",0,"done")
+            await action("item","kept",2,"claim")
+            with self.assertRaisesRegex(ReviewError,"result_required"):
+                await action("item","kept",3,"complete")
+            await action("item","kept",3,"complete",result="Verified test leaf 2/3")
+            await action("family","v:F",0,"done",scope="xtrek")
+            async with self.sessions() as db:
+                self.assertEqual((await store.page(db,None,None,None,None,"",0,20,"open"))["total"],0)
+                self.assertEqual((await store.page(db,None,None,None,None,"",0,20,"done"))["total"],1)
+                extra=(await review.extras(db,run,"","undecided","all",0,20))["items"][0]
+                self.assertEqual((extra["key"],extra["check"]),("2/4","eligible"))
+            await action("extra","2/4",0,"save",decision="yes")
+            with self.assertRaisesRegex(ReviewError,"exact_variant_required"):
+                await action("family","v:F",1,"save",decision="yes")
+            remote[1]["stock"]=1
+            async with self.sessions() as db:
+                run=(await store.refresh(db,None,run))["id"]
+            async with self.sessions() as db:
+                extra=(await review.extras(db,run,"other","","all",0,20))["items"][0]
+                self.assertEqual((extra["work"]["decision"],extra["work"]["status"]),("undecided","blocked"))
+                group=(await store.page(db,None,None,None,None,"",0,20,"done"))["groups"][0]
+                self.assertEqual(group["work"]["scope"],"xtrek")
+                self.assertEqual(group["items"][0]["work"]["result"],"Verified test leaf 2/3")
+            await action("family","v:F",1,"reopen")
+            await action("item","kept",4,"reopen")
+            async with self.sessions() as db:
+                self.assertEqual((await store.page(db,None,None,None,None,"",0,20,"open"))["total"],1)
+                self.assertEqual((await review.queue(db,run,"blocked",0,20))["total"],1)
+                self.assertEqual(await db.scalar(text("SELECT count(*) FROM atomer_review_events WHERE kind='extra'")),2)
 
     async def test_complete_snapshot_preserves_nulls_and_never_confirms_stock(self):
         remote = [{"code": "xTrek", "variants": [{"code": "00042-X", "ean": "0012345678905", "stock": None}]}]
