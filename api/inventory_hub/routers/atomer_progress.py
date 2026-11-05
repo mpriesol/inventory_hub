@@ -2,6 +2,7 @@ import asyncio
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.access import operator_access
@@ -10,7 +11,7 @@ from inventory_hub.database import get_session
 from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services.atomer_progress import parse_source
 from inventory_hub.services.atomer_progress_store import latest, page, ProgressError, refresh
-from inventory_hub.services import atomer_review as review
+from inventory_hub.services import atomer_proposals, atomer_review as review
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.services.stock_publication_source import SourceError
@@ -183,5 +184,32 @@ async def record_generation_review(mode: Literal["preview","apply"], selection: 
                                    request: Request, db: AsyncSession = Depends(get_session)):
     try:
         return await atomer_generation_cards.finish_cards(db,selection,mode,_actor(request),record_pending=True)
+    except (ReviewError,CatalogError,SourceError) as error:
+        raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
+
+class ProposalSelection(atomer_generations.Strict):
+    run_id: int = Field(gt=0)
+
+
+@router.post("/approved-proposals/{action}/{mode}")
+async def approved_proposals(action: Literal["accept","verify"],mode: Literal["preview","apply"],
+                             request: Request,selection: ProposalSelection,db: AsyncSession = Depends(get_session)):
+    try:
+        operation = atomer_proposals.accept if action=="accept" else atomer_proposals.verify_links
+        return await operation(db,selection.run_id,mode,_actor(request))
+    except ReviewError as error:
+        raise HTTPException(error.status,detail={"code":error.code}) from None
+
+
+class ChangedStockPolicy(ProposalSelection):
+    selection: atomer_generations.Selection
+    revisions: dict[str,int] = Field(min_length=1,max_length=100)
+
+
+@router.post("/generation-stock-policy/{mode}")
+async def changed_stock_policy(mode: Literal["preview","apply"],selection: ChangedStockPolicy,request: Request,
+                               db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_generation_availability.after_stock_policy_change(db,selection,mode,_actor(request))
     except (ReviewError,CatalogError,SourceError) as error:
         raise HTTPException(error.status,detail={"code":error.code,"retry_after":getattr(error,"retry_after",None)}) from None
