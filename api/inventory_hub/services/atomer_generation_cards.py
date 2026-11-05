@@ -53,7 +53,13 @@ async def finish_cards(db, selection, mode, actor, *, record_pending=False):
             card = owner[1].id
             other = await db.scalar(select(ShopProduct.id).where(ShopProduct.product_id==card,
                 ShopProduct.shop_id!=owner[0].shop_id).limit(1))
-            gen.require(other is None,"generation_card_shared")
+            if item.preserved_card:
+                from inventory_hub.services.atomer_generation_preserved_card import check
+                gen.require(card==item.preserved_card.id,'generation_existing_card_changed')
+                shared_link=await check(db,item,target=(str(family.product_id),str(vid),family.parent),read_bike=True)
+                gen.require(shared_link and shared_link.id==owner[0].id,'generation_existing_card_mapping_changed')
+            else:
+                gen.require(other is None,"generation_card_shared")
             owners = set(await db.scalars(select(ProductIdentifier.product_id).where(
                 ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES),
                 func.ltrim(ProductIdentifier.value,"0")==item.ean.lstrip("0"))))
@@ -63,7 +69,7 @@ async def finish_cards(db, selection, mode, actor, *, record_pending=False):
                         "generation_card_override")
             existing = (await db.execute(select(ProductVariantAttribute.attribute_name,ProductVariantAttribute.attribute_value)
                         .where(ProductVariantAttribute.product_id==card))).all()
-            extra = missing_axes(doc["expected_axes"][item.code],existing)
+            extra = [] if item.preserved_card else missing_axes(doc["expected_axes"][item.code],existing)
             note = (f"xTrek {family.product_id}/{vid} · karta Hub {card} · {item.code} · EAN {item.ean}. "
                     f"Generácia {item.generation}. Natívna rodina, parametre, ceny a väzba overené.")
             if doc.get('unreported_stock'):

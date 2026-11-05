@@ -350,12 +350,14 @@ def native_pair_links(cards, fingerprint):
     return result
 
 
-def untouched_other_work(record, group, detail, revision, command):
+def untouched_other_work(record, group, detail, revision, command, job=None, events=None):
     """The other owner keeps its untouched proposal. Explicit decisions never authorize this operation."""
     if record['revision'] != revision:
         return False
     if revision == 0:
         return record['status'] == 'open' and not record['instruction'] and not command
+    if revision in (2,3):
+        return proposals.owns_undelivered_proposal(record,revision,command,detail,group,job,events or {})
     if revision != 1 or record['status'] != 'queued' or command != 'approve_suggestions':
         return False
     scope = record['scope'] if record['scope'] != 'default' else group['scope']
@@ -400,7 +402,18 @@ async def exact_pair_cards(db, pair, head, native, completed):
                         and saved['revision'] == pair.revision + int(completed), 'review_changed')
             gen.require(command == ('barcode_owner_verified' if completed else 'review_block'), 'review_changed')
         else:
-            gen.require(untouched_other_work(saved, group, detail, pair.other_revision, command), 'review_changed')
+            campaign, events = None, {}
+            if pair.other_revision in (2,3):
+                campaign=(await db.execute(text("""SELECT j.stage,j.guards,j.receipt,c.actor
+                    FROM atomer_catalog_campaigns c JOIN atomer_catalog_jobs j ON j.campaign=c.id
+                    JOIN atomer_progress_runs r ON c.source_sha=r.source_sha256 AND c.admin_sha=r.admin_export_sha256
+                    WHERE r.id=:r AND j.family_key=:key AND c.shop_fingerprint=:fp FOR UPDATE OF j"""),
+                    {'r':head,'key':detail['family_key'],'fp':repair.target_fingerprint('xtrek')})).mappings().one_or_none()
+                if campaign:
+                    events=dict((await db.execute(text("""SELECT revision,command FROM atomer_review_events
+                        WHERE kind='item' AND key=:s AND revision<=:v AND (revision=1 OR actor=:actor)"""),
+                        {'s':expected.sku,'v':pair.other_revision,'actor':campaign['actor']})).all())
+            gen.require(untouched_other_work(saved, group, detail, pair.other_revision, command, campaign, events), 'review_changed')
     keys = {c.ean.lstrip('0') for c in (wrong, owner)}
     found = list(await db.scalars(select(ProductIdentifier).where(ProductIdentifier.identifier_type.in_(ProductIdentifierService.BARCODE_TYPES),
         or_(ProductIdentifier.product_id.in_((wrong.id, owner.id)), func.ltrim(ProductIdentifier.value, '0').in_(keys))).with_for_update()))

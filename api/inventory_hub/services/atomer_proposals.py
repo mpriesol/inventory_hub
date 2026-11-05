@@ -37,6 +37,20 @@ def suggestions(row, scope):
     return selected or ['verify']
 
 
+def owns_undelivered_proposal(record,revision,command,detail,group,job,events):
+    """Bind the exact previous machine proposal and its claim to one still-undelivered catalog job."""
+    if (record['revision']!=revision or revision not in (2,3) or not job or not job.get('guards') or
+            job['stage'] not in ('pending','prepared','blocked','partial') or events.get(revision)!=command or
+            events.get(1)!='approve_suggestions' or events.get(2)!='claim'):
+        return False
+    if any(job['receipt'].get(k) for k in ('dispatched','content_intent','identity_verified','product_id')):
+        return False
+    scope=record['scope'] if record['scope']!='default' else group['scope']
+    wanted='\n'.join(INSTRUCTIONS[k] for k in suggestions(detail,scope))
+    return (record['instruction']==wanted and (revision,record['status'],command) in
+            ((2,'working','claim'),(3,'blocked','block')) and ['item',detail['code'],2] in job['guards'].get('own',()))
+
+
 async def accept(db, run, mode, actor):
     await review._lock_current_run(db, run)
     # Explicit withdrawals, active family decisions, saved notes/instructions and historical

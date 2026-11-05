@@ -37,6 +37,16 @@ class ExistingContentTests(unittest.TestCase):
             result = content.send_content({'BAG': plan}, 'fp')['BAG']
         return result, write
 
+    def test_source_exception_can_only_enter_creation_for_an_absent_parent(self):
+        self.doc['new_parent_only'] = True
+        self.assertEqual(self.prepare()['status'], 'conflict')
+        with patch.object(native, '_connection'), patch.object(native, '_read', return_value={'BAG': self.actual}), \
+             patch.object(native, '_sparse', return_value=[]), patch.object(native.transport, '_request') as put:
+            ids = {'BAG': self.ids}
+            self.assertEqual(native.complete_related([self.doc], 'fp', ids)['BAG']['status'], 'conflict')
+            self.assertEqual(native.prepare_extensions([self.doc], 'fp', None, ids, {'BAG':['NEW']})['BAG']['status'], 'conflict')
+            put.assert_not_called()
+
     def test_unchanged_legacy_family_is_verified_including_current_protected_links(self):
         self.actual['related'].append('MANUAL')
         self.actual['categories'].append(dict(category_id=90, main_yn=False, position=4))

@@ -548,6 +548,7 @@ def prepare_content(documents, fingerprint, expected_ids):
     for key, doc in selected.items():
         live = observed.get(key)
         try:
+            _require(not doc.get('new_parent_only'), 'new_source_exception_create_only')
             plan = _assess(doc, live, expected_ids[key])
             if plan['status'] == 'ready':
                 plan['before'] = plain(live)

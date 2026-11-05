@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 from inventory_hub.services import atomer_source_state as source_state
+from inventory_hub.services import atomer_variant_barcode_owners as size_owners
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,8 +116,20 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
           AND document->>'source_sha'=:sha AND document->>'admin_sha'=:admin
         ORDER BY updated_at
     """), {"sha":digest,"admin":admin_sha})).all())
-    rows = await asyncio.to_thread(progress.reconcile, catalog, remote, card_index,
+    size_proofs = (await db.scalars(text("""
+        SELECT document || jsonb_build_object('journal_id',id) FROM atomer_variant_repairs WHERE state='verified'
+          AND document->>'operation'='misassigned_variant_barcode'
+          AND document->>'source_sha'=:sha AND document->>'admin_sha'=:admin ORDER BY updated_at
+    """), {"sha":digest,"admin":admin_sha})).all()
+    effective, corrections = size_owners.effective_sources(catalog,admin,remote,card_index,xtrek_links,size_proofs)
+    rows = await asyncio.to_thread(progress.reconcile, effective, remote, card_index,
                                    xtrek_links, overrides, bike_links, bike_targets, proven_brands)
+    for row in rows:
+        proof=corrections.get(row['code'])
+        if proof:
+            # Downstream source builders intentionally revalidate the unchanged administrative bytes.
+            row['ean']=proof['atomer_ean']
+            row['verified_size_barcode']=proof
     outstanding=(await db.execute(text("""
         SELECT DISTINCT ON (a.key) a.key,j.document->'identity'->>'product_id',
                j.document->'observed_ids'->>a.key,a.value->>1

@@ -1,9 +1,11 @@
 import json
 import os
-from datetime import datetime, timezone
+from contextlib import ExitStack
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -28,6 +30,52 @@ def selection(**changes):
 
 
 class EngineSelectionTests(unittest.TestCase):
+    def test_new_native_sample_requires_insert_ack_exact_readback_and_matching_public_html(self):
+        from inventory_hub.services import atomer_catalog_outcomes as outcomes
+        desc=dict(language='sk',title='Source',long_description='<p>Source <b>body</b></p>',active_yn=True)
+        payload=dict(code='P',active_yn=True,descriptions=[desc])
+        job=dict(document={'payload':payload},receipt=dict(dispatched=True,ack=dict(inserted=True,product_id=83)))
+        live={**payload,'product_id':83,'descriptions':[{**desc,'url':'https://xtrek.site/p/actual-native-path'}]}
+        seen=dict(product_id=83,identity_verified=True,native=live)
+        evidence=outcomes.capture(job,seen)
+        self.assertEqual((evidence['kind'],evidence['product_id']),('created',83))
+        self.assertTrue(evidence['sample']['html_verified'])
+        self.assertNotIn('sample',outcomes.capture(job,{**seen,'native':{**live,'active_yn':False}}))
+        for bad in ({'url':'https://example.invalid/p/old'},{'long_description':'Source body'}):
+            changed={**live,'descriptions':[{**live['descriptions'][0],**bad}]}
+            self.assertNotIn('sample',outcomes.capture(job,{**seen,'native':changed}))
+        self.assertIsNone(outcomes.capture(job,{**seen,'identity_verified':False}))
+        for ack in ({},{'inserted':False},{'inserted':True,'product_id':99}):
+            self.assertEqual(outcomes.capture({**job,'receipt':dict(dispatched=True,ack=ack)},seen)['kind'],'unconfirmed_origin')
+        self.assertEqual(outcomes.capture({**job,'document':{**job['document'],'extension':{'product_id':83}}},seen)['kind'],'unconfirmed_origin')
+        extension={'product_id':83,'existing_report_run':1}
+        self.assertEqual(outcomes.capture({**job,'document':{**job['document'],'extension':extension}},seen)['kind'],'existing')
+
+    def test_partial_vat_is_new_parent_only_with_the_exact_approved_source_counts(self):
+        from inventory_hub.services import atomer_new_source as src
+        pin=dict(source_parent_id='202',parent_rate='23',rates={'23':18,'0':18})
+        sel=selection(partial_vat_families={'P':pin}).model_dump()
+        with self.assertRaises(ValidationError):
+            selection(partial_vat_families={'P':{**pin,'rates':{'23':17,'0':19}}})
+        codes=[f'leaf-{i}' for i in range(36)]
+        index=Mock();index.canonical.return_value='P';index.family.return_value=({'P':{}},{})
+        index.related_codes.return_value=([],[]);index.leaves.return_value=codes
+        rows={k:{'detail':{'state':'needs_target'}} for k in codes}
+        guards={'rows':rows,'scope':dict.fromkeys(codes,'default'),'blocked':{},'excluded':{}}
+        def create(*args):
+            return {'source_family_codes':codes,'payload':{'code':'P','variants':[{'code':k} for k in codes[:18]]},
+                    'deferred_leaves':dict.fromkeys(codes[18:],{'reason':'new_variant_vat_not_representable'}),
+                    'new_parent_only':bool(args[4].get('partial_vat_families'))}
+        with patch.object(src,'build',side_effect=create) as build:
+            doc=engine._make_document(index,'v:P',rows,guards,{},sel,{},new_parent=True)
+            self.assertTrue(doc['vat_create_only'])
+            self.assertEqual(build.call_args.args[4]['partial_vat_families'],{'P':pin})
+            engine._make_document(index,'v:P',rows,guards,{},sel,{})
+            self.assertNotIn('partial_vat_families',build.call_args.args[4])
+            rows[codes[-1]]['detail']['product_id']=201
+            with self.assertRaisesRegex(engine.ReviewError,'catalog_partial_vat_requires_new_parent'):
+                engine._make_document(index,'v:P',rows,guards,{},sel,{},new_parent=True)
+
     def test_request_accounting_never_retains_hosts_ids_and_ignores_unrelated_work(self):
         from datetime import timedelta
         c=dict(phase='prepared')
@@ -118,6 +166,77 @@ class EngineSelectionTests(unittest.TestCase):
 
 
 class CorrectedSiblingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_large_family_creates_one_parent_and_appends_tranches_using_observed_ids(self):
+        from inventory_hub.services import atomer_new_native as native
+        codes=[f'leaf-{i:03}' for i in range(418)]
+        parent_code='P'; pid=912
+        payload={'code':parent_code,'variants':[{'code':k,'main_yn':k==codes[-1]} for k in codes]}
+        rows={k:{'detail':{'state':'needs_target'}} for k in codes}
+        saved=dict(family_key='v:P',stage='pending',document=None,receipt={},attempts=0,
+                   guards={'rows':rows,'scope':dict.fromkeys(codes,'default'),'excluded':{},'blocked':{}})
+        c=dict(id='campaign',checked_at=datetime.now(timezone.utc),checked_run_id=17,selection={},shop_fingerprint='fp')
+        db=AsyncMock(); live={}; sends=[]; observations=[]
+
+        async def record(_db,_cid,_family,stage,**updates):
+            saved['stage']=stage
+            for field in ('document','receipt','guards'):
+                if field in updates:
+                    saved[field]=deepcopy(updates[field])
+
+        def apply_leaves(selected):
+            self.assertEqual(saved['stage'],'sending')
+            self.assertLessEqual(len(selected),engine.MAX_LEAVES)
+            self.assertFalse(live.keys() & set(selected))
+            sends.append(len(selected))
+            live.update({k:10001+codes.index(k) for k in selected})
+
+        def create(docs,fp):
+            self.assertFalse(live)
+            first=docs[0]['payload']['variants']
+            self.assertEqual([v['code'] for v in first if v['main_yn']],[codes[-1]])
+            apply_leaves([v['code'] for v in first])
+            return {parent_code:{'inserted':True,'product_id':pid}}
+
+        def plan(docs,fp,ts,anchors,added):
+            self.assertEqual(anchors[parent_code],dict(product_id=pid,variant_ids=live))
+            return {parent_code:dict(status='ready',payload={'code':parent_code,'variants':added[parent_code]},before=dict(live))}
+
+        def append(plans,fp):
+            self.assertEqual(plans[parent_code]['before'],live)
+            apply_leaves(plans[parent_code]['payload']['variants'])
+            return {parent_code:{'status':'sent'}}
+
+        def observe(docs,fp,anchors,*,extension=False):
+            observations.append(len(live))
+            return {parent_code:dict(status='verified',issues=[],identity_verified=True,verified_fields=True,
+                    remaining_variants=sorted(set(codes)-live.keys()) if extension else [],product_id=pid,variants=dict(live),
+                    native=dict(code=parent_code,product_id=pid,variants=[{'code':k,'variant_id':v} for k,v in live.items()]))}
+
+        async def unchanged(_db,_c,jobs):
+            return jobs
+
+        with ExitStack() as mocks:
+            bind=lambda obj,k,fn:mocks.enter_context(patch.object(obj,k,fn))
+            bind(engine,'_job',record);bind(engine,'_checked',unchanged);bind(engine,'_absent_in_report',unchanged)
+            bind(engine,'_source',AsyncMock());bind(engine,'_options',AsyncMock());bind(engine,'_root_index',AsyncMock())
+            bind(engine,'_lock_current',AsyncMock());bind(engine,'_family',AsyncMock(return_value=(rows,{})))
+            bind(engine,'_make_document',Mock(return_value={'payload':deepcopy(payload)}))
+            bind(native,'preflight',lambda *args:{parent_code:[]});bind(native,'send',create)
+            bind(native,'prepare_extensions',plan);bind(native,'send_extensions',append);bind(native,'observe',observe)
+            bind(native,'observe_extensions',lambda *args:observe(*args,extension=True))
+            await engine._prepare(db,c,[deepcopy(saved)])
+            for expected_size in (85,170,255,340,418):
+                self.assertEqual(saved['stage'],'prepared')
+                await engine._dispatch(db,c,[deepcopy(saved)])
+                self.assertEqual(saved['stage'],'observe')
+                await engine._observe(db,c,[deepcopy(saved)])
+                self.assertEqual(len(live),expected_size)
+        self.assertEqual(sends,[85,85,85,85,78])
+        self.assertEqual(observations,[85,170,255,340,418])
+        self.assertEqual(saved['stage'],'cards')
+        self.assertEqual(saved['receipt']['variants'],live)
+        self.assertEqual(saved['receipt']['native_origin']['kind'],'created')
+
     async def test_validated_missing_sibling_is_only_appended_to_the_observed_pid(self):
         fresh=dict(payload=dict(code='P',variants=[{'code':'a'},{'code':'b'}]),deferred_leaves={})
         prior=dict(payload=dict(code='P',variants=[{'code':'a'}]),deferred_leaves={'b':{'reason':'unverified'}})
@@ -177,6 +296,41 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.pg.dispose()
         await self.conn.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
         await self.conn.close()
+
+    async def test_known_quota_blocks_only_matching_shop_and_persists_meter_totals(self):
+        async with self.factory() as db:
+            await engine.process(db,selection(scope='catalog'),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            await engine._exec(db,"UPDATE atomer_catalog_jobs SET stage='prepared' WHERE family_key='v:P'")
+            await engine._exec(db,"UPDATE atomer_catalog_jobs SET stage='cards',guards=CAST(:g AS jsonb) WHERE family_key='s:closed'",
+                               g=json.dumps({'scope':{'closed':'biketrek'}}))
+            until=datetime.now(timezone.utc)+timedelta(minutes=4)
+            await engine._exec(db,'INSERT INTO upgates_api_budget(target_key,blocked_until) VALUES(:k,:n)',k='a'*64,n=until)
+            with patch.object(meter,'targets',return_value={'a'*64:'xtrek','b'*64:'biketrek'}):
+                await meter.defer_known_windows(db,c)
+                self.assertEqual((await engine._one(db,"SELECT next_at FROM atomer_catalog_jobs WHERE family_key='v:P'"))['next_at'],until)
+                self.assertLess((await engine._one(db,"SELECT next_at FROM atomer_catalog_jobs WHERE family_key='s:closed'"))['next_at'],until)
+                await meter.persist(db,c['id'],{('observe','xtrek','products','GET','sent'):2})
+                await meter.persist(db,c['id'],{('observe','xtrek','products','GET','sent'):1})
+                self.assertEqual((await engine.status(db))['api_this_hour'][0]['amount'],3)
+
+    async def test_current_run_counts_existing_separately_from_observed_new_product(self):
+        async with self.factory() as db:
+            await engine.process(db,selection(scope='catalog'),'apply','operator')
+            c=dict(await engine._one(db,'SELECT * FROM atomer_catalog_campaigns'))
+            await engine._exec(db,"UPDATE atomer_progress_items SET detail=detail || jsonb_build_object('product_id',100) WHERE code='closed'")
+            await engine._proofs(db,c['id'],'s:closed',{'closed':('partial',dict(status='verified',scope='xtrek',xtrek={'product_id':100}))})
+            created=dict(kind='created',code='P',product_id=83,observed_at='2026-01-01T01:00:00Z',sample={
+                'shop_url':'https://xtrek.site/p/observed','html_verified':True,'variant_count':2,'title':'Test'})
+            await engine._job(db,c['id'],'v:P','cards',receipt=dict(product_id=83,identity_verified=True,dispatched=True,native_origin=created))
+            saved=await engine.status(db)
+            self.assertEqual([saved['counts'][k] for k in ('xtrek_created_families','xtrek_existing_families','xtrek_origin_unknown')],[1,1,0])
+            self.assertEqual([r['product_id'] for r in saved['created_examples']],[83])
+            await engine._job(db,c['id'],'v:P','cards',receipt={'dispatched':True,'product_id':83,'identity_verified':True})
+            saved=await engine.status(db)
+            self.assertEqual(saved['counts']['xtrek_origin_unknown'],1)
+            self.assertFalse(saved['created_examples'])
+
 
     async def test_preview_scope_extension_claim_and_ambiguous_post(self):
         async with self.factory() as db:

@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from inventory_hub import database
 from inventory_hub.services import atomer_catalog_recheck as recheck, atomer_category_restore as restore
-from inventory_hub.services import atomer_catalog_meter as meter
+from inventory_hub.services import atomer_catalog_meter as meter, atomer_catalog_outcomes as outcomes
 from inventory_hub.services import atomer_proposals as proposals, atomer_review as review
 from inventory_hub.services import atomer_variant_repair as repair
 from inventory_hub.services.atomer_review_targets import ReviewError
@@ -26,6 +26,19 @@ MAX_GROUPS = 80
 Digest = Annotated[str, Field(pattern=r'^[a-f0-9]{64}$')]
 Token = Annotated[str, Field(min_length=1,max_length=260)]
 ID = Annotated[int, Field(gt=0,strict=True)]
+
+
+class PartialVatPin(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source_parent_id: Annotated[str,Field(pattern=r'^[0-9]{1,24}$')]
+    parent_rate: Literal['23']
+    rates: dict[Literal['23','0'],ID]
+
+    @model_validator(mode='after')
+    def approved_split(self):
+        if self.rates != {'23':18,'0':18}:
+            raise ValueError('catalog_partial_vat_split_not_approved')
+        return self
 
 
 class Selection(BaseModel):
@@ -51,6 +64,7 @@ class Selection(BaseModel):
     barcode_corrections: dict[Token,dict] = Field(default_factory=dict,max_length=4000)
     zero_barcode_sentinels: dict[Token,Token] = Field(default_factory=dict,max_length=100)
     partial_barcodes: bool = False
+    partial_vat_families: dict[Token,PartialVatPin] = Field(default_factory=dict,max_length=1)
     requeue: dict[Token,Digest] = Field(default_factory=dict,max_length=300)
 
     @model_validator(mode='after')
@@ -129,6 +143,11 @@ async def process(db,selection,mode,actor):
     fresh['zero_barcode_sentinels']={**original,**fresh['zero_barcode_sentinels']}
     if len(fresh['zero_barcode_sentinels'])>100:
         raise ReviewError('catalog_source_sentinel_selection_too_large')
+    original_vat=merged.get('partial_vat_families',{})
+    proposed_vat=fresh['partial_vat_families']
+    if original_vat and proposed_vat and original_vat!=proposed_vat:
+        raise ReviewError('catalog_partial_vat_selection_changed')
+    fresh['partial_vat_families']=original_vat or proposed_vat
     fresh['contextual_roots']=sorted(set(merged.get('contextual_roots',[])+fresh['contextual_roots']))
     old_restore=merged.get('category_restore')
     if old_restore:
@@ -234,6 +253,8 @@ async def status(db):
     counts.update(dict(scopes))
     counts.update(await local.counts(db,campaign))
     counts['pending']=counts['total']-sum(counts[x] for x in ('verified','partial','blocked','excluded'))
+    origin,examples=await outcomes.summary(db,campaign,counts['native_families'])
+    counts.update(origin)
     fields='family_key,stage,problem AS reason,leaf_count AS leaves,updated_at'
     recent=await _rows(db,f"SELECT {fields} FROM atomer_catalog_jobs WHERE campaign=:c AND stage<>'pending' ORDER BY updated_at DESC,family_key LIMIT 16",c=cid)
     blocked=await _rows(db,f"SELECT {fields} FROM atomer_catalog_jobs WHERE campaign=:c AND stage IN ('blocked','partial') ORDER BY priority,updated_at DESC,family_key LIMIT 100",c=cid)
@@ -251,6 +272,7 @@ async def status(db):
                 last_problem=campaign['problem'],counts=counts,family_states={r['stage']:r['n'] for r in grouped},
                 registry_gaps=(campaign['options'] or {}).get('registry_gaps',{}),
                 api_this_hour=await meter.summary(db,cid),api_windows=await meter.windows(db),
+                created_examples=examples,
                 recent=clean(recent),blocked=clean(blocked),delayed=clean(delayed),
                 source_card_blockers=await local.blocked_reasons(db,campaign),
                 priority=[{k:v for k,v in r.items() if k!='problem'} for r in clean(priority)])
@@ -277,6 +299,7 @@ async def details(db,family_key):
     return dict(family_key=family_key,run_id=h['id'] if h else None,stage=j['stage'] if j else None,
                 reason=_short_problem(j['problem']) if j else None,next_at=j['next_at'] if j else None,
                 attempts=j['attempts'] if j else None,priority=j['priority'] if j else None,
+                native_origin=j['receipt'].get('native_origin') if j else None,
                 source_card_stage=j['source_card_stage'] if j else None,
                 source_card_problem=_short_problem(j['source_card_problem']) if j else None,
                 recheck_revision=token,items=[dict(r) for r in rows],source_cards=[dict(r) for r in local])
@@ -329,7 +352,7 @@ def _blocked_work(row,kind,key,allow):
     if state=='blocked':
         return row.get('result') or 'Existujúca blokovaná úloha vyžaduje vyriešenie.'
     active_save=row.get('command')=='save' or kind=='item' and row.get('command') in (
-        'barcode_owner_verified','brand_identity_verified','standalone_family_verified')
+        'barcode_owner_verified','brand_identity_verified','standalone_family_verified','variant_barcode_owners_verified')
     if state=='open' and (row.get('revision') or 0)>0 and not active_save:
         return 'Otvorená úloha bola ručne odvolaná alebo upravená.'
     if state=='queued':
@@ -542,7 +565,7 @@ async def _root_index(db,c):
     return mapping
 
 
-def _make_document(index,f,rows,g,options,selection,roots):
+def _make_document(index,f,rows,g,options,selection,roots,*,new_parent=False):
     from inventory_hub.services import atomer_new_source as src
     key=index.canonical(f[2:])
     csv,xml=index.family(key)
@@ -554,7 +577,21 @@ def _make_document(index,f,rows,g,options,selection,roots):
     cfg={**options,'reference_codes':{**roots,**refs},'property_names':selection.get('property_names',{}),'barcode_corrections':selection.get('barcode_corrections',{}),'named_axes':selection.get('named_axes',{})}
     cfg['partial_barcodes']=selection.get('partial_barcodes',False)
     cfg['zero_barcode_sentinels']=selection.get('zero_barcode_sentinels',{})
+    vat=(selection.get('partial_vat_families') or {}).get(key)
+    if vat and new_parent:
+        if set(_selected(g))!=set(index.leaves(key)) or any(_scope_of(g,k)=='biketrek' for k in _selected(g)):
+            raise ReviewError('catalog_partial_vat_requires_whole_new_family')
+        if any(not _missing_identity(r['detail']) for r in rows.values()):
+            raise ReviewError('catalog_partial_vat_requires_new_parent')
+        cfg['partial_vat_families']={key:vat}
     doc=src.build(family,{k:r['detail'] for k,r in rows.items()},csv,xml,cfg,set(roots.values()))
+    if cfg.get('partial_vat_families'):
+        published=doc['payload'].get('variants') or []
+        deferred=doc.get('deferred_leaves') or {}
+        if (doc.get('new_parent_only') is not True or set(doc.get('source_family_codes',[]))!=set(index.leaves(key)) or
+                len(published)!=vat['rates'][vat['parent_rate']] or len(published)+len(deferred)!=sum(vat['rates'].values())):
+            raise ReviewError('catalog_partial_vat_split_changed')
+        doc['vat_create_only']=True
     wanted={k for k in _selected(g) if g['scope'][k]!='biketrek'}
     doc['deferred_leaves']={k:v for k,v in (doc.get('deferred_leaves') or {}).items() if k in wanted}
     product=doc['payload']
@@ -621,7 +658,7 @@ async def _prepare(db,c,jobs):
             options=await _options(db,c,index)
             roots=await _root_index(db,c)
         try:
-            doc=await asyncio.to_thread(_make_document,index,f,rows,guards,options,c['selection'],roots)
+            doc=await asyncio.to_thread(_make_document,index,f,rows,guards,options,c['selection'],roots,new_parent=not has_target)
         except (ReviewError, ValueError, ArithmeticError) as err:
             code=getattr(err,'code','new_source_value_invalid')
             held=getattr(err,'deferred_leaves',{})
@@ -632,7 +669,7 @@ async def _prepare(db,c,jobs):
             if len(pids)!=1:
                 await _finish(db,c,j,{k:('blocked',dict(reason='Varianty majú rôznych existujúcich rodičov xTrek.')) for k in keys})
                 continue
-            doc['extension']=dict(product_id=int(next(iter(pids))),existing={
+            doc['extension']=dict(product_id=int(next(iter(pids))),existing_report_run=c['checked_run_id'],existing={
                 k:dict(product_id=int(rows[k]['detail']['product_id']),variant_id=rows[k]['detail']['variant_id'])
                 for k in has_target if k not in doc.get('deferred_leaves',{})})
         elif len(doc['payload'].get('variants',[]))>MAX_LEAVES:
@@ -658,16 +695,20 @@ async def _checked(db,c,jobs):
     return checked
 
 
+def _missing_identity(detail):
+    return detail['state'] in ('needs_both','needs_target') and not any(detail.get(k) for k in
+            ('product_id','variant_id','reasons','candidates','target_code','target_ean'))
+
+
 async def _absent_in_report(db,c,jobs):
     """A newer comparable report may have paired an SKU or GTIN under another identity."""
     remaining=[]
     for job in jobs:
         records,_=await _family(db,c['checked_run_id'],job['family_key'])
-        codes=recheck.prior_codes(job['document'])
+        doc=job['document']
+        codes=set(doc['source_family_codes']) if doc.get('vat_create_only') else recheck.prior_codes(doc)
         current=[records[k]['detail'] for k in codes if k in records]
-        if len(current)==len(codes) and all(
-                d['state'] in ('needs_both','needs_target') and not any(d.get(k) for k in
-                ('product_id','variant_id','reasons','candidates','target_code','target_ean')) for d in current):
+        if len(current)==len(codes) and all(_missing_identity(d) for d in current):
             remaining.append(job)
             continue
         reason='Aktuálny report už nepotvrdzuje voľnú identitu celej rodiny. Vytvorenie sa neodoslalo.'
@@ -858,7 +899,10 @@ async def expand_rechecked(db,c,j,seen):
     """A fresh source proof may now permit siblings excluded from a confirmed earlier tranche."""
     if not seen.get('identity_verified') or not seen.get('product_id'):
         return False
-    old=j['document'];previous=set(old.get('deferred_leaves') or {})|set(j['receipt'].get('catalog_deferred') or {})
+    old=j['document']
+    if old.get('new_parent_only'):
+        return False
+    previous=set(old.get('deferred_leaves') or {})|set(j['receipt'].get('catalog_deferred') or {})
     previous.update(j['receipt'].get('added_source_codes') or [])
     if not previous:
         return False
@@ -904,6 +948,10 @@ async def _observe(db,c,jobs):
             obs=seen[code]
         summary={k:v for k,v in obs.items() if k!='native'}
         receipt={**j['receipt'],**summary}
+        origin=outcomes.capture(j,obs)
+        if origin:
+            receipt['native_origin']=origin
+        j['receipt']=receipt
         reason='; '.join(str(x) for x in obs.get('issues',[]) + (j['receipt'].get('ack') or {}).get('issues',[]))
         if receipt.get('rebuild_after_observation'):
             active={k for k in _selected(j['guards']) if _scope_of(j['guards'],k)!='biketrek'}
@@ -921,7 +969,7 @@ async def _observe(db,c,jobs):
             if obs['identity_verified']:
                 if await expand_rechecked(db,c,j,obs):
                     continue
-                receipt.update(content_requested=True,rebuild_after_observation=False)
+                receipt.update(content_requested=not doc.get('new_parent_only'),rebuild_after_observation=False)
         if doc.get('deferred_leaves'):
             receipt['catalog_deferred']=doc['deferred_leaves']
         if obs['identity_verified'] and (doc.get('remaining_create_variants') or obs.get('remaining_variants')):
@@ -1018,7 +1066,7 @@ async def _cards(db,c,jobs):
         stored={**stored,'cards':attach};j['receipt']=stored
         need_content=any(v.get('status')=='verified' and v.get('card_id') and v.get('scope')!='biketrek'
                          and (v.get('xtrek') or {}).get('product_id') for _,v in proofs.values())
-        if need_content and (not doc or stored.get('content_requested')):
+        if need_content and (not doc or stored.get('content_requested') and not doc.get('new_parent_only')):
             await _proofs(db,c['id'],f,{k:('partial' if st=='verified' and v.get('scope')!='biketrek' else st,v)
                                         for k,(st,v) in proofs.items()})
             await _job(db,c['id'],f,'fidelity',receipt={**stored,'content_requested':True})
@@ -1057,7 +1105,7 @@ async def _related(db,c,jobs):
         doc={**d,'payload':{**d['payload'],'related':sorted(resolved)},'missing_related':sorted(missing)}
         old=j['receipt']; signature=sha256(_json(sorted(resolved)).encode()).hexdigest()
         needs=(resolved!=prev or 'related' in old.get('deferred',[])) and old.get('related_intent')!=signature
-        if needs:
+        if needs and not d.get('new_parent_only'):
             old={**old,'related_intent':signature}
             changed.append(j)
         j.update(document=doc,receipt=old)
@@ -1090,6 +1138,8 @@ async def _related(db,c,jobs):
         d=j['document'];obs=seen[d['payload']['code']]
         prev_cards=j['receipt'].get('cards',{})
         r={**j['receipt'],**{k:v for k,v in obs.items() if k!='native'}}
+        if origin:=outcomes.capture(j,obs):
+            r['native_origin']=origin
         missing=d.get('missing_related',[])
         if obs['identity_verified'] and missing and other:
             await _job(db,c['id'],j['family_key'],'related',document=d,receipt=r,
@@ -1111,7 +1161,7 @@ async def _related(db,c,jobs):
             else:
                 final[code]=('partial',{**base,'reason':'; '.join(obs['issues']) or 'Natívny produkt vyžaduje kontrolu.'})
         await _job(db,c['id'],j['family_key'],'related',receipt=r)
-        if obs['identity_verified'] and not obs['verified_fields'] and any(
+        if not d.get('new_parent_only') and obs['identity_verified'] and not obs['verified_fields'] and any(
                 v.get('status')=='verified' and v.get('card_id') and v.get('scope')!='biketrek' for _,v in final.values()):
             await _proofs(db,c['id'],j['family_key'],final)
             await _job(db,c['id'],j['family_key'],'fidelity',receipt={**r,'content_requested':True})

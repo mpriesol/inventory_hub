@@ -506,3 +506,5 @@ Atomer catalog migration now has a durable, operator-started worker, per-family 
 The migration records Hub card preparation separately from xTrek verification. Existing native families have a guarded content check, and unresolved writes keep their original receipt across API quota windows.
 
 The Atomer campaign records API capacity separately for each shop and phase. Verified supplier evidence can trigger a recheck of the precise card, and large BIKETREK till products support direct checks of individual sellable variants.
+
+The operator’s Atomer table reconciles confirmed card and shop receipts with current Hub identities when reading the report. Snapshot totals retain their original check date.

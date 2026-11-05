@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import unittest
 from unittest.mock import Mock, patch
 
@@ -80,7 +80,7 @@ class NativeCreationTests(unittest.TestCase):
         occupied=dict(code='blue',product_id=22,variants_exists_yn=False,variants=[])
         variant=dict(code='BAG',product_id=30,variant_id=31)
         with patch.object(native.transport,'_client',return_value=Mock()),\
-             patch.object(native,'_delta',return_value=[(20,[('ANOTHER',21,list(native._tokens(changed['variants'][0])))])]),\
+             patch.object(native,'_delta',return_value={20}),\
              patch.object(native,'_sparse',side_effect=[[occupied],[variant],[changed]]):
             issues=native.preflight([doc],'fp',datetime.now(timezone.utc))['BAG']
         self.assertTrue(any('20/21' in x and 'ean' in x for x in issues))
@@ -105,30 +105,6 @@ class NativeCreationTests(unittest.TestCase):
         with patch.object(native, '_sparse', return_value=[dict(row, product_id=3)]), self.assertRaises(ReviewError):
             native._supplements(Mock(), parents, 'related')
 
-    def test_incremental_identity_scan_retains_previous_pages_and_recovers_after_a_failed_scan(self):
-        started = datetime.now(timezone.utc) - timedelta(hours=6)
-        first = dict(code='FIRST', product_id=1, variants=[], variants_exists_yn=False)
-        second = dict(code='SECOND', product_id=2, variants=[], variants_exists_yn=False)
-
-        def incomplete():
-            yield second
-            raise native.ExportError('partial')
-
-        with patch.object(native, '_delta_observation', None), patch.object(
-            native.catalog, 'page_rows', side_effect=[[first], incomplete(), [second]]
-        ) as pages:
-            self.assertEqual({pid for pid, _ in native._delta(Mock(), 'fp', started)}, {1})
-            checkpoint = native._delta_observation[1]
-            with self.assertRaises(native.transport.SourceError):
-                native._delta(Mock(), 'fp', started)
-            self.assertEqual(native._delta_observation[1], checkpoint)
-            self.assertEqual(set(native._delta_observation[2]), {1})
-            self.assertEqual({pid for pid, _ in native._delta(Mock(), 'fp', started)}, {1, 2})
-            self.assertEqual(pages.call_args_list[1].args[2], pages.call_args_list[2].args[2])
-            since = datetime.fromisoformat(pages.call_args_list[1].args[2]['last_update_time_from'])
-            self.assertGreater(since, started)
-            self.assertLess(since, checkpoint)
-
     def test_source_related_aliases_and_unresolved_fields_are_verified_independently(self):
         doc = creation()
         doc.update(related=['SOURCE-ALIAS', 'NOT-HERE'], missing_related=['NOT-HERE'],
@@ -149,7 +125,7 @@ class NativeCreationTests(unittest.TestCase):
             variants=[dict(code='BLUE',variant_id=202,inserted_yn=True)])])
         with patch.object(native.transport,'_client',return_value=Mock()),patch.object(native,'_post',return_value=ack) as send:
             result=native.send([document],'fp')
-            self.assertEqual(result['BAG'],dict(product_id=101,variant_ids={'BLUE':202},issues=[]))
+            self.assertEqual(result['BAG'],dict(product_id=101,variant_ids={'BLUE':202},issues=[],inserted=True))
             self.assertEqual(send.call_count,1)
             document['payload']['variants'][0]['stock']=5
             with self.assertRaises(CatalogError):

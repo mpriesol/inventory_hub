@@ -859,6 +859,39 @@ def verified_leaf_barcode(code, ean, root, corrections, *, internal_id='', zero_
     raise ReviewError('new_leaf_ean_unverified')
 
 
+def _mixed_vat_plan(row, children, xml_rows, pin, deferred):
+    """Keep a pinned new parent's rate and isolate only incompatible source sellables."""
+    code = 'new_parent_variant_vat_conflict'
+    parent_rate = decimal_value(named(row,'DPH'))
+    rates = {sku:decimal_value(named(child,'DPH')) for sku,child in children.items()}
+    counts = dict(Counter(format(rate.normalize(),'f') for rate in rates.values()))
+    expected = dict(source_parent_id=named(row,'Interné číslo').strip(),
+                    parent_rate=format(parent_rate.normalize(),'f'),rates=counts)
+    gen.require(isinstance(pin,dict) and pin==expected and parent_rate>0 and parent_rate in rates.values()
+                and len(counts)>1
+                and all(type(n) is int for n in pin['rates'].values())
+                and set(xml_rows)==set(children),code)
+    for sku,child in children.items():
+        cv=fields(child)
+        node=xml_rows[sku]
+        rate=rates[sku]
+        gross,net=cv('Bežná cena'),cv('Bežná cena bez DPH')
+        remote_rate,remote_gross=_code(node.findtext('VAT')),_code(node.findtext('PRICE_VAT'))
+        gen.require(cv('DPH') and remote_rate and gross and net and remote_gross
+                    and rate==decimal_value(remote_rate) and decimal_value(gross)==decimal_value(remote_gross)
+                    and abs(decimal_value(net)*(1+rate/100)-decimal_value(gross))<Decimal('0.011')
+                    and source.flag(cv('Viditeľný')) is source.flag(node.findtext('VISIBILITY')),code)
+        if rate!=parent_rate:
+            receipt=dict(reason='new_variant_vat_not_representable',source_rate=cv('DPH'),
+                         parent_rate=named(row,'DPH'),source_price_gross=gross,source_price_net=net,
+                         buyers_price_gross=remote_gross,buyers_rate=remote_rate,source_ean=cv('EAN kód').strip(),
+                         source_internal_id=cv('Interné číslo').strip(),source_active=source.flag(cv('Viditeľný')))
+            if sku in deferred:
+                receipt['additional_conflict']=deferred[sku]
+            deferred[sku]=receipt
+    return {**expected,'new_parent_only':True}
+
+
 def build(family, details, csv_source, xml_rows, options, native_codes):
     root = family.parent
     gen.require(root in csv_source and details, 'new_parent_source_missing')
@@ -931,12 +964,17 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
         source_images = gen.image_paths(nodes[0]) + source_images
     parent_vat = decimal_value(v('DPH'))
     vat = parent_vat
+    partial_vat = None
     if children:
         rates = {decimal_value(named(r,'DPH')) for r in children.values()}
-        gen.require(len(rates)==1 and (vat == 0 or vat in rates), 'new_parent_variant_vat_conflict')
-        # Non-selling placeholder parents in Atomer sometimes carry a zero
-        # rate; Upgates stores the shared saleable rate at parent level.
-        vat = rates.pop()
+        pin = (options.get('partial_vat_families') or {}).get(root)
+        if pin is not None:
+            partial_vat = _mixed_vat_plan(row,children,xml_rows,pin,deferred)
+        else:
+            gen.require(len(rates)==1 and (vat == 0 or vat in rates), 'new_parent_variant_vat_conflict')
+            # Non-selling placeholder parents in Atomer sometimes carry a zero
+            # rate; Upgates stores the shared saleable rate at parent level.
+            vat = rates.pop()
     weights = {}
     product = dict(code=root,active_yn=visible,descriptions=[desc],categories=categories,
                    prices=pricing(row,options['pricelist'],active=visible and not children),vats={'sk':float(vat)},
@@ -1087,7 +1125,7 @@ def build(family, details, csv_source, xml_rows, options, native_codes):
                 description_sources=description_sources,
                 manufacturer_origin=brand_source,source_manufacturer_hint=prefix if not brand else '',
                 unspecified_weights=sorted(unspecified_weights),source_parent_barcode=parent_barcode,
-                shipping_weight_rounding=weights,
+                shipping_weight_rounding=weights,partial_vat=partial_vat,new_parent_only=partial_vat is not None,
                 source_bonus_points=bonus,missing_source_features=[
                     f'{code} · V Atomeri má položka {points} bonusových bodov navyše. xTrek nemá zodpovedajúce produktové pole.'
                     for code,points in bonus.items()]+[

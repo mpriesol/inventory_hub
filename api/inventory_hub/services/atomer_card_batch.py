@@ -534,7 +534,8 @@ async def _write_links(db,shop,selected,cat,results,apply):
                         is_variant=remote['is_variant'],is_listed=True,push_pending=False,last_pull_at=links.now())
                 db.add(rec)
             saved.append(remote)
-        receipt[shop.code]=dto(cat.get(key)[1])
+        receipt[shop.code]={**dto(cat.get(key)[1]),'parent':remote['parent_code'] if remote['is_variant'] else None,
+                            'shop_url':remote.get('shop_url'),'shop_admin_url':remote.get('shop_admin_url')}
     if saved:
         await db.flush()
         await links._cache_metadata(db,shop.id,saved)
@@ -735,7 +736,7 @@ async def reconcile(db,run_id,codes,*,apply,actor,native_ids=None,catalogs=None,
                     if not was_blocked:
                         rec.update(status='blocked',reason='card_mapping_readback_failed')
                     continue
-                rec[s]=dto(identity,m.id)
+                rec[s]={**(rec.get(s) or {}),**dto(identity,m.id)}
             if rec['status']!='blocked':
                 rec['status']='verified'
     return results
