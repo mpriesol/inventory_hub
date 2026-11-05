@@ -30,6 +30,7 @@ export function AtomerMigrationProgress() {
   const [expanded,setExpanded] = useState<Set<string>>(new Set());
   const [query,setQuery] = useState(''), [offset,setOffset] = useState(0), [revision,setRevision] = useState(0);
   const [pending,setPending] = useState(false), [reading,setReading] = useState(false), [error,setError] = useState('');
+  const [readReason,setReadReason] = useState('');
   const [file,setFile] = useState<File | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const auto = useRef<number | null>(null);
@@ -49,7 +50,7 @@ export function AtomerMigrationProgress() {
   const run = page?.run;
   async function update(selected: File | null, staleOnly = false, applyFiles = false) {
     if (pending || !page) return;
-    setPending(true); setError('');
+    setPending(true); setError(''); setReadReason('');
     try {
       await refreshProgress(page.run?.id || 0, selected, staleOnly, applyFiles?targetFile:null, applyFiles?adminFile:null, adminComplete);
       if(applyFiles){
@@ -60,7 +61,10 @@ export function AtomerMigrationProgress() {
       setOffset(0); setRevision(n => n+1);
     } catch (e: any) {
       if (e?.code === 'run_changed') setRevision(n=>n+1);
-      else setError(e?.code || 'failed');
+      else {
+        setError(e?.code || 'failed');
+        if (e?.code==='remote_read_failed' && /^[a-z0-9_]{1,100}$/.test(e.message)) setReadReason(e.message);
+      }
     } finally { setPending(false); }
   }
   useEffect(() => {
@@ -168,7 +172,8 @@ export function AtomerMigrationProgress() {
     {edit && <AtomerReviewEditor subject={edit.subject} run={edit.run} initialDecision={edit.decision} onClose={()=>setEdit(null)} onSaved={()=>{
       setEdit(null);setNotice(m('saved'));setRevision(v=>v+1);
     }}/>}
-    {error && <p role="alert" className="progress-warning">{t('atomerProgress.errors.'+error,{defaultValue:m('errors.failed')})}</p>}
+    {error && <p role="alert" className="progress-warning">{t('atomerProgress.errors.'+error,{defaultValue:m('errors.failed')})}
+      {error==='remote_read_failed' && readReason && <> <code>{readReason}</code></>}</p>}
     {run && <>
       <div className="progress-counts">
         {[[m('kinds.variant'),run.totals.kinds.variant||0],[m('kinds.standalone'),run.totals.kinds.standalone||0],

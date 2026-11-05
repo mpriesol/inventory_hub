@@ -74,6 +74,8 @@ použiť nedávny úplný katalóg zo serverovej vyrovnávacej pamäte, doplní 
 s časovým prekrytím a preverí počet rodičov a variantov. Každú rodinu s variantmi načíta
 aktuálne podľa ID. Odlišný počet rodičov vyvolá úplné čítanie produktov. Neúplná rodina,
 nezhodné natívne ID alebo súbežná zmena zastavia zverejnenie nového prehľadu.
+Pri záverečnom čítaní Hub porovná čas zmeny vrátane časového pásma s časom začatia kontroly.
+Ak vzdialenú kontrolu zastaví chyba, pri upozornení v prehľade sa zobrazí aj jej kód.
 
 Pri sťahovaní konkrétnych variantov xTrek do skladu sa použije rovnaké doplnenie zmien
 nad nedávnym katalógom. Potvrdenie navyše načíta všetkých vybraných rodičov priamo z API.

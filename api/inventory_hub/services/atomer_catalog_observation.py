@@ -121,6 +121,21 @@ def parameter_rows(client, products):
         raise export.ExportError('upgates_export_family_incomplete')
 
 
+def verify_read_window(client, started):
+    # Upgates dates have second precision. Validate the offset on the rows the
+    # filter returned, which may include products older than the requested time.
+    since = started.replace(microsecond=0) - timedelta(seconds=1)
+    for product in page_rows(client, 'products', {'last_update_time_from': since.isoformat()}):
+        try:
+            changed = datetime.fromisoformat(product['last_update_time'])
+        except (KeyError, TypeError, ValueError):
+            raise export.ExportError('upgates_export_update_time_unknown') from None
+        if changed.utcoffset() is None:
+            raise export.ExportError('upgates_export_update_time_unknown')
+        if changed >= since:
+            raise export.ExportError('upgates_export_catalog_changed')
+
+
 def catalog(cache=None):
     from inventory_hub.services import atomer_progress as progress
     started=datetime.now(timezone.utc)
@@ -132,9 +147,7 @@ def catalog(cache=None):
         leaves=list(parameter_rows(client,parents))
         # The remote API does not offer a transaction across endpoints. A concurrent edit
         # during this observation invalidates it even when all collection counts still match.
-        changed=list(page_rows(client,'products',{'last_update_time_from':(started-timedelta(seconds=1)).isoformat(timespec='seconds')}))
-        if changed:
-            raise export.ExportError('upgates_export_catalog_changed')
+        verify_read_window(client, started)
         return progress.flatten_catalog(parents,leaves)
     finally:
         client.session.close()
