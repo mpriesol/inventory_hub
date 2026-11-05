@@ -414,6 +414,17 @@ async def import_upgates_products(
     shop = await _get_shop(db, shop_code)
     products, _ = await asyncio.to_thread(_fetch_upgates_products, shop_code, ttl_s=IMPORT_CACHE_TTL_S,
                                          force_refresh=selected_leaves is not None, exact_codes=selected_leaves)
+    return await register_observed_products(db, shop, products, wanted=wanted, import_all=import_all,
+                                            update_existing=update_existing, existing_only=existing_only,
+                                            selected_leaves=selected_leaves, shop_code=shop_code)
+
+
+async def register_observed_products(db, shop, products, *, selected_leaves, wanted=(),
+                                     import_all=False, update_existing=False, existing_only=False,
+                                     canonical_skus=None, shop_code=None):
+    """Internal path for verified native observations; no remote reads or transaction commits."""
+    shop_code = shop_code or shop.code
+    canonical_skus = canonical_skus or {}
     families = _pull_families(shop.id, products)
     if selected_leaves is not None:
         found = {i.code for f in families for i, _ in f["leaves"]}
@@ -488,7 +499,7 @@ async def import_upgates_products(
                     if resolution.product_id is None:
                         title = product_title(p)
                         suffix = variant_params_text(obj) or identity.code
-                        product = Product(sku=identity.code, name=(f"{title} – {suffix}" if variants else title or identity.code)[:500],
+                        product = Product(sku=canonical_skus.get(identity.code, identity.code), name=(f"{title} – {suffix}" if variants else title or identity.code)[:500],
                                           brand=str(p.get("manufacturer") or "")[:100] or None,
                                           weight_g=_weight_g(obj), group_id=None, created_from_source=source)
                         created_rows.append(product)
@@ -509,7 +520,7 @@ async def import_upgates_products(
                     params = _variant_params(obj) if variants else []
                     # An EAN-linked shop alias is not authoritative for canonical
                     # axes. Backfill only the same exact shared physical SKU.
-                    if product.id not in attributed and identity.code == product.sku:
+                    if product.id not in attributed and (identity.code == product.sku or resolution.product_id is None):
                         for order, (name, value) in enumerate(params):
                             db.add(ProductVariantAttribute(product_id=product.id, attribute_name=name,
                                                            attribute_value=value, display_order=order))

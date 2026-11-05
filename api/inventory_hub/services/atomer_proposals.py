@@ -89,7 +89,7 @@ async def verify_links(db, run, mode, actor):
       AND i.detail->>'card_state'='exists' AND i.detail->'reasons'='[]'::jsonb
       AND w.scope IN ('default','both','xtrek')
       AND (coalesce(i.detail->>'bike_state','')='linked' OR
-           (w.scope IN ('default','xtrek') AND i.detail->>'bike_state'='unlinked'))
+           (w.scope='xtrek' AND i.detail->>'bike_state'='unlinked'))
       AND NOT EXISTS (SELECT 1 FROM atomer_review_work f WHERE f.kind='family' AND f.key=i.family_key
                       AND (f.status<>'open' OR f.scope='biketrek'))
       AND EXISTS (SELECT 1 FROM shop_products s JOIN shops sh ON sh.id=s.shop_id JOIN products p ON p.id=s.product_id

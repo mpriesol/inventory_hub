@@ -239,6 +239,41 @@
     "blocked": "Blokované",
     "sending": "Prebieha zápis",
     "uncertain": "Treba overiť zápis",
-    "error": "Spracovanie zlyhalo"
+    "error": "Spracovanie zlyhalo",
+    "catalog": "Migrácia do xTreku",
+    "registered": "Uložené v Hube"
+  },
+  "engine": {
+    "title": "Migrácia do xTreku",
+    "verifiedLeaves": "overených predajných kódov",
+    "families": "produktov",
+    "pending": "Čaká",
+    "partial": "Čiastočné",
+    "blocked": "Na doriešenie",
+    "excluded": "Ručné výnimky",
+    "next": "Ďalšia kontrola",
+    "showIssues": "Produkty na doriešenie",
+    "unavailable": "Aktuálny stav migrácie sa nepodarilo načítať.",
+    "states": {
+      "idle": "Čaká",
+      "running": "Prebieha",
+      "waiting": "Čaká na ďalšiu dávku",
+      "review": "Treba doriešiť",
+      "done": "Dokončené",
+      "source_changed": "Zdroj bol aktualizovaný"
+    },
+    "receipts": "Výsledky po produktoch",
+    "product": "Produkt",
+    "choose": "Vyber produkt",
+    "openProduct": "Otvoriť v prehľade",
+    "awaitingProof": "Overenie tejto rodiny ešte prebieha.",
+    "card": "Karta Hub",
+    "result": "Výsledok",
+    "proof": {
+      "verified": "Overené",
+      "partial": "Čiastočné",
+      "blocked": "Na doriešenie",
+      "excluded": "Ručná výnimka"
+    }
   }
 }
