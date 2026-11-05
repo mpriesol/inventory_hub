@@ -80,7 +80,9 @@ def _catalog_rows(dataset, shop="xtrek"):
 
 
 def remote_catalog():
-    xtrek = flatten_catalog(_catalog_rows("products"), _catalog_rows("variants"))
+    from inventory_hub.routers.upgates_sync import _cache_load
+    from inventory_hub.services import atomer_catalog_observation
+    xtrek = atomer_catalog_observation.catalog(_cache_load("xtrek"))
     return xtrek, bike_catalog(_catalog_rows("products", "biketrek"))
 
 

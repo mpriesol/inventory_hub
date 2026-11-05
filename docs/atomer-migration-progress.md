@@ -68,3 +68,14 @@ vykonáva iba čítanie. Odložený zápis možno zopakovať po preukázanom lok
 pred odoslaním a opätovnom overení pôvodného stavu.
 
 Ak ten istý presne identifikovaný variant pri doplnení chýbajúceho EAN vyžaduje aj opravu osi, voliteľné pole `names` umožní v rovnakej overenej požiadavke použiť hodnoty parametrov z uloženého zdroja Atomeru.
+
+Obnova prehľadu číta parametre variantov podľa skupín natívnych rodičov. Pre xTrek môže
+použiť nedávny úplný katalóg zo serverovej vyrovnávacej pamäte, doplní živé zmenené produkty
+s časovým prekrytím a preverí počet rodičov a variantov. Každú rodinu s variantmi načíta
+aktuálne podľa ID. Odlišný počet rodičov vyvolá úplné čítanie produktov. Neúplná rodina,
+nezhodné natívne ID alebo súbežná zmena zastavia zverejnenie nového prehľadu.
+
+Pri sťahovaní konkrétnych variantov xTrek do skladu sa použije rovnaké doplnenie zmien
+nad nedávnym katalógom. Potvrdenie navyše načíta všetkých vybraných rodičov priamo z API.
+Následne sa uplatnia obvyklé kontroly duplicít celého katalógu, pôvodného tokenu variantu,
+vlastníctva karty a explicitne vybraných položiek. Fyzické množstvá sa týmto postupom nezapisujú.

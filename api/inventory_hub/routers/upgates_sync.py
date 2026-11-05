@@ -122,6 +122,7 @@ def _cache_age_s(cache: Dict[str, Any]) -> Optional[int]:
 
 def _fetch_upgates_products(
     shop_code: str, ttl_s: int, force_refresh: bool = False,
+    exact_codes=None, preview_delta: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Return (products, meta). meta: source cache/api, pulled_at, cache_age_s."""
     if not force_refresh:
@@ -134,7 +135,22 @@ def _fetch_upgates_products(
                 }
     try:
         client = UpgatesClient.from_shop(shop_code)
-        products = list(client.iter_products())
+        if shop_code=='xtrek' and (exact_codes is not None or preview_delta):
+            from inventory_hub.services.atomer_catalog_observation import selection_products
+            from inventory_hub.services.migration_upgates_export import ExportError
+            from inventory_hub.services.product_publication_source import plain
+            try:
+                products=selection_products(client,_cache_load(shop_code),exact_codes)
+                if products is None:
+                    products=list(client.iter_products())
+                else:
+                    products=plain(products)
+            except ExportError as exc:
+                raise HTTPException(502, detail=str(exc)) from None
+            finally:
+                client.session.close()
+        else:
+            products = list(client.iter_products())
     except UpgatesError as e:
         raise HTTPException(502, detail=str(e))
     _cache_save(shop_code, products)
@@ -329,7 +345,7 @@ async def preview_upgates_products(
     """Preview new/linkable families and explicit conflicts without database writes."""
     shop = await _get_shop(db, shop_code)
     products, meta = await asyncio.to_thread(_fetch_upgates_products, shop_code,
-                                             ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh)
+                                             ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh, preview_delta=not refresh)
     families = _pull_families(shop.id, products)
     index = await load_identity_index(db, shop.id, [i for f in families for i, _ in f["leaves"]])
     _mark_resolved_duplicates(families, index)
@@ -397,7 +413,7 @@ async def import_upgates_products(
         raise HTTPException(400, detail="Zadaj 'codes', 'all': true alebo 'update_existing': true")
     shop = await _get_shop(db, shop_code)
     products, _ = await asyncio.to_thread(_fetch_upgates_products, shop_code, ttl_s=IMPORT_CACHE_TTL_S,
-                                         force_refresh=selected_leaves is not None)
+                                         force_refresh=selected_leaves is not None, exact_codes=selected_leaves)
     families = _pull_families(shop.id, products)
     if selected_leaves is not None:
         found = {i.code for f in families for i, _ in f["leaves"]}
