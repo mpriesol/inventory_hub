@@ -71,7 +71,12 @@ async def finish_cards(db, selection, mode, actor, *, record_pending=False):
             if item.code in pending:
                 actual,wanted=pending[item.code]
                 status="blocked"
-                note+=f" xTrek uvádza dostupnosť {actual}; Atomer vyžaduje {wanted}. Treba overiť natívne ID dostupnosti xTrek."
+                note+=f" xTrek uvádza dostupnosť {actual}. Atomer vyžaduje {wanted}."
+                option=(doc.get("availability_bindings") or {}).get(wanted)
+                if option and doc.get("availability_binding_sent"):
+                    note+=f" Natívne ID {option} bolo overené a odoslané. Spätné čítanie zmenu nepotvrdilo. Skontrolovať nastavenie dostupnosti pri tomto variante a jeho rodičovi."
+                else:
+                    note+=" Treba overiť natívne ID dostupnosti xTrek."
             if record["status"]==status and record["result"]==note and not extra:
                 finished.append((item.code,card))
                 continue
