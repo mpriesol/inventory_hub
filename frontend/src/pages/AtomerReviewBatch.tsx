@@ -4,7 +4,7 @@ import { hubRequest } from '../api/access';
 
 type Family = { operation?:'verified_barcode'; run_id:number; source_sha:string; rows:{code:string}[] };
 type GenerationSelection = { run_id:number; phase:'label'|'extend'; families:{rows:{code:string}[]}[] };
-type Plan = { generations?:GenerationSelection; finishGenerationCards?:boolean; generationRecovery?:"fields"|"adopt"; pendingGenerationCards?:boolean; availabilityOptions?:Record<string,number>; packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
+type Plan = { approvedProposals?: { run_id:number; action:"accept"|"verify" }; changedStockPolicy?:{run_id:number;selection:GenerationSelection;revisions:Record<string,number>}; generations?:GenerationSelection; finishGenerationCards?:boolean; generationRecovery?:"fields"|"adopt"; pendingGenerationCards?:boolean; availabilityOptions?:Record<string,number>; packs?:{families:Family[]}[]; families?:Family[]; blocks?:{run_id:number;items:Record<string,unknown>} };
 type Result = { retry_after?:number; status:string; count:number; reason?:string };
 const base = '/api/migration/atomer-progress';
 
@@ -23,7 +23,9 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
       const gen=p.generations;
       if (gen && (gen.run_id!==run || !['label','extend'].includes(gen.phase) ||
           !Array.isArray(gen.families) || !gen.families.length || gen.families.some(f=>!f.rows?.length))) throw Error();
-      if (!(families.length||p.blocks||gen) || families.length>200 ||
+      if ((p.approvedProposals && (p.approvedProposals.run_id!==run || !['accept','verify'].includes(p.approvedProposals.action))) ||
+          (p.changedStockPolicy && p.changedStockPolicy.run_id!==run)) throw Error();
+      if (!(families.length||p.blocks||gen||p.approvedProposals||p.changedStockPolicy) || families.length>200 ||
           p.packs?.some(pack=>!pack.families.length||pack.families.length>25) ||
           families.some(f=>f.run_id!==run||!Array.isArray(f.rows)||!f.rows.length) || (p.blocks && p.blocks.run_id!==run)) throw Error();
       setPlan(p);
@@ -37,6 +39,8 @@ export function AtomerReviewBatch({run,onSaved}:{run:number;onSaved:()=>void}) {
         path:operation==='verified_barcode'?'/verified-barcodes/':'/variant-parameters/',
         label:selection.rows[0].code,body:selection as unknown
       }));
+      if (plan.approvedProposals) requests.push({path:'/approved-proposals/'+plan.approvedProposals.action+'/',label:m('title'),body:{run_id:run}});
+      if (plan.changedStockPolicy) requests.push({path:'/generation-stock-policy/',label:plan.changedStockPolicy.selection.families[0].rows[0].code,body:plan.changedStockPolicy});
       for (const pack of plan.packs||[]) requests.push({
         path:'/review-batch/',label:pack.families[0].rows[0].code,
         body:{families:pack.families.map(({operation,...family})=>family)}

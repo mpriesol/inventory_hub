@@ -498,3 +498,5 @@ Pri obsadenej kombinácii môže operátor rozlíšiť generácie variantov v xT
 Spätná kontrola nových generácií umožňuje podľa pôvodného zámeru obnoviť cenu rodiča a preniesť presné natívne ID do skladového importu.
 
 Pri nezhode dostupnosti môže Hub doložiť kartu a presný parameter generácie, pričom riadok ostáva blokovaný do potvrdenia natívnej dostupnosti.
+
+The Atomer migration report supports audited batch acceptance of the displayed proposals and scoped availability reconciliation after a shop policy change. See [migration progress](docs/atomer-migration-progress.md).
