@@ -238,6 +238,41 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.apply(preview, [self.ids[1]])
         self.assertEqual((await self.mappings())[0].external_variant_id, '901')
 
+    async def test_recreated_variant_with_same_codes_rekeys_only_existing_shop_mapping(self):
+        mapping_id, request = await self.variant_replacement_fixture()
+        async with self.transaction() as db:
+            mapping = await db.get(ShopProduct, mapping_id)
+            mapping.external_code, mapping.parent_code = 'NEW-LEAF', 'NEW-PARENT'
+            other_shop_id = await db.scalar(select(Shop.id).where(Shop.code == 'biketrek'))
+            other = ShopProduct(shop_id=other_shop_id, product_id=self.ids[0], external_code='OTHER-SHOP',
+                external_product_id='700', is_variant=False, is_listed=True)
+            db.add(other)
+            await db.flush()
+            other_mapping_id, other_before = other.id, service._mapping(other)
+        before = await self.snapshot()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(return_value={
+                'fingerprint': self.fingerprint, 'requests': 2, 'existing_mapping_ids': []})) as deletion:
+            preview = await self.preview(request)
+            self.assertEqual(preview['rows'][0]['status'], 'ready')
+            previous = preview['rows'][0]['previous_mapping']
+            self.assertEqual((previous['external_product_id'], previous['external_variant_id']), ('800', '901'))
+            result = await self.apply(preview, [self.ids[0]])
+            self.assertEqual(await self.apply(preview, [self.ids[0]]), result)
+            replay = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.assertEqual(replay['rows'][0]['status'], 'already_linked')
+            self.assertEqual(deletion.await_count, 2)
+            for call in deletion.await_args_list:
+                self.assertEqual(call.args[1], [previous])
+        mappings = {mapping.id: mapping for mapping in await self.mappings()}
+        current = service._mapping(mappings[mapping_id])
+        self.assertEqual((current['external_product_id'], current['external_variant_id']), ('801', '902'))
+        self.assertEqual(current['external_code'], previous['external_code'])
+        self.assertEqual(current['parent_code'], previous['parent_code'])
+        self.assertEqual(service._mapping(mappings[other_mapping_id]), other_before)
+        self.assertEqual(result['result']['replaced_mappings'], [{'product_id': self.ids[0],
+            'sku': 'SHARED-A', 'eans': [EAN_A], 'previous_mapping': previous, 'mapping': current}])
+        self.assertEqual(await self.snapshot(), before)
+
     async def test_new_parent_publication_is_rechecked_before_apply(self):
         from inventory_hub.product_editor_models import ProductEditorPublication
         mapping_id, request = await self.variant_replacement_fixture()

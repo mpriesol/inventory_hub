@@ -272,7 +272,7 @@ def _choice(facts, leaves, manual=None, cached=()):
     return (matches[0] if len(matches) == 1 else None), matched_by, len(matches)
 
 
-async def _replacement_mappings(db, shop, manual, *, expected=None, errors=None):
+async def _replacement_mappings(db, shop, manual, choices, *, expected=None, errors=None):
     selected = {pid for pid, item in manual.items() if item.get('replace_deleted_variant')}
     if not selected:
         return {}
@@ -285,12 +285,13 @@ async def _replacement_mappings(db, shop, manual, *, expected=None, errors=None)
     from inventory_hub.stock_native_models import StockNativeOrder, StockNativeEvent
     for pid in sorted(selected):
         row, target = by_product.get(pid), manual[pid]
+        remote = choices[pid][0]
         # A fresh request after a successful replacement is a normal exact
         # identity check. Do not try to prove that the new live target is gone.
-        if (row is not None and row.is_listed and row.is_variant == target['is_variant']
+        if (row is not None and remote is not None and row.is_listed and row.is_variant == target['is_variant']
                 and row.external_code == target['code']
                 and row.parent_code == (target['parent_code'] if target['is_variant'] else None)
-                and row.external_product_id and row.native_id):
+                and row.external_product_id == remote['parent_id'] and row.native_id == remote['external_id']):
             continue
         try:
             if row is None or not row.is_variant or not row.is_listed:
@@ -558,8 +559,6 @@ async def preview(db, payload, *, actor=None):
     facts = await _facts(db, payload.product_ids)
     cached, cache_limited = await _cached(db, shop_id, facts)
     manual = {item.product_id: item.model_dump() for item in payload.manual_matches}
-    replacement_errors = {}
-    replacements = await _replacement_mappings(db, shop, manual, errors=replacement_errors)
     # Explicit rows substitute their chosen leaf for the automatic SKU lookup.
     try:
         codes = sorted({manual[pid]['code'] if pid in manual else exact_code(item['sku']) for pid, item in facts.items()})
@@ -585,6 +584,12 @@ async def preview(db, payload, *, actor=None):
         leaves.extend(extra['leaves'])
         observed['requests'] += extra['requests']
     leaves = _unique(leaves)
+    # Recreated products can reuse both codes. Only freshly observed native
+    # IDs distinguish an existing link from a deleted-variant replacement.
+    choices = {pid: _choice(item, leaves, manual.get(pid), cached) for pid, item in facts.items()}
+    replacement_errors = {}
+    replacements = await _replacement_mappings(db, shop, manual, choices, errors=replacement_errors)
+    await db.commit()  # Release mapping locks before checking remote deletion.
     deletion_errors = {}
     if replacements:
         deleted = await _source_call(source.verify_deleted_variants(payload.shop_code, list(replacements.values()),
@@ -605,7 +610,8 @@ async def preview(db, payload, *, actor=None):
     facts = await _facts(db, payload.product_ids, lock=True)
     choices = {pid: _choice(item, leaves, manual.get(pid), cached) for pid, item in facts.items()}
     replacement_errors = {}
-    replacements = await _replacement_mappings(db, shop, manual, expected=replacements, errors=replacement_errors)
+    replacements = await _replacement_mappings(db, shop, manual, choices,
+        expected=replacements, errors=replacement_errors)
     rows = await _rows(db, shop, facts, choices, replacements)
     for row in rows:
         code = replacement_errors.get(row['product_id']) or deletion_errors.get(row['product_id'])
@@ -724,7 +730,7 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     choices = {item['product_id']: (current[remote_key(item['remote'])], item['match_by'], 1) for item in selected}
     manual = {item['product_id']: {**item['remote'], 'replace_deleted_variant': True} for item in selected
               if item['product_id'] in replacements}
-    replacements = await _replacement_mappings(db, shop, manual, expected=replacements)
+    replacements = await _replacement_mappings(db, shop, manual, choices, expected=replacements)
     checked = await _rows(db, shop, facts, choices, replacements)
     if any(item['status'] not in ('ready', 'already_linked') for item in checked):
         raise LinkError('product_links_identity_changed')
