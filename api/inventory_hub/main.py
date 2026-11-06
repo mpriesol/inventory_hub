@@ -88,10 +88,11 @@ async def lifespan(app: FastAPI):
     fifo_cost_worker = None
     invoice_archive_worker = None
     if settings.USE_POSTGRES:
-        from inventory_hub.services.atomer_catalog_engine import run as migrate_atomer_catalog
-        catalog_worker = asyncio.create_task(migrate_atomer_catalog(), name="atomer-catalog")
-        from inventory_hub.services.atomer_catalog_source_cards import run as create_atomer_cards
-        source_card_worker = asyncio.create_task(create_atomer_cards(), name="atomer-source-cards")
+        if settings.ATOMER_CATALOG_WORKER_ENABLED:
+            from inventory_hub.services.atomer_catalog_engine import run as migrate_atomer_catalog
+            catalog_worker = asyncio.create_task(migrate_atomer_catalog(), name="atomer-catalog")
+            from inventory_hub.services.atomer_catalog_source_cards import run as create_atomer_cards
+            source_card_worker = asyncio.create_task(create_atomer_cards(), name="atomer-source-cards")
         from inventory_hub.services.ai_content_worker import run
         worker = asyncio.create_task(run(), name="ai-content-queue")
         from inventory_hub.services.order_collection_worker import run as collect_orders

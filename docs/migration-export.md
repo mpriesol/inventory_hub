@@ -21,6 +21,13 @@ Predvolené `refresh=false` využíva existujúcu krátkodobú katalógovú cach
 odkaz v UI vyžaduje čerstvé čítanie. Čítanie Upgates používa existujúci klient
 a jeho API limity. Dočasný ZIP sa po stiahnutí uzavrie a neuchováva na serveri.
 
+Pre offline párovanie použite
+`GET /api/migration/catalog-export?shop_code=xtrek&local_only=true`.
+Táto voľba číta iba lokálne tabuľky Hubu a vôbec nevolá Upgates, ani pri
+`refresh=true`. `manifest.json` uvádza `remote.source="local_only"` a
+`remote.catalog_included=false`; prázdny `upgates_products.jsonl` preto
+neznamená prázdny e-shop. Predvolené `local_only=false` zachováva doterajší export.
+
 Export nie je záloha. Neobsahuje konfiguráciu, prihlasovacie údaje, zákazníkov,
 objednávky, faktúry ani kompletnú pohybovú históriu. Surová bilancia sama
 nepreukazuje potvrdený sklad. Dostupnosť a množstvo dodávateľa či e-shopu sú
