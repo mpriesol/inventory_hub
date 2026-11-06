@@ -1,5 +1,6 @@
 """Bounded identities and authenticated link-only API; no real shop or database."""
 from contextlib import ExitStack
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
@@ -12,6 +13,8 @@ from pydantic import SecretStr, ValidationError
 
 from inventory_hub.database import get_session
 from inventory_hub.db_models import IdentifierType
+from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
+from inventory_hub.product_link_models import ProductLinkPreview
 from inventory_hub.product_link_types import (
     ProductLinkMatch, ProductLinksApplyRequest, ProductLinksCandidatesRequest, ProductLinksPreviewRequest,
     ProductLinksRefreshRequest,
@@ -314,6 +317,112 @@ class ProductLinksReplacementPreviewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(expected, row['errors'])
                 if changes.get('in_use'):
                     deletion.assert_not_awaited()
+
+
+class ProductLinksReplacementMetadataTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.facts = {'product_id': 1, 'sku': 'HUB-LEAF', 'name': 'Retained card', 'is_active': True,
+                      'eans': ['5901234123457'], 'attributes': [], 'manual_eans': None}
+        self.mapping = ShopProduct(id=7, product_id=1, shop_id=2, is_listed=True, is_variant=True,
+            external_code='SHOP-LEAF', parent_code='SHOP-PARENT', external_product_id='800',
+            external_variant_id='901', shop_price='29.99', shop_stock='3')
+        self.remote = {'code': 'SHOP-LEAF', 'parent_code': 'SHOP-PARENT', 'is_variant': True,
+                       'parent_id': '801', 'external_id': '902', 'name': 'Recreated variant',
+                       'eans': self.facts['eans'], 'attributes': []}
+        self.previous = service._mapping(self.mapping)
+        self.vault = {'code': 'SHOP-PARENT', 'product_id': 800, 'variants_exists_yn': True,
+            'prices': [{'price_with_vat': '29.99'}], 'stock': 3,
+            'descriptions': [{'language': 'sk', 'title': 'Previous family'}],
+            'variants': [{'code': 'SHOP-LEAF', 'variant_id': 901, 'ean': self.facts['eans']},
+                         {'code': 'UNSELECTED-SIBLING', 'variant_id': 903}],
+            '_hub_link_metadata': {'variant:901': {**service.remote_identity(self.remote),
+                'external_id': '901', 'parent_id': '800', 'name': 'Previous leaf'}}}
+        self.pulled_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self.content = ShopProductContent(id=8, shop_id=2, external_code='SHOP-PARENT',
+                                          data=deepcopy(self.vault), pulled_at=self.pulled_at)
+        self.checked = {'product_id': 1, 'sku': 'HUB-LEAF', 'remote': self.remote,
+            'local_eans': self.facts['eans'], 'match_by': 'manual', 'status': 'ready',
+            'local_hash': service._facts_hash(self.facts), 'previous_mapping': self.previous}
+        document = {'shop_code': 'xtrek', 'fingerprint': 'a' * 64, 'rows': [self.checked]}
+        self.preview = ProductLinkPreview(id=str(uuid4()), shop_id=2, status='prepared', document=document,
+            preview_hash=service.digest(document), expires_at=service.now() + timedelta(minutes=30))
+        self.payload = ProductLinksApplyRequest(**apply_body(preview_hash=self.preview.preview_hash))
+        self.db = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(side_effect=[self.preview, self.content]),
+                                  get=AsyncMock(return_value=self.mapping), commit=AsyncMock(), flush=AsyncMock())
+
+    async def apply(self):
+        observed = {'fingerprint': 'a' * 64, 'leaves': [deepcopy(self.remote)], 'requests': 1}
+        with patch.object(service.source, 'verify', AsyncMock(return_value=observed)), \
+             patch.object(service.source, 'verify_deleted_variants', AsyncMock(return_value={'requests': 2})), \
+             patch.object(service.source, 'current_fingerprint', AsyncMock(return_value='a' * 64)), \
+             patch.object(service, '_shop', AsyncMock(return_value=SimpleNamespace(id=2))), \
+             patch.object(service, '_facts', AsyncMock(return_value={1: self.facts})), \
+             patch.object(service, '_replacement_mappings', AsyncMock(return_value={1: self.previous})), \
+             patch.object(service, '_rows', AsyncMock(return_value=[self.checked])):
+            return await service._apply_prepared(self.db, self.preview.id, self.payload, self.preview)
+
+    async def test_verified_recreated_parent_transitions_its_old_vault_with_atomic_audit(self):
+        result = await self.apply()
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual((self.mapping.id, self.mapping.product_id, self.mapping.external_product_id,
+                          self.mapping.external_variant_id), (7, 1, '801', '902'))
+        self.assertIsNone(self.mapping.shop_price)
+        self.assertIsNone(self.mapping.shop_stock)
+        self.assertEqual(set(self.content.data), {'_hub_link_metadata'})
+        self.assertEqual(set(self.content.data['_hub_link_metadata']), {'variant:902'})
+        self.assertEqual(self.content.data['_hub_link_metadata']['variant:902']['parent_id'], '801')
+        self.assertEqual(self.content.pulled_at, self.pulled_at)
+        archive = self.preview.result['_content_archives'][0]
+        self.assertEqual(archive['data'], self.vault)
+        self.assertEqual(archive['pulled_at'], self.pulled_at.isoformat())
+        self.assertEqual((archive['previous_parent_id'], archive['parent_id']), ('800', '801'))
+        self.assertNotIn('_content_archives', result['result'])
+        self.assertEqual(service.public(self.preview), result)
+
+        db = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(return_value=self.content))
+        self.assertEqual(await service._cache_metadata(db, 2, [self.remote]), [])
+        self.assertEqual(self.preview.result['_content_archives'][0]['data'], self.vault)
+
+    async def test_parent_transition_requires_each_selected_leafs_exact_previous_mapping(self):
+        for changes in (None, {'external_product_id': '799'}, {'parent_code': 'OTHER-PARENT'},
+                        {'is_listed': False}, {'is_variant': False}):
+            with self.subTest(changes=changes):
+                db = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(return_value=self.content))
+                replacements = {} if changes is None else {
+                    'variant:902': {**self.previous, **changes}}
+                with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed'):
+                    await service._cache_metadata(db, 2, [self.remote], replacements=replacements)
+                self.assertEqual(self.content.data, self.vault)
+                self.assertEqual(self.content.pulled_at, self.pulled_at)
+
+        sibling = {**self.remote, 'code': 'UNREVIEWED-LEAF', 'external_id': '904'}
+        db = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(return_value=self.content))
+        with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed'):
+            await service._cache_metadata(db, 2, [self.remote, sibling],
+                                          replacements={'variant:902': self.previous})
+        self.assertEqual(self.content.data, self.vault)
+
+    async def test_unrelated_cached_parent_or_metadata_is_never_retired(self):
+        for changes in ({'product_id': 799}, {'code': 'UNRELATED'},
+                        {'_hub_link_metadata': {'variant:901': {'parent_id': '799'}}}):
+            with self.subTest(changes=changes):
+                self.content.data = {**deepcopy(self.vault), **changes}
+                before = deepcopy(self.content.data)
+                db = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(return_value=self.content))
+                with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed'):
+                    await service._cache_metadata(db, 2, [self.remote],
+                                                  replacements={'variant:902': self.previous})
+                self.assertEqual(self.content.data, before)
+
+    async def test_same_parent_vault_is_not_retired_when_only_variant_id_changes(self):
+        remote = {**self.remote, 'parent_id': '800'}
+        db = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(return_value=self.content))
+        self.assertEqual(await service._cache_metadata(db, 2, [remote],
+                                                      replacements={'variant:902': self.previous}), [])
+        self.assertEqual({key: value for key, value in self.content.data.items() if key != '_hub_link_metadata'},
+                         {key: value for key, value in self.vault.items() if key != '_hub_link_metadata'})
+        self.assertEqual(set(self.content.data['_hub_link_metadata']), {'variant:901', 'variant:902'})
+        self.assertEqual(self.content.pulled_at, self.pulled_at)
 
 
 class ProductLinksFailureFenceTests(unittest.IsolatedAsyncioTestCase):

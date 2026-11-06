@@ -9,6 +9,10 @@ obe väzby. Náhľad oddeľuje konfliktné riadky; potvrdenie znovu kontroluje
 vymazanie starého variantu, vlastníctvo cieľa a rozpracované operácie oboch
 rodičov. Bez novej migrácie či automatického mazania v e-shope. Živé prepojenie
 konkrétnych kariet sa overuje samostatne po importe cieľových produktov.
+Pri opätovnom použití kódu rodiča explicitná overená výmena archivuje jeho
+starú kompletnú cache vo výsledku operácie a ponechá iba nové navigačné
+metadáta. Bežné prepojenie či obnovenie odkazov nemôže meniť natívnu identitu;
+archív, väzba a výsledok sa uložia v tej istej transakcii. Bez novej migrácie.
 
 ## Denné dostupnosti a objednávkové webhooky (28. 10. 2026)
 

@@ -156,6 +156,20 @@ kódmi a novými ID, explicitná výmena prejde všetkými vyššie uvedenými k
 vymazania pôvodného variantu, EAN, vlastníctva a rozpracovaných operácií.
 Bez voľby `replace_deleted_variant=true` sa takáto väzba automaticky neopraví.
 
+Ak sa pri rovnakej hodnote kódu zmenilo aj natívne ID rodiča, stará kompletná
+cache rodiny nesmie blokovať už overenú výmenu ani predstierať obsah nového
+rodiča. Iba pri výslovne potvrdených náhradách všetkých vybraných položiek
+tejto rodiny sa jej pôvodné ID porovná s každou pôvodnou väzbou. Nezhoda alebo
+cache tretej identity naďalej zastavia celú transakciu. Pôvodný obsah vrátane
+súrodencov a času úplného načítania sa uchová v internom poli
+`product_link_previews.result._content_archives` spolu s výsledkom výmeny.
+Aktívna cache potom obsahuje iba čerstvé navigačné metadáta vybraných cieľov;
+nie je úplným podkladom na export a nepreberá staré ceny ani zásoby. Čas
+úplného načítania sa neobnoví. Bežné prepojenie ani **Načítať odkazy** túto
+výnimku nemajú. Archív sa nevracia v bežnej odpovedi API a následné úplné
+načítanie katalógu ho neprepíše. Opakovanie dokončenej dávky vracia ten istý
+výsledok bez ďalšieho archívu alebo zápisu väzieb.
+
 Zmena nepotrebuje SQL migráciu a nezapína skladovú synchronizáciu. Návrat kódu
 sa robí kompatibilným revert PR; nevracia už vykonané väzby na vymazané ciele.
 Syntetické testy overujú zachovanie kariet, identifikátorov a pohybov, audit,

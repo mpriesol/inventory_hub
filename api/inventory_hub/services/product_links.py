@@ -428,10 +428,12 @@ async def _rows(db, shop, facts, choices, replacements=None):
 
 
 def public(row):
+    result = ({key: value for key, value in row.result.items() if key != '_content_archives'}
+              if row.result is not None else None)
     return {'id': row.id, 'shop_code': row.document['shop_code'], 'status': row.status,
         'preview_hash': row.preview_hash, 'expires_at': row.expires_at.isoformat(),
         'rows': [{key: value for key, value in item.items() if key != 'local_hash'} for item in row.document['rows']],
-        'remote_requests': row.document.get('remote_requests', 0), 'result': row.result}
+        'remote_requests': row.document.get('remote_requests', 0), 'result': result}
 
 
 async def get(db, identifier):
@@ -445,16 +447,19 @@ def _metadata_key(remote):
     return ('variant:' if remote['is_variant'] else 'product:') + remote['external_id']
 
 
-async def _cache_metadata(db, shop_id, leaves):
+async def _cache_metadata(db, shop_id, leaves, *, replacements=None):
     """Store scoped display observations without replacing a complete vault.
 
     A newly created row has only this sidecar: it cannot impersonate a complete
     family for the legacy export guard. Existing prices, stock, descriptions,
-    siblings and full-pull freshness remain untouched.
+    siblings and full-pull freshness remain untouched for the same parent.
+    An explicitly verified parent replacement archives the old complete vault
+    in the atomic apply result; it cannot masquerade as the recreated family.
     """
     grouped = defaultdict(list)
     for leaf in leaves:
         grouped[leaf['parent_code']].append(leaf)
+    replacements, archives = replacements or {}, []
     for parent_code in sorted(grouped):
         await db.execute(insert(ShopProductContent).values(shop_id=shop_id, external_code=parent_code,
             data={}, pulled_at=now()).on_conflict_do_nothing(
@@ -466,6 +471,27 @@ async def _cache_metadata(db, shop_id, leaves):
         data = deepcopy(row.data)
         metadata = data.get('_hub_link_metadata')
         metadata = metadata if isinstance(metadata, dict) else {}
+        previous_parent_id = str(data['product_id']) if data.get('product_id') is not None else None
+        parent_ids = {leaf['parent_id'] for leaf in grouped[parent_code]}
+        if previous_parent_id is not None and parent_ids != {previous_parent_id}:
+            # Only selected, deletion-verified replacements can retire this
+            # exact earlier parent. An unrelated vault or ordinary refresh
+            # remains a conflict, even when the product codes are identical.
+            if len(parent_ids) != 1 or data.get('code', parent_code) != parent_code:
+                raise LinkError('product_links_identity_changed')
+            for leaf in grouped[parent_code]:
+                previous = replacements.get(_metadata_key(leaf))
+                if (not previous or not previous.get('is_variant') or not previous.get('is_listed')
+                        or previous.get('parent_code') != parent_code
+                        or previous.get('external_product_id') != previous_parent_id):
+                    raise LinkError('product_links_identity_changed')
+            if any(isinstance(item, dict) and item.get('parent_id') != previous_parent_id
+                   for item in metadata.values()):
+                raise LinkError('product_links_identity_changed')
+            archives.append({'content_id': row.id, 'external_code': parent_code,
+                'previous_parent_id': previous_parent_id, 'parent_id': next(iter(parent_ids)),
+                'data': data, 'pulled_at': row.pulled_at.isoformat()})
+            data, metadata = {}, {}
         for leaf in grouped[parent_code]:
             # A full earlier observation can prove a parent was recreated.
             if data.get('product_id') is not None and str(data['product_id']) != leaf['parent_id']:
@@ -478,6 +504,7 @@ async def _cache_metadata(db, shop_id, leaves):
                 'observed_at': now().isoformat()}
         data['_hub_link_metadata'] = metadata
         row.data = data
+    return archives
 
 
 async def _refresh_mappings(db, shop_id, product_ids, *, lock=False):
@@ -739,7 +766,9 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
         raise LinkError('product_links_identity_changed')
     if await _source_call(source.current_fingerprint(shop_code)) != fingerprint:
         raise LinkError('source_connection_changed')
-    await _cache_metadata(db, shop.id, [item['remote'] for item in checked])
+    content_archives = await _cache_metadata(db, shop.id, [item['remote'] for item in checked],
+        replacements={_metadata_key(item['remote']): replacements[item['product_id']]
+                      for item in checked if item['product_id'] in replacements})
     linked, existing, replaced = [], [], []
     for item in checked:
         pid, remote = item['product_id'], item['remote']
@@ -781,6 +810,8 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
         'already_linked_product_ids': sorted(existing), 'completed_at': row.completed_at.isoformat(),
         'applied_by': actor or {'source': 'operator_token'}, 'remote_requests': observed['requests'],
         'replaced_mappings': replaced}
+    if content_archives:
+        row.result['_content_archives'] = content_archives
     await db.flush()
     result = public(row)
     await db.commit()
