@@ -501,7 +501,7 @@ Pri nezhode dostupnosti môže Hub doložiť kartu a presný parameter generáci
 
 The Atomer migration report supports audited batch acceptance of the displayed proposals and scoped availability reconciliation after a shop policy change. See [migration progress](docs/atomer-migration-progress.md).
 
-Atomer catalog migration now has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. See [migration progress](docs/atomer-migration-progress.md).
+Atomer catalog migration has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. Automatic catalog and source-card workers now require `ATOMER_CATALOG_WORKER_ENABLED=true` (default `false`); restarting with the default preserves all campaign journals without resuming them. See [migration progress](docs/atomer-migration-progress.md). The existing authenticated [catalog export](docs/migration-export.md) supports `local_only=true` for a Hub snapshot without any Upgates request.
 
 The migration records Hub card preparation separately from xTrek verification. Existing native families have a guarded content check, and unresolved writes keep their original receipt across API quota windows.
 

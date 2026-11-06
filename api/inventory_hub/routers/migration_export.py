@@ -33,9 +33,13 @@ async def upgates_export(dataset: Dataset, shop_code: Literal["biketrek", "xtrek
 
 @router.get("/catalog-export")
 async def catalog_export(shop_code: Literal["biketrek", "xtrek"] = "biketrek", refresh: bool = False,
+                         local_only: bool = False,
                          db: AsyncSession = Depends(get_session)):
-    products, meta = await asyncio.to_thread(_fetch_upgates_products, shop_code,
-        ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh)
+    if local_only:
+        products, meta = [], {"source": "local_only", "catalog_included": False}
+    else:
+        products, meta = await asyncio.to_thread(_fetch_upgates_products, shop_code,
+            ttl_s=PREVIEW_CACHE_TTL_S, force_refresh=refresh)
     output = await build_export(db, products, meta, shop_code)
     return StreamingResponse(download_chunks(output), media_type="application/zip", headers={
         "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",

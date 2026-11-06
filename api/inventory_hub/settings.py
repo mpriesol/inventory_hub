@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: SecretStr = SecretStr("")
     AI_CONTENT_ACCESS_TOKEN: SecretStr = SecretStr("")
     AI_CONTENT_ENABLED: bool = False
+    ATOMER_CATALOG_WORKER_ENABLED: bool = Field(
+        default=False,
+        description="Start automatic Atomer catalog and source-card workers; requires explicit opt-in",
+    )
     STOCK_PUBLICATION_WRITE_ENABLED: bool = False
     STOCK_SYNC_WRITE_ENABLED: bool = False
     FIFO_COST_SYNC_WRITE_ENABLED: bool = False

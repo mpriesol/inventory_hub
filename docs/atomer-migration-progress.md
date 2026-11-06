@@ -99,7 +99,15 @@ Operator-approved proposals can be previewed and saved together with the private
 
 ## Durable catalog migration
 
-The authenticated report can register a group of exact families or the complete approved catalog from the pinned buyers and administrative CSV archives. The operator can see registration, pending numbers, verification, explicit exclusions, partial results, blocking reasons and the next retry in the report. A preview is read-only. Apply registers the work in PostgreSQL. The API worker resumes that work after restart and stores the source fingerprint, recorded intent and observed native IDs. A job that reached the send boundary is checked against the shop before further writes.
+Automatic catalog and source-card workers start only when the server setting
+`ATOMER_CATALOG_WORKER_ENABLED=true` is explicitly configured. It defaults to
+`false`; after the API restarts, neither Atomer worker resumes stored campaigns.
+Campaigns, work ownership, source archives, write intents and receipts remain
+intact. Other Hub workers and explicit operator actions keep their existing
+behavior. Re-enabling requires a deliberate setting change and API restart;
+review any intervening XML imports before resuming the saved campaign.
+
+The authenticated report can register a group of exact families or the complete approved catalog from the pinned buyers and administrative CSV archives. The operator can see registration, pending numbers, verification, explicit exclusions, partial results, blocking reasons and the next retry in the report. A preview is read-only. Apply registers the work in PostgreSQL. When enabled, the API worker resumes that work after restart and stores the source fingerprint, recorded intent and observed native IDs. A job that reached the send boundary is checked against the shop before further writes.
 
 The source adapter verifies visibility and commercial fields separately for parents and sellable leaves. Original HTML, option mappings and unmapped source values are retained privately. Hub card bindings are checked against the exact xTrek leaf and, when available, the matching BIKETREK leaf. A native product ID by itself does not complete a family. Per-family observed evidence is available through the authenticated catalog-engine/family endpoint. Product creation and card linking do not imply physical stock initialization. Native stock authority is configured in the separate stock workflow.
 

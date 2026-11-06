@@ -68,6 +68,22 @@ class ExportRoutesTests(unittest.TestCase):
         upstream.assert_called_once_with("biketrek", ttl_s=routes.PREVIEW_CACHE_TTL_S, force_refresh=True)
         self.assertEqual(build.await_args.args[1:], ([{"code": "001"}], {"source": "api"}, "biketrek"))
 
+    def test_local_only_download_never_reads_upgates_even_when_refresh_requested(self):
+        for refresh in ("false", "true"):
+            with self.subTest(refresh=refresh):
+                output = io.BytesIO(b"local-archive")
+                with patch.object(routes, "_fetch_upgates_products", side_effect=AssertionError("Unexpected Upgates read")) as upstream, \
+                        patch.object(routes, "build_export", AsyncMock(return_value=output)) as build:
+                    response = self.client.get(
+                        f"/migration/catalog-export?shop_code=xtrek&local_only=true&refresh={refresh}",
+                        headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, b"local-archive")
+                self.assertTrue(output.closed)
+                upstream.assert_not_called()
+                self.assertEqual(build.await_args.args[1:],
+                    ([], {"source": "local_only", "catalog_included": False}, "xtrek"))
+
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
 
@@ -211,3 +227,15 @@ class ExportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(archive.read(name + ".jsonl").splitlines()), count)
                 self.assertNotIn(b"config_path", archive.read("suppliers.jsonl"))
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_local_only_snapshot_distinguishes_omitted_catalog_from_an_empty_shop(self):
+        metadata = {"source": "local_only", "catalog_included": False}
+        async with self.sessions() as db:
+            output = await service.build_export(db, [], metadata, "xtrek")
+            with output, zipfile.ZipFile(output) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                self.assertEqual(manifest["remote"], metadata)
+                self.assertEqual(manifest["counts"]["products"], 1)
+                self.assertEqual(manifest["counts"]["upgates_products"], 0)
+                self.assertEqual(archive.read("upgates_products.jsonl"), b"")
+                self.assertIn("Remote catalog was not read or included.", manifest["notes"])

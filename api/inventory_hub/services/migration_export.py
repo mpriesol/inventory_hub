@@ -98,7 +98,9 @@ async def build_export(db, remote_products, remote_meta, shop_code):
                 "local_snapshot_at": snapshot_at, "remote_shop": shop_code,
                 "remote": remote_meta, "counts": counts,
                 "notes": ["Local tables share one repeatable-read, read-only transaction.",
-                    "Remote catalog has its own observation time; this is not a global freeze.",
+                    ("Remote catalog was not read or included."
+                     if remote_meta.get("source") == "local_only" else
+                     "Remote catalog has its own observation time; this is not a global freeze."),
                     "Balances can be historical and unconfirmed. Tracking evidence is exported separately.",
                     "Shop and supplier quantities are observations, not physical warehouse balances.",
                     "No product, link, quantity, inventory authority or synchronization setting was changed."]}))
