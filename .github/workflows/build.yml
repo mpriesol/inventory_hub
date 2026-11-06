@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "codex/deployment-lock-diagnostic"]
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -27,7 +27,7 @@ jobs:
   diagnose-deployment-locks:
     # Temporary, fixed read-only inspection from this branch only. It cannot
     # build, migrate, restart, cancel sessions, or write application data.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/deployment-lock-diagnostic' && inputs.deploy == false
+    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/deployment-lock-diagnostic'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
