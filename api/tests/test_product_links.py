@@ -3,7 +3,7 @@ from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -250,6 +250,70 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
         mapping.parent_code, mapping.is_listed = "NEW-PARENT", False
         rows = await self.rows({1: self.facts}, {1: (remote, "manual", 1)}, mappings=[mapping])
         self.assertEqual(rows[0]["status"], "conflict")
+
+
+class ProductLinksReplacementPreviewTests(unittest.IsolatedAsyncioTestCase):
+    async def preview_same_codes(self, *, parent_id='801', variant_id='902', old_exists=False,
+                                 eans=('5901234123457',), in_use=False):
+        facts = {'product_id': 1, 'sku': 'HUB-LEAF', 'name': 'Retained card', 'is_active': True,
+                 'eans': ['5901234123457'], 'attributes': [], 'manual_eans': None}
+        mapping = SimpleNamespace(id=7, product_id=1, shop_id=2, is_listed=True, is_variant=True,
+            external_code='SHOP-LEAF', parent_code='SHOP-PARENT', external_product_id='800',
+            external_variant_id='901', native_id='901')
+        remote = {'code': 'SHOP-LEAF', 'parent_code': 'SHOP-PARENT', 'is_variant': True,
+                  'parent_id': parent_id, 'external_id': variant_id, 'name': 'Recreated variant',
+                  'eans': list(eans), 'attributes': []}
+        index = IdentityIndex(2, [SimpleNamespace(id=1, sku=facts['sku'], is_active=True)], [mapping],
+            [SimpleNamespace(product_id=1, value=facts['eans'][0], identifier_type=IdentifierType.ean,
+                             supplier_id=None)])
+        db = SimpleNamespace(get=AsyncMock(return_value=None), execute=AsyncMock(),
+            scalars=AsyncMock(return_value=[mapping]), scalar=AsyncMock(return_value=None),
+            commit=AsyncMock(), flush=AsyncMock(), add=Mock())
+        deletion = AsyncMock(return_value={'fingerprint': 'a' * 64, 'requests': 2,
+                                           'existing_mapping_ids': [7] if old_exists else []})
+        guard = AsyncMock(side_effect=service.LinkError('product_links_replacement_in_use') if in_use else None)
+        with patch.object(service, '_shop', AsyncMock(return_value=SimpleNamespace(id=2, code='xtrek'))), \
+             patch.object(service, '_facts', AsyncMock(return_value={1: facts})), \
+             patch.object(service, '_cached', AsyncMock(return_value=([], False))), \
+             patch.object(service, 'load_identity_index', AsyncMock(return_value=index)), \
+             patch.object(service, '_require_mapping_write_available', guard), \
+             patch.object(service.source, 'discover', AsyncMock(return_value={
+                 'fingerprint': 'a' * 64, 'leaves': [remote], 'requests': 3})), \
+             patch.object(service.source, 'verify_deleted_variants', deletion):
+            result = await service.preview(db, ProductLinksPreviewRequest(**preview_body(
+                product_ids=[1], manual_matches=[{'product_id': 1, 'code': remote['code'],
+                    'parent_code': remote['parent_code'], 'is_variant': True, 'replace_deleted_variant': True}])))
+        return result['rows'][0], deletion, guard
+
+    async def test_same_codes_with_changed_native_identity_require_guarded_replacement(self):
+        for parent_id, variant_id in (('801', '902'), ('800', '902'), ('801', '901')):
+            with self.subTest(parent_id=parent_id, variant_id=variant_id):
+                row, deletion, guard = await self.preview_same_codes(parent_id=parent_id, variant_id=variant_id)
+                self.assertEqual(row['status'], 'ready')
+                self.assertEqual(row['previous_mapping']['external_product_id'], '800')
+                self.assertEqual(row['previous_mapping']['external_variant_id'], '901')
+                deletion.assert_awaited_once()
+                self.assertEqual(deletion.await_args.args[1], [row['previous_mapping']])
+                self.assertTrue(deletion.await_args.kwargs['collect_conflicts'])
+                self.assertEqual(guard.await_count, 2)
+
+    async def test_exact_current_native_identity_is_already_linked_without_deletion_check(self):
+        row, deletion, guard = await self.preview_same_codes(parent_id='800', variant_id='901', in_use=True)
+        self.assertEqual(row['status'], 'already_linked')
+        self.assertNotIn('previous_mapping', row)
+        deletion.assert_not_awaited()
+        guard.assert_not_awaited()
+
+    async def test_recreated_same_codes_keep_live_old_variant_and_ean_guards(self):
+        for changes, expected in (({'old_exists': True}, 'product_links_variant_still_exists'),
+                ({'eans': ()}, 'product_links_replacement_ean_mismatch'),
+                ({'in_use': True}, 'product_links_replacement_in_use')):
+            with self.subTest(changes=changes):
+                row, deletion, guard = await self.preview_same_codes(**changes)
+                self.assertEqual(row['status'], 'conflict')
+                self.assertIn(expected, row['errors'])
+                if changes.get('in_use'):
+                    deletion.assert_not_awaited()
 
 
 class ProductLinksFailureFenceTests(unittest.IsolatedAsyncioTestCase):

@@ -150,6 +150,12 @@ výsledku. Rovnaké request ID vráti pôvodný výsledok bez opakovania zápisu
 Nový náhľad už správne prepojeného cieľa vráti `already_linked`, aj keď je
 vo vstupnom riadku ešte označené `replace_deleted_variant=true`.
 
+Rovnaký kód variantu a rodiča nestačí na stav `already_linked`: musia sa zhodovať
+aj čerstvo načítané natívne ID oboch. Ak bol variant znovu vytvorený s rovnakými
+kódmi a novými ID, explicitná výmena prejde všetkými vyššie uvedenými kontrolami
+vymazania pôvodného variantu, EAN, vlastníctva a rozpracovaných operácií.
+Bez voľby `replace_deleted_variant=true` sa takáto väzba automaticky neopraví.
+
 Zmena nepotrebuje SQL migráciu a nezapína skladovú synchronizáciu. Návrat kódu
 sa robí kompatibilným revert PR; nevracia už vykonané väzby na vymazané ciele.
 Syntetické testy overujú zachovanie kariet, identifikátorov a pohybov, audit,
