@@ -18,6 +18,7 @@ from sqlalchemy.pool import NullPool
 
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Shop
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
+from inventory_hub.product_link_models import ProductLinkPreview
 from inventory_hub.product_link_types import ProductLinksApplyRequest, ProductLinksPreviewRequest, ProductLinksRefreshRequest
 from inventory_hub.routers.upgates_sync import _push_family_has_canonical_codes
 from inventory_hub.services import product_links as service
@@ -240,9 +241,18 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recreated_variant_with_same_codes_rekeys_only_existing_shop_mapping(self):
         mapping_id, request = await self.variant_replacement_fixture()
+        pulled_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        vault = {'code': 'NEW-PARENT', 'product_id': 800, 'variants_exists_yn': True,
+            'prices': [{'price_with_vat': '29.99'}], 'stock': 3,
+            'descriptions': [{'language': 'sk', 'title': 'Previous family'}],
+            'variants': [{'code': 'NEW-LEAF', 'variant_id': 901, 'ean': [EAN_A]},
+                         {'code': 'UNSELECTED-SIBLING', 'variant_id': 903}],
+            '_hub_link_metadata': {'variant:901': {'parent_id': '800', 'name': 'Previous leaf'}}}
         async with self.transaction() as db:
             mapping = await db.get(ShopProduct, mapping_id)
             mapping.external_code, mapping.parent_code = 'NEW-LEAF', 'NEW-PARENT'
+            db.add(ShopProductContent(shop_id=self.shop_id, external_code='NEW-PARENT',
+                                      data=vault, pulled_at=pulled_at))
             other_shop_id = await db.scalar(select(Shop.id).where(Shop.code == 'biketrek'))
             other = ShopProduct(shop_id=other_shop_id, product_id=self.ids[0], external_code='OTHER-SHOP',
                 external_product_id='700', is_variant=False, is_listed=True)
@@ -271,6 +281,47 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service._mapping(mappings[other_mapping_id]), other_before)
         self.assertEqual(result['result']['replaced_mappings'], [{'product_id': self.ids[0],
             'sku': 'SHARED-A', 'eans': [EAN_A], 'previous_mapping': previous, 'mapping': current}])
+        content = await self.content('NEW-PARENT')
+        self.assertEqual(set(content.data), {'_hub_link_metadata'})
+        self.assertEqual(set(content.data['_hub_link_metadata']), {'variant:902'})
+        self.assertEqual(content.pulled_at, pulled_at)
+        async with self.sessions() as db:
+            saved = await db.get(ProductLinkPreview, str(preview['id']))
+            archive = saved.result['_content_archives'][0]
+            self.assertEqual(archive['data'], vault)
+            self.assertEqual(archive['pulled_at'], pulled_at.isoformat())
+            self.assertNotIn('_content_archives', result['result'])
+            product = await db.get(Product, self.ids[0])
+            self.assertFalse(_push_family_has_canonical_codes(content.data, [product]))
+        await self.refresh([self.ids[0]])
+        self.assertEqual(set((await self.content('NEW-PARENT')).data), {'_hub_link_metadata'})
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_recreated_variant_cannot_retire_an_unrelated_cache_after_preview(self):
+        mapping_id, request = await self.variant_replacement_fixture()
+        async with self.transaction() as db:
+            mapping = await db.get(ShopProduct, mapping_id)
+            mapping.external_code, mapping.parent_code = 'NEW-LEAF', 'NEW-PARENT'
+            db.add(ShopProductContent(shop_id=self.shop_id, external_code='NEW-PARENT',
+                                      data={'product_id': 800, 'code': 'NEW-PARENT'}))
+        before = await self.snapshot()
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(return_value={
+                'fingerprint': self.fingerprint, 'requests': 2, 'existing_mapping_ids': []})):
+            preview = await self.preview(request)
+            async with self.transaction() as db:
+                cache = await db.scalar(select(ShopProductContent).where(
+                    ShopProductContent.shop_id == self.shop_id, ShopProductContent.external_code == 'NEW-PARENT'))
+                cache.data = {'product_id': 999, 'code': 'NEW-PARENT'}
+            with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed') as failed:
+                await self.apply(preview, [self.ids[0]])
+            self.assertTrue(failed.exception.known_unapplied)
+        mapping = (await self.mappings())[0]
+        self.assertEqual((mapping.id, mapping.external_product_id, mapping.external_variant_id),
+                         (mapping_id, '800', '901'))
+        self.assertEqual((await self.content('NEW-PARENT')).data, {'product_id': 999, 'code': 'NEW-PARENT'})
+        async with self.sessions() as db:
+            saved = await db.get(ProductLinkPreview, str(preview['id']))
+            self.assertIsNone(saved.result)
         self.assertEqual(await self.snapshot(), before)
 
     async def test_new_parent_publication_is_rechecked_before_apply(self):
