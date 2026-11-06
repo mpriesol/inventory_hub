@@ -24,91 +24,173 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  diagnose-deployment-locks:
-    # Temporary, fixed read-only inspection from this branch only. It cannot
-    # build, migrate, restart, cancel sessions, or write application data.
+  recover-deployment-locks:
+    # Scoped recovery, reviewed separately from the earlier read-only diagnosis.
     if: github.event_name == 'push' && github.ref == 'refs/heads/codex/deployment-lock-diagnostic'
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 7
     steps:
-      - name: Inspect deployment locks without private row or query content
+      - name: Recover the two verified orphan migrations and the verified API
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          command_timeout: 120s
+          command_timeout: 360s
           script: |
             set -eu
             cd /opt/inventory-hub
-            api_container=$(docker compose -f docker-compose.yml -f docker-compose.ai-content.yml ps -q api)
-            test -n "$api_container"
-            docker inspect --format 'API id={{.Id}} image_id={{.Image}} started={{.State.StartedAt}} running={{.State.Running}}' "$api_container"
-            docker image inspect ghcr.io/mpriesol/inventory-hub-api:main --format 'PULLED_MAIN image_id={{.Id}}'
-            project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$api_container")
-            docker ps --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=api' --format 'API_CONTAINER id={{.ID}} image={{.Image}} state={{.Status}} name={{.Names}}'
-            health_status=0
-            docker compose -f docker-compose.yml -f docker-compose.ai-content.yml exec -T api python -m inventory_hub.security_check --timeout 12 || health_status=$?
-            docker compose -f docker-compose.yml -f docker-compose.ai-content.yml exec -T api python - <<'PY'
-            import hashlib
-            import json
+
+            old_api=e315fed17cb21f11abcf637b280a7a7d116cf8f6a3e455a2be8dd880351ea0c4
+            old_image=sha256:ce1f53a3b052a3615f821123551498d1d0dc8cc4e2d2722734da055fcf2fd7f8
+            new_image=sha256:eddf99eb7284c4d17899eaf7d0092d1afffe5f137d849d5a7f2cda668516b9fc
+            recovery_name=inventory-hub-atomer-recovery-156
+
+            compose() { docker compose -f docker-compose.yml -f docker-compose.ai-content.yml "$@"; }
+            test "$(compose ps -q api)" = "$old_api"
+            test "$(docker inspect --format '{{.Image}}' "$old_api")" = "$old_image"
+            test "$(docker inspect --format '{{.State.Running}}' "$old_api")" = true
+            test "$(docker inspect --format '{{.State.StartedAt}}' "$old_api")" = 2026-11-05T19:52:59.908429137Z
+            test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$old_api")" = inventory-hub
+            test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$old_api")" = api
+            test "$(docker image inspect ghcr.io/mpriesol/inventory-hub-api:main --format '{{.Id}}')" = "$new_image"
+            if docker inspect "$recovery_name" >/dev/null 2>&1; then
+              printf '%s\n' 'Recovery container already exists; inspect its result, do not replay.'
+              exit 1
+            fi
+
+            guard_migration() {
+              container="$1"
+              expected_name="$2"
+              test "$(docker inspect --format '{{.Name}}' "$container")" = "/$expected_name"
+              test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = inventory-hub
+              test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")" = api
+              test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' "$container")" = True
+              test "$(docker inspect --format '{{json .Config.Cmd}}' "$container")" = '["python","-m","inventory_hub.migrate"]'
+              test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
+            }
+            guard_migration a4799ec676c0 inventory-hub-api-run-8c1098a80737
+            guard_migration d061b1b61982 inventory-hub-api-run-e5c9ca4d9040
+            test "$(docker inspect --format '{{.Image}}' d061b1b61982)" = "$new_image"
+            old_orphan=$(docker inspect --format '{{.Id}}' a4799ec676c0)
+            new_orphan=$(docker inspect --format '{{.Id}}' d061b1b61982)
+
+            # Prove the pinned image is the reviewed release. No settings, credentials or
+            # application data are read by this isolated image check.
+            docker run --rm -i --network none --entrypoint python "$new_image" - <<'PY'
+            from hashlib import sha256
             from pathlib import Path
-            import psycopg2
-            import inventory_hub
-            from inventory_hub.settings import settings
-
-            def emit(label, rows):
-                print(json.dumps({'kind': label, 'rows': rows}, default=str), flush=True)
-
-            root = Path(inventory_hub.__file__).parent
-            emit('running_code', {'product_links_sha256': hashlib.sha256(
-                (root / 'services/product_links.py').read_bytes()).hexdigest(),
-                'atomer_worker_opt_in_setting_exists': hasattr(settings, 'ATOMER_CATALOG_WORKER_ENABLED')})
-            try:
-                with psycopg2.connect(host=settings.DB_HOST, port=settings.DB_PORT, dbname=settings.DB_NAME,
-                        user=settings.DB_USER, password=settings.DB_PASSWORD, connect_timeout=5,
-                        application_name='inventory-hub-deploy-readonly-diagnostic',
-                        options='-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000') as connection:
-                    with connection.cursor() as cursor:
-                        cursor.execute("""
-                            SELECT pid, state, wait_event_type, wait_event,
-                              extract(epoch FROM clock_timestamp()-backend_start)::bigint AS backend_age_s,
-                              extract(epoch FROM clock_timestamp()-xact_start)::bigint AS transaction_age_s,
-                              extract(epoch FROM clock_timestamp()-query_start)::bigint AS statement_age_s,
-                              pg_blocking_pids(pid) AS blockers,
-                              CASE
-                                WHEN query LIKE '%pg_advisory_xact_lock(691432138)%' THEN 'atomer_schema_lock'
-                                WHEN query LIKE '-- Operator decisions belong%' THEN 'atomer_schema_038'
-                                WHEN query LIKE '-- A separate durable intent%' THEN 'atomer_schema_041'
-                                WHEN query LIKE '-- Private source-to-card receipts%' THEN 'atomer_schema_043'
-                                ELSE 'other'
-                              END AS fixed_statement_class
-                            FROM pg_stat_activity
-                            WHERE datname=current_database() AND pid<>pg_backend_pid()
-                              AND backend_type='client backend'
-                            ORDER BY backend_start LIMIT 100
-                        """)
-                        names = [column.name for column in cursor.description]
-                        activity = [dict(zip(names, row)) for row in cursor.fetchall()]
-                        emit('database_activity_metadata', activity)
-                        cursor.execute("""
-                            SELECT l.pid, l.locktype, l.mode, l.granted,
-                              CASE WHEN c.oid IS NOT NULL THEN n.nspname||'.'||c.relname END AS relation,
-                              l.classid, l.objid, l.transactionid::text
-                            FROM pg_locks l
-                            LEFT JOIN pg_class c ON c.oid=l.relation
-                            LEFT JOIN pg_namespace n ON n.oid=c.relnamespace
-                            WHERE l.pid=ANY(%s) AND (NOT l.granted OR l.locktype IN ('advisory','transactionid')
-                              OR c.relname IN ('atomer_progress_runs','atomer_catalog_jobs','atomer_catalog_campaigns'))
-                            ORDER BY l.pid,l.granted,l.locktype,l.mode LIMIT 200
-                        """, ([row['pid'] for row in activity],))
-                        names = [column.name for column in cursor.description]
-                        emit('database_lock_metadata', [dict(zip(names, row)) for row in cursor.fetchall()])
-            except Exception as error:
-                emit('diagnostic_error', {'type': type(error).__name__, 'sqlstate': getattr(error, 'pgcode', None)})
-                raise SystemExit(1)
+            expected = {
+                'services/product_links.py': '23c3bac03b64632f17f3af20bcec2aa76edabbb5a676032db663d7b4044cb113',
+                'main.py': '6f6ae1713411911d5295e987462a6e72fbe09893c123c08e7749dc89e1e87ba3',
+                'settings.py': '1b8e96ae5a3aeb1e55902c95f1b1850430db9703cb35c62e6393f6bc9e4355f5',
+            }
+            for path, digest in expected.items():
+                assert sha256((Path('/app/inventory_hub') / path).read_bytes()).hexdigest() == digest
+            print('PINNED_RELEASE_SOURCE_VERIFIED 5a27335334bac514225ed2853d63d24d62c87fac')
             PY
-            exit "$health_status"
+            schema_digest='from pathlib import Path; from hashlib import sha256; p=Path("/app/inventory_hub/migrations"); assert p.is_dir(); files=sorted(p.glob("*.sql")); assert files; print(sha256(b"".join(x.name.encode()+b"\0"+x.read_bytes() for x in files)).hexdigest())'
+            old_schema=$(docker exec "$old_api" python -c "$schema_digest")
+            new_schema=$(docker run --rm --network none --entrypoint python "$new_image" -c "$schema_digest")
+            test "$old_schema" = "$new_schema"
+            printf '%s\n' 'MIGRATION_SQL_IDENTICAL_TO_RUNNING_RELEASE'
+
+            workdir=$(mktemp -d /opt/inventory-hub/recovery-156.XXXXXX)
+            cat > "$workdir/new.yml" <<YAML
+            services:
+              api:
+                image: "$new_image"
+                environment:
+                  ATOMER_CATALOG_WORKER_ENABLED: "false"
+            YAML
+            cat > "$workdir/rollback.yml" <<YAML
+            services:
+              api:
+                image: "$old_image"
+                command:
+                  - python
+                  - -c
+                  - |
+                      import asyncio
+                      import uvicorn
+                      from inventory_hub.services import atomer_catalog_engine as catalog
+                      from inventory_hub.services import atomer_catalog_source_cards as cards
+                      async def paused():
+                          await asyncio.Event().wait()
+                      catalog.run = paused
+                      cards.run = paused
+                      uvicorn.run("inventory_hub.main:app", host="0.0.0.0", port=8000)
+            YAML
+            compose -f "$workdir/new.yml" config --quiet
+            compose -f "$workdir/rollback.yml" config --quiet
+            stopped_api=false
+            completed=false
+            recovery_container=''
+
+            healthy() {
+              deadline=$(( $(date +%s) + 60 ))
+              while [ "$(date +%s)" -lt "$deadline" ]; do
+                if compose exec -T api python -m inventory_hub.security_check --timeout 12; then
+                  return 0
+                fi
+                sleep 3
+              done
+              return 1
+            }
+
+            finish() {
+              result=$?
+              trap - EXIT INT TERM
+              set +e
+              if [ "$completed" != true ] && [ "$stopped_api" = true ]; then
+                if [ -n "$recovery_container" ] && docker inspect "$recovery_container" >/dev/null 2>&1; then
+                  # This is only the one container created and captured by this invocation.
+                  docker stop --time 10 "$recovery_container" >/dev/null 2>&1
+                fi
+                printf '%s\n' 'RECOVERY_FAILED_RESTORING_PREVIOUS_API_WITH_ATOMER_WORKERS_PAUSED'
+                if compose -f "$workdir/rollback.yml" up -d --no-deps --force-recreate api && healthy; then
+                  printf '%s\n' 'ROLLBACK_HEALTHY_OLD_API_ATOMER_WORKERS_PAUSED_REPLACEMENT_FIX_NOT_DEPLOYED'
+                else
+                  printf '%s\n' 'ROLLBACK_HEALTH_FAILED_OPERATOR_ACTION_REQUIRED'
+                fi
+              fi
+              rm -f "$workdir/new.yml" "$workdir/rollback.yml"
+              rmdir "$workdir"
+              exit "$result"
+            }
+            trap finish EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+
+            printf '%s\n' 'STOPPING_TWO_VERIFIED_ORPHAN_MIGRATIONS'
+            docker stop --time 10 "$old_orphan" "$new_orphan"
+            printf '%s\n' 'STOPPING_VERIFIED_OLD_API'
+            stopped_api=true
+            docker stop --time 30 "$old_api"
+
+            printf '%s\n' 'RUNNING_ONE_BOUNDED_MIGRATION'
+            recovery_container=$(compose -f "$workdir/new.yml" run -d --no-deps --name "$recovery_name" \
+              -e 'PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000' \
+              api python -m inventory_hub.migrate)
+            migration_exit=$(timeout --signal=TERM 150 docker wait "$recovery_container")
+            docker logs "$recovery_container"
+            test "$migration_exit" = 0
+
+            printf '%s\n' 'STARTING_VERIFIED_NEW_API'
+            compose -f "$workdir/new.yml" up -d --no-deps --force-recreate api
+            current_api=$(compose ps -q api)
+            test "$(docker inspect --format '{{.Image}}' "$current_api")" = "$new_image"
+            compose exec -T api python - <<'PY'
+            from hashlib import sha256
+            from pathlib import Path
+            from inventory_hub.settings import settings
+            assert not settings.ATOMER_CATALOG_WORKER_ENABLED
+            assert sha256(Path('/app/inventory_hub/services/product_links.py').read_bytes()).hexdigest() == '23c3bac03b64632f17f3af20bcec2aa76edabbb5a676032db663d7b4044cb113'
+            print('NEW_API_CODE_VERIFIED_ATOMER_WORKERS_DISABLED')
+            PY
+            healthy
+            completed=true
+            printf '%s\n' 'RECOVERY_DEPLOYMENT_HEALTHY 5a27335334bac514225ed2853d63d24d62c87fac'
 
   build-and-push:
     if: github.ref == 'refs/heads/main'
