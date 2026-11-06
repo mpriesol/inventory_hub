@@ -24,6 +24,92 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  diagnose-deployment-locks:
+    # Temporary, fixed read-only inspection from this branch only. It cannot
+    # build, migrate, restart, cancel sessions, or write application data.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/deployment-lock-diagnostic' && inputs.deploy == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Inspect deployment locks without private row or query content
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 120s
+          script: |
+            set -eu
+            cd /opt/inventory-hub
+            api_container=$(docker compose -f docker-compose.yml -f docker-compose.ai-content.yml ps -q api)
+            test -n "$api_container"
+            docker inspect --format 'API id={{.Id}} image_id={{.Image}} started={{.State.StartedAt}} running={{.State.Running}}' "$api_container"
+            docker image inspect ghcr.io/mpriesol/inventory-hub-api:main --format 'PULLED_MAIN image_id={{.Id}}'
+            project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$api_container")
+            docker ps --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=api' --format 'API_CONTAINER id={{.ID}} image={{.Image}} state={{.Status}} name={{.Names}}'
+            health_status=0
+            docker compose -f docker-compose.yml -f docker-compose.ai-content.yml exec -T api python -m inventory_hub.security_check --timeout 12 || health_status=$?
+            docker compose -f docker-compose.yml -f docker-compose.ai-content.yml exec -T api python - <<'PY'
+            import hashlib
+            import json
+            from pathlib import Path
+            import psycopg2
+            import inventory_hub
+            from inventory_hub.settings import settings
+
+            def emit(label, rows):
+                print(json.dumps({'kind': label, 'rows': rows}, default=str), flush=True)
+
+            root = Path(inventory_hub.__file__).parent
+            emit('running_code', {'product_links_sha256': hashlib.sha256(
+                (root / 'services/product_links.py').read_bytes()).hexdigest(),
+                'atomer_worker_opt_in_setting_exists': hasattr(settings, 'ATOMER_CATALOG_WORKER_ENABLED')})
+            try:
+                with psycopg2.connect(host=settings.DB_HOST, port=settings.DB_PORT, dbname=settings.DB_NAME,
+                        user=settings.DB_USER, password=settings.DB_PASSWORD, connect_timeout=5,
+                        application_name='inventory-hub-deploy-readonly-diagnostic',
+                        options='-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000') as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT pid, state, wait_event_type, wait_event,
+                              extract(epoch FROM clock_timestamp()-backend_start)::bigint AS backend_age_s,
+                              extract(epoch FROM clock_timestamp()-xact_start)::bigint AS transaction_age_s,
+                              extract(epoch FROM clock_timestamp()-query_start)::bigint AS statement_age_s,
+                              pg_blocking_pids(pid) AS blockers,
+                              CASE
+                                WHEN query LIKE '%pg_advisory_xact_lock(691432138)%' THEN 'atomer_schema_lock'
+                                WHEN query LIKE '-- Operator decisions belong%' THEN 'atomer_schema_038'
+                                WHEN query LIKE '-- A separate durable intent%' THEN 'atomer_schema_041'
+                                WHEN query LIKE '-- Private source-to-card receipts%' THEN 'atomer_schema_043'
+                                ELSE 'other'
+                              END AS fixed_statement_class
+                            FROM pg_stat_activity
+                            WHERE datname=current_database() AND pid<>pg_backend_pid()
+                              AND backend_type='client backend'
+                            ORDER BY backend_start LIMIT 100
+                        """)
+                        names = [column.name for column in cursor.description]
+                        activity = [dict(zip(names, row)) for row in cursor.fetchall()]
+                        emit('database_activity_metadata', activity)
+                        cursor.execute("""
+                            SELECT l.pid, l.locktype, l.mode, l.granted,
+                              CASE WHEN c.oid IS NOT NULL THEN n.nspname||'.'||c.relname END AS relation,
+                              l.classid, l.objid, l.transactionid::text
+                            FROM pg_locks l
+                            LEFT JOIN pg_class c ON c.oid=l.relation
+                            LEFT JOIN pg_namespace n ON n.oid=c.relnamespace
+                            WHERE l.pid=ANY(%s) AND (NOT l.granted OR l.locktype IN ('advisory','transactionid')
+                              OR c.relname IN ('atomer_progress_runs','atomer_catalog_jobs','atomer_catalog_campaigns'))
+                            ORDER BY l.pid,l.granted,l.locktype,l.mode LIMIT 200
+                        """, ([row['pid'] for row in activity],))
+                        names = [column.name for column in cursor.description]
+                        emit('database_lock_metadata', [dict(zip(names, row)) for row in cursor.fetchall()])
+            except Exception as error:
+                emit('diagnostic_error', {'type': type(error).__name__, 'sqlstate': getattr(error, 'pgcode', None)})
+                raise SystemExit(1)
+            PY
+            exit "$health_status"
+
   build-and-push:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
