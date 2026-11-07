@@ -15,7 +15,7 @@ from inventory_hub.services.atomer_progress_store import latest, ProgressError, 
 from inventory_hub.services.atomer_progress_display import page
 from inventory_hub.services import atomer_missing_native_ean as missing_native_ean
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
-from inventory_hub.services import atomer_catalog_control
+from inventory_hub.services import atomer_catalog_control, atomer_catalog_job_control
 from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity, atomer_standalone_family, atomer_variant_barcode_owners
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
@@ -279,6 +279,35 @@ async def catalog_campaign_change(campaign_id: atomer_catalog_control.CampaignID
 async def catalog_campaign_control_receipt(request_id: UUID, db: AsyncSession = Depends(get_session)):
     try:
         return await atomer_catalog_control.receipt(db, request_id)
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
+@router.get("/catalog-engine/campaigns/{campaign_id}/jobs/control")
+async def catalog_job_control(campaign_id: atomer_catalog_control.CampaignID,
+                              family: str = Query(min_length=1, max_length=260),
+                              db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_job_control.get(db, campaign_id, family)
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
+@router.post("/catalog-engine/campaigns/{campaign_id}/jobs/{action}")
+async def catalog_job_change(campaign_id: atomer_catalog_control.CampaignID,
+                            action: atomer_catalog_job_control.Action,
+                            payload: atomer_catalog_job_control.JobControlRequest, request: Request,
+                            db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_job_control.change(db, campaign_id, action, payload, _actor(request))
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
+@router.get("/catalog-engine/job-control-requests/{request_id}")
+async def catalog_job_control_receipt(request_id: UUID, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_job_control.receipt(db, request_id)
     except ReviewError as error:
         raise HTTPException(error.status, detail={"code": error.code}) from None
 

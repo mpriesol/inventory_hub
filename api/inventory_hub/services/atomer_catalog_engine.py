@@ -212,13 +212,13 @@ async def process(db,selection,mode,actor):
         """,c=cid,r=head['id'],s=selection.source_sha,a=selection.admin_sha,fp=fp,actor=actor,config=_json(fresh),new_options=options_changed,wake=wake)
         if wake:
             await _exec(db,"""UPDATE atomer_catalog_jobs SET next_at=now(),attempts=0
-                   WHERE campaign=:c AND stage IN ('pending','fidelity') AND problem LIKE '%stock_publication_source_unavailable%'
+                   WHERE campaign=:c AND NOT operator_withdrawn AND stage IN ('pending','fidelity') AND problem LIKE '%stock_publication_source_unavailable%'
                    AND problem NOT ILIKE '%Limit Upgates%' AND problem NOT ILIKE '%HTTP 429%'""",c=cid)
         jobs=[dict(key=r['family_key'],size=r['size'],p=0 if r['family_key'] in pinned else r['p']) for r in entries]
         await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
             SELECT :c,j->>'key',(j->>'p')::int,(j->>'size')::int FROM jsonb_array_elements(CAST(:jobs AS jsonb)) j
         ON CONFLICT(campaign,family_key) DO UPDATE SET priority=least(atomer_catalog_jobs.priority,excluded.priority),
-            leaf_count=excluded.leaf_count
+            leaf_count=excluded.leaf_count WHERE NOT atomer_catalog_jobs.operator_withdrawn
         """,c=cid,jobs=_json(jobs))
         if current and merged.get('scope')=='catalog' and current['checked_run_id']!=head['id']:
             await _sync_families(db,cid,head['id'])
@@ -309,13 +309,23 @@ async def details(db,family_key):
 
 
 async def _job(db,c,f,stage,*,problem='',guards=None,document=None,receipt=None,delay=0,increment=False):
-    await _exec(db,"""UPDATE atomer_catalog_jobs SET stage=:stage,problem=:problem,updated_at=now(),
+    result=await _exec(db,"""UPDATE atomer_catalog_jobs SET stage=:stage,problem=:problem,updated_at=now(),
         next_at=now()+make_interval(secs=>:delay),attempts=attempts+:inc,
         guards=coalesce(CAST(:guards AS jsonb),guards),document=coalesce(CAST(:doc AS jsonb),document),
-        receipt=coalesce(CAST(:receipt AS jsonb),receipt) WHERE campaign=:c AND family_key=:f""",
+        receipt=coalesce(CAST(:receipt AS jsonb),receipt) WHERE campaign=:c AND family_key=:f AND NOT operator_withdrawn""",
         stage=stage,problem=problem[:3900],delay=delay,inc=int(increment),c=c,f=f,
         guards=None if guards is None else _json(guards),doc=None if document is None else _json(document),
         receipt=None if receipt is None else _json(receipt))
+    if result.rowcount==0:
+        raise ReviewError('catalog_job_withdrawn_or_missing')
+
+
+async def _assert_job_active(db,c,f):
+    # Also fences a stale in-memory candidate before it can reach an HTTP/card
+    # intent. The SQL trigger independently protects every automatic writer.
+    if await db.scalar(text('SELECT operator_withdrawn FROM atomer_catalog_jobs '
+                            'WHERE campaign=:c AND family_key=:f FOR SHARE'),dict(c=c,f=f)) is True:
+        raise ReviewError('catalog_job_withdrawn')
 
 
 async def _proofs(db,c,f,proofs):
@@ -397,6 +407,7 @@ async def _mutate_work(db,kind,key,row,command,actor,result=''):
 
 async def _claim(db,c,j,rows,group):
     """Lock current selection and snapshot every sibling, including operator-owned exceptions."""
+    await _assert_job_active(db,c['id'],j['family_key'])
     f=j['family_key']; allow=c['selection']['working']; own=[]; skip={}; problems={}
     if group['status']=='done':
         skip={k:'Ručne uzavretá rodina.' for k in rows}
@@ -450,6 +461,7 @@ def _selected(guards):
 
 
 async def _guarded(db,c,j):
+    await _assert_job_active(db,c['id'],j['family_key'])
     rows,group=await _family(db,c['checked_run_id'],j['family_key'])
     g=j['guards']
     if _guard(group)!=g['group'] or {k:_guard(r) for k,r in rows.items()}!=g['rows']:
@@ -1176,17 +1188,18 @@ async def _sync_families(db,cid,run):
     await _exec(db,"""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
          SELECT :c,family_key,min(CASE WHEN state IN ('needs_both','needs_target') THEN 1 ELSE 4 END),count(*)
          FROM atomer_progress_items WHERE run_id=:r GROUP BY family_key
-         ON CONFLICT(campaign,family_key) DO UPDATE SET leaf_count=excluded.leaf_count""",c=cid,r=run)
+         ON CONFLICT(campaign,family_key) DO UPDATE SET leaf_count=excluded.leaf_count
+         WHERE NOT atomer_catalog_jobs.operator_withdrawn""",c=cid,r=run)
     await _exec(db,"""WITH expanded AS (
            SELECT j.family_key,jsonb_agg(i.code ORDER BY i.code) AS added
            FROM atomer_catalog_jobs j JOIN atomer_progress_items i ON i.run_id=:r AND i.family_key=j.family_key
-           WHERE j.campaign=:c AND j.stage IN ('verified','partial','blocked','excluded') AND j.guards IS NOT NULL
+           WHERE j.campaign=:c AND NOT j.operator_withdrawn AND j.stage IN ('verified','partial','blocked','excluded') AND j.guards IS NOT NULL
              AND NOT (j.guards->'rows' ? i.code) GROUP BY j.family_key
          ) UPDATE atomer_catalog_jobs j SET stage='pending',next_at=now(),priority=0,
              source_card_stage='pending',source_card_next_at=now(),source_card_attempts=0,
              receipt=j.receipt||jsonb_build_object('rollover',true,'previous_stage',j.stage,
                                                     'added_source_codes',e.added,'added_run',CAST(:r AS bigint))
-             FROM expanded e WHERE j.campaign=:c AND j.family_key=e.family_key""",c=cid,r=run)
+             FROM expanded e WHERE j.campaign=:c AND j.family_key=e.family_key AND NOT j.operator_withdrawn""",c=cid,r=run)
 
 
 async def _step(db,c):
@@ -1201,7 +1214,7 @@ async def _step(db,c):
     # Finish committed/uncertain writes before starting new work. Deferred relations
     # yield to the missing parents they depend on.
     candidates=await _rows(db,f"""SELECT j.*,CASE WHEN priority=0 AND {local.NEEDS_TARGET} THEN 1 ELSE 0 END AS priority_target
-        FROM atomer_catalog_jobs j WHERE campaign=:c
+        FROM atomer_catalog_jobs j WHERE campaign=:c AND NOT j.operator_withdrawn
         AND stage=ANY(CAST(:stages AS text[])) AND next_at<=now()
         AND (stage<>'pending' OR receipt->>'rollover'='true' OR source_card_stage<>'pending' OR source_card_attempts>0 OR NOT {local.ELIGIBLE})
         ORDER BY CASE WHEN stage IN ('sending','updating','observe') THEN 0 WHEN priority=0 AND {local.NEEDS_TARGET} THEN 1 ELSE 2 END,
@@ -1265,7 +1278,7 @@ async def _step(db,c):
                 if j['stage']!=phase:
                     continue
                 await _exec(db,"""UPDATE atomer_catalog_jobs SET receipt=receipt || jsonb_build_object('isolate_phase',CAST(:s AS text)),
-                              problem=:p WHERE campaign=:c AND family_key=:f""",
+                              problem=:p WHERE campaign=:c AND family_key=:f AND NOT operator_withdrawn""",
                             p=exc.code,c=c['id'],f=j['family_key'],s=phase)
         else:
             j=dict(await _one(db,'SELECT * FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f',
@@ -1310,14 +1323,14 @@ async def _step(db,c):
         label=_diagnostic(c,error)
         await _exec(db,"""UPDATE atomer_catalog_jobs SET next_at=greatest(next_at,now()+make_interval(secs=>:delay)),
                          problem=:problem,attempts=attempts+:inc
-                         WHERE campaign=:c AND stage=:s AND
+                         WHERE campaign=:c AND NOT operator_withdrawn AND stage=:s AND
                          (stage<>'pending' OR priority<4 OR priority=:prio)""",
                     c=c['id'],delay=delay,s=phase,prio=batch[0]['priority'],problem=label,inc=int(not quota))
         await _exec(db,"""UPDATE atomer_catalog_campaigns SET state='running',failures=0,problem=:p,
                         next_at=now(),updated_at=now() WHERE id=:c""",p=label,c=c['id'])
         return True
     await _exec(db,"""UPDATE atomer_catalog_jobs SET receipt=receipt-'isolate'-'isolate_phase'
-                       WHERE campaign=:c AND family_key=ANY(CAST(:keys AS text[])) AND stage<>:s
+                       WHERE campaign=:c AND NOT operator_withdrawn AND family_key=ANY(CAST(:keys AS text[])) AND stage<>:s
                        AND (receipt ? 'isolate' OR receipt ? 'isolate_phase')""",c=c['id'],keys=[j['family_key'] for j in batch],s=phase)
     await _exec(db,"UPDATE atomer_catalog_campaigns SET state='running',failures=0,problem='',next_at=now(),updated_at=now() WHERE id=:c",c=c['id'])
     return True

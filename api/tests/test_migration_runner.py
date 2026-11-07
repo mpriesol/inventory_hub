@@ -20,7 +20,7 @@ class MigrationRunnerTests(unittest.TestCase):
             "product_import", "ai_content_settings", "upgates_api_budget", "stock_native", "stock_delta", "product_links",
             "supplier_card_links", "sku_policy", "shop_identity", "item_units", "supplier_authority", "invoice_archive",
             "supplier_availability_delivery", "order_webhooks", "stock_sync_dirty", "atomer_progress", "atomer_review",
-            "shared_stock_sales", "product_consolidation", "atomer_catalog_control",
+            "shared_stock_sales", "product_consolidation", "atomer_catalog_control", "atomer_catalog_job_control",
         )
         calls = []
 
@@ -38,8 +38,8 @@ class MigrationRunnerTests(unittest.TestCase):
             (action, f"inventory_hub.{name}_migrate")
             for name in expected for action in ("import", "run")
         ])
-        self.assertIn("[migrations] done completed=37/37 elapsed_s=", output.getvalue())
-        self.assertEqual(output.getvalue().count("done module="), 37)
+        self.assertIn("[migrations] done completed=38/38 elapsed_s=", output.getvalue())
+        self.assertEqual(output.getvalue().count("done module="), 38)
 
     def test_migration_failure_stops_before_importing_the_next_upgrade(self):
         completed = Mock()
@@ -58,7 +58,7 @@ class MigrationRunnerTests(unittest.TestCase):
         self.assertEqual(load.call_count, 2)
         self.assertIn("failed module=opening_stock_migrate", stderr.getvalue())
         self.assertIn("error_type=RuntimeError", stderr.getvalue())
-        self.assertIn("failed completed=1/37 elapsed_s=", stderr.getvalue())
+        self.assertIn("failed completed=1/38 elapsed_s=", stderr.getvalue())
         self.assertNotIn("done completed=", stdout.getvalue())
         self.assertNotIn(str(failure), stdout.getvalue() + stderr.getvalue())
 
@@ -71,7 +71,7 @@ class MigrationRunnerTests(unittest.TestCase):
         self.assertEqual(result, 1)
         load.assert_called_once_with("inventory_hub.ai_content_migrate")
         self.assertIn("error_type=ImportError", stderr.getvalue())
-        self.assertIn("failed completed=0/37", stderr.getvalue())
+        self.assertIn("failed completed=0/38", stderr.getvalue())
         self.assertNotIn("private detail", stdout.getvalue() + stderr.getvalue())
 
     def test_timings_include_module_execution_and_total(self):
