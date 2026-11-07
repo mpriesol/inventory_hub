@@ -19,6 +19,7 @@ from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttri
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.product_link_models import ProductLinkPreview
 from inventory_hub.services import product_link_source as source
+from inventory_hub.services import product_link_recovery as recovery
 from inventory_hub.services.product_identity import (
     IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, mapping_code, verified_barcodes,
 )
@@ -274,7 +275,8 @@ def _choice(facts, leaves, manual=None, cached=()):
 
 async def _replacement_mappings(db, shop, manual, choices, *, expected=None, errors=None):
     selected = {pid for pid, item in manual.items()
-                if item.get('replace_deleted_variant') or item.get('replace_deleted_product')}
+                if item.get('replace_deleted_variant') or item.get('replace_deleted_product')
+                or item.get('reviewed_deleted_replacement')}
     if not selected:
         return {}
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
@@ -282,23 +284,26 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
         ShopProduct.product_id.in_(selected)).with_for_update().execution_options(populate_existing=True)))
     by_product = {row.product_id: row for row in rows}
     mappings = {}
-    from inventory_hub.db_models_ext import ShopOrder, ShopOrderItem
-    from inventory_hub.stock_native_models import StockNativeOrder, StockNativeEvent
     for pid in sorted(selected):
         row, target = by_product.get(pid), manual[pid]
         if row is not None and getattr(row, 'shared_stock', False):
             raise LinkError('shared_stock_sale_requires_group_workflow')
         remote = choices[pid][0]
-        # A fresh request after a successful replacement is a normal exact
-        # identity check. Do not try to prove that the new live target is gone.
-        if (row is not None and remote is not None and row.is_listed and row.is_variant == target['is_variant']
-                and row.external_code == target['code']
-                and row.parent_code == (target['parent_code'] if target['is_variant'] else None)
-                and row.external_product_id == remote['parent_id'] and row.native_id == remote['external_id']):
-            continue
         try:
-            if (row is None or not row.is_listed or not target.get(
-                    'replace_deleted_variant' if row.is_variant else 'replace_deleted_product')):
+            review = target.get('reviewed_deleted_replacement')
+            if review:
+                recovery.pin_target(review, remote, row)
+                if not recovery.ordinary(row):
+                    raise LinkError('product_links_replacement_not_allowed')
+            # A fresh request after a successful replacement is a normal exact
+            # identity check. Do not try to prove that the new live target is gone.
+            if (row is not None and remote is not None and row.is_listed and row.is_variant == target['is_variant']
+                    and row.external_code == target['code']
+                    and row.parent_code == (target['parent_code'] if target['is_variant'] else None)
+                    and row.external_product_id == remote['parent_id'] and row.native_id == remote['external_id']):
+                continue
+            if (row is None or not row.is_listed or not (review or target.get(
+                    'replace_deleted_variant' if row.is_variant else 'replace_deleted_product'))):
                 raise LinkError('product_links_replacement_not_allowed')
             try:
                 source._native_id(row.external_product_id)
@@ -310,14 +315,7 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
                     raise ValueError('A standalone mapping has no variant or parent code')
             except (ValueError, TypeError, source.SourceError):
                 raise LinkError('product_links_replacement_identity_missing') from None
-            native = await db.scalar(select(StockNativeOrder.order_id).join(StockNativeEvent,
-                StockNativeEvent.id == StockNativeOrder.event_id).where(StockNativeOrder.shop_id == shop.id,
-                StockNativeEvent.facts.contains({'lines': [{'product_id': pid, 'native': True}]})).limit(1))
-            active = await db.scalar(select(ShopOrderItem.id).join(ShopOrder, ShopOrder.id == ShopOrderItem.order_id)
-                .where(ShopOrder.shop_id == shop.id, ShopOrderItem.product_id == pid,
-                    ShopOrderItem.stock_managed.is_(True), ShopOrder.stock_state.in_(('pending', 'reserved'))).limit(1))
-            if native is not None or active is not None:
-                raise LinkError('product_links_replacement_in_use')
+            await _require_recovery_order_idle(db, shop, pid, 'product_links_replacement_in_use')
             await _require_mapping_write_available(db, shop, row,
                 {row.parent_code if row.is_variant else row.external_code, target['parent_code'], target['code']},
                 'product_links_replacement_in_use')
@@ -329,6 +327,19 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
     if expected is not None and mappings != expected:
         raise LinkError('product_links_identity_changed')
     return mappings
+
+
+async def _require_recovery_order_idle(db, shop, product_id, error_code):
+    from inventory_hub.db_models_ext import ShopOrder, ShopOrderItem
+    from inventory_hub.stock_native_models import StockNativeOrder, StockNativeEvent
+    native = await db.scalar(select(StockNativeOrder.order_id).join(StockNativeEvent,
+        StockNativeEvent.id == StockNativeOrder.event_id).where(StockNativeOrder.shop_id == shop.id,
+        StockNativeEvent.facts.contains({'lines': [{'product_id': product_id, 'native': True}]})).limit(1))
+    active = await db.scalar(select(ShopOrderItem.id).join(ShopOrder, ShopOrder.id == ShopOrderItem.order_id)
+        .where(ShopOrder.shop_id == shop.id, ShopOrderItem.product_id == product_id,
+            ShopOrderItem.stock_managed.is_(True), ShopOrder.stock_state.in_(('pending', 'reserved'))).limit(1))
+    if native is not None or active is not None:
+        raise LinkError(error_code)
 
 
 async def _verify_replacement_absence(shop_code, mappings, fingerprint, *, max_requests, collect_conflicts=False):
@@ -366,14 +377,16 @@ async def _require_mapping_write_available(db, shop, mapping, parents, error_cod
         raise LinkError(error_code) from None
 
 
-async def _rows(db, shop, facts, choices, replacements=None):
+async def _rows(db, shop, facts, choices, replacements=None, reviews=None, completions=None):
     identities = [RemoteIdentity(shop.id, remote['code'], remote['is_variant'], remote['external_id'],
         remote['parent_code'], tuple(remote['eans']), expected_product_id=pid, external_product_id=remote['parent_id'])
         for pid, (remote, mode, count) in choices.items() if remote is not None]
     index = await load_identity_index(db, shop.id, identities)
     replacements = replacements or {}
-    if replacements:
-        index = index.without_mappings({mapping['id'] for mapping in replacements.values()})
+    reviews, completions = reviews or {}, completions or {}
+    if replacements or completions:
+        index = index.without_mappings({mapping['id'] for mapping in replacements.values()} |
+            {item['previous_mapping']['id'] for item in completions.values()})
     duplicate_targets = Counter(remote_key(remote) for remote, mode, count in choices.values() if remote is not None)
     rows = []
     for pid, item in facts.items():
@@ -388,9 +401,17 @@ async def _rows(db, shop, facts, choices, replacements=None):
                                    else 'replaces_deleted_product')
             if remote is None:
                 row['errors'].append('product_links_replacement_not_allowed')
+            elif pid in reviews:
+                row['reviewed_deleted_replacement'] = reviews[pid]
+                error = recovery.replacement_identity_error(item, remote, replacements[pid], reviews[pid])
+                if error:
+                    row['errors'].append(error)
             elif (not row['local_eans'] or set(row['local_eans']) != set(remote['eans'])
                     or remote.get('invalid_barcodes')):
                 row['errors'].append('product_links_replacement_ean_mismatch')
+        if pid in completions:
+            row['parent_completion'] = completions[pid]
+            row['warnings'].append('completes_unverified_parent')
         if not item['is_active']:
             row['errors'].append('inactive_product')
         if remote is None:
@@ -610,6 +631,9 @@ async def preview(db, payload, *, actor=None):
         for flag in ('replace_deleted_variant', 'replace_deleted_product'):
             if not match.get(flag):
                 match.pop(flag, None)
+        for field in ('reviewed_deleted_replacement', 'complete_unverified_parent'):
+            if match.get(field) is None:
+                match.pop(field, None)
     request_hash = digest(raw)
     existing = await db.get(ProductLinkPreview, str(payload.request_id))
     if existing is not None:
@@ -627,7 +651,9 @@ async def preview(db, payload, *, actor=None):
     except ValueError:
         raise LinkError('product_links_unsupported_code', 422) from None
     await db.commit()  # No database locks or transaction spans external I/O.
-    observed = await _source_call(source.discover(payload.shop_code, codes, max_requests=MAX_REQUESTS))
+    parent_codes = {item['parent_code'] for item in manual.values() if item.get('complete_unverified_parent')}
+    observe = source.inspect_codes if parent_codes else source.discover
+    observed = await _source_call(observe(payload.shop_code, sorted(set(codes) | parent_codes), max_requests=MAX_REQUESTS))
     leaves = list(observed['leaves'])
     remaining = MAX_REQUESTS - observed['requests']
     fallback, fallback_needs_parent = [], False
@@ -675,7 +701,11 @@ async def preview(db, payload, *, actor=None):
     replacement_errors = {}
     replacements = await _replacement_mappings(db, shop, manual, choices,
         expected=replacements, errors=replacement_errors)
-    rows = await _rows(db, shop, facts, choices, replacements)
+    reviews = await recovery.reviewed_replacements(db, shop, facts, manual, choices, replacements,
+        errors=replacement_errors)
+    completions = await recovery.parent_completions(db, shop, facts, manual, choices, observed,
+        errors=replacement_errors)
+    rows = await _rows(db, shop, facts, choices, replacements, reviews, completions)
     for row in rows:
         code = replacement_errors.get(row['product_id']) or deletion_errors.get(row['product_id'])
         if code:
@@ -712,6 +742,7 @@ def _apply_selection(row, payload, *, allow_expired=False):
     rows = {item['product_id']: item for item in row.document['rows']}
     if any(pid not in rows or rows[pid]['status'] not in ('ready', 'already_linked') for pid in chosen):
         raise LinkError('product_links_invalid_selection', 422)
+    recovery.require_complete_selection([rows[pid] for pid in chosen], chosen)
     if not allow_expired and now() >= row.expires_at:
         raise LinkError('product_links_preview_expired')
     return [rows[pid] for pid in chosen]
@@ -766,8 +797,25 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     shop_code, fingerprint = row.document['shop_code'], row.document['fingerprint']
     frozen = [item['remote'] for item in selected]
     replacements = {item['product_id']: item['previous_mapping'] for item in selected if item.get('previous_mapping')}
+    reviews = {item['product_id']: item['reviewed_deleted_replacement'] for item in selected
+               if item.get('reviewed_deleted_replacement')}
+    completions = {item['product_id']: item['parent_completion'] for item in selected if item.get('parent_completion')}
     await db.commit()
-    observed = await _source_call(source.verify(shop_code, frozen, fingerprint, max_requests=MAX_REQUESTS))
+    if completions:
+        codes = {item['code'] for item in frozen} | {item['remote']['parent_code'] for item in selected
+                                                   if item.get('parent_completion')}
+        observed = await _source_call(source.inspect_codes(shop_code, sorted(codes), fingerprint, max_requests=MAX_REQUESTS))
+        # Parent occupancy needs the wider inspection, but every selected row
+        # must retain verify()'s exact code/kind/parent scope. Another native
+        # leaf appearing in that scope is an ambiguity, including mixed rows.
+        scopes = {(item['code'], item['parent_code'], item['is_variant']) for item in frozen}
+        scoped = [item for item in observed['leaves']
+                  if (item['code'], item['parent_code'], item['is_variant']) in scopes]
+        if {tuple(remote_identity(item).values()) for item in scoped} != {tuple(remote_identity(item).values()) for item in frozen}:
+            raise LinkError('source_identity_changed')
+        observed['leaves'] = scoped
+    else:
+        observed = await _source_call(source.verify(shop_code, frozen, fingerprint, max_requests=MAX_REQUESTS))
     if replacements:
         deleted = await _verify_replacement_absence(shop_code, list(replacements.values()),
             fingerprint, max_requests=MAX_REQUESTS - observed['requests'])
@@ -795,8 +843,14 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
               ('replace_deleted_variant' if replacements[item['product_id']]['is_variant']
                else 'replace_deleted_product'): True} for item in selected
               if item['product_id'] in replacements}
+    for pid, review in reviews.items():
+        manual[pid] = {**choices[pid][0], 'reviewed_deleted_replacement': review['request']}
+    for pid, completion in completions.items():
+        manual[pid] = {**choices[pid][0], 'complete_unverified_parent': completion['request']}
     replacements = await _replacement_mappings(db, shop, manual, choices, expected=replacements)
-    checked = await _rows(db, shop, facts, choices, replacements)
+    reviews = await recovery.reviewed_replacements(db, shop, facts, manual, choices, replacements, expected=reviews)
+    completions = await recovery.parent_completions(db, shop, facts, manual, choices, observed, expected=completions)
+    checked = await _rows(db, shop, facts, choices, replacements, reviews, completions)
     if any(item['status'] not in ('ready', 'already_linked') for item in checked):
         raise LinkError('product_links_identity_changed')
     verified_before = {item['product_id']: item.get('unverified_mapping') for item in selected}
@@ -807,11 +861,25 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     content_archives = await _cache_metadata(db, shop.id, [item['remote'] for item in checked],
         replacements={_metadata_key(item['remote']): replacements[item['product_id']]
                       for item in checked if item['product_id'] in replacements})
-    linked, existing, replaced = [], [], []
+    content_archives.extend(await recovery.archive_parent_content(db, shop.id, completions))
+    linked, existing, replaced, completed_parents = [], [], [], []
     for item in checked:
         pid, remote = item['product_id'], item['remote']
         if item['status'] == 'already_linked':
             existing.append(pid)
+            continue
+        if pid in completions:
+            original = completions[pid]['previous_mapping']
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.id == original['id'])
+                .with_for_update().execution_options(populate_existing=True))
+            if _mapping(mapping) != original:
+                raise LinkError('product_links_identity_changed')
+            mapping.parent_code = remote['parent_code']
+            mapping.external_product_id = remote['parent_id']
+            mapping.external_variant_id = remote['external_id']
+            completed_parents.append({'product_id': pid, 'previous_mapping': original, 'mapping': _mapping(mapping),
+                                      'review': completions[pid]['request']})
+            linked.append(pid)
             continue
         if item.get('unverified_mapping'):
             original = item['unverified_mapping']
@@ -834,7 +902,8 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
             mapping.last_push_at, mapping.last_push_status, mapping.last_push_error = None, None, None
             mapping.push_pending, mapping.last_pull_at = False, now()
             replaced.append({'product_id': pid, 'sku': item['sku'], 'eans': item['local_eans'],
-                             'previous_mapping': replacements[pid], 'mapping': _mapping(mapping)})
+                             'previous_mapping': replacements[pid], 'mapping': _mapping(mapping),
+                             **({'review': reviews[pid]} if pid in reviews else {})})
             linked.append(pid)
             continue
         db.add(ShopProduct(shop_id=shop.id, product_id=pid, external_product_id=remote['parent_id'],
@@ -848,6 +917,8 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
         'already_linked_product_ids': sorted(existing), 'completed_at': row.completed_at.isoformat(),
         'applied_by': actor or {'source': 'operator_token'}, 'remote_requests': observed['requests'],
         'replaced_mappings': replaced}
+    if completed_parents:
+        row.result['completed_parent_mappings'] = completed_parents
     if content_archives:
         row.result['_content_archives'] = content_archives
     await db.flush()

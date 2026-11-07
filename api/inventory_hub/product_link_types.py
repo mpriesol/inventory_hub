@@ -17,6 +17,55 @@ class LinkInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+class ReviewedIdentitySource(LinkInput):
+    kind: Literal['shop_mapping', 'supplier_product']
+    id: StrictInt = Field(gt=0)
+
+
+class ReviewedNativeTarget(LinkInput):
+    mapping_id: StrictInt = Field(gt=0)
+    native_product_id: StrictInt = Field(gt=0, le=9007199254740991)
+    native_variant_id: StrictInt | None = Field(default=None, gt=0, le=9007199254740991)
+    identity_evidence: StrictStr = Field(min_length=10, max_length=2000)
+    same_physical_item_confirmed: Literal[True]
+
+    @field_validator('same_physical_item_confirmed', mode='before')
+    @classmethod
+    def confirmation(cls, value):
+        if value is not True:
+            raise ValueError('Explicit confirmation is required')
+        return value
+
+    @field_validator('identity_evidence')
+    @classmethod
+    def evidence(cls, value):
+        if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError('Describe the verified physical identity and its source')
+        value.encode('utf-8')
+        return value
+
+
+class ReviewedDeletedReplacement(ReviewedNativeTarget):
+    mode: Literal['verified_barcode_subset', 'exact_sku_without_barcode']
+    evidence_source: ReviewedIdentitySource | None = None
+
+    @model_validator(mode='after')
+    def source_required(self):
+        if self.mode == 'exact_sku_without_barcode' and self.evidence_source is None:
+            raise ValueError('Pin an existing other-shop mapping or bound supplier item')
+        return self
+
+
+class CompleteUnverifiedParent(ReviewedNativeTarget):
+    native_variant_id: StrictInt = Field(gt=0, le=9007199254740991)
+    expected_parent_code: StrictStr
+
+    @field_validator('expected_parent_code')
+    @classmethod
+    def parent_code_value(cls, value):
+        return exact_code(value)
+
+
 class ProductLinkMatch(LinkInput):
     product_id: StrictInt = Field(gt=0)
     code: StrictStr
@@ -24,6 +73,8 @@ class ProductLinkMatch(LinkInput):
     is_variant: StrictBool
     replace_deleted_variant: StrictBool = False
     replace_deleted_product: StrictBool = False
+    reviewed_deleted_replacement: ReviewedDeletedReplacement | None = None
+    complete_unverified_parent: CompleteUnverifiedParent | None = None
 
     @field_validator('code', 'parent_code')
     @classmethod
@@ -36,6 +87,16 @@ class ProductLinkMatch(LinkInput):
             raise ValueError('A standalone product is its own parent')
         if self.replace_deleted_variant and self.replace_deleted_product:
             raise ValueError('Choose the kind of the original deleted mapping')
+        modes = [self.replace_deleted_variant, self.replace_deleted_product,
+                 self.reviewed_deleted_replacement is not None, self.complete_unverified_parent is not None]
+        if sum(modes) > 1:
+            raise ValueError('Choose one explicit recovery operation')
+        review = self.reviewed_deleted_replacement or self.complete_unverified_parent
+        if review is not None and self.is_variant != (review.native_variant_id is not None):
+            raise ValueError('Pin the exact native identity for the selected leaf kind')
+        if self.complete_unverified_parent is not None and (
+                not self.is_variant or self.parent_code == self.complete_unverified_parent.expected_parent_code):
+            raise ValueError('Parent completion requires a different verified variant container code')
         return self
 
 

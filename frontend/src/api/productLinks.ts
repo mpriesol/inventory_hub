@@ -1,9 +1,22 @@
 import { hubRequest } from './access';
 
 export type ProductLinkShop = 'biketrek' | 'xtrek';
+export interface ProductLinkReviewedTarget {
+  mapping_id: number; native_product_id: number; native_variant_id?: number | null;
+  identity_evidence: string; same_physical_item_confirmed: true;
+}
+export interface ProductLinkReviewedReplacement extends ProductLinkReviewedTarget {
+  mode: 'verified_barcode_subset' | 'exact_sku_without_barcode';
+  evidence_source?: { kind: 'shop_mapping' | 'supplier_product'; id: number } | null;
+}
+export interface ProductLinkParentCompletion extends ProductLinkReviewedTarget {
+  native_variant_id: number; expected_parent_code: string;
+}
 export interface ProductLinkManualMatch {
   product_id: number; code: string; parent_code: string; is_variant: boolean;
   replace_deleted_variant?: boolean; replace_deleted_product?: boolean;
+  reviewed_deleted_replacement?: ProductLinkReviewedReplacement | null;
+  complete_unverified_parent?: ProductLinkParentCompletion | null;
 }
 export interface ProductLinkPreviewBody {
   request_id: string; shop_code: ProductLinkShop; product_ids: number[];
@@ -18,18 +31,24 @@ export interface ProductLinkRow {
   product_id: number; sku: string; name: string; local_eans?: string[];
   status: 'ready' | 'already_linked' | 'not_found' | 'conflict'; match_by: string | null;
   previous_mapping?: { id: number; external_code: string; external_product_id: string | null; external_variant_id: string | null; parent_code: string | null; is_variant: boolean };
+  reviewed_deleted_replacement?: { request: ProductLinkReviewedReplacement; source: Record<string, unknown> | null };
+  parent_completion?: { request: ProductLinkParentCompletion; previous_mapping: NonNullable<ProductLinkRow['previous_mapping']>;
+    family_product_ids: number[]; content: Record<string, unknown> };
   remote: ProductLinkRemote | null; warnings: string[]; errors: string[];
 }
 export interface ProductLinkReplacement {
   product_id: number; sku: string; eans: string[];
   previous_mapping: NonNullable<ProductLinkRow['previous_mapping']>;
   mapping: NonNullable<ProductLinkRow['previous_mapping']>;
+  review?: ProductLinkRow['reviewed_deleted_replacement'];
 }
 export interface ProductLinkBatch {
   id: string; shop_code: ProductLinkShop; status: 'prepared' | 'completed'; preview_hash: string;
   expires_at: string; rows: ProductLinkRow[];
   result: null | { product_ids: number[]; linked_product_ids: number[]; already_linked_product_ids: number[];
-    replaced_mappings?: ProductLinkReplacement[] };
+    replaced_mappings?: ProductLinkReplacement[];
+    completed_parent_mappings?: { product_id: number; previous_mapping: NonNullable<ProductLinkRow['previous_mapping']>;
+      mapping: NonNullable<ProductLinkRow['previous_mapping']>; review: ProductLinkParentCompletion }[] };
 }
 export interface ProductLinkApplyBody { preview_hash: string; product_ids: number[]; confirmed: true }
 export interface ProductLinkMetadataResult {

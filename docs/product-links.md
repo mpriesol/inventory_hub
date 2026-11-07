@@ -50,12 +50,13 @@ Implementačné a syntetické testy nie sú dôkazom ostrého prepojenia konkré
 ## Jedna reprezentácia a typované ID (migrácia 030)
 
 Bežný postup priraďuje najviac jednu predajnú reprezentáciu karty v konkrétnom
-e-shope. Výslovne overený predaj rôznych počtov rovnakých voľných kusov používa
+e-shope. Výslovne overený predaj rôznych počtov rovnakých voľných kusov alebo
+presných aliasov celého skladového výrobku s faktorom 1 používa
 samostatný [postup zdieľanej kusovej karty](shared-stock-sales.md) s faktorom pre
 každú predajnú položku. Bežné párovanie takúto skupinu neprepisuje.
 Rovnaký výrobok ako samostatný produkt aj pokladňový variant v BIKETREK je
-konflikt. Obsluha odstráni duplicitný pokladňový variant v e-shope a ponechá
-samostatný produkt. Hub nikdy automaticky nemaže vzdialené produkty ani
+pri bežnom párovaní konflikt. Obsluha výslovne vyrieši nadbytočný záznam alebo
+overí skutočnú skupinu podľa uvedeného postupu. Hub nikdy automaticky nemaže vzdialené produkty ani
 nezakladá druhú kartu na obídenie konfliktu.
 
 `shop_products.product_id` odkazuje na internú kartu `products.id`. Natívna
@@ -243,3 +244,131 @@ dokončenej dávky vráti pôvodný výsledok bez ďalších vzdialených číta
 zápisov. Nový náhľad už správne prepojeného cieľa vráti `already_linked` aj
 s pôvodným opt-in príznakom. Rozšírenie je dostupné cez API bez nového
 ovládača v UI, SQL migrácie alebo automatického mazania v e-shope.
+
+## Výslovne skontrolované migračné opravy
+
+Nasledujúce dve voľby v `manual_matches` sú samostatné opt-in opravy bežných
+väzieb. Nekombinujú sa navzájom ani s `replace_deleted_product` či
+`replace_deleted_variant`. Bez nich platí pôvodná presná zhoda neprázdnych
+EAN pri výmene a pôvodná zhoda rodiča pri dopĺňaní natívnych ID. Resolver
+ostatných workflow zostáva nezmenený.
+
+### Výmena s viacerými platnými GTIN alebo bez čiarového kódu
+
+`reviewed_deleted_replacement` pripne ID pôvodného mapovacieho riadku,
+presné natívne ID nového rodiča a variantu, vecný `identity_evidence`
+(10–2000 znakov bez riadiacich znakov) a doslovné
+`same_physical_item_confirmed=true`. Samostatný cieľ má
+`native_variant_id=null`. Príklad jednej syntetickej ručnej voľby:
+
+```json
+{
+  "product_id": 42,
+  "code": "CURRENT-LEAF",
+  "parent_code": "CURRENT-FAMILY",
+  "is_variant": true,
+  "reviewed_deleted_replacement": {
+    "mapping_id": 7,
+    "native_product_id": 800,
+    "native_variant_id": 101,
+    "mode": "verified_barcode_subset",
+    "identity_evidence": "Overené rovnaké vyhotovenie a rozmery; výrobca potvrdzuje pokračujúcu položku s oboma uloženými GTIN.",
+    "same_physical_item_confirmed": true
+  }
+}
+```
+
+Režim `verified_barcode_subset` vyžaduje neprázdnu množinu platných GTIN
+nového cieľa, ktorá je podmnožinou overených identifikátorov tej istej karty
+aj prípadnej ručnej EAN úpravy. Zápis neodstraňuje ostatné platné GTIN karty.
+Nový GTIN mimo tejto množiny, neplatný čiarový kód, protichodná variantová os
+alebo iný vlastník cieľového kódu, natívneho ID či GTIN zostávajú konfliktom.
+Samotná príslušnosť ku GTIN množine nenahrádza fyzické preskúmanie výrobku:
+odlišná generácia, veľkosť, farba alebo konštrukcia nesmie dostať toto potvrdenie.
+
+Režim `exact_sku_without_barcode` vyžaduje prázdne množiny overených GTIN
+na karte, v jej ručnej úprave aj na novom cieli. Cieľ nesmie obsahovať ani
+neplatný čiarový kód. Starý `external_code`, nový `code` a kanonické SKU
+musia byť presne rovnaké. Navyše je povinná štruktúrovaná referencia:
+
+```json
+"evidence_source": {"kind": "shop_mapping", "id": 8}
+```
+
+`shop_mapping` označuje existujúcu evidovanú väzbu tej istej karty v druhom
+aktívnom Upgates e-shope: rovnaký presný kód, úplné natívne ID, bežná väzba
+s faktorom 1. Ani zdieľaná väzba s faktorom 1 nie je týmto dôkazom. Referencia
+na inú kartu či neúplnú väzbu sa odmietne. Alternatívou je
+`{"kind":"supplier_product","id":123}`: aktívna dodávateľská položka už
+jednoznačne priradená tejto karte aktívnym `product_supply_sources` a presným
+dodávateľsky vymedzeným `supplier_sku` identifikátorom. Ak tento zdroj má
+platný GTIN, bezčiarový režim sa nepoužije; najprv sa overí riadna oprava EAN.
+
+Server zmrazí lokálny zdroj vrátane jeho vlastníctva, natívnych ID a hashov
+uloženého obsahu; pri potvrdení ho pod identitným zámkom znovu porovná.
+Referencia sama nespúšťa ďalší úplný pull druhého e-shopu alebo dodávateľa.
+Obsluha musí v dôkaze uviesť, čo fyzicky overila. Verejný náhľad obsahuje
+`reviewed_deleted_replacement.request` a zdrojový súhrn so `source_hash`.
+
+Oba režimy stále dokazujú neprítomnosť pôvodného natívneho cieľa v aktívnej
+aj archivovanej časti pri náhľade aj potvrdení. Zachovávajú všetky objednávkové,
+natívne a publikačné blokácie, kartu, ID mapovania, identifikátory, sklad a
+FIFO. Výsledok obsahuje pôvodnú aj novú väzbu a použitý dôkaz. Nejde o
+prenos živého cieľa na inú kartu ani o zlúčenie kanonických kariet.
+
+### Doplnenie staršej rodiny s náhradným kódom rodiča
+
+Starší import používal pri prázdnom natívnom kóde rodiča prvý kód variantu
+ako lokálny kľúč rodiny. Tento náhradný kód sa nesmie zapísať na rodiča,
+pretože už patrí predajnému variantu. Najprv sa samostatne opraví natívny
+kontajner na overený jedinečný kód. Hub cez tento postup natívne kódy nemení.
+
+Každá voľba potom obsahuje `complete_unverified_parent`, napríklad:
+
+```json
+{
+  "product_id": 42,
+  "code": "PHYSICAL-A",
+  "parent_code": "SOURCE-FAMILY",
+  "is_variant": true,
+  "complete_unverified_parent": {
+    "mapping_id": 7,
+    "expected_parent_code": "PHYSICAL-A",
+    "native_product_id": 800,
+    "native_variant_id": 101,
+    "identity_evidence": "Overený pôvodný fyzický variant podľa presného GTIN a opravený zdrojový kód kontajnera.",
+    "same_physical_item_confirmed": true
+  }
+}
+```
+
+V náhľade musia byť **všetky existujúce väzby daného e-shopu pod pôvodným
+náhradným rodičom** a celá takáto rodina sa potvrdzuje naraz. Každá musí byť
+bežný evidovaný variant s oboma natívnymi ID dosiaľ `NULL`, rovnakým
+nezmeneným variantovým kódom a presne zhodnou neprázdnou množinou platných
+GTIN. Známe natívne ID sa týmto postupom neprepisuje. Pôvodný rodič musí
+zodpovedať jednému z kódov vybranej rodiny; nový rodič musí patriť rovnakému
+čerstvo overenému natívnemu kontajneru pre všetky listy.
+
+Čítanie navyše overí obsadenie nového rodičovského kódu v produktovom aj
+variantovom priestore. Kód iného produktu alebo predajného variantu opravu
+blokuje. Stále platí najviac osem GET na fázu a limity výberu. Vlastníctvo,
+EAN, osi, aktívne objednávky, natívne účinky a odosielané či neisté publikácie
+sa kontrolujú aj pri potvrdení. Osobitne sa chránia starý a nový rodič.
+
+Náhľad zmrazí mapovania celej rodiny aj odtlačky starej a novej lokálnej
+cache. Existujúci obsah nesmie tvrdiť inú známu natívnu identitu. Potvrdenie
+zmení iba `parent_code` a doplní chýbajúce natívne ID existujúcich riadkov;
+ponechá pozorované ceny, zásobu a všetky ostatné obchodné údaje. Pôvodná
+cache sa atomicky archivuje do interného `_content_archives`; jej starý
+náhradný kľúč už neposkytuje úplný exportovateľný produkt. Nový rodič dostane
+presné navigačné metadáta, nikdy premenovaný starý úplný obsah. Výsledok
+`completed_parent_mappings` zachová pred/po identity a výslovný dôkaz.
+
+Obe rozšírenia používajú existujúce UUID, hash náhľadu, 30-minútovú platnosť,
+atómový výsledok a `known_unapplied` protokol. Nezadané či `null` nové voľby
+sa vynechávajú z request hash, takže staršie dávky ostávajú obnoviteľné.
+Opakovanie rovnakého dokončeného UUID nemení mapovanie, archív ani históriu.
+Bez SQL migrácie, vzdialených zápisov, automatickej opravy EAN alebo prevodu
+na zdieľanú skladovú skupinu. Kompatibilný revert kódu nevracia už potvrdené
+väzby na pôvodné neúplné alebo vymazané ciele; auditné výsledky sa ponechajú.
