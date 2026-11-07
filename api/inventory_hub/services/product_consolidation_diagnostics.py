@@ -1,4 +1,4 @@
-"""Read-only explanation of the existing conservative dependency matcher.
+"""Read-only explanation of typed scope plus conservative unknown dependencies.
 
 This is observation, never a cancellation, exemption, approval or new apply
 token. JSON documents stay on the server; only identity paths/values and intent
@@ -218,6 +218,14 @@ async def _documents(db, summary, variables, request_id):
         condition = dependencies._mentions_sql() + ' AND (' + dependencies._open_condition(table, columns) + ')'
         if table == 'product_consolidations':
             condition += ' AND t.id<>:request_id'
+        # A typed unknown/dictionary-key reference need not have any legacy
+        # string hit. Preserve this section's exact old meaning and expose the
+        # complete modern classification separately in typed_scope.
+        observed = await dependencies._summary(db, table, condition,
+            {'vars': json.dumps(variables), 'request_id': request_id})
+        count = observed['count']
+        if not count:
+            continue
         keys = TABLE_KEYS[table]
         key_sql = ','.join("'" + key + "',t." + dependencies.quoted(key) for key in keys)
         order = ','.join('t.' + dependencies.quoted(key) for key in keys)
@@ -310,13 +318,25 @@ async def inspect(db, identifier):
         targets=consolidation._targets(raw), request_id=row.id)
     variables = _variables(raw, local, summary.pop('tokens'))
     documents, problems = await _documents(db, summary, variables, row.id)
-    journals, journal_blockers, journal_problems = _journals([shop['code'] for shop in local['shops']], variables)
+    # Keep the old exact-word explanations as a diagnostic aid, never as the
+    # eligibility decision. The typed audit also includes dictionary keys and
+    # disjoint full rows that the old prefilter could not select.
+    journals, _, journal_problems = _journals([shop['code'] for shop in local['shops']], variables)
     problems.extend(journal_problems)
+    typed = summary['facts']['typed_catalog_scope']
+    records = typed['records']
+    typed_projection = {'parser_version': typed['parser_version'], 'tables': typed['tables'],
+        'total_records': len(records), 'records': records[:MAX_ROWS],
+        'total_journals': len(typed['catalog_journals']), 'catalog_journals': typed['catalog_journals'][:MAX_ROWS],
+        'projection_complete': len(records) <= MAX_ROWS and len(typed['catalog_journals']) <= MAX_ROWS
+            and not any(item.get('projection_truncated') for item in records),
+        'classification_counts': {state: sum(item['classification'] == state for item in records)
+            for state in ('reference', 'unknown', 'context_only', 'disjoint')}}
     return {'consolidation_id': row.id, 'preview_hash': row.preview_hash, 'preview_status': row.status,
             'observed_at': datetime.now(timezone.utc).isoformat(),
             'database_snapshot_at': (await db.scalar(text('SELECT transaction_timestamp()'))).isoformat(),
             'scope_source': 'original_server_stored_preview', 'scope_hash': _hash(variables),
-            'matcher_policy': 'base_dependency_guard_without_optional_exemptions',
+            'matcher_policy': typed['parser_version'],
             'preserve_keeper_invoice_receiving_requested': raw.get('preserve_keeper_invoice_receiving') is True,
             'read_only': True, 'remote_requests': 0, 'guard_decision_changed': False,
             'complete': not problems, 'problems': sorted(set(problems)),
@@ -324,14 +344,16 @@ async def inspect(db, identifier):
                       'exact_string_tokens': variables['tokens'],
                       'pooled_native_ids_in_existing_matcher': variables['native_strings']},
             'frozen_blockers': row.document['dependencies']['blockers'],
-            'current_blockers': summary['blockers'] + journal_blockers,
+            'current_blockers': summary['blockers'],
             'documents': documents, 'catalog_journals': journals,
+            'typed_scope': typed_projection,
             'limits': {'rows_per_table': MAX_ROWS, 'document_bytes': MAX_DOCUMENT_BYTES,
                        'journal_records': MAX_ROWS,
                        'total_document_bytes': MAX_TOTAL_BYTES, 'matches_per_document': MAX_MATCHES,
                        'identity_fields_per_document': MAX_IDENTITY_FIELDS},
-            'interpretation': ['Matched display labels and parent context are evidence to review, never exemptions.',
-                'Generic product_ids may be supplier or native IDs; the existing matcher remains unchanged.',
+            'interpretation': ['The legacy matched-path section explains exact words only; typed_scope is the current writer-scope proof.',
+                'Top-level complete describes the legacy explanation; typed_scope.projection_complete describes the typed projection.',
+                'Known supplier, Hub and native namespaces are distinct; unverified shapes remain blocked.',
                 'This is the base dependency scanner, without optional keeper-only dependency exemptions.',
                 'Database rows share a read-only repeatable-read snapshot; filesystem journals have separately checked observations.',
                 'A complete explanation does not make a blocked preview eligible. Apply repeats all existing guards.']}

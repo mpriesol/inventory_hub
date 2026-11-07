@@ -326,9 +326,8 @@ async def _dependencies(db, raw, local, *, keeper_inputs=None):
         targets=_targets(raw), request_id=raw['request_id'], keeper_dependencies=preserved)
     if preserved is not None:
         result['keeper_dependencies'] = preserved
-    journals = dependencies.catalog_journals([row['code'] for row in local['shops']], set(result.pop('tokens')))
-    result['catalog_journals'] = journals['records']
-    result['blockers'].extend(journals['blockers'])
+    result.pop('tokens')
+    result['catalog_journals'] = result['facts']['typed_catalog_scope']['catalog_journals']
     return result
 
 
@@ -425,6 +424,7 @@ async def _lock_identity_owners(db):
     try:
         await db.execute(text('''LOCK TABLE products, product_identifiers, shop_products,
             product_supply_sources, product_sku_identities IN SHARE MODE NOWAIT'''))
+        await dependencies.semantic_scope.lock_inputs(db)
     except DBAPIError as error:
         if getattr(error.orig, 'sqlstate', None) == '55P03':
             raise links.LinkError('consolidation_identity_writer_busy') from None

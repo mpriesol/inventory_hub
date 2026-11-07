@@ -287,6 +287,73 @@ tests do not authorize or perform a production receipt.
 
 ## Current reads and historical records
 
+### Typed catalog dependency scope
+
+The dependency inventory parses the known import-draft, AI-job, Atomer-job,
+consolidation-review and catalog-journal writer schemas. Hub product IDs,
+supplier product IDs, mapping IDs and shop-qualified native product/variant
+IDs have separate namespaces. Dictionary keys in an Atomer selection and
+dictionary values in a saved Hub-owner map are inspected as identities.
+Unknown fields, missing lineage, invalid barcodes and incomplete observations
+produce an explicit hold, including unsupported documents otherwise unrelated
+to the selected group. Unknown JSON tables keep the conservative existing
+reference guard.
+
+A known shop selector's display name and a create-only family container can be
+reported as context after all executable leaves, aliases, GTINs and pinned
+owners are inspected. An existing-parent content update remains a dependency
+of every affected leaf in that shop. A historical other-shop container in an
+Atomer receipt can be context only when its exact current code, native leaf,
+mapping and Hub owner are independently consistent. Pending Atomer selections
+remain blockers; pausing a campaign does not withdraw its jobs.
+
+Staged AI requires the actual stored draft ID, reciprocal row/job links, exact
+source selection and the original AI baseline. The complete current draft is
+checked because one finished family can advance save/publication for every
+row. The authoritative per-shop publications are followed; an aggregate display
+preview ID is not mistaken for a missing importer file. Supplier catalog IDs
+are resolved through their current source rows and normal identity policy.
+Unsaved manufacturer proofs use the same read-only SKU policy as draft save.
+
+Known database documents are read without the old string-only prefilter. Every
+complete original row is hashed, including documents classified as disjoint.
+The bounds are 1,000 rows per known table, 16 MB per row and 64 MB across those
+rows and their linked source evidence. Additional source/family reads are
+bounded to 20,000 rows. An overflow blocks the entire proof. Matched/context
+path projections are separately limited to 100 entries per record; truncation
+does not stop validation or remove a full-row hash.
+
+Catalog journals use the pure merged base/result/event loader. No recovery
+reader, AI public serializer or network request runs during dependency proof.
+Base files and sidecars are hashed before and after parsing and database owner
+resolution; directory membership is compared too. There are at most 1,000
+base journals per shop, 16 MB per file and 64 MB in total. An `invalid` item is
+not treated as settled. Complete disjoint create intent may be classified as
+context, while matching uncertain/missing/malformed intent remains blocked.
+
+Apply repeats the full proof under the identity lock and `SHARE NOWAIT` table
+fences for the known document/source inputs, then compares it with the preview.
+This fences concurrent inserts as well as updates. It does not wait for a
+writer that already holds a draft/job row before requesting the identity lock.
+A busy writer or changed document expires the apply through the existing
+rollback/result protocol. Filesystem checks remain bounded observations;
+no filesystem lock is held through the database commit. A new unsent journal
+can appear after the last observation. Publication executors still verify the
+current canonical SKU and identity before their durable sending intent; an old
+retired-SKU plan is not authorized by a stale file. A genuinely new keeper plan
+is evaluated by the current executor guards.
+
+The dependency-diagnostics GET includes bounded `typed_scope` classifications
+and keeps the legacy matched-word explanation separate. It exposes identity
+paths, counts and hashes, not document bodies, prompts or financial contents.
+Top-level `complete` describes the legacy explanation;
+`typed_scope.projection_complete` separately describes the typed projection.
+Only the reviewed product-AI and Atomer document shapes are understood. Other
+AI kinds or additional Atomer receipt fields stay on hold until their actual
+writer contract is reviewed; this parser is not a generic exemption for them.
+This change performs no catalog, stock, invoice, receiving or publisher writes
+and needs no new migration.
+
 `product_canonical_aliases` is an audited, immutable one-hop map from a retired
 ID to its keeper. Current SKU, scoped supplier-code and barcode ownership use
 that map before checking for multiple owners. Unrelated inactive products are
