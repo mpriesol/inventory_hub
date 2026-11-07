@@ -297,7 +297,12 @@ def _family_resolution(family: dict, index) -> tuple[list, Optional[dict]]:
     for resolution in resolutions:
         reasons.update(resolution.reasons)
         candidates.update(resolution.candidate_product_ids)
-    # The database allows one leaf per canonical product in each shop.
+        if any(getattr(mapping, "shared_stock", False)
+               for mapping in index.by_product.get(resolution.product_id, [])):
+            # A sale GTIN/quantity is not a physical-card GTIN/quantity. The
+            # ordinary pull has no reviewed factor or per-sale editor contract.
+            reasons.add("shared_stock_sale_requires_group_workflow")
+    # This ordinary registration workflow supports one leaf per canonical card.
     matched = [r.product_id for r in resolutions if r.product_id is not None]
     if len(matched) != len(set(matched)):
         reasons.add("local_mapping_conflict")
@@ -729,6 +734,12 @@ async def push_products_to_shop(
     to_send: List[Dict[str, Any]] = []
     for parent, data in parents.items():
         family_products = resolved_products[parent]
+        shared = await db.scalar(select(ShopProduct.id).where(
+            ShopProduct.product_id.in_([product.id for product in family_products]),
+            ShopProduct.shared_stock.is_(True)).limit(1))
+        if shared is not None:
+            skipped.append({"sku": parent, "reason": "shared_stock_sale_requires_group_workflow"})
+            continue
         if any(product.sku not in selected_skus for product in family_products):
             skipped.append({"sku": parent, "reason": "selection_expands_family"})
             continue

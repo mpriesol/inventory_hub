@@ -18,6 +18,7 @@ export interface StockSyncRun {
 }
 export interface StockSyncItem {
   id: number; sku: string; protocol?: StockSyncProtocol; status: string; error: string | null;
+  sale_key?: string; target?: { code?: string; parent_code?: string; variant_code?: string | null };
   desired: { stock?: number | string; stock_increment?: string; availability: string; can_add_to_basket_yn: boolean };
   before: unknown; after: unknown; attempt_started_at: string | null; verified_at: string | null;
 }
@@ -42,5 +43,5 @@ export const saveStockSyncSettings = (body: StockSyncUpdate) => hubRequest<Stock
 export const runStockSync = (shop_code: string) => hubRequest<StockSyncRunDetail>(`${base}/run`, { shop_code, confirmed: true });
 export const getStockSyncRun = (id: string, signal?: AbortSignal, offset = 0, limit = 100) => hubRequest<StockSyncRunDetail>(`${base}/runs/${encodeURIComponent(id)}?offset=${offset}&limit=${limit}`, undefined, signal);
 export const resolveStockSyncItem = (id: number, resolution?: StockSyncResolution) => hubRequest<StockSyncRunDetail>(`${base}/items/${id}/resolve`, { confirmed: true, external_requests_finished: true, ...resolution });
-export interface StockSyncBaseline { shop_code: string; baseline_count: number; skus: string[] }
+export interface StockSyncBaseline { shop_code: string; baseline_count: number; skus: string[]; selected_count?: number }
 export const establishStockSyncBaseline = (body: { shop_code: string; hold_id: string; skus: string[]; confirmed: true; external_writers_paused: true; orders_reconciled: true }) => hubRequest<StockSyncBaseline>(`${base}/baseline`, body);

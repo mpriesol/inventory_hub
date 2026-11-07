@@ -23,6 +23,10 @@ function checkedPreview(value: OrderExceptionResolution, shop: string, id: strin
       || value.lines.some(line => !line || typeof line.sku !== 'string' || !Number.isInteger(line.issue_movement_id)
         || typeof line.issued_qty !== 'string' || !Number.isFinite(Number(line.issued_qty)) || Number(line.issued_qty) <= 0
         || typeof line.physical_return_supported !== 'boolean'
+        || ((line.sale_quantity !== undefined || line.sale_to_stock_factor !== undefined)
+          && (typeof line.sale_quantity !== 'string' || !Number.isFinite(Number(line.sale_quantity)) || Number(line.sale_quantity) <= 0
+            || typeof line.sale_to_stock_factor !== 'string' || !Number.isInteger(Number(line.sale_to_stock_factor))
+            || Number(line.sale_to_stock_factor) < 1 || Number(line.sale_to_stock_factor) > 1000000))
         || [line.returned_qty, line.returnable_qty].some(qty => qty !== null && (typeof qty !== 'string' || !qty.trim() || !Number.isFinite(Number(qty)) || Number(qty) < 0)))
       || (value.status === 'completed' && (value.result?.action !== 'resolve_exception' || value.result.movements_created !== 0 || typeof value.result.reason !== 'string'))) {
     throw new Error('Invalid exception preview');
@@ -114,7 +118,7 @@ export function OrderExceptionPanel({ shop, job, blocked, onBusy, onActive, onCl
     {preview && <>
       <p>{preview.warehouse.name} · {text('sourceStatus')}: {preview.source_status_name || t('orderCollection.unknown')} · {text('issuedAt')}: {date(preview.issued_at)}</p>
       <div className="opening-stock-table-scroll"><table data-testid="order-exception-lines"><thead><tr><th>SKU</th><th>{text('issue')}</th><th>{text('issued')}</th><th>{text('returned')}</th><th>{text('remaining')}</th></tr></thead>
-        <tbody>{preview.lines.map(line => <tr key={line.issue_movement_id}><td><code>{line.sku}</code></td><td>{line.issue_movement_id}</td><td>{line.issued_qty}</td><td>{line.returned_qty ?? t('orderCollection.unknown')}</td><td>{line.returnable_qty ?? t('orderCollection.unknown')}{!line.physical_return_supported && <small className="orders-inbox-subline">{text('legacy')}</small>}</td></tr>)}</tbody></table></div>
+        <tbody>{preview.lines.map(line => <tr key={line.issue_movement_id}><td><code>{line.sku}</code>{line.sale_to_stock_factor && <small className="orders-inbox-subline">{t('orderCollection.exception.saleUnits', { quantity: line.sale_quantity, pieces: line.sale_to_stock_factor })}</small>}</td><td>{line.issue_movement_id}</td><td>{line.issued_qty}{line.sale_to_stock_factor && <> {text('pieces')}</>}</td><td>{line.returned_qty ?? t('orderCollection.unknown')}{line.sale_to_stock_factor && line.returned_qty !== null && <> {text('pieces')}</>}</td><td>{line.returnable_qty ?? t('orderCollection.unknown')}{line.sale_to_stock_factor && line.returnable_qty !== null && <> {text('pieces')}</>}{!line.physical_return_supported && <small className="orders-inbox-subline">{text('legacy')}</small>}</td></tr>)}</tbody></table></div>
       <p>{text('returnHelp')} <Link to="/stock" target="_blank" rel="noopener noreferrer">{text('openStock')}</Link></p>
       {preview.status === 'completed' ? <div role="status" className="opening-stock-notice"><strong>{text('completed')}</strong><p>{preview.result?.reason}</p><p>{text('refreshHelp')}</p></div> : <>
         <p className="opening-stock-muted">{expired ? text('expired') : `${text('expires')}: ${date(preview.expires_at)}`}</p>

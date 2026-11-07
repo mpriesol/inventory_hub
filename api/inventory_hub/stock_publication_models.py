@@ -53,6 +53,7 @@ class StockPublicationItem(Base):
     batch_id: Mapped[str] = mapped_column(String(36), ForeignKey("stock_publication_batches.id", ondelete="RESTRICT"), nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     sku: Mapped[str] = mapped_column(String(100), nullable=False)
+    sale_key: Mapped[str] = mapped_column(String(32), nullable=False, default="", server_default="")
     target: Mapped[dict] = mapped_column(JSONB, nullable=False)
     quantity: Mapped[str] = mapped_column(String(32), nullable=False)
     before_quantity: Mapped[str | None] = mapped_column(String(32))
@@ -67,4 +68,4 @@ class StockPublicationItem(Base):
     acknowledgement: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     resolution: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     __table_args__ = (UniqueConstraint("batch_id", "position", name="uq_stock_publication_item_position"),
-                      UniqueConstraint("batch_id", "sku", name="uq_stock_publication_item_sku"))
+                      UniqueConstraint("batch_id", "sku", "sale_key", name="uq_stock_publication_item_sku"))

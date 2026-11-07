@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 
 from sqlalchemy import case, func, or_, select
 
@@ -16,6 +16,7 @@ from inventory_hub.db_models_ext import ShopProduct, StockBalance, StockMovement
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.services.product_identity import mapping_code
 from inventory_hub.services.stock_evidence import physical_stock_evidence
+from inventory_hub.services import sale_units
 
 
 class StockProjectionError(Exception):
@@ -73,6 +74,12 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
         reject("mapping_ambiguous")
     else:
         mapping = mappings[0]
+        try:
+            row.update(sale_units.mapping_fields(mapping))
+            sale_factor = sale_units.factor(row.get("sale_to_stock_factor", 1))
+        except sale_units.SaleUnitError:
+            reject("sale_factor_invalid")
+            sale_factor = Decimal(1)
         code = mapping_code(mapping)
         raw_code = mapping.external_code
         parent = mapping.parent_code if mapping.is_variant else mapping.external_code
@@ -96,7 +103,8 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
                         row["target"][key] = int(native)
     if getattr(product, "item_type", "stock") == "service":
         reject("item_not_stocked")
-    if getattr(product, "stock_unit", "pcs") == "m":
+    if (getattr(product, "stock_unit", "pcs") == "m"
+            or (row.get("sale_key") and getattr(product, "stock_unit", "pcs") != "pcs")):
         reject("unit_unsupported")
     if stock is None:
         reject("balance_missing")
@@ -115,7 +123,17 @@ def _row(sku, product, mappings, code_owners, sku_owners, stock):
         row.update(quantity_known=True, qty_on_hand=_number_text(on_hand), qty_reserved=_number_text(reserved),
                    qty_quarantined=_number_text(quarantined),
                    qty_available=_number_text(on_hand - reserved - quarantined))
+        if row.get("sale_key"):
+            # Physical balance fields remain base pieces. A sale representation
+            # exposes only complete quantities that fit in the shared pool.
+            row["qty_sellable"] = _number_text(
+                ((on_hand - reserved - quarantined) / sale_factor).to_integral_value(rounding=ROUND_FLOOR))
     return row
+
+
+def publication_quantity(row):
+    """Return sale units for the exact leaf; legacy rows are already pieces."""
+    return row.get("qty_sellable", row.get("qty_available"))
 
 
 async def preview(db, shop_code: str, skus: list[str]) -> dict:
@@ -164,7 +182,8 @@ zero-count audit. An absent balance is never inferred to mean zero.
             ShopProduct.shop_id == shop.id, ShopProduct.product_id.in_(product_ids))
         mappings = (await db.execute(select(ShopProduct.id, ShopProduct.product_id, ShopProduct.is_variant,
             ShopProduct.external_code, ShopProduct.parent_code, ShopProduct.is_listed,
-            ShopProduct.external_product_id, ShopProduct.external_variant_id)
+            ShopProduct.external_product_id, ShopProduct.external_variant_id,
+            ShopProduct.shared_stock, ShopProduct.sale_to_stock_factor)
             .where(ShopProduct.shop_id == shop.id, or_(ShopProduct.product_id.in_(product_ids),
                   func.lower(leaf_code).in_(selected_codes), leaf_code.op("~")(r"[^ -~]"))))).all()
         by_product, code_owners = defaultdict(list), defaultdict(list)
@@ -182,7 +201,17 @@ zero-count audit. An absent balance is never inferred to mean zero.
                                              has_movement.label("has_movement")).where(
                         StockBalance.product_id.in_(product_ids), StockBalance.warehouse_id == warehouse.id,
                     ))).all()}
-        rows = [_row(sku, products.get(sku), by_product[products[sku].id] if sku in products else [],
-                     code_owners, sku_owners, balances.get(products[sku].id) if sku in products else None) for sku in skus]
+        rows = []
+        for sku in skus:
+            product = products.get(sku)
+            selected = by_product[product.id] if product else []
+            # Ordinary rows retain the historical ambiguity guard. Multiple
+            # leaves are allowed only through an explicitly shared group.
+            groups = ([[mapping] for mapping in sorted(selected, key=lambda row: row.id)]
+                      if selected and all(getattr(row, "shared_stock", False) for row in selected)
+                      else [selected])
+            for group in groups:
+                rows.append(_row(sku, product, group, code_owners, sku_owners,
+                                 balances.get(product.id) if product else None))
     return {"shop_code": shop.code, "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
             "captured_at": datetime.now(timezone.utc).isoformat(), "external_write_enabled": False, "rows": rows}

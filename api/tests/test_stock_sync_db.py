@@ -113,10 +113,165 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def checkpoint(self,local=4,*,native=0,audit_due=False,metadata=None):
         async with self.session() as db:
-            row=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            row=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             row.local_quantity,row.native_quantity=local,native
             row.last_audit_at=self.clock-timedelta(hours=7) if audit_due else self.clock
             if metadata is not None:row.metadata_values=metadata
+
+    async def shared_card(self, *, checkpoints=True):
+        from shared_stock_fixture import remote_identity, shared_sale_mappings
+        self.shared_remote = {}
+        self.shared_keys = []
+        self.shared_failure_code = None
+        async with self.session() as db:
+            mappings = await shared_sale_mappings(db, self.shop_id, self.product_id)
+            await db.delete(await db.get(StockSyncCheckpoint, (self.shop_id, 'SKU-A', '')))
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
+            balance.qty_on_hand, balance.qty_reserved, balance.qty_quarantined = Decimal(200), Decimal(0), Decimal(0)
+            balance.total_value = Decimal(200) * balance.avg_cost
+            for mapping in mappings:
+                key = str(mapping.id)
+                self.shared_keys.append(key)
+                identity = remote_identity(mapping)
+                self.shared_remote[identity['code']] = {'identity': identity,
+                    'stock': str(200 // int(mapping.sale_to_stock_factor)),
+                    'availability': 'SKLADOM', 'can_add_to_basket_yn': True}
+                if checkpoints:
+                    point = self.make_checkpoint(self.product_id, 'SKU-A')
+                    point.sale_key, point.sale_to_stock_factor = key, mapping.sale_to_stock_factor
+                    point.target, point.local_quantity = identity, Decimal(self.shared_remote[identity['code']]['stock'])
+                    db.add(point)
+
+        async def read(shop, target, fingerprint):
+            self.assertFalse(self.io_session.in_transaction())
+            return copy.deepcopy(self.shared_remote[target['code']])
+
+        async def read_many(shop, targets, fingerprint):
+            self.assertFalse(self.io_session.in_transaction())
+            return {target['code']: {'observation': copy.deepcopy(self.shared_remote[target['code']]),
+                    'observed_at': self.clock, 'observed_monotonic': service.monotonic()} for target in targets}
+
+        async def write(shop, target, value, fingerprint):
+            self.assertFalse(self.io_session.in_transaction())
+            async with self.session() as db:
+                sending = (await db.scalars(select(StockSyncItem).where(StockSyncItem.status == 'sending'))).all()
+                self.assertEqual(len(sending), 1)
+                self.assertEqual(sending[0].target['code'], target['code'])
+            remote = self.shared_remote[target['code']]
+            remote['stock'] = str(int(Decimal(remote['stock']) + Decimal(value['stock_increment'])))
+            remote.update({key: val for key, val in value.items() if key != 'stock_increment'})
+            if target['code'] == self.shared_failure_code:
+                raise service.source.SourceError('stock_publication_write_unconfirmed', uncertain=True)
+            return {'acknowledged': True}
+
+        service.source.read.side_effect = read
+        service.source.read_many.side_effect = read_many
+        service.source.write_delta_once.side_effect = write
+
+    async def test_shared_card_continues_across_small_batches_without_replaying_siblings(self):
+        await self.shared_card()
+        async with self.session() as db:
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
+            balance.qty_reserved = 8
+        await self.invoke('configure', self.config(batch_size=1))
+        run = await self.invoke('enqueue', SyncRunInput(shop_code='biketrek', confirmed=True, skus=['SKU-A']))
+        for verified in (1, 2, 3):
+            await self.invoke('process_run', run['id'])
+            result = await self.invoke('get_run', run['id'])
+            self.assertEqual(result['counts']['verified'], verified)
+            self.assertEqual(result['counts']['pending'], 3 - verified)
+            self.assertEqual(result['more_pending'], verified < 3)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual({item['sale_key'] for item in result['items']}, set(self.shared_keys))
+        self.assertEqual([self.shared_remote[code]['stock'] for code in ('SKU-A', 'SKU-A-8', 'SKU-A-100')], ['192', '24', '1'])
+        self.assertEqual(service.source.write_delta_once.await_count, 3)
+        run = await self.invoke('enqueue', SyncRunInput(shop_code='biketrek', confirmed=True, skus=['SKU-A']))
+        for _ in range(3):
+            await self.invoke('process_run', run['id'])
+        self.assertEqual((await self.invoke('get_run', run['id']))['status'], 'completed')
+        self.assertEqual(service.source.write_delta_once.await_count, 3, 'Confirmed sibling deltas are never replayed')
+
+    async def test_shared_card_dirty_ack_waits_for_ambiguous_sibling_and_resolution(self):
+        from inventory_hub.services import stock_sync_dirty
+        await self.shared_card()
+        await self.enable_dirty_sync()
+        async with self.session() as db:
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
+            balance.qty_reserved = 8
+        identifier = await self.dispatch_dirty()
+        self.shared_failure_code = 'SKU-A-8'
+        await self.invoke('process_run', identifier)
+        result = await self.invoke('get_run', identifier)
+        self.assertEqual(result['status'], 'uncertain')
+        self.assertEqual(result['counts']['verified'], 2)
+        self.assertEqual(result['counts']['uncertain'], 1)
+        uncertain = next(item for item in result['items'] if item['status'] == 'uncertain')
+        self.assertEqual(uncertain['sale_key'], self.shared_keys[1])
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+        dirty = await self.dirty_row()
+        self.assertLess(dirty.acknowledged_generation, dirty.generation)
+        self.assertEqual(dirty.run_id, identifier)
+        self.assertEqual(service.source.write_delta_once.await_count, 3)
+        resolved = await self.invoke('resolve', uncertain['id'], SyncResolveInput(confirmed=True,
+            external_requests_finished=True, outcome='applied', evidence='Synthetic upstream log proves exactly one accepted pack adjustment'))
+        self.assertEqual(resolved['status'], 'completed')
+        self.clock += timedelta(seconds=61)
+        service.now.return_value = self.clock
+        async with self.session() as db:
+            await stock_sync_dirty.settle(db)
+        dirty = await self.dirty_row()
+        self.assertEqual(dirty.acknowledged_generation, dirty.generation)
+        self.assertIsNone(dirty.run_id)
+        self.assertEqual(service.source.write_delta_once.await_count, 3)
+
+    async def test_shared_card_baseline_records_all_sale_leaves_under_one_hold(self):
+        await self.shared_card(checkpoints=False)
+        async with self.session() as db:
+            hold = await db.get(StockPublicationHold, self.hold_id)
+            hold.active, hold.created_at, hold.closed_at = True, self.clock, None
+        result = await self.invoke('baseline', SyncBaselineInput(shop_code='biketrek', hold_id=self.hold_id,
+            skus=['SKU-A'], confirmed=True, external_writers_paused=True, orders_reconciled=True))
+        self.assertEqual(result['baseline_count'], 3)
+        self.assertEqual(result['selected_count'], 3)
+        self.assertEqual(result['skus'], ['SKU-A'])
+        async with self.session() as db:
+            points = (await db.scalars(select(StockSyncCheckpoint).order_by(StockSyncCheckpoint.sale_to_stock_factor))).all()
+            self.assertEqual([point.sale_key for point in points], self.shared_keys)
+            self.assertEqual([point.local_quantity for point in points], [200, 25, 2])
+            self.assertEqual([point.sale_to_stock_factor for point in points], [1, 8, 100])
+            self.assertTrue(all(point.native_quantity == 0 for point in points))
+        service.source.write_delta_once.assert_not_awaited()
+
+    async def test_shared_pack_order_deducts_base_pieces_but_never_repeats_native_pack_debit(self):
+        from inventory_hub.services import stock_native
+        await self.shared_card()
+        # The ordinary fixture simulates the native shop deduction in self.remote.
+        self.remote = self.shared_remote['SKU-A-8']
+        make_line = raw_line
+        with patch(__name__ + '.raw_line', side_effect=lambda **kwargs: make_line(code='SKU-A-8', **kwargs)):
+            order = await self.processed_order(quantity='1')
+        self.assertEqual(self.shared_remote['SKU-A-8']['stock'], '24')
+        async with self.session() as db:
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.product_id))
+            self.assertEqual((balance.qty_on_hand, balance.qty_reserved), (200, 8), order['result'])
+            effects = [await stock_native.projection(db, self.shop_id, self.warehouse_id, self.product_id,
+                sale_key=key) for key in self.shared_keys]
+            self.assertEqual(effects, [0, -1, 0], 'Only the purchased leaf has a native one-sale-unit debit')
+        run = await self.prepare()
+        await self.invoke('process_run', run['id'])
+        result = await self.invoke('get_run', run['id'])
+        self.assertEqual(result['status'], 'completed')
+        bought = next(item for item in result['items'] if item['sale_key'] == self.shared_keys[1])
+        self.assertEqual(bought['desired']['stock_increment'], '0')
+        self.assertTrue(bought['after']['no_remote_write'])
+        self.assertEqual([self.shared_remote[code]['stock'] for code in ('SKU-A', 'SKU-A-8', 'SKU-A-100')], ['192', '24', '1'])
+        self.assertEqual(service.source.write_delta_once.await_count, 2)
+        await self.processed_order(previous=order)
+        again = await self.invoke('enqueue', SyncRunInput(shop_code='biketrek', confirmed=True, skus=['SKU-A']))
+        await self.invoke('process_run', again['id'])
+        self.assertEqual((await self.invoke('get_run', again['id']))['status'], 'completed')
+        self.assertEqual(service.source.write_delta_once.await_count, 2, 'Replayed order collection leaves all sibling checkpoints unchanged')
 
     async def asyncTearDown(self):
         for p in reversed(self.patches):p.stop()
@@ -889,7 +1044,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.remote['stock'],'2')
         service.source.write_delta_once.assert_not_awaited()
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual((point.local_quantity,point.native_quantity),(2,-2))
 
     async def test_backorder_offset_uses_full_native_demand_not_only_allocated_quantity(self):
@@ -906,7 +1061,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.remote['stock'],'0')
         self.assertEqual(str(service.source.write_delta_once.await_args.args[2]['stock_increment']),'4')
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual((point.local_quantity,point.native_quantity),(0,-8))
             balance=await db.scalar(select(StockBalance).where(StockBalance.product_id==self.product_id))
             self.assertEqual(balance.qty_reserved,4,'The remaining four units are backordered, not reserved')
@@ -923,7 +1078,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.invoke('process_run',row['id'])
         self.assertEqual(self.remote['stock'],'4')
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual(point.local_quantity,4,'ACK must not swallow the concurrently received units')
         service.source.write_delta_once.side_effect=self.write_remote
         second=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A']))
@@ -933,7 +1088,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_checkpoint_never_infers_baseline_from_live_stock(self):
         async with self.session() as db:
-            await db.delete(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A')))
+            await db.delete(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A','')))
         row=await self.prepare()
         await self.invoke('process_run',row['id'])
         result=await self.invoke('get_run',row['id'])
@@ -944,7 +1099,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_baseline_requires_active_hold_and_matching_confirmed_quantity(self):
         async with self.session() as db:
-            await db.delete(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A')))
+            await db.delete(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A','')))
         request=SyncBaselineInput(shop_code='biketrek',hold_id=self.hold_id,skus=['SKU-A'],
             confirmed=True,external_writers_paused=True,orders_reconciled=True)
         with self.assertRaises(service.SyncError) as raised:
@@ -958,12 +1113,12 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.invoke('baseline',request)
         self.assertEqual(raised.exception.code,'stock_sync_baseline_mismatch')
         async with self.session() as db:
-            self.assertIsNone(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A')))
+            self.assertIsNone(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A','')))
         self.remote.update(stock='4',availability='SKLADOM')
         result=await self.invoke('baseline',request)
         self.assertEqual(result['baseline_count'],1)
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual((point.local_quantity,point.native_quantity),(4,0))
             self.assertEqual(point.target,self.remote['identity'])
             self.assertTrue((await db.get(StockPublicationHold,self.hold_id)).active)
@@ -971,7 +1126,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_baseline_rejects_peer_collection_before_hold_and_unprocessed_peer_order(self):
         async with self.session() as db:
-            await db.delete(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A')))
+            await db.delete(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A','')))
             hold=await db.get(StockPublicationHold,self.hold_id)
             hold.active,hold.created_at,hold.closed_at=True,self.clock,None
             peer=await db.scalar(select(Shop).where(Shop.code=='xtrek'))
@@ -1001,7 +1156,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         service.source.read_many.assert_not_awaited()
         service.source.write_delta_once.assert_not_awaited()
         async with self.session() as db:
-            self.assertIsNone(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A')))
+            self.assertIsNone(await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A','')))
 
     async def test_baseline_cannot_start_without_order_automation_cutoff(self):
         async with self.session() as db:
@@ -1017,7 +1172,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         service.source.read_many.assert_not_awaited()
         service.source.write_delta_once.assert_not_awaited()
         async with self.session() as db:
-            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))).local_quantity,9)
+            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))).local_quantity,9)
 
     async def test_publisher_compensates_released_native_debt_without_manufacturing_return(self):
         # The real issued-order cancellation/exception workflow is covered by
@@ -1037,7 +1192,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.remote['stock'],'2')
         self.assertEqual(service.source.write_delta_once.await_args.args[2]['stock_increment'],'-2')
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual((point.local_quantity,point.native_quantity),(2,0))
             after={table:(await db.execute(text(f'SELECT * FROM {table} ORDER BY id'))).mappings().all()
                    for table in before}
@@ -1074,7 +1229,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 deleted=False,origin='web',status_id=1,observation_hash='b'*64,
                 observed_at=self.clock,last_seen_at=self.clock)
             db.add(entry);await db.flush();entry_id=entry.id
-            self.assertIsNone(await db.get(StockSyncCheckpoint,(peer.id,'SKU-A')))
+            self.assertIsNone(await db.get(StockSyncCheckpoint,(peer.id,'SKU-A','')))
         # BIKETREK was reconciled yesterday; older xTrek changes are absorbed.
         await self.prepare()
         async with self.session() as db:
@@ -1095,7 +1250,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.remote['stock'],'5')
         service.source.write_delta_once.assert_not_awaited()
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual(point.local_quantity,4)
             self.assertTrue(point.last_observation['audit_mismatch'])
 
@@ -1112,7 +1267,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         service.source.write_delta_once.assert_awaited_once()
         self.assertEqual(service.source.write_delta_once.await_args.args[2]['stock_increment'],'0')
         async with self.session() as db:
-            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))
+            point=await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))
             self.assertEqual(point.local_quantity,4)
             self.assertEqual(point.metadata_values['availability'],'SKLADOM')
             self.assertTrue(point.last_observation['audit_mismatch'])
@@ -1135,12 +1290,12 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code,'stock_sync_delta_resolution_required')
         service.source.read.assert_not_awaited()
         async with self.session() as db:
-            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))).local_quantity,9)
+            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))).local_quantity,9)
             self.assertEqual((await db.get(StockSyncItem,result['items'][0]['id'])).status,'uncertain')
         await self.invoke('resolve',result['items'][0]['id'],SyncResolveInput(confirmed=True,
             external_requests_finished=True,outcome='not_applied',evidence='Upstream request log confirms rejection before application'))
         async with self.session() as db:
-            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))).local_quantity,9)
+            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))).local_quantity,9)
         service.source.write_delta_once.side_effect=self.write_remote
         second=await self.invoke('enqueue',SyncRunInput(shop_code='biketrek',confirmed=True,skus=['SKU-A']))
         await self.invoke('process_run',second['id'])
@@ -1182,7 +1337,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'],'uncertain')
         self.assertEqual(self.remote['stock'],'4','A matching remote value still cannot prove the request outcome')
         async with self.session() as db:
-            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))).local_quantity,9)
+            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))).local_quantity,9)
         with self.assertRaises(service.SyncError) as raised:
             await self.invoke('resolve',result['items'][0]['id'],
                 SyncResolveInput(confirmed=True,external_requests_finished=True))
@@ -1200,7 +1355,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         resolved=await self.invoke('resolve',result['items'][0]['id'],SyncResolveInput(confirmed=True,external_requests_finished=True,outcome='applied',evidence='Confirmed synthetic upstream request was applied once'))
         self.assertEqual(resolved['status'],'completed');self.assertEqual(service.source.write_delta_once.await_count,1)
         async with self.session() as db:
-            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A'))).local_quantity,4)
+            self.assertEqual((await db.get(StockSyncCheckpoint,(self.shop_id,'SKU-A',''))).local_quantity,4)
 
     async def test_stock_changed_during_remote_read_is_reprojected_before_put(self):
         row=await self.prepare()

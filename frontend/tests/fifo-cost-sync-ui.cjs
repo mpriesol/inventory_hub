@@ -9,7 +9,7 @@ Object.defineProperty(global, 'navigator', { value: dom.window.navigator, config
 global.HTMLElement = dom.window.HTMLElement; global.IS_REACT_ACT_ENVIRONMENT = true;
 for (const ext of ['.ts', '.tsx']) require.extensions[ext] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8').replace(/import\.meta\.env/g, '{}'), { compilerOptions: { jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 require.extensions['.css'] = () => {};
-require('../src/i18n/index.ts');
+const i18n = require('../src/i18n/index.ts').default;
 const React = require('react'), { act } = React;
 const { createRoot } = require('react-dom/client');
 const { MemoryRouter } = require('react-router-dom');
@@ -131,7 +131,15 @@ const writes = () => calls.filter(call => call.method !== 'GET');
     previewMode = 'ok'; await click('retry-cost-preview'); assert(!element('cost-preview-recovery'));
     await click('load-cost-settings');
     records = Array.from({ length: 51 }, (_, i) => ({ ...preview(), id: `record-${i}`, subject: `ORDER-${i}`, status: 'verified' }));
+    records[50] = { ...records[50], kind: 'product', subject: 'SHARED-PATCH',
+      source: { kind: 'product', sku: 'SHARED-PATCH', sale_to_stock_factor: '8', unit_cost: '0.8', base_unit_cost: '0.1' },
+      sale_target: { code: 'PATCH-8', product_id: 97557, variant_id: 97803 },
+      remote_costs: { prices_with_vat_yn: false, lines: [], product: { before: '0.7', desired: '0.8' } } };
     await click('load-cost-history'); assert(required('cost-history-previous').disabled && !required('cost-history-next').disabled); await click('cost-history-next'); assert(calls.at(-1).path.includes('offset=50')); assert(element('cost-publication-record-50') && !element('cost-publication-record-49'));
+    assert(required('cost-publication-record-50').closest('tr').textContent.includes('PATCH-8'));
+    await click('cost-publication-record-50');
+    assert(required('cost-publication-detail').textContent.includes(i18n.t('stockPublication.saleUnit', { pieces: '8' })));
+    assert(required('cost-remote-values').textContent.includes('PATCH-8'), 'Product cost recovery identifies the exact shared sale leaf');
     optionsMode = 'pending'; await click('load-cost-settings'); const old = resolveOptions, oldCall = calls.at(-1);
     await act(async () => { unlockHub('synthetic-new-token'); await tick(); }); assert(oldCall.signal.aborted);
     await act(async () => { old(); await tick(); }); assert(!element('cost-products'), 'An old credential response cannot reopen settings');

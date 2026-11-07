@@ -16,6 +16,7 @@ from inventory_hub.order_collection_models import OrderInboxEntry
 from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.order_stock_models import OrderStockPreview
 from inventory_hub.services import order_stock as stock, order_stock_ledger as ledger, stock_settings
+from inventory_hub.services import sale_units
 from inventory_hub.services.order_stock_source import load_source, resolve_lines
 
 
@@ -100,6 +101,11 @@ async def _issued_lines(db, order, *, lock=False):
         line = expected[item.external_item_id]
         if item.product_id != line["product_id"] or item.quantity != line["quantity"]:
             raise ExceptionError("order_exception_ledger_changed")
+        proof = sale_units.line_fields(line)
+        if proof and (item.sale_mapping_id != proof["sale_mapping_id"]
+                or item.sale_to_stock_factor != sale_units.line_factor(line)
+                or item.sale_quantity != line["sale_quantity"]):
+            raise ExceptionError("order_exception_ledger_changed")
         movement = await db.scalar(select(StockMovement).where(
             StockMovement.idempotency_key == f"order:{order.id}:issue:{item.id}"))
         if (movement is None or item.status != "fulfilled" or movement.movement_type != MovementType.SALE_OUT
@@ -118,6 +124,7 @@ async def _issued_lines(db, order, *, lock=False):
         result.append({"sku": sku, "product_id": item.product_id, "issue_movement_id": movement.id,
             "issued_qty": format(item.quantity, "f"), "returned_qty": format(returned, "f") if allocations else None,
             "returnable_qty": format(item.quantity - returned, "f") if allocations else None,
+            **({"sale_quantity": format(item.sale_quantity, "f"), **proof, "stock_unit": "pcs"} if proof else {}),
             "physical_return_supported": bool(allocations)})
     original = order.stock_issue_result
     if not result and not (not issued and original.get("movements_created") == 0

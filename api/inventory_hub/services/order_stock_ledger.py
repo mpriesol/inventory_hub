@@ -18,6 +18,7 @@ from inventory_hub.db_models import MovementType, OrderStatus, Product, Reservat
 from inventory_hub.db_models_ext import Reservation, ShopOrder, ShopOrderItem, StockBalance, StockMovement
 from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
+from inventory_hub.services import sale_units
 from inventory_hub.stock_tracking_models import StockTracking
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 
@@ -125,15 +126,23 @@ def _source_lines(source_order: dict) -> tuple[list[dict], list[dict], list[dict
                 or type(row.get("product_id")) is not int or not row.get("sku")):
             errors.append(_error("line_identity", line_key=key))
             continue
-        quantity = _number(row.get("quantity"))
-        if quantity is None or not ZERO < quantity <= MAX_QUANTITY or quantity != quantity.to_integral_value():
+        sale_quantity = _number(row.get("quantity"))
+        try:
+            proof = sale_units.line_fields(row)
+            conversion = sale_units.factor(proof.get("sale_to_stock_factor", 1))
+        except sale_units.SaleUnitError:
+            errors.append(_error("sale_factor_invalid", line_key=key))
+            continue
+        quantity = sale_quantity * conversion if sale_quantity is not None else None
+        if quantity is None or not ZERO < quantity <= MAX_QUANTITY or quantity != quantity.to_integral_value() or sale_quantity != sale_quantity.to_integral_value():
             errors.append(_error("quantity_unsupported", line_key=key))
             continue
         if row.get("unit") != "ks" or row.get("length_unit") or row.get("length") not in (None, "", "0", "0.0", "0.00", "0.000"):
             errors.append(_error("unit_unsupported", line_key=key))
             continue
         lines.append({"line_key": key, "product_id": row["product_id"], "sku": row["sku"],
-                      "code": row["code"], "quantity": quantity})
+                      "code": row["code"], "quantity": quantity,
+                      **({"sale_quantity": sale_quantity, **proof} if proof else {})})
     return lines, excluded, errors
 
 
@@ -169,6 +178,13 @@ async def _plan(db, order, source_order, action, warehouse_id, *, lock):
         allocated = quantity - shortage
         previous[reservation.product_id] += allocated
         old_by_line[item.external_item_id] = allocated
+    for line in lines:
+        item = items.get(line["line_key"])
+        if item is not None and (getattr(item, "sale_mapping_id", None) != line.get("sale_mapping_id")
+                or sale_units.factor(getattr(item, "sale_to_stock_factor", 1)) != sale_units.line_factor(line)):
+            # A quantity edit may replan a reservation. A unit edit may not
+            # reinterpret already-reserved physical demand under the same line.
+            errors.append(_error("sale_factor_changed", line_key=line["line_key"]))
     by_product = defaultdict(list)
     for line in lines:
         by_product[line["product_id"]].append(line)
@@ -198,7 +214,8 @@ async def _plan(db, order, source_order, action, warehouse_id, *, lock):
     for product_id in sorted(ids):
         product, balance = products.get(product_id), balances.get(product_id)
         current = by_product[product_id]
-        if product is not None and (product.item_type != "stock" or product.stock_unit == "m"):
+        if product is not None and (product.item_type != "stock" or product.stock_unit == "m"
+                or any(line.get("sale_key") for line in current) and product.stock_unit != "pcs"):
             errors.append(_error("unit_unsupported" if product.item_type == "stock" else "line_identity", product_id=product_id))
             continue
         if product_id not in confirmed_ids:
@@ -279,6 +296,8 @@ async def _plan(db, order, source_order, action, warehouse_id, *, lock):
             remaining -= line_allocated
             planned_lines.append({"line_key": line["line_key"], "product_id": product_id,
                 "sku": product.sku, "quantity": _text(line["quantity"]),
+                **({"sale_quantity": _text(line["sale_quantity"]), **sale_units.line_fields(line)}
+                   if line.get("sale_key") else {}),
                 "old_allocation": _text(old_by_line.get(line["line_key"], ZERO)),
                 "allocation": _text(line_allocated), "shortage": _text(line["quantity"] - line_allocated)})
     plan = {"action": action, "order_id": order.id, "order_revision": order.stock_revision,
@@ -321,6 +340,9 @@ async def apply_order(db, order, source_order: dict, action: str, warehouse_id: 
             items[line["line_key"]] = item
             db.add(item)
         item.product_id, item.quantity = line["product_id"], line["quantity"]
+        item.sale_quantity = line.get("sale_quantity")
+        item.sale_to_stock_factor = sale_units.line_factor(line)
+        item.sale_mapping_id = line.get("sale_mapping_id")
         item.external_product_code = line["code"]
         item.status = "fulfilled" if action == "issue" else "reserved"
     await db.flush()

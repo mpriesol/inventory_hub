@@ -18,6 +18,7 @@ from inventory_hub.db_models import MovementType, Product, Warehouse
 from inventory_hub.db_models_ext import Reservation, ShopOrder, ShopOrderItem, StockBalance, StockMovement
 from inventory_hub.fifo_models import FifoAllocation, FifoLayer, FifoState
 from inventory_hub.services import fifo
+from inventory_hub.services import sale_units
 from inventory_hub.services.order_stock_ledger import _source_lines
 from inventory_hub.services.order_stock_source import _quantity
 
@@ -106,6 +107,22 @@ async def product_cost(db, product_id: int, warehouse_id: int) -> dict:
         [row[4] for row in rows if row[4] is not None], {row[5].id: row[5] for row in rows if row[5] is not None})
 
 
+def sale_product_cost(evidence: dict, sale: dict) -> dict:
+    """Convert a known base-piece acquisition price to one native sale unit."""
+    try:
+        proof = sale_units.line_fields({key: sale[key] for key in sale_units.FIELDS if key in sale})
+    except sale_units.SaleUnitError:
+        _fail("sale_factor_invalid")
+    if not proof:
+        return evidence
+    base_cost = Decimal(evidence["unit_cost"])
+    cost = fifo.money(base_cost * sale_units.factor(proof["sale_to_stock_factor"]))
+    if not cost.is_finite() or cost > fifo.MAX_UNIT_COST:
+        _fail("cost_out_of_range")
+    values = {key: value for key, value in evidence.items() if key not in {"signature", "source_hash"}}
+    return _signed({**values, **proof, "base_unit_cost": evidence["unit_cost"], "unit_cost": fifo.number(cost)})
+
+
 def project_order(order, evidence: list[tuple]) -> dict:
     """Project joined (item, reservation, movement, allocation, layer, root) rows.
 
@@ -146,6 +163,14 @@ physical product can consume different layers and have different unit costs.
         if (original is None or issued_quantity != original["quantity"]
                 or any(line.get(key) != original[key] for key in ("product_id", "sku"))):
             _fail("evidence_mismatch")
+        try:
+            proof = sale_units.line_fields(original)
+            if sale_units.line_fields(line) != proof:
+                _fail("evidence_mismatch")
+            if proof and Decimal(str(line.get("sale_quantity"))) != original["sale_quantity"]:
+                _fail("evidence_mismatch")
+        except (sale_units.SaleUnitError, InvalidOperation, TypeError, ValueError):
+            _fail("evidence_mismatch")
     if len({line["line_key"] for line in issued_lines}) != len(lines):
         _fail("evidence_mismatch")
     grouped = defaultdict(list)
@@ -170,6 +195,12 @@ physical product can consume different layers and have different unit costs.
                 or movement.reference_type != "shop_order" or movement.reference_id != str(order.id)
                 or movement.reference_source != str(order.shop_id)
                 or movement.idempotency_key != f"order:{order.id}:issue:{item.id}"):
+            _fail("evidence_mismatch")
+        proof = sale_units.line_fields(original)
+        sale_quantity = original.get("sale_quantity", original["quantity"])
+        if proof and (getattr(item, "sale_mapping_id", None) != proof["sale_mapping_id"]
+                or getattr(item, "sale_quantity", None) != sale_quantity
+                or getattr(item, "sale_to_stock_factor", None) != sale_units.factor(proof["sale_to_stock_factor"])):
             _fail("evidence_mismatch")
         if movement.unit_cost_currency != "EUR" or movement.fx_rate_to_eur != Decimal("1"):
             _fail("currency_unsupported")
@@ -213,13 +244,14 @@ physical product can consume different layers and have different unit costs.
             _fail("allocation_quantity_mismatch")
         if total > fifo.MAX_VALUE:
             _fail("cost_out_of_range")
-        unit_cost = fifo.money(total / quantity)
+        unit_cost = fifo.money(total / sale_quantity)
         if unit_cost > fifo.MAX_UNIT_COST:
             _fail("cost_out_of_range")
         all_movements.add(movement.id)
         projections.append({"line_key": key, "product_id": item.product_id, "sku": original["sku"],
-            "code": original["code"], "quantity": fifo.number(quantity), "unit_cost": fifo.number(unit_cost),
+            "code": original["code"], "quantity": fifo.number(sale_quantity), "unit_cost": fifo.number(unit_cost),
             "total_cost": fifo.number(total), "movement_ids": [movement.id],
+            **({**proof, "stock_quantity": fifo.number(quantity)} if proof else {}),
             "allocations": sorted(allocations, key=lambda row: (row["sequence"], row["id"]))})
     if set(issued.get("movement_ids", [])) != all_movements or issued.get("movements_created") != len(all_movements):
         _fail("evidence_mismatch")

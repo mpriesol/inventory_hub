@@ -103,6 +103,8 @@ def policy_dto(policy, warehouse):
 def publication_dto(row):
     result = {key: deepcopy(getattr(row, key)) for key in ('id', 'kind', 'subject', 'status', 'source',
         'before', 'after', 'error', 'created_at', 'expires_at', 'attempt_started_at', 'verified_at', 'resolution')}
+    if row.kind == 'product' and (row.source or {}).get('sale_key'):
+        result['sale_target'] = deepcopy((row.target or {}).get('identity'))
     document = row.document
     if document:
         before, desired = document['before']['values'], document['after']['values']
@@ -200,10 +202,23 @@ async def configure(db, payload):
     return result
 
 
-async def product_target(db, shop_id, product_id, sku):
-    mapping = await one(db, ShopProduct, (ShopProduct.shop_id == shop_id) & (ShopProduct.product_id == product_id))
-    if mapping is None or not mapping.is_listed:
+async def product_target(db, shop_id, product_id, sku, sale_key=''):
+    from inventory_hub.services import sale_units
+    mappings = (await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shop_id,
+                                                         ShopProduct.product_id == product_id))).all()
+    try:
+        selected = [row for row in mappings if sale_units.sale_key(row) == sale_key]
+    except sale_units.SaleUnitError:
+        raise CostSyncError('fifo_cost_mapping_invalid') from None
+    if len(selected) != 1:
+        raise CostSyncError('fifo_cost_mapping_ambiguous' if mappings else 'fifo_cost_mapping_missing')
+    mapping = selected[0]
+    if not mapping.is_listed:
         raise CostSyncError('fifo_cost_mapping_missing')
+    try:
+        sale = sale_units.mapping_fields(mapping)
+    except sale_units.SaleUnitError:
+        raise CostSyncError('fifo_cost_mapping_invalid') from None
     if not mapping.external_product_id or (mapping.is_variant and not mapping.external_variant_id):
         raise CostSyncError('fifo_cost_mapping_unverified')
     code = mapping.external_code
@@ -211,7 +226,8 @@ async def product_target(db, shop_id, product_id, sku):
     if not code or code != code.strip() or not parent:
         raise CostSyncError('fifo_cost_mapping_alias')
     product = await db.get(Product, product_id)
-    if product is None or product.item_type == 'service' or product.stock_unit == 'm':
+    if (product is None or product.item_type == 'service' or product.stock_unit == 'm'
+            or (sale and (product.item_type != 'stock' or product.stock_unit != 'pcs'))):
         raise CostSyncError('fifo_cost_unit_unsupported')
     # The explicit remote mapping is authoritative. Case-fold collisions must not select another
     # leaf, including Unicode case-fold expansions which SQL lower() misses.
@@ -233,14 +249,16 @@ async def product_target(db, shop_id, product_id, sku):
             if not native.isdigit() or int(native) <= 0:
                 raise CostSyncError('fifo_cost_mapping_invalid')
             identity[key] = int(native)
-    return {'identity': identity, 'mapping_id': mapping.id, 'external_id': mapping.native_id}
+    return {'identity': identity, 'mapping_id': mapping.id, 'external_id': mapping.native_id, **sale}
 
 
-async def local_source(db, kind, identifier, warehouse_id, shop_id):
+async def local_source(db, kind, identifier, warehouse_id, shop_id, sale_key=''):
     try:
         if kind == 'product':
             evidence = await projection.product_cost(db, identifier, warehouse_id)
-            target = await product_target(db, shop_id, identifier, evidence['sku'])
+            target = (await product_target(db, shop_id, identifier, evidence['sku'], sale_key=sale_key) if sale_key
+                      else await product_target(db, shop_id, identifier, evidence['sku']))
+            evidence = projection.sale_product_cost(evidence, target)
         else:
             evidence = await projection.order_cost(db, identifier)
             if evidence['warehouse_id'] != warehouse_id or evidence['shop_id'] != shop_id:
@@ -252,7 +270,24 @@ async def local_source(db, kind, identifier, warehouse_id, shop_id):
 
 
 def identifier(row):
-    return int(row.target_key.split(':', 1)[1])
+    return int(row.target_key.split(':')[1])
+
+
+def publication_sale_key(row):
+    parts = row.target_key.split(':')
+    return parts[2] if row.kind == 'product' and len(parts) == 3 else ''
+
+
+async def product_sale_keys(db, shop_id, product_id):
+    from inventory_hub.services import sale_units
+    mappings = (await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shop_id,
+        ShopProduct.product_id == product_id).order_by(ShopProduct.id))).all()
+    if not mappings or not all(row.shared_stock for row in mappings):
+        return ['']
+    try:
+        return [sale_units.sale_key(row) for row in mappings if row.is_listed] or ['']
+    except sale_units.SaleUnitError:
+        raise CostSyncError('fifo_cost_mapping_invalid') from None
 
 
 async def read_remote(shop_code, kind, subject, target, fingerprint):
@@ -469,34 +504,37 @@ async def scan_batch(db, shop_id):
         policy.order_cursor = policy.order_max
     products = (await db.execute(select(Product.id, Product.sku).join(ShopProduct, ShopProduct.product_id == Product.id)
         .where(ShopProduct.shop_id == shop.id, ShopProduct.is_listed.is_(True), Product.item_type == "stock", Product.id > policy.product_cursor,
-               Product.id <= policy.product_max).order_by(Product.id).limit(product_budget))).all() if product_budget else []
+               Product.id <= policy.product_max).distinct().order_by(Product.id).limit(product_budget))).all() if product_budget else []
     orders = (await db.execute(select(ShopOrder.id, ShopOrder.external_id).where(ShopOrder.shop_id == shop.id,
         ShopOrder.id > policy.order_cursor, ShopOrder.id <= policy.order_max, ShopOrder.stock_state == 'issued',
         ShopOrder.stock_warehouse_id == warehouse.id, ShopOrder.stock_issued_at >= policy.orders_since)
         .order_by(ShopOrder.id).limit(order_budget))).all() if order_budget and policy.orders_since else []
     for kind, candidates in (('product', products), ('order', orders)):
         for candidate in candidates:
-            key, subject = f'{kind}:{candidate[0]}', candidate[1]
-            try:
-                evidence, target = await local_source(db, kind, candidate[0], warehouse.id, shop.id)
-            except CostSyncError as error:
-                # Record one diagnostic until its reason changes; still retry
-                # evidence locally on the next full pass, with no remote GET.
-                last = await db.scalar(select(Publication).where(Publication.shop_id == shop.id,
-                    Publication.target_key == key).order_by(Publication.created_at.desc()).limit(1))
-                if not last or last.status != 'skipped' or last.error != error.code:
-                    db.add(Publication(id=str(uuid4()), shop_id=shop.id, warehouse_id=warehouse.id,
-                        kind=kind, target_key=key, subject=subject, status='skipped', automatic=not policy.scan_manual,
+            keys = await product_sale_keys(db, shop.id, candidate[0]) if kind == 'product' else ['']
+            for sale_key in keys:
+                key, subject = f'{kind}:{candidate[0]}' + (f':{sale_key}' if sale_key else ''), candidate[1]
+                try:
+                    evidence, target = (await local_source(db, kind, candidate[0], warehouse.id, shop.id, sale_key=sale_key)
+                                        if sale_key else await local_source(db, kind, candidate[0], warehouse.id, shop.id))
+                except CostSyncError as error:
+                    # Record one diagnostic per leaf until its reason changes;
+                    # a bad sibling cannot silently stand in for another leaf.
+                    last = await db.scalar(select(Publication).where(Publication.shop_id == shop.id,
+                        Publication.target_key == key).order_by(Publication.created_at.desc()).limit(1))
+                    if not last or last.status != 'skipped' or last.error != error.code:
+                        db.add(Publication(id=str(uuid4()), shop_id=shop.id, warehouse_id=warehouse.id,
+                            kind=kind, target_key=key, subject=subject, status='skipped', automatic=not policy.scan_manual,
+                            settings_revision=policy.revision, target_fingerprint=policy.target_fingerprint,
+                            source_hash=digest({'key': key, 'error': error.code}), source={'kind': kind},
+                            created_at=now(), error=error.code))
+                    continue
+                if not await cache_current(db, policy, key, evidence, target):
+                    db.add(Publication(id=str(uuid4()), shop_id=shop.id, warehouse_id=warehouse.id, kind=kind,
+                        target_key=key, subject=subject, status='queued', automatic=not policy.scan_manual,
                         settings_revision=policy.revision, target_fingerprint=policy.target_fingerprint,
-                        source_hash=digest({'key': key, 'error': error.code}), source={'kind': kind},
-                        created_at=now(), error=error.code))
-                continue
-            if not await cache_current(db, policy, key, evidence, target):
-                db.add(Publication(id=str(uuid4()), shop_id=shop.id, warehouse_id=warehouse.id, kind=kind,
-                    target_key=key, subject=subject, status='queued', automatic=not policy.scan_manual,
-                    settings_revision=policy.revision, target_fingerprint=policy.target_fingerprint,
-                    source_hash=evidence['source_hash'], source=evidence, target=target, created_at=now()))
-            await db.flush()
+                        source_hash=evidence['source_hash'], source=evidence, target=target, created_at=now()))
+                await db.flush()
     if product_budget:
         policy.product_cursor = products[-1][0] if len(products) == product_budget else policy.product_max
     if order_budget:
@@ -520,7 +558,9 @@ async def check_current(db, row, shop_code):
         raise CostSyncError('fifo_cost_target_changed')
     if row.expires_at and row.expires_at <= now():
         raise CostSyncError('fifo_cost_preview_expired')
-    evidence, target = await local_source(db, row.kind, identifier(row), warehouse.id, shop.id)
+    key = publication_sale_key(row)
+    evidence, target = (await local_source(db, row.kind, identifier(row), warehouse.id, shop.id, sale_key=key) if key
+                        else await local_source(db, row.kind, identifier(row), warehouse.id, shop.id))
     if evidence['source_hash'] != row.source_hash or target != row.target:
         raise CostSyncError('fifo_cost_source_changed')
     return evidence

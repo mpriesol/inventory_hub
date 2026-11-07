@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import re
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -344,9 +344,20 @@ async def verified_existing_sources(db, shop, products, index, local) -> set[int
     mappings = (await db.scalars(select(ShopProduct).join(Shop, Shop.id == ShopProduct.shop_id)
         .where(Shop.code == shop, ShopProduct.product_id.in_(set(local.values())),
                ShopProduct.is_listed.is_(True)))).all()
-    by_product = {mapping.product_id: mapping for mapping in mappings}
-    return {source.id for source in products if local.get(source.id) in by_product
-        and _mapping_owns_remote(by_product[local[source.id]], source, index)}
+    by_product = defaultdict(list)
+    for mapping in mappings:
+        by_product[mapping.product_id].append(mapping)
+    return {source.id for source in products if any(_mapping_owns_remote(mapping, source, index)
+        for mapping in by_product.get(local.get(source.id), []))}
+
+
+async def shared_product_ids(db, product_ids):
+    if not product_ids:
+        return set()
+    # A new shop listing cannot infer its unit from an existing shared card's
+    # historical canonical SKU or package GTIN, including another shop's group.
+    return set(await db.scalars(select(ShopProduct.product_id).where(
+        ShopProduct.product_id.in_(product_ids), ShopProduct.shared_stock.is_(True))))
 
 
 def _money(value: Decimal) -> float:
@@ -571,6 +582,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     selection_codes = Counter(p.shop_code.casefold() for p in products)
     parent_codes = Counter(item.code.casefold() for item in items)
     local, conflicts = await local_identities(db, products)
+    shared_ids = await shared_product_ids(db, set(local.values()))
     occupied = any(p.shop_code.casefold() in codes or set(p.eans) & eans
         or parent_shop_code(p).casefold() in codes for p in products)
     verified = await verified_existing_sources(db, shop, products, index, local) if occupied else set()
@@ -597,6 +609,8 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     for item in items:
         if any(id in conflicts for id in item.product_ids):
             item.status, item.errors = "invalid", ["local_identity_conflict"]
+        elif item.status == 'ready' and any(local.get(id) in shared_ids for id in item.product_ids):
+            item.status, item.errors = 'invalid', ['shared_stock_sale_requires_group_workflow']
         elif item.status == 'ready' and any(id not in local for id in item.product_ids):
             item.status, item.errors = 'invalid', ['sku_identity_required']
     from inventory_hub.services.catalog import attach_shop_links
@@ -716,6 +730,9 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
         raise CatalogError("local_identity_conflict", "Local identifiers require manual reconciliation", 409)
     if any(source.id not in existing for source in products):
         raise CatalogError('sku_identity_required', 'A shop response cannot allocate a new Hub identity; reconcile the saved card', 409)
+    if await shared_product_ids(db, set(existing.values())):
+        raise CatalogError('shared_stock_sale_requires_group_workflow',
+                           'Shared sale identities require the reviewed sale group workflow', 409)
     if staging:
         saved_ids = {int(key): value for key, value in staging.get('saved_product_ids', {}).items()}
         if not saved_ids:
@@ -741,7 +758,12 @@ async def register_created(db: AsyncSession, shop: str, item: dict, sources: dic
     remote_variants = {v.get("code"): v for v in remote.get("variants", [])}
     for source in products:
         product_id = existing.get(source.id)
-        mapping = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == shop_id, ShopProduct.product_id == product_id))
+        mappings = list(await db.scalars(select(ShopProduct).where(
+            ShopProduct.shop_id == shop_id, ShopProduct.product_id == product_id)))
+        if len(mappings) > 1 or any(row.shared_stock for row in mappings):
+            raise CatalogError('shared_stock_sale_requires_group_workflow',
+                               'Shared sale identities require the reviewed sale group workflow', 409)
+        mapping = mappings[0] if mappings else None
         variant = bool(item["variants_count"])
         external = remote_variants.get(source.shop_code, {}) if variant else remote
         native_product = str(remote["product_id"]) if remote.get("product_id") is not None else None
@@ -1064,7 +1086,12 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 _assert_payload(item["payload"], expected_active=expected_active)
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 async with get_session_context() as db:
-                    await claim_product_prefix(db, [sources[id] for id in item["product_ids"]])
+                    selected = [sources[id] for id in item["product_ids"]]
+                    await claim_product_prefix(db, selected)
+                    local, _ = await local_identities(db, selected)
+                    if await shared_product_ids(db, set(local.values())):
+                        raise CatalogError('shared_stock_sale_requires_group_workflow',
+                                           'Shared sale identities require the reviewed sale group workflow', 409)
                 assert_availability_fresh(document.get('staging'))
                 item.update(status="uncertain", errors=["import_outcome_unknown"], product_write_attempted=True)
                 result["updated_at"] = now().isoformat()

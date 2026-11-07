@@ -379,6 +379,15 @@ export function ProductEditorPage() {
     }
   }
   function shopNavigation(row: ProductEditorRow, shop: ProductEditorRow['shops'][number], scope: 'grid' | 'detail') {
+    if (shop.shared_stock) return <div className="product-editor-presence product-editor-shop-navigation" data-testid={`${scope}-shared-sales-${row.id}-${shop.shop_code}`}>
+      <strong>{t('productEditor.sharedSales', { count: shop.sale_mappings?.length ?? 0 })}</strong>
+      {shop.sale_mappings?.map(sale => <small key={sale.id}>
+        <code>{sale.code}</code> · {t('stockPublication.saleUnit', { pieces: sale.sale_to_stock_factor })}
+        {!sale.is_listed && <> · {t('productEditor.unmapped')}</>}
+        {sale.shop_url && <> · <a href={sale.shop_url} target="_blank" rel="noopener noreferrer">{t('productEditor.openShop')} ↗</a></>}
+        {sale.shop_admin_url && <> · <a href={sale.shop_admin_url} target="_blank" rel="noopener noreferrer">{t('productEditor.openAdmin')} ↗</a></>}
+      </small>)}
+    </div>;
     const key = `${row.id}:${shop.shop_code}`, notice = linkRefresh[key];
     const missing = !shop.shop_url || !shop.shop_admin_url;
     return <div className="product-editor-presence product-editor-shop-navigation">

@@ -12,6 +12,7 @@ export interface PublicationOptions {
 }
 export interface PublicationItem {
   id: number; position: number; sku: string; target: Record<string, unknown> | null;
+  sale_key?: string;
   quantity: string | null; before_quantity: string | null; after_quantity: string | null; status: string;
   attempt_id: string | null; attempt_started_at: string | null; attempt_completed_at: string | null;
   verified_at: string | null; error: string | null; observation: unknown; acknowledgement: unknown; resolution: unknown;
@@ -19,6 +20,7 @@ export interface PublicationItem {
 export interface PublicationRow {
   sku: string; product_id: number | null; target: { code?: string; parent_code: string; variant_code: string | null } | null;
   quantity_known: boolean; qty_on_hand: string | null; qty_reserved: string | null; qty_available: string | null; errors: string[];
+  sale_key?: string; sale_mapping_id?: number; sale_to_stock_factor?: string; qty_sellable?: string;
   remote: { identity: { code: string; parent_code: string; variant_code: string | null; product_id: number; variant_id: number | null }; quantity: string | null } | null;
 }
 export interface PublicationBatch {

@@ -3,11 +3,13 @@ from datetime import timedelta
 from decimal import Decimal
 from sqlalchemy import func, select, text
 from inventory_hub.db_models import Product, Shop
+from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.stock_delta_models import StockSyncCheckpoint as Checkpoint, StockSyncBaselineEvent
 from inventory_hub.stock_sync_models import StockSyncItem as Item, StockSyncRun as Run
 from inventory_hub.stock_publication_models import StockPublicationHold
 from inventory_hub.services import stock_native
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+from inventory_hub.services import sale_units
 
 PROTOCOL = 'delta_v1'
 AUDIT_SECONDS = 21600
@@ -22,22 +24,45 @@ def metadata(value):
     return {key: value.get(key) for key in ('availability', 'can_add_to_basket_yn')}
 
 
-async def checkpoint(db, shop_id, sku, lock=False):
-    query = select(Checkpoint).where(Checkpoint.shop_id == shop_id, Checkpoint.sku == sku)
+async def checkpoint(db, shop_id, sku, lock=False, sale_key=""):
+    query = select(Checkpoint).where(Checkpoint.shop_id == shop_id, Checkpoint.sku == sku,
+                                     Checkpoint.sale_key == sale_key)
     if lock:
         query = query.with_for_update()
     return await db.scalar(query.execution_options(populate_existing=True))
 
 
-async def current(db, shop, warehouse, sku):
+async def current(db, shop, warehouse, sku, sale_key=""):
     from inventory_hub.services import stock_sync as sync
-    target, value = await sync.desired(db, shop.code, sku)
+    target, value = (await sync.desired(db, shop.code, sku, sale_key=sale_key) if sale_key
+                     else await sync.desired(db, shop.code, sku))
     product_id = await db.scalar(select(Product.id).where(Product.sku == sku))
+    fields = {}
+    if sale_key:
+        mapping = await db.get(ShopProduct, int(sale_key))
+        try:
+            fields = sale_units.mapping_fields(mapping)
+        except sale_units.SaleUnitError:
+            raise sync.SyncError('stock_sync_baseline_changed') from None
+        if (not mapping or mapping.shop_id != shop.id or mapping.product_id != product_id
+                or fields.get('sale_key') != sale_key):
+            raise sync.SyncError('stock_sync_baseline_changed')
     try:
-        native = await stock_native.projection(db, shop.id, warehouse.id, product_id, checked=True)
+        native = (await stock_native.projection(db, shop.id, warehouse.id, product_id, checked=True, sale_key=sale_key)
+                  if sale_key else await stock_native.projection(db, shop.id, warehouse.id, product_id, checked=True))
     except stock_native.NativeError as error:
         raise sync.SyncError(error.code, error.status) from None
-    return {'target': target, 'value': value, 'product_id': product_id, 'native': str(native)}
+    return {'target': target, 'value': value, 'product_id': product_id, 'native': str(native), **fields}
+
+
+async def item_current(db, shop, warehouse, item):
+    key = getattr(item, 'sale_key', '') or ''
+    return await current(db, shop, warehouse, item.sku, sale_key=key) if key else await current(db, shop, warehouse, item.sku)
+
+
+async def item_checkpoint(db, item, lock=False):
+    key = getattr(item, 'sale_key', '') or ''
+    return await checkpoint(db, item.shop_id, item.sku, lock, sale_key=key) if key else await checkpoint(db, item.shop_id, item.sku, lock)
 
 
 def check_binding(cp, state, warehouse_id, fingerprint):
@@ -46,6 +71,8 @@ def check_binding(cp, state, warehouse_id, fingerprint):
         raise sync.SyncError('stock_sync_baseline_required')
     if (cp.warehouse_id != warehouse_id or cp.product_id != state['product_id']
             or cp.target_fingerprint != fingerprint
+            or (getattr(cp, 'sale_key', '') or '') != state.get('sale_key', '')
+            or Decimal(getattr(cp, 'sale_to_stock_factor', 1) or 1) != Decimal(state.get('sale_to_stock_factor', 1))
             or any(cp.target.get(key) != value for key, value in state['target'].items())):
         raise sync.SyncError('stock_sync_baseline_changed')
 
@@ -63,14 +90,18 @@ def needs_read(cp, state, at):
 
 
 def snapshot(cp, state):
-    return {'checkpoint_revision': cp.revision, 'local_quantity': state['value']['stock'],
-            'native_quantity': state['native'], 'metadata_values': metadata(state['value'])}
+    result = {'checkpoint_revision': cp.revision, 'local_quantity': state['value']['stock'],
+              'native_quantity': state['native'], 'metadata_values': metadata(state['value'])}
+    if state.get('sale_key'):
+        result.update(sale_key=state['sale_key'], sale_to_stock_factor=state['sale_to_stock_factor'])
+    return result
 
 
 def advance(cp, frozen, at):
     cp.local_quantity = Decimal(frozen['local_quantity'])
     cp.native_quantity = Decimal(frozen['native_quantity'])
     cp.metadata_values = frozen['metadata_values']
+    cp.sale_to_stock_factor = Decimal(frozen.get('sale_to_stock_factor', 1))
     cp.revision += 1
     cp.updated_at = at
 
@@ -109,21 +140,29 @@ async def baseline(db, request):
         fingerprint = sync.target_fingerprint(shop.code)
         if not fingerprint:
             raise sync.SyncError('stock_sync_target_changed')
-        states = {sku: await current(db, shop, warehouse, sku) for sku in request.skus}
+        states = {}
+        for sku in request.skus:
+            for key in await sync.sale_keys(db, shop.code, sku):
+                states[(sku, key)] = (await current(db, shop, warehouse, sku, sale_key=key) if key
+                                      else await current(db, shop, warehouse, sku))
         return shop, warehouse, fingerprint, states, native_plan
 
     shop, warehouse, fingerprint, states, native_plan = await locked()
     shop_id, warehouse_id = shop.id, warehouse.id
     await db.commit()
     try:
-        observations = await sync.source.read_many(request.shop_code, [state['target'] for state in states.values()], fingerprint)
+        observations = {}
+        targets = [state['target'] for state in states.values()]
+        for offset in range(0, len(targets), 100):
+            observations.update(await sync.source.read_many(request.shop_code, targets[offset:offset+100], fingerprint))
+        sync.source._consistent_identities(observations)
     except sync.source.SourceError as error:
         raise sync.SyncError(error.code, error.status) from None
     shop, warehouse, fresh_fingerprint, fresh, fresh_plan = await locked()
     if (shop.id, warehouse.id, fresh_fingerprint, fresh, fresh_plan) != (shop_id, warehouse_id, fingerprint, states, native_plan):
         raise sync.SyncError('stock_sync_baseline_changed')
     # Validate every row before storing any checkpoint; the caller owns rollback.
-    for sku, state in fresh.items():
+    for (sku, key), state in fresh.items():
         observed = observations[state['target']['code']]['observation']
         if observed['stock'] != state['value']['stock']:
             raise sync.SyncError('stock_sync_baseline_mismatch')
@@ -131,22 +170,25 @@ async def baseline(db, request):
         await stock_native.apply_maintenance(db, fresh_plan, request.hold_id)
     except stock_native.NativeError as error:
         raise sync.SyncError(error.code, error.status) from None
-    fresh = {sku: await current(db, shop, warehouse, sku) for sku in request.skus}
+    fresh = {(sku, key): (await current(db, shop, warehouse, sku, sale_key=key) if key
+                          else await current(db, shop, warehouse, sku)) for sku, key in fresh}
     at = sync.now()
     audit_rows = []
-    for sku, state in fresh.items():
+    for (sku, key), state in fresh.items():
         observed = observations[state['target']['code']]['observation']
-        cp = await checkpoint(db, shop_id, sku, True)
+        cp = await checkpoint(db, shop_id, sku, True, sale_key=key) if key else await checkpoint(db, shop_id, sku, True)
         if cp is None:
-            cp = Checkpoint(shop_id=shop_id, sku=sku, revision=1)
+            cp = Checkpoint(shop_id=shop_id, sku=sku, sale_key=key, revision=1)
             db.add(cp)
         else:
             cp.revision += 1
         audit_rows.append({'sku': sku, 'revision': cp.revision, 'target': observed['identity'],
-                           'local_quantity': state['value']['stock'], 'native_quantity': state['native']})
+                           'local_quantity': state['value']['stock'], 'native_quantity': state['native'],
+                           **({'sale_key': key, 'sale_to_stock_factor': state['sale_to_stock_factor']} if key else {})})
         cp.product_id, cp.warehouse_id = state['product_id'], warehouse_id
         cp.target_fingerprint, cp.target = fingerprint, observed['identity']
         cp.local_quantity, cp.native_quantity = Decimal(state['value']['stock']), Decimal(state['native'])
+        cp.sale_to_stock_factor = Decimal(state.get('sale_to_stock_factor', 1))
         cp.metadata_values, cp.hold_id = metadata(observed), request.hold_id
         cp.baseline_at = cp.updated_at = cp.last_audit_at = at
         cp.last_observation = observed
@@ -157,7 +199,8 @@ async def baseline(db, request):
     count = await db.scalar(select(func.count()).select_from(Checkpoint).where(
         Checkpoint.shop_id == shop_id, Checkpoint.target_fingerprint == fingerprint))
     await db.commit()
-    return {'shop_code': request.shop_code, 'baseline_count': count, 'skus': request.skus}
+    return {'shop_code': request.shop_code, 'baseline_count': count, 'skus': request.skus,
+            'selected_count': len(fresh)}
 
 
 async def process_item(db, item_id, prefetched=None):
@@ -184,10 +227,11 @@ async def process_item(db, item_id, prefetched=None):
         if row.status != 'prepared':
             raise sync.SyncError('stock_sync_item_changed')
         if await db.scalar(select(Item.id).where(Item.shop_id == shop.id, Item.sku == row.sku,
+                                                 Item.sale_key == (getattr(row, 'sale_key', '') or ''),
                                                  Item.status.in_(sync.FENCED)).limit(1)):
             raise sync.SyncError('stock_sync_target_uncertain')
-        state = await current(db, shop, warehouse, row.sku)
-        cp = await checkpoint(db, shop.id, row.sku, True)
+        state = await item_current(db, shop, warehouse, row)
+        cp = await item_checkpoint(db, row, True)
         check_binding(cp, state, warehouse.id, fingerprint)
         return row, cp, state
 
@@ -238,7 +282,7 @@ async def process_item(db, item_id, prefetched=None):
         # stock is deliberately absent. Never repeat after an ambiguous result.
         await sync.source.write_delta_once(shop_code, item.target, value, fingerprint)
         item = await sync.one(db, Item, Item.id == item_id, True)
-        cp = await checkpoint(db, item.shop_id, item.sku, True)
+        cp = await item_checkpoint(db, item, True)
         if cp is None or cp.revision != frozen['checkpoint_revision']:
             raise sync.SyncError('stock_sync_checkpoint_changed')
         advance(cp, frozen, sync.now())
@@ -266,7 +310,7 @@ async def resolve(db, item, run, request):
     from inventory_hub.services import stock_sync as sync
     if request.outcome is None or not request.evidence or len(request.evidence.strip()) < 8:
         raise sync.SyncError('stock_sync_delta_resolution_required', 422)
-    cp = await checkpoint(db, item.shop_id, item.sku, True)
+    cp = await item_checkpoint(db, item, True)
     frozen = item.delta_snapshot
     if cp is None or not frozen or cp.revision != frozen['checkpoint_revision']:
         raise sync.SyncError('stock_sync_checkpoint_changed')

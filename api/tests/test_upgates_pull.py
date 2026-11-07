@@ -701,6 +701,7 @@ class LegacyPushIdentityTests(unittest.IsolatedAsyncioTestCase):
         mapping = SimpleNamespace(shop_id=1, parent_code=None, external_code="ALIAS")
         content = SimpleNamespace(data={"code": "ALIAS", "stock": 999})
         db = MagicMock(spec=AsyncSession)
+        db.scalar.return_value = None
         db.execute.side_effect = [self.row(product), self.row(mapping), self.row(content), self.row(rows=[product])]
         client = MagicMock()
         with patch.object(upgates_sync, "_get_shop", AsyncMock(return_value=SimpleNamespace(id=2))), \
@@ -715,6 +716,7 @@ class LegacyPushIdentityTests(unittest.IsolatedAsyncioTestCase):
         mapping = SimpleNamespace(shop_id=1, parent_code="POS-ALL", external_code=products[0].sku)
         content = SimpleNamespace(data={"code": "POS-ALL", "variants": [{"code": p.sku} for p in products]})
         db = MagicMock(spec=AsyncSession)
+        db.scalar.return_value = None
         db.execute.side_effect = [self.row(products[0]), self.row(mapping), self.row(content), self.row(rows=products)]
         client = MagicMock()
         with patch.object(upgates_sync, "_get_shop", AsyncMock(return_value=SimpleNamespace(id=2))), \
@@ -730,6 +732,7 @@ class LegacyPushIdentityTests(unittest.IsolatedAsyncioTestCase):
         mapping = SimpleNamespace(shop_id=1, parent_code="PARENT", external_code="V-M")
         content = SimpleNamespace(data={"code": "PARENT", "variants": [{"code": "V-M", "stock": 999}]})
         db = MagicMock(spec=AsyncSession)
+        db.scalar.return_value = None
         db.execute.side_effect = [self.row(product), self.row(mapping), self.row(content), self.row(rows=[product]), self.row(99)]
         client = MagicMock()
         with patch.object(upgates_sync, "_get_shop", AsyncMock(return_value=SimpleNamespace(id=2))), \
@@ -740,6 +743,24 @@ class LegacyPushIdentityTests(unittest.IsolatedAsyncioTestCase):
         query = str(db.execute.call_args.args[0])
         self.assertIn("shop_products.parent_code", query)
         self.assertIn("shop_products.product_id", query)
+
+    async def test_shared_card_in_any_shop_blocks_new_push_before_remote_post(self):
+        product = SimpleNamespace(id=1, sku="LOOSE-PATCH")
+        mapping = SimpleNamespace(shop_id=1, parent_code=None, external_code="LOOSE-PATCH")
+        content = SimpleNamespace(data={"code": "LOOSE-PATCH", "ean": "5901234123457"})
+        db = MagicMock(spec=AsyncSession)
+        db.execute.side_effect = [self.row(product), self.row(mapping), self.row(content), self.row(rows=[product])]
+        db.scalar.return_value = 42
+        client = MagicMock()
+        with patch.object(upgates_sync, "_get_shop", AsyncMock(return_value=SimpleNamespace(id=2))), \
+                patch.object(upgates_sync.UpgatesClient, "from_shop", return_value=client):
+            result = await upgates_sync.push_products_to_shop("xtrek", {"skus": [product.sku]}, db)
+        self.assertEqual(result["pushed_products"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "shared_stock_sale_requires_group_workflow")
+        client.post.assert_not_called()
+        guard = str(db.scalar.call_args.args[0])
+        self.assertIn("shop_products.shared_stock IS true", guard)
+        self.assertNotIn("shop_products.shop_id", guard)
 
     async def test_push_builder_never_keeps_remote_parent_or_variant_quantity_snapshots(self):
         payload = upgates_sync._build_push_payload({"code": "P", "stock": 999, "stocks": [{"stock": 999}],

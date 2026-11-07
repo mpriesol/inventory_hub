@@ -44,6 +44,7 @@ MIGRATIONS = (
     "stock_sync_dirty_migrate",       # 036
     "atomer_progress_migrate",        # 037
     "atomer_review_migrate",          # 038
+    "shared_stock_sales_migrate",     # 046;039–045 retain their existing feature installers
 )
 
 

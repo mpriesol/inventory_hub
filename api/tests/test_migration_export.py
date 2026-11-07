@@ -228,6 +228,25 @@ class ExportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(b"config_path", archive.read("suppliers.jsonl"))
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
+    async def test_shared_sale_factors_and_empty_sale_barcodes_are_preserved_in_export(self):
+        async with self.sessions() as db:
+            await db.execute(text("""INSERT INTO shop_products
+                (shop_id,product_id,external_product_id,external_variant_id,external_code,parent_code,
+                 is_variant,shared_stock,sale_to_stock_factor,sale_barcodes)
+                SELECT s.id,p.id,'800',CAST(100+f.factor AS text),'PACK-'||f.factor,'PATCHES',
+                       true,true,f.factor,'[]'::jsonb
+                FROM shops s CROSS JOIN products p CROSS JOIN (VALUES (1),(8),(100)) AS f(factor)
+                WHERE s.code='biketrek' AND p.sku='00042-X'"""))
+            await db.commit()
+        async with self.sessions() as db:
+            output = await service.build_export(db, [], {'source': 'local_only'}, 'biketrek')
+            with output, zipfile.ZipFile(output) as archive:
+                links = [json.loads(line) for line in archive.read('shop_links.jsonl').splitlines()]
+                self.assertEqual({row['sale_to_stock_factor'] for row in links}, {'1.000', '8.000', '100.000'})
+                self.assertTrue(all(row['shared_stock'] is True and row['sale_barcodes'] == [] for row in links))
+                self.assertEqual(len({row['product_id'] for row in links}), 1)
+                self.assertEqual(json.loads(archive.read('manifest.json'))['counts']['tracking'], 0)
+
     async def test_local_only_snapshot_distinguishes_omitted_catalog_from_an_empty_shop(self):
         metadata = {"source": "local_only", "catalog_included": False}
         async with self.sessions() as db:

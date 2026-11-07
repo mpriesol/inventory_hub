@@ -134,7 +134,8 @@ class AliasIndex:
                  "mapping_id": mapping.id, "is_variant": mapping.is_variant, "native_id": native_id,
                  "parent_native_id": parent_id, "audit_ids": audit_ids, "code_chain": code_chain,
                  "target_fingerprint": self.target_fingerprint}
-        return IdentityResolution("mapped", product_id, "verified_sku_alias", [product_id]), proof
+        return IdentityResolution("mapped", product_id, "verified_sku_alias", [product_id],
+                                  mapping_id=mapping.id), proof
 
 
 async def load(db, shop, index, lines):

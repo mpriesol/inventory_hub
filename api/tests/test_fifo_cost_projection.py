@@ -57,6 +57,30 @@ def issued_evidence(costs=("10", "20", "30"), quantity=None):
 
 
 class FifoCostProjectionTests(unittest.TestCase):
+    def test_product_acquisition_price_is_per_native_sale_unit(self):
+        evidence = service.project_product(*product_evidence([layer(1, "0.0123", remaining="200")]))
+        costs = [service.sale_product_cost(evidence, {"sale_key": str(n), "sale_mapping_id": n,
+            "sale_to_stock_factor": str(factor)}) for n, factor in enumerate((1, 8, 100), start=1)]
+        self.assertEqual([row["unit_cost"] for row in costs], ["0.0123", "0.0984", "1.23"])
+        self.assertTrue(all(row["base_unit_cost"] == "0.0123" for row in costs))
+        self.assertEqual(len({row["source_hash"] for row in costs}), 3)
+        self.assertEqual(evidence["unit_cost"], "0.0123")
+
+    def test_issued_pack_cost_uses_frozen_sale_quantity_and_piece_allocations(self):
+        order, rows = issued_evidence(costs=("0.10",)*4 + ("0.20",)*4, quantity="8")
+        proof = {"sale_key": "77", "sale_mapping_id": 77, "sale_to_stock_factor": "8"}
+        order.stock_snapshot["lines"][0].update(quantity="1", **proof)
+        order.stock_issue_result["lines"][0].update(sale_quantity="1", **proof)
+        item = rows[0][0]
+        item.sale_quantity, item.sale_to_stock_factor, item.sale_mapping_id = D(1), D(8), 77
+        value = service.project_order(order, rows)
+        self.assertEqual((value["lines"][0]["quantity"], value["lines"][0]["stock_quantity"],
+                          value["lines"][0]["unit_cost"], value["total_cost"]), ("1", "8", "1.2", "1.2"))
+        rows[0][3].returned_quantity = D(1)
+        self.assertEqual(service.project_order(order, rows), value)
+        item.sale_to_stock_factor = D(100)
+        self.assertBlocked("evidence_mismatch", service.project_order, order, rows)
+
     def assertBlocked(self, code, callback, *args):
         with self.assertRaises(service.FifoCostProjectionError) as raised:
             callback(*args)

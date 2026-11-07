@@ -11,9 +11,9 @@ class NativeCostMappingTests(IsolatedAsyncioTestCase):
         for variant, parent, leaf in ((False, None, None), (True, None, '20'), (True, '10', None)):
             mapping = SimpleNamespace(is_listed=True, is_variant=variant,
                 external_product_id=parent, external_variant_id=leaf)
-            db = SimpleNamespace(get=AsyncMock(), execute=AsyncMock())
+            db = SimpleNamespace(get=AsyncMock(), execute=AsyncMock(),
+                scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [mapping])))
             with self.subTest(variant=variant, parent=parent, leaf=leaf), \
-                    patch.object(fifo_cost_sync, 'one', AsyncMock(return_value=mapping)), \
                     patch.object(fifo_cost_sync.source, 'read_product', AsyncMock()) as remote:
                 with self.assertRaisesRegex(fifo_cost_sync.CostSyncError, 'fifo_cost_mapping_unverified'):
                     await fifo_cost_sync.product_target(db, 1, 7, 'SKU-A')

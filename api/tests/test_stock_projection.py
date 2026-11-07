@@ -57,6 +57,37 @@ class ReadOnlyDB:
 
 
 class StockProjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_piece_pool_projects_each_complete_sale_quantity(self):
+        mappings = [mapping(n, code=f"PATCH-{factor}", shared_stock=True, sale_to_stock_factor=Decimal(factor))
+                    for n, factor in enumerate((1, 8, 100), start=1)]
+        for reserved, expected in (("0", ["200", "25", "2"]), ("8", ["192", "24", "1"]),
+                                   ("193", ["7", "0", "0"])):
+            with self.subTest(reserved=reserved):
+                rows = (await service.preview(ReadOnlyDB(mappings=mappings,
+                    balances=[balance(on_hand="200", reserved=reserved)]), "biketrek", ["SKU-A"]))["rows"]
+                self.assertEqual([row["sale_key"] for row in rows], ["1", "2", "3"])
+                self.assertEqual([service.publication_quantity(row) for row in rows], expected)
+                self.assertTrue(all(row["qty_available"] == str(200-int(reserved)) for row in rows))
+                self.assertTrue(all(not row["errors"] and row["quantity_known"] for row in rows))
+
+    async def test_ordinary_or_mixed_duplicate_mappings_remain_ambiguous(self):
+        for shared in (False, True):
+            rows = (await service.preview(ReadOnlyDB(mappings=[mapping(),
+                mapping(2, code="SECOND", shared_stock=shared, sale_to_stock_factor=Decimal(8) if shared else Decimal(1))]),
+                "biketrek", ["SKU-A"]))["rows"]
+            self.assertEqual(len(rows), 1)
+            self.assertIn("stock_projection_mapping_ambiguous", rows[0]["errors"])
+            self.assertIsNone(service.publication_quantity(rows[0]))
+
+    async def test_shared_unconfirmed_pool_is_unknown_for_every_sale_leaf(self):
+        rows = (await service.preview(ReadOnlyDB(mappings=[
+            mapping(1, code="PATCH-1", shared_stock=True, sale_to_stock_factor=1),
+            mapping(2, code="PATCH-8", shared_stock=True, sale_to_stock_factor=8)], balances=[]),
+            "biketrek", ["SKU-A"]))["rows"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["errors"] == ["stock_projection_balance_missing"] for row in rows))
+        self.assertTrue(all(service.publication_quantity(row) is None for row in rows))
+
     async def test_quarantine_is_never_published_as_available(self):
         row = (await service.preview(ReadOnlyDB(balances=[balance(quarantined="2")]), "biketrek", ["SKU-A"]))["rows"][0]
         self.assertEqual((row["qty_available"], row["qty_quarantined"]), ("2", "2"))

@@ -49,7 +49,10 @@ Implementačné a syntetické testy nie sú dôkazom ostrého prepojenia konkré
 
 ## Jedna reprezentácia a typované ID (migrácia 030)
 
-Jedna karta Hubu má najviac jednu predajnú reprezentáciu v konkrétnom e-shope.
+Bežný postup priraďuje najviac jednu predajnú reprezentáciu karty v konkrétnom
+e-shope. Výslovne overený predaj rôznych počtov rovnakých voľných kusov používa
+samostatný [postup zdieľanej kusovej karty](shared-stock-sales.md) s faktorom pre
+každú predajnú položku. Bežné párovanie takúto skupinu neprepisuje.
 Rovnaký výrobok ako samostatný produkt aj pokladňový variant v BIKETREK je
 konflikt. Obsluha odstráni duplicitný pokladňový variant v e-shope a ponechá
 samostatný produkt. Hub nikdy automaticky nemaže vzdialené produkty ani

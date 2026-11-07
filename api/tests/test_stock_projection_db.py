@@ -114,6 +114,26 @@ class StockProjectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(xtrek["rows"][0]["qty_available"], "4")
         self.assertEqual(await self.snapshot(), before)
 
+    async def test_explicit_sale_variants_share_one_read_only_piece_balance(self):
+        from shared_stock_fixture import shared_sale_mappings
+        await self.seed('SKU-A', '200', '8')
+        async with self.sessions() as db:
+            mappings = await shared_sale_mappings(db, self.shops['biketrek'], self.products['SKU-A'])
+            keys = [str(mapping.id) for mapping in mappings]
+            await db.commit()
+        before = await self.snapshot()
+        rows = (await self.preview())['rows']
+        self.assertEqual([row['sale_key'] for row in rows], keys)
+        self.assertEqual([row['sale_to_stock_factor'] for row in rows], ['1', '8', '100'])
+        self.assertEqual([row['qty_sellable'] for row in rows], ['192', '24', '1'])
+        self.assertEqual({row['qty_on_hand'] for row in rows}, {'200'})
+        self.assertEqual({row['qty_available'] for row in rows}, {'192'})
+        self.assertTrue(all(row['quantity_known'] and not row['errors'] for row in rows))
+        peer = (await self.preview('xtrek'))['rows'][0]
+        self.assertNotIn('sale_key', peer)
+        self.assertEqual(peer['qty_available'], '192')
+        self.assertEqual(await self.snapshot(), before)
+
     async def test_unopened_unverified_and_exhausted_stock_remain_distinct(self):
         await self.seed("SKU-A", "0", "0", evidence=False)
         await self.seed("SKU-B", "0", "0")

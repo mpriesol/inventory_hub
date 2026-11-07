@@ -27,7 +27,7 @@ erDiagram
 | `product_identifiers` | `product_id`, typ, presná hodnota a pri dodávateľskom kóde aj `supplier_id`. Úvodné nuly a význam identifikátora zostávajú zachované. |
 | `supplier_products.id` | Interné ID konkrétnej dodávateľskej ponuky. Kód ponuky je jednoznačný až spolu s dodávateľom. |
 | `product_supply_sources` | Výslovná väzba `product_id` → `supplier_product_id`; jedna ponuka má jedného vlastníka. Produkt môže mať viac dodávateľov a najviac jeden primárny zdroj. |
-| `shop_products` | Najviac jeden riadok pre dvojicu `shop_id`, `product_id`. Výslovná väzba nesie natívne ID a kód konkrétnej predajnej položky. |
+| `shop_products` | Bežne jeden riadok pre dvojicu `shop_id`, `product_id`. Výslovne overená [skupina predajných násobkov](shared-stock-sales.md) môže mať viac väzieb s faktorom na jednu kusovú kartu; každá natívna predajná položka má jediného vlastníka. |
 | `shop_product_content` | Obnoviteľný obsah načítaný z e-shopu. Neurčuje vlastníctvo produktu ani fyzické množstvo. |
 
 Čiarový kód, MPN, dodávateľský kód a SKU nie sú zameniteľné. Podľa spresnenia

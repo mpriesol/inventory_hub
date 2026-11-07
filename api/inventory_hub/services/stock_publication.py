@@ -255,7 +255,7 @@ async def _dto(db, batch, *, detailed=True):
     result["shop_code"] = await db.scalar(select(Shop.code).where(Shop.id == batch.shop_id))
     if detailed:
         result["preview_data"] = batch.preview_data
-        result["items"] = [{key: getattr(item, key) for key in ("id", "position", "sku", "target", "quantity",
+        result["items"] = [{key: getattr(item, key) for key in ("id", "position", "sku", "sale_key", "target", "quantity",
             "before_quantity", "after_quantity", "status", "attempt_id", "attempt_started_at", "attempt_completed_at",
             "verified_at", "error", "observation", "acknowledgement", "resolution")} for item in await _items(db, batch.id)]
     return result
@@ -303,6 +303,8 @@ async def preview(db, payload):
     if len(payload.skus) > scope["config"]["values"]["publication_batch_size"]:
         raise PublicationError("stock_publication_batch_too_large", 422)
     projection = await _projection(db, payload.shop_code, payload.skus)
+    if len(projection["rows"]) > scope["config"]["values"]["publication_batch_size"]:
+        raise PublicationError("stock_publication_batch_too_large", 422)
     authority = _authority(scope)
     created = now()
     expires = created + timedelta(minutes=scope["config"]["values"]["publication_preview_minutes"])
@@ -352,7 +354,8 @@ async def preview(db, payload):
     for position, row in enumerate(rows):
         if not row["errors"] and row["remote"] is not None:
             db.add(Item(batch_id=identifier, position=position, sku=row["sku"], target=row["remote"]["identity"],
-                        quantity=row["qty_available"], before_quantity=row["remote"]["quantity"], status="prepared"))
+                        sale_key=row.get("sale_key", ""), quantity=stock_projection.publication_quantity(row),
+                        before_quantity=row["remote"]["quantity"], status="prepared"))
     await db.flush()
     result = await _dto(db, batch)
     await db.commit()
@@ -380,7 +383,8 @@ async def _ready(db, scope, batch):
     await _quarantine(db, scope, excluding=batch.id)
     if scope["config"].get("retry_after_at") and scope["config"]["retry_after_at"] > now():
         raise PublicationError("stock_publication_retry_later", 429)
-    projection = await _projection(db, scope["shop"].code, [row["sku"] for row in batch.preview_data["rows"]])
+    projection = await _projection(db, scope["shop"].code,
+                                  list(dict.fromkeys(row["sku"] for row in batch.preview_data["rows"])))
     if _local_hash(projection) != batch.preview_data["local_hash"]:
         raise PublicationError("stock_publication_local_changed")
 

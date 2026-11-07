@@ -462,6 +462,9 @@ def _plan(row,scope,catalogs,local,indexes,new_id,aliases):
     if owner:
         p=local.products[owner]
         require(p.item_type=='stock' and p.is_active,'card_not_active_stock')
+        require(not any(getattr(mapping,'shared_stock',False) for shop_code in keys
+                        for mapping in indexes[shop_code].by_product.get(owner,[])),
+                'shared_stock_sale_requires_group_workflow')
         if (row.get('barcode_evidence') or {}).get('required_atomer_id'):
             require(not barcode_keys([row['ean']]).isdisjoint(barcode_keys(local.product_barcodes.get(owner,()))),
                     'confirmed_corrected_card_gtin_required')

@@ -231,6 +231,45 @@ class StockPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.state(batch)).batch.status, "prepared")
         self.write.assert_not_awaited()
 
+    async def test_shared_card_previews_and_publishes_every_sale_leaf_once(self):
+        from shared_stock_fixture import remote_identity, shared_sale_mappings
+        async with self.transaction() as db:
+            mappings = await shared_sale_mappings(db, self.shops['biketrek'], self.products['SKU-A'])
+            for mapping in mappings:
+                self.remote[mapping.external_code] = {'identity': remote_identity(mapping), 'quantity': '0'}
+            balance = await db.scalar(select(StockBalance).where(StockBalance.product_id == self.products['SKU-A']))
+            balance.qty_on_hand, balance.qty_reserved = D(200), D(8)
+        before = await self.physical_snapshot()
+        batch = await self.prepare(['SKU-A'])
+        state = await self.state(batch)
+        self.assertEqual([item.quantity for item in state.items], ['192', '24', '1'])
+        self.assertEqual(len({item.sale_key for item in state.items}), 3)
+        self.assertEqual({item.sku for item in state.items}, {'SKU-A'})
+        with patch.object(service.settings, 'STOCK_PUBLICATION_WRITE_ENABLED', True):
+            await self.submit(batch)
+            await self.invoke('process_batch', batch.id)
+            await self.invoke('process_batch', batch.id)
+        state = await self.state(batch)
+        self.assertEqual(state.batch.status, 'completed')
+        self.assertTrue(all(item.status == 'verified' for item in state.items))
+        self.assertEqual([self.remote[item.target['code']]['quantity'] for item in state.items], ['192', '24', '1'])
+        self.assertEqual(self.write.await_count, 3)
+        self.assertEqual(await self.physical_snapshot(), before)
+
+    async def test_shared_card_expansion_respects_remote_item_batch_limit(self):
+        from shared_stock_fixture import shared_sale_mappings
+        async with self.transaction() as db:
+            await shared_sale_mappings(db, self.shops['biketrek'], self.products['SKU-A'])
+            settings = await db.get(StockWarehouseSettings, self.warehouse_id)
+            settings.values = {'publication_batch_size': 2}
+        await self.configure()
+        await self.open_hold()
+        with self.assertRaises(service.PublicationError) as raised:
+            await self.preview(['SKU-A'])
+        self.assertEqual(raised.exception.code, 'stock_publication_batch_too_large')
+        self.read.assert_not_awaited()
+        self.write.assert_not_awaited()
+
     async def test_unknown_local_quantity_blocks_entire_batch_without_put(self):
         batch = await self.prepare(["SKU-A", "MISSING-SKU"])
         self.assertEqual(batch.status, "blocked")

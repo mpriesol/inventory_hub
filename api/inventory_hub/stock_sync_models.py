@@ -1,6 +1,6 @@
 """Scheduled central-authority publication with durable per-leaf write fences."""
 from datetime import datetime
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from inventory_hub.database import Base
@@ -63,6 +63,7 @@ class StockSyncItem(Base):
     shop_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("shops.id", ondelete="RESTRICT"), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False)
     sku: Mapped[str] = mapped_column(String(100), nullable=False)
+    sale_key: Mapped[str] = mapped_column(String(32), nullable=False, default="", server_default="")
     target: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     desired: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     before: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
@@ -73,5 +74,8 @@ class StockSyncItem(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolution: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     delta_snapshot: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
-    __table_args__ = (Index("uq_stock_sync_target_fence", "shop_id", "sku", unique=True,
-                           postgresql_where="status IN ('sending','uncertain')"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "sku", "sale_key", name="stock_sync_items_run_id_sku_key"),
+        Index("uq_stock_sync_target_fence", "shop_id", "sku", "sale_key", unique=True,
+              postgresql_where="status IN ('sending','uncertain')"),
+    )

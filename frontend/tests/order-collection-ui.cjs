@@ -62,7 +62,9 @@ let exceptionMode = 'valid', resolveMode = 'valid', pendingException, pendingRes
 const exceptionFixture = (id, shop) => ({ id, preview_hash: 'synthetic-preview-hash', status: 'prepared', order_number: 'RETURN-ORDER', shop_code: shop,
   warehouse: { id: 1, code: 'main', name: 'Main fixture' }, expires_at: '2099-10-14T20:00:00Z', source_status_name: 'Returned', issued_at: '2026-10-14T10:00:00Z',
   lines: [{ sku: 'EXCEPTION-SKU', product_id: 12, issue_movement_id: 600, issued_qty: '3.000', returned_qty: '1.000', returnable_qty: '2.000', physical_return_supported: true },
-    { sku: 'LEGACY-ISSUE', product_id: 13, issue_movement_id: 601, issued_qty: '1.000', returned_qty: null, returnable_qty: null, physical_return_supported: false }], result: null });
+    { sku: 'LEGACY-ISSUE', product_id: 13, issue_movement_id: 601, issued_qty: '1.000', returned_qty: null, returnable_qty: null, physical_return_supported: false },
+    { sku: 'SHARED-PATCH', product_id: 9871, issue_movement_id: 602, issued_qty: '8.000', sale_quantity: '1.000',
+      sale_to_stock_factor: '8', returned_qty: '3.000', returnable_qty: '5.000', physical_return_supported: true }], result: null });
 const exceptionButton = action => document.querySelector(`[data-testid="${action}-order-exception"]`);
 const calls = []; let pendingStatus; let pendingStock; let statusMode = 'valid'; let stockMode = 'valid'; let configMode = 'valid'; let rejectConfig;
 global.fetch = async (path, init = {}) => {
@@ -207,6 +209,11 @@ const posts = () => calls.filter(call => call.method === 'POST');
   const exceptionRows = document.querySelectorAll('[data-testid="order-exception-lines"] tbody tr');
   assert.equal(exceptionRows[0].children[2].textContent, '3.000'); assert.equal(exceptionRows[0].children[3].textContent, '1.000');
   assert.equal(exceptionRows[1].children[3].textContent, t('unknown'), 'Unsupported legacy returns remain unknown, never zero');
+  assert.equal(exceptionRows[2].children[2].textContent, `8.000 ${t('exception.pieces')}`);
+  assert.equal(exceptionRows[2].children[3].textContent, `3.000 ${t('exception.pieces')}`);
+  assert.equal(exceptionRows[2].children[4].textContent, `5.000 ${t('exception.pieces')}`);
+  assert(exceptionRows[2].textContent.includes(i18n.t('orderCollection.exception.saleUnits', { quantity: '1.000', pieces: '8' })),
+    'Shared stock exceptions distinguish the one pack sold from individual physical pieces returned');
   assert(document.querySelector('[data-testid="order-exception-panel"] a[href="/stock"][target="_blank"]'));
   assert(exceptionButton('resolve').disabled);
   await input(document.querySelector('[data-testid="order-exception-reason"]'), '  Goods have not physically returned yet.  ');

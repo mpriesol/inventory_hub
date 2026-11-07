@@ -203,9 +203,11 @@ async def _rows(db, ids, warehouse):
             .order_by(ProductVariantAttribute.display_order, ProductVariantAttribute.attribute_name))).all():
         attributes[row.product_id].append({"name": row.attribute_name, "value": row.attribute_value})
     shops = (await db.scalars(select(Shop).where(Shop.is_active.is_(True), Shop.platform == "upgates").order_by(Shop.code))).all()
-    mappings = defaultdict(dict)
+    mappings = defaultdict(lambda: defaultdict(list))
     for row in (await db.scalars(select(ShopProduct).where(ShopProduct.product_id.in_(ids)).order_by(ShopProduct.id))).all():
-        mappings[row.product_id][row.shop_id] = row
+        mappings[row.product_id][row.shop_id].append(row)
+        if row.shared_stock:
+            locked_definitions.add(row.product_id)
     observed = {row["id"]: row for row in (await db.execute(text(OBSERVED_SQL), {"ids": list(ids)})).mappings().all()}
     sources = defaultdict(list)
     supplier_query = select(Product.id, Supplier.code, SupplierProduct.supplier_sku,
@@ -248,12 +250,23 @@ async def _rows(db, ids, warehouse):
         shop_values, image_urls = [], []
         fallback_attributes = []
         for shop in shops:
-            mapping = mappings[product.id].get(shop.id)
+            sale_mappings = mappings[product.id].get(shop.id, [])
+            shared = len(sale_mappings) > 1 or any(value.shared_stock for value in sale_mappings)
+            # The ordinary merchandising editor has one desired price/EAN per
+            # card and shop. Do not let the last pack variant silently win.
+            mapping = sale_mappings[0] if len(sale_mappings) == 1 and not shared else None
             raw = observed.get(mapping.id, {}) if mapping else {}
             image_urls.append(raw.get("image_url"))
             if not fallback_attributes and mapping and mapping.is_variant:
                 fallback_attributes = variant_attributes({"parameters": raw.get("parameters")})
-            shop_values.append({"shop_code": shop.code, "mapped": bool(mapping and mapping.is_listed),
+            shop_values.append({"shop_code": shop.code, "mapped": any(value.is_listed for value in sale_mappings),
+                **({"shared_stock": True, "sale_mappings": [{"id": value.id, "code": value.external_code,
+                    "external_product_id": value.external_product_id, "external_variant_id": value.external_variant_id,
+                    "parent_code": value.parent_code, "is_variant": value.is_variant,
+                    "shop_url": _http_url(observed.get(value.id, {}).get("shop_url")),
+                    "shop_admin_url": _http_url(observed.get(value.id, {}).get("shop_admin_url")),
+                    "sale_to_stock_factor": _decimal(value.sale_to_stock_factor), "is_listed": value.is_listed}
+                    for value in sale_mappings]} if shared else {}),
                 "mapping": {"id": mapping.id, "external_id": mapping.native_id, "code": mapping.external_code,
                     "external_product_id": mapping.external_product_id, "external_variant_id": mapping.external_variant_id,
                     "variant_code": mapping.external_code if mapping.is_variant else None, "parent_code": mapping.parent_code, "is_variant": mapping.is_variant} if mapping else None,
@@ -632,7 +645,7 @@ async def save(db, payload: ProductEditorSaveRequest):
         try:
             async with db.begin_nested():
                 if definition_changes:
-                    if await definition_locked(db, product_id):
+                    if row["item_definition_locked"] or await definition_locked(db, product_id):
                         raise EditorError("item_definition_locked")
                     product = await db.get(Product, product_id)
                     for field, value in definition_changes.items():
@@ -680,7 +693,7 @@ async def save(db, payload: ProductEditorSaveRequest):
 async def _edit_identity(db, product_id, patch, row):
     """Caller holds the shared identity lock and per-product lock; audit is atomic."""
     if patch.sku is not None and patch.sku != row["sku"]:
-        if any(shop.get("mapping") for shop in row["shops"]):
+        if any(shop.get("mapping") or shop.get("shared_stock") for shop in row["shops"]):
             raise EditorError("product_editor_mapped_sku_rename")
         from inventory_hub.sku_policy_models import ProductSkuIdentity
         if await db.scalar(select(ProductSkuIdentity.id).where(ProductSkuIdentity.product_id == product_id)):
