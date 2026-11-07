@@ -262,6 +262,40 @@ class ProductConsolidationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('consolidation_reserved_or_quarantined_stock', codes)
         self.assertFalse(preview['eligible'])
 
+    async def test_operator_pause_keeps_matching_prepared_job_as_a_consolidation_blocker(self):
+        from inventory_hub.services import atomer_catalog_control as control
+        campaign = 'c' * 64
+        async with self.transaction() as db:
+            await db.execute(text("INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(:sha,1,'[]')"),
+                             {'sha': 'a' * 64})
+            run = await db.scalar(text("""INSERT INTO atomer_progress_runs(source_sha256,checked_at,totals)
+                VALUES(:sha,now(),'{}') RETURNING id"""), {'sha': 'a' * 64})
+            await db.execute(text("""INSERT INTO atomer_catalog_campaigns
+                (id,run_id,source_sha,admin_sha,shop_fingerprint,actor,selection,state,checked_run_id)
+                VALUES(:id,:run,:source,:admin,:fp,'operator','{}','running',:run)"""),
+                {'id': campaign, 'run': run, 'source': 'a' * 64, 'admin': 'b' * 64, 'fp': 'd' * 64})
+            await db.execute(text("""INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count,stage,document)
+                VALUES(:campaign,'s:synthetic',1,1,'prepared',CAST(:doc AS jsonb))"""),
+                {'campaign': campaign, 'doc': json.dumps({'product_id': self.retired})})
+        async with self.transaction() as db:
+            state = await control.get(db, campaign)
+            await control.change(db, campaign, 'pause', control.ControlRequest(request_id=uuid4(),
+                expected_revision=state['revision'], expected_updated_at=state['updated_at'],
+                reason='Reviewed campaign scheduler maintenance.', confirmed=True), 'operator-token')
+        before = await self.stock()
+        preview = await self.preview()
+        self.assertFalse(preview['eligible'])
+        blockers = preview['dependencies']['blockers']
+        self.assertIn('atomer_catalog_jobs', {row.get('table') for row in blockers})
+        self.assertNotIn('atomer_catalog_controls', {row.get('table') for row in blockers})
+        self.assertNotIn('consolidation_catalog_worker_active', {row['code'] for row in blockers})
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_blocked'):
+            await self.apply(preview)
+        self.assertEqual(await self.stock(), before)
+        async with self.transaction() as db:
+            self.assertEqual(await db.scalar(text('SELECT stage FROM atomer_catalog_jobs')), 'prepared')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductCanonicalAlias)), 0)
+
     async def test_changed_native_axes_barcode_and_exact_id_fail_without_mutations(self):
         for field, value, expected in [('external_id', '99999', 'consolidation_native_identity_ambiguous'),
                                       ('eans', [OTHER_EAN], 'consolidation_native_identity_changed'),
@@ -361,7 +395,7 @@ class ProductConsolidationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             # The deployment runner replays these exact SQL payloads, each in
             # its own transaction. Feature installers039–045 already exist in
             # this fixture, as they do in an upgraded deployment.
-            for number in [*range(5, 39), 46, 47]:
+            for number in [*range(5, 39), 46, 47, 48]:
                 scripts = list(self.sql_root.glob(f'{number:03}_*.sql'))
                 self.assertEqual(len(scripts), 1)
                 await connection.execute(scripts[0].read_text())

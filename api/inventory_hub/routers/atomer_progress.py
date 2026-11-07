@@ -1,5 +1,6 @@
 import asyncio
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import Field
@@ -14,6 +15,7 @@ from inventory_hub.services.atomer_progress_store import latest, ProgressError, 
 from inventory_hub.services.atomer_progress_display import page
 from inventory_hub.services import atomer_missing_native_ean as missing_native_ean
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
+from inventory_hub.services import atomer_catalog_control
 from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity, atomer_standalone_family, atomer_variant_barcode_owners
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
@@ -251,6 +253,34 @@ async def catalog_engine_start(mode: Literal["preview","apply"], selection: atom
     except (ReviewError,CatalogError,SourceError,AtomerSourceError) as error:
         raise HTTPException(getattr(error,"status",422),detail={"code":error.code,
             "retry_after":getattr(error,"retry_after",None)}) from None
+
+
+@router.get("/catalog-engine/campaigns/{campaign_id}/control")
+async def catalog_campaign_control(campaign_id: atomer_catalog_control.CampaignID,
+                                   db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_control.get(db, campaign_id)
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
+@router.post("/catalog-engine/campaigns/{campaign_id}/{action}")
+async def catalog_campaign_change(campaign_id: atomer_catalog_control.CampaignID,
+                                  action: atomer_catalog_control.Action,
+                                  payload: atomer_catalog_control.ControlRequest, request: Request,
+                                  db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_control.change(db, campaign_id, action, payload, _actor(request))
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
+@router.get("/catalog-engine/control-requests/{request_id}")
+async def catalog_campaign_control_receipt(request_id: UUID, db: AsyncSession = Depends(get_session)):
+    try:
+        return await atomer_catalog_control.receipt(db, request_id)
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
 
 @router.post("/generation-observation")
 async def observe_generation_selection(selection: atomer_generations.Selection, db: AsyncSession = Depends(get_session)):

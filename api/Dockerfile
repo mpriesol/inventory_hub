@@ -67,6 +67,7 @@ COPY infra/db-init/044_atomer_progress_target.sql /app/inventory_hub/migrations/
 COPY infra/db-init/045_atomer_catalog_usage.sql /app/inventory_hub/migrations/045_atomer_catalog_usage.sql
 COPY infra/db-init/046_shared_stock_sales.sql /app/inventory_hub/migrations/046_shared_stock_sales.sql
 COPY infra/db-init/047_product_consolidation.sql /app/inventory_hub/migrations/047_product_consolidation.sql
+COPY infra/db-init/048_atomer_catalog_control.sql /app/inventory_hub/migrations/048_atomer_catalog_control.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000
