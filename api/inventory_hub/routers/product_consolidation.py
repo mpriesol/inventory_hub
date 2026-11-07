@@ -26,6 +26,12 @@ async def get(identifier: UUID, db: AsyncSession = Depends(get_session)):
     return await call(service.get(db, str(identifier)))
 
 
+@router.get('/{identifier}/dependency-diagnostics')
+async def dependency_diagnostics(identifier: UUID, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import product_consolidation_diagnostics
+    return await call(product_consolidation_diagnostics.inspect(db, str(identifier)))
+
+
 @router.post('/{identifier}/apply')
 async def apply(identifier: UUID, payload: ProductConsolidationApplyRequest, request: Request,
                 db: AsyncSession = Depends(get_session)):
