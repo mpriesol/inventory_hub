@@ -167,14 +167,14 @@ async def trace(db, *, code='', product_id=None, invoice_page=1, movement_page=1
         shop_rows = await rows(db, """SELECT sp.id,s.code AS shop_code,'shop' AS source,s.name AS label,sp.shop_price AS price,
             sp.last_pull_at AS observed_at
             FROM shop_products sp JOIN shops s ON s.id=sp.shop_id
-            WHERE sp.product_id=:product_id AND sp.is_listed ORDER BY s.name""", params)
+            WHERE sp.product_id=:product_id AND sp.is_listed AND sp.retired_at IS NULL ORDER BY s.name""", params)
         observed = {row['id']: row for row in (await db.execute(text(OBSERVED_SQL), {'ids': [selected]})).mappings().all()}
         price_rows = await rows(db, """SELECT sp.id,CASE WHEN sp.is_variant THEN
             jsonb_path_query_first(c.data, '$.variants[*] ? (@.code == $code).prices', jsonb_build_object('code',sp.external_code))
             ELSE c.data->'prices' END AS prices
             FROM shop_products sp JOIN shop_product_content c ON c.shop_id=sp.shop_id
             AND c.external_code=CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
-            WHERE sp.product_id=:product_id""", params)
+            WHERE sp.product_id=:product_id AND sp.retired_at IS NULL""", params)
         price_data = {row['id']: row['prices'] for row in price_rows}
         product['shops'] = []
         for row in shop_rows:

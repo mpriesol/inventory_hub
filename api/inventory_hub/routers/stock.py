@@ -21,6 +21,7 @@ from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.services.product_editor import effective_names
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.services.stock_tracking import confirmed_stock, current_layer
+from inventory_hub.services.canonical_products import current_product_condition
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -145,7 +146,8 @@ async def stock_summary(db: AsyncSession = Depends(get_session)) -> Dict[str, An
     complete = not any(row.incomplete for row in rows)
     monetary_total = lambda key: float(sum((getattr(row, key) or Decimal(0) for row in rows), Decimal(0)))
     confirmed_products = sum(int(row.products_with_stock or 0) for row in rows)
-    products_total = (await db.execute(select(func.count(Product.id)).where(Product.item_type == "stock"))).scalar() or 0
+    products_total = (await db.execute(select(func.count(Product.id)).where(Product.item_type == "stock",
+        current_product_condition()))).scalar() or 0
     open_orders = int(await db.scalar(select(func.count(ShopOrder.id)).where(
         ShopOrder.stock_state.in_(("pending", "reserved")))) or 0)
     return {"products_total": int(products_total), "products_with_stock": confirmed_products,

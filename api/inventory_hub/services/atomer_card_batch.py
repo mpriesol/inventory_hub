@@ -393,9 +393,12 @@ async def _indices(db,shops):
     products=list(await db.scalars(select(Product)))
     identifiers=list(await db.scalars(select(ProductIdentifier)))
     mappings=list(await db.scalars(select(ShopProduct).where(ShopProduct.shop_id.in_([s.id for s in shops.values()]))))
-    indexes={s:IdentityIndex(shop.id,products,[m for m in mappings if m.shop_id==shop.id],identifiers) for s,shop in shops.items()}
+    from inventory_hub.services.canonical_products import aliases_for
+    redirects=await aliases_for(db,[row.id for row in products])
+    indexes={s:IdentityIndex(shop.id,products,[m for m in mappings if m.shop_id==shop.id],identifiers,
+                            canonical_aliases=redirects) for s,shop in shops.items()}
     aliases=defaultdict(set)
-    local=IdentityIndex(0,products,(),identifiers)
+    local=IdentityIndex(0,products,(),identifiers,canonical_aliases=redirects)
     for code,owners in local.exact_internal_sku.items():
         for owner in owners:
             aliases[owner].add(code)

@@ -1086,16 +1086,20 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                 _assert_payload(item["payload"], expected_active=expected_active)
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
                 async with get_session_context() as db:
+                    # Serialize the final current-owner check and durable
+                    # sending intent against identity-only consolidation.
+                    # The network POST remains outside this short DB section.
+                    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
                     selected = [sources[id] for id in item["product_ids"]]
                     await claim_product_prefix(db, selected)
                     local, _ = await local_identities(db, selected)
                     if await shared_product_ids(db, set(local.values())):
                         raise CatalogError('shared_stock_sale_requires_group_workflow',
                                            'Shared sale identities require the reviewed sale group workflow', 409)
-                assert_availability_fresh(document.get('staging'))
-                item.update(status="uncertain", errors=["import_outcome_unknown"], product_write_attempted=True)
-                result["updated_at"] = now().isoformat()
-                _item_checkpoint(path, result, item)
+                    assert_availability_fresh(document.get('staging'))
+                    item.update(status="uncertain", errors=["import_outcome_unknown"], product_write_attempted=True)
+                    result["updated_at"] = now().isoformat()
+                    _item_checkpoint(path, result, item)
                 rejected = None
                 try:
                     response = await asyncio.to_thread(client.post, "products", {"products": [item["payload"]]})

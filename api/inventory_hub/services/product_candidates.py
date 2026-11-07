@@ -11,6 +11,7 @@ from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, 
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute
 from inventory_hub.product_editor_models import ProductEditorOverride
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.canonical_products import aliases_for, current_product_condition
 from inventory_hub.services.product_identity import VERIFIED_BARCODE_TYPES, barcode_keys, verified_barcodes
 from inventory_hub.services.product_links import axes, LinkError
 
@@ -99,9 +100,11 @@ async def _load_cards(db, ids):
     rows = (await db.execute(query.outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == Product.id)
                             .where(Product.id.in_(ids)).order_by(Product.id))).mappings().all()
     eans, attributes = defaultdict(set), defaultdict(list)
+    redirects = await aliases_for(db, ids)
+    identity_ids = set(ids) | {old for old, keeper in redirects.items() if keeper in ids}
     for pid, value in (await db.execute(select(ProductIdentifier.product_id, ProductIdentifier.value).where(
-            ProductIdentifier.product_id.in_(ids), ProductIdentifier.identifier_type.in_(VERIFIED_BARCODE_TYPES)))).all():
-        eans[pid].update(verified_barcodes((value,)))
+            ProductIdentifier.product_id.in_(identity_ids), ProductIdentifier.identifier_type.in_(VERIFIED_BARCODE_TYPES)))).all():
+        eans[redirects.get(pid, pid)].update(verified_barcodes((value,)))
     for pid, name, value in (await db.execute(select(ProductVariantAttribute.product_id,
             ProductVariantAttribute.attribute_name, ProductVariantAttribute.attribute_value)
             .where(ProductVariantAttribute.product_id.in_(ids))
@@ -234,6 +237,12 @@ async def _find_candidates(db, queries, limit):
         for pid, supplier, code in source_rows[:EXACT_POOL_LIMIT]:
             for key in supplier_queries[(supplier, code)]:
                 exact[key][pid].add('supplier_sku')
+    redirects = await aliases_for(db, {pid for values in exact.values() for pid in values})
+    for key, values in exact.items():
+        projected = defaultdict(set)
+        for pid, reasons in values.items():
+            projected[redirects.get(pid, pid)].update(reasons)
+        exact[key] = projected
     exact_ids = {pid for values in exact.values() for pid in values}
     effective_name = func.coalesce(ProductEditorOverride.data['common']['name'].astext, Product.name)
     compact_sku = func.regexp_replace(_sql_fold(Product.sku), '[^a-z0-9]', '', 'g')
@@ -251,7 +260,8 @@ async def _find_candidates(db, queries, limit):
     fuzzy_ids = []
     if predicates:
         fuzzy_ids = list(await db.scalars(select(Product.id).outerjoin(ProductEditorOverride,
-            ProductEditorOverride.product_id == Product.id).where(or_(*predicates), Product.id.not_in(exact_ids))
+            ProductEditorOverride.product_id == Product.id).where(or_(*predicates), Product.id.not_in(exact_ids),
+                                                                 current_product_condition())
             .order_by(Product.id).limit(FUZZY_POOL_LIMIT + 1)))
     fuzzy_truncated = len(fuzzy_ids) > FUZZY_POOL_LIMIT
     cards = await _load_cards(db, sorted(exact_ids | set(fuzzy_ids[:FUZZY_POOL_LIMIT])))

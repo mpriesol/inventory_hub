@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from inventory_hub.db_models import Product, ProductGroup, ProductIdentifier, Shop, Supplier, SupplierProduct, Warehouse
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent, StockBalance, StockMovement
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
+from inventory_hub.product_consolidation_models import ProductCanonicalAlias
 from inventory_hub.product_editor_types import EditorRowPatch, ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index
@@ -29,6 +30,7 @@ from inventory_hub.services.stock_evidence import physical_stock_evidence
 from inventory_hub.services.stock_tracking import confirmed_stock, current_layer
 from inventory_hub.stock_tracking_models import StockTracking
 from inventory_hub.services.item_units import definition_locked, definition_lock_condition
+from inventory_hub.services.canonical_products import aliases_for, current_product_condition
 
 
 class EditorError(Exception):
@@ -126,7 +128,7 @@ LEFT JOIN LATERAL (SELECT c.data->'_hub_link_metadata'->
  ON link.value->>'external_id' = (CASE WHEN sp.is_variant THEN sp.external_variant_id ELSE sp.external_product_id END) AND link.value->'is_variant' = to_jsonb(sp.is_variant)
  AND link.value->>'code' = sp.external_code
  AND link.value->>'parent_code' = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
-WHERE sp.product_id = ANY(:ids)
+WHERE sp.product_id = ANY(:ids) AND sp.retired_at IS NULL
 """
 
 
@@ -156,6 +158,8 @@ def _make_row(facts, data, revision, warehouse, stock):
         shops.append({**shop, "overrides": overrides, "effective": effective, "published_fields": published,
                       "state": ("published" if desired <= set(published) else "saved_unpublished") if desired else "inherited"})
     return {"id": facts["id"], "sku": facts["sku"], "is_active": facts["is_active"], "group": facts["group"],
+            "canonical_product_id": facts.get("canonical_product_id", facts["id"]),
+            "retired": facts.get("retired", False),
             "item_type": facts.get("item_type", "stock"), "stock_unit": facts.get("stock_unit", "pcs"),
             "item_definition_locked": facts.get("item_definition_locked", False),
             "supplier_linked": facts.get("supplier_linked", False),
@@ -194,10 +198,15 @@ async def _rows(db, ids, warehouse):
         .where(ProductEditorOverride.product_id.in_(ids)).execution_options(populate_existing=True))).all()}
     locked_definitions = set(await db.scalars(select(Product.id).where(Product.id.in_(ids), definition_lock_condition(Product.id))))
     identifiers = defaultdict(list)
+    canonical_aliases = await aliases_for(db, ids)
+    identity_ids = set(ids) | {old for old, keeper in canonical_aliases.items() if keeper in ids}
     for row, supplier_code in (await db.execute(select(ProductIdentifier, Supplier.code).outerjoin(Supplier,
-            ProductIdentifier.supplier_id == Supplier.id).where(ProductIdentifier.product_id.in_(ids))
+            ProductIdentifier.supplier_id == Supplier.id).where(ProductIdentifier.product_id.in_(identity_ids))
             .order_by(ProductIdentifier.is_primary.desc(), ProductIdentifier.id))).all():
         identifiers[row.product_id].append((row, supplier_code))
+        keeper = canonical_aliases.get(row.product_id)
+        if keeper in ids:
+            identifiers[keeper].append((row, supplier_code))
     attributes = defaultdict(list)
     for row in (await db.scalars(select(ProductVariantAttribute).where(ProductVariantAttribute.product_id.in_(ids))
             .order_by(ProductVariantAttribute.display_order, ProductVariantAttribute.attribute_name))).all():
@@ -283,12 +292,15 @@ async def _rows(db, ids, warehouse):
         minimum = (str(int(balance.min_quantity)) if balance.min_quantity == balance.min_quantity.to_integral_value()
                    else _decimal(balance.min_quantity)) if balance is not None else None
         facts = {"id": product.id, "sku": product.sku, "name": product.name, "brand": product.brand,
+            "canonical_product_id": canonical_aliases.get(product.id, product.id),
+            "retired": product.id in canonical_aliases,
             "item_type": product.item_type, "stock_unit": product.stock_unit,
             "item_definition_locked": product.id in locked_definitions,
             "is_active": product.is_active, "supplier_linked": product.supplier_linked,
             "group": {"id": group.id, "code": group.code, "name": group.name} if group else None,
-            "attributes": attributes[product.id] or fallback_attributes, "eans": [identifier.value for identifier, _ in identifiers[product.id]
-                if str(getattr(identifier.identifier_type, "value", identifier.identifier_type)) in ("ean", "upc", "unverified_barcode")],
+            "attributes": attributes[product.id] or fallback_attributes, "eans": list(dict.fromkeys(
+                identifier.value for identifier, _ in identifiers[product.id]
+                if str(getattr(identifier.identifier_type, "value", identifier.identifier_type)) in ("ean", "upc", "unverified_barcode"))),
             "supplier_codes": [{"supplier_code": supplier, "code": sku} for supplier, sku in sorted(codes, key=lambda item: (item[0] or "", item[1]))],
             "shops": shop_values, "warehouse_min_quantity": minimum,
             "supplier_availability": supplier_availability.get(product.id),
@@ -337,6 +349,7 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
     effective_brand = func.coalesce(ProductEditorOverride.data["common"]["brand"].astext, Product.brand)
     statement = select(Product.id).outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == Product.id)
     statement = statement.outerjoin(ProductGroup, ProductGroup.id == Product.group_id)
+    statement = statement.where(current_product_condition())
     if activity != "all":
         statement = statement.where(Product.is_active.is_(activity == "active"))
     if supplier_link != "all":
@@ -351,10 +364,16 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
         matching_linked_products = select(ProductSupplySource.product_id).join(SupplierProduct,
             SupplierProduct.id == ProductSupplySource.supplier_product_id).where(supplier_code_match)
         supplier_match = Product.id.in_(matching_linked_products)
-        identifier_match = exists(select(ProductIdentifier.id).where(ProductIdentifier.product_id == Product.id,
-            _sql_fold(ProductIdentifier.value).like(pattern, escape="\\")))
+        matching_identifiers = select(func.coalesce(ProductCanonicalAlias.canonical_product_id,
+            ProductIdentifier.product_id)).select_from(ProductIdentifier).outerjoin(ProductCanonicalAlias,
+            ProductCanonicalAlias.retired_product_id == ProductIdentifier.product_id).where(
+                _sql_fold(ProductIdentifier.value).like(pattern, escape="\\"))
+        identifier_match = Product.id.in_(matching_identifiers)
+        former_skus = select(Product.id).where(_sql_fold(Product.sku).like(pattern, escape="\\")).correlate(None)
+        former_sku_match = Product.id.in_(select(ProductCanonicalAlias.canonical_product_id).where(
+            ProductCanonicalAlias.retired_product_id.in_(former_skus)))
         statement = statement.where(or_(_sql_fold(Product.sku).like(pattern, escape="\\"), _sql_fold(name).like(pattern, escape="\\"),
-                                       identifier_match, supplier_match))
+                                       identifier_match, supplier_match, former_sku_match))
     if brand is not None:
         statement = statement.where(func.lower(func.trim(effective_brand)) == brand.strip().lower())
     if shop_code:
@@ -589,6 +608,8 @@ async def save(db, payload: ProductEditorSaveRequest):
     ids = [item.get("product_id") for item in payload.changes if type(item.get("product_id")) is int and item["product_id"] > 0]
     duplicates = {key for key, count in Counter(ids).items() if count > 1}
     await db.scalars(select(Product.id).where(Product.id.in_(ids)).order_by(Product.id).with_for_update())
+    from inventory_hub.services.canonical_products import aliases_for
+    canonical_aliases = await aliases_for(db, ids)
     await db.scalars(select(ShopProduct).where(ShopProduct.product_id.in_(ids)).order_by(ShopProduct.id).with_for_update(read=True))
     await db.scalars(select(ShopProductContent.id).where(exists(select(ShopProduct.id).where(ShopProduct.product_id.in_(ids),
         ShopProduct.shop_id == ShopProductContent.shop_id,
@@ -619,6 +640,11 @@ async def save(db, payload: ProductEditorSaveRequest):
         if product_id in duplicates:
             results.append(error("invalid", "product_editor_duplicate_product"))
             continue
+        if product_id in canonical_aliases:
+            response = error('conflict', 'product_retired')
+            response['canonical_product_id'] = canonical_aliases[product_id]
+            results.append(response)
+            continue
         row = rows.get(product_id)
         if row is None:
             results.append(error("missing", "product_editor_product_missing"))
@@ -639,6 +665,11 @@ async def save(db, payload: ProductEditorSaveRequest):
         identity_fields = patch.variant.model_fields_set & {"eans", "sku"} if patch.variant else set()
         identity_changed = bool(identity_fields and any(getattr(patch.variant, field) is not None
             and getattr(patch.variant, field) != row[field] for field in identity_fields))
+        if (identity_changed or definition_changes) and product_id in canonical_aliases.values():
+            # Preserved historical identifiers are effective current evidence.
+            # V1 does not offer an editor path that could silently remove them.
+            results.append(error('conflict', 'canonical_identity_requires_review'))
+            continue
         if changed == row["overrides"] and not identity_changed and not activity_changed and not definition_changes:
             results.append({"product_id": product_id, "status": "saved", "row": _public(row), "errors": []})
             continue

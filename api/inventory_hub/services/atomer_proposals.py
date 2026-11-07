@@ -107,12 +107,12 @@ async def verify_links(db, run, mode, actor):
       AND NOT EXISTS (SELECT 1 FROM atomer_review_work f WHERE f.kind='family' AND f.key=i.family_key
                       AND (f.status<>'open' OR f.scope='biketrek'))
       AND EXISTS (SELECT 1 FROM shop_products s JOIN shops sh ON sh.id=s.shop_id JOIN products p ON p.id=s.product_id
-          WHERE sh.code='xtrek' AND s.product_id=(i.detail->>'hub_id')::integer
+          WHERE sh.code='xtrek' AND s.retired_at IS NULL AND s.product_id=(i.detail->>'hub_id')::integer
           AND p.sku=i.detail->>'hub_sku' AND s.external_product_id=i.detail->>'product_id'
           AND s.external_variant_id IS NOT DISTINCT FROM i.detail->>'variant_id'
           AND s.external_code=i.detail->>'target_code' AND NOT coalesce(s.push_pending,false))
       AND (i.detail->>'bike_state'<>'linked' OR EXISTS (
-          SELECT 1 FROM shop_products s JOIN shops sh ON sh.id=s.shop_id WHERE sh.code='biketrek'
+          SELECT 1 FROM shop_products s JOIN shops sh ON sh.id=s.shop_id WHERE sh.code='biketrek' AND s.retired_at IS NULL
           AND s.product_id=(i.detail->>'hub_id')::integer AND s.id=(i.detail->'bike'->>'link_id')::integer
           AND s.external_product_id=i.detail->'bike'->>'product_id'
           AND s.external_variant_id IS NOT DISTINCT FROM i.detail->'bike'->>'variant_id'

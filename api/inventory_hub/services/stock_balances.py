@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.db_models_ext import StockBalance
 from inventory_hub.db_models import Product
 from inventory_hub.services.stock_publication_gate import require_stock_write_allowed, StockPublicationHoldError
+from inventory_hub.services.canonical_products import require_current_products
 
 
 class StockItemRequiredError(StockPublicationHoldError):
@@ -26,6 +27,9 @@ async def lock_stock_balances(
     await require_stock_write_allowed(db, warehouse_id)
     products = (await db.scalars(select(Product).where(Product.id.in_(sorted(product_ids)))
         .order_by(Product.id).with_for_update(read=True).execution_options(populate_existing=True))).all()
+    # Retirement obtains UPDATE on these same rows. Check only after SHARE:
+    # a writer that observed the old card before retirement cannot resurrect it.
+    await require_current_products(db, product_ids)
     if any(product.item_type != "stock" for product in products):
         raise StockItemRequiredError()
     balances = {}

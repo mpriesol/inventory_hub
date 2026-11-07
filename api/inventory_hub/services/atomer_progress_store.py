@@ -104,7 +104,9 @@ async def refresh(db: AsyncSession, source, expected, only_if_stale=False, revie
     identifiers = (await db.scalars(select(ProductIdentifier))).all()
     links = (await db.scalars(select(ShopProduct).where(ShopProduct.shop_id.in_(shop_ids.values())))).all()
     overrides = dict((await db.execute(select(ProductEditorOverride.product_id, ProductEditorOverride.data))).all())
-    card_index = IdentityIndex(shop_ids["xtrek"], cards, (), identifiers)
+    from inventory_hub.services.canonical_products import aliases_for
+    redirects = await aliases_for(db, [card.id for card in cards])
+    card_index = IdentityIndex(shop_ids["xtrek"], cards, (), identifiers, canonical_aliases=redirects)
     bike_links = defaultdict(list)
     for link in links:
         if link.shop_id == shop_ids["biketrek"]:

@@ -30,7 +30,7 @@ JOIN products p ON (
  EXISTS (SELECT 1 FROM product_supply_sources binding
          WHERE binding.product_id = p.id AND binding.supplier_product_id = source.id
            AND binding.is_active))
-JOIN shop_products sp ON sp.product_id = p.id AND sp.is_listed
+JOIN shop_products sp ON sp.product_id = p.id AND sp.is_listed AND sp.retired_at IS NULL
 JOIN shops shop ON shop.id = sp.shop_id AND shop.code = :shop AND shop.is_active
 JOIN shop_product_content c ON c.shop_id = sp.shop_id
  AND c.external_code = CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END

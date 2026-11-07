@@ -208,12 +208,14 @@ if settings.USE_POSTGRES:
     from inventory_hub.routers.product_editor import router as product_editor_router
     from inventory_hub.routers.product_links import router as product_links_router
     from inventory_hub.routers.shared_stock_sales import router as shared_stock_sales_router
+    from inventory_hub.routers.product_consolidation import router as product_consolidation_router
     from inventory_hub.routers.supplier_card_links import router as supplier_card_links_router
     app.include_router(fifo_router)
     app.include_router(fifo_returns_router)
     app.include_router(product_editor_router)
     app.include_router(product_links_router)
     app.include_router(shared_stock_sales_router)
+    app.include_router(product_consolidation_router)
     app.include_router(supplier_card_links_router)
     from inventory_hub.routers.sku_policy import router as sku_policy_router
     app.include_router(sku_policy_router)

@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import asyncpg
+from current_schema_fixture import apply_current_core_schema
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -28,6 +29,7 @@ class OperatorProgress(unittest.IsolatedAsyncioTestCase):
         for f in ('001_schema.sql','004_shop_product_content.sql','030_shop_identity.sql','037_atomer_progress.sql','038_atomer_review.sql',
                   '040_atomer_catalog_campaign.sql','043_atomer_source_cards.sql'):
             await self.conn.execute((root/f).read_text())
+        await apply_current_core_schema(self.conn)
         await self.conn.execute("""
           INSERT INTO shops(code,name,platform) VALUES ('xtrek','xTrek','upgates'),('biketrek','BIKETREK','upgates') ON CONFLICT DO NOTHING;
           INSERT INTO atomer_progress_sources VALUES(repeat('a',64),2,'[]');
