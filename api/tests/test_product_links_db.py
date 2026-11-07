@@ -150,6 +150,291 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             'code': 'SHARED-A', 'parent_code': 'SHARED-A', 'is_variant': False, 'replace_deleted_variant': True}])
         return mapping_id, request
 
+    async def standalone_replacement_fixture(self, *, variant=False, reused_code=False):
+        old_code = 'SHARED-A' if reused_code else 'OLD-PRODUCT'
+        if variant:
+            self.remote[0] = leaf('NEW-LEAF', 800, eans=[EAN_A], parent_code='NEW-PARENT', parent_id='801')
+        async with self.transaction() as db:
+            mapping = ShopProduct(shop_id=self.shop_id, product_id=self.ids[0], external_code=old_code,
+                external_product_id='800', is_variant=False, is_listed=True, shop_stock=19, shop_price=29,
+                shop_availability='old observation', push_pending=True, last_push_status='ok')
+            db.add(mapping)
+            other_shop = await db.scalar(select(Shop.id).where(Shop.code == 'biketrek'))
+            db.add(ShopProduct(shop_id=other_shop, product_id=self.ids[0], external_code='OTHER-SHOP',
+                               external_product_id='900', is_variant=False, is_listed=True))
+            await db.flush()
+            mapping_id = mapping.id
+            await db.execute(text("""INSERT INTO fifo_states (product_id, warehouse_id, activation_kind)
+                SELECT :product, id, 'receipt' FROM warehouses WHERE code='hlavny-sklad'"""), {'product': self.ids[0]})
+            await db.execute(text("""INSERT INTO fifo_layers
+                (product_id, warehouse_id, receipt_movement_id, physical_received_at,
+                 quantity_original, quantity_remaining, unit_cost, cost_status, provenance)
+                SELECT product_id, warehouse_id, id, now(), 7, 7, 3.1250, 'known', '{"fixture":"receipt"}'
+                FROM stock_movements WHERE idempotency_key='fixture-existing-receipt'"""))
+            await db.execute(text("""INSERT INTO stock_tracking
+                (product_id, warehouse_id, source_type, source_id, operator_name, archived_balance)
+                SELECT :product, id, 'opening', 'fixture', 'test', '{"qty_on_hand":"7"}'
+                FROM warehouses WHERE code='hlavny-sklad'"""), {'product': self.ids[0]})
+        target = self.remote[0]
+        request = self.request(product_ids=[self.ids[0]], manual_matches=[{'product_id': self.ids[0],
+            'code': target['code'], 'parent_code': target['parent_code'], 'is_variant': target['is_variant'],
+            'replace_deleted_product': True}])
+        return mapping_id, request
+
+    async def standalone_snapshot(self):
+        result = await self.snapshot()
+        async with self.sessions() as db:
+            for table in ('fifo_states', 'fifo_layers', 'fifo_allocations', 'fifo_cost_revisions',
+                          'fifo_returns', 'fifo_return_lines', 'fifo_releases', 'stock_tracking',
+                          'reservations', 'shop_order_items', 'stock_native_orders', 'stock_native_events'):
+                result[table] = await db.scalar(text(
+                    f"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM {table} t"))
+        return result
+
+    def absent_products(self):
+        return AsyncMock(return_value={'fingerprint': self.fingerprint, 'requests': 2, 'existing_mapping_ids': []})
+
+    async def assert_standalone_replacement(self, *, variant=False, reused_code=False):
+        mapping_id, request = await self.standalone_replacement_fixture(variant=variant, reused_code=reused_code)
+        before = await self.standalone_snapshot()
+        old_mappings = {mapping.id: service._mapping(mapping) for mapping in await self.mappings()}
+        pulled_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        vault = {'product_id': 800, 'code': 'SHARED-A', 'variants_exists_yn': False,
+                 'prices': [{'price_with_vat': 29}], 'stock': 19, 'descriptions': [{'title': 'Old standalone'}]}
+        if reused_code:
+            async with self.transaction() as db:
+                db.add(ShopProductContent(shop_id=self.shop_id, external_code='SHARED-A', data=vault, pulled_at=pulled_at))
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion, \
+             patch.object(service.source, 'verify_deleted_variants', AsyncMock()) as variants:
+            preview = await self.preview(request)
+            self.assertEqual(preview['rows'][0]['status'], 'ready')
+            self.assertIn('replaces_deleted_product', preview['rows'][0]['warnings'])
+            self.assertEqual(preview['rows'][0]['previous_mapping'], old_mappings[mapping_id])
+            self.assertEqual(await self.standalone_snapshot(), before)
+            result = await self.apply(preview, [self.ids[0]])
+            self.assertEqual(await self.apply(preview, [self.ids[0]]), result)
+            self.assertEqual((await self.preview(request))['result'], result['result'])
+            replay = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.assertEqual(replay['rows'][0]['status'], 'already_linked')
+            self.assertEqual(deletion.await_count, 2)
+            self.assertEqual(deletion.await_args_list[0].args[1], [old_mappings[mapping_id]])
+            self.assertTrue(deletion.await_args_list[0].kwargs['collect_conflicts'])
+            self.assertFalse(deletion.await_args_list[1].kwargs['collect_conflicts'])
+            variants.assert_not_awaited()
+        mappings = {mapping.id: mapping for mapping in await self.mappings()}
+        mapping, target = mappings[mapping_id], self.remote[0]
+        self.assertEqual((mapping.id, mapping.product_id, mapping.external_product_id, mapping.external_variant_id,
+                          mapping.external_code, mapping.parent_code, mapping.is_variant),
+                         (mapping_id, self.ids[0], target['parent_id'], target['external_id'] if variant else None,
+                          target['code'], target['parent_code'] if variant else None, variant))
+        self.assertEqual((mapping.shop_stock, mapping.shop_price, mapping.shop_availability,
+                          mapping.last_push_status, mapping.push_pending), (None, None, None, None, False))
+        for identifier, old in old_mappings.items():
+            if identifier != mapping_id:
+                self.assertEqual(service._mapping(mappings[identifier]), old)
+        self.assertEqual(result['result']['replaced_mappings'], [{'product_id': self.ids[0], 'sku': 'SHARED-A',
+            'eans': [EAN_A], 'previous_mapping': old_mappings[mapping_id], 'mapping': service._mapping(mapping)}])
+        if reused_code:
+            content = await self.content('SHARED-A')
+            self.assertEqual(set(content.data), {'_hub_link_metadata'})
+            self.assertEqual(set(content.data['_hub_link_metadata']), {'product:101'})
+            self.assertEqual(content.pulled_at, pulled_at)
+            async with self.sessions() as db:
+                saved = await db.get(ProductLinkPreview, str(preview['id']))
+                self.assertEqual(saved.result['_content_archives'][0]['data'], vault)
+                self.assertEqual(saved.result['_content_archives'][0]['pulled_at'], pulled_at.isoformat())
+            self.assertNotIn('_content_archives', result['result'])
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_deleted_standalone_recreated_same_code_preserves_stock_fifo_tracking_and_archives_cache(self):
+        await self.assert_standalone_replacement(reused_code=True)
+
+    async def test_deleted_standalone_can_target_variant_with_equal_numeric_id_in_other_namespace(self):
+        await self.assert_standalone_replacement(variant=True)
+
+    async def test_standalone_replacement_requires_its_own_opt_in_and_complete_old_identity(self):
+        mapping_id, request = await self.standalone_replacement_fixture()
+        before = await self.standalone_snapshot()
+        for flags in ({}, {'replace_deleted_variant': True}):
+            match = request.manual_matches[0].model_dump(exclude={'replace_deleted_product', 'replace_deleted_variant'})
+            with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion:
+                preview = await self.preview(self.request(product_ids=[self.ids[0]], manual_matches=[{**match, **flags}]))
+                self.assertEqual(preview['rows'][0]['status'], 'conflict')
+                deletion.assert_not_awaited()
+        async with self.transaction() as db:
+            mapping = await db.get(ShopProduct, mapping_id)
+            mapping.external_product_id = None
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion:
+            preview = await self.preview(request)
+            self.assertIn('product_links_replacement_identity_missing', preview['rows'][0]['errors'])
+            deletion.assert_not_awaited()
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_existing_or_reappeared_standalone_is_conflict_and_fences_apply(self):
+        mapping_id, request = await self.standalone_replacement_fixture()
+        before = await self.standalone_snapshot()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion:
+            deletion.return_value['existing_mapping_ids'] = [mapping_id]
+            blocked = await self.preview(request)
+            self.assertIn('product_links_product_still_exists', blocked['rows'][0]['errors'])
+            with self.assertRaisesRegex(service.LinkError, 'product_links_invalid_selection'):
+                await self.apply(blocked, [self.ids[0]])
+            deletion.return_value['existing_mapping_ids'] = []
+            preview = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            deletion.side_effect = service.source.SourceError('product_links_product_still_exists', 409)
+            with self.assertRaisesRegex(service.LinkError, 'product_links_product_still_exists') as failed:
+                await self.apply(preview, [self.ids[0]])
+            self.assertTrue(failed.exception.known_unapplied)
+            with self.assertRaisesRegex(service.LinkError, 'product_links_preview_expired'):
+                await self.apply(preview, [self.ids[0]])
+        mapping = next(row for row in await self.mappings() if row.id == mapping_id)
+        self.assertEqual(mapping.external_product_id, '800')
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_incomplete_standalone_proof_on_apply_cannot_change_mapping_or_cache(self):
+        mapping_id, request = await self.standalone_replacement_fixture()
+        before = await self.standalone_snapshot()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion:
+            preview = await self.preview(request)
+            deletion.side_effect = service.source.SourceError('source_pagination_incomplete')
+            with self.assertRaisesRegex(service.LinkError, 'source_pagination_incomplete') as failed:
+                await self.apply(preview, [self.ids[0]])
+            self.assertTrue(failed.exception.known_unapplied)
+        self.assertIsNone(await self.content('SHARED-A'))
+        self.assertEqual(next(row for row in await self.mappings() if row.id == mapping_id).external_product_id, '800')
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_foreign_target_owner_appearing_after_preview_blocks_apply(self):
+        mapping_id, request = await self.standalone_replacement_fixture()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()):
+            preview = await self.preview(request)
+            async with self.transaction() as db:
+                db.add(ShopProduct(shop_id=self.shop_id, product_id=self.ids[2], external_code='SHARED-A',
+                                   external_product_id='101', is_variant=False, is_listed=True))
+            before = await self.standalone_snapshot()
+            blocked = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.assertEqual(blocked['rows'][0]['status'], 'conflict')
+            with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual(next(row for row in await self.mappings() if row.id == mapping_id).external_product_id, '800')
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_old_code_publication_blocks_preview_and_new_parent_blocks_apply(self):
+        from inventory_hub.product_editor_models import ProductEditorPublication
+        mapping_id, request = await self.standalone_replacement_fixture(variant=True)
+        async with self.transaction() as db:
+            publication = ProductEditorPublication(id=str(uuid4()), product_id=self.ids[0], shop_id=self.shop_id,
+                state='sending', document={'identity': {'parent_code': 'OLD-PRODUCT'}})
+            db.add(publication)
+        before = await self.standalone_snapshot()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion:
+            blocked = await self.preview(request)
+            self.assertIn('product_links_replacement_in_use', blocked['rows'][0]['errors'])
+            deletion.assert_not_awaited()
+            async with self.transaction() as db:
+                current = await db.get(ProductEditorPublication, publication.id)
+                current.state = 'completed'
+            preview = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            async with self.transaction() as db:
+                current = await db.get(ProductEditorPublication, publication.id)
+                current.state, current.document = 'uncertain', {'identity': {'parent_code': 'NEW-PARENT'}}
+            with self.assertRaisesRegex(service.LinkError, 'product_links_replacement_in_use'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_reserved_order_blocks_preview_and_apply(self):
+        from inventory_hub.db_models_ext import ShopOrder, ShopOrderItem
+        mapping_id, request = await self.standalone_replacement_fixture()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()):
+            preview = await self.preview(request)
+            async with self.transaction() as db:
+                order = ShopOrder(shop_id=self.shop_id, external_id='standalone-reserved-order',
+                                  order_date=datetime.now(timezone.utc), stock_state='reserved')
+                db.add(order)
+                await db.flush()
+                db.add(ShopOrderItem(order_id=order.id, product_id=self.ids[0], external_item_id='line-1',
+                                    external_product_code='OLD-PRODUCT', quantity=2, stock_managed=True))
+            before = await self.standalone_snapshot()
+            blocked = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.assertIn('product_links_replacement_in_use', blocked['rows'][0]['errors'])
+            with self.assertRaisesRegex(service.LinkError, 'product_links_replacement_in_use'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_ambiguous_target_or_changed_ean_cannot_be_applied(self):
+        mapping_id, request = await self.standalone_replacement_fixture()
+        before = await self.standalone_snapshot()
+        self.remote.append(leaf('SHARED-A', 999, eans=[EAN_A]))
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()):
+            blocked = await self.preview(request)
+            self.assertIn('ambiguous_remote_match', blocked['rows'][0]['errors'])
+            with self.assertRaisesRegex(service.LinkError, 'product_links_invalid_selection'):
+                await self.apply(blocked, [self.ids[0]])
+            self.remote.pop()
+            preview = await self.preview(request.model_copy(update={'request_id': uuid4()}))
+            self.remote[0]['eans'] = [EAN_B]
+            with self.assertRaisesRegex(service.LinkError, 'product_links_remote_changed'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_unresolved_stock_sync_blocks_apply(self):
+        from inventory_hub.stock_sync_models import StockSyncItem, StockSyncRun
+        mapping_id, request = await self.standalone_replacement_fixture()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()):
+            preview = await self.preview(request)
+            async with self.transaction() as db:
+                warehouse = await db.scalar(text("SELECT id FROM warehouses WHERE code='hlavny-sklad'"))
+                run = StockSyncRun(id=str(uuid4()), shop_id=self.shop_id, warehouse_id=warehouse,
+                                  target_fingerprint=self.fingerprint, settings_revision=1, trigger='manual')
+                db.add(run)
+                await db.flush()
+                db.add(StockSyncItem(run_id=run.id, shop_id=self.shop_id, warehouse_id=warehouse,
+                                    sku='SHARED-A', status='uncertain'))
+            before = await self.standalone_snapshot()
+            with self.assertRaisesRegex(service.LinkError, 'product_links_replacement_in_use'):
+                await self.apply(preview, [self.ids[0]])
+        self.assertEqual(next(row for row in await self.mappings() if row.id == mapping_id).external_product_id, '800')
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_existing_native_order_effect_blocks_preview(self):
+        from inventory_hub.db_models_ext import ShopOrder
+        from inventory_hub.stock_native_models import StockNativeEvent, StockNativeOrder
+        mapping_id, request = await self.standalone_replacement_fixture()
+        async with self.transaction() as db:
+            warehouse = await db.scalar(text("SELECT id FROM warehouses WHERE code='hlavny-sklad'"))
+            order = ShopOrder(shop_id=self.shop_id, external_id='native-effect',
+                              order_date=datetime.now(timezone.utc), stock_state='none')
+            db.add(order)
+            await db.flush()
+            event = StockNativeEvent(order_id=order.id, revision=1, source_hash='b' * 64,
+                                     facts={'lines': [{'product_id': self.ids[0], 'native': True}]})
+            db.add(event)
+            await db.flush()
+            db.add(StockNativeOrder(order_id=order.id, shop_id=self.shop_id, warehouse_id=warehouse,
+                revision=1, order_revision=1, event_id=event.id, source_hash='b' * 64,
+                source_updated_at=datetime.now(timezone.utc), status_id=1, status_type='new'))
+        before = await self.standalone_snapshot()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()) as deletion:
+            preview = await self.preview(request)
+            self.assertIn('product_links_replacement_in_use', preview['rows'][0]['errors'])
+            deletion.assert_not_awaited()
+        self.assertEqual(await self.standalone_snapshot(), before)
+
+    async def test_standalone_cannot_archive_unrelated_same_code_cache(self):
+        mapping_id, request = await self.standalone_replacement_fixture(reused_code=True)
+        async with self.transaction() as db:
+            db.add(ShopProductContent(shop_id=self.shop_id, external_code='SHARED-A',
+                                      data={'product_id': 999, 'code': 'SHARED-A'}))
+        before = await self.standalone_snapshot()
+        with patch.object(service.source, 'verify_deleted_products', self.absent_products()):
+            preview = await self.preview(request)
+            with self.assertRaisesRegex(service.LinkError, 'product_links_identity_changed') as failed:
+                await self.apply(preview, [self.ids[0]])
+            self.assertTrue(failed.exception.known_unapplied)
+        self.assertEqual((await self.content('SHARED-A')).data, {'product_id': 999, 'code': 'SHARED-A'})
+        self.assertEqual(next(row for row in await self.mappings() if row.id == mapping_id).external_product_id, '800')
+        self.assertEqual(await self.standalone_snapshot(), before)
+
     async def test_deleted_pos_variant_relinks_same_card_and_preserves_ledger_with_replay(self):
         mapping_id, request = await self.replacement_fixture()
         before = await self.snapshot()

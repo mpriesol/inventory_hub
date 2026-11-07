@@ -3986,8 +3986,9 @@
       "source_authentication_failed": "The shop denied access. Check the connection settings.",
       "product_links_mapping_missing": "The mapping no longer exists. Open product linking to check it.",
       "product_links_variant_still_exists": "The old variant still exists in the shop. Resolve the duplicate first.",
-      "product_links_replacement_identity_missing": "The old variant link is missing an exact native ID or code. Refresh the original link from the shop first.",
-      "product_links_replacement_not_allowed": "Only a deleted variant link may be replaced with an existing product or variant.",
+      "product_links_product_still_exists": "The old standalone product still exists in the shop. Resolve the duplicate first.",
+      "product_links_replacement_identity_missing": "The original link is missing an exact native ID or code. Refresh the original link from the shop first.",
+      "product_links_replacement_not_allowed": "Only a deleted product or variant link may be replaced, using the explicit option for its original kind.",
       "product_links_replacement_in_use": "This link has a pending or dependent operation. Complete or resolve it first.",
       "product_links_identity_in_use": "An update for this product is still sending or has an uncertain result. Resolve the original operation first; the link will remain unchanged.",
       "product_links_replacement_ean_mismatch": "Replacement requires exactly the same valid EANs on the stock card and the new variant or product."
@@ -4020,6 +4021,7 @@
       "unmapped_sku_collision": "Multiple cards have the same SKU ignoring letter case.",
       "assigned_product_changed": "The code and identifiers do not belong to the selected card.",
       "replaces_deleted_variant": "Once deletion of the original variant is verified, the link will move to the selected product or variant.",
+      "replaces_deleted_product": "Once deletion of the original standalone product is verified, the link will move to the selected product or variant.",
       "native_identity_verification": "Confirmation will add the verified shop IDs to the existing link. The stock card and quantities will be preserved."
     },
     "allAlreadyLinked": "All selected cards are already linked to {{shop}}.",

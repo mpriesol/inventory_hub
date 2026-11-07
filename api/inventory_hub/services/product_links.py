@@ -273,7 +273,8 @@ def _choice(facts, leaves, manual=None, cached=()):
 
 
 async def _replacement_mappings(db, shop, manual, choices, *, expected=None, errors=None):
-    selected = {pid for pid, item in manual.items() if item.get('replace_deleted_variant')}
+    selected = {pid for pid, item in manual.items()
+                if item.get('replace_deleted_variant') or item.get('replace_deleted_product')}
     if not selected:
         return {}
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
@@ -294,13 +295,17 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
                 and row.external_product_id == remote['parent_id'] and row.native_id == remote['external_id']):
             continue
         try:
-            if row is None or not row.is_variant or not row.is_listed:
+            if (row is None or not row.is_listed or not target.get(
+                    'replace_deleted_variant' if row.is_variant else 'replace_deleted_product')):
                 raise LinkError('product_links_replacement_not_allowed')
             try:
                 source._native_id(row.external_product_id)
-                source._native_id(row.external_variant_id)
-                exact_code(row.parent_code)
                 exact_code(row.external_code)
+                if row.is_variant:
+                    source._native_id(row.external_variant_id)
+                    exact_code(row.parent_code)
+                elif row.external_variant_id is not None or row.parent_code is not None:
+                    raise ValueError('A standalone mapping has no variant or parent code')
             except (ValueError, TypeError, source.SourceError):
                 raise LinkError('product_links_replacement_identity_missing') from None
             native = await db.scalar(select(StockNativeOrder.order_id).join(StockNativeEvent,
@@ -312,7 +317,8 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
             if native is not None or active is not None:
                 raise LinkError('product_links_replacement_in_use')
             await _require_mapping_write_available(db, shop, row,
-                {row.parent_code, target['parent_code'], target['code']}, 'product_links_replacement_in_use')
+                {row.parent_code if row.is_variant else row.external_code, target['parent_code'], target['code']},
+                'product_links_replacement_in_use')
             mappings[pid] = _mapping(row)
         except LinkError as error:
             if errors is None:
@@ -321,6 +327,20 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
     if expected is not None and mappings != expected:
         raise LinkError('product_links_identity_changed')
     return mappings
+
+
+async def _verify_replacement_absence(shop_code, mappings, fingerprint, *, max_requests, collect_conflicts=False):
+    """Keep both original identity namespaces under one remote-read budget."""
+    requests, existing = 0, []
+    for is_variant, verify in ((True, source.verify_deleted_variants), (False, source.verify_deleted_products)):
+        selected = [mapping for mapping in mappings if mapping['is_variant'] is is_variant]
+        if not selected:
+            continue
+        result = await _source_call(verify(shop_code, selected, fingerprint,
+            max_requests=max_requests - requests, collect_conflicts=collect_conflicts))
+        requests += result['requests']
+        existing.extend(result.get('existing_mapping_ids', []))
+    return {'requests': requests, 'existing_mapping_ids': existing}
 
 
 async def _require_mapping_write_available(db, shop, mapping, parents, error_code):
@@ -362,7 +382,8 @@ async def _rows(db, shop, facts, choices, replacements=None):
                'local_hash': _facts_hash(item)}
         if pid in replacements:
             row['previous_mapping'] = replacements[pid]
-            row['warnings'].append('replaces_deleted_variant')
+            row['warnings'].append('replaces_deleted_variant' if replacements[pid]['is_variant']
+                                   else 'replaces_deleted_product')
             if remote is None:
                 row['errors'].append('product_links_replacement_not_allowed')
             elif (not row['local_eans'] or set(row['local_eans']) != set(remote['eans'])
@@ -481,9 +502,17 @@ async def _cache_metadata(db, shop_id, leaves, *, replacements=None):
                 raise LinkError('product_links_identity_changed')
             for leaf in grouped[parent_code]:
                 previous = replacements.get(_metadata_key(leaf))
-                if (not previous or not previous.get('is_variant') or not previous.get('is_listed')
-                        or previous.get('parent_code') != parent_code
+                if (not previous or not previous.get('is_listed')
                         or previous.get('external_product_id') != previous_parent_id):
+                    raise LinkError('product_links_identity_changed')
+                if previous.get('is_variant') is True:
+                    previous_code = previous.get('parent_code')
+                elif (previous.get('is_variant') is False and previous.get('parent_code') is None
+                      and previous.get('external_variant_id') is None):
+                    previous_code = previous.get('external_code')
+                else:
+                    raise LinkError('product_links_identity_changed')
+                if previous_code != parent_code:
                     raise LinkError('product_links_identity_changed')
             if any(isinstance(item, dict) and item.get('parent_id') != previous_parent_id
                    for item in metadata.values()):
@@ -573,8 +602,10 @@ async def refresh(db, payload):
 async def preview(db, payload, *, actor=None):
     raw = payload.model_dump(mode='json')
     for match in raw['manual_matches']:
-        if not match.get('replace_deleted_variant'):
-            match.pop('replace_deleted_variant', None)
+        # Default-false additions must not change hashes of persisted requests.
+        for flag in ('replace_deleted_variant', 'replace_deleted_product'):
+            if not match.get(flag):
+                match.pop(flag, None)
     request_hash = digest(raw)
     existing = await db.get(ProductLinkPreview, str(payload.request_id))
     if existing is not None:
@@ -612,17 +643,18 @@ async def preview(db, payload, *, actor=None):
         observed['requests'] += extra['requests']
     leaves = _unique(leaves)
     # Recreated products can reuse both codes. Only freshly observed native
-    # IDs distinguish an existing link from a deleted-variant replacement.
+    # IDs distinguish an existing link from a deletion-verified replacement.
     choices = {pid: _choice(item, leaves, manual.get(pid), cached) for pid, item in facts.items()}
     replacement_errors = {}
     replacements = await _replacement_mappings(db, shop, manual, choices, errors=replacement_errors)
     await db.commit()  # Release mapping locks before checking remote deletion.
     deletion_errors = {}
     if replacements:
-        deleted = await _source_call(source.verify_deleted_variants(payload.shop_code, list(replacements.values()),
-            observed['fingerprint'], max_requests=MAX_REQUESTS - observed['requests'], collect_conflicts=True))
+        deleted = await _verify_replacement_absence(payload.shop_code, list(replacements.values()),
+            observed['fingerprint'], max_requests=MAX_REQUESTS - observed['requests'], collect_conflicts=True)
         observed['requests'] += deleted['requests']
-        deletion_errors = {pid: 'product_links_variant_still_exists' for pid, mapping in replacements.items()
+        deletion_errors = {pid: ('product_links_variant_still_exists' if mapping['is_variant']
+                                else 'product_links_product_still_exists') for pid, mapping in replacements.items()
                            if mapping['id'] in deleted.get('existing_mapping_ids', [])}
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
     # Concurrent equal UUID requests share the first committed observation.
@@ -733,8 +765,8 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     await db.commit()
     observed = await _source_call(source.verify(shop_code, frozen, fingerprint, max_requests=MAX_REQUESTS))
     if replacements:
-        deleted = await _source_call(source.verify_deleted_variants(shop_code, list(replacements.values()),
-            fingerprint, max_requests=MAX_REQUESTS - observed['requests']))
+        deleted = await _verify_replacement_absence(shop_code, list(replacements.values()),
+            fingerprint, max_requests=MAX_REQUESTS - observed['requests'])
         observed['requests'] += deleted['requests']
     current = {remote_key(leaf): leaf for leaf in _unique(observed['leaves'])}
     if observed['fingerprint'] != fingerprint or any(remote_key(leaf) not in current or
@@ -755,7 +787,9 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
     if any(_facts_hash(facts[item['product_id']]) != item['local_hash'] for item in selected):
         raise LinkError('product_links_identity_changed')
     choices = {item['product_id']: (current[remote_key(item['remote'])], item['match_by'], 1) for item in selected}
-    manual = {item['product_id']: {**item['remote'], 'replace_deleted_variant': True} for item in selected
+    manual = {item['product_id']: {**item['remote'],
+              ('replace_deleted_variant' if replacements[item['product_id']]['is_variant']
+               else 'replace_deleted_product'): True} for item in selected
               if item['product_id'] in replacements}
     replacements = await _replacement_mappings(db, shop, manual, choices, expected=replacements)
     checked = await _rows(db, shop, facts, choices, replacements)

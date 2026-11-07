@@ -1,5 +1,20 @@
 # Inventory Hub — prehľad projektu
 
+## Výmena väzby po vymazaní samostatného produktu (7. 11. 2026)
+
+[API pre existujúce väzby](docs/product-links.md#nahradenie-už-vymazaného-samostatného-produktu)
+prijíma výslovné `replace_deleted_product=true` pre staré samostatné produkty.
+Náhľad aj potvrdenie dokazujú neprítomnosť pôvodného natívneho ID produktu
+v nearchivovanej aj archivovanej časti `GET /products/simple`. Premenovaný,
+neaktívny, archivovaný alebo na variantového rodiča zmenený produkt výmenu blokuje.
+Nový cieľ môže byť samostatný produkt alebo presný variant; vyžaduje rovnakú
+neprázdnu množinu overených EAN a voľné vlastníctvo. Zachovajú sa ID karty aj
+mapovania, SKU, identifikátory, sklad, FIFO a história. Objednávkové, publikačné
+a synchronizačné kontroly sa opakujú pred zápisom; príslušná stará cache sa
+archivuje v tej istej transakcii ako zmena väzby.
+Pôvodný príznak `replace_deleted_variant` a uložené request hashe zostávajú
+kompatibilné. Bez novej SQL migrácie, ovládača v UI alebo vzdialeného zápisu.
+
 ## Výmena väzby na nový variant (4. 11. 2026)
 
 Existujúci postup [náhrady vymazaného pokladňového variantu](docs/product-links.md#nahradenie-už-vymazaného-pokladňového-variantu)

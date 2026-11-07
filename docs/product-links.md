@@ -175,3 +175,68 @@ sa robí kompatibilným revert PR; nevracia už vykonané väzby na vymazané ci
 Syntetické testy overujú zachovanie kariet, identifikátorov a pohybov, audit,
 opakovanie, EAN/rodičovské konflikty, vlastníctvo cieľa a nevyjasnenú publikáciu.
 Nasadenie ani tieto testy samy nepotvrdzujú dokončenie konkrétnej živej dávky.
+
+## Nahradenie už vymazaného samostatného produktu
+
+API podporuje aj starú samostatnú položku prostredníctvom samostatného
+opt-in príznaku `manual_matches[].replace_deleted_product = true`.
+`replace_deleted_variant` zostáva výhradne pre pôvodnú variantovú väzbu;
+oba príznaky nesmú byť súčasne `true`. `is_variant` naďalej opisuje **nový
+cieľ**, takže vymazaný samostatný produkt možno nahradiť iným samostatným
+produktom aj konkrétnym variantom. Príklad syntetického vstupu náhľadu:
+
+```json
+{
+  "request_id": "5f04537b-e8e9-4334-b6fd-72c5fe95bd3e",
+  "shop_code": "xtrek",
+  "product_ids": [42],
+  "manual_matches": [{
+    "product_id": 42,
+    "code": "NEW-LEAF",
+    "parent_code": "NEW-PARENT",
+    "is_variant": true,
+    "replace_deleted_product": true
+  }]
+}
+```
+
+Pôvodná väzba musí byť aktívne evidovaná (`is_listed=true`) a musí mať
+overené `external_product_id`, presný `external_code`, `is_variant=false`,
+`external_variant_id=null` a `parent_code=null`. Pri náhľade **aj potvrdení**
+server číta `GET /products/simple` s filtrom pôvodných `product_ids`,
+`variants_yn=false` a osobitne `archived_yn=false` i `archived_yn=true`.
+Ak sa pôvodné ID objaví v ktoromkoľvek úplnom zozname, produkt stále existuje;
+platí to aj po premenovaní, deaktivácii alebo zmene na rodiča variantov.
+Chýbajúci kód, prázdna neúplná odpoveď ani viditeľnosť produktu nie sú dôkazom
+vymazania. Chybné stránkovanie, filtrovanie, spojenie alebo prekročenie limitu
+čítačov zastaví operáciu. Zmiešané výmeny produktov a variantov zdieľajú
+pôvodný limit ôsmich vzdialených požiadaviek na jednu fázu.
+
+Náhľad uvádza `replaces_deleted_product`, pôvodnú mapovaciu položku a presný
+nový cieľ. Existujúci pôvodný produkt spôsobí konflikt riadka
+`product_links_product_still_exists`; ostatné pripravené riadky možno vybrať
+samostatne. Opätovné objavenie pôvodného produktu pri potvrdení zastaví celú
+vybranú transakciu a pôvodný náhľad sa ohradí rovnakým postupom
+`known_unapplied` ako pri variantových výmenách.
+
+Platí rovnaká neprázdna, presne zhodná množina overených čiarových kódov,
+vlastníctvo cieľa a kontrola protichodných osí ako pri výmene variantu.
+Aktívne objednávky, natívne účinky, odosielané alebo nevyjasnené skladové,
+produktové a cenové publikácie zostávajú blokujúce. Kontrola publikácií
+zahŕňa pôvodný samostatný kód aj nový rodičovský a cieľový kód. V jednej
+transakcii sa zmení iba tá istá väzba a jej pozorované metadáta; ID karty,
+SKU, identifikátory, skladové zostatky, sledovanie, pohyby, FIFO a objednávková
+história zostávajú zachované. Audit `replaced_mappings` obsahuje obe identity.
+
+Pri opätovnom použití pôvodného kódu sa predchádzajúca kompletná cache
+archivuje do `_content_archives` iba vtedy, keď jej natívne ID a kód presne
+zodpovedajú overenej pôvodnej samostatnej väzbe. Cache tretej identity je
+konflikt. Archív, zmena väzby a výsledok sa uložia atomicky; čas úplného
+načítania sa neobnoví a aktívna cache obsahuje iba nové navigačné metadáta.
+
+Nezadané aj `false` príznaky sa pred výpočtom request hash vynechávajú, preto
+staršie variantové a bežné náhľady zostávajú obnoviteľné. Opakovanie presnej
+dokončenej dávky vráti pôvodný výsledok bez ďalších vzdialených čítaní či
+zápisov. Nový náhľad už správne prepojeného cieľa vráti `already_linked` aj
+s pôvodným opt-in príznakom. Rozšírenie je dostupné cez API bez nového
+ovládača v UI, SQL migrácie alebo automatického mazania v e-shope.
