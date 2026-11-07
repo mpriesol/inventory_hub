@@ -190,7 +190,8 @@ Upgates import, with matching source, creator and original SKU reference. It
 preserves their full-precision records and all unconfirmed balances unchanged.
 Any confirmed tracking, FIFO state/layer/receipt/cutover, reservation,
 quarantine, nonlegacy movement, receiving or inventory-count dependency blocks
-the group. Existing order lines by product ID, sale mapping or former/current
+the group by default. A narrowly verified keeper receipt can use the explicit
+option below. Existing order lines by product ID, sale mapping or former/current
 sales code also block it. Supplier bindings and editor/SKU overrides can remain
 on the keeper; such dependencies on a duplicate require a later supported
 design. They are not silently moved.
@@ -218,6 +219,71 @@ Catalog publication also holds the shared identity lock for its final current
 owner check and durable sending checkpoint. Its HTTP POST remains outside the
 lock. A stale preparation cannot publish a former SKU as a new canonical card
 after retirement.
+
+### Explicit keeper invoice and paused receiving preservation
+
+`preserve_keeper_invoice_receiving` is a strict boolean preview option, default
+`false`. Omission and explicit `false` retain the original request hash and old
+UUID replay behavior. `true` freezes an additional server-generated proof in
+the preview. The client cannot specify exempt invoice IDs, receiving lines or
+dependency tables. This option changes neither archive matching nor physical
+receiving. It does not call reconcile, resume or finalize.
+
+The server scans the complete receiving scope, including NULL-product lines,
+raw supplier SKU/GTIN values, stored supplier-product references and referenced
+saved drafts. Both the raw resolver used by finalization and the enriched
+receiving projection must independently and unambiguously resolve each relevant
+line to the keeper before and after the identity alias is created. The stored
+line may already point to the keeper or remain NULL. Its session must remain
+paused. A reference, candidate, pin or referenced draft identity on a retired
+card blocks the group. Missing configuration, incomplete discovery, unresolved
+source evidence and relevant warnings also block it. A directly linked import
+draft on a related receiving session remains a hold even if it is settled or
+its document is empty and contains no selected product token. This option does
+not exempt import intentions. Discovery currently bounds
+the installation to 1,000 sessions, 20,000 receiving lines and 2,000 selected
+invoice claims; exceeding a bound returns a hold rather than a partial scan.
+
+Only parsed purchase invoice claims already pinned to the keeper qualify. They
+must have a verified source hash and independently consistent raw identity and
+stored supplier source. An optional receiving header link must identify the
+same supplier and invoice number in a paused session with a proven relevant
+line. It is not treated as a line-to-line foreign key. Any retired invoice
+claim remains blocked. The existing guards for orders, tracking, FIFO, reserved
+stock, other financial references and active operation documents are unchanged.
+
+The proof stores IDs, counts and full stored-row hashes for the complete relevant
+invoice documents and receiving sessions, including all their lines, scan
+records, source snapshots and referenced drafts. It does not expose invoice
+contents in a preview. Apply compares the proof with the frozen preview, then
+repeats both identity resolutions and all preservation hashes after alias
+creation. Any difference rolls back the entire consolidation and expires that
+review with its existing known-unapplied fence. Original quantities, prices,
+costs, product pins, NULLs, session status and timestamps are preserved.
+
+Input tables use `SHARE NOWAIT` after the existing identity/Product lock order.
+This prevents a concurrent unbound line or source row appearing between the
+final scan and commit. The proof does not acquire receiving row locks, because
+receiving writers acquire their session before the shared identity lock.
+An already active writer produces a busy conflict rather than a lock cycle.
+
+Supplier configuration is read under a shared filesystem lease on the existing
+prefix registry lock, held through proof and commit. The proof never calls the
+ordinary loader, which can discover and write registry entries. Normal config
+load/save/claim/rotate first try the exclusive lock without waiting. Contention
+inside an asyncio event loop returns HTTP409 `supplier_configuration_busy`
+before that config operation changes data; synchronous worker threads/processes
+retain their serialized waiting behavior. The global response does not assert
+that an entire enclosing batch was unapplied: existing per-item journals and
+uncertain-write recovery still apply.
+
+This extension requires no SQL migration. Isolated PostgreSQL tests exercise
+two keeper invoice claims, a paused NULL-product line, unchanged full rows and
+stock, raw/enriched disagreements, retired pins, a new unbound phantom, writer
+contention, session/identity lock order and post-alias rollback. A separate
+synthetic future receiving test verifies that an explicit later reconcile and
+finalize still use the same keeper, quantity, cost and movement UUID. Those
+tests do not authorize or perform a production receipt.
 
 ## Current reads and historical records
 

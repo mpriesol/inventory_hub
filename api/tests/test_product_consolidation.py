@@ -68,6 +68,15 @@ class ProductConsolidationInputTests(unittest.TestCase):
         with self.assertRaisesRegex(product_links.LinkError, 'consolidation_absent_code_selected_as_target'):
             service._plan(request, {'mappings': [row]})
 
+    def test_keeper_preservation_requires_strict_boolean_and_has_no_client_exemption_ids(self):
+        for value in (1, 0, 'true', 'false', None):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                ProductConsolidationPreviewRequest(**{**body(), 'preserve_keeper_invoice_receiving': value})
+        self.assertFalse(ProductConsolidationPreviewRequest(**body()).preserve_keeper_invoice_receiving)
+        for key in ('allowed_invoice_line_ids', 'allowed_receiving_line_ids', 'ignored_dependencies'):
+            with self.subTest(key=key), self.assertRaises(ValidationError):
+                ProductConsolidationPreviewRequest(**{**body(), key: [1]})
+
     def test_only_unchanged_complete_unit_factor_and_literal_confirmations_are_accepted(self):
         self.assertEqual(ProductConsolidationPreviewRequest(**body()).additional_sales[0].sale_to_stock_factor, 1)
         for factor in (0, 2, 8, True, 1.0, '1', None):

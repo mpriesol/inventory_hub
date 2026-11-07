@@ -7,6 +7,7 @@ session -> identity locked operation, preserving the scanner's lock order.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from hashlib import sha256
 from uuid import uuid4
@@ -48,11 +49,17 @@ def _barcode_keys(eans):
     return {ProductIdentifierService.gtin_key(ean) for ean in eans}
 
 
-def _identity(session, line, prefix, source=None, *, expected=None):
+def raw_identity(supplier_id, line, prefix):
+    """The un-enriched identity used again by physical receiving finalization."""
     sku = (line.supplier_sku or '').strip()
     return RemoteIdentity(0, prefix + sku if sku else '',
+        barcodes=(line.ean or '',), supplier_id=supplier_id, supplier_sku=sku,
+        expected_product_id=line.product_id)
+
+
+def _identity(session, line, prefix, source=None, *, expected=None):
+    return replace(raw_identity(session.supplier_id, line, prefix),
         barcodes=(line.ean or '', *(source.eans if source else [])),
-        supplier_id=session.supplier_id, supplier_sku=sku,
         expected_product_id=line.product_id if expected is None else expected)
 
 
@@ -131,9 +138,9 @@ async def _prepared_product_ids(db, session):
     return candidates
 
 
-async def inspect_products(db, session, prefix):
+async def inspect_products(db, session, prefix, *, supplier_cfg=None):
     """Return a read-only projection plus trusted source/product objects."""
-    cfg = supplier_config(session.supplier.code)
+    cfg = supplier_config(session.supplier.code) if supplier_cfg is None else supplier_cfg
     verified = await _feed_verified(db, session, cfg)
     by_sku, by_ean, malformed = await _catalog_candidates(db, session)
     verified = verified and not malformed

@@ -42,7 +42,7 @@ from inventory_hub.services import receiving_source
 from inventory_hub.services.item_units import receipt_values, validate_stock_quantity, ItemUnitError
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
-from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
+from inventory_hub.supplier_prefix import SupplierPrefixError, canonical_supplier_sku, get_supplier_prefix
 from inventory_hub.routers.receiving import _update_invoice_status
 from inventory_hub.access import operator_access
 from inventory_hub.routers.product_editor import NoStoreRoute
@@ -340,9 +340,8 @@ def _request_actor(request: Optional[Request], fallback: str) -> str:
 
 
 def _receiving_identity(supplier: Supplier, line: ReceivingLine, prefix: str) -> RemoteIdentity:
-    sku = (line.supplier_sku or "").strip()
-    return RemoteIdentity(0, f"{prefix}{sku}" if sku else "", barcodes=(line.ean or "",),
-        supplier_id=supplier.id, supplier_sku=sku, expected_product_id=line.product_id)
+    from inventory_hub.services.receiving_products import raw_identity
+    return raw_identity(supplier.id, line, prefix)
 
 
 def _identity_error(line: ReceivingLine, resolution) -> HTTPException:
