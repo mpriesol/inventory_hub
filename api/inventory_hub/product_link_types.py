@@ -23,6 +23,7 @@ class ProductLinkMatch(LinkInput):
     parent_code: StrictStr
     is_variant: StrictBool
     replace_deleted_variant: StrictBool = False
+    replace_deleted_product: StrictBool = False
 
     @field_validator('code', 'parent_code')
     @classmethod
@@ -33,6 +34,8 @@ class ProductLinkMatch(LinkInput):
     def standalone_parent(self):
         if not self.is_variant and self.parent_code != self.code:
             raise ValueError('A standalone product is its own parent')
+        if self.replace_deleted_variant and self.replace_deleted_product:
+            raise ValueError('Choose the kind of the original deleted mapping')
         return self
 
 

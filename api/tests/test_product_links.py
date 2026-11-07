@@ -34,6 +34,17 @@ def apply_body(**changes):
 
 
 class ProductLinksInputTests(unittest.TestCase):
+    def test_deleted_product_opt_in_is_strict_exclusive_and_independent_of_target_kind(self):
+        for is_variant in (False, True):
+            match = ProductLinkMatch(product_id=1, code='NEW', parent_code='PARENT' if is_variant else 'NEW',
+                                     is_variant=is_variant, replace_deleted_product=True)
+            self.assertTrue(match.replace_deleted_product)
+            self.assertFalse(match.replace_deleted_variant)
+        for flags in ({'replace_deleted_product': 'true'}, {'replace_deleted_product': 1},
+                      {'replace_deleted_product': True, 'replace_deleted_variant': True}):
+            with self.subTest(flags=flags), self.assertRaises(ValidationError):
+                ProductLinkMatch(product_id=1, code='NEW', parent_code='NEW', is_variant=False, **flags)
+
     def test_deleted_variant_can_target_an_explicit_variant_under_another_parent(self):
         match = ProductLinkMatch(product_id=1, code='NEW-LEAF', parent_code='NEW-PARENT',
                                  is_variant=True, replace_deleted_variant=True)
@@ -123,19 +134,20 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
             return await service._rows(SimpleNamespace(), SimpleNamespace(id=2), facts, choices, replacements)
 
     async def test_replacement_requires_exact_nonempty_valid_barcode_sets(self):
-        old = {1: {'id': 7, 'external_variant_id': '88'}}
         remote = {**self.remote, 'is_variant': True, 'parent_code': 'NEW-PARENT', 'parent_id': '800'}
-        good = await self.rows({1: self.facts}, {1: (remote, 'manual', 1)}, replacements=old)
-        self.assertEqual(good[0]['status'], 'ready')
-        for local, target in (([], remote), (self.facts['eans'], {**remote, 'eans': []}),
-                (self.facts['eans'], {**remote, 'eans': ['4006381333931']}),
-                (self.facts['eans'], {**remote, 'eans': [*remote['eans'], '4006381333931']}),
-                (self.facts['eans'], {**remote, 'invalid_barcodes': ['invalid']})):
-            with self.subTest(local=local, target=target):
-                result = await self.rows({1: {**self.facts, 'eans': local}},
-                    {1: (target, 'manual', 1)}, replacements=old)
-                self.assertEqual(result[0]['status'], 'conflict')
-                self.assertIn('product_links_replacement_ean_mismatch', result[0]['errors'])
+        for is_variant in (False, True):
+            old = {1: {'id': 7, 'is_variant': is_variant, 'external_variant_id': '88' if is_variant else None}}
+            good = await self.rows({1: self.facts}, {1: (remote, 'manual', 1)}, replacements=old)
+            self.assertEqual(good[0]['status'], 'ready')
+            for local, target in (([], remote), (self.facts['eans'], {**remote, 'eans': []}),
+                    (self.facts['eans'], {**remote, 'eans': ['4006381333931']}),
+                    (self.facts['eans'], {**remote, 'eans': [*remote['eans'], '4006381333931']}),
+                    (self.facts['eans'], {**remote, 'invalid_barcodes': ['invalid']})):
+                with self.subTest(is_variant=is_variant, local=local, target=target):
+                    result = await self.rows({1: {**self.facts, 'eans': local}},
+                        {1: (target, 'manual', 1)}, replacements=old)
+                    self.assertEqual(result[0]['status'], 'conflict')
+                    self.assertIn('product_links_replacement_ean_mismatch', result[0]['errors'])
 
     def test_manual_variant_target_requires_exact_parent(self):
         remote = {**self.remote, 'is_variant': True, 'parent_code': 'ACTUAL', 'parent_id': '800'}
@@ -256,6 +268,39 @@ class ProductLinksIdentityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProductLinksReplacementPreviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_request_hashes_replay_without_added_false_flags(self):
+        for old_flag in (False, True):
+            manual = {'product_id': 1, 'code': 'NEW', 'parent_code': 'NEW', 'is_variant': False}
+            if old_flag:
+                manual['replace_deleted_variant'] = True
+            raw = preview_body(product_ids=[1], manual_matches=[manual], query='')
+            saved = SimpleNamespace(request_hash=service.digest(raw))
+            db = SimpleNamespace(get=AsyncMock(return_value=saved))
+            with patch.object(service, 'public', return_value={'legacy': True}), \
+                 patch.object(service.source, 'discover', AsyncMock()) as discover:
+                self.assertEqual(await service.preview(db, ProductLinksPreviewRequest(**raw)), {'legacy': True})
+                discover.assert_not_awaited()
+                changed = deepcopy(raw)
+                changed['manual_matches'][0].pop('replace_deleted_variant', None)
+                changed['manual_matches'][0]['replace_deleted_product'] = True
+                with self.assertRaisesRegex(service.LinkError, 'product_links_request_changed'):
+                    await service.preview(db, ProductLinksPreviewRequest(**changed))
+
+    async def test_mixed_original_kinds_share_one_deletion_read_budget(self):
+        old_variant = {'id': 7, 'is_variant': True}
+        old_product = {'id': 8, 'is_variant': False}
+        with patch.object(service.source, 'verify_deleted_variants', AsyncMock(return_value={
+                'requests': 2, 'existing_mapping_ids': [7]})) as variants, \
+             patch.object(service.source, 'verify_deleted_products', AsyncMock(return_value={
+                'requests': 2, 'existing_mapping_ids': [8]})) as products:
+            result = await service._verify_replacement_absence('xtrek', [old_product, old_variant], 'fingerprint',
+                                                               max_requests=5, collect_conflicts=True)
+            self.assertEqual(result, {'requests': 4, 'existing_mapping_ids': [7, 8]})
+            self.assertEqual(variants.await_args.args[1], [old_variant])
+            self.assertEqual(products.await_args.args[1], [old_product])
+            self.assertEqual(variants.await_args.kwargs, {'max_requests': 5, 'collect_conflicts': True})
+            self.assertEqual(products.await_args.kwargs, {'max_requests': 3, 'collect_conflicts': True})
+
     async def preview_same_codes(self, *, parent_id='801', variant_id='902', old_exists=False,
                                  eans=('5901234123457',), in_use=False):
         facts = {'product_id': 1, 'sku': 'HUB-LEAF', 'name': 'Retained card', 'is_active': True,

@@ -137,6 +137,72 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
             await source.verify_deleted_variants("biketrek", [{"is_variant": True,
                 "external_product_id": "7", "external_variant_id": "71"}], FINGERPRINT)
 
+    def old_product(self, identifier='7', mapping_id=1):
+        return {'id': mapping_id, 'is_variant': False, 'external_product_id': identifier,
+                'external_variant_id': None, 'parent_code': None, 'external_code': 'OLD-CODE'}
+
+    async def test_deleted_standalone_reads_both_complete_partitions_by_product_id(self):
+        self.setup_client(page('products', []), page('products', []))
+        result = await source.verify_deleted_products('xtrek', [self.old_product()], FINGERPRINT)
+        self.assertEqual(result, {'fingerprint': FINGERPRINT, 'requests': 2, 'existing_mapping_ids': []})
+        self.assertEqual([url for url, _ in self.session.calls], [BASE + '/products/simple'] * 2)
+        self.assertEqual([kwargs['params'] for _, kwargs in self.session.calls], [
+            {'product_ids': '7', 'variants_yn': 'false', 'archived_yn': archived,
+             'page': 1, 'current_page_items': 100} for archived in ('false', 'true')])
+        self.assertTrue(self.session.closed)
+
+    async def test_existing_inactive_archived_renamed_or_converted_product_is_not_deleted(self):
+        for archived in (False, True):
+            for has_variants in (False, True):
+                with self.subTest(archived=archived, has_variants=has_variants):
+                    product = {'product_id': 7, 'code': 'RENAMED', 'active_yn': False,
+                               'archived_yn': archived, 'variants_exists_yn': has_variants}
+                    partitions = [[], []]
+                    partitions[int(archived)] = [product]
+                    self.setup_client(*(page('products', rows) for rows in partitions))
+                    with self.assertRaisesRegex(source.SourceError, 'product_links_product_still_exists'):
+                        await source.verify_deleted_products('xtrek', [self.old_product()], FINGERPRINT)
+                    self.assertEqual(len(self.session.calls), 2)
+
+    async def test_standalone_batch_collects_only_existing_product_mapping_ids(self):
+        self.setup_client(page('products', [{'product_id': 7}]), page('products', []))
+        result = await source.verify_deleted_products('xtrek', [self.old_product(), self.old_product('8', 2)],
+                                                      FINGERPRINT, collect_conflicts=True)
+        self.assertEqual(result['existing_mapping_ids'], [1])
+        self.assertEqual(self.session.calls[0][1]['params']['product_ids'], '7;8')
+
+    async def test_partial_or_unfiltered_standalone_response_never_proves_absence(self):
+        cases = [
+            ([page('products', [], total=1)], 'source_pagination_incomplete'),
+            ([{'products': []}], 'source_pagination_invalid'),
+            ([page('products', []), Response(b'{"products":')], 'source_json_invalid'),
+            ([page('products', [{'product_id': 8}]), page('products', [])], 'source_filter_mismatch'),
+            ([page('products', [{'product_id': 7}]), page('products', [{'product_id': 7}])], 'source_filter_mismatch'),
+            ([page('products', [{}]), page('products', [])], 'source_native_id_invalid'),
+        ]
+        for replies, code in cases:
+            with self.subTest(code=code):
+                self.setup_client(*replies)
+                with self.assertRaisesRegex(source.SourceError, code):
+                    await source.verify_deleted_products('xtrek', [self.old_product()], FINGERPRINT,
+                                                         collect_conflicts=True)
+
+    async def test_standalone_proof_needs_both_partitions_within_shared_budget(self):
+        self.setup_client(page('products', []), page('products', []))
+        with self.assertRaisesRegex(source.SourceError, 'source_request_limit'):
+            await source.verify_deleted_products('xtrek', [self.old_product()], FINGERPRINT, max_requests=1)
+        self.assertEqual(len(self.session.calls), 1)
+
+    async def test_standalone_proof_rejects_wrong_identity_kind_before_reading(self):
+        self.setup_client()
+        for changes in ({'is_variant': True}, {'is_variant': 0}, {'external_variant_id': '71'},
+                        {'parent_code': 'PARENT'}, {'external_product_id': None}):
+            with self.subTest(changes=changes), self.assertRaises(source.SourceError):
+                await source.verify_deleted_products('xtrek', [{**self.old_product(), **changes}], FINGERPRINT)
+        with self.assertRaises(source.SourceError):
+            await source.verify_deleted_products('xtrek', [self.old_product()] * 2, FINGERPRINT)
+        self.assertEqual(self.session.calls, [])
+
     async def test_exact_variant_filter_and_separate_documented_axes(self):
         self.discovery(variant())
         result = await source.discover("xtrek", ["LEAF-M"])

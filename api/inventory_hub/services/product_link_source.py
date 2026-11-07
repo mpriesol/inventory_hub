@@ -404,3 +404,39 @@ def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests, col
 
 async def verify_deleted_variants(shop_code, mappings, fingerprint, *, max_requests=MAX_REQUESTS, collect_conflicts=False):
     return await asyncio.to_thread(_verify_deleted_variants, shop_code, mappings, fingerprint, max_requests, collect_conflicts)
+
+
+def _verify_deleted_products(shop_code, mappings, fingerprint, max_requests, collect_conflicts=False):
+    """Prove old standalone product IDs absent from both complete partitions.
+
+    Inactivity, renaming or conversion to a variant parent is not deletion.
+    Only the product namespace is inspected; equal numeric variant IDs are
+    unrelated. The bounded reader rejects partial or unfiltered responses.
+    """
+    _need(isinstance(mappings, list) and 0 < len(mappings) <= MAX_CODES
+          and all(isinstance(row, dict) and row.get('is_variant') is False
+                  and row.get('external_variant_id') is None and row.get('parent_code') is None
+                  for row in mappings), 'source_leaves_invalid', 422)
+    product_ids = {_native_id(row.get('external_product_id')) for row in mappings}
+    _need(len(product_ids) == len(mappings), 'source_leaves_invalid', 422)
+    reader = _Reader(shop_code, fingerprint, max_requests)
+    try:
+        products = []
+        for archived in ('false', 'true'):
+            products.extend(reader.pages('/products/simple', 'products', {
+                'product_ids': ';'.join(sorted(product_ids)), 'variants_yn': 'false', 'archived_yn': archived}))
+        existing = set()
+        for product in products:
+            product_id = _native_id(product.get('product_id'))
+            _need(product_id in product_ids and product_id not in existing, 'source_filter_mismatch')
+            existing.add(product_id)
+        _need(collect_conflicts or not existing, 'product_links_product_still_exists', 409)
+        return {'fingerprint': reader.fingerprint, 'requests': reader.requests,
+                'existing_mapping_ids': [row['id'] for row in mappings
+                    if str(row['external_product_id']) in existing]}
+    finally:
+        reader.close()
+
+
+async def verify_deleted_products(shop_code, mappings, fingerprint, *, max_requests=MAX_REQUESTS, collect_conflicts=False):
+    return await asyncio.to_thread(_verify_deleted_products, shop_code, mappings, fingerprint, max_requests, collect_conflicts)
