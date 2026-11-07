@@ -325,7 +325,7 @@ logical-link manifests use length-framed records independent of page size.
 Repeated linked rows remain represented for every operation that uses them.
 
 Bounds are 16,000,000 serialized bytes per raw row, 64,000,000 retained input
-bytes for an operation and 256,000,000 charged database body bytes per scan.
+and reuse bytes, and 256,000,000 charged database body bytes per scan.
 These are decimal bytes, not resident-memory guarantees. A linked selection
 for a single indivisible operation remains limited to 20,000 rows, and distinct
 identity queries to 20,000. Charged work includes repeated source/draft reads;
@@ -335,6 +335,19 @@ Samples share a 1,000,000-byte allowance, normally retain 25 rows per table and
 prioritize bounded examples of later unknown/reference reasons. Full counts,
 reason histograms and manifests cover every inspected operation. Matched/context
 paths are separately limited to 100 per record; truncation changes output only.
+
+Within one inspection, repeated complete importer identity queries reuse their
+serialized resolver results. The key includes the full path-independent query
+(including supplier, GTINs, expected owner and SKU-policy inputs) and the exact
+supplier namespace. This reuse lives only inside the current repeatable-read
+snapshot or apply's held input fences. Every proof still records its own paths,
+owner references and full resolution hash; no raw row, linked draft or journal
+is skipped. A later inspection, including apply after preview, resolves fresh.
+The optimization keeps at most 4,000,000 serialized bytes **within** the existing
+64,000,000-byte retained allowance. Deterministic eviction makes room for each
+complete raw operation; cache pressure causes another read, never a new
+eligibility exception or limit increase. Work metadata reports the bounded
+reuse footprint and hit/miss counts separately from logical link coverage.
 
 Catalog journals use the pure merged base/result/event loader. No recovery
 reader, AI public serializer or network request runs during dependency proof.
