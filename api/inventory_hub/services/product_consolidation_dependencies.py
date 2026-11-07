@@ -11,6 +11,8 @@ import re
 from sqlalchemy import text
 from inventory_hub import config_io
 from inventory_hub.services.product_links import digest
+from inventory_hub.services import product_dependency_scan as semantic_scope
+from inventory_hub.services.product_dependency_scope import Scope
 
 
 PRESERVED = {'product_identifiers', 'product_variant_attributes', 'stock_balances', 'stock_movements',
@@ -189,7 +191,7 @@ async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, target
         if summary['count']:
             blockers.append({'code': 'consolidation_order_sale_history', 'count': summary['count']})
     for table, fields in sorted(columns.items()):
-        if table in JSON_READ_ONLY or 'jsonb' not in fields.values():
+        if table in JSON_READ_ONLY or table in semantic_scope.TABLES or 'jsonb' not in fields.values():
             continue
         condition = _mentions_sql() + ' AND (' + _open_condition(table, fields) + ')'
         if table == 'product_consolidations':
@@ -198,6 +200,11 @@ async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, target
         if summary['count']:
             facts['pending:' + table] = summary
             blockers.append({'code': 'consolidation_pending_document', 'table': table, 'count': summary['count']})
+    typed = await semantic_scope.inspect(db,
+        scope=Scope.build(ids, products, identifiers, mappings, targets),
+        columns=columns, open_condition=_open_condition, request_id=request_id)
+    facts['typed_catalog_scope'] = typed
+    blockers.extend(typed['blockers'])
     # A campaign may have selected a whole source family/brand before concrete
     # product IDs exist. Do not guess that it excludes this group.
     if 'atomer_catalog_campaigns' in columns:
