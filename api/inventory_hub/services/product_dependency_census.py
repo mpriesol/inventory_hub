@@ -24,11 +24,14 @@ REQUIRED = {'ai_content_jobs': {'context', 'kind', 'status'},
             'product_consolidations': {'id', 'status', 'expires_at'}}
 
 
-def _limits(row, max_rows):
+def _limits(row, *, compound_join=False):
     values = {key: int(row[key]) for key in ('count', 'bytes', 'largest')}
-    limits = {'count': max_rows, 'bytes': scan.MAX_TOTAL_BYTES, 'largest': scan.MAX_ROW_BYTES}
+    # Paging has no total row-count or aggregate retained-body cutoff. A
+    # compound family join is reference metadata, not one raw-row work charge.
+    limits = {'count': None, 'bytes': None if compound_join else scan.MAX_WORK_BYTES,
+              'largest': None if compound_join else scan.MAX_ROW_BYTES}
     return {**values, 'limits': limits,
-            'exceeded_limits': [key for key in limits if values[key] > limits[key]]}
+            'exceeded_limits': [key for key, limit in limits.items() if limit is not None and values[key] > limit]}
 
 
 async def _buckets(db, table, condition, params, expression, known):
@@ -68,7 +71,7 @@ async def inspect(db, request_id, *, open_condition):
             coalesce(sum(octet_length(to_jsonb(t)::text)),0) AS bytes,
             coalesce(max(octet_length(to_jsonb(t)::text)),0) AS largest
             FROM {table} t WHERE {condition}'''), params)).mappings().one()
-        entry = {'available': True, **_limits(row, scan.MAX_ROWS)}
+        entry = {'available': True, **_limits(row)}
         entry['json_schema_recognized'] = ({key for key, kind in fields.items() if kind == 'jsonb'}
                                            == scan.JSON_COLUMNS[table])
         shapes = {}
@@ -106,7 +109,7 @@ async def inspect(db, request_id, *, open_condition):
             LEFT JOIN atomer_review_work w ON w.kind='item' AND w.key=i.code
             LEFT JOIN atomer_review_work g ON g.kind='family' AND g.key=j.family_key
             WHERE j.stage NOT IN ('verified','excluded')'''))).mappings().one()
-        families = {'available': True, **_limits(row, scan.MAX_EXTRA_ROWS),
+        families = {'available': True, **_limits(row, compound_join=True),
                     'matched_jobs': int(row['matched_jobs'])}
         jobs = tables.get('atomer_catalog_jobs', {})
         if jobs.get('available'):
@@ -117,17 +120,21 @@ async def inspect(db, request_id, *, open_condition):
 
     base_bytes = sum(row['bytes'] for row in tables.values() if row.get('available'))
     with_families = base_bytes + families.get('bytes', 0)
-    return {'version': 'dependency-census-v1', 'metadata_only': True,
+    return {'version': 'dependency-census-v2', 'metadata_only': True,
         'complete': not problems, 'problems': problems, 'tables': tables,
         'atomer_current_families': families,
         'known_tables_total_bytes': base_bytes,
-        'known_tables_total_bytes_exceeds_limit': base_bytes > scan.MAX_TOTAL_BYTES,
-        'known_and_atomer_bytes_lower_bound': with_families,
-        'known_and_atomer_bytes_lower_bound_exceeds_limit': with_families > scan.MAX_TOTAL_BYTES,
-        'combined_bytes_limit': scan.MAX_TOTAL_BYTES,
+        'known_tables_total_bytes_exceeds_limit': base_bytes > scan.MAX_WORK_BYTES,
+        'known_and_atomer_join_bytes': with_families,
+        'combined_bytes_limit': scan.MAX_WORK_BYTES,
+        'scanner_bounds': {'raw_row_bytes': scan.MAX_ROW_BYTES, 'retained_payload_bytes': scan.MAX_TOTAL_BYTES,
+            'db_work_bytes': scan.MAX_WORK_BYTES, 'deadline_seconds': scan.MAX_SCAN_SECONDS,
+            'linked_rows_per_operation': scan.MAX_EXTRA_ROWS},
         'interpretation': [
             'Counts use every row selected by the current typed scanner, without a product-token filter.',
             'The current consolidation UUID is excluded; all saved drafts remain in scope.',
             'Lifecycle buckets describe shapes only and never exempt a dependency.',
-            'Combined bytes are a lower bound: supplier sources, other linked evidence and filesystem journals are not measured here.',
+            'Base table bytes are a work lower bound; per-operation linked rows are charged again when read.',
+            'The family join total is reference metadata: it repeats family-work per leaf and omits campaign, claim, source and draft closures.',
+            'Actual charged DB work and the two separately bounded filesystem observations appear in typed_scope.work.',
             'Complete means metadata queries completed, not that parsing or identity verification passed.']}

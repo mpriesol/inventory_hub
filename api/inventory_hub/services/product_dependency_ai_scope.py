@@ -31,9 +31,12 @@ def native_identity(proof, identity, namespace, path):
 
 
 def inspect(proof, raw, drafts, catalog_sources):
+    if raw.get('kind') == 'rules':
+        from inventory_hub.services.product_dependency_rule_scope import inspect as inspect_rule
+        return inspect_rule(proof, raw)
     ctx = s.obj(raw.get('context'), CONTEXT, ('shop', 'code'), '/context')
     if raw.get('kind') != 'product':
-        # Rules and supplier lookup use different executors and schemas. A new
+        # Other job kinds use different executors and schemas. A new
         # parser, not a job-status guess, is needed to exclude their intent.
         raise s.Unverified('unsupported_ai_job_kind', '/kind')
     namespace = s.shop(ctx['shop'])

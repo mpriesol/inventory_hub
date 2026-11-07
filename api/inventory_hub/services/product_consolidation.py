@@ -358,6 +358,36 @@ async def get(db, identifier):
 
 
 async def preview(db, payload, *, actor=None):
+    try:
+        return await _preview(db, payload, actor=actor)
+    except DBAPIError as error:
+        state = getattr(error.orig, 'sqlstate', None)
+        constraint = (getattr(error.orig, 'constraint_name', None)
+            or getattr(getattr(error.orig, '__cause__', None), 'constraint_name', None))
+        if state != '40001' and not (state == '23505' and constraint == 'product_consolidations_pkey'):
+            raise
+        await db.rollback()
+        code = 'consolidation_dependency_snapshot_changed'
+        if state == '23505':
+            # The unique collision is only this review UUID. A fresh RC read
+            # may replay the already committed identical review, never generate
+            # a new preview or repeat any native request.
+            row = await db.get(ProductConsolidation, str(payload.request_id), populate_existing=True)
+            if row is not None:
+                if row.request_hash == links.digest(_request(payload)):
+                    result = public(row)
+                    await db.commit()
+                    return result
+                code = 'consolidation_request_changed'
+            else:
+                code = 'consolidation_preview_retry_required'
+            await db.rollback()
+        failure = links.LinkError(code)
+        failure.known_unapplied = True
+        raise failure from None
+
+
+async def _preview(db, payload, *, actor=None):
     raw = _request(payload)
     request_hash = links.digest(raw)
     existing = await db.get(ProductConsolidation, str(payload.request_id))
@@ -369,6 +399,9 @@ async def preview(db, payload, *, actor=None):
     plan = _plan(raw, local)
     await db.commit()
     native = await _native(raw, local)
+    # This is the first statement of the post-native transaction. Every page
+    # and linked read shares one snapshot; selected-row races fail explicitly.
+    await db.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'))
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
     existing = await db.get(ProductConsolidation, str(payload.request_id), populate_existing=True)
     if existing:
@@ -405,6 +438,9 @@ def _check(row, payload, *, expired=False):
         raise links.LinkError('consolidation_preview_changed')
     if row.status == 'completed':
         return False
+    version = row.document.get('dependencies', {}).get('facts', {}).get('typed_catalog_scope', {}).get('parser_version')
+    if version != dependencies.semantic_scope.s.VERSION:
+        raise links.LinkError('consolidation_dependency_inventory_version_changed')
     if row.status != 'prepared' or not expired and row.expires_at <= links.now():
         raise links.LinkError('consolidation_preview_expired')
     if row.document['dependencies']['blockers']:

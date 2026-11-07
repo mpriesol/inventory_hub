@@ -314,31 +314,46 @@ async def inspect(db, identifier):
     if row is None:
         raise links.LinkError('consolidation_not_found', 404)
     local, raw = row.document['local'], row.document['request']
+    frozen = {'id': row.id, 'preview_hash': row.preview_hash, 'status': row.status,
+              'blockers': row.document['dependencies']['blockers']}
+    snapshot_at = (await db.scalar(text('SELECT transaction_timestamp()'))).isoformat()
     # Census runs before the bounded loader can stop at its first limit. This
     # is only a diagnostic projection, never part of preview/apply eligibility.
     inventory = await census.inspect(db, row.id, open_condition=dependencies._open_condition)
-    summary = await dependencies.inspect(db, ids=consolidation._ids(raw), keeper_id=raw['keeper_product_id'],
-        products=local['products'], identifiers=local['identifiers'], mappings=local['mappings'],
-        targets=consolidation._targets(raw), request_id=row.id)
+    timed_out = False
+    try:
+        summary = await dependencies.inspect(db, ids=consolidation._ids(raw), keeper_id=raw['keeper_product_id'],
+            products=local['products'], identifiers=local['identifiers'], mappings=local['mappings'],
+            targets=consolidation._targets(raw), request_id=frozen['id'])
+    except dependencies.semantic_scope.InventoryTimeout as error:
+        summary, timed_out = error.dependency_summary, True
     variables = _variables(raw, local, summary.pop('tokens'))
-    documents, problems = await _documents(db, summary, variables, row.id)
-    # Keep the old exact-word explanations as a diagnostic aid, never as the
-    # eligibility decision. The typed audit also includes dictionary keys and
-    # disjoint full rows that the old prefilter could not select.
-    journals, _, journal_problems = _journals([shop['code'] for shop in local['shops']], variables)
-    problems.extend(journal_problems)
+    if timed_out:
+        documents, journals, problems = [], [], ['database_inventory_time_limit']
+    else:
+        documents, problems = await _documents(db, summary, variables, frozen['id'])
+        # Legacy explanations remain diagnostic only. No additional reads may
+        # follow the scanner's timeout rollback.
+        journals, _, journal_problems = _journals([shop['code'] for shop in local['shops']], variables)
+        problems.extend(journal_problems)
     typed = summary['facts']['typed_catalog_scope']
     records = typed['records']
     typed_projection = {'parser_version': typed['parser_version'], 'tables': typed['tables'],
-        'total_records': len(records), 'records': records[:MAX_ROWS],
-        'total_journals': len(typed['catalog_journals']), 'catalog_journals': typed['catalog_journals'][:MAX_ROWS],
-        'projection_complete': len(records) <= MAX_ROWS and len(typed['catalog_journals']) <= MAX_ROWS
+        'inventory_complete': typed.get('complete', False),
+        'total_records': typed.get('record_count', len(records)), 'records': records[:MAX_ROWS],
+        'total_journals': typed.get('journal_count', len(typed['catalog_journals'])),
+        'catalog_journals': typed['catalog_journals'][:MAX_ROWS],
+        'projection_complete': typed.get('record_projection_complete', True)
+            and typed.get('journal_projection_complete', True)
+            and len(records) <= MAX_ROWS and len(typed['catalog_journals']) <= MAX_ROWS
             and not any(item.get('projection_truncated') for item in records),
-        'classification_counts': {state: sum(item['classification'] == state for item in records)
-            for state in ('reference', 'unknown', 'context_only', 'disjoint')}}
-    return {'consolidation_id': row.id, 'preview_hash': row.preview_hash, 'preview_status': row.status,
+        'classification_counts': typed.get('classification_counts', {}),
+        'reason_counts': typed.get('reason_counts', {}),
+        'proof_manifest': typed.get('proof_manifest'), 'linked_manifest': typed.get('linked_manifest'),
+        'work': typed.get('work', {})}
+    return {'consolidation_id': frozen['id'], 'preview_hash': frozen['preview_hash'], 'preview_status': frozen['status'],
             'observed_at': datetime.now(timezone.utc).isoformat(),
-            'database_snapshot_at': (await db.scalar(text('SELECT transaction_timestamp()'))).isoformat(),
+            'database_snapshot_at': snapshot_at,
             'scope_source': 'original_server_stored_preview', 'scope_hash': _hash(variables),
             'matcher_policy': typed['parser_version'],
             'preserve_keeper_invoice_receiving_requested': raw.get('preserve_keeper_invoice_receiving') is True,
@@ -347,7 +362,7 @@ async def inspect(db, identifier):
             'scope': {'hub_product_ids': variables['ids'], 'mapping_ids': variables['mapping_ids'],
                       'exact_string_tokens': variables['tokens'],
                       'pooled_native_ids_in_existing_matcher': variables['native_strings']},
-            'frozen_blockers': row.document['dependencies']['blockers'],
+            'frozen_blockers': frozen['blockers'],
             'current_blockers': summary['blockers'],
             'documents': documents, 'catalog_journals': journals,
             'typed_scope': typed_projection,

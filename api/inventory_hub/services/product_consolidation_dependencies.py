@@ -200,22 +200,32 @@ async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, target
         if summary['count']:
             facts['pending:' + table] = summary
             blockers.append({'code': 'consolidation_pending_document', 'table': table, 'count': summary['count']})
-    typed = await semantic_scope.inspect(db,
-        scope=Scope.build(ids, products, identifiers, mappings, targets),
-        columns=columns, open_condition=_open_condition, request_id=request_id)
+    timed_out = None
+    try:
+        typed = await semantic_scope.inspect(db,
+            scope=Scope.build(ids, products, identifiers, mappings, targets),
+            columns=columns, open_condition=_open_condition, request_id=request_id)
+    except semantic_scope.InventoryTimeout as error:
+        # The scanner has rolled back; no further SQL or expired ORM access.
+        # Only the read-only diagnostic caller may project these plain facts.
+        timed_out, typed = error, error.report
     facts['typed_catalog_scope'] = typed
     blockers.extend(typed['blockers'])
     # A campaign may have selected a whole source family/brand before concrete
     # product IDs exist. Do not guess that it excludes this group.
-    if 'atomer_catalog_campaigns' in columns:
+    if timed_out is None and 'atomer_catalog_campaigns' in columns:
         count = await db.scalar(text("SELECT count(*) FROM atomer_catalog_campaigns WHERE state IN ('running','waiting')"))
         if count:
             blockers.append({'code': 'consolidation_catalog_worker_active', 'count': count})
-    return {'blockers': sorted(blockers, key=lambda item: (item['code'], item.get('table', ''))),
+    result = {'blockers': sorted(blockers, key=lambda item: (item['code'], item.get('table', ''))),
             'facts': facts, 'schema_hash': digest([list(map(dict, foreign_keys)), list(map(dict, catalog))]),
             'tokens': sorted(tokens),
             'history_hash': digest({key: value for key, value in facts.items()
                 if key.startswith(('stock_', 'fifo_', 'reservations.', 'shop_order_', 'receiving_', 'inventory_count_'))})}
+    if timed_out is not None:
+        timed_out.dependency_summary = result
+        raise timed_out
+    return result
 
 
 def catalog_journals(shop_codes, tokens):
