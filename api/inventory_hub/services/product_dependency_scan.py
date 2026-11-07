@@ -11,6 +11,7 @@ from inventory_hub.services import product_dependency_atomer_scope as atomer_sco
 from inventory_hub.services import product_dependency_journals as journals
 from inventory_hub.services import product_dependency_inventory as inventory
 from inventory_hub.services import product_dependency_links as linked
+from inventory_hub.services.product_dependency_reuse import ResolutionMemo
 from inventory_hub.services import product_links as links
 
 
@@ -27,6 +28,7 @@ MAX_WORK_BYTES = 256000000  # Admitted DB body work, including repeated linked r
 MAX_SCAN_SECONDS = 120
 MAX_EXTRA_ROWS = 20000  # One indivisible linked operation, not the cumulative family inventory.
 MAX_IDENTITY_QUERIES = 20000
+MAX_RESOLUTION_REUSE_BYTES = 4000000
 MAX_RECORDS_PER_TABLE = 25
 MAX_SAMPLE_BYTES = 1000000
 MAX_JOURNAL_SAMPLES = 100
@@ -138,7 +140,8 @@ async def _namespaces(db):
 
 
 async def _resolve(db, proofs, extras, *, suppliers, budget):
-    extras['supplier_namespaces'] = s.digest(suppliers)
+    namespace = s.digest(suppliers)
+    extras['supplier_namespaces'] = namespace
     from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index
     from inventory_hub.services.sku_policy import preview_sku
     from inventory_hub.sku_policy_types import SkuIdentityInput
@@ -150,14 +153,26 @@ async def _resolve(db, proofs, extras, *, suppliers, budget):
     budget.query_keys.update(unique)
     if len(budget.query_keys) > MAX_IDENTITY_QUERIES:
         raise s.Unverified('import_identity_query_limit')
+    resolved = {}
+    missing = {}
+    for key, value in unique.items():
+        budget.check_time()
+        cached = budget.reuse.get((namespace, key)) if budget.reuse is not None else None
+        if cached is None:
+            missing[key] = value
+        else:
+            resolved[key] = cached
     identities = {key: RemoteIdentity(0, code=value['code'], supplier_id=suppliers.get(value['supplier']),
         supplier_sku=value['supplier_sku'], barcodes=tuple(value['barcodes']), expected_product_id=value['expected'])
-        for key, value in unique.items()}
+        for key, value in missing.items()}
     index = await load_identity_index(db, 0, list(identities.values()), local=True) if identities else None
-    resolved = {}
-    for key, value in unique.items():
+    for key, value in missing.items():
+        budget.check_time()
         if value['supplier'] not in suppliers:
             resolved[key] = {'unverified': 'import_supplier_namespace_missing'}
+            if budget.reuse is not None:
+                budget.reuse.put((namespace, key), resolved[key])
+                budget.account_reuse()
             continue
         result = index.resolve(identities[key])
         owners = set(result.candidate_product_ids)
@@ -182,6 +197,9 @@ async def _resolve(db, proofs, extras, *, suppliers, budget):
                 owners.add(sku['product_id'])
             record['owners'] = sorted(owners)
         resolved[key] = record
+        if budget.reuse is not None:
+            budget.reuse.put((namespace, key), record)
+            budget.account_reuse()
     for proof in proofs:
         for pin in proof.supplier_pins:
             if suppliers.get(pin['supplier']) != pin['id']:
@@ -252,7 +270,8 @@ async def _journal(db, namespace, identifier, record, *, scope, budget, supplier
 
 
 async def inspect(db, *, scope, columns, open_condition, request_id):
-    budget = inventory.Budget(MAX_ROW_BYTES, MAX_TOTAL_BYTES, MAX_WORK_BYTES, MAX_SCAN_SECONDS)
+    budget = inventory.Budget(MAX_ROW_BYTES, MAX_TOTAL_BYTES, MAX_WORK_BYTES, MAX_SCAN_SECONDS,
+        reuse=ResolutionMemo(MAX_RESOLUTION_REUSE_BYTES))
     checkpoint = {}
     try:
         # Cancellation also interrupts a long awaited SQL operation. This
@@ -299,6 +318,7 @@ async def _inspect(db, *, scope, columns, open_condition, request_id, budget, ch
                 'retained_payload_limit_bytes': MAX_TOTAL_BYTES, 'deadline_seconds': MAX_SCAN_SECONDS,
                 'peak_retained_payload_bytes': budget.peak_payload,
                 'distinct_identity_queries': len(budget.query_keys),
+                'identity_reuse': budget.reuse.result() if budget.reuse is not None else None,
                 'journal_observation_bytes': file_bytes, 'journal_limit_per_pass_bytes': journals.MAX_TOTAL_BYTES},
             'blockers': blockers}
     try:

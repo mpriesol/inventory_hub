@@ -1,6 +1,8 @@
 """Operator-only, durable review of one unchanged complete retail unit."""
 from uuid import UUID
-from fastapi import APIRouter, Depends, Request
+from typing import Annotated
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
@@ -30,6 +32,14 @@ async def get(identifier: UUID, db: AsyncSession = Depends(get_session)):
 async def dependency_diagnostics(identifier: UUID, db: AsyncSession = Depends(get_session)):
     from inventory_hub.services import product_consolidation_diagnostics
     return await call(product_consolidation_diagnostics.inspect(db, str(identifier)))
+
+
+@router.get('/{identifier}/dependency-evidence')
+async def dependency_evidence(identifier: UUID,
+                              job_ids: list[Annotated[str, Field(pattern=r'^[0-9a-f]{32}$')]] = Query(min_length=1, max_length=8),
+                              db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import product_dependency_evidence
+    return await call(product_dependency_evidence.inspect(db, str(identifier), job_ids))
 
 
 @router.post('/{identifier}/apply')

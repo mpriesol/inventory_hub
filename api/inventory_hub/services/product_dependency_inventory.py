@@ -56,6 +56,8 @@ class Budget:
     bytes: int = 0
     peak_payload: int = 0
     query_keys: set = field(default_factory=set)
+    reuse: object | None = None
+    retained: int = 0
 
     def check_time(self):
         if self.max_seconds is not None and time.monotonic() - self.started > self.max_seconds:
@@ -69,6 +71,17 @@ class Budget:
             raise s.Unverified('database_total_document_limit', path)
         self.bytes += size
         self.rows += 1
+
+    def retain(self, size):
+        """Keep optimization storage inside the existing payload allowance."""
+        self.retained = size
+        if self.reuse is not None:
+            self.reuse.reserve(size, self.max_payload)
+        self.account_reuse()
+
+    def account_reuse(self):
+        cached = self.reuse.bytes if self.reuse is not None else 0
+        self.peak_payload = max(self.peak_payload, self.retained + cached)
 
 
 async def statistics(db, table, condition, params):
@@ -182,6 +195,7 @@ async def documents(db, table, condition, params, *, budget, page_rows, manifest
             budget.consume(int(meta['bytes']), table)
             if meta['bytes'] > budget.max_payload:
                 raise s.Unverified('database_payload_limit', table)
+            budget.retain(int(meta['bytes']))
             keys = {f'inventory_key_{i}': value for i, value in enumerate(meta['key'])}
             exact = ' AND '.join(f't."{name}"=:inventory_key_{i}' for i, name in enumerate(columns))
             row = (await db.execute(text(f'''SELECT {key_sql} AS key,to_jsonb(t) AS document,
@@ -208,7 +222,7 @@ class Closure:
         self.db, self.budget = db, budget
         self.page_rows, self.page_bytes = page_rows, page_bytes
         self.retained = retained
-        self.budget.peak_payload = max(self.budget.peak_payload, retained)
+        self.budget.retain(retained)
         self.max_linked_rows = max_linked_rows
         self.root = Manifest('linked-closure')
         self.edges = self.bytes = 0
@@ -220,6 +234,9 @@ class Closure:
             raise s.Unverified('linked_identity_scope_limit', role)
         if self.retained + expected['bytes'] > self.budget.max_payload:
             raise s.Unverified('database_payload_limit', role)
+        # Evict reusable results before materializing this complete closure.
+        # A cache must never make a previously admissible operation too large.
+        self.budget.retain(self.retained + expected['bytes'])
         root = Manifest(['linked', role, table])
         result = []
         async for page in pages(self.db, table, condition, params, budget=self.budget,
