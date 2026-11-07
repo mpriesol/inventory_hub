@@ -45,6 +45,7 @@ MIGRATIONS = (
     "atomer_progress_migrate",        # 037
     "atomer_review_migrate",          # 038
     "shared_stock_sales_migrate",     # 046;039–045 retain their existing feature installers
+    "product_consolidation_migrate",  # 047; no live consolidation or stock activation
 )
 
 

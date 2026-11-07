@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -154,6 +155,40 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         if queued:
             await imports.execute_import("test-shop", self.id)
         return imports.import_result("test-shop", self.id)
+
+    async def test_product_send_intent_is_durable_under_identity_lock_and_http_runs_after_release(self):
+        state = {'inside': False, 'locked': False, 'intent': False}
+        checkpoint, post = imports._item_checkpoint, self.client.post
+        class Session:
+            async def execute(inner, statement, parameters):
+                self.assertEqual(str(statement), 'SELECT pg_advisory_xact_lock(:key)')
+                self.assertEqual(parameters, {'key': imports.IDENTITY_WRITE_LOCK})
+                state['locked'] = True
+        @asynccontextmanager
+        async def session():
+            state.update(inside=True, locked=False)
+            try:
+                yield Session()
+            finally:
+                state.update(inside=False, locked=False)
+        def save_intent(path, result, item):
+            if item['status'] == 'uncertain' and item.get('product_write_attempted') and not state['intent']:
+                self.assertTrue(state['inside'] and state['locked'])
+                checkpoint(path, result, item)
+                state['intent'] = True
+                return
+            checkpoint(path, result, item)
+        def send(path, payload):
+            if path == 'products':
+                self.assertTrue(state['intent'])
+                self.assertFalse(state['inside'])
+            return post(path, payload)
+        with patch.object(imports, 'get_session_context', session), \
+             patch.object(imports, '_item_checkpoint', side_effect=save_intent), \
+             patch.object(self.client, 'post', side_effect=send):
+            result = await self.run_import()
+        self.assertEqual(result['items'][0]['status'], 'created', result)
+        self.assertTrue(state['intent'])
 
     async def test_new_shared_group_after_preview_blocks_before_product_post(self):
         self.shared_existing.return_value = {1}

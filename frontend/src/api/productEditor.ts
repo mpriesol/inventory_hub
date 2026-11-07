@@ -10,6 +10,7 @@ export interface ProductEditorOptions {
 }
 export interface ProductShopValues { name: string | null; sale_price_gross: string | null; visible: boolean | null }
 export interface ProductEditorRow {
+  canonical_product_id?: number; retired?: boolean;
   is_active: boolean; supplier_linked: boolean; item_type: ProductItemType; stock_unit: StockUnit; item_definition_locked?: boolean;
   id: number; sku: string; group: { id: number; code: string; name: string } | null;
   attributes: { name: string; value: string }[]; eans: string[]; supplier_codes: { supplier_code: string; code: string }[]; image_url: string | null;

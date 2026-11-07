@@ -146,7 +146,7 @@ async def after_stock_policy_change(db, request, mode, actor):
                         and not state["instruction"] and not state["note"] and state["scope"]!="biketrek"),"review_changed")
             card=await db.scalar(text("""
                SELECT p.id FROM products p JOIN shop_products s ON s.product_id=p.id JOIN shops sh ON sh.id=s.shop_id
-               WHERE sh.code='xtrek' AND s.is_variant AND NOT s.push_pending AND p.sku=:code AND s.external_code=:code
+               WHERE sh.code='xtrek' AND s.retired_at IS NULL AND s.is_variant AND NOT s.push_pending AND p.sku=:code AND s.external_code=:code
                AND s.external_product_id=:pid AND s.external_variant_id=:vid AND s.parent_code=:parent
                AND EXISTS(SELECT 1 FROM product_identifiers b WHERE b.product_id=p.id AND ltrim(b.value,'0')=ltrim(:ean,'0')
                     AND b.identifier_type IN ('ean','unverified_barcode','upc'))

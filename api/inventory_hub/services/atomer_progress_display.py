@@ -68,8 +68,8 @@ WITH observed_families AS MATERIALIZED (
          AND b.external_variant_id IS NOT DISTINCT FROM d->'bike'->>'variant_id'
          AND b.parent_code IS NOT DISTINCT FROM nullif(d->'bike'->>'parent','')) AS same_b
  FROM cards c
- LEFT JOIN shop_products x ON x.shop_id=(SELECT id FROM shops WHERE code='xtrek') AND x.product_id=c.cid AND x.is_listed
- LEFT JOIN shop_products b ON b.shop_id=(SELECT id FROM shops WHERE code='biketrek') AND b.product_id=c.cid AND b.is_listed
+ LEFT JOIN shop_products x ON x.shop_id=(SELECT id FROM shops WHERE code='xtrek') AND x.product_id=c.cid AND x.is_listed AND x.retired_at IS NULL
+ LEFT JOIN shop_products b ON b.shop_id=(SELECT id FROM shops WHERE code='biketrek') AND b.product_id=c.cid AND b.is_listed AND b.retired_at IS NULL
 ), effective AS (
  SELECT m.*,
     CASE WHEN conflict OR d->>'card_state'='review' THEN 'review'

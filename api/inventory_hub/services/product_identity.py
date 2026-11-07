@@ -3,7 +3,8 @@
 New BIKETREK and xTrek products share canonical codes. Existing explicit shop
 mappings may use different codes and take precedence, then an exact SKU or registered old SKU,
 then validated EAN/UPC (including equivalent GTIN representations).
-Conflicting evidence is reported; existing products and mappings never merge.
+Conflicting evidence is reported. Only an audited one-hop canonical redirect
+can project a retired owner onto an existing current card; history stays raw.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier
 from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services import sale_units
+from inventory_hub.services.canonical_products import aliases_for
 
 
 # Shared with catalog_import.register_created; callers hold it for mapping writes.
@@ -70,13 +72,18 @@ def mapping_code(mapping: ShopProduct) -> str:
 
 
 class IdentityIndex:
-    def __init__(self, shop_id: int, products=(), mappings=(), identifiers=(), *, shared_product_ids=()):
+    def __init__(self, shop_id: int, products=(), mappings=(), identifiers=(), *, shared_product_ids=(), canonical_aliases=None):
         self.shop_id = shop_id
+        self.canonical_aliases = dict(canonical_aliases or {})
+        owner = lambda pid: self.canonical_aliases.get(pid, pid)
         self.shared_product_ids = set(shared_product_ids)
-        self.products = {row.id: row for row in products}
+        self.original_products = {row.id: row for row in products}
+        self.products = {pid: row for pid, row in self.original_products.items() if pid not in self.canonical_aliases}
         self.by_sku = defaultdict(set)
-        for row in self.products.values():
-            self.by_sku[row.sku.casefold()].add(row.id)
+        self.exact_sku = defaultdict(set)
+        for row in self.original_products.values():
+            self.by_sku[row.sku.casefold()].add(owner(row.id))
+            self.exact_sku[row.sku].add(owner(row.id))
         self.by_code = defaultdict(list)
         self.by_external_id = defaultdict(list)
         self.by_product = defaultdict(list)
@@ -90,19 +97,20 @@ class IdentityIndex:
                 self.shared_product_ids.add(mapping.product_id)
             self.add_mapping(mapping)
         for identifier in identifiers:
+            product_id = owner(identifier.product_id)
             if identifier.identifier_type == IdentifierType.internal_sku:
-                self.by_internal_sku[identifier.value.casefold()].add(identifier.product_id)
-                self.exact_internal_sku[identifier.value].add(identifier.product_id)
+                self.by_internal_sku[identifier.value.casefold()].add(product_id)
+                self.exact_internal_sku[identifier.value].add(product_id)
             if identifier.identifier_type == IdentifierType.supplier_sku:
-                self.by_supplier_sku[(identifier.supplier_id, identifier.value)].add(identifier.product_id)
+                self.by_supplier_sku[(identifier.supplier_id, identifier.value)].add(product_id)
             if (identifier.identifier_type in VERIFIED_BARCODE_TYPES
                     and verified_barcodes((identifier.value,))):
-                self.by_barcode[identifier.value].add(identifier.product_id)
-                self.product_barcodes[identifier.product_id].add(identifier.value)
+                self.by_barcode[identifier.value].add(product_id)
+                self.product_barcodes[product_id].add(identifier.value)
 
     def add_mapping(self, mapping: ShopProduct) -> None:
         """Index a committed-to-the-current-transaction mapping after a family succeeds."""
-        if mapping.shop_id != self.shop_id:
+        if mapping.shop_id != self.shop_id or getattr(mapping, 'retired_at', None) is not None:
             return
         self.by_product[mapping.product_id].append(mapping)
         code = mapping_code(mapping)
@@ -126,6 +134,10 @@ class IdentityIndex:
     def resolve(self, identity: RemoteIdentity) -> IdentityResolution:
         if identity.shop_id != self.shop_id:
             raise ValueError("Identity belongs to another shop")
+        if identity.expected_product_id in self.canonical_aliases:
+            return IdentityResolution('conflict', reasons=['product_retired'],
+                candidate_product_ids=sorted({identity.expected_product_id,
+                    self.canonical_aliases[identity.expected_product_id]}))
         code = identity.code.strip()
         codes = self.by_code.get(code.casefold(), []) if code else []
         remote_ids = self.by_external_id.get((identity.is_variant, identity.external_id), []) \
@@ -148,7 +160,8 @@ class IdentityIndex:
                 barcode_ids = set()
         mapped_ids = {row.product_id for row in mappings.values()}
         sku_ids = self.by_sku.get(code.casefold(), set()) if code else set()
-        exact_sku_ids = {product_id for product_id in sku_ids if self.products[product_id].sku == code}
+        exact_sku_ids = (self.exact_sku.get(code, set()) | {pid for pid in sku_ids
+            if getattr(self.products.get(pid), 'sku', None) == code}) if code else set()
         alias_ids = self.by_internal_sku.get(code.casefold(), set()) if code else set()
         exact_alias_ids = self.exact_internal_sku.get(code, set()) if code else set()
         supplier_ids = self.by_supplier_sku.get((identity.supplier_id, identity.supplier_sku.strip()), set()) \
@@ -161,6 +174,8 @@ class IdentityIndex:
 
         if expected_ids and identity.expected_product_id not in self.products:
             return conflict("assigned_product_missing")
+        if mapped_ids.intersection(self.canonical_aliases):
+            return conflict('product_retired')
         if len(supplier_ids) > 1:
             return conflict("supplier_identifier_conflict")
         evidence = [ids for ids in (mapped_ids, barcode_ids, sku_ids, alias_ids, supplier_ids, expected_ids) if ids]
@@ -285,6 +300,11 @@ async def load_identity_index(
     for start in range(0, len(missing_ids), 500):
         rows = await db.execute(select(Product).where(Product.id.in_(missing_ids[start:start + 500])))
         products.update((row.id, row) for row in rows.scalars())
+    aliases = await aliases_for(db, products.keys())
+    related_ids = sorted((set(aliases) | set(aliases.values())) - products.keys())
+    for start in range(0, len(related_ids), 500):
+        products.update((row.id, row) for row in await db.scalars(select(Product).where(
+            Product.id.in_(related_ids[start:start + 500]))))
     # Include SKU-only candidates before loading stored barcodes: an unowned
     # incoming EAN must still conflict with that product's different known EAN.
     product_ids = sorted(products)
@@ -299,4 +319,5 @@ async def load_identity_index(
             rows = await db.execute(select(ShopProduct.product_id).where(
                 ShopProduct.product_id.in_(product_ids[start:start + 500]), ShopProduct.shared_stock.is_(True)))
             shared_product_ids.update(rows.scalars())
-    return IdentityIndex(shop_id, products.values(), mappings, identifiers, shared_product_ids=shared_product_ids)
+    return IdentityIndex(shop_id, products.values(), mappings, identifiers,
+        shared_product_ids=shared_product_ids, canonical_aliases=aliases)

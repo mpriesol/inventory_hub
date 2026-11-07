@@ -115,8 +115,8 @@ async def _local(db, s):
         _require(eans is None or barcode_keys(eans) == barcode_keys([r.ean]), 'missing_ean_card_override_changed')
         bindings = (await db.execute(text("""
           SELECT s.code AS shop,to_jsonb(sp) AS row FROM shop_products sp JOIN shops s ON s.id=sp.shop_id
-          WHERE sp.product_id=:card OR (s.code='xtrek' AND sp.external_product_id=:pid)
-             OR (s.code='biketrek' AND sp.external_product_id=:bp AND sp.external_variant_id IS NOT DISTINCT FROM CAST(:bv AS text))
+          WHERE sp.retired_at IS NULL AND (sp.product_id=:card OR (s.code='xtrek' AND sp.external_product_id=:pid)
+             OR (s.code='biketrek' AND sp.external_product_id=:bp AND sp.external_variant_id IS NOT DISTINCT FROM CAST(:bv AS text)))
           ORDER BY sp.id FOR UPDATE OF sp
         """), dict(card=r.card, pid=str(r.xtrek_id), bp=str(r.bike_id), bv=str(r.bike_variant) if r.bike_variant else None))).all()
         _require(all(link['product_id'] == r.card for _, link in bindings), 'missing_ean_link_owner_changed')

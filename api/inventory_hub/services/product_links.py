@@ -122,10 +122,14 @@ async def _facts(db, product_ids, *, lock=False, exclude_supplier_product_id=Non
     products = list(await db.scalars(query.execution_options(populate_existing=True)))
     if len(products) != len(product_ids):
         raise LinkError('product_links_product_missing', 404)
+    from inventory_hub.services.canonical_products import aliases_for, require_current_products
+    await require_current_products(db, product_ids)
+    canonical_aliases = await aliases_for(db, product_ids)
+    identity_ids = set(product_ids) | {old for old, keeper in canonical_aliases.items() if keeper in product_ids}
     eans, attributes = defaultdict(list), defaultdict(list)
-    for row in await db.scalars(select(ProductIdentifier).where(ProductIdentifier.product_id.in_(product_ids))):
+    for row in await db.scalars(select(ProductIdentifier).where(ProductIdentifier.product_id.in_(identity_ids))):
         if getattr(row.identifier_type, 'value', row.identifier_type) in ('ean', 'upc'):
-            eans[row.product_id].extend(verified_barcodes((row.value,)))
+            eans[canonical_aliases.get(row.product_id, row.product_id)].extend(verified_barcodes((row.value,)))
     for row in await db.scalars(select(ProductVariantAttribute).where(ProductVariantAttribute.product_id.in_(product_ids))
                                .order_by(ProductVariantAttribute.attribute_name)):
         attributes[row.product_id].append({'name': row.attribute_name, 'value': row.attribute_value})
@@ -138,7 +142,7 @@ async def _facts(db, product_ids, *, lock=False, exclude_supplier_product_id=Non
           AND c.external_code=coalesce(nullif(sp.parent_code,''),sp.external_code)
         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data->'variants')='array'
           THEN c.data->'variants' ELSE '[]'::jsonb END) leaf(data)
-        WHERE sp.product_id=ANY(CAST(:ids AS bigint[])) AND sp.is_variant AND sp.is_listed
+        WHERE sp.product_id=ANY(CAST(:ids AS bigint[])) AND sp.is_variant AND sp.is_listed AND sp.retired_at IS NULL
           AND leaf.data->>'code'=sp.external_code
         """), {'ids': list(product_ids)})).mappings():
         fallback[row['product_id']].extend(variant_attributes({'parameters': row['attributes']}))

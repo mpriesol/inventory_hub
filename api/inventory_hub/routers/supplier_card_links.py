@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.services import supplier_card_links as service
+from inventory_hub.services.canonical_products import ProductRetiredError
 from inventory_hub.supplier_card_link_types import (
     SupplierCardLinkApplyRequest, SupplierCardLinkCandidatesRequest, SupplierCardLinkPreviewRequest,
 )
@@ -43,6 +44,10 @@ def actor(request):
 async def call(operation):
     try:
         return await operation
+    except ProductRetiredError as error:
+        raise HTTPException(409, detail={'code': error.code,
+            'retired_product_id': error.retired_product_id,
+            'canonical_product_id': error.canonical_product_id}) from None
     except service.SupplierCardLinkError as error:
         detail = {'code': error.code}
         if error.known_unapplied:

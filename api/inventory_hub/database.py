@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
     async_sessionmaker,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, with_loader_criteria
 from sqlalchemy import event, text
 
 from inventory_hub.settings import settings
@@ -26,6 +26,21 @@ from inventory_hub.settings import settings
 class Base(DeclarativeBase):
     """Base class for all database models."""
     pass
+
+
+@event.listens_for(Session, 'do_orm_execute')
+def current_shop_mappings(execute_state):
+    """All ORM ownership readers use current mappings, including aliased joins.
+
+    Historical tools explicitly opt in with include_retired_shop_mappings=True.
+    Raw SQL is audited separately; database triggers reject writes to retired
+    mappings even when an old ORM instance remains in a session identity map.
+    """
+    if (execute_state.is_select and execute_state.is_orm_statement
+            and not execute_state.execution_options.get('include_retired_shop_mappings', False)):
+        from inventory_hub.db_models_ext import ShopProduct
+        execute_state.statement = execute_state.statement.options(with_loader_criteria(
+            ShopProduct, lambda cls: cls.retired_at.is_(None), include_aliases=True))
 
 
 # ============================================================================

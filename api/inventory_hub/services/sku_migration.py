@@ -77,7 +77,7 @@ async def _local(db, ids):
                     THEN jsonb_array_length(c.data->'variants') ELSE 0 END AS variant_count
         FROM shop_products sp JOIN shop_product_content c ON c.shop_id=sp.shop_id
          AND c.external_code=CASE WHEN sp.is_variant THEN sp.parent_code ELSE sp.external_code END
-        WHERE sp.product_id=ANY(CAST(:ids AS bigint[]))
+        WHERE sp.product_id=ANY(CAST(:ids AS bigint[])) AND sp.retired_at IS NULL
         """), {"ids": ids})).mappings().all()
     cached = {row["id"]: dict(row) for row in cache}
     groups = {code.casefold() for code in await db.scalars(select(ProductGroup.code).where(

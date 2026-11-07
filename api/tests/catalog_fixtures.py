@@ -41,7 +41,14 @@ def northfinder_product(variants=None, purchase="10", retail="24.60"):
 
 @asynccontextmanager
 async def dummy_session():
-    yield object()
+    class IdentityLockOnly:
+        async def execute(self, statement, parameters):
+            # Catalog unit tests replace all domain reads; the one real DB
+            # operation left at the sending boundary is its identity lock.
+            from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+            assert str(statement) == 'SELECT pg_advisory_xact_lock(:key)'
+            assert parameters == {'key': IDENTITY_WRITE_LOCK}
+    yield IdentityLockOnly()
 
 
 class FakeUpgates:

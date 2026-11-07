@@ -335,6 +335,10 @@ class ShopProduct(TimestampMixin, Base):
     last_push_error: Mapped[Optional[str]] = mapped_column(Text)
     last_pull_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     is_listed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Retirement is distinct from native visibility/listing state. Original
+    # rows remain available as evidence, but cannot own a current native leaf.
+    retired_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    retired_by_consolidation_id: Mapped[Optional[str]] = mapped_column(String(36))
     
     @hybrid_property
     def native_id(self) -> Optional[str]:
@@ -351,7 +355,7 @@ class ShopProduct(TimestampMixin, Base):
     
     __table_args__ = (
         Index("uq_shop_products_single", "shop_id", "product_id", unique=True,
-              postgresql_where="NOT shared_stock"),
+              postgresql_where="NOT shared_stock AND retired_at IS NULL"),
         CheckConstraint("sale_to_stock_factor >= 1 AND sale_to_stock_factor <= 1000000 "
                         "AND sale_to_stock_factor = trunc(sale_to_stock_factor) "
                         "AND (shared_stock OR sale_to_stock_factor = 1) "
@@ -361,9 +365,9 @@ class ShopProduct(TimestampMixin, Base):
         CheckConstraint("is_variant OR (external_variant_id IS NULL AND parent_code IS NULL)",
                         name="chk_shop_products_identity_shape"),
         Index("uq_shop_products_native_product", "shop_id", "external_product_id", unique=True,
-              postgresql_where="NOT is_variant AND external_product_id IS NOT NULL"),
+              postgresql_where="NOT is_variant AND external_product_id IS NOT NULL AND retired_at IS NULL"),
         Index("uq_shop_products_native_variant", "shop_id", "external_variant_id", unique=True,
-              postgresql_where="is_variant AND external_variant_id IS NOT NULL"),
+              postgresql_where="is_variant AND external_variant_id IS NOT NULL AND retired_at IS NULL"),
     )
 
 

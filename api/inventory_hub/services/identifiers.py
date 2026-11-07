@@ -178,6 +178,12 @@ class ProductIdentifierService:
         value = (value or "").strip()
         if not value:
             raise ValueError("Identifier value cannot be empty")
+        from inventory_hub.services.canonical_products import require_current_products
+        from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
+        from sqlalchemy import text
+        await self.db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+        await self.db.execute(select(Product.id).where(Product.id == product_id).with_for_update(read=True))
+        await require_current_products(self.db, {product_id})
         
         # Auto-classify if type not provided
         if identifier_type is None:
@@ -309,14 +315,14 @@ class ProductIdentifierService:
             .where(
                 ProductIdentifier.value.in_(self.gtin_equivalents(code) or (code,)),
                 ProductIdentifier.identifier_type.in_(self.BARCODE_TYPES),
-                Product.is_active == True,
             )
         )
         result = await self.db.execute(stmt)
-        products = list(result.scalars().unique())
+        from inventory_hub.services.canonical_products import canonical_owner_products
+        products = await canonical_owner_products(self.db, {row.id for row in result.scalars()})
         if len(products) > 1:
             raise IdentifierConflict(product.id for product in products)
-        return products[0] if products else None
+        return products[0] if products and products[0].is_active else None
     
     async def find_product_by_identifier(
         self,
@@ -333,7 +339,6 @@ class ProductIdentifierService:
         
         conditions = [
             ProductIdentifier.value == value,
-            Product.is_active == True,
         ]
         
         if identifier_type:
@@ -350,33 +355,39 @@ class ProductIdentifierService:
             .where(and_(*conditions))
         )
         result = await self.db.execute(stmt)
-        products = list(result.scalars().unique())
+        from inventory_hub.services.canonical_products import canonical_owner_products
+        products = await canonical_owner_products(self.db, {row.id for row in result.scalars()})
         if len(products) > 1:
             raise IdentifierConflict(product.id for product in products)
-        return products[0] if products else None
+        return products[0] if products and products[0].is_active else None
     
     async def get_all_barcodes(self, product_id: int) -> List[str]:
         """Get all barcode values for product."""
+        from inventory_hub.services.canonical_products import effective_product_ids
+        owner_ids = await effective_product_ids(self.db, {product_id})
         stmt = (
             select(ProductIdentifier.value)
             .where(
-                ProductIdentifier.product_id == product_id,
+                ProductIdentifier.product_id.in_(owner_ids),
                 ProductIdentifier.identifier_type.in_(self.BARCODE_TYPES),
             )
             .order_by(ProductIdentifier.is_primary.desc(), ProductIdentifier.id)
         )
         result = await self.db.execute(stmt)
-        return list(result.scalars())
+        return list(dict.fromkeys(result.scalars()))
     
     async def get_primary_barcode(self, product_id: int) -> Optional[str]:
         """Get primary barcode for product (from barcode group)."""
+        from inventory_hub.services.canonical_products import effective_product_ids
+        owner_ids = await effective_product_ids(self.db, {product_id})
         stmt = (
             select(ProductIdentifier.value)
             .where(
-                ProductIdentifier.product_id == product_id,
+                ProductIdentifier.product_id.in_(owner_ids),
                 ProductIdentifier.identifier_type.in_(self.BARCODE_TYPES),
                 ProductIdentifier.is_primary == True,
             )
+            .order_by((ProductIdentifier.product_id == product_id).desc(), ProductIdentifier.id)
             .limit(1)
         )
         result = await self.db.execute(stmt)

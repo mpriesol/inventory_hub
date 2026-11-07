@@ -302,14 +302,16 @@ class RemotePreflightTests(unittest.TestCase):
 
 class ReadOnlyIdentityDatabase:
     """Execute the loader's SELECT filters against in-memory relational fixtures."""
-    def __init__(self, *, products=(), mappings=(), identifiers=()):
+    def __init__(self, *, products=(), mappings=(), identifiers=(), canonical_aliases=None):
         self.products, self.mappings, self.identifiers = list(products), list(mappings), list(identifiers)
+        self.canonical_aliases = dict(canonical_aliases or {})
         self.queries = []
 
     async def execute(self, statement):
         self.queries.append(statement)
         entity = statement.column_descriptions[0]["entity"]
         params = statement.compile().params
+        from inventory_hub.product_consolidation_models import ProductCanonicalAlias
         if entity is ShopProduct:
             if 'shop_id_1' in params:
                 rows = [row for row in self.mappings if row.shop_id == params["shop_id_1"]]
@@ -334,9 +336,15 @@ class ReadOnlyIdentityDatabase:
                 rows = [row for row in rows if (row.supplier_id, row.value) in params["param_1"]]
             else:
                 rows = [row for row in rows if row.product_id in params["product_id_1"]]
+        elif entity is ProductCanonicalAlias:
+            rows = [(old, keeper) for old, keeper in self.canonical_aliases.items()
+                    if old in params.get('retired_product_id_1', ()) or keeper in params.get('canonical_product_id_1', ())]
         else:
             raise AssertionError(f"Unexpected database write or entity: {entity}")
-        return SimpleNamespace(scalars=lambda: rows)
+        return SimpleNamespace(scalars=lambda: rows, all=lambda: rows)
+
+    async def scalars(self, statement):
+        return (await self.execute(statement)).scalars()
 
 
 class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
@@ -362,7 +370,7 @@ class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
         incoming = [RemoteIdentity(2, row.sku, True) for row in products]
         index = await load_identity_index(db, 2, incoming)
         self.assertTrue(all(index.resolve(row).matched_by == "shared_sku" for row in incoming))
-        self.assertLessEqual(len(db.queries), 14)  # SKU, old SKU, barcodes and global sale-unit guards in bounded batches.
+        self.assertLessEqual(len(db.queries), 17)  # SKU, aliases, barcodes and sale-unit guards remain bounded batches.
         for query in db.queries:
             self.assertTrue(str(query).startswith("SELECT "))
             for value in query.compile().params.values():

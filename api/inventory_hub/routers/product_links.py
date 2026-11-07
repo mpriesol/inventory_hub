@@ -13,9 +13,12 @@ from inventory_hub.product_link_types import (
     ProductLinksApplyRequest, ProductLinksCandidatesRequest, ProductLinksPreviewRequest, ProductLinksRefreshRequest,
 )
 from inventory_hub.services import product_links as service
+from inventory_hub.services.canonical_products import ProductRetiredError
 
 
 class NoStoreRoute(APIRoute):
+    validation_error_code = 'product_links_invalid_request'
+
     def get_route_handler(self):
         original = super().get_route_handler()
         async def handler(request):
@@ -25,7 +28,7 @@ class NoStoreRoute(APIRoute):
                 error.headers = {**(error.headers or {}), 'Cache-Control': 'no-store'}
                 raise
             except RequestValidationError:
-                response = JSONResponse(status_code=422, content={'detail': {'code': 'product_links_invalid_request'}})
+                response = JSONResponse(status_code=422, content={'detail': {'code': self.validation_error_code}})
             response.headers['Cache-Control'] = 'no-store'
             return response
         return handler
@@ -43,6 +46,9 @@ def actor(request):
 async def call(operation):
     try:
         return await operation
+    except ProductRetiredError as error:
+        raise HTTPException(409, detail={'code': error.code, 'retired_product_id': error.retired_product_id,
+            'canonical_product_id': error.canonical_product_id}) from None
     except service.LinkError as error:
         headers = {'Retry-After': str(error.retry_after)} if error.retry_after else None
         detail = {'code': error.code}
