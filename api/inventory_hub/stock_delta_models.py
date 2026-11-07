@@ -11,6 +11,8 @@ class StockSyncCheckpoint(Base):
     __tablename__ = "stock_sync_checkpoints"
     shop_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("shops.id", ondelete="RESTRICT"), primary_key=True)
     sku: Mapped[str] = mapped_column(String(100), primary_key=True)
+    sale_key: Mapped[str] = mapped_column(String(32), primary_key=True, default="", server_default="")
+    sale_to_stock_factor: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False, default=1, server_default="1")
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

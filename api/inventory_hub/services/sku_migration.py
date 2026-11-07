@@ -107,7 +107,8 @@ async def _impacts(db, ids):
           (SELECT count(*) FROM stock_sync_items u WHERE u.sku=p.sku AND u.status IN ('prepared','sending','uncertain')) AS pending_stock_sync_items,
           (SELECT count(*) FROM stock_publication_items u WHERE u.sku=p.sku AND u.status IN ('prepared','sending','uncertain')) AS pending_stock_publications,
           (SELECT count(*) FROM fifo_cost_publications u WHERE u.kind='product'
-             AND u.target_key='product:' || p.id::text AND u.status IN ('queued','sending','uncertain')) AS pending_cost_publications,
+             AND (u.target_key='product:' || p.id::text OR u.target_key LIKE 'product:' || p.id::text || ':%')
+             AND u.status IN ('queued','sending','uncertain')) AS pending_cost_publications,
           (SELECT count(*) FROM shop_sync_outbox u WHERE u.product_id=p.id AND u.status::text IN ('pending','processing','failed')) AS pending_shop_outbox,
           (SELECT count(*) FROM product_import_drafts d WHERE EXISTS (
               SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.document->'rows')='array'

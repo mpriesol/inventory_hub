@@ -19,6 +19,12 @@ Ak bol produkt vypredaný, nový potvrdený príjem poskytne novú cenu. Ak ešt
 
 V príklade aj v Hube sú obstarávacie ceny v EUR bez DPH. Zostávajúci sklad má hodnotu 90 € a priemer 45 €; tento priemer sa neposiela ako cena ďalšieho FIFO kusa.
 
+### Predajné množstvá zo spoločnej kusovej karty
+
+Pri výslovne potvrdených predajných prepojeniach sa produktová cena ďalšieho FIFO kusa násobí počtom kusov v predajnej jednotke. Cena 0,10 €/ks dá variantom po 1, 8 a 100 kusov obstarávaciu cenu 0,10 €, 0,80 € a 10 €. Každý variant má vlastný cieľ, podpis podkladov, overený výsledok a ochranu neistého zápisu. Neznáma kusová cena zostáva neznáma aj po násobení.
+
+Objednávka používa skutočné náklady svojich vydaných kusov a uložené pôvodné predajné množstvo. Ak jedna predaná jednotka po 8 kusov čerpá 4 kusy po 0,10 € a 4 kusy po 0,20 €, do jej riadka sa prenesie 1,20 € za predajnú jednotku. Historický násobok, kusové FIFO alokácie a predajné množstvo sa navzájom overia; dnešné mapovanie nesmie spätne prepočítať starý predaj. Vratka nemení cenu pôvodného predajného riadka.
+
 ## Nastavenie a ručné spustenie
 
 1. Odomkni stránku existujúcim operátorským tokenom, vyber e-shop a jeho sklad.

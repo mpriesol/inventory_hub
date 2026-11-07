@@ -40,4 +40,5 @@ class StockNativeLine(Base):
     __tablename__ = "stock_native_lines"
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("stock_native_orders.order_id", ondelete="RESTRICT"), primary_key=True)
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("products.id", ondelete="RESTRICT"), primary_key=True)
+    sale_key: Mapped[str] = mapped_column(String(32), primary_key=True, default="", server_default="")
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 0), nullable=False)

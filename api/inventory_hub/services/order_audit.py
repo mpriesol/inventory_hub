@@ -134,12 +134,14 @@ def _line_identity(shop_id: int, raw: dict) -> RemoteIdentity:
 
 
 def _normalize_line(raw: dict, position: int, identity: RemoteIdentity, index) -> dict:
+    from inventory_hub.services import sale_units
     code, ean = _text(raw.get("code")), _text(raw.get("ean"))
     quantity = _quantity(raw.get("quantity"))
     kind = _text(raw.get("type"), 30)
     reasons = []
     manual = not (code or ean or _positive_id(raw.get("product_id")) or _positive_id(raw.get("option_set_id")))
     product_id = sku = matched_by = None
+    sale_proof = {}
     invalid_identity = (
         any(raw.get(key) not in (None, "") and not _identity_text(raw.get(key)) for key in ("code", "ean"))
         or any(raw.get(key) not in (None, "", 0, "0") and _positive_id(raw.get(key)) is None
@@ -162,6 +164,16 @@ def _normalize_line(raw: dict, position: int, identity: RemoteIdentity, index) -
         classification = resolution.status
         product_id, matched_by = resolution.product_id, resolution.matched_by
         reasons.extend(resolution.reasons)
+        if classification == "mapped":
+            mappings = [mapping for mapping in index.by_product.get(product_id, [])
+                        if mapping.id == resolution.mapping_id]
+            try:
+                if len(mappings) != 1:
+                    raise sale_units.SaleUnitError("sale_mapping_invalid")
+                sale_proof = sale_units.mapping_fields(mappings[0])
+            except sale_units.SaleUnitError as error:
+                classification = "conflict"
+                reasons.append(str(error))
         if not code:
             reasons.append("missing_code_with_identity")
             # A barcode can suggest a product, but this audit never creates
@@ -186,6 +198,7 @@ def _normalize_line(raw: dict, position: int, identity: RemoteIdentity, index) -
         "title": _text(raw.get("title"), 300), "ean": ean, "quantity": quantity,
         "unit": _text(raw.get("unit"), 30), "classification": classification,
         "product_id": product_id, "sku": sku, "matched_by": matched_by,
+        **sale_proof,
         "reasons": sorted(set(reasons)),
     }
 

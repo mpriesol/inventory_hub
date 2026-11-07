@@ -72,7 +72,7 @@ export function StockPublicationPage() {
   function acceptBatch(value: PublicationBatch) {
     if (value.shop_code !== shop) { setError('stock_publication_wrong_shop'); return; }
     setBaselineResult(null); setBatchLoaded({ value, shop, revision: accessRevision() }); setBatchId(value.id); setSkuText(value.items.map(item => item.sku).join('\n'));
-    if (value.preview_data.rows) setSkuText(value.preview_data.rows.map(row => row.sku).join('\n'));
+    if (value.preview_data.rows) setSkuText([...new Set(value.preview_data.rows.map(row => row.sku))].join('\n'));
     setBlockedBatches(previous => { const next = { ...previous }; if (['queued', 'running', 'uncertain'].includes(value.status) || value.items.some(item => ['sending', 'uncertain'].includes(item.status))) next[value.id] = value.hold_id; else delete next[value.id]; return next; });
     previewRequest.current = null; clearConfirmations(); if (uncertain === 'batch') setUncertain(null);
   }
@@ -131,9 +131,10 @@ export function StockPublicationPage() {
   }
   function establishBaseline() {
     if (!batch || !activeHold || !baselineEligible || !baselineWritersPaused || !baselineOrdersReconciled) return;
-    const skus = batch.preview_data.rows.map(row => row.sku);
+    const skus = [...new Set(batch.preview_data.rows.map(row => row.sku))];
     mutate('baseline', () => establishStockSyncBaseline({ shop_code: shop, hold_id: activeHold.id, skus, confirmed: true, external_writers_paused: true, orders_reconciled: true }), value => {
       if (value.shop_code !== shop || !Number.isSafeInteger(value.baseline_count) || value.baseline_count < 0 || !Array.isArray(value.skus) || value.skus.length !== skus.length || new Set(value.skus).size !== skus.length || value.skus.some(sku => !skus.includes(sku))) throw new Error('Invalid baseline response');
+      if (value.selected_count !== undefined && (!Number.isSafeInteger(value.selected_count) || value.selected_count < skus.length)) throw new Error('Invalid baseline item count');
       setBaselineResult(value);
     }, 'options');
   }
@@ -200,8 +201,8 @@ export function StockPublicationPage() {
         {batch.status === 'blocked' && <p className="opening-stock-errors">{t('stockPublication.blockedHelp')}</p>}
         <h3>{t('stockPublication.comparison')}</h3>
         <div className="opening-stock-table-scroll"><table data-testid="comparison-table"><thead><tr>{['sku', 'target', 'onHand', 'reserved', 'desired', 'before', 'itemError'].map(key => <th key={key}>{t(`stockPublication.${key}`)}</th>)}</tr></thead><tbody>{batch.preview_data.rows.slice(0, 100).map((row, index) => <tr key={`${row.sku}:${index}`}>
-          <td><code>{row.sku}</code></td><td><code>{row.remote?.identity.code ?? row.target?.variant_code ?? row.target?.parent_code ?? '—'}</code>{row.remote?.identity.variant_code && <small className="stock-publication-subline">{t('stockPublication.parent')}: {row.remote.identity.parent_code}</small>}</td>
-          <td>{row.quantity_known ? quantity(row.qty_on_hand) : t('stockPublication.unknown')}</td><td>{row.quantity_known ? quantity(row.qty_reserved) : t('stockPublication.unknown')}</td><td>{row.quantity_known ? quantity(row.qty_available) : t('stockPublication.unknown')}</td><td>{quantity(row.remote?.quantity ?? null)}</td><td>{row.errors.map((code, index) => <div key={index}>{message(code)}</div>)}</td>
+          <td><code>{row.sku}</code>{row.sale_to_stock_factor && <small className="stock-publication-subline">{t('stockPublication.saleUnit', { pieces: row.sale_to_stock_factor })}</small>}</td><td><code>{row.remote?.identity.code ?? row.target?.variant_code ?? row.target?.parent_code ?? '—'}</code>{row.remote?.identity.variant_code && <small className="stock-publication-subline">{t('stockPublication.parent')}: {row.remote.identity.parent_code}</small>}</td>
+          <td>{row.quantity_known ? quantity(row.qty_on_hand) : t('stockPublication.unknown')}</td><td>{row.quantity_known ? quantity(row.qty_reserved) : t('stockPublication.unknown')}</td><td>{row.quantity_known ? quantity(row.qty_sellable ?? row.qty_available) : t('stockPublication.unknown')}</td><td>{quantity(row.remote?.quantity ?? null)}</td><td>{row.errors.map((code, index) => <div key={index}>{message(code)}</div>)}</td>
         </tr>)}</tbody></table></div>
         <h3>{t('stockPublication.deliveryResults')}</h3>
         <div className="opening-stock-table-scroll"><table><thead><tr>{['sku', 'target', 'before', 'desired', 'after', 'itemStatus', 'checkedAt', 'itemError'].map(key => <th key={key}>{t(`stockPublication.${key}`)}</th>)}</tr></thead><tbody>{batch.items.slice(0, 100).map(item => <tr key={item.id}>
@@ -220,7 +221,7 @@ export function StockPublicationPage() {
         </div>
         {batch.status === 'uncertain' && <><div className="opening-stock-confirmations"><label><input data-testid="requests-finished" type="checkbox" checked={requestsFinished} disabled={!!busy || !!uncertain || !sameHold} onChange={event => setRequestsFinished(event.target.checked)} />{t('stockPublication.requestsFinished')}</label></div><span className="action-control"><Button data-testid="resolve" disabled={!!busy || !!uncertain || !requestsFinished || !sameHold} onClick={() => { if (requestsFinished && sameHold) mutate('resolve', () => resolvePublication(batch.id), acceptBatch, 'batch'); }}>{t('stockPublication.resolve')}</Button><ActionScope effects={['upgates-read', 'hub-write']} shop={shop} calls={{ kind: 'variable' }} /></span></>}
         {baselineEligible && <section className="opening-stock-notice" data-testid="sync-baseline-panel"><h3>{t('stockPublication.baselineTitle')}</h3><p>{t('stockPublication.baselineHelp')}</p>
-          {baselineResult ? <p role="status" className="opening-stock-success" data-testid="sync-baseline-result">{t('stockPublication.baselineSaved', { count: baselineResult.skus.length })}</p> : <><div className="opening-stock-confirmations"><label><input data-testid="baseline-writers-paused" type="checkbox" checked={baselineWritersPaused} disabled={!!busy || !!uncertain} onChange={event => setBaselineWritersPaused(event.target.checked)} />{t('stockPublication.writersPaused')}</label><label><input data-testid="baseline-orders-reconciled" type="checkbox" checked={baselineOrdersReconciled} disabled={!!busy || !!uncertain} onChange={event => setBaselineOrdersReconciled(event.target.checked)} />{t('stockPublication.ordersReconciled')}</label></div>
+          {baselineResult ? <p role="status" className="opening-stock-success" data-testid="sync-baseline-result">{t('stockPublication.baselineSaved', { count: baselineResult.selected_count ?? baselineResult.skus.length })}</p> : <><div className="opening-stock-confirmations"><label><input data-testid="baseline-writers-paused" type="checkbox" checked={baselineWritersPaused} disabled={!!busy || !!uncertain} onChange={event => setBaselineWritersPaused(event.target.checked)} />{t('stockPublication.writersPaused')}</label><label><input data-testid="baseline-orders-reconciled" type="checkbox" checked={baselineOrdersReconciled} disabled={!!busy || !!uncertain} onChange={event => setBaselineOrdersReconciled(event.target.checked)} />{t('stockPublication.ordersReconciled')}</label></div>
           <span className="action-control"><Button data-testid="establish-sync-baseline" variant="secondary" disabled={!!busy || !!uncertain || !baselineWritersPaused || !baselineOrdersReconciled} onClick={establishBaseline}>{t('stockPublication.establishBaseline')}</Button><ActionScope effects={['hub-write', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span></>}
           <p><Link to={`/settings/availability?shop=${shop}`}>{t('stockPublication.openStockSync')}</Link></p>
         </section>}

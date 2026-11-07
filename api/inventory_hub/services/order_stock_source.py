@@ -16,10 +16,12 @@ from uuid import UUID
 from inventory_hub.db_models import Shop
 from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index, verified_barcodes
 from inventory_hub.services import order_sku_aliases
+from inventory_hub.services import sale_units
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connection_fingerprint
 
 
-IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons", "sku_alias_proof", "item_type", "stock_unit"}
+IDENTITY_FIELDS = {"classification", "product_id", "sku", "matched_by", "reasons", "sku_alias_proof", "item_type", "stock_unit",
+                   *sale_units.FIELDS}
 
 
 class SourceError(Exception):
@@ -239,6 +241,7 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
         reasons, product_id, sku, matched_by = [], None, None, None
         item_type = stock_unit = None
         alias_proof = None
+        sale_proof = {}
         if line["identity_invalid"]:
             classification, reasons = "conflict", ["invalid_identity"]
         elif line["kind"] == "discount":
@@ -251,6 +254,16 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
             resolved, alias_proof = aliases.resolve(line)
             classification, product_id, matched_by = resolved.status, resolved.product_id, resolved.matched_by
             reasons = list(resolved.reasons)
+            if classification == "mapped":
+                mappings = [mapping for mapping in index.by_product.get(product_id, [])
+                            if mapping.id == resolved.mapping_id]
+                try:
+                    if len(mappings) != 1:
+                        raise sale_units.SaleUnitError("sale_mapping_invalid")
+                    sale_proof = sale_units.mapping_fields(mappings[0])
+                except sale_units.SaleUnitError as error:
+                    classification = "conflict"
+                    reasons.append(str(error))
             if not line["code"]:
                 reasons.append("missing_code_with_identity")
             if product_id is not None:
@@ -266,6 +279,7 @@ async def resolve_lines(db, shop: Shop, order_dict: dict) -> list[dict]:
         result.append({**line, "classification": classification, "product_id": product_id, "sku": sku,
                        "item_type": item_type, "stock_unit": stock_unit,
                        "matched_by": matched_by, "reasons": sorted(set(reasons)),
+                       **sale_proof,
                        **({"sku_alias_proof": alias_proof} if alias_proof else {})})
     return result
 

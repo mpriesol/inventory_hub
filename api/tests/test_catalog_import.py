@@ -136,6 +136,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         patch("inventory_hub.services.catalog.attach_shop_links", AsyncMock()).start()
         self.register = patch.object(imports, "register_created", AsyncMock()).start()
         self.verified_existing = patch.object(imports, "verified_existing_sources", AsyncMock(return_value=set())).start()
+        self.shared_existing = patch.object(imports, "shared_product_ids", AsyncMock(return_value=set())).start()
         self.id = "a" * 32
         self.path = imports._path("test-shop", self.id)
         p = product()
@@ -153,6 +154,14 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         if queued:
             await imports.execute_import("test-shop", self.id)
         return imports.import_result("test-shop", self.id)
+
+    async def test_new_shared_group_after_preview_blocks_before_product_post(self):
+        self.shared_existing.return_value = {1}
+        result = await self.run_import()
+        self.assertEqual(result['items'][0]['errors'], ['shared_stock_sale_requires_group_workflow'])
+        self.assertIs(result['items'][0]['product_write_attempted'], False)
+        self.assertEqual(self.client.sent, [])
+        self.register.assert_not_awaited()
 
     async def test_supplier_expiry_after_queue_prevents_all_remote_writes(self):
         self.document['staging'] = {'draft_id': 'draft', 'hash': 'hash',

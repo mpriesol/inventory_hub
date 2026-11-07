@@ -44,7 +44,16 @@ const options = shop => ({ shop: { code: shop, name: shop === 'xtrek' ? 'xTrek' 
   policy, hold, server_write_enabled: serverWriteEnabled, external_write_enabled: serverWriteEnabled && policy.enabled,
   values: { publication_batch_size: 20, publication_preview_minutes: 10 } });
 const makeBatch = body => {
-  const rows = body.skus.map((sku, index) => {
+  const rows = body.skus.flatMap((sku, index) => {
+    if (sku === 'SHARED-PATCH') return [1, 8, 100].map((factor, position) => {
+      const code = `${sku}-${factor}`;
+      const target = { code, parent_code: 'PATCH-PARENT', variant_code: code };
+      return { sku, product_id: 9871, target, quantity_known: true,
+        sale_key: String(position + 10), sale_mapping_id: position + 10, sale_to_stock_factor: String(factor),
+        qty_on_hand: '200', qty_reserved: '8', qty_available: '192', qty_sellable: String(Math.floor(192 / factor)),
+        errors: [], remote: { identity: { ...target, product_id: 97557, variant_id: 97802 + position },
+          quantity: String(Math.floor(192 / factor)) } };
+    });
     const unknown = sku === 'UNKNOWN-BALANCE';
     const target = { code: sku, parent_code: 'PARENT-FIXTURE', variant_code: sku };
     return { sku, product_id: index + 1, target, quantity_known: !unknown,
@@ -60,7 +69,7 @@ const makeBatch = body => {
       order_policy_revision: 7, configuration_hash: 'b'.repeat(64), target_fingerprint: policy.target_fingerprint,
       local_hash: 'c'.repeat(64), rows, created_at: '2026-09-23T12:00:00Z', expires_at: '2100-01-01T00:00:00Z' },
     items: rows.filter(row => row.quantity_known).map((row, position) => ({ id: position + 1, position, sku: row.sku,
-      target: row.remote.identity, quantity: row.qty_available, before_quantity: row.remote.quantity, after_quantity: null,
+      target: row.remote.identity, quantity: row.qty_sellable ?? row.qty_available, before_quantity: row.remote.quantity, after_quantity: null,
       status: 'prepared', attempt_id: null, attempt_started_at: null, attempt_completed_at: null, verified_at: null,
       error: null, observation: null, acknowledgement: null, resolution: null })),
   };
@@ -70,6 +79,7 @@ let holdSequence = 0;
 let optionsMode = 'valid', previewMode = 'valid', submitMode = 'valid';
 let resolveOptions, resolvePreview, rejectSubmit, rejectBaseline;
 let baselineMode = 'ok';
+let baselineSkus = ['KNOWN-ZERO', 'SELECTED-VARIANT'];
 const posts = suffix => calls.filter(call => call.method === 'POST' && (!suffix || call.path.endsWith(suffix)));
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
@@ -80,10 +90,10 @@ global.fetch = async (path, init = {}) => {
   const url = new URL(path, dom.window.location.origin);
   if (url.pathname === '/api/stock-sync/baseline') {
     assert.equal(init.method, 'POST');
-    assert.deepEqual(body, { shop_code: 'xtrek', hold_id: hold.id, skus: ['KNOWN-ZERO', 'SELECTED-VARIANT'], confirmed: true, external_writers_paused: true, orders_reconciled: true });
+    assert.deepEqual(body, { shop_code: 'xtrek', hold_id: hold.id, skus: baselineSkus, confirmed: true, external_writers_paused: true, orders_reconciled: true });
     assert(hold.active, 'Baseline requires the current maintenance hold');
     if (baselineMode === 'pending') return new Promise((resolve, reject) => { rejectBaseline = () => reject(new TypeError('Synthetic lost baseline response')); });
-    return reply({ shop_code: body.shop_code, baseline_count: body.skus.length, skus: body.skus });
+    return reply({ shop_code: body.shop_code, baseline_count: body.skus.includes('SHARED-PATCH') ? 3 : body.skus.length, selected_count: body.skus.includes('SHARED-PATCH') ? 3 : body.skus.length, skus: body.skus });
   }
   if (url.pathname.endsWith('/options')) {
     assert.equal(init.method, 'GET');
@@ -257,6 +267,23 @@ global.fetch = async (path, init = {}) => {
   assert.equal(posts('/baseline').length, 2, 'An operator may explicitly verify the unchanged held selection again');
   assert(required('sync-baseline-result').textContent.includes('2'));
   assert(hold.active && cannotUse('release-hold'), 'A saved baseline neither activates transfers nor releases maintenance');
+
+  await input('skus', 'SHARED-PATCH'); await click('preview');
+  const sharedRows = [...required('comparison-table').querySelectorAll('tbody tr')];
+  assert.equal(sharedRows.length, 3, 'The API can expand one card into its three explicitly linked sale leaves');
+  assert.deepEqual(sharedRows.map(row => row.querySelectorAll('td')[4].textContent), ['192', '24', '1'],
+    'Publication quantities are complete sale units, while physical balance remains in pieces');
+  assert(sharedRows[1].textContent.includes(i18n.t('stockPublication.saleUnit', { pieces: '8' })));
+  assert.equal(required('skus').value, 'SHARED-PATCH', 'Recovered leaf rows do not duplicate the canonical SKU input');
+  const sharedId = required('batch-id').value;
+  const shared = batches.get(sharedId);
+  batches.set(sharedId, { ...shared, status: 'completed',
+    items: shared.items.map(item => ({ ...item, status: 'verified', after_quantity: item.quantity })) });
+  await click('recover-batch');
+  baselineSkus = ['SHARED-PATCH'];
+  await click('baseline-writers-paused'); await click('baseline-orders-reconciled'); await click('establish-sync-baseline');
+  assert.deepEqual(posts('/baseline').at(-1).body.skus, ['SHARED-PATCH'], 'All leaf checkpoints are requested through one canonical card');
+  assert(required('sync-baseline-result').textContent.includes('3'));
 
   await click('maintenance-completed'); await click('release-hold');
   assert.equal(posts('/release').length, 1); assert.equal(hold.active, false);

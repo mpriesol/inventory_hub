@@ -141,6 +141,7 @@ Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach po
 | [Mapovanie produktových feedov](docs/product-feed-mapping.md) | Zdrojové polia, transformácie, parametre a kategórie podľa dodávateľa a e-shopu. |
 | [Príprava importu](docs/product-imports.md) | Uložený editovateľný náhľad, voliteľné AI, uloženie do Hubu a samostatné odoslanie do e-shopu. |
 | [Prepojenie existujúcich kariet](docs/product-links.md) | Jednotlivé aj hromadné párovanie s existujúcimi produktmi e-shopov, náhľad, konflikty a obnova. |
+| [Rôzne počty kusov z jednej karty](docs/shared-stock-sales.md) | Výslovne overené predajné násobky, zmrazené jednotky objednávok, spoločná fyzická zásoba a samostatné predajné ciele. |
 | [Spoločná identita a nové SKU](docs/sku-policy.md) | Automatický značkový prefix a kód predajnej jednotky; spoločné kontroly identity. |
 | [Dátový model skladu](docs/warehouse-model.md) | Diagram ID, autorita údajov, služby, jednotky a hranice migrácie. |
 | [Prevod existujúcich SKU](docs/sku-migration.md) | Čítací náhľad pilotu, kontrola natívnych ID, závislosti, obnova indexov a návrat. |
@@ -249,6 +250,7 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `routers/order_collection.py`, `services/order_collection*.py`, `services/stock_projection.py` | Chránené nastavenie, obnoviteľný čítací zber, inbox a lokálny návrh zásob bez externých zápisov. |
 | `routers/stock_publication.py`, `services/stock_publication*.py` | Chránené dávky, blokácia skladu a samostatné odoslanie absolútneho stavu počas potvrdenej údržby. |
 | `routers/stock_sync.py`, `services/stock_sync.py`, `services/stock_delta.py`, `services/stock_native.py` | Pravidelný `stock_increment`, kontrolné body po údržbe a evidencia natívnych objednávkových účinkov; bez automatickej aktivácie. |
+| `routers/shared_stock_sales.py`, `services/shared_stock_sales.py`, `services/sale_units.py` | Chránený náhľad a atómové potvrdenie skupiny predajných položiek s explicitným počtom kusov jednej karty; nemení fyzické množstvo ani aktivácie. |
 | `routers/upgates_sync.py`, `services/upgates.py` | Načítanie produktov a vybrané operácie ich prenosu. |
 | `services/upgates_budget.py` | Spoločný rozpočet a jedna súbežná API požiadavka na HTTPS origin naprieč procesmi, cez samostatné autocommit PostgreSQL spojenie. |
 | `routers/catalog.py`, `services/catalog.py`, `services/catalog_import.py` | Katalóg, identita, náhľad a založenie produktov. |
@@ -276,6 +278,7 @@ Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
 | `warehouses`, `stock_balances`, `stock_movements` | Sklady, aktuálne množstvá a nemenná história pohybov. |
 | `opening_stock_batches`, `opening_stock_lines` | Uložené náhľady, pôvod, riadky a výsledky zaúčtovania počiatočného stavu. |
 | `shops`, `shop_products`, `shop_product_content` | Kanály, mapovania a zachytený obsah z Upgates. |
+| `shared_stock_sale_previews` | Overené skupiny predajných väzieb, faktory, pôvod a trvalý výsledok uloženia. |
 | `availability_profiles`, `shop_product_availability` | Model dostupnosti; nie dôkaz hotovej automatizácie. |
 | `shop_orders`, `shop_order_items`, `reservations`, `order_stock_policies`, `order_stock_previews` | Kontrolované skladové spracovanie objednávok, potvrdené politiky a trvalé náhľady/výsledky. Existujúce nespravované objednávky sa automaticky nepreberajú. |
 | `stock_warehouse_settings`, `stock_shop_settings`, `order_processing_jobs` | Predvolené hodnoty, výslovné aktivácie a trvalá fronta lokálneho spracovania. |
@@ -388,8 +391,9 @@ V [infra/db-init](infra/db-init) sú tieto SQL súbory:
 | `026_stock_delta.sql` | Rozdielový protokol, kontrolné body po údržbe a zmrazené podklady pokusov; bez prevzatia starého oprávnenia či automatickej aktivácie. |
 | `027_product_links.sql` | Trvalé náhľady a výsledky prepojenia existujúcich kariet s e-shopmi. |
 | `028_supplier_card_links.sql` | Trvalé náhľady a výsledky ručného priradenia dodávateľskej položky k existujúcej karte. |
+| `046_shared_stock_sales.sql` | Explicitné predajné násobky jednej kusovej karty, zmrazené jednotky objednávky a kľúče publikovania po predajných väzbách; bez prepočtu histórie alebo aktivácie zásob. |
 
-**Deployment spúšťa `005` až `033` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) všetkých dvadsaťdeväť upgrade SQL súborov balí do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Nové `024`–`026` sú aditívne a neaktivujú synchronizáciu.
+**Deployment spúšťa `005` až `038` a následne `046` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. Inštalátory `039`–`045` si ponechávajú svoje doterajšie spúšťanie. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) balí potrebné upgrade SQL súbory do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Migrácie `024`–`026` a `046` neaktivujú synchronizáciu.
 
 Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
 

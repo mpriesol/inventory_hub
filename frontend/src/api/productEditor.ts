@@ -29,7 +29,11 @@ export interface ProductEditorRow {
   warehouse: { code: string; location: string | null; min_quantity: string | null } | null;
   stock: { managed?: boolean; known: boolean; tracking_status?: 'confirmed' | 'unconfirmed' | 'no_warehouse' | 'nonstock'; started_at?: string | null; qty_on_hand: string | null; qty_reserved: string | null; qty_quarantined: string | null; qty_available: string | null; avg_cost: string | null; total_value: string | null };
   shops: { shop_code: string; mapped: boolean; shop_url?: string | null; shop_admin_url?: string | null; overrides: ProductShopValues; effective: ProductShopValues;
-    mapping?: { code: string; external_product_id: string | null; external_variant_id: string | null; parent_code: string | null; is_variant: boolean };
+    mapping?: { code: string; external_product_id: string | null; external_variant_id: string | null; parent_code: string | null; is_variant: boolean } | null;
+    shared_stock?: boolean;
+    sale_mappings?: { id: number; code: string; external_product_id: string | null; external_variant_id: string | null;
+      parent_code: string | null; is_variant: boolean; sale_to_stock_factor: string; is_listed: boolean;
+      shop_url?: string | null; shop_admin_url?: string | null }[];
     observed: { name: string | null; price: string | null; price_basis: 'unknown'; visible: boolean | null }; published_fields?: ProductPublicationField[]; state: 'inherited' | 'saved_unpublished' | 'published' }[];
   overrides: { common?: Record<string, unknown>; variant?: Record<string, unknown>; warehouses?: Record<string, Record<string, unknown>>; shops?: Record<string, Record<string, unknown>> };
 }

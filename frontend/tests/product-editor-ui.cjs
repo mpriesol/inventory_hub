@@ -68,6 +68,12 @@ const makeRow = id => ({ id, item_type:'stock', stock_unit:'pcs', item_definitio
   overrides: { common: {}, variant: {}, warehouses: {}, shops: {} },
 });
 const rows = new Map(Array.from({ length: 51 }, (_, index) => { const row = makeRow(index + 1); return [row.id, row]; }));
+const sharedShop = rows.get(5).shops.find(shop => shop.shop_code === 'biketrek');
+Object.assign(sharedShop, { shared_stock: true, mapping: null, shop_url: null, shop_admin_url: null,
+  sale_mappings: [1, 8, 100].map((factor, index) => ({ id: index + 100, code: `PATCH-${factor}`,
+    external_product_id: '97557', external_variant_id: String(97802 + index), parent_code: 'PATCH-PARENT', is_variant: true,
+    sale_to_stock_factor: String(factor), is_listed: true, shop_url: `https://biketrek.example.test/patch-${factor}`,
+    shop_admin_url: `https://biketrek.example.test/admin/patch-${factor}` })) });
 const editorOptions = { shops: [{ id: 1, code: 'biketrek', name: 'BIKETREK' }, { id: 2, code: 'xtrek', name: 'xTrek' }],
   warehouses: [{ id: 8, code: 'other', name: 'Other fixture', is_default: false }, { id: 7, code: 'main', name: 'Main fixture', is_default: true }], brands: ['Fixture', 'Other'], page_sizes: [25, 50, 100], currency: 'EUR', price_basis: 'incl_vat' };
 let loseCreateResponse = true; const createdRequests = new Map();
@@ -271,6 +277,14 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(3, 'supplier_availability').includes(t('supplierStatus.missing_link')), 'A missing supplier link is distinguished from expired data');
   assert(cellText(4, 'supplier_availability').includes(t('supplierStatus.missing_observation')));
   assert(cellText(5, 'supplier_availability').includes(t('supplierStatus.conflict')));
+  assert(cellText(5, 'biketrek').includes(i18n.t('productEditor.sharedSales', { count: 3 })));
+  assert(cellText(5, 'biketrek').includes(i18n.t('stockPublication.saleUnit', { pieces: '8' })));
+  assert.equal(cell(5, 'biketrek').querySelectorAll('a').length, 6, 'Each shared sale leaf keeps its own explicit links');
+  assert(!element('grid-refresh-links-5-biketrek'), 'A shared group never refreshes one arbitrary scalar mapping');
+  await click('detail-5');
+  assert(required('detail-shared-sales-5-biketrek').textContent.includes('PATCH-100'));
+  assert(!element('detail-refresh-links-5-biketrek'));
+  await click('close-detail');
   assert(!cellText(3, 'supplier_quantity').includes('6'), 'An unresolved supplier link never exposes a quantity as current');
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');

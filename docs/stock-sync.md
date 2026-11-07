@@ -11,7 +11,7 @@ V nastaveniach dostupností a synchronizácie vyber e-shop. Interval, veľkosť 
 | Nastavenie | Predvolene | Rozsah |
 | --- | --- | --- |
 | Interval medzi dokončenými priechodmi | 300 sekúnd | 60–86 400 sekúnd |
-| Počet SKU v pracovnej dávke | 20 | 1–100 |
+| Počet predajných položiek v pracovnej dávke | 20 | 1–100 |
 | Najvyšší vek objednávok | 900 sekúnd | 60–86 400 sekúnd |
 
 Jeden priechod spracuje postupne všetky zalistované SKU daného e-shopu. Väčší katalóg sa rozdelí na dávky; nejde iba o prvých 20 produktov pri každom intervale. **Spustiť teraz** vytvorí ručný priechod bez zapnutia pravidelného plánovača. API môže ručný prenos zúžiť na vybrané SKU. Opakované stlačenie pri rovnakom rozpracovanom výbere zobrazí existujúci priechod. Iný výber počká, kým prebiehajúci priechod skončí.
@@ -35,6 +35,16 @@ Pri prvom zapnutí alebo doloženom zosúladení musí obsluha reálne pozastavi
 Kontrolný bod uloží presnú vzdialenú identitu, pripojenie, lokálne voľné množstvo, súčet natívnych účinkov daného e-shopu a dostupnosť. Má revíziu a nemenný audit naviazaný na údržbovú blokáciu. Nezakladá lokálny pohyb ani sám nemení vzdialenú zásobu. Bez úspešnej kontroly celej vybranej dávky nevznikne čiastočne platný výsledok.
 
 Pre ďalší prenos platí `rozdiel = (lokálne množstvo − uložené lokálne množstvo) − (natívny účinok − uložený natívny účinok)`. Natívny odpočet má záporné znamienko. Rezervácia vlastnej Upgates objednávky sa preto do rovnakého e-shopu neposiela druhýkrát; príjem alebo zmena z druhého kanála sa prenesie ako skutočný rozdiel. Potvrdenie PUT posunie oba uložené počítadlá. Zmeny, ktoré vzniknú počas sieťového volania, zostanú pre ďalší priechod.
+
+### Viac predajných množstiev z jednej kusovej karty
+
+Výslovne potvrdené spoločné prepojenie môže priradiť jednej kusovej karte viac produktov alebo variantov toho istého e-shopu. Každá predajná jednotka má vlastný nemenný násobok kusov, napríklad 1, 8 alebo 100. Dodávateľské balenie ani text názvu tento násobok neurčujú. Fyzická bilancia, rezervácie, FIFO a vratky zostávajú v kusoch jednej karty; do predajného variantu sa prenáša `floor(voľné kusy / násobok)`.
+
+Pre 200 voľných kusov sú predajné množstvá 200, 25 a 2. Predaj jedného variantu po 8 kusov zmení voľnú zásobu na 192 a predajné množstvá na 192, 24 a 1. Ak Upgates už natívne odpočítal jednu jednotku variantu po 8 kusov, Hub tomuto variantu nepošle druhý odpočet. Ostatné varianty dostanú príslušný rozdiel svojho predajného množstva. Počíta sa rozdiel dvoch zaokrúhlených stavov, nie zaokrúhlený rozdiel kusov.
+
+Každé také prepojenie má samostatný kontrolný bod, natívny účinok a ochranu neistého zápisu podľa stabilného ID mapovania. Kontrolný bod obsahuje aj násobok; zmena faktora nemôže prevziať starý bod. Staré prepojenia 1 : 1 používajú pôvodný prázdny kľúč a ich historické fakty sa neprepisujú. Výber jedného SKU pri údržbovom overení založí body pre všetky jeho explicitné predajné prepojenia; odpoveď rozlišuje počet vybraných predajných položiek (`selected_count`) a celkový počet bodov e-shopu (`baseline_count`).
+
+Pracovná dávka môže skončiť uprostred skupiny. Zvyšné predajné položky zostanú uložené na pokračovanie a potvrdené položky sa neopakujú. Udalosť zmeny spoločnej karty sa považuje za vybavenú až po overení všetkých jej predajných položiek. Neistý výsledok jedného variantu zachová jeho pôvodný pokus a čakajúcu udalosť. Spoločná karta nezavádza okamžitú transakciu medzi pokladňou, e-shopmi a Hubom; naďalej platia podmienky aktuálneho zberu a zosúladenia objednávok.
 
 Natívna evidencia sa opiera o presné skladové identity a systémový typ stavu, nie o názov stavu či lokálnu obchodnú politiku. Neznáme identity, necelé množstvá, nepodporované zostavy, zmazané objednávky a nepreukázané storno či opätovné otvorenie sa nesmú odhadovať. Taký prípad vyžaduje kontrolu a podľa potreby údržbové zosúladenie. Inkrementálny zber zachytí aj nové zmeny objednávok vytvorených pred začiatkom lokálnej skladovej evidencie: dolná hranica dátumu vytvorenia je rok 1900, hranica poslednej zmeny zostáva inkrementálna. Historické zmeny sa tým automaticky nezaúčtujú do skladu.
 
@@ -111,7 +121,7 @@ Všetky cesty vyžadujú operátorský token a `Cache-Control: no-store`. Prefix
 
 Migrácia `015_stock_sync.sql` založila predvoľby, politiky, priechody a položky. Aditívne `024_upgates_api_budget.sql`, `025_stock_native.sql` a `026_stock_delta.sql` dopĺňajú spoločný rozpočet, natívnu evidenciu a kontrolné body s protokolom `delta_v1`. Sú súčasťou explicitného spúšťača `python -m inventory_hub.migrate`; nemenia fyzické bilancie ani nezapínajú automatiku. Starý absolútny protokol sa nesmie použiť na nový pravidelný prenos.
 
-Spoločný pracovník používa session advisory lock; sieťové volania prebiehajú po ukončení obchodnej DB transakcie. Každý PUT má najprv uložený stav `sending` a zmrazenú revíziu kontrolného bodu. Čiastočný unikátny index drží konflikt pre `(shop_id,sku)` v stavoch `sending` a `uncertain`. Po páde sa `sending` zmení na `uncertain`, nikdy na oprávnenie zopakovať PUT. Lokálne odmietnutie API rozpočtom s preukázaným `request_sent:false` nie je odoslaný ani nejasný zápis.
+Spoločný pracovník používa session advisory lock; sieťové volania prebiehajú po ukončení obchodnej DB transakcie. Každý PUT má najprv uložený stav `sending` a zmrazenú revíziu kontrolného bodu. Čiastočný unikátny index drží konflikt pre `(shop_id,sku,sale_key)` v stavoch `sending` a `uncertain`; bežné väzby používajú prázdny `sale_key`. Po páde sa `sending` zmení na `uncertain`, nikdy na oprávnenie zopakovať PUT. Lokálne odmietnutie API rozpočtom s preukázaným `request_sent:false` nie je odoslaný ani nejasný zápis.
 
 Identita aj vlastná bilancia sa znovu vyhodnotia po vzdialenom čítaní pred uložením zámeru. Obe lokálne kontroly a ich projekcie používajú poradie zámkov **identita → e-shop → sklad**, aby sa produktové prepojenie nezmenilo medzi overením objednávok a výpočtom odosielaného množstva. Zámky sa uvoľnia pred každým sieťovým volaním. Sklad sa počas sieťovej práce nemení na údržbový režim; následné lokálne zmeny sa premietnu ďalším priechodom. Otvorenie údržby a príprava pravidelného `sending` zámeru krátko zamykajú rovnaký riadok skladu, takže jeden postup nemôže prekryť druhý. HTTP 429 zohľadňuje uložený `Retry-After` aj spoločné limity objednávkových integrácií.
 

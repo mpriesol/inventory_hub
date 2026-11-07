@@ -14,6 +14,8 @@ Odosiela sa **vlastná voľná zásoba = fyzická zásoba − rezervácie − ka
 
 Vyberajú sa konkrétne SKU. Variant pod pokladňovým rodičom „xTrek“ v BIKETREK sa odosiela samostatne podľa svojho kódu; ostatné tisíce variantov tohto rodiča sa nepridávajú. Neznáma bilancia alebo nejednoznačné mapovanie operáciu blokujú. Neznámy stav sa nesmie poslať ako nula.
 
+Ak má vybraná kusová karta výslovne potvrdených viac predajných prepojení s násobkami, náhľad zahrnie všetky tieto prepojenia. Pri 192 voľných kusoch a násobkoch 1, 8 a 100 odošle 192, 24 a 1 predajnú jednotku. Tabuľka ukazuje fyzické kusy aj násobok a presný kód každého cieľa. Každý cieľ má samostatný záznam a výsledok; ostatné varianty vzdialeného rodiča sa stále nepridávajú. Nepotvrdená spoločná zásoba zostáva neznáma a nesmie sa odvodiť zo starého názvu balenia alebo zo vzdialeného množstva.
+
 Pred odosielaním je potrebné údržbové okno:
 
 1. Zastav všetky externé cesty, ktoré čerpajú zo spoločného uzatváraného skladu: webové objednávky, pokladňu, ručné zásahy v administrácii a ďalšie integrácie. Pri spoločnom sklade sa to týka BIKETREK aj xTrek, aj keď odosielaš iba do jedného e-shopu. Hub tieto cesty formulárom automaticky nezastaví.
@@ -31,10 +33,12 @@ Limity sa nastavujú na `/settings/stock`, rovnako ako ostatné skladové predvo
 
 | Nastavenie | Predvolené | Rozsah |
 | --- | --- | --- |
-| `publication_batch_size` — počet vybraných SKU v dávke | 20 | 1–100 |
+| `publication_batch_size` — počet cieľových predajných položiek v dávke | 20 | 1–100 |
 | `publication_preview_minutes` — platnosť náhľadu | 15 minút | 5–60 minút |
 
 Zmena zdedenej hodnoty sa týka e-shopov bez vlastnej výnimky. Platnosť náhľadu nie je platnosť uzáveru: vypršaný náhľad sklad automaticky neodomkne.
+
+Limit platí aj po rozšírení vybraných SKU na ich explicitné predajné prepojenia. Príliš veľká skupina sa odmietne pred vzdialeným čítaním a neuloží sa skrátený náhľad.
 
 Jedna zmenená položka potrebuje viac API volaní: načítanie náhľadu, nové overenie pred zápisom, jeden zápis a následné čítanie. Veľkosť dávky nie je počet API volaní. Ak sa vzdialené množstvo pri kontrole už zhoduje s požadovaným, zápis sa vynechá a uloží sa overená zhoda.
 

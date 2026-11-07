@@ -286,6 +286,8 @@ async def _replacement_mappings(db, shop, manual, choices, *, expected=None, err
     from inventory_hub.stock_native_models import StockNativeOrder, StockNativeEvent
     for pid in sorted(selected):
         row, target = by_product.get(pid), manual[pid]
+        if row is not None and getattr(row, 'shared_stock', False):
+            raise LinkError('shared_stock_sale_requires_group_workflow')
         remote = choices[pid][0]
         # A fresh request after a successful replacement is a normal exact
         # identity check. Do not try to prove that the new live target is gone.
@@ -404,6 +406,8 @@ async def _rows(db, shop, facts, choices, replacements=None):
         if resolution.status == 'conflict' or resolution.product_id != pid:
             row['errors'].extend(resolution.reasons or ['identity_unresolved'])
         mappings = index.by_product.get(pid, [])
+        if any(getattr(mapping, 'shared_stock', False) for mapping in mappings):
+            row['errors'].append('shared_stock_sale_requires_group_workflow')
         if len(mappings) > 1:
             row['errors'].append('ambiguous_shop_mapping')
         elif mappings:

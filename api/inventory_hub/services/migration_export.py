@@ -23,7 +23,7 @@ TABLES = {
     "identifiers": (ProductIdentifier, "id product_id identifier_type value supplier_id is_primary"),
     "variant_attributes": (ProductVariantAttribute, "product_id attribute_name attribute_value display_order"),
     "shops": (Shop, "id code name platform is_active"),
-    "shop_links": (ShopProduct, "id shop_id product_id external_product_id external_variant_id external_code parent_code is_variant is_listed shop_availability shop_stock shop_price last_pull_at"),
+    "shop_links": (ShopProduct, "id shop_id product_id external_product_id external_variant_id external_code parent_code is_variant is_listed shared_stock sale_to_stock_factor sale_barcodes shop_availability shop_stock shop_price last_pull_at"),
     "suppliers": (Supplier, "id code name is_active"),
     "supplier_products": (SupplierProduct, "id supplier_id supplier_sku manufacturer_sku ean name brand supplier_group_code is_active is_discontinued supplier_availability_code_raw supplier_availability_text stock_qty lead_time_days last_seen_at updated_at"),
     "supplier_links": (ProductSupplySource, "id product_id supplier_product_id priority is_primary orderable pack_size is_active"),

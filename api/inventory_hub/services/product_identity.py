@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier
 from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services import sale_units
 
 
 # Shared with catalog_import.register_created; callers hold it for mapping writes.
@@ -61,6 +62,7 @@ class IdentityResolution:
     matched_by: str | None = None
     candidate_product_ids: list[int] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    mapping_id: int | None = None
 
 
 def mapping_code(mapping: ShopProduct) -> str:
@@ -68,8 +70,9 @@ def mapping_code(mapping: ShopProduct) -> str:
 
 
 class IdentityIndex:
-    def __init__(self, shop_id: int, products=(), mappings=(), identifiers=()):
+    def __init__(self, shop_id: int, products=(), mappings=(), identifiers=(), *, shared_product_ids=()):
         self.shop_id = shop_id
+        self.shared_product_ids = set(shared_product_ids)
         self.products = {row.id: row for row in products}
         self.by_sku = defaultdict(set)
         for row in self.products.values():
@@ -83,6 +86,8 @@ class IdentityIndex:
         self.by_internal_sku = defaultdict(set)
         self.exact_internal_sku = defaultdict(set)
         for mapping in mappings:
+            if getattr(mapping, 'shared_stock', False):
+                self.shared_product_ids.add(mapping.product_id)
             self.add_mapping(mapping)
         for identifier in identifiers:
             if identifier.identifier_type == IdentifierType.internal_sku:
@@ -130,6 +135,17 @@ class IdentityIndex:
         barcode_ids = set().union(*(self.by_barcode.get(value, set()) for raw in barcodes
                                    for value in ProductIdentifierService.gtin_equivalents(raw)))
         incoming_barcode_keys = barcode_keys(barcodes)
+        if len(mappings) == 1:
+            sale_mapping = next(iter(mappings.values()))
+            try:
+                sale_proof = sale_units.mapping_fields(sale_mapping)
+            except sale_units.SaleUnitError:
+                sale_proof = {}
+            if sale_proof and (not barcodes or incoming_barcode_keys <= barcode_keys(
+                    getattr(sale_mapping, "sale_barcodes", None))):
+                # Confirmed sale GTINs belong to this sales representation;
+                # canonical-card GTIN lookup is a different unit namespace.
+                barcode_ids = set()
         mapped_ids = {row.product_id for row in mappings.values()}
         sku_ids = self.by_sku.get(code.casefold(), set()) if code else set()
         exact_sku_ids = {product_id for product_id in sku_ids if self.products[product_id].sku == code}
@@ -171,12 +187,33 @@ class IdentityIndex:
                 return conflict("mapping_identity_changed")
             if (sku_ids | alias_ids) and (sku_ids | alias_ids) != {mapping.product_id}:
                 return conflict("mapping_identifier_conflict")
-            if barcode_ids and barcode_ids != {mapping.product_id}:
-                return conflict("mapping_identifier_conflict")
-            stored_barcodes = self.product_barcodes.get(mapping.product_id, set())
+            try:
+                sale_proof = sale_units.mapping_fields(mapping)
+            except sale_units.SaleUnitError:
+                return conflict("sale_factor_invalid")
+            # A verified sale pack has its own GTIN, distinct from the base
+            # piece's identifiers. Only an explicit reviewed mapping supplies
+            # that relation; barcode-only discovery remains unchanged.
+            if sale_proof:
+                product = self.products.get(mapping.product_id)
+                if (getattr(product, "item_type", "stock") != "stock"
+                        or getattr(product, "stock_unit", "pcs") != "pcs"):
+                    return conflict("shared_stock_sale_piece_card_required")
+                stored_barcodes = set(verified_barcodes(getattr(mapping, "sale_barcodes", None)))
+                if barcodes and (not stored_barcodes or not incoming_barcode_keys <= barcode_keys(stored_barcodes)):
+                    return conflict("mapping_identifier_conflict")
+            else:
+                if barcode_ids and barcode_ids != {mapping.product_id}:
+                    return conflict("mapping_identifier_conflict")
+                stored_barcodes = self.product_barcodes.get(mapping.product_id, set())
             if barcodes and stored_barcodes and not incoming_barcode_keys.intersection(barcode_keys(stored_barcodes)):
                 return conflict("mapping_identifier_conflict")
-            return IdentityResolution("mapped", mapping.product_id, "shop_mapping", [mapping.product_id])
+            return IdentityResolution("mapped", mapping.product_id, "shop_mapping", [mapping.product_id],
+                                      mapping_id=mapping.id)
+        if self.shop_id and self.shared_product_ids.intersection(candidates):
+            # A piece card may carry legacy package SKU/GTIN evidence. A new
+            # shop representation needs its own explicit factor, even factor1.
+            return conflict('shared_stock_sale_requires_group_workflow')
         if sku_ids or alias_ids:
             if exact_sku_ids != sku_ids:
                 return conflict("unmapped_sku_collision")
@@ -251,10 +288,15 @@ async def load_identity_index(
     # Include SKU-only candidates before loading stored barcodes: an unowned
     # incoming EAN must still conflict with that product's different known EAN.
     product_ids = sorted(products)
+    shared_product_ids = set()
     for start in range(0, len(product_ids), 500):
         rows = await db.execute(select(ProductIdentifier).where(
             ProductIdentifier.identifier_type.in_(VERIFIED_BARCODE_TYPES),
             ProductIdentifier.product_id.in_(product_ids[start:start + 500]),
         ))
         identifiers.extend(rows.scalars())
-    return IdentityIndex(shop_id, products.values(), mappings, identifiers)
+        if not local:
+            rows = await db.execute(select(ShopProduct.product_id).where(
+                ShopProduct.product_id.in_(product_ids[start:start + 500]), ShopProduct.shared_stock.is_(True)))
+            shared_product_ids.update(rows.scalars())
+    return IdentityIndex(shop_id, products.values(), mappings, identifiers, shared_product_ids=shared_product_ids)

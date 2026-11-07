@@ -323,6 +323,9 @@ class ShopProduct(TimestampMixin, Base):
     external_code: Mapped[Optional[str]] = mapped_column(String(100))
     parent_code: Mapped[Optional[str]] = mapped_column(String(100))
     is_variant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    shared_stock: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    sale_to_stock_factor: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
+    sale_barcodes: Mapped[Optional[list]] = mapped_column(JSONB(none_as_null=True))
     shop_availability: Mapped[Optional[str]] = mapped_column(String(100))
     shop_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
     shop_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
@@ -347,7 +350,13 @@ class ShopProduct(TimestampMixin, Base):
     product: Mapped["Product"] = relationship()
     
     __table_args__ = (
-        UniqueConstraint("shop_id", "product_id", name="uq_shop_products"),
+        Index("uq_shop_products_single", "shop_id", "product_id", unique=True,
+              postgresql_where="NOT shared_stock"),
+        CheckConstraint("sale_to_stock_factor >= 1 AND sale_to_stock_factor <= 1000000 "
+                        "AND sale_to_stock_factor = trunc(sale_to_stock_factor) "
+                        "AND (shared_stock OR sale_to_stock_factor = 1) "
+                        "AND (NOT shared_stock OR (sale_barcodes IS NOT NULL AND jsonb_typeof(sale_barcodes)='array'))",
+                        name="chk_shop_product_sale_factor"),
         Index("idx_shop_products_pending", "shop_id", postgresql_where="push_pending = true"),
         CheckConstraint("is_variant OR (external_variant_id IS NULL AND parent_code IS NULL)",
                         name="chk_shop_products_identity_shape"),
@@ -451,6 +460,11 @@ class ShopOrderItem(TimestampMixin, Base):
     external_item_id: Mapped[Optional[str]] = mapped_column(String(100))
     external_product_code: Mapped[Optional[str]] = mapped_column(String(100))
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    # quantity is the immutable physical demand. Sale fields are a snapshot,
+    # not a live foreign-key lookup that could reinterpret an earlier issue.
+    sale_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    sale_to_stock_factor: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
+    sale_mapping_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
     total_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
@@ -463,6 +477,12 @@ class ShopOrderItem(TimestampMixin, Base):
     
     __table_args__ = (
         CheckConstraint("quantity > 0", name="chk_order_item_qty_positive"),
+        CheckConstraint("sale_to_stock_factor >= 1 AND sale_to_stock_factor <= 1000000 "
+                        "AND sale_to_stock_factor = trunc(sale_to_stock_factor) "
+                        "AND (sale_quantity IS NULL OR (sale_quantity > 0 "
+                        "AND quantity = sale_quantity * sale_to_stock_factor)) "
+                        "AND (sale_mapping_id IS NULL OR (sale_mapping_id > 0 AND sale_quantity IS NOT NULL))",
+                        name="chk_order_item_sale_snapshot"),
         Index("idx_shop_order_items_order", "order_id"),
         Index("idx_shop_order_items_product", "product_id"),
         Index("uq_stock_order_item_key", "order_id", "external_item_id", unique=True,

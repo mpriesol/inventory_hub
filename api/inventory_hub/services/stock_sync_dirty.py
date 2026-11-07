@@ -21,18 +21,21 @@ async def settle(db):
         .order_by(Dirty.shop_id, Dirty.product_id, Dirty.warehouse_id).limit(100)
         .with_for_update(of=Dirty))).all()
     for row, status, error in rows:
-        item = await db.scalar(select(Item).where(Item.run_id == row.run_id, Item.sku == row.dispatched_sku))
-        if item is not None and item.status == 'verified':
+        items = (await db.scalars(select(Item).where(Item.run_id == row.run_id,
+            Item.sku == row.dispatched_sku).order_by(Item.id))).all()
+        fenced = next((item for item in items if item.status in sync.FENCED), None)
+        failed = next((item for item in items if item.status != 'verified'), None)
+        if items and all(item.status == 'verified' for item in items):
             row.acknowledged_generation = max(row.acknowledged_generation, row.dispatched_generation)
             row.last_error = None
             row.next_attempt_at = at
-        elif item is not None and item.status in sync.FENCED:
+        elif fenced is not None:
             # Keep the same run reference until explicit uncertain resolution.
-            row.last_error = item.error or 'stock_sync_target_uncertain'
+            row.last_error = fenced.error or 'stock_sync_target_uncertain'
             row.next_attempt_at = at + timedelta(seconds=60)
             continue
         else:
-            row.last_error = (item.error if item is not None else error) or 'stock_sync_items_need_review'
+            row.last_error = (failed.error if failed is not None else error) or 'stock_sync_items_need_review'
             # Failures remain dirty, but a persistent remote identity error
             # must not cause one request every worker tick.
             row.next_attempt_at = at + timedelta(seconds=3600)

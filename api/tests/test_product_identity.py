@@ -311,7 +311,11 @@ class ReadOnlyIdentityDatabase:
         entity = statement.column_descriptions[0]["entity"]
         params = statement.compile().params
         if entity is ShopProduct:
-            rows = [row for row in self.mappings if row.shop_id == params["shop_id_1"]]
+            if 'shop_id_1' in params:
+                rows = [row for row in self.mappings if row.shop_id == params["shop_id_1"]]
+            else:
+                rows = [row.product_id for row in self.mappings if row.product_id in params['product_id_1']
+                        and getattr(row, 'shared_stock', False)]
         elif entity is Product:
             if "lower_1" in params:
                 rows = [row for row in self.products if row.sku.lower() in params["lower_1"]]
@@ -358,7 +362,7 @@ class IdentityLoaderTests(unittest.IsolatedAsyncioTestCase):
         incoming = [RemoteIdentity(2, row.sku, True) for row in products]
         index = await load_identity_index(db, 2, incoming)
         self.assertTrue(all(index.resolve(row).matched_by == "shared_sku" for row in incoming))
-        self.assertLessEqual(len(db.queries), 11)  # SKU, old SKU and stored barcodes, each in bounded batches.
+        self.assertLessEqual(len(db.queries), 14)  # SKU, old SKU, barcodes and global sale-unit guards in bounded batches.
         for query in db.queries:
             self.assertTrue(str(query).startswith("SELECT "))
             for value in query.compile().params.values():

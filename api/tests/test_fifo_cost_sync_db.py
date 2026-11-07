@@ -184,6 +184,53 @@ class FifoCostSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.invoke('process_publication', publication_id)
         self.assertEqual(self.remote['values']['price_purchase'], '40')
 
+    async def test_shared_card_costs_publish_and_cache_each_exact_sale_leaf(self):
+        from shared_stock_fixture import remote_identity, shared_sale_mappings
+        remotes = {}
+        async with self.session() as db:
+            mappings = await shared_sale_mappings(db, self.shop_id, self.product_id)
+            keys = [f'product:{self.product_id}:{mapping.id}' for mapping in mappings]
+            for mapping in mappings:
+                remote = copy.deepcopy(self.remote)
+                remote['identity'] = remote_identity(mapping)
+                remotes[mapping.external_code] = remote
+        self.product_cost = '0.10'
+
+        async def read(shop, identity, fingerprint):
+            self.assertFalse(self.io_session.in_transaction())
+            return copy.deepcopy(remotes[identity['code']])
+
+        async def write(shop, document, fingerprint):
+            self.assertFalse(self.io_session.in_transaction())
+            async with self.session() as db:
+                sending = (await db.scalars(select(Publication).where(Publication.status == 'sending'))).all()
+                self.assertEqual(len(sending), 1)
+                self.assertEqual(sending[0].target['identity']['code'], document['identity']['code'])
+            remotes[document['identity']['code']].update(copy.deepcopy(document['after']))
+
+        service.source.read_product.side_effect = read
+        service.source.write_once.side_effect = write
+        await self.invoke('configure', self.config(enabled=True))
+        await self.queue_product(automatic=True)
+        async with self.session() as db:
+            rows = (await db.scalars(select(Publication).where(Publication.status == 'queued'))).all()
+            self.assertEqual({row.target_key for row in rows}, set(keys))
+            self.assertEqual({row.source['unit_cost'] for row in rows}, {'0.1', '0.8', '10'})
+            self.assertEqual(len({row.source_hash for row in rows}), 3)
+            identifiers = [row.id for row in rows]
+        for identifier in identifiers:
+            await self.invoke('process_publication', identifier)
+            result = await self.invoke('get_publication', identifier)
+            self.assertEqual(result['status'], 'verified')
+            self.assertIn(result['sale_target']['code'], remotes)
+        self.assertEqual([remotes[code]['values']['price_purchase'] for code in ('SKU-A', 'SKU-A-8', 'SKU-A-100')],
+                         ['0.1', '0.8', '10'])
+        self.assertEqual(service.source.write_once.await_count, 3)
+        service.source.read_product.reset_mock()
+        self.assertIsNone(await self.queue_product(automatic=True))
+        service.source.read_product.assert_not_awaited()
+        self.assertEqual(service.source.write_once.await_count, 3)
+
     async def test_manual_run_rechecks_external_cost_drift(self):
         await self.invoke('configure', self.config(enabled=True))
         publication_id = await self.queue_product(automatic=True)

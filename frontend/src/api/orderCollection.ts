@@ -32,6 +32,7 @@ export interface CollectionRun {
 export interface CollectionStockPreview {
   shop_code: string; warehouse: { id: number; code: string; name: string }; captured_at: string; external_write_enabled: false;
   rows: { sku: string; product_id: number | null; target: { parent_code: string; variant_code: string | null; code: string } | null;
+    sale_key?: string; sale_mapping_id?: number; sale_to_stock_factor?: string; qty_sellable?: string;
     quantity_known: boolean; qty_on_hand: string | null; qty_reserved: string | null; qty_available: string | null; errors: string[] }[];
 }
 const base = '/api/order-collection';
@@ -47,6 +48,7 @@ export interface OrderExceptionResolution {
   id: string; preview_hash: string; status: 'prepared' | 'completed'; order_number: string; shop_code: string;
   warehouse: { id: number; code: string; name: string }; expires_at: string; source_status_name: string | null; issued_at: string;
   lines: { sku: string; product_id: number; issue_movement_id: number; issued_qty: string;
+    sale_quantity?: string; sale_to_stock_factor?: string;
     returned_qty: string | null; returnable_qty: string | null; physical_return_supported: boolean }[];
   result: { action: 'resolve_exception'; reason: string; actor: string; movements_created: 0 } | null;
 }

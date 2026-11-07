@@ -13,15 +13,18 @@ export interface FifoCostAllocation {
 }
 export interface FifoCostLine {
   sku: string; product_id: number; line_key: string; quantity: string; unit_cost: string; total_cost: string; allocations: FifoCostAllocation[];
+  code?: string; sale_to_stock_factor?: string; stock_quantity?: string;
 }
 export interface FifoCostSource {
   lines?: FifoCostLine[]; sku?: string; unit_cost?: string; total_cost?: string; currency?: string; warehouse_code?: string;
+  sale_to_stock_factor?: string; base_unit_cost?: string;
   order_number?: string; [key: string]: unknown;
 }
 export interface FifoCostPublication {
   id: string; kind: 'product' | 'order'; status: 'prepared' | 'queued' | 'sending' | 'verified' | 'uncertain' | 'failed' | 'skipped' | 'resolved';
   remote_costs: { prices_with_vat_yn: boolean; lines: { line_key: string; code: string; before: string | null; desired: string }[]; product?: { before: string | null; desired: string } } | null;
   subject: string; source: FifoCostSource; before: unknown; after: unknown; error: string | null;
+  sale_target?: { code: string; product_id: number; variant_id?: number | null } | null;
   created_at: string; expires_at: string | null; attempt_started_at: string | null; verified_at: string | null; resolution: unknown;
 }
 export interface FifoCostOptions {

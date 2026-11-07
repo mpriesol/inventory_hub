@@ -16,6 +16,7 @@ CORE_MIGRATIONS = (
     "032_supplier_authority.sql",
     "035_order_webhooks.sql",
     "039_atomer_variant_repairs.sql",  # Shared merchandising write fence
+    "046_shared_stock_sales.sql",
 )
 
 

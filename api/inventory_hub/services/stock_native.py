@@ -19,6 +19,7 @@ from inventory_hub.order_processing_models import OrderProcessingJob
 from inventory_hub.order_stock_models import OrderStockPolicy
 from inventory_hub.stock_native_models import StockNativeEvent, StockNativeLine, StockNativeOrder
 from inventory_hub.stock_publication_models import StockPublicationHold
+from inventory_hub.services import sale_units
 
 STATUS_TYPES = frozenset({"Received", "Canceled", "Sent", "PaymentSuccessful", "PaymentFailed", "PaymentCanceled",
     "PaymentInProcess", "Unresolved", "Custom", "HomecreditProcessing", "HomecreditRejected", "HomecreditApproved",
@@ -53,7 +54,7 @@ def facts(order, source, statuses):
     if len(matches) != 1 or matches[0].get("type") not in STATUS_TYPES:
         raise NativeError("stock_native_status_unknown")
     kind = matches[0]["type"]
-    totals, lines, seen = defaultdict(lambda: Decimal(0)), [], set()
+    totals, sale_totals, lines, seen = defaultdict(lambda: Decimal(0)), defaultdict(lambda: Decimal(0)), [], set()
     for line in source.get("lines", []):
         key = line.get("line_key")
         if not key or key in seen:
@@ -72,6 +73,10 @@ def facts(order, source, statuses):
                 or line.get("length") not in (None, "", "0", "0.0", "0.00", "0.000")):
             raise NativeError("stock_native_line_identity")
         quantity = _quantity(line.get("quantity"))
+        try:
+            sale = sale_units.line_fields(line)
+        except sale_units.SaleUnitError:
+            raise NativeError("stock_native_line_identity") from None
         native = line.get("has_native_identity")
         if type(native) is not bool:
             raise NativeError("stock_native_identity_unknown")
@@ -86,17 +91,25 @@ def facts(order, source, statuses):
             raise NativeError("stock_native_line_identity")
         lines.append({"line_key": key, "product_id": line["product_id"], "code": line["code"],
                       "native_product_id": product_id, "native_option_set_id": option_id,
-                      "quantity": str(int(quantity)), "native": native})
+                      "quantity": str(int(quantity)), "native": native, **sale})
         if native:
-            totals[line["product_id"]] -= quantity if kind != "Canceled" else Decimal(0)
-    return {"facts_complete": True, "source_uuid": source["uuid"], "source_updated_at": source["updated_at"],
+            if sale:
+                sale_totals[(line["product_id"], sale["sale_key"])] -= quantity if kind != "Canceled" else Decimal(0)
+            else:
+                totals[line["product_id"]] -= quantity if kind != "Canceled" else Decimal(0)
+    result = {"facts_complete": True, "source_uuid": source["uuid"], "source_updated_at": source["updated_at"],
             "status_id": source["status_id"], "status_type": kind, "order_revision": order.stock_revision,
             "lines": sorted(lines, key=lambda row: row["line_key"]),
             "quantities": {str(key): str(int(value)) for key, value in sorted(totals.items())}}
+    if sale_totals:
+        result["sale_quantities"] = [{"product_id": product_id, "sale_key": key, "quantity": str(int(value))}
+            for (product_id, key), value in sorted(sale_totals.items())]
+    return result
 
 
 def _native_lines(value):
-    fields = ("line_key", "product_id", "code", "native_product_id", "native_option_set_id", "quantity")
+    fields = ("line_key", "product_id", "code", "native_product_id", "native_option_set_id", "quantity",
+              "sale_key", "sale_mapping_id", "sale_to_stock_factor")
     return sorted(tuple(line.get(key) for key in fields) for line in value["lines"] if line.get("native"))
 
 
@@ -106,18 +119,35 @@ async def _identities(db, shop_id, value, *, bind=False):
         return
     rows = (await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shop_id,
         ShopProduct.product_id.in_({line["product_id"] for line in native})))).all()
-    mappings = {row.product_id: row for row in rows}
+    by_product = defaultdict(list)
+    for row in rows:
+        by_product[row.product_id].append(row)
+
+    def selected(line):
+        candidates = by_product.get(line["product_id"], [])
+        key = line.get("sale_key", "")
+        if key:
+            candidates = [row for row in candidates if str(row.id) == key]
+        if len(candidates) != 1:
+            raise NativeError("stock_native_line_identity")
+        mapping = candidates[0]
+        try:
+            if sale_units.mapping_fields(mapping) != sale_units.line_fields(line):
+                raise NativeError("stock_native_line_identity")
+        except sale_units.SaleUnitError:
+            raise NativeError("stock_native_line_identity") from None
+        return mapping
+
+    pairs = [(line, selected(line)) for line in native]
     aliases = None
-    if any((mapping := mappings.get(line["product_id"])) is not None
-           and (mapping.external_code) != line["code"] for line in native):
+    if any(mapping.external_code != line["code"] for line, mapping in pairs):
         from inventory_hub.db_models import Shop
         from inventory_hub.services import order_sku_aliases
         from inventory_hub.services.product_identity import load_identity_index
         shop = await db.get(Shop, shop_id)
         index = await load_identity_index(db, shop_id, [order_sku_aliases.identity(shop_id, line) for line in native])
         aliases = await order_sku_aliases.load(db, shop, index, native)
-    for line in native:
-        mapping = mappings.get(line["product_id"])
+    for line, mapping in pairs:
         identifiers = (() if mapping is None else
                        (mapping.external_product_id, mapping.external_variant_id) if mapping.is_variant else
                        (mapping.external_product_id,))
@@ -141,7 +171,8 @@ async def _identities(db, shop_id, value, *, bind=False):
               or str(line["native_product_id"]) != mapping.native_id):
             raise NativeError("stock_native_line_identity")
         proof = {"id": mapping.id, "code": code, "parent_code": mapping.parent_code,
-                 "external_id": mapping.native_id, "is_variant": mapping.is_variant}
+                 "external_id": mapping.native_id, "is_variant": mapping.is_variant,
+                 **sale_units.mapping_fields(mapping)}
         stored = line.get("mapping")
         # An audited code-only rename must not invalidate an immutable older
         # observation. Native leaf, mapping row and variant parent stay fixed.
@@ -220,8 +251,8 @@ async def record(db, order, source_order, statuses, source_hash):
     await db.flush()
     await db.execute(delete(StockNativeLine).where(StockNativeLine.order_id == order.id))
     if error is None:
-        db.add_all([StockNativeLine(order_id=order.id, product_id=int(key), quantity=Decimal(amount))
-                    for key, amount in value["quantities"].items()])
+        db.add_all([StockNativeLine(order_id=order.id, product_id=product_id, sale_key=key, quantity=amount)
+                    for product_id, key, amount in _quantity_rows(value)])
     await db.flush()
     return current
 
@@ -285,17 +316,36 @@ def _known_current_quantities(value):
     """Rebase current known demand, never reconstruct an uncertain past effect."""
     if value.get("facts_complete") is not True or value.get("status_type") not in STATUS_TYPES:
         raise NativeError("stock_native_reconciliation_unknown")
-    amounts = defaultdict(lambda: Decimal(0))
+    amounts, sale_amounts = defaultdict(lambda: Decimal(0)), defaultdict(lambda: Decimal(0))
     for line in value.get("lines", []):
         if type(line.get("product_id")) is not int or type(line.get("native")) is not bool:
             raise NativeError("stock_native_reconciliation_unknown")
         quantity = _quantity(line.get("quantity"))
+        try:
+            sale = sale_units.line_fields(line)
+        except sale_units.SaleUnitError:
+            raise NativeError("stock_native_reconciliation_unknown") from None
         if line["native"]:
-            amounts[line["product_id"]] -= quantity if value["status_type"] != "Canceled" else Decimal(0)
+            if sale:
+                sale_amounts[(line["product_id"], sale["sale_key"])] -= quantity if value["status_type"] != "Canceled" else Decimal(0)
+            else:
+                amounts[line["product_id"]] -= quantity if value["status_type"] != "Canceled" else Decimal(0)
     result = {str(key): str(int(amount)) for key, amount in sorted(amounts.items())}
     if result != value.get("quantities"):
         raise NativeError("stock_native_reconciliation_unknown")
+    expected_sales = [{"product_id": product_id, "sale_key": key, "quantity": str(int(amount))}
+        for (product_id, key), amount in sorted(sale_amounts.items())]
+    if expected_sales != value.get("sale_quantities", []):
+        raise NativeError("stock_native_reconciliation_unknown")
     return result
+
+
+def _quantity_rows(value):
+    """Leaf debts use native sale units; they must not be multiplied by factor."""
+    _known_current_quantities(value)
+    return ([(int(key), "", Decimal(amount)) for key, amount in value["quantities"].items()]
+            + [(row["product_id"], row["sale_key"], Decimal(row["quantity"]))
+               for row in value.get("sale_quantities", [])])
 
 
 async def _maintenance_plan(db, shop_id, warehouse_id, skus):
@@ -379,17 +429,17 @@ context and commit this with every affected checkpoint, or roll everything back.
         current.event_id, current.revision, current.error = event.id, event.revision, None
         current.canceled_seen = current.status_type == "Canceled"
         await db.execute(delete(StockNativeLine).where(StockNativeLine.order_id == current.order_id))
-        db.add_all([StockNativeLine(order_id=current.order_id, product_id=int(key), quantity=Decimal(amount))
-            for key, amount in _known_current_quantities(value).items()])
+        db.add_all([StockNativeLine(order_id=current.order_id, product_id=product_id, sale_key=key, quantity=amount)
+            for product_id, key, amount in _quantity_rows(value)])
     await db.flush()
     return {"hold_id": hold.id, "order_ids": ids}
 
 
-async def projection(db, shop_id, warehouse_id, product_id, *, checked=False):
+async def projection(db, shop_id, warehouse_id, product_id, *, checked=False, sale_key=""):
     if not checked:
         await coverage(db, shop_id, warehouse_id)
     value = await db.scalar(select(func.coalesce(func.sum(StockNativeLine.quantity), 0))
         .join(StockNativeOrder, StockNativeOrder.order_id == StockNativeLine.order_id)
         .where(StockNativeOrder.shop_id == shop_id, StockNativeOrder.warehouse_id == warehouse_id,
-               StockNativeLine.product_id == product_id))
+               StockNativeLine.product_id == product_id, StockNativeLine.sale_key == sale_key))
     return Decimal(value)

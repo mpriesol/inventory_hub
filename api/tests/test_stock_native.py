@@ -9,6 +9,22 @@ from test_order_stock import raw_line, raw_order, raw_page
 
 
 class NativeMappingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_two_sales_of_same_card_bind_their_exact_mapping_rows(self):
+        mappings = [SimpleNamespace(id=identifier, product_id=7, external_code=f'PATCH-{factor}', parent_code='PATCHES',
+            is_variant=True, external_product_id='101', external_variant_id=str(200+identifier),
+            native_id=str(200+identifier), shared_stock=True, sale_to_stock_factor=factor)
+            for identifier, factor in ((11, 8), (12, 100))]
+        db = SimpleNamespace(scalars=AsyncMock(return_value=Mock(all=lambda: mappings)))
+        value = {'lines': [{'native': True, 'line_key': str(n), 'product_id': 7, 'code': mapping.external_code,
+            'native_product_id': 101, 'native_option_set_id': 300+n, 'sale_key': str(mapping.id),
+            'sale_mapping_id': mapping.id, 'sale_to_stock_factor': str(mapping.sale_to_stock_factor)}
+            for n, mapping in enumerate(mappings)]}
+        await service._identities(db, 1, value, bind=True)
+        self.assertEqual([row['mapping']['id'] for row in value['lines']], [11, 12])
+        mappings[0].sale_to_stock_factor = 100
+        with self.assertRaisesRegex(service.NativeError, 'stock_native_line_identity'):
+            await service._identities(db, 1, value)
+
     async def test_unverified_mapping_cannot_bind_order_native_evidence(self):
         for variant, parent, leaf in ((False, None, None), (True, None, '20'),
                                       (True, '101', None), (True, '101', 'None')):
@@ -40,6 +56,25 @@ class NativeFactsTests(unittest.TestCase):
         result = service.facts(local, observed, statuses)
         self.assertEqual(result["quantities"], {"7": "-5"})
         self.assertEqual(result["lines"][0]["native_product_id"], 101)
+
+    def test_shared_leaf_native_debt_is_sale_units_not_combined_piece_demand(self):
+        local, observed, statuses = self.observed(
+            raw_line(product_id=101, option_set_id=301, code="PATCH-8", quantity="2"),
+            raw_line(product_id=101, option_set_id=302, code="PATCH-100", quantity="1"))
+        for line in observed["lines"]:
+            identifier, factor = (11, 8) if line["code"] == "PATCH-8" else (12, 100)
+            line.update(sale_key=str(identifier), sale_mapping_id=identifier, sale_to_stock_factor=str(factor))
+        result = service.facts(local, observed, statuses)
+        self.assertEqual(result["quantities"], {})
+        self.assertEqual(result["sale_quantities"], [
+            {"product_id": 7, "sale_key": "11", "quantity": "-2"},
+            {"product_id": 7, "sale_key": "12", "quantity": "-1"}])
+        self.assertEqual([(pid, key, str(qty)) for pid, key, qty in service._quantity_rows(result)],
+                         [(7, "11", "-2"), (7, "12", "-1")])
+        changed = deepcopy(result)
+        changed["sale_quantities"][0]["quantity"] = "-16"
+        with self.assertRaisesRegex(service.NativeError, "stock_native_reconciliation_unknown"):
+            service._known_current_quantities(changed)
 
     def test_only_real_canceled_type_restores_not_custom_or_payment_canceled(self):
         for kind in service.STATUS_TYPES:

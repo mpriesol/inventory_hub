@@ -166,13 +166,15 @@ async def counts(db, run_id):
 
 async def run_dto(db, row, detail=False, offset=0, limit=1000):
     data = {key: getattr(row, key) for key in ('id', 'trigger', 'status', 'protocol', 'started_at', 'completed_at', 'error')}
-    data.update(shop_code=await db.scalar(select(Shop.code).where(Shop.id == row.shop_id)), counts=await counts(db, row.id),
-                more_pending=row.cursor_product_id < row.max_product_id)
+    summary = await counts(db, row.id)
+    data.update(shop_code=await db.scalar(select(Shop.code).where(Shop.id == row.shop_id)), counts=summary,
+                more_pending=row.cursor_product_id < row.max_product_id or summary['pending'] > 0)
     if detail:
         items = (await db.scalars(select(Item).where(Item.run_id == row.id)
             .order_by(case((Item.status == 'uncertain', 0), else_=1), Item.id).offset(offset).limit(limit))).all()
         data['items'] = [{**{key: getattr(item, key) for key in ('id', 'sku', 'status', 'error', 'desired', 'before',
-                        'after', 'attempt_started_at', 'verified_at', 'delta_snapshot')}, 'protocol': row.protocol} for item in items]
+                        'after', 'attempt_started_at', 'verified_at', 'delta_snapshot')}, 'protocol': row.protocol,
+                         **({'sale_key': item.sale_key, 'target': item.target} if item.sale_key else {})} for item in items]
         data['items_total'] = await db.scalar(select(func.count()).select_from(Item).where(Item.run_id == row.id))
         data['items_offset'], data['items_limit'] = offset, limit
         data['items_truncated'] = data['items_total'] > offset + len(items)
@@ -309,17 +311,27 @@ def matches(observed, desired):
     return all(observed.get(key) == value for key, value in desired.items())
 
 
-async def desired(db, shop_code, sku):
+async def sale_keys(db, shop_code, sku):
+    """Expand one canonical card into its explicitly configured sales leaves."""
     projection = await stock_projection.preview(db, shop_code, [sku])
-    row = projection['rows'][0]
+    return list(dict.fromkeys(row.get('sale_key', '') for row in projection['rows']))
+
+
+async def desired(db, shop_code, sku, sale_key=''):
+    projection = await stock_projection.preview(db, shop_code, [sku])
+    rows = [row for row in projection['rows'] if row.get('sale_key', '') == sale_key]
+    if len(rows) != 1:
+        raise SyncError('stock_projection_mapping_ambiguous')
+    row = rows[0]
     if row['errors']:
         raise SyncError(row['errors'][0])
     from inventory_hub.services.supplier_availability import project
     offers = await project(db, [row['product_id']])
     offer = offers.get(row['product_id'], {})
-    label = 'SKLADOM' if Decimal(row['qty_available']) > 0 else (
+    quantity = stock_projection.publication_quantity(row)
+    label = 'SKLADOM' if Decimal(quantity) > 0 else (
         offer.get('label', 'do 5 dní') if offer.get('fresh') and offer.get('available') is True else 'overíme')
-    value = {'stock': row['qty_available'], 'availability': label, 'can_add_to_basket_yn': True}
+    value = {'stock': quantity, 'availability': label, 'can_add_to_basket_yn': True}
     source._fields(value)
     return row['target'], value
 
@@ -392,22 +404,26 @@ async def process_run(db, identifier):
             selected = [row.sku for row in rows]
             run.cursor_product_id = rows[-1].id if rows else run.max_product_id
         for sku in selected:
-            item = Item(run_id=run.id, shop_id=shop.id, warehouse_id=warehouse.id, sku=sku, status='prepared')
-            db.add(item)
-            await db.flush()
-            pending.append(item.id)
+            for key in await sale_keys(db, shop.code, sku):
+                item = Item(run_id=run.id, shop_id=shop.id, warehouse_id=warehouse.id, sku=sku,
+                            sale_key=key, status='prepared')
+                db.add(item)
+                await db.flush()
+                pending.append(item.id)
+        pending = pending[:values['batch_size']]
     # Snapshot only locally eligible leaves while holding the same ordered
     # gates as process_item. Failures still follow its ordinary per-item path.
     targets, preflight_errors = {}, {}
     for item_id in pending:
         item = await one(db, Item, Item.id == item_id)
         if await db.scalar(select(Item.id).where(Item.shop_id == shop.id, Item.sku == item.sku,
+                                                Item.sale_key == (getattr(item, 'sale_key', '') or ''),
                                                 Item.status.in_(FENCED)).limit(1)):
             continue
         try:
             from inventory_hub.services import stock_delta
-            state = await stock_delta.current(db, shop, warehouse, item.sku)
-            cp = await stock_delta.checkpoint(db, shop.id, item.sku)
+            state = await stock_delta.item_current(db, shop, warehouse, item)
+            cp = await stock_delta.item_checkpoint(db, item)
             stock_delta.check_binding(cp, state, warehouse.id, run.target_fingerprint)
             if stock_delta.needs_read(cp, state, now()):
                 targets[item_id] = source.transport._target(cp.target, frozen=True)
@@ -440,7 +456,8 @@ async def process_run(db, identifier):
     run = await one(db, Run, Run.id == run_id, True)
     run.last_batch_at = now()
     policy = await one(db, Policy, Policy.shop_id == run.shop_id)
-    if run.cursor_product_id >= run.max_product_id:
+    remaining = await db.scalar(select(Item.id).where(Item.run_id == run.id, Item.status == 'prepared').limit(1))
+    if run.cursor_product_id >= run.max_product_id and remaining is None:
         await finish(db, run, policy, values)
     else:
         run.status = 'queued'

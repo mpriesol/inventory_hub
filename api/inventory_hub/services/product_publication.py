@@ -34,6 +34,8 @@ def fingerprint(shop):
 
 def target(row, shop_code):
     shop = next((item for item in row['shops'] if item['shop_code'] == shop_code), None)
+    if shop and shop.get('shared_stock'):
+        raise ERROR('product_publication_shared_sales', 422)
     mapping = shop.get('mapping') if shop else None
     if not shop or not shop['mapped'] or not mapping:
         raise ERROR('product_publication_mapping_missing', 422)
