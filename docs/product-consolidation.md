@@ -354,6 +354,17 @@ writer contract is reviewed; this parser is not a generic exemption for them.
 This change performs no catalog, stock, invoice, receiving or publisher writes
 and needs no new migration.
 
+The diagnostics GET also returns a metadata-only `scope_inventory` before the
+bounded loader runs. For every known table it reports the exact selected row
+count, total full-row JSON bytes, largest row and each exceeded scanner limit.
+The Atomer current-family join has the same separate totals. Fixed lifecycle
+buckets distinguish SQL NULL, JSON null, known states and an `other` bucket;
+unknown text, prompts and full documents are not returned. The census uses the
+same read-only repeatable-read snapshot as the rest of the diagnostics. Its
+`complete` flag means the metadata queries completed, and does not make a
+blocked review eligible. Supplier and other linked inputs are not included in
+its combined-byte lower bound. Preview/apply proofs and their limits are unchanged.
+
 `product_canonical_aliases` is an audited, immutable one-hop map from a retired
 ID to its keeper. Current SKU, scoped supplier-code and barcode ownership use
 that map before checking for multiple owners. Unrelated inactive products are

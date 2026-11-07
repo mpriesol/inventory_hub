@@ -14,6 +14,7 @@ from inventory_hub.product_consolidation_models import ProductConsolidation
 from inventory_hub.services import product_consolidation as consolidation
 from inventory_hub.services import product_consolidation_dependencies as dependencies
 from inventory_hub.services import product_links as links
+from inventory_hub.services import product_dependency_census as census
 
 
 TABLE_KEYS = {'ai_content_jobs': ('id',), 'product_import_drafts': ('id',),
@@ -313,6 +314,9 @@ async def inspect(db, identifier):
     if row is None:
         raise links.LinkError('consolidation_not_found', 404)
     local, raw = row.document['local'], row.document['request']
+    # Census runs before the bounded loader can stop at its first limit. This
+    # is only a diagnostic projection, never part of preview/apply eligibility.
+    inventory = await census.inspect(db, row.id, open_condition=dependencies._open_condition)
     summary = await dependencies.inspect(db, ids=consolidation._ids(raw), keeper_id=raw['keeper_product_id'],
         products=local['products'], identifiers=local['identifiers'], mappings=local['mappings'],
         targets=consolidation._targets(raw), request_id=row.id)
@@ -347,6 +351,7 @@ async def inspect(db, identifier):
             'current_blockers': summary['blockers'],
             'documents': documents, 'catalog_journals': journals,
             'typed_scope': typed_projection,
+            'scope_inventory': inventory,
             'limits': {'rows_per_table': MAX_ROWS, 'document_bytes': MAX_DOCUMENT_BYTES,
                        'journal_records': MAX_ROWS,
                        'total_document_bytes': MAX_TOTAL_BYTES, 'matches_per_document': MAX_MATCHES,
