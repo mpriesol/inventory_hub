@@ -642,7 +642,7 @@ async def preview(db, payload, *, actor=None):
         for flag in ('replace_deleted_variant', 'replace_deleted_product'):
             if not match.get(flag):
                 match.pop(flag, None)
-        for field in ('reviewed_deleted_replacement', 'complete_unverified_parent'):
+        for field in ('reviewed_deleted_replacement', 'complete_unverified_parent', 'reviewed_parent_rename'):
             if match.get(field) is None:
                 match.pop(field, None)
     request_hash = digest(raw)
@@ -651,6 +651,9 @@ async def preview(db, payload, *, actor=None):
         if existing.request_hash != request_hash:
             raise LinkError('product_links_request_changed')
         return public(existing)
+    if any(match.reviewed_parent_rename is not None for match in payload.manual_matches):
+        from inventory_hub.services import product_link_parent_rename
+        return await product_link_parent_rename.preview(db, payload, request_hash, actor=actor)
     shop = await _shop(db, payload.shop_code)
     shop_id = shop.id
     facts = await _facts(db, payload.product_ids)
@@ -781,8 +784,9 @@ async def apply(db, identifier, payload, *, actor=None):
 async def _fence_failed_apply(db, identifier, payload, error):
     """Settle all earlier applies before reporting that none can still commit.
 
-    Explicit source/identity failures happen before business writes. The shared
-    lock orders this expiry with every in-flight apply: a completed apply wins;
+    Explicit source/identity failures precede business writes or roll their
+    uncommitted transaction back below. The shared lock orders this expiry with
+    every in-flight apply: a completed apply wins;
     otherwise every delayed apply must observe the committed expiry. Unknown
     database/commit failures are deliberately not converted into this guarantee.
     """
@@ -804,6 +808,9 @@ async def _fence_failed_apply(db, identifier, payload, error):
 
 
 async def _apply_prepared(db, identifier, payload, row, *, actor=None):
+    if row.document.get('operation') == 'reviewed_parent_rename':
+        from inventory_hub.services import product_link_parent_rename
+        return await product_link_parent_rename.apply_prepared(db, identifier, payload, row, actor=actor)
     selected = _apply_selection(row, payload)
     shop_code, fingerprint = row.document['shop_code'], row.document['fingerprint']
     frozen = [item['remote'] for item in selected]

@@ -324,6 +324,44 @@ async def inspect_codes(shop_code: str, codes: list[str], expected_fingerprint: 
     return await asyncio.to_thread(_discover, shop_code, codes, expected_fingerprint, max_requests, True)
 
 
+def _inspect_parent_rename(shop_code, codes, parent_ids, fingerprint, max_requests):
+    """Observe selected-code occupancy and every leaf of exact known parents.
+
+    This is a positive same-native-ID proof, not an absence/deletion probe.
+    The flat variant endpoint includes inactive siblings when no active filter
+    is supplied. Pagination and all parent IDs remain bounded and checked.
+    """
+    started = time.monotonic()
+    _need(isinstance(parent_ids, list) and 0 < len(parent_ids) <= MAX_CODES,
+          'source_parent_scope_invalid', 422)
+    parents = {_native_id(value) for value in parent_ids}
+    _need(len(parents) == len(parent_ids), 'source_parent_scope_invalid', 422)
+    result = _discover(shop_code, codes, fingerprint, max_requests, True)
+    reader = _Reader(shop_code, result['fingerprint'], max_requests - result['requests'])
+    try:
+        rows = reader.pages('/products/variants', 'variants', {'product_ids': ';'.join(sorted(parents))})
+        leaves, seen = [], set()
+        for item in rows:
+            parent_id = _native_id(item.get('product_id'))
+            _need(parent_id in parents, 'source_filter_mismatch')
+            leaf = _leaf({'code': item.get('product_code'), 'product_id': parent_id}, item, variant=True)
+            _need(leaf['external_id'] not in seen, 'source_duplicate_variant_id')
+            seen.add(leaf['external_id'])
+            leaves.append(leaf)
+            _need(len(leaves) <= MAX_LEAVES, 'source_result_limit')
+        _need({leaf['parent_id'] for leaf in leaves} == parents, 'source_parent_family_incomplete', 409)
+        return {**result, 'requests': result['requests'] + reader.requests,
+                'family_leaves': sorted(leaves, key=_key), 'observation_started_monotonic': started}
+    finally:
+        reader.close()
+
+
+async def inspect_parent_rename(shop_code, codes, parent_ids, expected_fingerprint=None,
+                                *, max_requests=MAX_REQUESTS):
+    return await asyncio.to_thread(_inspect_parent_rename, shop_code, codes, parent_ids,
+                                   expected_fingerprint, max_requests)
+
+
 async def current_fingerprint(shop_code: str) -> str:
     """Read normal connection configuration without an API request or secret output."""
     def read():
