@@ -201,7 +201,7 @@ async def cycle():
             return False
         if not await db.scalar(text('SELECT pg_try_advisory_xact_lock(691433138)')):
             return False
-        c=await engine._one(db,"SELECT * FROM atomer_catalog_campaigns WHERE state IN ('running','waiting') LIMIT 1")
+        c=await engine._one(db,"SELECT * FROM atomer_catalog_campaigns WHERE state IN ('running','waiting') AND NOT operator_paused LIMIT 1")
         if not c:
             return False
         c=dict(c)
@@ -215,6 +215,13 @@ async def cycle():
             raise
         except Exception as exc:
             await db.rollback()
+            # Rollback released the review mutex. A pause may have committed
+            # since then; reacquire before even changing retry metadata.
+            await db.execute(text('SELECT pg_advisory_xact_lock(691433138)'))
+            active=await engine._one(db,"""SELECT id FROM atomer_catalog_campaigns WHERE id=:c
+                AND state IN ('running','waiting') AND NOT operator_paused""",c=c['id'])
+            if not active:
+                return False
             # This change controls scheduling only. Never commit any partial card
             # creation or an ownership revision from a failed transaction.
             reason=engine._diagnostic({'phase':'source_card'},exc)

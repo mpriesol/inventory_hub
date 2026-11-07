@@ -128,6 +128,8 @@ async def process(db,selection,mode,actor):
     if active and active['id']!=cid:
         raise ReviewError('catalog_other_campaign_active')
     current=await _one(db,'SELECT * FROM atomer_catalog_campaigns WHERE id=:c FOR UPDATE',c=cid)
+    if current and current['operator_paused']:
+        raise ReviewError('catalog_operator_paused')
     fp=repair.target_fingerprint('xtrek')
     if not fp or current and fp!=current['shop_fingerprint']:
         raise ReviewError('target_connection_changed')
@@ -268,6 +270,7 @@ async def status(db):
     clean=lambda rows:[{**r,'reason':_short_problem(r.get('reason') or r.get('problem') or '')}
                        for r in rows]
     return dict(campaign_id=cid,state=campaign['state'],run_id=campaign['run_id'],checked_run_id=campaign['checked_run_id'],
+                operator_paused=campaign['operator_paused'],operator_control_revision=campaign['operator_control_revision'],
                 updated_at=campaign['updated_at'],next_retry_at=campaign['next_at'] if campaign['state']=='waiting' else None,
                 last_problem=campaign['problem'],counts=counts,family_states={r['stage']:r['n'] for r in grouped},
                 registry_gaps=(campaign['options'] or {}).get('registry_gaps',{}),
@@ -1361,7 +1364,7 @@ async def cycle():
             return False
         try:
             async with database.get_session_context() as db:
-                active=await _one(db,"SELECT * FROM atomer_catalog_campaigns WHERE state IN ('running','waiting') AND next_at<=now() ORDER BY updated_at LIMIT 1")
+                active=await _one(db,"SELECT * FROM atomer_catalog_campaigns WHERE state IN ('running','waiting') AND NOT operator_paused AND next_at<=now() ORDER BY updated_at LIMIT 1")
                 if not active:
                     return False
                 c=dict(active)

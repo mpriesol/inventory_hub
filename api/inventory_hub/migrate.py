@@ -46,6 +46,7 @@ MIGRATIONS = (
     "atomer_review_migrate",          # 038
     "shared_stock_sales_migrate",     # 046;039–045 retain their existing feature installers
     "product_consolidation_migrate",  # 047; no live consolidation or stock activation
+    "atomer_catalog_control_migrate", # 048; no campaign lifecycle changes
 )
 
 
