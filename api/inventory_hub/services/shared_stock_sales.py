@@ -172,7 +172,8 @@ def public(row):
             'sales': row.document['selected'], 'existing_mappings': row.document['local']['mappings'],
             'replaced_mappings': [_public_mapping(item) for item in row.document['local'].get('replaced_mappings', [])],
             'deletion_proof': row.document.get('deletion_proof'),
-            'identity_evidence': row.document['request']['identity_evidence'], 'result': result}
+            'identity_evidence': row.document['request']['identity_evidence'], 'result': result,
+            **({'source_read': row.document['source_read']} if row.document.get('source_read') else {})}
 
 
 async def get(db, identifier):
@@ -182,10 +183,14 @@ async def get(db, identifier):
     return public(row)
 
 
-async def preview(db, payload, *, actor=None):
+def request_document(payload):
     raw = payload.model_dump(mode='json')
     raw['sales'] = sorted(raw['sales'], key=lambda sale: (sale['code'], _key(sale)))
-    request_hash = links.digest(raw)
+    return raw, links.digest(raw)
+
+
+async def preview(db, payload, *, actor=None, _observation=None):
+    raw, request_hash = request_document(payload)
     existing = await db.get(SharedStockSalePreview, str(payload.request_id))
     if existing is not None:
         if existing.request_hash != request_hash:
@@ -194,22 +199,31 @@ async def preview(db, payload, *, actor=None):
     shop = await links._shop(db, payload.shop_code)
     shop_id = shop.id
     await db.commit()
-    observed = await links._source_call(links.source.discover(payload.shop_code,
-        [sale['code'] for sale in raw['sales']], max_requests=links.MAX_REQUESTS))
+    if _observation is None:
+        observed = await links._source_call(links.source.discover(payload.shop_code,
+            [sale['code'] for sale in raw['sales']], max_requests=links.MAX_REQUESTS))
+    else:
+        _observation.require_fresh(payload.shop_code)
+        observed = _observation.observed
     selected = _selected(raw['sales'], observed)
+    if _observation is not None:
+        links.verified_selection(observed, [entry['remote'] for entry in selected])
     preflight = None
     absence = None
     if any(entry['sale'].get('replace_deleted_mapping') for entry in selected):
         shop = await links._shop(db, payload.shop_code)
         preflight = await _inspect(db, shop, payload.product_id, selected)
         await db.commit()
-        absence = await _absence(payload.shop_code, preflight, observed['fingerprint'], observed['requests'])
+        absence = (_observation.absence(preflight) if _observation is not None else
+                   await _absence(payload.shop_code, preflight, observed['fingerprint'], observed['requests']))
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
     existing = await db.get(SharedStockSalePreview, str(payload.request_id), populate_existing=True)
     if existing is not None:
         if existing.request_hash != request_hash:
             raise links.LinkError('shared_stock_sale_request_changed')
         return public(existing)
+    if _observation is not None:
+        _observation.require_fresh(payload.shop_code)
     shop = await links._shop(db, payload.shop_code)
     if shop.id != shop_id:
         raise links.LinkError('shared_stock_sale_context_changed')
@@ -219,12 +233,18 @@ async def preview(db, payload, *, actor=None):
     document = {'shop_code': shop.code, 'fingerprint': observed['fingerprint'], 'request': raw,
                 'local': local, 'selected': selected, 'deletion_proof': absence,
                 'created_by': actor or {'source': 'operator_token'}}
+    if _observation is not None:
+        if await links._source_call(links.source.current_fingerprint(shop.code)) != observed['fingerprint']:
+            raise links.LinkError('source_connection_changed')
+        document['source_read'] = _observation.proof()
     row = SharedStockSalePreview(id=str(payload.request_id), shop_id=shop.id, product_id=payload.product_id,
         request_hash=request_hash, preview_hash=links.digest(document), document=document,
         expires_at=links.now()+timedelta(minutes=links.PREVIEW_MINUTES), status='prepared')
     db.add(row)
     await db.flush()
     result = public(row)
+    if _observation is not None:
+        _observation.require_fresh(payload.shop_code)
     await db.commit()
     return result
 
@@ -241,41 +261,50 @@ def _check(row, payload, *, expired=False):
     return True
 
 
-async def apply(db, identifier, payload, *, actor=None):
+async def apply(db, identifier, payload, *, actor=None, _observation=None):
     row = await db.get(SharedStockSalePreview, str(identifier))
     if not _check(row, payload, expired=True):
         return public(row)
     try:
-        return await _apply(db, identifier, payload, row, actor=actor)
+        return await _apply(db, identifier, payload, row, actor=actor, _observation=_observation)
     except links.LinkError as error:
         if error.code in ('shared_stock_sale_not_found', 'shared_stock_sale_preview_changed'):
             raise
-        # Settle earlier concurrent applies before saying this request did not
-        # write. Unknown DB/commit failures retain their uncertain outcome.
-        await db.rollback()
-        await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-        row = await db.scalar(select(SharedStockSalePreview).where(SharedStockSalePreview.id == str(identifier))
-            .with_for_update().execution_options(populate_existing=True))
-        if row and row.status == 'completed' and row.preview_hash == payload.preview_hash:
-            result = public(row)
-            await db.commit()
-            return result
-        if row and row.preview_hash == payload.preview_hash and row.status == 'prepared':
-            row.status, row.expires_at = 'expired', min(row.expires_at, links.now())
+        return await fence_failed_apply(db, identifier, payload, error)
+
+
+async def fence_failed_apply(db, identifier, payload, error):
+    # Settle earlier concurrent applies before saying this request did not
+    # write. Unknown DB/commit failures retain their uncertain outcome.
+    await db.rollback()
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    row = await db.scalar(select(SharedStockSalePreview).where(SharedStockSalePreview.id == str(identifier))
+        .with_for_update().execution_options(populate_existing=True))
+    if row and row.status == 'completed' and row.preview_hash == payload.preview_hash:
+        result = public(row)
         await db.commit()
-        error.known_unapplied = True
-        raise
+        return result
+    if row and row.preview_hash == payload.preview_hash and row.status == 'prepared':
+        row.status, row.expires_at = 'expired', min(row.expires_at, links.now())
+    await db.commit()
+    error.known_unapplied = True
+    raise error
 
 
-async def _apply(db, identifier, payload, row, *, actor=None):
+async def _apply(db, identifier, payload, row, *, actor=None, _observation=None):
     _check(row, payload)
     document = row.document
     shop_code, fingerprint = document['shop_code'], document['fingerprint']
     await db.commit()
-    observed = await links._source_call(links.source.verify(shop_code,
-        [entry['remote'] for entry in document['selected']], fingerprint, max_requests=links.MAX_REQUESTS))
+    frozen = [entry['remote'] for entry in document['selected']]
+    if _observation is None:
+        observed = await links._source_call(links.source.verify(shop_code, frozen, fingerprint, max_requests=links.MAX_REQUESTS))
+    else:
+        _observation.require_fresh(shop_code)
+        observed = links.verified_selection(_observation.observed, frozen)
     selected = _selected(document['request']['sales'], observed)
-    absence = await _absence(shop_code, document['local'], fingerprint, observed['requests'])
+    absence = (_observation.absence(document['local']) if _observation is not None else
+               await _absence(shop_code, document['local'], fingerprint, observed['requests']))
     if (observed['fingerprint'] != fingerprint or
         [links.remote_snapshot(row['remote']) for row in selected] !=
         [links.remote_snapshot(row['remote']) for row in document['selected']]):
@@ -285,6 +314,8 @@ async def _apply(db, identifier, payload, row, *, actor=None):
         .with_for_update().execution_options(populate_existing=True))
     if not _check(row, payload):
         return public(row)
+    if _observation is not None:
+        _observation.require_fresh(shop_code)
     shop = await links._shop(db, shop_code)
     if shop.id != row.shop_id:
         raise links.LinkError('shared_stock_sale_context_changed')
@@ -335,7 +366,11 @@ async def _apply(db, identifier, payload, row, *, actor=None):
                   'completed_at': row.completed_at.isoformat(), 'applied_by': actor or {'source': 'operator_token'}}
     if archives:
         row.result['_content_archives'] = archives
+    if _observation is not None:
+        row.result['source_read'] = _observation.proof()
     await db.flush()
     result = public(row)
+    if _observation is not None:
+        _observation.require_fresh(shop_code)
     await db.commit()
     return result

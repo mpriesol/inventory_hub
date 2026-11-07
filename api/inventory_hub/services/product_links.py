@@ -91,6 +91,13 @@ def remote_snapshot(remote):
             'axes': axes(remote.get('attributes'))}
 
 
+def verified_selection(observed, frozen):
+    try:
+        return source.verified_selection(observed, frozen)
+    except source.SourceError as error:
+        raise LinkError(error.code, error.status, error.retry_after) from None
+
+
 def _mapping(row):
     if row is None:
         return None
@@ -808,12 +815,7 @@ async def _apply_prepared(db, identifier, payload, row, *, actor=None):
         # Parent occupancy needs the wider inspection, but every selected row
         # must retain verify()'s exact code/kind/parent scope. Another native
         # leaf appearing in that scope is an ambiguity, including mixed rows.
-        scopes = {(item['code'], item['parent_code'], item['is_variant']) for item in frozen}
-        scoped = [item for item in observed['leaves']
-                  if (item['code'], item['parent_code'], item['is_variant']) in scopes]
-        if {tuple(remote_identity(item).values()) for item in scoped} != {tuple(remote_identity(item).values()) for item in frozen}:
-            raise LinkError('source_identity_changed')
-        observed['leaves'] = scoped
+        observed = verified_selection(observed, frozen)
     else:
         observed = await _source_call(source.verify(shop_code, frozen, fingerprint, max_requests=MAX_REQUESTS))
     if replacements:
