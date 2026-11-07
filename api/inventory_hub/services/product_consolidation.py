@@ -5,6 +5,7 @@ stock/history rows remain on their original owners. Only explicitly reviewed
 current native relationships are retained or rebound onto the selected keeper.
 """
 from collections import defaultdict
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import timedelta
 from decimal import Decimal
@@ -15,6 +16,7 @@ from inventory_hub.db_models_ext import ShopProduct
 from inventory_hub.product_consolidation_models import ProductCanonicalAlias, ProductConsolidation
 from inventory_hub.services import product_links as links
 from inventory_hub.services import product_consolidation_dependencies as dependencies
+from inventory_hub.services import product_consolidation_keeper_dependencies as keeper_dependencies
 from inventory_hub.services.canonical_products import aliases_for
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, barcode_keys, load_identity_index
 from inventory_hub.services.shared_stock_sales import _replacement_snapshot
@@ -23,6 +25,9 @@ from inventory_hub.services.stock_publication_gate import require_stock_write_al
 
 def _request(payload):
     raw = payload.model_dump(mode='json')
+    # Preserve the request/hash shape of already frozen reviews and UUID replays.
+    if not raw.get(keeper_dependencies.FLAG):
+        raw.pop(keeper_dependencies.FLAG, None)
     raw['retired_product_ids'].sort()
     raw['mapping_actions'].sort(key=lambda row: row['mapping_id'])
     raw['additional_sales'].sort(key=lambda row: (row['shop_code'], row['code']))
@@ -314,10 +319,13 @@ async def _identity(db, raw, local, native):
             'same_complete_retail_unit_factor': 1}
 
 
-async def _dependencies(db, raw, local):
+async def _dependencies(db, raw, local, *, keeper_inputs=None):
+    preserved = await keeper_dependencies.inspect(db, raw, local, keeper_inputs) if keeper_inputs is not None else None
     result = await dependencies.inspect(db, ids=_ids(raw), keeper_id=raw['keeper_product_id'],
         products=local['products'], identifiers=local['identifiers'], mappings=local['mappings'],
-        targets=_targets(raw), request_id=raw['request_id'])
+        targets=_targets(raw), request_id=raw['request_id'], keeper_dependencies=preserved)
+    if preserved is not None:
+        result['keeper_dependencies'] = preserved
     journals = dependencies.catalog_journals([row['code'] for row in local['shops']], set(result.pop('tokens')))
     result['catalog_journals'] = journals['records']
     result['blockers'].extend(journals['blockers'])
@@ -368,23 +376,27 @@ async def preview(db, payload, *, actor=None):
         if existing.request_hash != request_hash:
             raise links.LinkError('consolidation_request_changed')
         return public(existing)
-    # No network occurs under these row locks. A preview never changes cards,
-    # mapping ownership, stock flags, history or cached native content.
-    current = await _local(db, raw, lock=True)
-    if current != local:
-        raise links.LinkError('consolidation_context_changed')
-    identity = await _identity(db, raw, current, native)
-    deps = await _dependencies(db, raw, current)
-    document = {'request': raw, 'local': current, 'plan': plan, 'native': native,
-        'identity': identity, 'dependencies': deps, 'created_by': actor or {'source': 'operator_token'}}
-    row = ProductConsolidation(id=str(payload.request_id), request_hash=request_hash,
-        preview_hash=links.digest(document), document=document, status='prepared',
-        expires_at=links.now()+timedelta(minutes=links.PREVIEW_MINUTES))
-    db.add(row)
-    await db.flush()
-    result = public(row)
-    await db.commit()
-    return result
+    enabled = raw.get(keeper_dependencies.FLAG, False)
+    with keeper_dependencies.configurations() if enabled else nullcontext(None) as keeper_inputs:
+        # No network occurs under these row locks. A preview never changes cards,
+        # mapping ownership, stock flags, history or cached native content.
+        current = await _local(db, raw, lock=True)
+        if current != local:
+            raise links.LinkError('consolidation_context_changed')
+        if enabled:
+            await keeper_dependencies.lock_inputs(db)
+        identity = await _identity(db, raw, current, native)
+        deps = await _dependencies(db, raw, current, keeper_inputs=keeper_inputs)
+        document = {'request': raw, 'local': current, 'plan': plan, 'native': native,
+            'identity': identity, 'dependencies': deps, 'created_by': actor or {'source': 'operator_token'}}
+        row = ProductConsolidation(id=str(payload.request_id), request_hash=request_hash,
+            preview_hash=links.digest(document), document=document, status='prepared',
+            expires_at=links.now()+timedelta(minutes=links.PREVIEW_MINUTES))
+        db.add(row)
+        await db.flush()
+        result = public(row)
+        await db.commit()
+        return result
 
 
 def _check(row, payload, *, expired=False):
@@ -468,93 +480,104 @@ async def _apply(db, identifier, payload, row, *, actor=None):
     if current != local:
         raise links.LinkError('consolidation_context_changed')
     await _lock_identity_owners(db)
-    if await _identity(db, raw, current, native) != document['identity']:
-        raise links.LinkError('consolidation_identity_changed')
-    deps = await _dependencies(db, raw, current)
-    if deps['blockers'] or deps != document['dependencies']:
-        raise links.LinkError('consolidation_dependencies_changed')
-    for shop_code, observation in native.items():
-        # Configuration-only read; no HTTP runs while DB locks are held.
-        if await links._source_call(links.source.current_fingerprint(shop_code)) != observation['fingerprint']:
-            raise links.LinkError('consolidation_shop_connection_changed')
-    timestamp = links.now()
-    originals = {item['id']: item for item in current['mappings']}
-    targets = _targets(raw)
-    counts = {shop['code']: sum(target['shop_code'] == shop['code'] for target in targets) for shop in local['shops']}
-    shops = {shop['code']: shop['id'] for shop in local['shops']}
-    observed = {(code, *links.remote_key(leaf)): leaf for code, result in native.items() for leaf in result['leaves']}
-    current_rows, retired_mapping_ids = [], []
-    # Retire obsolete mapping rows first; original owner, IDs, SKU, price and
-    # native stock observations remain byte-for-byte, apart from audit stamps.
-    for action in raw['mapping_actions']:
-        mapping = await db.get(ShopProduct, action['mapping_id'])
-        if action['action'] == 'retain':
-            current_rows.append((mapping, action['target']))
-        else:
-            mapping.retired_at = timestamp
-            mapping.retired_by_consolidation_id = row.id
-            retired_mapping_ids.append(mapping.id)
-    await db.flush()
-    for action in raw['mapping_actions']:
-        if action['action'] != 'bind':
-            continue
-        target = action['target']
-        # Fresh identity reads contain no price/quantity observations. Preserve
-        # those on the retired row; never copy them to a recreated native leaf.
-        mapping = ShopProduct(shop_id=shops[target['shop_code']], product_id=raw['keeper_product_id'])
-        db.add(mapping)
-        current_rows.append((mapping, target))
-    for target in raw['additional_sales']:
-        mapping = ShopProduct(shop_id=shops[target['shop_code']], product_id=raw['keeper_product_id'])
-        db.add(mapping)
-        current_rows.append((mapping, target))
-    for mapping, target in current_rows:
-        leaf = observed[_key(target)]
-        mapping.external_product_id = leaf['parent_id']
-        mapping.external_variant_id = leaf['external_id'] if leaf['is_variant'] else None
-        mapping.external_code, mapping.is_variant = leaf['code'], leaf['is_variant']
-        mapping.parent_code = leaf['parent_code'] if leaf['is_variant'] else None
-        mapping.is_listed = True
-        mapping.shared_stock = counts[target['shop_code']] > 1
-        mapping.sale_to_stock_factor = Decimal(1)
-        mapping.sale_barcodes = leaf['eans'] if mapping.shared_stock else None
-    await db.flush()
-    for product_id in raw['retired_product_ids']:
-        product = await db.get(Product, product_id)
-        product.is_active = False
-    await db.flush()
-    db.add_all(ProductCanonicalAlias(retired_product_id=product_id,
-        canonical_product_id=raw['keeper_product_id'], consolidation_id=row.id)
-        for product_id in raw['retired_product_ids'])
-    await db.flush()
-    # Verify original stock/history hashes without any canonical aggregation.
-    for key, before in deps['facts'].items():
-        if key.startswith(('stock_', 'fifo_', 'reservations.', 'shop_order_', 'receiving_', 'inventory_count_')) and '.' in key:
-            table, column = key.split('.', 1)
-            after = await dependencies._summary(db, table,
-                f't.{dependencies.quoted(column)}=ANY(CAST(:ids AS bigint[]))', {'ids': sorted(_ids(raw))})
-            if after != before:
-                raise links.LinkError('consolidation_history_changed')
-    for target in targets:
-        owners = list(await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shops[target['shop_code']],
-            ShopProduct.is_variant == target['is_variant'], ShopProduct.native_id == _key(target)[2])))
-        if len(owners) != 1 or owners[0].product_id != raw['keeper_product_id']:
-            raise links.LinkError('consolidation_result_ownership_changed')
-    row.status, row.completed_at = 'completed', timestamp
-    row.result = {'keeper_product_id': raw['keeper_product_id'], 'retired_product_ids': raw['retired_product_ids'],
-        'retired_mapping_ids': retired_mapping_ids,
-        'current_mappings': [{**links._mapping(mapping), 'product_id': mapping.product_id,
-            'shop_code': target['shop_code'], 'shared_stock': mapping.shared_stock, 'sale_to_stock_factor': 1}
-            for mapping, target in current_rows],
-        'history_hash_unchanged': deps['history_hash'], 'physical_stock_changed': False,
-        'remote_write_performed': False, 'applied_by': actor or {'source': 'operator_token'}}
-    unverified_proofs = {code: observation['unverified_code_absence'] for code, observation in native.items()
-                         if 'unverified_code_absence' in observation}
-    if unverified_proofs:
-        # Keep apply's fresh negative code observations apart from the frozen
-        # preview. Neither observation claims an unknown native ID was deleted.
-        row.result = {**row.result, 'unverified_code_absence': unverified_proofs}
-    await db.flush()
-    result = public(row)
-    await db.commit()
-    return result
+    enabled = raw.get(keeper_dependencies.FLAG, False)
+    if enabled:
+        await keeper_dependencies.lock_inputs(db)
+    with keeper_dependencies.configurations() if enabled else nullcontext(None) as keeper_inputs:
+        if await _identity(db, raw, current, native) != document['identity']:
+            raise links.LinkError('consolidation_identity_changed')
+        deps = await _dependencies(db, raw, current, keeper_inputs=keeper_inputs)
+        if deps['blockers'] or deps != document['dependencies']:
+            raise links.LinkError('consolidation_dependencies_changed')
+        for shop_code, observation in native.items():
+            # Configuration-only read; no HTTP runs while DB locks are held.
+            if await links._source_call(links.source.current_fingerprint(shop_code)) != observation['fingerprint']:
+                raise links.LinkError('consolidation_shop_connection_changed')
+        timestamp = links.now()
+        originals = {item['id']: item for item in current['mappings']}
+        targets = _targets(raw)
+        counts = {shop['code']: sum(target['shop_code'] == shop['code'] for target in targets) for shop in local['shops']}
+        shops = {shop['code']: shop['id'] for shop in local['shops']}
+        observed = {(code, *links.remote_key(leaf)): leaf for code, result in native.items() for leaf in result['leaves']}
+        current_rows, retired_mapping_ids = [], []
+        # Retire obsolete mapping rows first; original owner, IDs, SKU, price and
+        # native stock observations remain byte-for-byte, apart from audit stamps.
+        for action in raw['mapping_actions']:
+            mapping = await db.get(ShopProduct, action['mapping_id'])
+            if action['action'] == 'retain':
+                current_rows.append((mapping, action['target']))
+            else:
+                mapping.retired_at = timestamp
+                mapping.retired_by_consolidation_id = row.id
+                retired_mapping_ids.append(mapping.id)
+        await db.flush()
+        for action in raw['mapping_actions']:
+            if action['action'] != 'bind':
+                continue
+            target = action['target']
+            # Fresh identity reads contain no price/quantity observations. Preserve
+            # those on the retired row; never copy them to a recreated native leaf.
+            mapping = ShopProduct(shop_id=shops[target['shop_code']], product_id=raw['keeper_product_id'])
+            db.add(mapping)
+            current_rows.append((mapping, target))
+        for target in raw['additional_sales']:
+            mapping = ShopProduct(shop_id=shops[target['shop_code']], product_id=raw['keeper_product_id'])
+            db.add(mapping)
+            current_rows.append((mapping, target))
+        for mapping, target in current_rows:
+            leaf = observed[_key(target)]
+            mapping.external_product_id = leaf['parent_id']
+            mapping.external_variant_id = leaf['external_id'] if leaf['is_variant'] else None
+            mapping.external_code, mapping.is_variant = leaf['code'], leaf['is_variant']
+            mapping.parent_code = leaf['parent_code'] if leaf['is_variant'] else None
+            mapping.is_listed = True
+            mapping.shared_stock = counts[target['shop_code']] > 1
+            mapping.sale_to_stock_factor = Decimal(1)
+            mapping.sale_barcodes = leaf['eans'] if mapping.shared_stock else None
+        await db.flush()
+        for product_id in raw['retired_product_ids']:
+            product = await db.get(Product, product_id)
+            product.is_active = False
+        await db.flush()
+        db.add_all(ProductCanonicalAlias(retired_product_id=product_id,
+            canonical_product_id=raw['keeper_product_id'], consolidation_id=row.id)
+            for product_id in raw['retired_product_ids'])
+        await db.flush()
+        if keeper_inputs is not None:
+            after = await keeper_dependencies.inspect(db, raw, current, keeper_inputs)
+            if after != deps['keeper_dependencies']:
+                raise links.LinkError('consolidation_keeper_dependencies_changed')
+        # Verify original stock/history hashes without any canonical aggregation.
+        for key, before in deps['facts'].items():
+            if key.startswith(('stock_', 'fifo_', 'reservations.', 'shop_order_', 'receiving_', 'inventory_count_')) and '.' in key:
+                table, column = key.split('.', 1)
+                after = await dependencies._summary(db, table,
+                    f't.{dependencies.quoted(column)}=ANY(CAST(:ids AS bigint[]))', {'ids': sorted(_ids(raw))})
+                if after != before:
+                    raise links.LinkError('consolidation_history_changed')
+        for target in targets:
+            owners = list(await db.scalars(select(ShopProduct).where(ShopProduct.shop_id == shops[target['shop_code']],
+                ShopProduct.is_variant == target['is_variant'], ShopProduct.native_id == _key(target)[2])))
+            if len(owners) != 1 or owners[0].product_id != raw['keeper_product_id']:
+                raise links.LinkError('consolidation_result_ownership_changed')
+        row.status, row.completed_at = 'completed', timestamp
+        row.result = {'keeper_product_id': raw['keeper_product_id'], 'retired_product_ids': raw['retired_product_ids'],
+            'retired_mapping_ids': retired_mapping_ids,
+            'current_mappings': [{**links._mapping(mapping), 'product_id': mapping.product_id,
+                'shop_code': target['shop_code'], 'shared_stock': mapping.shared_stock, 'sale_to_stock_factor': 1}
+                for mapping, target in current_rows],
+            'history_hash_unchanged': deps['history_hash'], 'physical_stock_changed': False,
+            'remote_write_performed': False, 'applied_by': actor or {'source': 'operator_token'}}
+        unverified_proofs = {code: observation['unverified_code_absence'] for code, observation in native.items()
+                             if 'unverified_code_absence' in observation}
+        if unverified_proofs:
+            # Keep apply's fresh negative code observations apart from the frozen
+            # preview. Neither observation claims an unknown native ID was deleted.
+            row.result = {**row.result, 'unverified_code_absence': unverified_proofs}
+        if keeper_inputs is not None:
+            keeper_inputs.verify()
+            row.result['keeper_dependencies_hash'] = deps['keeper_dependencies']['preserved_rows_hash']
+        await db.flush()
+        result = public(row)
+        await db.commit()
+        return result

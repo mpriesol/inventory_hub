@@ -2,7 +2,7 @@
 from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID
-from pydantic import Field, StrictInt, StrictStr, field_validator, model_validator
+from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 from inventory_hub.product_link_types import LinkInput
 from inventory_hub.shared_stock_sale_types import SharedStockSaleApplyRequest, SharedStockSaleTarget
 
@@ -62,6 +62,7 @@ class ProductConsolidationPreviewRequest(LinkInput):
     mode: Literal['identity_only_preserve_unconfirmed_history']
     same_physical_retail_unit_confirmed: Literal[True]
     legacy_initial_history_preserved: Literal[True]
+    preserve_keeper_invoice_receiving: StrictBool = False
     identity_evidence: ConsolidationEvidence
     mapping_actions: list[ConsolidationMappingAction] = Field(max_length=50)
     additional_sales: list[ConsolidationTarget] = Field(default_factory=list, max_length=20)

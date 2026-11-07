@@ -5,6 +5,7 @@ from typing import Dict, Any
 from copy import deepcopy
 from contextlib import contextmanager
 import fcntl
+import asyncio
 import json, os
 from inventory_hub.config_normalize import normalize_supplier_availability, normalize_availability_publication
 from inventory_hub.supplier_prefix import (
@@ -127,7 +128,20 @@ def _prefix_registry(*, early_commit: bool = False):
     root.mkdir(parents=True, exist_ok=True)
     registry_path = root / ".product-prefixes.json"
     with (root / ".product-prefixes.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # Synchronous threads/processes retain serialized waiting.
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            else:
+                # A read lease may belong to another task in this very loop.
+                # Never block that task from committing and releasing it.
+                # No registry/configuration mutation has happened yet.
+                raise SupplierPrefixError('supplier_configuration_busy',
+                    'Supplier configuration is busy; retry after the current operation.', 409) from None
         try:
             if registry_path.exists():
                 try:

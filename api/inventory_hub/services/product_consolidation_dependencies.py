@@ -97,10 +97,13 @@ def _mentions_sql():
                              for path in paths) + ')'
 
 
-async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, targets, request_id):
+async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, targets, request_id,
+                  keeper_dependencies=None):
     ids = sorted(ids)
     retired = [pid for pid in ids if pid != keeper_id]
     blockers, facts = [], {}
+    if keeper_dependencies is not None:
+        blockers.extend(keeper_dependencies['blockers'])
     catalog = (await db.execute(text('''SELECT c.relname AS table_name,a.attname AS column_name,
         format_type(a.atttypid,a.atttypmod) AS data_type FROM pg_class c
         JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid
@@ -135,6 +138,13 @@ async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, target
             continue
         if table in KEEPER_ONLY:
             summary = await _summary(db, table, f't.{quoted(column)}=ANY(CAST(:retired AS bigint[]))', params)
+        elif keeper_dependencies is not None and (table, column) in (
+                ('uploaded_invoice_lines', 'matched_product_id'), ('receiving_lines', 'product_id')):
+            # Only complete server-discovered, independently proven rows receive
+            # an exception. A new/missing/retired FK remains a normal blocker.
+            key = 'allowed_invoice_line_ids' if table == 'uploaded_invoice_lines' else 'allowed_receiving_line_ids'
+            summary = await _summary(db, table, condition + ' AND NOT (t.id=ANY(CAST(:allowed AS bigint[])))',
+                {**params, 'allowed': keeper_dependencies[key]})
         elif table in PREVIEWS:
             summary = await _summary(db, table, condition + ' AND ' + _open_condition(table, columns[table]), params)
         elif table == 'product_editor_publications':

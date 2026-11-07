@@ -148,6 +148,21 @@ app = FastAPI(
     lifespan=lifespan,
     root_path=os.environ.get("ROOT_PATH", ""),
 )
+from inventory_hub.supplier_prefix import SupplierPrefixError
+
+
+@app.exception_handler(SupplierPrefixError)
+async def supplier_prefix_error_response(_request, error: SupplierPrefixError):
+    from fastapi.responses import JSONResponse
+    # Never echo configuration content, paths or credentials from an exception.
+    # Existing route-specific HTTPException translations retain their statuses.
+    message = ('Supplier configuration is busy; retry after the current operation.'
+               if error.code == 'supplier_configuration_busy'
+               else 'Supplier configuration could not be verified.')
+    return JSONResponse(status_code=error.status,
+        content={'detail': {'code': error.code, 'message': message}}, headers={'Cache-Control': 'no-store'})
+
+
 from inventory_hub.routers.auth import install as install_auth
 install_auth(app)
 # CORS handles preflight before the private API boundary; preflight never

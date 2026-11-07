@@ -6,6 +6,8 @@ Pri chýbajúcej karte použite **Založiť skladové karty** a [spoločnú poli
 
 Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity ani dokončenie príjmu nevolajú Upgates. Dokončenie príjmu zapíše pohyby a nákupné ceny do lokálneho skladu; samo nespúšťa publikovanie zásob do e-shopov.
 
+Výslovná konsolidácia duplicitnej identity má predvolene vypnutú možnosť zachovať jednoznačné fakturačné väzby a pozastavený príjem na ponechanej karte. Kontroluje rovnakú surovú identitu ako finalizácia aj obohatené zobrazenie príjmu a nemení riadky, ceny, množstvá, stav ani uložené `NULL` priradenie. Priamy importný draft alebo identita vyradenej karty zostáva blokovaný. Fyzické prijatie je naďalej samostatná operácia; [kontrakt konsolidácie](product-consolidation.md#explicit-keeper-invoice-and-paused-receiving-preservation) opisuje dôkazy, zámky a obmedzenia. Ak inú operáciu blokuje krátky lease dodávateľskej konfigurácie, asynchrónna cesta vráti `supplier_configuration_busy` (409); obsluha zachová pôvodný request UUID a pravidlá obnovy konkrétnej operácie.
+
 ## Pre obsluhu
 
 - Zoznam položiek sa otvorí automaticky. Šípky pri prijatom množstve pridajú alebo odoberú jednu fakturovanú jednotku; ceruzka umožní zadať presné množstvo. Počas ukladania alebo čakajúcich skenov sú ručné zmeny blokované. Pri stratenej odpovedi sa najskôr načíta uložený stav, aby ďalší klik nevychádzal zo starého množstva.
