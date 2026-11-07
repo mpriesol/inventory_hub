@@ -105,7 +105,7 @@ async def defer_known_windows(db,c):
         until=blocked_until(w)
         if not until:
             continue
-        await db.execute(text("""UPDATE atomer_catalog_jobs j SET next_at=:n,problem=:p WHERE campaign=:c
+        await db.execute(text("""UPDATE atomer_catalog_jobs j SET next_at=:n,problem=:p WHERE campaign=:c AND NOT j.operator_withdrawn
             AND next_at<:n AND ((:shop='xtrek' AND stage IN ('prepared','sending','observe','related','fidelity','updating'))
                  OR (stage='cards' AND EXISTS(SELECT 1 FROM jsonb_each_text(j.guards->'scope') e
                      WHERE e.value<>:other)))"""),dict(c=c['id'],shop=shop,other='xtrek' if shop=='biketrek' else 'biketrek',

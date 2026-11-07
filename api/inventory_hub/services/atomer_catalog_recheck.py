@@ -36,6 +36,7 @@ def next_phase(candidate):
 async def reschedule(db,c,candidate,expected,mode,actor):
     from inventory_hub.services import atomer_catalog_engine as engine
     family=candidate['family_key']
+    await engine._assert_job_active(db,c['id'],family)
     rows,group=await engine._family(db,c['checked_run_id'],family)
     if not rows or candidate['stage'] not in ('partial','blocked') or expected!=revision(candidate,c['checked_run_id'],rows,group):
         raise ReviewError('catalog_recheck_changed')

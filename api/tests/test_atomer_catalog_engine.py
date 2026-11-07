@@ -271,7 +271,7 @@ class CampaignIntegrationTest(unittest.IsolatedAsyncioTestCase):
         root=Path(__file__).resolve().parents[2]/'infra'/'db-init'
         for name in ('024_upgates_api_budget.sql','037_atomer_progress.sql','038_atomer_review.sql','040_atomer_catalog_campaign.sql',
                      '041_atomer_catalog_content.sql','043_atomer_source_cards.sql','045_atomer_catalog_usage.sql',
-                     '048_atomer_catalog_control.sql'):
+                     '048_atomer_catalog_control.sql','049_atomer_catalog_job_control.sql'):
             await self.conn.execute((root/name).read_text())
         await self.conn.execute("""
             CREATE TABLE products(id bigint PRIMARY KEY);

@@ -92,7 +92,7 @@ def _one_subject(index,parent,data,rows,code,corrections):
 async def due(db,c):
     return await engine._rows(db,f"""SELECT j.campaign,j.family_key,j.leaf_count,j.stage,j.guards,
               j.source_card_attempts FROM atomer_catalog_jobs j WHERE j.campaign=:cid
-              AND j.source_card_stage='pending' AND j.source_card_next_at<=now()
+              AND NOT j.operator_withdrawn AND j.source_card_stage='pending' AND j.source_card_next_at<=now()
               AND coalesce(j.receipt->>'rollover','false')<>'true'
               AND j.stage IN ('pending','prepared','sending','observe','cards','related','fidelity','updating')
               AND {ELIGIBLE} ORDER BY j.priority,j.family_key LIMIT :lim""",
@@ -145,6 +145,7 @@ async def prepare(db,c,jobs):
     index=None
     for j in jobs:
         f=j['family_key']
+        await engine._assert_job_active(db,c['id'],f)
         rows,group=await engine._family(db,c['checked_run_id'],f)
         g=j['guards']
         if g is None:
@@ -228,7 +229,7 @@ async def cycle():
             await engine._exec(db,"""UPDATE atomer_catalog_jobs SET source_card_problem=:p,
                  source_card_attempts=source_card_attempts+1,source_card_next_at=now()+make_interval(secs=>:delay),
                  source_card_stage=CASE WHEN source_card_attempts>=5 THEN 'blocked' ELSE source_card_stage END
-                 WHERE campaign=:c AND source_card_stage='pending' AND family_key=ANY(CAST(:keys AS text[]))""",
+                 WHERE campaign=:c AND NOT operator_withdrawn AND source_card_stage='pending' AND family_key=ANY(CAST(:keys AS text[]))""",
                  p=reason,c=c['id'],keys=[j['family_key'] for j in jobs],
                  delay=min(300,5*2**min(6,max(j['source_card_attempts'] for j in jobs))))
         return True
@@ -303,7 +304,7 @@ async def retry_new_evidence(db, campaign, selection, submitted_codes):
     await engine._exec(db, """
         UPDATE atomer_catalog_jobs j
         SET source_card_stage='pending',source_card_next_at=now(),source_card_attempts=0,source_card_problem=''
-        WHERE j.campaign=:campaign AND j.source_card_stage IN ('checked','blocked')
+        WHERE j.campaign=:campaign AND NOT j.operator_withdrawn AND j.source_card_stage IN ('checked','blocked')
           AND j.stage=ANY(CAST(:runnable AS text[]))
           AND EXISTS (SELECT 1 FROM atomer_catalog_source_cards s
               JOIN jsonb_each_text(CAST(:tokens AS jsonb)) t ON t.key=s.code
