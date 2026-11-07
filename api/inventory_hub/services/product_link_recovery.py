@@ -240,7 +240,7 @@ async def parent_completions(db, shop, facts, manual, choices, observed, *, expe
 
 def require_complete_selection(rows, chosen):
     for row in rows:
-        completion = row.get('parent_completion')
+        completion = row.get('parent_completion') or row.get('parent_rename')
         if completion and not set(completion['family_product_ids']) <= set(chosen):
             raise links.LinkError('product_links_parent_family_incomplete', 422)
 

@@ -66,6 +66,10 @@ class CompleteUnverifiedParent(ReviewedNativeTarget):
         return exact_code(value)
 
 
+class ReviewedParentRename(CompleteUnverifiedParent):
+    """A known native variant retained under a renamed native parent code."""
+
+
 class ProductLinkMatch(LinkInput):
     product_id: StrictInt = Field(gt=0)
     code: StrictStr
@@ -75,6 +79,7 @@ class ProductLinkMatch(LinkInput):
     replace_deleted_product: StrictBool = False
     reviewed_deleted_replacement: ReviewedDeletedReplacement | None = None
     complete_unverified_parent: CompleteUnverifiedParent | None = None
+    reviewed_parent_rename: ReviewedParentRename | None = None
 
     @field_validator('code', 'parent_code')
     @classmethod
@@ -88,15 +93,19 @@ class ProductLinkMatch(LinkInput):
         if self.replace_deleted_variant and self.replace_deleted_product:
             raise ValueError('Choose the kind of the original deleted mapping')
         modes = [self.replace_deleted_variant, self.replace_deleted_product,
-                 self.reviewed_deleted_replacement is not None, self.complete_unverified_parent is not None]
+                 self.reviewed_deleted_replacement is not None, self.complete_unverified_parent is not None,
+                 self.reviewed_parent_rename is not None]
         if sum(modes) > 1:
             raise ValueError('Choose one explicit recovery operation')
-        review = self.reviewed_deleted_replacement or self.complete_unverified_parent
+        review = self.reviewed_deleted_replacement or self.complete_unverified_parent or self.reviewed_parent_rename
         if review is not None and self.is_variant != (review.native_variant_id is not None):
             raise ValueError('Pin the exact native identity for the selected leaf kind')
         if self.complete_unverified_parent is not None and (
                 not self.is_variant or self.parent_code == self.complete_unverified_parent.expected_parent_code):
             raise ValueError('Parent completion requires a different verified variant container code')
+        if self.reviewed_parent_rename is not None and (
+                not self.is_variant or self.parent_code == self.reviewed_parent_rename.expected_parent_code):
+            raise ValueError('Parent rename requires an existing variant and a different exact parent code')
         return self
 
 
@@ -122,6 +131,10 @@ class ProductLinksPreviewRequest(ProductLinksCandidatesRequest):
         ids = [item.product_id for item in self.manual_matches]
         if len(set(ids)) != len(ids) or not set(ids) <= set(self.product_ids) or self.query:
             raise ValueError('Manual choices must identify distinct selected rows')
+        if any(item.reviewed_parent_rename is not None for item in self.manual_matches) and (
+                set(ids) != set(self.product_ids)
+                or any(item.reviewed_parent_rename is None for item in self.manual_matches)):
+            raise ValueError('Parent rename is an explicit metadata-only batch without mixed link operations')
         return self
 
 

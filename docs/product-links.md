@@ -372,3 +372,76 @@ Opakovanie rovnakého dokončeného UUID nemení mapovanie, archív ani históri
 Bez SQL migrácie, vzdialených zápisov, automatickej opravy EAN alebo prevodu
 na zdieľanú skladovú skupinu. Kompatibilný revert kódu nevracia už potvrdené
 väzby na pôvodné neúplné alebo vymazané ciele; auditné výsledky sa ponechajú.
+
+## Overené premenovanie kódu rodiča pri rovnakých natívnych ID
+
+Existujúce `POST /api/product-links/preview` a potvrdenie náhľadu podporujú
+výslovnú voľbu `reviewed_parent_rename`. Ide o opravu metadát existujúcej
+bežnej väzby po premenovaní rodiča v Upgates. Musia byť už známe obe kladné
+natívne ID a nesmie sa meniť kód variantu. Nejde o doplnenie chýbajúcich ID,
+náhradu vymazaného produktu, import ani prechod na zdieľanú skladovú skupinu.
+Bežný náhľad aj `refresh` nesúlad rodiča naďalej odmietajú.
+
+Syntetický prvok `manual_matches`:
+
+```json
+{
+  "product_id": 42,
+  "code": "PHYSICAL-A",
+  "parent_code": "CURRENT-FAMILY",
+  "is_variant": true,
+  "reviewed_parent_rename": {
+    "mapping_id": 7,
+    "expected_parent_code": "PREVIOUS-FAMILY",
+    "native_product_id": 800,
+    "native_variant_id": 101,
+    "identity_evidence": "Overené rovnaké natívne ID rodiča a variantu, nezmenený kód a GTIN; zmenil sa iba kód rodiča.",
+    "same_physical_item_confirmed": true
+  }
+}
+```
+
+Všetky vybrané riadky musia používať túto voľbu; dávka sa nesmie miešať
+s inými operáciami a potvrdzuje sa celá. Server vyžaduje všetky existujúce
+väzby pod starým rodičom, presné mapovacie ID, pôvodný kód rodiča a už
+overené natívne ID. Do dôkazu zahrnie aj súrodencov, ktorí už majú správny
+kód rodiča, a úplnú natívnu rodinu. Čítanie cez dokumentovaný
+[`GET /products/variants` s `product_ids`](https://docs.upgates.com/api-reference/produkty-seznamy)
+nefiltruje aktivitu variantov. Kontroluje stránkovanie, presné rodičovské ID,
+obsadenie kódov a prípadné duplicitné či nejednoznačné položky. Platí limit
+ôsmich GET na fázu a najviac 200 pozorovaných listov; prekročenie je konflikt.
+
+Vybraný variant musí mať platný neprázdny natívny GTIN bez neplatných častí,
+ktorý sa pri potvrdení nemení. Chýbajúci kanonický EAN Hubu je prípustný,
+pretože hlavný dôkaz tvorí existujúca presná natívna väzba. Ak Hub alebo
+ručná úprava už obsahuje platné GTIN, musia zahŕňať natívne GTIN. Tento
+postup žiadny identifikátor nepridáva ani neodstraňuje. Osi sa zmrazia a
+existujúci rozpor s osami Hubu opravu blokuje.
+
+Náhľad uloží celé pôvodné mapovacie riadky, lokálnu identitu a natívnu
+rodinu. Potvrdenie vykoná nové čítanie, znovu overí vlastníctvo pred aj po
+navrhovanej zmene kódu a zachová kontroly objednávok, natívnych účinkov
+a rozpracovaných či neistých publikácií. Lokálne zápisy chráni spoločný
+identity lock a krátky `SHARE ROW EXCLUSIVE NOWAIT` zámok `shop_products`;
+riadkové zámky sú tiež `NOWAIT`. Konflikt zámkov je bezpečný konflikt,
+nie dôvod preskočiť kontrolu. Pozorovanie nesmie byť staršie než 60 sekúnd
+od začiatku čítania ani po získaní zámkov, ani pred potvrdením transakcie.
+
+**Povolený zápis je iba `parent_code` a prirodzený auditný `updated_at`
+nastavený existujúcim databázovým triggerom.** Každé ďalšie raw mapovacie
+pole musí zostať rovnaké, vrátane pôvodných ID, cien, pozorovanej zásoby,
+hodnôt `NULL` a časov pull/push. Súrodenci mimo opravy zostávajú úplne
+nezmenení. Kanonické karty, EAN, dodávateľské väzby, úplná cache, obsah,
+zásoby a história sa nezapisujú. Neobnovujú sa ani navigačné metadáta.
+
+Výsledok obsahuje `parent_renamed_product_ids`, `renamed_mappings`, pôvodný
+a nový auditný čas a hashe mapovaní pred/po. UUID, hash náhľadu, 30-minútová
+platnosť a existujúci `known_unapplied` protokol zostávajú zachované.
+Explicitná chyba vráti aj prípadné necommitnuté lokálne zmeny späť pred
+uložením neaplikovaného výsledku. Neistá databázová/commit chyba sa nevydáva
+za preukázané neaplikovanie. Replay dokončeného UUID nič neprepisuje.
+Nezadaná alebo `null` nová voľba nemení hashe starých požiadaviek.
+
+Bez novej SQL migrácie, konfigurácie alebo ovládača UI. Nasadenie kódu
+samo neopraví žiadnu väzbu. Kompatibilný návrat kódu ponechá už vykonané
+opravy aj auditné výsledky; existujúce DB triggery sa nikdy nevypínajú.

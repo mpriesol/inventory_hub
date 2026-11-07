@@ -1538,5 +1538,6 @@ class ProductLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             stored = await db.get(ProductLinkPreview, str(request_id))
             self.assertEqual(stored.request_hash, service.digest(legacy))
         explicit_nulls = {**legacy, 'manual_matches': [{**match, 'replace_deleted_variant': False,
-            'replace_deleted_product': False, 'reviewed_deleted_replacement': None, 'complete_unverified_parent': None}]}
+            'replace_deleted_product': False, 'reviewed_deleted_replacement': None, 'complete_unverified_parent': None,
+            'reviewed_parent_rename': None}]}
         self.assertEqual(await self.preview(ProductLinksPreviewRequest(**explicit_nulls)), preview)
