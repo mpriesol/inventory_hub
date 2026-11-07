@@ -455,6 +455,120 @@ class ProductConsolidationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text('SELECT stage FROM atomer_catalog_jobs')), 'prepared')
             self.assertEqual(await db.scalar(select(func.count()).select_from(ProductCanonicalAlias)), 0)
 
+    async def test_dependency_diagnostics_is_database_read_only_and_keeps_all_pending_guard_matches(self):
+        from inventory_hub.services import product_consolidation_diagnostics as diagnostics
+        from inventory_hub.services import catalog_import
+        preview = await self.preview()
+        second = await self.preview()
+        draft_id, ai_id, campaign = uuid4().hex, uuid4().hex, 'f' * 64
+        document = {'shops': [{'code': 'synthetic', 'name': 'SYN-KEEP'}],
+                    'rows': [{'hub_product_id': self.retired, 'values': {'code': 'SYN-OLD',
+                        'description_html': 'PRIVATE-DRAFT-TEXT', 'purchase_net': 'PRIVATE-PRICE'}}]}
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO product_import_drafts
+                (id,request_hash,revision,supplier,shop,status,document)
+                VALUES(:id,:hash,1,'synthetic','biketrek','draft',CAST(:doc AS jsonb))'''),
+                {'id': draft_id, 'hash': 'e'*64, 'doc': json.dumps(document)})
+            await db.execute(text('INSERT INTO ai_content_batches(id,request_hash) VALUES(:id,:hash)'),
+                             {'id': ai_id, 'hash': 'd'*64})
+            await db.execute(text('''INSERT INTO ai_content_jobs(id,batch_id,status,context)
+                VALUES(:id,:id,'completed',CAST(:doc AS jsonb))'''),
+                {'id': ai_id, 'doc': json.dumps({'product_ids': [self.retired], 'source_kind': 'catalog',
+                    'update_preview': {'state': 'uncertain'}, 'provider_prompt': 'PRIVATE-PROMPT'})})
+            await db.execute(text("INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(:sha,1,'[]')"),
+                             {'sha': 'a' * 64})
+            run = await db.scalar(text("""INSERT INTO atomer_progress_runs(source_sha256,checked_at,totals)
+                VALUES(:sha,now(),'{}') RETURNING id"""), {'sha': 'a' * 64})
+            await db.execute(text('''INSERT INTO atomer_catalog_campaigns
+                (id,run_id,source_sha,admin_sha,shop_fingerprint,actor,selection,state,checked_run_id)
+                VALUES(:id,:run,:source,:admin,:fp,'operator','{}','paused',:run)'''),
+                {'id': campaign, 'run': run, 'source': 'a'*64, 'admin': 'b'*64, 'fp': 'd'*64})
+            await db.execute(text('''INSERT INTO atomer_catalog_jobs
+                (campaign,family_key,priority,leaf_count,stage,document,guards,receipt)
+                VALUES(:campaign,'s:synthetic',1,1,'prepared',CAST(:doc AS jsonb),CAST(:guards AS jsonb),
+                       CAST(:receipt AS jsonb))'''), {'campaign': campaign, 'receipt': json.dumps({'dispatched': False}),
+                'doc': json.dumps({'payload': {'code': 'SYN-KEEP'}}),
+                'guards': json.dumps({'rows': {'SYN-KEEP': {}}, 'excluded': {}, 'blocked': {},
+                                     'scope': {'SYN-KEEP': 'biketrek'}})})
+        tables = ('product_import_drafts', 'ai_content_jobs', 'atomer_catalog_jobs', 'product_consolidations')
+        async def hashes():
+            async with self.sessions() as db:
+                return {table: await db.scalar(text(f"SELECT md5(string_agg(to_jsonb(t)::text,E'\\n' ORDER BY to_jsonb(t)::text)) FROM {table} t")) for table in tables}
+        before = await hashes()
+        stock = await self.stock()
+        discover_calls = links.source.discover.await_count
+        with patch.object(catalog_import, 'import_result', side_effect=AssertionError('Recovery must not run')):
+            async with self.sessions() as db:
+                report = await diagnostics.inspect(db, preview['id'])
+                self.assertEqual(await db.scalar(text('SHOW transaction_read_only')), 'on')
+                self.assertEqual(await db.scalar(text('SHOW transaction_isolation')), 'repeatable read')
+        self.assertTrue(report['complete'], report['problems'])
+        by_table = {part['table']: part for part in report['documents']}
+        self.assertEqual(set(by_table), set(tables))
+        self.assertEqual(by_table['product_import_drafts']['records'][0]['row_identity'], {'id': draft_id})
+        self.assertEqual(by_table['product_consolidations']['records'][0]['row_identity'], {'id': second['id']})
+        self.assertNotIn(preview['id'], [r['row_identity'].get('id') for r in by_table['product_consolidations']['records']])
+        matches = by_table['product_import_drafts']['records'][0]['matched_paths']
+        self.assertEqual(next(m for m in matches if m['path'] == '/document/shops/0/name')['role'], 'shop_display_label')
+        self.assertIn('/document/rows/0/hub_product_id', {m['path'] for m in matches})
+        self.assertEqual(before, await hashes())
+        self.assertEqual(stock, await self.stock())
+        self.assertEqual(discover_calls, links.source.discover.await_count)
+        self.assertNotIn('PRIVATE-', json.dumps(report))
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_changed'):
+            await self.apply(preview)
+
+    async def test_dependency_diagnostics_keeps_one_snapshot_during_concurrent_draft_edit(self):
+        from inventory_hub.services import product_consolidation_diagnostics as diagnostics
+        from inventory_hub.services import product_consolidation_dependencies as dependencies
+        preview = await self.preview()
+        draft_id = uuid4().hex
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO product_import_drafts
+                (id,request_hash,revision,supplier,shop,status,document)
+                VALUES(:id,:hash,1,'synthetic','biketrek','draft','{"rows":[{"values":{"code":"SYN-KEEP"}}]}')'''),
+                {'id': draft_id, 'hash': 'e'*64})
+        original = dependencies.inspect
+        async def after_scan(db, **kwargs):
+            result = await original(db, **kwargs)
+            async with self.transaction() as other:
+                await other.execute(text('''UPDATE product_import_drafts SET revision=revision+1,
+                    document='{"rows":[{"values":{"code":"UNRELATED"}}]}' WHERE id=:id'''), {'id': draft_id})
+            return result
+        with patch.object(dependencies, 'inspect', side_effect=after_scan):
+            async with self.sessions() as db:
+                report = await diagnostics.inspect(db, preview['id'])
+        self.assertTrue(report['complete'])
+        part = next(p for p in report['documents'] if p['table'] == 'product_import_drafts')
+        self.assertEqual(part['matched_count'], 1)
+        self.assertEqual(part['records'][0]['matched_paths'][0]['value'], 'SYN-KEEP')
+        async with self.sessions() as db:
+            fresh = await diagnostics.inspect(db, preview['id'])
+        self.assertNotIn('product_import_drafts', {p['table'] for p in fresh['documents']})
+
+    async def test_dependency_diagnostic_bounds_and_unknown_schema_are_explicitly_incomplete(self):
+        from inventory_hub.services import product_consolidation_diagnostics as diagnostics
+        preview = await self.preview()
+        async with self.transaction() as db:
+            for _ in range(2):
+                await db.execute(text('''INSERT INTO product_import_drafts
+                    (id,request_hash,revision,supplier,shop,status,document)
+                    VALUES(:id,:hash,1,'synthetic','biketrek','draft',CAST(:doc AS jsonb))'''),
+                    {'id': uuid4().hex, 'hash': 'e'*64, 'doc': json.dumps({'code': 'SYN-KEEP', 'private': 'PRIVATE-'*100})})
+            await db.execute(text('CREATE TABLE future_operation(id bigint PRIMARY KEY,status text,document jsonb)'))
+            await db.execute(text('''INSERT INTO future_operation VALUES(1,'pending','{"code":"SYN-KEEP"}')'''))
+        with patch.object(diagnostics, 'MAX_ROWS', 1), patch.object(diagnostics, 'MAX_DOCUMENT_BYTES', 1):
+            async with self.sessions() as db:
+                report = await diagnostics.inspect(db, preview['id'])
+        self.assertFalse(report['complete'])
+        tables = {r['table']: r for r in report['documents']}
+        self.assertEqual(tables['product_import_drafts']['matched_count'], 2)
+        self.assertEqual(len(tables['product_import_drafts']['records']), 1)
+        self.assertEqual(tables['product_import_drafts']['records'][0]['reason'], 'document_bytes_limit')
+        self.assertEqual(tables['future_operation']['reason'], 'unsupported_document_schema_no_exemption')
+        self.assertNotIn('PRIVATE-', json.dumps(report))
+        self.assertTrue(any(r.get('table') == 'future_operation' for r in report['current_blockers']))
+
     async def test_changed_native_axes_barcode_and_exact_id_fail_without_mutations(self):
         for field, value, expected in [('external_id', '99999', 'consolidation_native_identity_ambiguous'),
                                       ('eans', [OTHER_EAN], 'consolidation_native_identity_changed'),
