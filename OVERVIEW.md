@@ -1,5 +1,21 @@
 # Inventory Hub — prehľad projektu
 
+## Výslovne skontrolovaná obnova bežných väzieb (7. 11. 2026)
+
+[Produktové väzby](docs/product-links.md#výslovne-skontrolované-migračné-opravy)
+majú dva voliteľné API postupy: doplnenie celej staršej rodiny s chybným
+náhradným kódom rodiča a náhradu vymazaného cieľa s overenou podmnožinou
+kanonických GTIN alebo bez čiarového kódu pri nezmenenom presnom SKU.
+Vyžadujú pripnuté ID mapovania a natívneho cieľa, konkrétny dôkaz a výslovné
+potvrdenie rovnakej fyzickej položky. Bez čiarového kódu sa navyše zmrazí
+existujúca bežná väzba druhého e-shopu alebo priradená dodávateľská položka.
+Predvolené pravidlá resolvera a presnej zhody EAN zostávajú zachované.
+Kontroly vlastníctva, neprítomnosti vymazaného cieľa, objednávok a neistých
+zápisov sa opakujú pri potvrdení; pôvodná cache zostane v audite.
+Zachovajú sa karty, mapovacie ID, identifikátory a celá skladová história.
+Bez novej migrácie, ovládača UI, vzdialeného zápisu či aktivácie skladu.
+Kód a syntetické testy nepotvrdzujú dokončenie konkrétnej živej dávky.
+
 ## Výmena väzby po vymazaní samostatného produktu (7. 11. 2026)
 
 [API pre existujúce väzby](docs/product-links.md#nahradenie-už-vymazaného-samostatného-produktu)

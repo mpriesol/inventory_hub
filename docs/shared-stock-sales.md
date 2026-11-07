@@ -10,6 +10,20 @@ rovnakých voľných kusov. Veľkosť, farba alebo odlišný výrobok vyžadujú
 fyzickú kartu. Uzavreté výrobné balenie, pár alebo súprava sa automaticky
 nepovažujú za voľné kusy.
 
+Rovnaký postup možno výslovne použiť aj pre viac predajných záznamov presne
+toho istého celého výrobku, ak má každý faktor **1**. Základnou skladovou
+jednotkou potom zostáva jeden celý predávaný kus: napríklad jeden stan alebo
+jedna kompletná súprava riadu. Súprava sa tým nerozkladá na jednotlivé diely.
+Dôkaz musí pomenovať celý výrobok, zhodný variant a jednotku; samotný spoločný
+názov či GTIN nestačí. `base_piece_unit_confirmed=true` v tomto prípade
+potvrdzuje tento nezmenený celý skladový kus. Odlišná farba, veľkosť,
+konštrukcia či obsah balenia zostávajú odlišnou fyzickou identitou.
+
+Aj skupina s faktorom 1 používa samostatné predajné kľúče a obmedzenia
+publikovania opísané nižšie. Bežná výmena jednej vymazanej položky za jednu
+novú položku preto používa [obnovu bežnej väzby](product-links.md), pokiaľ
+nie je skutočne potrebná skupina súčasne existujúcich predajných záznamov.
+
 ## Jednotky a história
 
 `shop_products.shared_stock=true` označuje výslovne skontrolovanú predajnú
@@ -115,7 +129,8 @@ audite; API ju nevracia. Nová väzba začne bez starých pozorovaní a bez čak
 odoslania. Fyzické tabuľky, sledovanie skladu a FIFO sa nemenia. Zlyhanie neskoršej
 kontroly obsahu vráti späť celú skupinu vrátane už pripravených riadkov.
 
-Táto cesta používa výslovné potvrdenie rovnakých voľných kusov a faktorov.
+Táto cesta používa výslovné potvrdenie rovnakých základných skladových kusov
+a faktorov; pri aliasoch celého výrobku zostávajú všetky faktory 1.
 Nevyžaduje vymyslený EAN variantu ani neprenáša EAN rodiča na variant.
 Bežný [postup náhrady zmazaného produktu](product-links.md) zachováva svoje
 pravidlá zhody EAN. Pri znovupoužití rovnakého `parent_code` s odlišným natívnym
