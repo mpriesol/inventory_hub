@@ -5,6 +5,7 @@ Every accepted container has a known writer schema. Unknown fields, incomplete
 lineage and bounded reads fail closed; original documents are hashed elsewhere.
 """
 from dataclasses import dataclass, field
+from collections import Counter
 import hashlib
 import json
 import re
@@ -16,7 +17,7 @@ from inventory_hub.product_import_types import ImportValues
 from inventory_hub.services.product_identity import barcode_keys, verified_barcodes
 
 
-VERSION = 'typed-catalog-scope-v1'
+VERSION = 'typed-catalog-scope-v2'
 MAX_ITEMS = 20000
 MAX_NODES = 400000
 MAX_MATCHES = 100
@@ -159,9 +160,11 @@ class Proof:
     supplier_pins: list = field(default_factory=list)
     match_count: int = 0
     context_count: int = 0
+    match_namespaces: Counter = field(default_factory=Counter)
 
     def hit(self, path, namespace, value):
         self.match_count += 1
+        self.match_namespaces[namespace] += 1
         if len(self.matches) < MAX_MATCHES:
             self.matches.append({'path': path, 'namespace': namespace, 'value': value})
 
@@ -229,6 +232,7 @@ class Proof:
             'classification': 'unknown' if self.errors else 'reference' if self.matches else 'context_only' if self.contexts else 'disjoint',
             'matched_paths': self.matches, 'context_paths': self.contexts, 'problems': self.errors,
             'matched_path_count': self.match_count, 'context_path_count': self.context_count,
+            'reference_reason_counts': dict(sorted(self.match_namespaces.items())),
             'projection_truncated': self.match_count > len(self.matches) or self.context_count > len(self.contexts),
             'resolved_identity_hash': digest(self.resolutions),
             'linked_drafts': sorted(self.linked_drafts),

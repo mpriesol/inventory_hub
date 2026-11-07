@@ -317,11 +317,24 @@ Unsaved manufacturer proofs use the same read-only SKU policy as draft save.
 
 Known database documents are read without the old string-only prefilter. Every
 complete original row is hashed, including documents classified as disjoint.
-The bounds are 1,000 rows per known table, 16 MB per row and 64 MB across those
-rows and their linked source evidence. Additional source/family reads are
-bounded to 20,000 rows. An overflow blocks the entire proof. Matched/context
-path projections are separately limited to 100 entries per record; truncation
-does not stop validation or remove a full-row hash.
+The v2 inventory uses deterministic primary-key pages, with identical database
+collation in ordering and keyset continuation. It has no global 1,000-job or
+20,000-family-leaf cutoff. Each operation loads its complete exact linked
+family, draft, supplier/feed source and saved mapping claims. Full-row and
+logical-link manifests use length-framed records independent of page size.
+Repeated linked rows remain represented for every operation that uses them.
+
+Bounds are 16,000,000 serialized bytes per raw row, 64,000,000 retained input
+bytes for an operation and 256,000,000 charged database body bytes per scan.
+These are decimal bytes, not resident-memory guarantees. A linked selection
+for a single indivisible operation remains limited to 20,000 rows, and distinct
+identity queries to 20,000. Charged work includes repeated source/draft reads;
+an admitted row can be charged before a cancelled fetch finishes. Overflow
+produces an explicit incomplete hold, never a successful prefix of the scope.
+Samples share a 1,000,000-byte allowance, normally retain 25 rows per table and
+prioritize bounded examples of later unknown/reference reasons. Full counts,
+reason histograms and manifests cover every inspected operation. Matched/context
+paths are separately limited to 100 per record; truncation changes output only.
 
 Catalog journals use the pure merged base/result/event loader. No recovery
 reader, AI public serializer or network request runs during dependency proof.
@@ -330,6 +343,25 @@ resolution; directory membership is compared too. There are at most 1,000
 base journals per shop, 16 MB per file and 64 MB in total. An `invalid` item is
 not treated as settled. Complete disjoint create intent may be classified as
 context, while matching uncertain/missing/malformed intent remains blocked.
+File bytes are separately reported for each of the two observations; they are
+not charged as database work. The per-pass byte limit is unchanged. These
+numbers describe serialized file sets, not physical I/O or memory consumption.
+
+Preview starts one repeatable-read database snapshot before the first
+post-native advisory-lock statement. A serialization race rolls back and
+returns a sanitized known-unapplied conflict without repeating native reads.
+Only the exact consolidation UUID primary-key collision can replay an already
+committed review after rollback and a fresh request-hash check. Apply remains
+read committed under its existing complete input fences. A prepared v1 inventory
+requires a new v2 review; already completed reviews retain idempotent replay.
+
+The typed scanner has a 120-second deadline, including awaited database reads.
+Expiry cancels the in-flight await and explicitly rolls back. Preview returns
+`consolidation_dependency_inventory_timeout` with known-unapplied status and
+does not save a partial prepared review; apply uses its existing expiry fence.
+The diagnostic GET may return captured plain metadata and incomplete progress
+after rollback, with no further database or expired ORM reads. The deadline
+covers this scanner, not preceding native discovery or unrelated endpoint work.
 
 Apply repeats the full proof under the identity lock and `SHARE NOWAIT` table
 fences for the known document/source inputs, then compares it with the preview.
@@ -348,9 +380,14 @@ and keeps the legacy matched-word explanation separate. It exposes identity
 paths, counts and hashes, not document bodies, prompts or financial contents.
 Top-level `complete` describes the legacy explanation;
 `typed_scope.projection_complete` separately describes the typed projection.
-Only the reviewed product-AI and Atomer document shapes are understood. Other
-AI kinds or additional Atomer receipt fields stay on hold until their actual
-writer contract is reviewed; this parser is not a generic exemption for them.
+`typed_scope.inventory_complete` states whether the full typed inventory was
+covered. Error-code histograms are deterministic per table and classification;
+recognized AI lifecycle labels never substitute for executable-scope proof.
+Only the reviewed product-AI, strict rules-only proposal and Atomer document
+shapes are understood. A [validated rule proposal](product-consolidation-rules-scope.md)
+can save only an unpublished rule version. Other AI kinds or additional Atomer
+receipt fields stay on hold until their actual writer contract is reviewed;
+this parser is not a generic exemption for them.
 This change performs no catalog, stock, invoice, receiving or publisher writes
 and needs no new migration.
 
@@ -362,8 +399,11 @@ buckets distinguish SQL NULL, JSON null, known states and an `other` bucket;
 unknown text, prompts and full documents are not returned. The census uses the
 same read-only repeatable-read snapshot as the rest of the diagnostics. Its
 `complete` flag means the metadata queries completed, and does not make a
-blocked review eligible. Supplier and other linked inputs are not included in
-its combined-byte lower bound. Preview/apply proofs and their limits are unchanged.
+blocked review eligible. Base-table bytes are a work lower bound. The separate
+family join total repeats family-work per leaf and omits campaign, mapping,
+source and draft closures, so it is reference metadata rather than the new
+scanner's exact charged work. Current scan limits and actual work are reported
+separately; paging changes no identity, lifecycle or financial eligibility rule.
 
 `product_canonical_aliases` is an audited, immutable one-hop map from a retired
 ID to its keeper. Current SKU, scoped supplier-code and barcode ownership use

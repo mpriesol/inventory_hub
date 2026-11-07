@@ -58,12 +58,13 @@ class DependencyCensusDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.execute(text('''INSERT INTO atomer_catalog_jobs(campaign,family_key,priority,leaf_count)
                 SELECT :campaign,'s:synthetic-census-' || n,1,1 FROM generate_series(1,1000) n'''),
                 {'campaign': campaign})
-        preview = await self.preview()
+        with patch.object(scan, 'MAX_WORK_BYTES', 1):
+            preview = await self.preview()
         self.assertFalse(preview['eligible'])
         self.assertEqual(preview['dependencies']['facts']['typed_catalog_scope']['records'], [])
         before, stock = await self.raw_hashes(), await self.stock()
         calls = []
-        original_census, original_rows = census.inspect, scan._rows
+        original_census, original_rows = census.inspect, scan._inspect
         async def record_census(*args, **kwargs):
             result = await original_census(*args, **kwargs)
             calls.append('census_complete')
@@ -72,7 +73,8 @@ class DependencyCensusDatabaseTests(unittest.IsolatedAsyncioTestCase):
             calls.append('loader')
             return await original_rows(*args, **kwargs)
         with patch.object(census, 'inspect', side_effect=record_census), \
-             patch.object(scan, '_rows', side_effect=record_rows), \
+             patch.object(scan, '_inspect', side_effect=record_rows), \
+             patch.object(scan, 'MAX_WORK_BYTES', 1), \
              patch.object(links.source, 'discover', side_effect=AssertionError('No native read')):
             report = await self.report(preview['id'])
         self.assertEqual(calls[0], 'census_complete')
@@ -80,7 +82,8 @@ class DependencyCensusDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(meta['complete'])
         self.assertEqual(set(meta['tables']), scan.TABLES)
         self.assertEqual(meta['tables']['atomer_catalog_jobs']['count'], 1001)
-        self.assertEqual(meta['tables']['atomer_catalog_jobs']['exceeded_limits'], ['count'])
+        self.assertEqual(meta['tables']['atomer_catalog_jobs']['exceeded_limits'], ['bytes'])
+        self.assertIsNone(meta['tables']['atomer_catalog_jobs']['limits']['count'])
         self.assertEqual(meta['tables']['product_import_drafts']['count'], 1)
         self.assertEqual(meta['tables']['product_consolidations']['count'], 0)
         self.assertEqual(meta['atomer_current_families']['count'], 1)
@@ -95,14 +98,14 @@ class DependencyCensusDatabaseTests(unittest.IsolatedAsyncioTestCase):
             expected = (await db.execute(text('''SELECT count(*) AS count,
                 sum(octet_length(to_jsonb(t)::text)) AS bytes,
                 max(octet_length(to_jsonb(t)::text)) AS largest FROM product_import_drafts t'''))).mappings().one()
-        with patch.object(scan, 'MAX_ROWS', 0), patch.object(scan, 'MAX_TOTAL_BYTES', 1), \
+        with patch.object(scan, 'MAX_WORK_BYTES', 1), patch.object(scan, 'MAX_TOTAL_BYTES', 1), \
              patch.object(scan, 'MAX_ROW_BYTES', 1):
             meta = await self.inventory()
         actual = meta['tables']['product_import_drafts']
         self.assertEqual({key: actual[key] for key in expected}, dict(expected))
-        self.assertEqual(actual['exceeded_limits'], ['count', 'bytes', 'largest'])
+        self.assertEqual(actual['exceeded_limits'], ['bytes', 'largest'])
         self.assertTrue(meta['known_tables_total_bytes_exceeds_limit'])
-        self.assertTrue(meta['known_and_atomer_bytes_lower_bound_exceeds_limit'])
+        self.assertGreater(meta['known_and_atomer_join_bytes'], meta['combined_bytes_limit'])
 
     async def test_recognized_lifecycle_buckets_never_echo_unknown_text_or_documents(self):
         batch = uuid4().hex

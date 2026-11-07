@@ -13,10 +13,32 @@ MAX_TOTAL_BYTES = 64000000
 TERMINAL = {'created', 'exists', 'skipped', 'linked', 'verified', 'completed'}
 
 
-def observe(shop_codes):
-    """Return immutable observations only, with no config/HTTP/recovery calls."""
+def inventory(shop_codes):
+    """Bounded directory membership only; it is not a file-content snapshot."""
+    manifests, identifiers, directories = {}, set(), set()
+    for namespace in sorted(shop_codes):
+        directory = config_io.shop_path(namespace).parent / 'catalog-imports'
+        if directory in directories:
+            continue
+        directories.add(directory)
+        if directory.is_symlink():
+            raise s.Unverified('journal_directory_symlink')
+        paths = sorted(path for path in directory.glob('*.json')
+                       if '.result.' not in path.name and not path.name.endswith('.result.json'))
+        if len(paths) > MAX_FILES:
+            raise s.Unverified('journal_count_limit')
+        for path in paths:
+            if not s.UUID32.fullmatch(path.stem):
+                raise s.Unverified('journal_filename_unverified')
+            identifiers.add((namespace, path.stem))
+        manifests[namespace] = s.digest([path.name for path in paths])
+    return manifests, identifiers
+
+
+def iter_observations(shop_codes):
+    """Yield one complete file set at a time; no config/HTTP/recovery calls."""
     from inventory_hub.services.catalog_import import _load_job
-    records, manifests, total, directories = {}, {}, 0, set()
+    total, directories = 0, set()
     for namespace in sorted(shop_codes):
         directory = config_io.shop_path(namespace).parent / 'catalog-imports'
         if directory in directories:
@@ -29,7 +51,7 @@ def observe(shop_codes):
         if len(paths) > MAX_FILES:
             raise s.Unverified('journal_count_limit')
         names = [path.name for path in paths]
-        manifests[namespace] = s.digest(names)
+        yield 'directory', namespace, s.digest(names)
         for path in paths:
             if not s.UUID32.fullmatch(path.stem):
                 raise s.Unverified('journal_filename_unverified')
@@ -59,11 +81,18 @@ def observe(shop_codes):
                 current = file.read_bytes() if file.exists() else None
                 if file.is_symlink() or current != content:
                     raise s.Unverified('journal_changed_during_read')
-            records[(namespace, path.stem)] = {'document': merged, 'hash': s.digest(merged),
+            yield 'journal', (namespace, path.stem), {'document': merged, 'hash': s.digest(merged),
                 'file_hashes': hashes, 'bytes': sum(len(value) for value in saved.values() if value is not None)}
         if names != sorted(path.name for path in directory.glob('*.json')
                            if '.result.' not in path.name and not path.name.endswith('.result.json')):
             raise s.Unverified('journal_directory_changed_during_read')
+
+
+def observe(shop_codes):
+    """Compatibility projection for callers explicitly needing bounded bodies."""
+    records, manifests = {}, {}
+    for kind, key, value in iter_observations(shop_codes):
+        (manifests if kind == 'directory' else records)[key] = value
     return records, manifests
 
 
