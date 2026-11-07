@@ -85,6 +85,23 @@ async def _local(db, raw, *, lock=False):
         {'ids': [row.id for row in mappings]})).all()) if mappings else {}
     mapping_rows = [{**_replacement_snapshot(row), 'shop_code': by_shop_id[row.shop_id],
         'legacy_external_id': legacy.get(row.id)} for row in mappings]
+    unverified_ids = {row['mapping_id'] for row in raw['mapping_actions']
+                      if row['action'] == 'retire_unverified_code_absent'}
+    if unverified_ids:
+        # A missing JSON key is not SQL NULL. This action requires the physical
+        # legacy column and a direct SQL null check; it never reconstructs it.
+        present = await db.scalar(text('''SELECT EXISTS (SELECT 1 FROM pg_attribute
+            WHERE attrelid='shop_products'::regclass AND attname='external_id'
+              AND attnum>0 AND NOT attisdropped)'''))
+        if not present:
+            raise links.LinkError('consolidation_legacy_native_column_missing')
+        nulls = dict((await db.execute(text('''SELECT id, external_id IS NULL
+            FROM shop_products WHERE id=ANY(CAST(:ids AS bigint[]))'''),
+            {'ids': sorted(unverified_ids)})).all())
+        for item in mapping_rows:
+            if item['id'] in unverified_ids:
+                item['legacy_external_id_column_present'] = True
+                item['legacy_external_id_sql_null'] = nulls.get(item['id']) is True
     identifiers = [{'id': row.id, 'product_id': row.product_id,
         'type': getattr(row.identifier_type, 'value', row.identifier_type), 'value': row.value,
         'supplier_id': row.supplier_id, 'is_primary': row.is_primary}
@@ -125,12 +142,31 @@ def _same_native(row, target):
         and row['external_variant_id'] == (str(target['native_variant_id']) if target['is_variant'] else None))
 
 
+def _unverified_code_claim(row):
+    code = row.get('external_code')
+    if (not isinstance(code, str) or not code or code != code.strip() or len(code) > 100
+            or ';' in code or any(ord(c) < 32 or ord(c) == 127 for c in code)
+            or row['is_variant'] is not False or row['parent_code'] is not None
+            or row['external_product_id'] is not None or row['external_variant_id'] is not None
+            or 'legacy_external_id' not in row or row['legacy_external_id'] is not None
+            or row.get('legacy_external_id_column_present') is not True
+            or row.get('legacy_external_id_sql_null') is not True):
+        raise links.LinkError('consolidation_unverified_standalone_claim_required')
+    return {**row, 'old_native_identity_status': 'unverified', 'native_id_absence_proven': False}
+
+
 def _plan(raw, local):
     originals = {row['id']: row for row in local['mappings']}
-    absent, actions = defaultdict(list), []
+    absent, unverified, actions = defaultdict(list), defaultdict(list), []
+    target_codes = {(row['shop_code'], row['code'].casefold()) for row in _targets(raw)}
     for action in raw['mapping_actions']:
         row, target = originals[action['mapping_id']], action['target']
-        if target is None:
+        if action['action'] == 'retire_unverified_code_absent':
+            claim = _unverified_code_claim(row)
+            if (row['shop_code'], row['external_code'].casefold()) in target_codes:
+                raise links.LinkError('consolidation_absent_code_selected_as_target')
+            unverified[row['shop_code']].append(claim)
+        elif target is None:
             absent[row['shop_code']].append(_previous_native(row))
         else:
             if row['shop_code'] != target['shop_code']:
@@ -156,7 +192,10 @@ def _plan(raw, local):
             else:
                 absent[row['shop_code']].append(_previous_native(row))
         actions.append(action)
-    return {'actions': actions, 'additional_sales': raw['additional_sales'], 'absence': dict(absent)}
+    plan = {'actions': actions, 'additional_sales': raw['additional_sales'], 'absence': dict(absent)}
+    if unverified:
+        plan['unverified_code_absence'] = dict(unverified)
+    return plan
 
 
 async def _native(raw, local, *, frozen=None):
@@ -203,6 +242,16 @@ async def _native(raw, local, *, frozen=None):
             requests += proof['requests']
         result[code] = {'fingerprint': fingerprint, 'leaves': leaves, 'requests': requests,
             'absent_mapping_ids': [row['id'] for row in old]}
+        unverified = plan.get('unverified_code_absence', {}).get(code, [])
+        if unverified:
+            proof = await links._source_call(links.source.verify_unoccupied_codes(code,
+                [row['external_code'] for row in unverified], fingerprint,
+                max_requests=links.MAX_REQUESTS-requests))
+            result[code]['requests'] += proof['requests']
+            result[code]['unverified_code_absence'] = {**proof,
+                'mapping_ids': [row['id'] for row in unverified],
+                'old_native_identity_status': 'unverified', 'native_id_absence_proven': False,
+                'exact_code_absence_proven': True}
     return result
 
 
@@ -252,6 +301,15 @@ async def _identity(db, raw, local, native):
                 (ShopProduct.native_id == _key(target)[2])))
         if set(await db.scalars(query)) - known_mapping_ids:
             raise links.LinkError('consolidation_foreign_native_owner')
+    unverified_ids = {row['mapping_id'] for row in raw['mapping_actions']
+                      if row['action'] == 'retire_unverified_code_absent'}
+    for claim in local['mappings']:
+        if claim['id'] not in unverified_ids:
+            continue
+        query = select(ShopProduct.id).where(ShopProduct.shop_id == shops[claim['shop_code']],
+            func.lower(ShopProduct.external_code) == claim['external_code'].lower())
+        if set(await db.scalars(query)) - known_mapping_ids:
+            raise links.LinkError('consolidation_foreign_native_owner')
     return {'verified_gtin_keys': sorted(gtins), 'physical_axes': physical_axes,
             'same_complete_retail_unit_factor': 1}
 
@@ -269,8 +327,10 @@ async def _dependencies(db, raw, local):
 def public(row):
     local = row.document['local']
     plan = deepcopy(row.document['plan'])
-    plan['absence'] = {shop: [{key: value for key, value in item.items() if not key.startswith('_')}
-                             for item in rows] for shop, rows in plan['absence'].items()}
+    for name in ('absence', 'unverified_code_absence'):
+        if name in plan:
+            plan[name] = {shop: [{key: value for key, value in item.items() if not key.startswith('_')}
+                                 for item in rows] for shop, rows in plan[name].items()}
     return {'id': row.id, 'status': row.status, 'preview_hash': row.preview_hash,
         'expires_at': row.expires_at.isoformat(), 'eligible': not row.document['dependencies']['blockers'],
         'keeper_product_id': row.document['request']['keeper_product_id'],
@@ -488,6 +548,12 @@ async def _apply(db, identifier, payload, row, *, actor=None):
             for mapping, target in current_rows],
         'history_hash_unchanged': deps['history_hash'], 'physical_stock_changed': False,
         'remote_write_performed': False, 'applied_by': actor or {'source': 'operator_token'}}
+    unverified_proofs = {code: observation['unverified_code_absence'] for code, observation in native.items()
+                         if 'unverified_code_absence' in observation}
+    if unverified_proofs:
+        # Keep apply's fresh negative code observations apart from the frozen
+        # preview. Neither observation claims an unknown native ID was deleted.
+        row.result = {**row.result, 'unverified_code_absence': unverified_proofs}
     await db.flush()
     result = public(row)
     await db.commit()

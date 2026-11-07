@@ -72,6 +72,7 @@ Each existing mapping has one explicit action:
 | `retain` | The exact current mapping already belongs to the keeper. Its native kind, IDs, code and parent remain unchanged. |
 | `bind` | Name the exact live native leaf. Preserve the original mapping as an immutable retired row and create a new current mapping on the keeper. |
 | `retire_absent` | Prove the old exact native claim absent from both active and archived partitions. Preserve the mapping without creating a replacement. |
+| `retire_unverified_code_absent` | Explicitly retire a standalone historical claim whose normalized and preserved legacy IDs are all SQL NULL, after proving its exact code absent from both namespaces and archive partitions. The old native identity remains unverified. |
 
 `additional_sales` names independently verified live leaves with no foreign
 current owner. Every target includes `shop_code`, `code`, `parent_code`,
@@ -88,6 +89,52 @@ absent. A preserved positive legacy `external_id` can be used only as an old
 standalone absence claim; it never certifies current ownership. Admin URLs,
 titles and a normalized null ID are not absence evidence. A hidden target that
 still exists fails `retire_absent`.
+
+### Historical claims with no recorded native ID
+
+`retire_unverified_code_absent` is a separate action with `target=null`. The
+server reads the original mapping by `mapping_id`; the request cannot supply an
+old ID or a replacement code. This action requires `is_variant=false`, a null
+`parent_code`, null normalized product and variant IDs, and an actual SQL NULL
+in the physical legacy `external_id` column. A missing database column, empty
+string, invalid value or positive legacy ID blocks this action. The column is
+verified through the PostgreSQL catalog before a direct SQL null check. There
+is no schema repair or fallback from a missing JSON key.
+
+For each shop, the original codes are read through four complete, bounded
+[`GET /products/simple` scopes](https://docs.upgates.com/api-reference/produkty-seznamy):
+`codes` and `variant_codes`, each with `archived_yn=false` and
+`archived_yn=true`. `variants_yn=false` omits sibling payloads; no `active_yn`
+filter is applied. The variant-code filter returns the containing product,
+so any returned row blocks the action even when the result is a parent, set,
+hidden item, differently cased code or unexpected record. All four results
+must be complete and empty. Authentication failure, rate limiting, timeout,
+incomplete pagination, connection change or exhausted shared request budget
+cannot produce an absence proof. These four reads consume the existing maximum
+of eight requests per shop and review phase, together with other identity reads.
+
+The preview separates `plan.unverified_code_absence` from native-ID `absence`.
+Its observation records the exact codes, four checked scopes, connection
+fingerprint, request count and check time. Both preview and completed apply
+state `old_native_identity_status="unverified"`,
+`native_id_absence_proven=false`, and `exact_code_absence_proven=true` in that
+observation. Apply repeats all four reads and stores its fresh observation in
+`result.unverified_code_absence`, preserving the original preview separately.
+
+Code absence does **not** establish that an unknown original native record was
+deleted: that record could previously have been renamed. The action retires an
+unverified local claim after an independent physical identity review. It does
+not reconstruct an ID, assign a new native owner or certify full native catalog
+coverage. The original code, owner, null IDs, shop observations and history remain
+on the retired mapping. Existing dependency and stock guards still apply. A
+foreign current mapping claiming the same shop code also blocks retirement,
+including a differently cased claim. Local claim changes or a code reappearing
+before apply expire the review without an ownership mutation. External absence
+observations are point-in-time reads; the API does not offer an atomic catalog
+snapshot across the subsequent local transaction.
+
+Use `retire_absent` whenever a preserved exact old native ID is available; its
+native-ID absence checks remain unchanged. Neither action deletes a shop item.
 
 Synthetic example, with every mapping explicitly enumerated:
 

@@ -26,6 +26,48 @@ def body():
 
 
 class ProductConsolidationInputTests(unittest.TestCase):
+    def test_unverified_claim_retirement_is_explicit_and_cannot_supply_old_identity_or_target(self):
+        request = body()
+        request['additional_sales'] = []
+        action = {'mapping_id': 4, 'action': 'retire_unverified_code_absent', 'target': None}
+        request['mapping_actions'] = [action]
+        self.assertEqual(ProductConsolidationPreviewRequest(**request).mapping_actions[0].action,
+                         'retire_unverified_code_absent')
+        for change in ({'target': body()['additional_sales'][0]}, {'old_native_product_id': 901},
+                       {'external_code': 'SYN-OLD'}, {'legacy_external_id': None}):
+            with self.subTest(change=change), self.assertRaises(ValidationError):
+                ProductConsolidationPreviewRequest(**{**request, 'mapping_actions': [{**action, **change}]})
+
+    def test_unverified_plan_requires_observed_sql_nulls_and_unchanged_standalone_kind(self):
+        request = body()
+        request['additional_sales'] = []
+        request['mapping_actions'] = [{'mapping_id': 4, 'action': 'retire_unverified_code_absent', 'target': None}]
+        row = {'id': 4, 'product_id': 2, 'shop_code': 'biketrek', 'external_code': 'SYN-OLD',
+               'is_variant': False, 'parent_code': None, 'external_product_id': None,
+               'external_variant_id': None, 'legacy_external_id': None,
+               'legacy_external_id_column_present': True, 'legacy_external_id_sql_null': True}
+        plan = service._plan(request, {'mappings': [row]})
+        self.assertEqual(plan['absence'], {})
+        claim = plan['unverified_code_absence']['biketrek'][0]
+        self.assertEqual(claim['old_native_identity_status'], 'unverified')
+        self.assertIs(claim['native_id_absence_proven'], False)
+        self.assertNotIn('exact_code_absence_proven', claim)
+        for change in ({'is_variant': True}, {'is_variant': 0}, {'parent_code': 'PARENT'},
+                       {'external_product_id': '901'}, {'external_variant_id': '902'},
+                       {'legacy_external_id': ''}, {'legacy_external_id': '901'},
+                       {'legacy_external_id_column_present': False}, {'legacy_external_id_sql_null': False},
+                       {'external_code': None}, {'external_code': 'SYN-OLD;OTHER'}):
+            with self.subTest(change=change), self.assertRaisesRegex(
+                    product_links.LinkError, 'consolidation_unverified_standalone_claim_required'):
+                service._plan(request, {'mappings': [{**row, **change}]})
+        for key in ('legacy_external_id', 'legacy_external_id_column_present', 'legacy_external_id_sql_null'):
+            incomplete = {name: value for name, value in row.items() if name != key}
+            with self.subTest(missing=key), self.assertRaises(product_links.LinkError):
+                service._plan(request, {'mappings': [incomplete]})
+        request['additional_sales'] = [{**body()['additional_sales'][0], 'code': 'syn-old'}]
+        with self.assertRaisesRegex(product_links.LinkError, 'consolidation_absent_code_selected_as_target'):
+            service._plan(request, {'mappings': [row]})
+
     def test_only_unchanged_complete_unit_factor_and_literal_confirmations_are_accepted(self):
         self.assertEqual(ProductConsolidationPreviewRequest(**body()).additional_sales[0].sale_to_stock_factor, 1)
         for factor in (0, 2, 8, True, 1.0, '1', None):

@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -451,3 +452,34 @@ def _verify_deleted_products(shop_code, mappings, fingerprint, max_requests, col
 
 async def verify_deleted_products(shop_code, mappings, fingerprint, *, max_requests=MAX_REQUESTS, collect_conflicts=False):
     return await asyncio.to_thread(_verify_deleted_products, shop_code, mappings, fingerprint, max_requests, collect_conflicts)
+
+
+def _verify_unoccupied_codes(shop_code, codes, fingerprint, max_requests):
+    """Prove only exact code absence, never an unknown old native ID's absence.
+
+    The documented simple list can select either product codes or containing
+    parents by variant codes, in both explicit archival partitions. Any row is
+    occupancy or an unverifiable filter response, even a parent, set or hidden
+    item. No sibling payload, active filter or flat-variant archive assumption
+    can turn an occupied code into a negative observation.
+    """
+    codes = _codes(codes)
+    reader = _Reader(shop_code, fingerprint, max_requests)
+    checks = []
+    try:
+        for namespace, field in (('product', 'codes'), ('variant', 'variant_codes')):
+            for archived in ('false', 'true'):
+                rows = reader.pages('/products/simple', 'products', {
+                    field: ';'.join(codes), 'variants_yn': 'false', 'archived_yn': archived})
+                _need(not rows, 'source_code_not_proven_absent', 409)
+                checks.append({'namespace': namespace, 'filter': field,
+                    'archived_yn': archived == 'true', 'matched_rows': 0})
+        return {'fingerprint': reader.fingerprint, 'codes': codes, 'requests': reader.requests,
+                'endpoint': '/products/simple', 'checks': checks,
+                'checked_at': datetime.now(timezone.utc).isoformat()}
+    finally:
+        reader.close()
+
+
+async def verify_unoccupied_codes(shop_code, codes, fingerprint, *, max_requests=MAX_REQUESTS):
+    return await asyncio.to_thread(_verify_unoccupied_codes, shop_code, codes, fingerprint, max_requests)
