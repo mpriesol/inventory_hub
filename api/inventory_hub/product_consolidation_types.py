@@ -22,12 +22,12 @@ class ConsolidationTarget(SharedStockSaleTarget):
 
 class ConsolidationMappingAction(LinkInput):
     mapping_id: StrictInt = Field(gt=0)
-    action: Literal['retain', 'bind', 'retire_absent']
+    action: Literal['retain', 'bind', 'retire_absent', 'retire_unverified_code_absent']
     target: ConsolidationTarget | None = None
 
     @model_validator(mode='after')
     def shape(self):
-        if (self.action == 'retire_absent') != (self.target is None):
+        if (self.action in ('retire_absent', 'retire_unverified_code_absent')) != (self.target is None):
             raise ValueError('Retire an absent mapping or name its exact current native leaf')
         return self
 

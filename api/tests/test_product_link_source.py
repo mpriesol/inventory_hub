@@ -203,6 +203,68 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
             await source.verify_deleted_products('xtrek', [self.old_product()] * 2, FINGERPRINT)
         self.assertEqual(self.session.calls, [])
 
+    async def test_unoccupied_codes_need_all_four_complete_namespaces_without_active_filter(self):
+        self.setup_client(*(page('products', []) for _ in range(4)))
+        result = await source.verify_unoccupied_codes('xtrek', ['SYN-OLD', 'SYN-KEEP'], FINGERPRINT)
+        self.assertEqual(result['requests'], 4)
+        self.assertEqual(result['codes'], ['SYN-KEEP', 'SYN-OLD'])
+        self.assertEqual(result['fingerprint'], FINGERPRINT)
+        self.assertTrue(result['checked_at'])
+        self.assertEqual([url for url, _ in self.session.calls], [BASE + '/products/simple'] * 4)
+        self.assertEqual([kwargs['params'] for _, kwargs in self.session.calls], [
+            {field: 'SYN-KEEP;SYN-OLD', 'variants_yn': 'false', 'archived_yn': archived,
+             'page': 1, 'current_page_items': 100}
+            for field in ('codes', 'variant_codes') for archived in ('false', 'true')])
+        self.assertEqual(result['checks'], [
+            {'namespace': namespace, 'filter': field, 'archived_yn': archived, 'matched_rows': 0}
+            for namespace, field in (('product', 'codes'), ('variant', 'variant_codes'))
+            for archived in (False, True)])
+        self.assertTrue(self.session.closed and all(reply.closed for reply in self.responses))
+
+    async def test_any_row_in_any_code_partition_blocks_including_parent_hidden_and_unexpected_rows(self):
+        for scope in range(4):
+            for item in ({'code': 'syn-old', 'product_id': 901, 'active_yn': False},
+                         {'code': 'PARENT', 'variants_exists_yn': True},
+                         {'code': 'SET', 'set_yn': True}, {}):
+                with self.subTest(scope=scope, item=item):
+                    replies = [page('products', []) for _ in range(scope)]
+                    self.setup_client(*replies, page('products', [item]))
+                    with self.assertRaisesRegex(source.SourceError, 'source_code_not_proven_absent'):
+                        await source.verify_unoccupied_codes('xtrek', ['SYN-OLD'], FINGERPRINT)
+                    self.assertTrue(self.session.closed)
+
+    async def test_partial_or_failed_four_scope_read_never_proves_code_absence(self):
+        cases = [
+            ([page('products', [], total=1)], 'source_pagination_incomplete'),
+            ([{'products': []}], 'source_pagination_invalid'),
+            ([page('products', [], pages=2, total=1), page('products', [], number=2, pages=2, total=1)],
+             'source_pagination_incomplete'),
+            ([page('products', []), Response(b'{"products":')], 'source_json_invalid'),
+            ([page('products', []), Response({}, status=401)], 'source_authentication_failed'),
+            ([page('products', []), Response({}, status=429, headers={'Retry-After': '12'})], 'source_rate_limited'),
+            ([page('products', []), requests.Timeout()], 'source_unavailable'),
+        ]
+        for replies, code in cases:
+            with self.subTest(code=code):
+                self.setup_client(*replies)
+                with self.assertRaisesRegex(source.SourceError, code):
+                    await source.verify_unoccupied_codes('xtrek', ['SYN-OLD'], FINGERPRINT)
+                self.assertTrue(self.session.closed)
+
+    async def test_code_absence_respects_remaining_budget_and_connection_fingerprint(self):
+        self.setup_client(*(page('products', []) for _ in range(3)))
+        with self.assertRaisesRegex(source.SourceError, 'source_request_limit'):
+            await source.verify_unoccupied_codes('xtrek', ['SYN-OLD'], FINGERPRINT, max_requests=3)
+        self.assertEqual(len(self.session.calls), 3)
+        self.setup_client()
+        with self.assertRaisesRegex(source.SourceError, 'source_connection_changed'):
+            await source.verify_unoccupied_codes('xtrek', ['SYN-OLD'], 'f' * 64)
+        self.assertEqual(self.session.calls, [])
+        for codes in ([], ['SYN;OTHER'], [' SYN'], [None]):
+            with self.subTest(codes=codes), self.assertRaisesRegex(source.SourceError, 'source_codes_invalid'):
+                await source.verify_unoccupied_codes('xtrek', codes, FINGERPRINT)
+        self.assertEqual(self.session.calls, [])
+
     async def test_exact_variant_filter_and_separate_documented_axes(self):
         self.discovery(variant())
         result = await source.discover("xtrek", ["LEAF-M"])

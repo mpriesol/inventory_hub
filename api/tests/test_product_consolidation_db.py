@@ -70,6 +70,7 @@ class ProductConsolidationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             patch.object(links.source, 'discover', AsyncMock(side_effect=self.discover)),
             patch.object(links.source, 'verify', AsyncMock(side_effect=self.verify)),
             patch.object(links.source, 'current_fingerprint', AsyncMock(return_value='a'*64)),
+            patch.object(links.source, 'verify_unoccupied_codes', AsyncMock(side_effect=self.code_absence)),
             patch.object(links, '_verify_replacement_absence', AsyncMock(side_effect=self.absence))]
         for patcher in self.patches:
             patcher.start()
@@ -135,6 +136,15 @@ class ProductConsolidationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         return {'fingerprint': fingerprint, 'requests': 2,
                 'existing_mapping_ids': [row['id'] for row in rows if row['id'] not in self.absent_ids]}
 
+    async def code_absence(self, shop_code, codes, fingerprint, **kwargs):
+        if any(row['code'].casefold() in {code.casefold() for code in codes} for row in self.remote):
+            raise links.source.SourceError('source_code_not_proven_absent', 409)
+        return {'fingerprint': fingerprint, 'codes': sorted(set(codes)), 'requests': 4,
+            'endpoint': '/products/simple', 'checked_at': links.now().isoformat(), 'checks': [
+                {'namespace': namespace, 'filter': field, 'archived_yn': archived, 'matched_rows': 0}
+                for namespace, field in (('product', 'codes'), ('variant', 'variant_codes'))
+                for archived in (False, True)]}
+
     def request(self):
         return ProductConsolidationPreviewRequest(request_id=uuid4(), keeper_product_id=self.keeper,
             retired_product_ids=[self.retired], mode='identity_only_preserve_unconfirmed_history',
@@ -162,6 +172,155 @@ class ProductConsolidationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                           'stock_sync_dirty', 'shop_sync_outbox'):
                 result[table] = await db.scalar(text(f"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM {table} t"))
         return result
+
+    def unverified_request(self):
+        request = self.request().model_dump(mode='json')
+        request['mapping_actions'] = [{'mapping_id': mapping_id,
+            'action': 'retire_unverified_code_absent', 'target': None} for mapping_id in self.mapping_ids]
+        return ProductConsolidationPreviewRequest(**request)
+
+    async def test_unverified_code_claim_retirement_preserves_null_ids_and_original_history(self):
+        self.remote = []
+        request = self.unverified_request()
+        before = await self.stock()
+        async with self.transaction() as db:
+            original = (await db.execute(text('''SELECT id, to_jsonb(sp)-'retired_at'
+                -'retired_by_consolidation_id'-'updated_at' AS value FROM shop_products sp ORDER BY id'''))).all()
+        preview = await self.preview(request)
+        self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+        self.assertEqual(preview['plan']['absence'], {})
+        self.assertEqual(preview['native']['biketrek']['absent_mapping_ids'], [])
+        self.assertEqual(preview['native']['biketrek']['requests'], 4)
+        for claim in preview['existing_mappings']:
+            self.assertIs(claim['legacy_external_id_column_present'], True)
+            self.assertIs(claim['legacy_external_id_sql_null'], True)
+            self.assertIsNone(claim['external_product_id'])
+            self.assertIsNone(claim['external_variant_id'])
+            self.assertIsNone(claim['legacy_external_id'])
+        done = await self.apply(preview)
+        self.assertEqual(done['status'], 'completed')
+        self.assertEqual(done['result']['current_mappings'], [])
+        self.assertFalse(done['result']['physical_stock_changed'])
+        self.assertFalse(done['result']['remote_write_performed'])
+        fresh = done['result']['unverified_code_absence']['biketrek']
+        self.assertEqual(fresh['mapping_ids'], self.mapping_ids)
+        self.assertEqual(fresh['codes'], ['SYN-KEEP', 'SYN-OLD'])
+        self.assertEqual(fresh['old_native_identity_status'], 'unverified')
+        self.assertIs(fresh['native_id_absence_proven'], False)
+        self.assertIs(fresh['exact_code_absence_proven'], True)
+        self.assertNotEqual(fresh['checked_at'], preview['native']['biketrek']['unverified_code_absence']['checked_at'])
+        self.assertEqual(await self.stock(), before)
+        async with self.transaction() as db:
+            self.assertEqual((await db.execute(text('''SELECT id, to_jsonb(sp)-'retired_at'
+                -'retired_by_consolidation_id'-'updated_at' AS value FROM shop_products sp ORDER BY id'''))).all(), original)
+            self.assertEqual(list(await db.scalars(select(ShopProduct))), [])
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductCanonicalAlias)), 1)
+        links._verify_replacement_absence.assert_not_awaited()
+        links.source.discover.assert_not_awaited()
+        links.source.verify.assert_not_awaited()
+        self.assertEqual(links.source.verify_unoccupied_codes.await_count, 2)
+        self.assertEqual(await self.preview(request), done)
+        self.assertEqual(await self.apply(preview), done)
+        self.assertEqual(links.source.verify_unoccupied_codes.await_count, 2)
+
+    async def test_unverified_retirement_rejects_nonnull_raw_legacy_even_when_normalized_ids_are_null(self):
+        self.remote = []
+        for legacy in ('', '0', '901', 'not-an-id'):
+            async with self.transaction() as db:
+                await db.execute(text('UPDATE shop_products SET external_id=:legacy WHERE id=:id'),
+                    {'legacy': legacy, 'id': self.mapping_ids[1]})
+            with self.subTest(legacy=legacy), self.assertRaisesRegex(
+                    links.LinkError, 'consolidation_unverified_standalone_claim_required'):
+                await self.preview(self.unverified_request())
+        links.source.verify_unoccupied_codes.assert_not_awaited()
+        links.source.discover.assert_not_awaited()
+
+    async def test_missing_physical_legacy_column_is_not_treated_as_sql_null(self):
+        self.remote = []
+        async with self.transaction() as db:
+            # Rename only in this disposable schema; JSON now lacks the key,
+            # exactly the distinction the production catalog check must make.
+            await db.execute(text('ALTER TABLE shop_products RENAME COLUMN external_id TO synthetic_legacy_id'))
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_legacy_native_column_missing'):
+            await self.preview(self.unverified_request())
+        links.source.verify_unoccupied_codes.assert_not_awaited()
+        links.source.current_fingerprint.assert_not_awaited()
+
+    async def test_unverified_claim_change_after_preview_expires_without_ownership_mutation(self):
+        self.remote = []
+        for column, value, previous in (('external_id', '901', None),
+                                       ('external_product_id', '901', None),
+                                       ('external_code', 'SYN-CHANGED', 'SYN-OLD')):
+            preview = await self.preview(self.unverified_request())
+            async with self.transaction() as db:
+                await db.execute(text(f'UPDATE shop_products SET {column}=:value WHERE id=:id'),
+                    {'value': value, 'id': self.mapping_ids[1]})
+            with self.subTest(column=column), self.assertRaisesRegex(
+                    links.LinkError, 'consolidation_context_changed') as caught:
+                await self.apply(preview)
+            self.assertTrue(caught.exception.known_unapplied)
+            async with self.transaction() as db:
+                self.assertEqual((await db.get(ProductConsolidation, preview['id'])).status, 'expired')
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ProductCanonicalAlias)), 0)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 2)
+                await db.execute(text(f'UPDATE shop_products SET {column}=:value WHERE id=:id'),
+                    {'value': previous, 'id': self.mapping_ids[1]})
+
+    async def test_reappearing_code_during_apply_is_known_unapplied_and_does_not_retire_claim(self):
+        self.remote = []
+        before = await self.stock()
+        preview = await self.preview(self.unverified_request())
+        self.remote = [self.leaf('syn-old', 901)]
+        with self.assertRaisesRegex(links.LinkError, 'source_code_not_proven_absent') as caught:
+            await self.apply(preview)
+        self.assertTrue(caught.exception.known_unapplied)
+        self.assertEqual(await self.stock(), before)
+        async with self.transaction() as db:
+            self.assertEqual((await db.get(ProductConsolidation, preview['id'])).status, 'expired')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductCanonicalAlias)), 0)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ShopProduct)), 2)
+
+    async def test_foreign_current_code_claim_blocks_retirement_even_with_empty_native_code_scopes(self):
+        self.remote = []
+        preview = await self.preview(self.unverified_request())
+        async with self.transaction() as db:
+            foreign = Product(sku='SYN-FOREIGN', name='Foreign current claim', is_active=False)
+            db.add(foreign); await db.flush()
+            db.add(ShopProduct(shop_id=self.shop_id, product_id=foreign.id, external_code='syn-old', is_variant=False))
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_foreign_native_owner') as caught:
+            await self.apply(preview)
+        self.assertTrue(caught.exception.known_unapplied)
+        async with self.transaction() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(ProductCanonicalAlias)), 0)
+            self.assertTrue((await db.get(Product, self.retired)).is_active)
+
+    async def test_mixed_bind_and_unverified_retirement_share_request_budget_and_distinct_proofs(self):
+        request = self.request().model_dump(mode='json')
+        request['mapping_actions'][1] = {'mapping_id': self.mapping_ids[1],
+            'action': 'retire_unverified_code_absent', 'target': None}
+        self.remote = self.remote[:1]
+        preview = await self.preview(ProductConsolidationPreviewRequest(**request))
+        self.assertTrue(preview['eligible'])
+        self.assertEqual(preview['native']['biketrek']['requests'], 6)
+        self.assertEqual(links.source.verify_unoccupied_codes.await_args.kwargs['max_requests'], 6)
+        self.assertEqual(preview['native']['biketrek']['unverified_code_absence']['mapping_ids'], [self.mapping_ids[1]])
+        done = await self.apply(preview)
+        self.assertEqual(len(done['result']['current_mappings']), 1)
+        self.assertFalse(done['result']['current_mappings'][0]['shared_stock'])
+        links._verify_replacement_absence.assert_not_awaited()
+
+    async def test_unverified_claim_action_keeps_confirmed_tracking_as_a_hard_block(self):
+        self.remote = []
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO stock_tracking
+                (product_id,warehouse_id,source_type,source_id,operator_name,archived_balance)
+                VALUES(:pid,:wid,'opening_stock','synthetic','Synthetic operator','{}'::jsonb)'''),
+                {'pid': self.keeper, 'wid': self.warehouse_id})
+        preview = await self.preview(self.unverified_request())
+        self.assertFalse(preview['eligible'])
+        self.assertIn('stock_tracking', {row.get('table') for row in preview['dependencies']['blockers']})
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_blocked'):
+            await self.apply(preview)
 
     async def test_two_sales_one_card_preserves_original_ids_skus_identifiers_and_legacy_stock(self):
         before = await self.stock()
