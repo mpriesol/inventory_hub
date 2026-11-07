@@ -79,3 +79,42 @@ class SharedStockSaleApplyRequest(LinkInput):
     @classmethod
     def confirmation(cls, value):
         return SharedStockSalePreviewRequest.confirmation(value)
+
+
+class SharedStockSaleBatchPreviewRequest(LinkInput):
+    items: list[SharedStockSalePreviewRequest] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode='after')
+    def scope(self):
+        if len({item.shop_code for item in self.items}) != 1:
+            raise ValueError('A batch belongs to one shop')
+        if (len({item.request_id for item in self.items}) != len(self.items)
+                or len({item.product_id for item in self.items}) != len(self.items)):
+            raise ValueError('Select each card and request UUID once')
+        targets = [sale for item in self.items for sale in item.sales]
+        if len(targets) > 100:
+            raise ValueError('Select at most 100 sale leaves per batch')
+        codes = [sale.code.casefold() for sale in targets]
+        native = [(sale.is_variant, sale.native_variant_id if sale.is_variant else sale.native_product_id)
+                  for sale in targets]
+        if len(set(codes)) != len(codes) or len(set(native)) != len(native):
+            raise ValueError('Each sale leaf must belong to exactly one card in the batch')
+        pins = [sale.replace_deleted_mapping.mapping_id for sale in targets if sale.replace_deleted_mapping]
+        if len(set(pins)) != len(pins):
+            raise ValueError('Each replaced mapping belongs to one card')
+        return self
+
+
+class SharedStockSaleBatchApplyItem(SharedStockSaleApplyRequest):
+    id: UUID
+
+
+class SharedStockSaleBatchApplyRequest(LinkInput):
+    shop_code: StrictStr = Field(pattern=r'^[a-z0-9][a-z0-9_-]{0,49}$')
+    items: list[SharedStockSaleBatchApplyItem] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode='after')
+    def distinct(self):
+        if len({item.id for item in self.items}) != len(self.items):
+            raise ValueError('Select each review UUID once')
+        return self

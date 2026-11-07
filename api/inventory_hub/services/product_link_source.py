@@ -334,8 +334,7 @@ async def current_fingerprint(shop_code: str) -> str:
     return await asyncio.to_thread(read)
 
 
-async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
-                 *, max_requests: int = MAX_REQUESTS) -> dict:
+def _selection_scope(leaves):
     _need(isinstance(leaves, list) and 0 < len(leaves) <= MAX_CODES and all(isinstance(v, dict) for v in leaves),
           "source_leaves_invalid", 422)
     try:
@@ -344,7 +343,12 @@ async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
     except (KeyError, TypeError):
         raise SourceError("source_leaves_invalid", 422) from None
     _need(len(expected) == len(leaves), "source_leaves_invalid", 422)
-    result = await discover(shop_code, codes, expected_fingerprint, max_requests=max_requests)
+    return expected, codes
+
+
+def verified_selection(result: dict, leaves: list[dict]) -> dict:
+    """Validate one exact selection inside a larger fresh source observation."""
+    expected, _ = _selection_scope(leaves)
     # An explicit selection may distinguish equal codes under different
     # parents. Recheck only its exact code/kind/parent scope; never switch to
     # another parent or recreated native identity if the selected one vanished.
@@ -354,6 +358,13 @@ async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
     found = {_key(leaf) for leaf in selected}
     _need(found == expected, "source_identity_changed", 409)
     return {**result, "leaves": selected}
+
+
+async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
+                 *, max_requests: int = MAX_REQUESTS) -> dict:
+    _, codes = _selection_scope(leaves)
+    result = await discover(shop_code, codes, expected_fingerprint, max_requests=max_requests)
+    return verified_selection(result, leaves)
 
 
 def _verify_deleted_variants(shop_code, mappings, fingerprint, max_requests, collect_conflicts=False):
