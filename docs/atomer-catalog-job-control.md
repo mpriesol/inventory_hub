@@ -70,8 +70,10 @@ free-text manifests remain intentionally redacted. This is **not** a complete
 historical event log, a native readback, a settlement certificate or new mutation
 permission. `historical_native_effects` remains `not_determined` in every case.
 Overwritten older rows cannot be reconstructed by this endpoint. Jobs with
-earlier effects continue to fail the original unsent-withdrawal checks; a future
-audited handoff requires a separate reviewed contract and concrete evidence.
+earlier effects continue to fail the original unsent-withdrawal checks. The
+separate [retained-job handoff](atomer-catalog-handoff.md) has its own complete
+current-writer proof, explicit local-effect acknowledgement and terminal audit;
+this diagnostic projection alone does not authorize that action.
 
 Eligibility requires the exact current source/run and every sibling review
 revision to agree with the saved guards. In the original `unsent_pending`

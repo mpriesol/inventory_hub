@@ -1,5 +1,20 @@
 # Inventory Hub — prehľad projektu
 
+## Trvalé odovzdanie úlohy Atomeru so zachovanými kartami (8. 11. 2026)
+
+Samostatný [handoff pozastavenej úlohy](docs/atomer-catalog-handoff.md) zachová
+vytvorené/znovu použité karty, pôvodné dôkazy a review. Nový čítací
+`jobs/handoff-control` a potvrdený `jobs/handoff` vyžadujú úplnú rodinu,
+čerstvý hash a úplnú kontrolu aktuálnych zápisov vrátane skrytých mapovaní,
+kanonických aliasov a konfliktných vlastníkov. Podporovaný stav `pending`
+má skutočné SQL NULL dokumentu, doslovné `{}` potvrdenie a nulovú revíziu
+riadenia; neisté či neúplné natívne zámery zostávajú zablokované. Migrácia 050
+pridáva nemenný audit a trvalý SQL zákaz obnovenia odovzdanej úlohy. Fyzický
+sklad ani história sa nemenia a kampaň zostáva pozastavená. Počty odovzdaných
+rodín sú samostatné; publikovanie zostáva nedokončené a pôvodné čiastočné dôkazy
+sa nemenia na overené. Implementácia má syntetické PostgreSQL testy; živé
+odovzdanie, následná konsolidácia a overenie nasadenia sú samostatné kroky.
+
 ## Čítací detail dôkazov jednej úlohy Atomeru (8. 11. 2026)
 
 [Riadiaci GET jednej úlohy](docs/atomer-catalog-job-control.md#optional-retained-history-diagnostics)
