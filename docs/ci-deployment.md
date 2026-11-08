@@ -33,6 +33,10 @@ npm cache, build and all configured jsdom interaction suites. No application tes
 removed. The ordinary serial `unittest discover` command in [AGENTS.md](../AGENTS.md)
 remains useful for local diagnosis; disclose database skips in local results.
 
+`frontend/tests/product-consolidation-ui.cjs` covers reviewed card merging,
+blocked previews and durable recovery after a lost preview/apply response.
+The product-editor suite also checks selection and unsaved-change entry guards.
+
 ## Reading the measurements
 
 Each backend job uploads `backend-test-<shard>` with a JSON report retained for

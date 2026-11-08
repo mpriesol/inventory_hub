@@ -383,6 +383,29 @@ async def get(db, identifier):
     return public(row)
 
 
+async def discard(db, identifier, payload):
+    """Settle an exact unused review before preparing a replacement.
+
+    The same identity/row fences as apply ensure that an in-flight application
+    either completed first or will observe the committed expired state. Blockers,
+    elapsed time and an obsolete parser version do not prevent discarding a review;
+    its original proof must still be intact. Completed operations are only replayed.
+    """
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    row = await db.scalar(select(ProductConsolidation).where(ProductConsolidation.id == str(identifier))
+        .with_for_update().execution_options(populate_existing=True))
+    if row is None:
+        raise links.LinkError('consolidation_not_found', 404)
+    if (payload.preview_hash != row.preview_hash or links.digest(row.document) != row.preview_hash
+            or row.status not in ('prepared', 'expired', 'completed')):
+        raise links.LinkError('consolidation_preview_changed')
+    if row.status == 'prepared':
+        row.status, row.expires_at = 'expired', min(row.expires_at, links.now())
+    result = public(row)
+    await db.commit()
+    return result
+
+
 async def preview(db, payload, *, actor=None):
     try:
         return await _preview(db, payload, actor=actor)
