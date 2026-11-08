@@ -38,8 +38,9 @@ effect, source refresh or native request. Its response includes:
   writer documents, with `complete` distinct from the bounded diagnostic
   projection flags. Timing/cache telemetry is excluded from confirmation hashes.
 - `eligible`, `complete`, `snapshot_hash` and structured `blockers`. An incomplete
-  scan or timeout never yields an applicable confirmation. A timeout has a null
-  hash; size/schema errors can instead return an explicit HTTP conflict code.
+  scan or timeout never yields an applicable confirmation. Timeouts and
+  handoff size/count limits have a null hash. Other schema/lifecycle errors can
+  return an explicit HTTP conflict code.
 
 The response always says `historical_native_effects: "not_determined"`,
 `source_publication_completed: false` and `content_publication_completed: false`.
@@ -113,6 +114,49 @@ fixed-size SHA-256 row hashes of PostgreSQL JSONB text. The existing typed/FS
 scanner retains its own row/byte/page/journal limits. The read/proof phase has a
 120-second deadline; cancellation rolls the transaction back and cannot continue
 using already-released fences.
+
+### Scope-limit diagnostics
+
+An oversized or nonconvergent scope keeps every existing bound. The read-only
+GET returns HTTP200 with `eligible=false`, `complete=false`,
+`snapshot_hash=null` and a structured `catalog_handoff_scope_limit` blocker.
+This result is a diagnostic, not a stored or applicable preview. The read-only
+transaction ends before the response. A POST reaching the same boundary still
+rolls back and returns HTTP409 with the existing conflict code.
+
+The blocker identifies `reason`, `section`, `observed`, `limit`, `encoding`
+and `count_is_exact`. Closure diagnostics also report the one-based
+`iteration`. A failed byte check can include `largest_row_bytes` or bounded
+`section_sizes`; a set or iteration check can include `set_counts`.
+
+| Reason | Measured boundary |
+|---|---|
+| `selection_rows` | Complete count of the selected identity/allocation SQL rows, before fetching their bounded body |
+| `selection_bytes` | Serialized bytes of that admitted row selection, including fields omitted by public catalog exports |
+| `closure_set` | Number of Hub IDs, tokens, barcodes or native targets at the start of an iteration |
+| `closure_iterations` | The unchanged maximum number of fixed-point iterations without convergence |
+| `identity_snapshot_bytes` | Combined identity snapshot, with separate sizes for its known sections |
+| `proof_bytes` | `retained_proof`, `candidate_proof` or `final_proof`, with sizes of retained data, identities and current-writer proof when present |
+| `retained_rows` | A 501-row proof/source query sentinel; `count_is_exact=false` explicitly marks a lower bound |
+| `family_scope_rows` / `empty_family_scope` | The captured complete family-code union exceeds its maximum or contains no code |
+| `retained_snapshot_bytes` | Retained job/campaign/review/source data before identity discovery |
+
+Each identity/allocation selection first counts all matching rows in the same
+transaction and rejects an excessive count before decoding any selected body.
+The original bounded fetch and its row/byte guards remain as additional checks.
+The old proof/source sentinel is explicitly distinguished from a full census.
+Byte measurements name the existing JSON encoding used by the relevant guard;
+section sizes omit their containing object's punctuation and are not expected
+to sum to the full serialized size. No raw source text, supplier feed body,
+credential, native payload or unknown field value is included in the diagnostic.
+
+For example, a synthetic scope with 6,001 mappings would expose
+`reason="selection_rows"`, `section="mappings"`, `observed=6001`,
+`limit=5000` and `count_is_exact=true`; it would have no confirmation hash.
+An error code alone does not establish which stage or section exceeded a bound.
+Shared native parents can expand through sibling owners and their other
+mappings. Complete family/owner/sibling coverage and the ordinary writer
+guards remain mandatory; no diagnostic admits a partial or smaller scope.
 
 ## Confirm and recover
 

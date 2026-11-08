@@ -21,6 +21,21 @@ from inventory_hub.services.identifiers import ProductIdentifierService
 
 MAX_ROWS = 5000
 MAX_BYTES = 5_000_000
+MAX_ITERATIONS = 32
+ROW_ENCODING = 'python-json-default-separators-ensure-ascii-true-utf8'
+
+
+class ScopeLimit(ReviewError):
+    """Sanitized measurement of a retained safety boundary, never a proof."""
+    def __init__(self, reason, section, observed, limit, *, encoding, iteration=None,
+                 count_is_exact=True, section_sizes=None, set_counts=None, largest_row_bytes=None):
+        super().__init__('catalog_handoff_scope_limit')
+        self.blocker = dict(code=self.code, reason=reason, section=section,
+            observed=observed, limit=limit, encoding=encoding, count_is_exact=count_is_exact)
+        for key, value in (('iteration', iteration), ('section_sizes', section_sizes),
+                           ('set_counts', set_counts), ('largest_row_bytes', largest_row_bytes)):
+            if value is not None:
+                self.blocker[key] = value
 
 
 class ScopeIssue(ReviewError):
@@ -112,11 +127,21 @@ async def lock_inputs(db, columns):
                           + ' IN SHARE MODE NOWAIT'))
 
 
-async def rows(db, query, **params):
+async def rows(db, query, *, section, iteration=None, **params):
+    # Count the whole selection in this same local snapshot before fetching a
+    # bounded body. A 5001-row sentinel is not an exact count of a large scope.
+    count = await db.scalar(text('SELECT count(*) FROM (' + query + ') AS handoff_selection'), params)
+    if count > MAX_ROWS:
+        raise ScopeLimit('selection_rows', section, count, MAX_ROWS, encoding='rows', iteration=iteration)
     result = [dict(row) for row in (await db.execute(text(query + ' LIMIT :handoff_limit'),
         {**params, 'handoff_limit': MAX_ROWS + 1})).mappings()]
-    if len(result) > MAX_ROWS or len(json.dumps(result, default=str).encode()) > MAX_BYTES:
-        raise ReviewError('catalog_handoff_scope_limit')
+    if len(result) > MAX_ROWS:
+        raise ScopeLimit('selection_rows', section, len(result), MAX_ROWS, encoding='rows',
+                         iteration=iteration, count_is_exact=False)
+    size = len(json.dumps(result, default=str).encode())
+    if size > MAX_BYTES:
+        raise ScopeLimit('selection_bytes', section, size, MAX_BYTES, encoding=ROW_ENCODING, iteration=iteration,
+            largest_row_bytes=max((len(json.dumps(row, default=str).encode()) for row in result), default=0))
     return result
 
 
@@ -229,9 +254,12 @@ async def closure(db, data, codes):
     namespaces = {'xtrek', 'biketrek'} | {t['shop_code'] for t in targets}
     products = identifiers = mappings = aliases = sku_identities = []
     previous = None
-    for _ in range(32):
-        if any(len(v) > MAX_ROWS for v in (ids, tokens, barcodes, targets)):
-            raise ReviewError('catalog_handoff_scope_limit')
+    for iteration in range(1, MAX_ITERATIONS + 1):
+        sizes = dict(hub_ids=len(ids), tokens=len(tokens), barcodes=len(barcodes), native_targets=len(targets))
+        for section, size in sizes.items():
+            if size > MAX_ROWS:
+                raise ScopeLimit('closure_set', section, size, MAX_ROWS, encoding='members',
+                                 iteration=iteration, set_counts=sizes)
         # Use the shared exact split/checksum/equivalence contract. Retain raw
         # and unverified member tokens too; never strip digits or drop a member.
         audit = semantic.Proof(semantic.Scope.build([], [], [], [], []))
@@ -256,13 +284,13 @@ async def closure(db, data, codes):
                 (i.identifier_type::text IN ('ean','upc') AND i.value=ANY(CAST(:barcodes AS text[]))))) OR EXISTS (
               SELECT 1 FROM product_sku_identities i WHERE i.product_id=p.id AND
                (i.source_code_fold=ANY(CAST(:codes AS text[])) OR lower(i.allocated_sku)=ANY(CAST(:codes AS text[]))))
-            ORDER BY p.id''', **params)
+            ORDER BY p.id''', section='products', iteration=iteration, **params)
         products = [r['data'] for r in products]
         ids.update(p['id'] for p in products)
         params['ids'] = sorted(ids)
         aliases = await rows(db, '''SELECT to_jsonb(t) AS data FROM product_canonical_aliases t WHERE
             retired_product_id=ANY(CAST(:ids AS bigint[])) OR canonical_product_id=ANY(CAST(:ids AS bigint[]))
-            ORDER BY retired_product_id''', **params)
+            ORDER BY retired_product_id''', section='canonical_aliases', iteration=iteration, **params)
         aliases = [r['data'] for r in aliases]
         ids.update(a[k] for a in aliases for k in ('retired_product_id', 'canonical_product_id'))
         mappings = await rows(db, '''SELECT to_jsonb(m)||jsonb_build_object('shop_code',s.code) AS data
@@ -272,7 +300,7 @@ async def closure(db, data, codes):
               (lower(m.external_code)=ANY(CAST(:codes AS text[])) OR lower(m.parent_code)=ANY(CAST(:codes AS text[])))) OR
              EXISTS(SELECT 1 FROM jsonb_array_elements(CAST(:targets AS jsonb)) v
               WHERE s.code=v->>'shop_code' AND m.external_product_id=(v->>'native_product_id'))
-            ORDER BY m.id''', **params)
+            ORDER BY m.id''', section='mappings', iteration=iteration, **params)
         mappings = [{**r['data'], 'legacy_external_id': r['data'].get('external_id')} for r in mappings]
         for mapping in mappings:
             if (not controls._native_id(mapping.get('external_product_id'))
@@ -283,10 +311,12 @@ async def closure(db, data, codes):
         ids.update(m['product_id'] for m in mappings)
         params['ids'] = sorted(ids)
         identifiers = await rows(db, '''SELECT to_jsonb(t) AS data FROM product_identifiers t
-            WHERE product_id=ANY(CAST(:ids AS bigint[])) ORDER BY id''', **params)
+            WHERE product_id=ANY(CAST(:ids AS bigint[])) ORDER BY id''',
+            section='identifiers', iteration=iteration, **params)
         identifiers = [{**r['data'], 'type': r['data']['identifier_type']} for r in identifiers]
         sku_identities = await rows(db, '''SELECT to_jsonb(t) AS data FROM product_sku_identities t
-            WHERE product_id=ANY(CAST(:ids AS bigint[])) ORDER BY id''', **params)
+            WHERE product_id=ANY(CAST(:ids AS bigint[])) ORDER BY id''',
+            section='sku_identities', iteration=iteration, **params)
         sku_identities = [r['data'] for r in sku_identities]
         tokens.update(p['sku'] for p in products)
         tokens.update(i['value'] for i in identifiers if i['value'])
@@ -311,7 +341,9 @@ async def closure(db, data, codes):
             break
         previous = state
     else:
-        raise ReviewError('catalog_handoff_scope_limit')
+        raise ScopeLimit('closure_iterations', 'fixed_point', MAX_ITERATIONS, MAX_ITERATIONS,
+            encoding='iterations', iteration=MAX_ITERATIONS,
+            set_counts=dict(hub_ids=len(ids), tokens=len(tokens), barcodes=len(barcodes), native_targets=len(targets)))
     if ids - {p['id'] for p in products}:
         raise ReviewError('catalog_handoff_retained_card_missing')
     if mapping_ids - {m['id'] for m in mappings}:
@@ -324,8 +356,10 @@ async def closure(db, data, codes):
     scope.parents.update(scope.sales)
     snapshot = dict(products=products, identifiers=identifiers, sku_identities=sku_identities, mappings=mappings, aliases=aliases,
         targets=targets, tokens=sorted(tokens), scope={k: sorted(v, key=lambda x: json.dumps(x)) for k, v in asdict(scope).items()})
-    if len(json.dumps(snapshot).encode()) > MAX_BYTES:
-        raise ReviewError('catalog_handoff_scope_limit')
+    size = len(json.dumps(snapshot).encode())
+    if size > MAX_BYTES:
+        raise ScopeLimit('identity_snapshot_bytes', 'identities', size, MAX_BYTES, encoding=ROW_ENCODING,
+            iteration=iteration, section_sizes={key: len(json.dumps(value).encode()) for key, value in snapshot.items()})
     return scope, snapshot
 
 
