@@ -137,8 +137,11 @@ class DependencyPagingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             db.add(AiBatch(id=batch, request_hash='e' * 64)); await db.flush()
             for number in range(1, 32):
+                # Both known lifecycles reach the same incomplete-context
+                # reason, so the late kind must earn its own sample.
                 db.add(AiJob(id=f'{number:032x}', batch_id=batch,
-                    kind='product' if number < 31 else 'supplier_lookup', status='ready', revision=1, context={}))
+                    kind='product' if number < 31 else 'supplier_lookup',
+                    status='ready' if number < 31 else 'lookup_failed', revision=1, context={}))
         report = await self.current()
         self.assertTrue(report['complete'])
         self.assertEqual(report['classification_counts']['ai_content_jobs']['unknown'], 31)
