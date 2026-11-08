@@ -91,6 +91,21 @@ class ProductLinkSourceTests(unittest.IsolatedAsyncioTestCase):
         details = [{**detailed(v["code"], v["variant_id"]), **v} for v in variants]
         self.setup_client(page("products", []), page("variants", details), page("products", [parent_metadata()]))
 
+    async def test_supplier_identity_projection_is_explicit_leaf_only_and_uses_same_gets(self):
+        self.discovery({**variant(), 'code_supplier': 'SYN-MANUFACTURER-ARTICLE'})
+        result = await source.discover('biketrek', ['LEAF-M'], include_supplier_identity=True)
+        self.assertEqual(result['leaves'][0]['supplier_code'], 'SYN-MANUFACTURER-ARTICLE')
+        self.assertEqual(result['requests'], 3)
+        self.assertEqual([url for url, _ in self.session.calls],
+                         [BASE + '/products', BASE + '/products/variants', BASE + '/products'])
+        parent = parent_metadata(code_supplier='PARENT-IS-NOT-A-LEAF-ARTICLE')
+        leaf = detailed()
+        self.assertNotIn('supplier_code', source._leaf(parent, leaf, variant=True))
+        self.assertIsNone(source._leaf(parent, leaf, variant=True, include_supplier_identity=True)['supplier_code'])
+        for invalid in (True, 123, ['ARTICLE'], {'code': 'ARTICLE'}, ' ARTICLE '):
+            with self.subTest(invalid=invalid), self.assertRaises(source.SourceError):
+                source._leaf(parent, {**leaf, 'code_supplier': invalid}, variant=True, include_supplier_identity=True)
+
     async def test_deleted_variant_is_verified_by_native_parent_not_old_code(self):
         self.setup_client(page("products", [family(variant("RENAMED-SIBLING", 72))]), page("products", []))
         result = await source.verify_deleted_variants("biketrek", [{"is_variant": True,

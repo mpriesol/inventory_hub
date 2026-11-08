@@ -111,7 +111,7 @@ def _navigation(parent: dict, item: dict) -> dict:
             'shop_admin_url': _url(item.get('admin_url')) or _url(parent.get('admin_url'))}
 
 
-def _leaf(parent: dict, item: dict, *, variant: bool) -> dict:
+def _leaf(parent: dict, item: dict, *, variant: bool, include_supplier_identity: bool = False) -> dict:
     code, parent_code = _code(item.get("code")), _code(parent.get("code"))
     parent_id = _native_id(parent.get("product_id"))
     if variant:
@@ -142,10 +142,15 @@ def _leaf(parent: dict, item: dict, *, variant: bool) -> dict:
         warnings.append("variant_axes_unknown")
     name = product_title(parent)
     _need(len(name) <= 2000, "source_name_invalid")
-    return {"code": code, "parent_code": parent_code, "parent_id": parent_id,
+    result = {"code": code, "parent_code": parent_code, "parent_id": parent_id,
             "is_variant": variant, "external_id": _native_id(item.get("variant_id")) if variant else parent_id,
             "name": name, "eans": eans, "raw_barcodes": raw, "invalid_barcodes": invalid,
             "attributes": attributes, "warnings": warnings, **_navigation(parent, item)}
+    if include_supplier_identity:
+        value = item.get('code_supplier')
+        _need(value is None or value == '' or isinstance(value, str), 'source_supplier_code_invalid')
+        result['supplier_code'] = _code(value) if value else None
+    return result
 
 
 def _key(leaf: dict) -> tuple:
@@ -223,7 +228,7 @@ class _Reader:
 
 
 def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None, max_requests: int,
-              include_occupied: bool = False) -> dict:
+              include_occupied: bool = False, include_supplier_identity: bool = False) -> dict:
     codes = _codes(codes)
     wanted, folded = set(codes), {code.casefold() for code in codes}
     reader = _Reader(shop_code, expected_fingerprint, max_requests)
@@ -254,7 +259,7 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
             _need(type(parent.get("set_yn", False)) is bool, "source_product_kind_unknown")
             if parent["variants_exists_yn"] or parent.get("set_yn", False):
                 continue
-            leaf = _leaf(parent, parent, variant=False)
+            leaf = _leaf(parent, parent, variant=False, include_supplier_identity=include_supplier_identity)
             leaves[_key(leaf)] = leaf
 
         # The documented flat endpoint already carries leaf EAN/parameters and
@@ -271,7 +276,7 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
             if code not in wanted:
                 continue
             parent = {"code": item.get("product_code"), "product_id": item.get("product_id")}
-            leaf = _leaf(parent, item, variant=True)
+            leaf = _leaf(parent, item, variant=True, include_supplier_identity=include_supplier_identity)
             key = _key(leaf)
             _need(key not in leaves, "source_duplicate_variant")
             native = leaf["external_id"]
@@ -297,7 +302,7 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
             _need(parent is not None, 'source_parent_changed', 409)
             _need(parent.get('variants_exists_yn') is True and parent.get('set_yn', False) is False,
                   'source_product_kind_unknown')
-            leaves[key] = _leaf(parent, item, variant=True)
+            leaves[key] = _leaf(parent, item, variant=True, include_supplier_identity=include_supplier_identity)
         result = {"fingerprint": reader.fingerprint, "leaves": sorted(leaves.values(), key=_key), "requests": reader.requests}
         if include_occupied:
             result["occupied_codes"] = sorted(occupied, key=lambda row: (
@@ -308,8 +313,9 @@ def _discover(shop_code: str, codes: list[str], expected_fingerprint: str | None
 
 
 async def discover(shop_code: str, codes: list[str], expected_fingerprint: str | None = None,
-                   *, max_requests: int = MAX_REQUESTS) -> dict:
-    return await asyncio.to_thread(_discover, shop_code, codes, expected_fingerprint, max_requests)
+                   *, max_requests: int = MAX_REQUESTS, include_supplier_identity: bool = False) -> dict:
+    return await asyncio.to_thread(_discover, shop_code, codes, expected_fingerprint, max_requests,
+                                  include_supplier_identity=include_supplier_identity)
 
 
 async def inspect_codes(shop_code: str, codes: list[str], expected_fingerprint: str | None = None,
@@ -400,9 +406,10 @@ def verified_selection(result: dict, leaves: list[dict]) -> dict:
 
 
 async def verify(shop_code: str, leaves: list[dict], expected_fingerprint: str,
-                 *, max_requests: int = MAX_REQUESTS) -> dict:
+                 *, max_requests: int = MAX_REQUESTS, include_supplier_identity: bool = False) -> dict:
     _, codes = _selection_scope(leaves)
-    result = await discover(shop_code, codes, expected_fingerprint, max_requests=max_requests)
+    options = {'include_supplier_identity': True} if include_supplier_identity else {}
+    result = await discover(shop_code, codes, expected_fingerprint, max_requests=max_requests, **options)
     return verified_selection(result, leaves)
 
 

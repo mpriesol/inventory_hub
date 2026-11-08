@@ -17,6 +17,7 @@ from inventory_hub.product_consolidation_models import ProductCanonicalAlias, Pr
 from inventory_hub.services import product_links as links
 from inventory_hub.services import product_consolidation_dependencies as dependencies
 from inventory_hub.services import product_consolidation_keeper_dependencies as keeper_dependencies
+from inventory_hub.services import product_consolidation_supplier_identity as supplier_identity
 from inventory_hub.services.canonical_products import aliases_for
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, barcode_keys, load_identity_index
 from inventory_hub.services.shared_stock_sales import _replacement_snapshot
@@ -28,6 +29,8 @@ def _request(payload):
     # Preserve the request/hash shape of already frozen reviews and UUID replays.
     if not raw.get(keeper_dependencies.FLAG):
         raw.pop(keeper_dependencies.FLAG, None)
+    if not raw.get(supplier_identity.FLAG):
+        raw.pop(supplier_identity.FLAG, None)
     raw['retired_product_ids'].sort()
     raw['mapping_actions'].sort(key=lambda row: row['mapping_id'])
     raw['additional_sales'].sort(key=lambda row: (row['shop_code'], row['code']))
@@ -47,9 +50,12 @@ def _key(target):
             str(target['native_variant_id'] if target['is_variant'] else target['native_product_id']))
 
 
-def _snapshot(remote):
-    return {**links.remote_snapshot(remote), 'raw_barcodes': remote.get('raw_barcodes', []),
+def _snapshot(remote, *, supplier=False):
+    value = {**links.remote_snapshot(remote), 'raw_barcodes': remote.get('raw_barcodes', []),
             'invalid_barcodes': remote.get('invalid_barcodes', [])}
+    if supplier:
+        value['supplier_code'] = remote.get('supplier_code')
+    return value
 
 
 async def _local(db, raw, *, lock=False):
@@ -124,8 +130,15 @@ async def _local(db, raw, *, lock=False):
         'identity': facts[card.id]} for card in cards]
     product_hash = await db.scalar(text('''SELECT md5(string_agg(to_jsonb(p)::text,E'\\n' ORDER BY p.id))
         FROM products p WHERE p.id=ANY(CAST(:ids AS bigint[]))'''), {'ids': ids})
-    return {'products': product_rows, 'product_hash': product_hash, 'identifiers': identifiers,
+    result = {'products': product_rows, 'product_hash': product_hash, 'identifiers': identifiers,
         'mappings': mapping_rows, 'shops': [{'id': shop.id, 'code': shop.code} for shop in shops]}
+    if raw.get(supplier_identity.FLAG):
+        if lock:
+            await supplier_identity.lock_inputs(db)
+        keeper = next(card for card in cards if card.id == raw['keeper_product_id'])
+        result[supplier_identity.LOCAL_KEY] = await supplier_identity.snapshot(
+            db, keeper, facts[keeper.id], identifiers, lock=lock)
+    return result
 
 
 def _previous_native(row):
@@ -209,6 +222,8 @@ async def _native(raw, local, *, frozen=None):
     for target in _targets(raw):
         grouped[target['shop_code']].append(target)
     result = {}
+    supplier = bool(raw.get(supplier_identity.FLAG))
+    source_options = {'include_supplier_identity': True} if supplier else {}
     for shop in local['shops']:
         code = shop['code']
         expected_fingerprint = frozen[code]['fingerprint'] if frozen else None
@@ -216,10 +231,10 @@ async def _native(raw, local, *, frozen=None):
         if targets:
             if frozen:
                 read = await links._source_call(links.source.verify(code, frozen[code]['leaves'],
-                    expected_fingerprint, max_requests=links.MAX_REQUESTS))
+                    expected_fingerprint, max_requests=links.MAX_REQUESTS, **source_options))
             else:
                 read = await links._source_call(links.source.discover(code, [row['code'] for row in targets],
-                    max_requests=links.MAX_REQUESTS))
+                    max_requests=links.MAX_REQUESTS, **source_options))
             leaves = []
             for target in targets:
                 matches = [row for row in read['leaves'] if links.remote_key(row) == _key(target)[1:]
@@ -236,7 +251,8 @@ async def _native(raw, local, *, frozen=None):
             requests, leaves = 0, []
         if expected_fingerprint is not None and fingerprint != expected_fingerprint:
             raise links.LinkError('consolidation_shop_connection_changed')
-        if frozen and [_snapshot(row) for row in leaves] != [_snapshot(row) for row in frozen[code]['leaves']]:
+        if frozen and [_snapshot(row, supplier=supplier) for row in leaves] != [
+                _snapshot(row, supplier=supplier) for row in frozen[code]['leaves']]:
             raise links.LinkError('consolidation_native_identity_changed')
         old = plan['absence'].get(code, [])
         if old:
@@ -264,13 +280,17 @@ async def _identity(db, raw, local, native):
     ids = _ids(raw)
     keeper = next(row for row in local['products'] if row['id'] == raw['keeper_product_id'])
     gtins = barcode_keys(keeper['identity']['eans'])
+    supplier_proof = supplier_identity.prove(raw, local, native) if raw.get(supplier_identity.FLAG) else None
+    if supplier_proof is not None:
+        gtins = {supplier_proof['verified_gtin_key']}
     if len(gtins) != 1:
         raise links.LinkError('consolidation_keeper_verified_gtin_required')
+    axes = supplier_identity.physical_axes if supplier_proof is not None else links.axes
     physical_axes = {}
     for row in local['products']:
         if not barcode_keys(row['identity']['eans']) <= gtins:
             raise links.LinkError('consolidation_card_gtin_conflict')
-        for axis, value in links.axes(row['identity']['attributes']).items():
+        for axis, value in axes(row['identity']['attributes']).items():
             if axis in physical_axes and physical_axes[axis] != value:
                 raise links.LinkError('consolidation_physical_axes_conflict')
             physical_axes[axis] = value
@@ -286,7 +306,7 @@ async def _identity(db, raw, local, native):
                 raise links.LinkError('consolidation_native_gtin_conflict')
             if set(leaf.get('invalid_barcodes', [])) - raw_identifiers:
                 raise links.LinkError('consolidation_unregistered_legacy_barcode')
-            for axis, value in links.axes(leaf['attributes']).items():
+            for axis, value in axes(leaf['attributes']).items():
                 if axis in physical_axes and physical_axes[axis] != value:
                     raise links.LinkError('consolidation_physical_axes_conflict')
                 physical_axes[axis] = value
@@ -315,8 +335,11 @@ async def _identity(db, raw, local, native):
             func.lower(ShopProduct.external_code) == claim['external_code'].lower())
         if set(await db.scalars(query)) - known_mapping_ids:
             raise links.LinkError('consolidation_foreign_native_owner')
-    return {'verified_gtin_keys': sorted(gtins), 'physical_axes': physical_axes,
+    result = {'verified_gtin_keys': sorted(gtins), 'physical_axes': physical_axes,
             'same_complete_retail_unit_factor': 1}
+    if supplier_proof is not None:
+        result[supplier_identity.PROOF_KEY] = supplier_proof
+    return result
 
 
 async def _dependencies(db, raw, local, *, keeper_inputs=None):
@@ -338,7 +361,7 @@ def public(row):
         if name in plan:
             plan[name] = {shop: [{key: value for key, value in item.items() if not key.startswith('_')}
                                  for item in rows] for shop, rows in plan[name].items()}
-    return {'id': row.id, 'status': row.status, 'preview_hash': row.preview_hash,
+    result = {'id': row.id, 'status': row.status, 'preview_hash': row.preview_hash,
         'expires_at': row.expires_at.isoformat(), 'eligible': not row.document['dependencies']['blockers'],
         'keeper_product_id': row.document['request']['keeper_product_id'],
         'retired_product_ids': row.document['request']['retired_product_ids'],
@@ -348,6 +371,9 @@ def public(row):
                               for item in local['mappings']],
         'plan': plan, 'native': row.document['native'],
         'dependencies': row.document['dependencies'], 'result': row.result}
+    if row.document['request'].get(supplier_identity.FLAG):
+        result[supplier_identity.PROOF_KEY] = deepcopy(row.document['identity'][supplier_identity.PROOF_KEY])
+    return result
 
 
 async def get(db, identifier):
@@ -495,6 +521,8 @@ async def _apply(db, identifier, payload, row, *, actor=None):
     _check(row, payload)
     document = deepcopy(row.document)
     raw, local = document['request'], document['local']
+    if raw.get(supplier_identity.FLAG) and await _local(db, raw) != local:
+        raise links.LinkError('consolidation_context_changed')
     await db.commit()
     native = await _native(raw, local, frozen=document['native'])
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})

@@ -63,6 +63,7 @@ class ProductConsolidationPreviewRequest(LinkInput):
     same_physical_retail_unit_confirmed: Literal[True]
     legacy_initial_history_preserved: Literal[True]
     preserve_keeper_invoice_receiving: StrictBool = False
+    use_keeper_supplier_gtin: StrictBool = False
     identity_evidence: ConsolidationEvidence
     mapping_actions: list[ConsolidationMappingAction] = Field(max_length=50)
     additional_sales: list[ConsolidationTarget] = Field(default_factory=list, max_length=20)

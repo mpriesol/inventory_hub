@@ -52,12 +52,12 @@ async def ai(closure, raw):
 async def atomer(closure, raw):
     """One exact (campaign,family_key) closure, including every source sibling."""
     campaigns = by_id(await closure.rows('atomer_campaign', 'atomer_catalog_campaigns',
-        't.id=:campaign', {'campaign': raw['campaign']}))
+        't.id=:campaign', {'campaign': raw['campaign']}, header_projection='atomer-campaign-v1'))
     campaign = campaigns.get(raw['campaign'])
     if campaign is None:
         return None, None, {}, None
     heads = await closure.rows('atomer_current_run', 'atomer_progress_runs',
-        't.id=(SELECT max(id) FROM atomer_progress_runs)', {})
+        't.id=(SELECT max(id) FROM atomer_progress_runs)', {}, header_projection='atomer-current-run-v1')
     head = heads[0]['document'] if len(heads) == 1 else None
     # Binding the pair through this exact campaign's checked_run_id avoids an
     # independent campaign-IN/family-IN cross product and the former global join.

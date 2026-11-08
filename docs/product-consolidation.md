@@ -16,7 +16,7 @@ receiving workflow.
 ## Physical identity and allowed scope
 
 The keeper and every duplicate must be `item_type=stock`, `stock_unit=pcs`. The
-keeper must be active. The keeper must have exactly one verified GTIN identity;
+keeper must be active. By default, the keeper must have exactly one registered verified GTIN identity;
 equivalent valid UPC/EAN representations count as one identity. Every other
 verified barcode must belong to that same identity. Unrelated owners, including
 inactive owners, remain conflicts. Missing or contradictory physical variant
@@ -26,7 +26,8 @@ The review records public manufacturer or other primary source URLs, a concrete
 description of the complete physical unit, and the reason the existing cards
 refer to it. A common name alone is insufficient. The server also compares
 available canonical axes on the cards and fresh native listings. Any conflicting
-common color, size or other canonical axis blocks the operation. It never
+common color, size or other canonical axis blocks the operation, apart from the
+explicitly scoped size equivalence below. It never
 invents an EAN, manufacturer code or conversion factor.
 
 Each sales target has factor **1**. A complete sealed pair or complete cookware
@@ -47,6 +48,76 @@ validates original supplier ownership, and its deployed SQL is unchanged.
 Keeper supplier aliases and bindings remain supported. Existing pending pushes,
 non-unit factors, unsupported shop platforms and inactive shop integrations
 block the operation.
+
+### Keeper identified by one linked supplier offer
+
+`use_keeper_supplier_gtin=true` is a separate strict boolean opt-in for an
+existing keeper with **no registered or manual barcode**. False and omission
+retain the original request hashes and behavior. It does not copy, move or
+delete any identifier and cannot repair an incorrectly registered barcode.
+The existing direct-GTIN path and ordinary editor/supplier-link ownership
+checks are unchanged.
+
+The server requires exactly one supplier relation on the keeper, including any
+inactive historical relations in that count. The relation must be active,
+orderable and `pack_size=1`; its supplier and offer must be active and the offer
+must not be discontinued. A keeper-owned scoped `supplier_sku` alias must name
+that exact offer. Its stored supplier article, stored manufacturer article and
+normalized catalog manufacturer article must be equal; the catalog shop SKU
+must equal the keeper SKU. Supplier/catalog/keeper brands must agree. A missing,
+contradictory or unparseable source, an import blocker or a mismatched catalog
+observation timestamp blocks the proof.
+
+There must be exactly one checksum-normalized GTIN across both source barcode
+representations and all registered barcodes of the selected group. Its original
+registered owner must be a selected retired card; every outside registered
+identity owner, including an inactive card, remains a conflict. Two fresh reviewed native leaves provide
+independent corroboration: a leaf originally mapped to the keeper must have the
+exact supplier article in its own `code_supplier`, and a leaf originally mapped
+to a selected retired card must provide that same verified GTIN. A parent SKU,
+parent supplier code, title, guessed prefix or additional unbound sales target
+cannot supply those two proofs. The same existing bounded GETs include the leaf
+supplier-code projection only for this opt-in; no new remote request is added.
+
+All reviewed native leaves must have nonempty complete agreeing axis sets.
+Every available local or catalog variant axis must agree with that set. Raw
+general catalog parameters are not inferred to be variant axes. Only within
+this fully corroborated branch, the named apparel size spellings `XXXL` and
+`3XL` compare as the same size. All other sizes and all non-size axes retain
+their existing comparison. Raw source, local and native attributes remain in
+the proof and remain unchanged in their original records. This rule does not
+alter the shared `product_links.axes()` normalizer.
+
+The public preview and completed/recovered response include
+`supplier_gtin_proof` with a typed source identity, its exact relation and alias
+IDs, activity/pack facts, observation time, full SHA256 hashes of supplier,
+offer, relation and alias rows, raw source attributes/axes, registered barcode
+IDs and owners, exact native mappings/IDs/codes/EANs and raw attributes/axes,
+raw local axes, the named `axis_rule` and the resulting common `physical_axes`.
+The operator supplies only the boolean opt-in; client-supplied exemption IDs,
+GTIN proofs or ignored axes are not accepted.
+
+The source snapshot is compared before and after native reads, including a
+fresh local comparison before apply consumes any remote quota. The locked
+comparison uses the existing identity/Product lock order and supplier input
+`SHARE NOWAIT` fences. Selected source, relation and alias row `FOR SHARE` reads make concurrent
+changes in the preview's repeatable-read snapshot fail explicitly. Apply
+rechecks the same complete proof while the source and ownership fences remain
+held through commit; an existing writer returns a known-unapplied busy result.
+No native HTTP executes while these database fences are held. GTIN evidence is
+not an availability freshness claim: its exact source observation is frozen and
+must match the current database and fresh native identity, without inventing a
+stock-feed age threshold.
+
+The original identifier rows and all stock/history records stay on their
+original IDs. Only the normal consolidation alias makes the retained GTIN
+visible on the keeper. `typed-catalog-scope-v5` validates the complete new proof
+against its frozen request, source, local owners and native lineage before
+classifying a saved consolidation. Unknown or changed proof fields remain
+blocking. Older prepared reviews require a fresh preview after this parser
+change; completed UUID replays remain readable. No SQL migration or stock
+authority change is required. Synthetic tests are not evidence that a live
+group has been consolidated.
 
 ## API contract
 
@@ -304,7 +375,7 @@ consolidation-review and catalog-journal writer schemas. Hub product IDs,
 supplier product IDs, mapping IDs and shop-qualified native product/variant
 IDs have separate namespaces. Dictionary keys in an Atomer selection and
 dictionary values in a saved Hub-owner map are inspected as identities.
-Unknown fields, missing lineage, invalid barcodes and incomplete observations
+Unknown fields, missing lineage, unsupported barcode shapes and incomplete observations
 produce an explicit hold, including unsupported documents otherwise unrelated
 to the selected group. Unknown JSON tables keep the conservative existing
 reference guard.
@@ -327,6 +398,31 @@ included in that union. No campaign or job status makes the job harmless.
 Every saved/current guard is validated before comparison; a missing or added
 family member, unknown field or malformed scope retains an explicit hold.
 
+The original Atomer progress `ean`, `target_ean`, saved card receipt `ean` and
+barcode-correction `before` are audited raw identities. They may contain a
+legacy value that the migration worker still refuses to publish. The scope
+parser retains the complete scalar and compares its exact raw value and each
+token against registered aliases/SKUs. It uses the existing identifier
+splitter for slash, comma, semicolon and whitespace compounds and checks every
+checksum-valid GTIN member. Alphanumeric legacy tokens remain literal; an
+embedded numeric substring, invalid checksum, zero sentinel or trailing letter
+never becomes a verified GTIN. An exact repeated source SKU also retains its
+documented placeholder meaning. Unsupported separators, non-string values and
+unbounded compounds remain holds. This does not change barcode registration,
+the worker's rejection, or strict barcode validation in other document types.
+
+Saved native card receipts may include exactly `shop_url` and
+`shop_admin_url`, each a nullable URL sanitized by the existing link-source
+writer. They are navigation context; every code, native ID, mapping and Hub
+owner is still checked. An extra field or malformed navigation value remains
+unknown. The immutable report can also explicitly record `state=review` with
+`kind_differs`: an Atomer source variant and an observed shop standalone (or
+the reverse) are two distinct, known shapes. The parser checks the source
+family/parent and the native code/product/variant/parent independently, retains
+the actual shop leaf and all possible native parent effects, and leaves the
+migration conflict unresolved. A missing conflict record, inconsistent family
+or incomplete native leaf cannot use this interpretation.
+
 Possible xTrek parent effects include the current native family, frozen card
 receipts and their exact mapping-owner lineage, the old document, and native
 IDs in acknowledgements and content results. A later content phase is included
@@ -340,7 +436,10 @@ A newer run or a concurrent header writer blocks the existing preview.
 This changes only read-only dependency classification, with no SQL migration
 or activation of an Atomer job. Synthetic tests exercise the real review
 completion transition, affected owners, changed parents, malformed guards and
-preview-to-apply drift while preserving the stock ledger.
+preview-to-apply drift while preserving the stock ledger. Additional tests use
+the real source/report writer for invalid source values and kind conflicts;
+PostgreSQL preview/apply/replay tests retain the exact original Atomer rows,
+registered identifiers and stock, and recheck raw-identity/navigation drift.
 
 Staged AI requires the actual stored draft ID, reciprocal row/job links, exact
 source selection and the original AI baseline. The complete current draft is
@@ -386,8 +485,8 @@ eligibility exception or limit increase. Work metadata reports the bounded
 reuse footprint and hit/miss counts separately from logical link coverage.
 
 Complete linked selections also reuse immutable serialized inputs within that
-same inspection. Their key includes the exact table, selection predicate and
-all parameters. A hit decodes a fresh copy in the original dictionary order;
+same inspection. Their key includes the exact table, selection predicate,
+all parameters and any fixed header profile. A hit decodes a fresh copy in the original dictionary order;
 the parser runs again and every operation still contributes its complete row
 hashes and logical edges. Selection statistics and the per-operation row,
 largest-row and retained-payload guards are checked on every use. The original
@@ -396,6 +495,20 @@ selection and compared with its decoded rows; a hit needs no repeated SQL
 serialization for those same statistics in the stable snapshot. Proven empty
 selections are included. No partial page, standalone statistics, classification
 or truncated projection is reused.
+
+Only the shared Atomer campaign and current source-run headers use fixed,
+versioned interpreter profiles. The campaign profile retains `id`, `state`,
+`checked_run_id`, `source_sha`, `admin_sha` and the **entire raw `selection`**,
+including every barcode correction. The source-run profile retains `id`,
+`source_sha256` and `admin_export_sha256`. Each initial database read still
+hashes and accounts for the complete original row, including omitted display
+and operational metadata. Every later logical edge retains that original
+key, byte count and hash. A change outside the projected fields therefore
+still changes the complete proof and invalidates a stale apply. Profiles are
+bound to exact roles/tables, have separate cache keys, and reject missing
+fields. All family, job, review, mapping, source and publication documents
+remain complete. This reduces repeated decoding without changing semantic
+classification, scope, row/work/time limits or mutation isolation.
 
 Linked-input reuse has a 16,000,000-byte sublimit inside the same 64,000,000-byte
 allowance, shared with the full current operation and the identity cache.
@@ -418,6 +531,33 @@ context, while matching uncertain/missing/malformed intent remains blocked.
 File bytes are separately reported for each of the two observations; they are
 not charged as database work. The per-pass byte limit is unchanged. These
 numbers describe serialized file sets, not physical I/O or memory consumption.
+
+The catalog variant writer's singular `image` is recognized only as an exact
+`{"url": "nonempty string"}` object on a variant. Unknown image keys, nested URL
+objects and the same unrecognized field on a parent remain blocked. Image
+content does not replace code, GTIN or native-leaf checks; the entire payload
+remains part of the unchanged journal hash.
+
+A staged journal retains both its complete frozen source/payload scope and the
+complete linked current draft. The draft UUID, supplier, selected source IDs and
+feed namespaces must agree, and every selected current Hub owner must be
+present. A nonempty frozen `saved_product_ids` map must cover exactly all journal
+sources; its original Hub claims remain in the proof even if the current owners
+differ. Legacy missing/empty maps use the same current-draft owner lookup as
+`catalog_import.register_created`. Current codes, GTINs, expected owners, AI
+baselines, other draft rows and publication references are still inspected.
+
+A changed staging content hash on an unsettled journal records this combined
+scope; it never proves completion or erases an uncertain/invalid item. The
+publication writer's `assert_snapshot` and `register_created` guards are
+unchanged. Matching either
+the frozen or current scope still blocks consolidation, while a complete
+disjoint journal can be preserved without running recovery. Missing owners or
+sources, unknown fields and incomplete lineage remain holds. Full journal and
+linked-draft hashes still reject changes between preview and apply. These are
+read-only proof changes, with no migration, remote write or limit increase.
+Already settled items retain all owner checks without recomputing the extra
+current-content digest; full row and file hashes still cover their evidence.
 
 Preview starts one repeatable-read database snapshot before the first
 post-native advisory-lock statement. A serialization race rolls back and
