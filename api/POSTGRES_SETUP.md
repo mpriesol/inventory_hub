@@ -1,303 +1,102 @@
-# PostgreSQL Setup for Inventory Hub v12 FINAL
+# Inštalácia, aktualizácia a obnova Inventory Hubu
 
-## Overview
+Toto je spoločný návod pre prostredie a databázu. [README](../README.md) je vstupný prehľad; [CI a nasadzovanie](../docs/ci-deployment.md) opisuje podrobnosti existujúceho release workflow. Použiť len prostredie a operácie pokryté aktuálnym zadaním a [oprávneniami](../AGENTS.md).
 
-Inventory Hub v12 uses PostgreSQL for:
-- **30 tables** with proper foreign keys and constraints
-- **Multi-EAN support** via `product_identifiers` table
-- **Immutable stock ledger** with trigger protection
-- **Receiving deduplication** via `line_number NOT NULL`
+## Prostredie a lokálny vývoj
 
----
-
-## Quick Start
-
-### 1. Install PostgreSQL 15+
-
-**Windows:**
-```powershell
-# Using winget
-winget install PostgreSQL.PostgreSQL.15
-
-# Or download installer from https://www.postgresql.org/download/windows/
-```
-
-**macOS:**
-```bash
-brew install postgresql@15
-brew services start postgresql@15
-```
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt update
-sudo apt install postgresql-15 postgresql-client-15
-sudo systemctl start postgresql
-```
-
-### 2. Create Database
+Zdrojové nastavenia používajú Python 3.12, PostgreSQL 16 a Node.js 20 v CI. Príkazy nižšie sa spúšťajú z koreňa repozitára a predpokladajú **samostatnú lokálnu databázu s pripravenou schémou**.
 
 ```bash
-# Connect as postgres user
-sudo -u postgres psql
-
-# Create database and user
-CREATE DATABASE inventory_hub;
-CREATE USER inventory_user WITH PASSWORD 'your_secure_password';
-GRANT ALL PRIVILEGES ON DATABASE inventory_hub TO inventory_user;
-
-# Connect to new database
-\c inventory_hub
-
-# Grant schema permissions
-GRANT ALL ON SCHEMA public TO inventory_user;
-\q
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r api/requirements.txt
+npm --prefix frontend ci
 ```
 
-### 3. Run Schema
+Do lokálneho necommitovaného `.env` nastaviť vlastné hodnoty podľa [settings.py](inventory_hub/settings.py):
+
+| Nastavenie | Účel |
+| --- | --- |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Vlastná izolovaná PostgreSQL DB a jej vlastník; pri vývoji localhost, nikdy produkčná DB. |
+| `USE_POSTGRES=true` | Aktuálny databázový skladový režim. |
+| `INVENTORY_DATA_ROOT` | Existujúci absolútny adresár oddelených lokálnych dát. |
+| `SUPPLIER_CREDENTIALS_ROOT` | Oddelený chránený adresár dodávateľských prístupov mimo verejných dát. |
+| `AI_CONTENT_ACCESS_TOKEN` | Vlastný lokálny operátorský token aspoň 24 znakov; používa ho aj prvé prihlásenie. |
+
+`ROOT_PATH` číta `main.py` priamo z prostredia procesu, nie zo Settings `.env`. Pri priamom lokálnom API ho ponechať prázdny; za proxy s prefixom `/api` ho pred spustením API nastaviť cez `export ROOT_PATH=/api`.
+
+Prístupy ani produkčné dáta nekopírovať do Git. Na nový vývoj nie sú potrebné živé e-shopové či AI prístupy. Predvolené nastavenia `STOCK_PUBLICATION_WRITE_ENABLED`, `STOCK_SYNC_WRITE_ENABLED`, `FIFO_COST_SYNC_WRITE_ENABLED` a `ATOMER_CATALOG_WORKER_ENABLED` zostávajú `false`.
+
+Po príprave schémy:
 
 ```bash
-# Using psql (recommended for error handling)
-psql -v ON_ERROR_STOP=1 -U inventory_user -d inventory_hub -f schema_v12_FINAL.sql
-
-# Expected output at end:
-# ╔═══════════════════════════════════════════╗
-# ║      === ALL SMOKE TESTS PASSED ===       ║
-# ╚═══════════════════════════════════════════╝
+PYTHONPATH=api python -m inventory_hub.migrate
+PYTHONPATH=api python -m uvicorn inventory_hub.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### 4. Configure Python Application
+V druhom termináli možno spustiť `npm --prefix frontend run dev`. Samotný Vite server nie je kompletná prihlasovacia zostava: [vite.config.ts](../frontend/vite.config.ts) nemá API proxy a časť klienta používa priamo `/api`. Pre celé UI treba rovnaký HTTPS pôvod pre frontend, `/api` a súbory `/data`, s proxy do lokálneho API. Samotné `VITE_API_BASE` toto nenahrádza. Cookie relácie vyžadujú HTTPS a kontrolu rovnakého pôvodu; [autentizačný kontrakt](../docs/user-accounts.md) sa pri vývoji nevypína.
 
-Create `.env` file in `api/` directory:
-
-```env
-# PostgreSQL
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=inventory_hub
-DB_USER=inventory_user
-DB_PASSWORD=your_secure_password
-
-# Feature flags
-USE_POSTGRES=true
-
-# File storage (update path for your system)
-INVENTORY_DATA_ROOT=C:/path/to/inventory-data
-```
-
-### 5. Install Python Dependencies
+Kontroly bez externých zápisov:
 
 ```bash
-cd api
-pip install -r requirements.txt
+python -m compileall -q api/inventory_hub
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
 ```
 
-New dependencies added for PostgreSQL:
-- `sqlalchemy[asyncio]>=2.0` - ORM with async support
-- `asyncpg>=0.29` - PostgreSQL async driver
-- `psycopg2-binary>=2.9` - PostgreSQL sync driver (for migrations)
-- `greenlet>=3.0` - SQLAlchemy async internals
+Databázové testy používajú vlastnú localhost DB s názvom končiacim `_catalog_test`; presné príkazy a UI sady sú v [AGENTS.md](../AGENTS.md) a [CI](../.github/workflows/ci.yml).
 
-### 6. Start Application
+## Nová prázdna databáza
+
+Repozitár obsahuje **50 SQL súborov `001`–`050`** v [infra/db-init](../infra/db-init/). `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
+
+[Referenčný Compose](../infra/docker-compose.prod.yml) pripája celý adresár do `/docker-entrypoint-initdb.d`; inicializátor PostgreSQL ho použije iba pri prázdnom dátovom volume. Pri existujúcej databáze sa tento adresár znovu nespúšťa. Nevytvárať preto nové produkčné volume ako spôsob aktualizácie a nepúšťať `001` nad existujúcimi dátami.
+
+**Overené 8. 11. 2026:** v novej izolovanej PostgreSQL 16.2 DB prešlo všetkých 50 SQL súborov `001`–`050` v poradí s `ON_ERROR_STOP=1`, potom aj skutočný 39-krokový `inventory_hub.migrate`. Overenie sa týkalo SQL a runnera; nebolo zostavením Docker obrazu ani testom celej novej serverovej inštalácie. Testovacia DB bola po kontrole odstránená, produkcia sa nemenila.
+
+Pre už vytvorenú **prázdnu lokálnu DB** nastav v prostredí `PGHOST=127.0.0.1`, správny `PGPORT`, `PGDATABASE`, `PGUSER` a bezpečný lokálny spôsob prihlásenia pre `psql`. Tieto hodnoty musia ukazovať na tú istú izolovanú DB ako `DB_*` v aplikácii. Potom z koreňa repozitára:
 
 ```bash
-cd api
-uvicorn inventory_hub.main:app --reload
+for sql in infra/db-init/[0-9][0-9][0-9]_*.sql; do
+  psql --no-psqlrc --set=ON_ERROR_STOP=1 --file="$sql" || exit 1
+done
+PYTHONPATH=api python -m inventory_hub.migrate
 ```
 
-Check health endpoint:
-```bash
-curl http://localhost:8000/health
-```
+Pri chybe nepokračovať ďalším súborom. Základná schéma nie je opakovateľný upgrade; čiastočne vytvorenú lokálnu testovaciu DB treba posúdiť pred novým pokusom. Tento postup sa nepoužíva nad existujúcou produkciou.
 
-Expected response:
-```json
-{
-  "status": "ok",
-  "version": "12.0.0",
-  "use_postgres": true,
-  "database": {
-    "status": "healthy",
-    "database": "connected"
-  }
-}
-```
+Dodávateľské/shop konfigurácie a prístupy spravovať cez existujúce konfiguračné postupy; filesystem šablóna sama nevytvorí zodpovedajúce databázové väzby. Nepreberať zo starých návodov ručné SQL zápisy pohybov, cien či identít.
 
----
+## Aktualizácia existujúcej databázy
 
-## Key Tables Overview
+Autoritatívne poradie je v [migrate.py](inventory_hub/migrate.py), SQL balenie v [API Dockerfile](Dockerfile).
 
-### Core Entities
-| Table | Purpose |
-|-------|---------|
-| `warehouses` | Physical storage locations |
-| `suppliers` | Vendors (Paul-Lange, etc.) |
-| `shops` | E-commerce platforms (Upgates, Atomeri) |
-| `products` | Master product catalog |
-| `product_identifiers` | **Multi-EAN support** - multiple barcodes per product |
+| Časť | Aktuálny rozsah |
+| --- | --- |
+| Základ schémy | SQL `001`–`004`; upgrade runner existujúci základ predpokladá. |
+| Upgrade runner | 39 Python modulov: `005`–`038`, potom `046`–`050`. |
+| Spoločný Atomer krok | [atomer_review_migrate.py](inventory_hub/atomer_review_migrate.py) vykonáva SQL `038`–`045` spolu v jednej transakcii. |
+| SQL v API obraze | Všetkých 46 upgrade súborov `005`–`050`. |
 
-### Stock Management
-| Table | Purpose |
-|-------|---------|
-| `stock_balances` | Current quantity per warehouse |
-| `stock_movements` | **Immutable ledger** - all in/out transactions |
+V existujúcom release workflow sa po stiahnutí obrazov vykoná `python -m inventory_hub.migrate` v jednom dočasnom API kontajneri, pred obnovením služieb. Každý modul zachováva vlastnú transakciu a advisory lock. Nie je to jedna transakcia cez celý upgrade: pri chybe sa runner zastaví, hotové moduly zostanú potvrdené a reštart API sa nedosiahne.
 
-### Receiving Workflow
-| Table | Purpose |
-|-------|---------|
-| `receiving_sessions` | Invoice import sessions |
-| `receiving_lines` | Individual invoice lines with `line_number NOT NULL` |
-| `scan_events` | Barcode scan history with undo support |
+Nová migrácia potrebuje nové číslo, zapojenie do runnera, balenie do obrazu a overenie. Už nasadené SQL sa neupravujú. Schéma sama neaktivuje skladové zápisy. Konkrétne dátové účinky existujúcich migrácií, napríklad úprava zapnutých dodávateľských intervalov v `034`, zostávajú súčasťou ich [prevádzkového kontraktu](../docs/ci-deployment.md).
 
-### Sync & Availability
-| Table | Purpose |
-|-------|---------|
-| `shop_product_availability` | Computed availability per shop |
-| `shop_sync_outbox` | Reliable delivery queue for shop updates |
-| `supplier_feeds` | Automated supplier data imports |
+## Produkčné nasadenie
 
----
+Používať [build.yml](../.github/workflows/build.yml) na `main` podľa existujúceho oprávnenia. Obrazy API/frontend sa zostavia paralelne; celý release je serializovaný s vypnutým rušením bežiaceho nasadenia. Markdown/docs-only zmeny automatický release nespúšťajú. Ručný dispatch `deploy=false` zostaví iba SHA obrazy, bez zmeny produkčného tagu a bez SSH deploymentu.
 
-## Multi-EAN Support
+Server pracuje s vlastným `docker-compose.yml` a generovaným `docker-compose.ai-content.yml`. Overlay zachováva tajné konfigurácie, supplier secrets volume a Caddy sieť `sps-proxy`. Referenčný Compose v repozitári sa nesmie zamieňať za overený aktuálny serverový súbor.
 
-The v12 schema supports multiple barcodes per product:
+Workflow kontroluje sieť a Compose konfiguráciu, stiahne obrazy, vykoná migrácie a obnoví `api`, `frontend-build`, `caddy`. Následne overí verejné zdravie DB, zamietnutie anonymného prístupu, autorizovaný stav AI a nedostupnosť raw konfigurácie; samostatne aj `/sps/healthz`. Obrazy čistí až po úspechu. Presné limity a diagnostika sú v [CI a nasadzovaní](../docs/ci-deployment.md).
 
-### Example: Paul-Lange Product with Multiple Codes
-```sql
--- Product with compound EAN from feed: "398828/6927116185329/6938112675813"
-INSERT INTO products (sku, name, supplier_id) VALUES ('PL-398828', 'Test Product', 1);
+## Záloha a obnova
 
-INSERT INTO product_identifiers (product_id, identifier_type, value, is_primary) VALUES
-  (1, 'unverified_barcode', '398828', false),
-  (1, 'ean', '6927116185329', true),       -- Primary barcode
-  (1, 'ean', '6938112675813', false);
+Konzistentný bod obnovy zahŕňa PostgreSQL, aplikačné dáta, deployment konfiguráciu a supplier secrets. [backup_inventory.py](../scripts/backup_inventory.py) tento rozsah archivuje a overuje obnovu DB v izolovanom kontajneri. Nástroj sám nezastavuje ani nespúšťa služby a nikdy neobnovuje produkciu.
 
--- Lookup by ANY code returns same product
-SELECT p.* FROM products p
-JOIN product_identifiers pi ON p.id = pi.product_id
-WHERE pi.value IN ('398828', '6927116185329', '6938112675813');
-```
+1. Pri tvorbe novej zálohy správca v dohodnutom okne pozastaví všetkých writerov a zastaví API. Nástroj odmietne bežiace API; `--writers-paused` je potvrdenie obsluhy, nie detekcia všetkých zápisov. Zachovať nastavenia a následne zosúladiť objednávky vzniknuté počas okna.
+2. Použiť presné serverové Compose súbory vrátane overlayu a existujúci [postup vytvorenia zálohy](../docs/sku-migration.md#overiteľná-serverová-záloha-pred-pilotom). Archívy obsahujú tajomstvá a zákaznícke doklady; uchovávať ich chránené mimo Git.
+3. Za overenú považovať iba zálohu s úspešným manifestom, kontrolami SHA-256 a dokončenou izolovanou obnovou. Režim `--verify-existing` môže znovu overiť presnú dokončenú zálohu bez zastavenia produkcie; potrebuje jej pôvodný lokálny PostgreSQL image a dostatok zdrojov. [Podrobný postup](../docs/sku-migration.md#opätovné-overenie-existujúcej-zálohy-bez-odstávky).
+4. Skutočná obnova servera vyžaduje výber konzistentnej zálohy, kontrolu oprávnení súborov, konfigurácií, volumes, kompatibility kódu a všetkých externých operácií po bode obnovy. Izolovaná kontrola DB sama nepotvrdzuje kompletnú obnovu aplikácie. Repo nemá automatický príkaz na obnovu produkcie.
 
-### Barcode Classification
-| Type | Pattern | Uniqueness |
-|------|---------|------------|
-| `ean` | 13/8 digits with valid checksum | Globally unique |
-| `upc` | 12 digits with valid checksum | Globally unique |
-| `unverified_barcode` | 4-10 digits | Unique per product |
-| `supplier_sku` | Any | Unique per supplier |
-| `internal_sku` | Any | Globally unique |
-
-### Primary Barcode Constraint
-Only ONE barcode can be primary across the "barcode group" (ean, upc, unverified_barcode):
-```sql
--- This enforced by partial unique index:
--- idx_identifiers_primary_barcode_group
-```
-
----
-
-## Immutable Stock Ledger
-
-Stock movements cannot be modified after creation:
-
-```sql
--- This will FAIL:
-UPDATE stock_movements SET quantity = 10 WHERE id = 1;
--- ERROR: stock_movements is immutable
-
--- CORRECT: Create compensating movement
-INSERT INTO stock_movements (
-  idempotency_key, product_id, warehouse_id, movement_type, quantity,
-  balance_after, avg_cost_after, notes
-) VALUES (
-  'correction:1:20260126', 1, 1, 'ADJUSTMENT_OUT', -2,
-  18, 10.00, 'Correction for movement #1'
-);
-```
-
----
-
-## Receiving Dedup
-
-v12 FINAL uses `line_number NOT NULL` for duplicate prevention:
-
-```sql
--- Each import assigns sequential line numbers: 1, 2, 3...
-INSERT INTO receiving_lines (session_id, line_number, ean, ordered_qty, ...)
-VALUES 
-  (100, 1, '1234567890123', 5, ...),
-  (100, 2, '9876543210987', 3, ...),
-  (100, 3, '1234567890123', 2, ...);  -- Same EAN, different line = OK!
-
--- Double-import blocked by UNIQUE(session_id, line_number)
-INSERT INTO receiving_lines (session_id, line_number, ean, ordered_qty, ...)
-VALUES (100, 1, '1234567890123', 5, ...);  -- FAILS - line_number 1 already exists
-```
-
----
-
-## Troubleshooting
-
-### Connection Refused
-```
-connection refused (os error 111)
-```
-**Fix:** Ensure PostgreSQL is running:
-```bash
-# Linux
-sudo systemctl status postgresql
-
-# Windows
-net start postgresql-x64-15
-
-# macOS
-brew services list
-```
-
-### Permission Denied
-```
-permission denied for schema public
-```
-**Fix:** Grant schema permissions:
-```sql
-GRANT ALL ON SCHEMA public TO inventory_user;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO inventory_user;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO inventory_user;
-```
-
-### Extension Errors (uuid-ossp, pg_trgm)
-These extensions are **optional** and commented out in schema. If you need them:
-```sql
--- Connect as postgres superuser first
-\c inventory_hub postgres
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-```
-
-### Smoke Tests Failed
-If any smoke test fails during schema creation, check the specific error. Common issues:
-- Missing seed data (warehouses, shops)
-- Incorrect enum values
-- Constraint violations in test data
-
----
-
-## Files Reference
-
-| File | Purpose |
-|------|---------|
-| `schema_v12_FINAL.sql` | Complete DDL with 30 tables, 12 smoke tests |
-| `DATABASE_DESIGN_v12_FINAL.md` | 10 invariants, design decisions |
-| `MIGRATION_NOTES_v12_FINAL.md` | Upgrade guide from v11 |
-| `IMPLEMENTATION_CHECKLIST_v12_FINAL.md` | Service implementation patterns |
-
----
-
-## Next Steps
-
-1. ✅ Database created and schema loaded
-2. ✅ Python dependencies installed
-3. ✅ Application connected
-4. 🔲 Seed initial data (suppliers, warehouses)
-5. 🔲 Test receiving workflow
-6. 🔲 Configure shop sync
+Pri neúspešnom upgrade najprv identifikovať fázu a modul. Dokončené migrácie nemaže revert kódu; zachovať nemenné pohyby, FIFO, aliasy, UUID výsledky, denníky a neisté zápisy. Oprava musí byť kompatibilná s uloženými dátami. Obnova DB nevracia už vykonaný Upgates zápis; riadi sa aj [kontraktom dotknutej funkcie](../OVERVIEW.md#aktuálny-stav-funkcií-a-obrazoviek).

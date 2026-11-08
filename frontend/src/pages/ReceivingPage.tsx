@@ -6,23 +6,12 @@ import {
   Upload, Download, ExternalLink, XCircle, CheckCircle, FileText
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
-import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem } from '../api/invoices';
+import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem, type RefreshResult } from '../api/invoices';
 import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
 import { createReceivingSession, resumeReceiving, reopenInvoice, getActiveSession, getReceivingSummary, lookupReceivingInvoice, type ReceivingInvoiceCandidate } from '../api/receiving';
 import { API_BASE } from '../api/client';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 import { duplicateReceivingLink, receivingSourceError } from '../features/receiving/sourceErrors';
-
-interface RefreshResult {
-  ok: boolean;
-  downloaded: number;
-  skipped: number;
-  failed: number;
-  pages?: number;
-  errors?: string[];
-  log_files?: string[];
-  message?: string;
-}
 
 interface InvoiceDisplay {
   id: string;

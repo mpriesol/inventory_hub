@@ -1,5 +1,16 @@
 import { API_BASE, fetchJSON } from "./client";
 
+export interface RefreshResult {
+  ok: boolean;
+  downloaded: number;
+  skipped: number;
+  failed: number;
+  pages?: number;
+  errors?: string[];
+  log_files?: string[];
+  message?: string;
+}
+
 export async function refreshSupplierInvoices(
   supplier: string,
   monthsBack: number = 3,
@@ -7,7 +18,7 @@ export async function refreshSupplierInvoices(
 ) {
   const body: any = { months_back: monthsBack };
   if (strategy) body.strategy = strategy;
-  return fetchJSON(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/invoices/refresh`, {
+  return fetchJSON<RefreshResult>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/invoices/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

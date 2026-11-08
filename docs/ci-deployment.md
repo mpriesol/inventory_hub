@@ -28,9 +28,11 @@ requires a localhost database whose name ends in `_catalog_test`; the original
 test-specific database guards still apply. Never run these tests against a live
 warehouse database.
 
-Pip downloads are cached against `api/requirements.txt`. The frontend retains its
-npm cache, build and all configured jsdom interaction suites. No application tests are
-removed. The ordinary serial `unittest discover` command in [AGENTS.md](../AGENTS.md)
+Pip downloads are cached against `api/requirements.txt`. The frontend runs
+`npm ci`, `tsc --noEmit` through `npm run typecheck`, the Vite build and all
+33 current `frontend/tests/*.cjs` interaction suites explicitly listed in CI.
+Type checking and jsdom checks cover different failures; neither verifies browser layout.
+The ordinary serial `unittest discover` command in [AGENTS.md](../AGENTS.md)
 remains useful for local diagnosis; disclose database skips in local results.
 
 `frontend/tests/product-consolidation-ui.cjs` covers reviewed card merging,
@@ -106,13 +108,17 @@ The image must still be available from GHCR. The release's image tags, serial
 execution, migration order, phase errors and readiness checks are unchanged.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes thirty-two upgrade
-modules, `005` through `036`, in their existing order. Each module retains its
+temporary API container. Its explicit list invokes thirty-nine upgrade
+modules: `005`–`038`, then `046`–`050`. The `atomer_review_migrate` module
+executes SQL `038`–`045` together in its transaction. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The first failure stops the runner and prevents the service restart. Already
 committed migrations remain applied. No schema SQL is changed by this optimization.
-New migrations require explicit runner and image-packaging updates. The warehouse
-model changes add `030_shop_identity.sql`, `031_item_units.sql` and
+The image packages all forty-six upgrade SQL files `005`–`050`; the repository
+contains fifty SQL files including the initial `001`–`004` schema. New migrations
+require explicit runner and image-packaging updates. Initialization of an empty
+database and backup/recovery are covered by the [setup guide](../api/POSTGRES_SETUP.md).
+The warehouse model changes add `030_shop_identity.sql`, `031_item_units.sql` and
 `032_supplier_authority.sql`; they retain historical data and leave publication
 authority switches unchanged. After new unit/identity writes, recovery uses a
 compatible forward fix, not old writers that ignore these fields.
@@ -128,17 +134,23 @@ Rollback should pause webhook settings and supplier publication, retain all new
 tables, event generations and uncertain-write evidence, then use a compatible
 forward fix. Reverting code does not undo the daily schedule migration.
 
-After successful migrations, the existing `--force-recreate` for `api`,
-`frontend-build` and `caddy` remains. Both public health routes must return HTTP
-200 in the same readiness round within the shared 60-second limit. Requests are
-capped at five seconds; response bodies and credentials are not logged. Image
-cleanup runs only after readiness succeeds. Preserve the existing Compose secret
-overlay and supplier credential volume during deployment or recovery.
+After successful migrations, deployment recreates `api`, `frontend-build` and
+`caddy` with the existing `--force-recreate`. The read-only
+[`inventory_hub.security_check`](../api/inventory_hub/security_check.py) runs
+inside the API container against public HTTPS. It checks healthy PostgreSQL via
+`/api/health`, anonymous HTTP 401 for stock and configuration paths,
+authenticated HTTP 200 for `/api/ai-content/status`, and HTTP 404 for raw
+configuration even after authentication. It uses the configured token inside
+the container, never in command arguments or logs, and rejects redirects.
+Each request has at most three seconds within a maximum twelve-second probe;
+the workflow retries probes within its shared sixty-second readiness window.
+Image cleanup follows only after Hub and SPS readiness succeed. Preserve the
+Compose secret overlay and supplier credential volume during deployment or recovery.
 
 On failure, use the failing phase/module and Actions outcome to diagnose before
 retrying. Do not edit deployed SQL or erase warehouse data. Reverting this pipeline
 change reverts orchestration, not already committed migrations; the migration
-modules remain independently callable. See [OVERVIEW.md](../OVERVIEW.md#produkčné-nasadzovanie-a-diagnostika)
+modules remain independently callable. See the [setup and recovery guide](../api/POSTGRES_SETUP.md)
 for the production and rollback boundaries.
 
 ## SPS proxy network (23 October 2026)
@@ -186,10 +198,4 @@ cases; this is not a direct measurement of fixture-only time.
 The release's API build/push step took 2:26, frontend build/push 0:34, and server
 deployment 1:15. The original builds were sequential. Migration execution used
 nineteen container starts and took approximately 33 seconds. These are historical
-baseline values, not measurements of the optimized implementation. The proposed
-6–8-minute combined target is an estimate until comparable runs establish it.
-
-
-Od 14. 10. 2026 readiness používa `inventory_hub.security_check` v API kontajneri proti verejnému HTTPS. Overuje zdravú DB, anonymné HTTP 401 pre sklad a konfiguračné cesty, autorizovaný stav AI a HTTP 404 pre raw konfiguráciu aj po prihlásení. Kľúč sa neobjaví v argumentoch ani logu. Kontrola je čítacia, nepovoľuje presmerovania a opakuje sa najviac počas existujúceho 60-sekundového okna. Anonymné HTTP 200 pre `/ai-content/status` už nie je úspešný stav.
-
-Migration033 (`033_invoice_archive.sql`) adds the external document archive, indexed invoice items and append-only settlement evidence. It is packaged and explicitly run after032; it does not download documents or issue invoices. CI also runs `invoices-ui.cjs` and `product-trace-ui.cjs`.
+baseline values, not measurements of the current implementation.

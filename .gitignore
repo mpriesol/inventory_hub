@@ -24,6 +24,7 @@ supplier-secrets/
 
 # Build artifacts
 *.log
+/api/api_structure.txt
 
 # IDE
 .vscode/

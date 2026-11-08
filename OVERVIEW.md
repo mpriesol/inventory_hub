@@ -1,735 +1,96 @@
 # Inventory Hub — prehľad projektu
 
-## Jednorazová atómová migrácia overených identít (8. 11. 2026)
+Inventory Hub spája produkty, dodávateľské doklady a fyzický sklad pre **BIKETREK** a **xTrek**. Technické kódy e-shopov zostávajú `biketrek` a `xtrek`.
 
-Samostatné operátorské API `product-consolidations/one-off/preview`,
-`one-off/apply` a `one-off/{request_id}` prijíma presný, vopred overený zoznam
-skupín a zachytené úplné katalógové podklady BIKETREK/xTrek. Čítací náhľad
-vypočíta hash aktuálnych kariet, mapovaní a pôvodnej histórie; potvrdenie
-znovu overí rovnaký rozsah pod zámkami a uloží všetky skupiny v jednej
-databázovej transakcii. Používa existujúce audity, odchod starých mapovaní
-a kanonické aliasy z migrácie 047, bez novej schémy, presunu histórie či súčtu
-množstiev. Pozastavené katalógové úlohy a ich dôkazy zostávajú nezmenené.
-Žiadna časť dávky nevolá vzdialené API. Predchádzajúce overené variantové osi
-sú výslovne oddelené od čerstvého katalógového pozorovania. Bežný interaktívny
-postup a jeho kontrola závislostí zostávajú samostatné. Podrobnosti vrátane
-obnovy po neistej odpovedi sú v [operátorskom kontrakte](docs/product-consolidation.md#one-off-atomic-identity-migration).
-Jednorazová dávka rozpoznáva aj pôvodné SKU importného pohybu cez presný
-interný alias tej istej karty bez dodávateľského rozsahu a cudzieho vlastníka.
-Pôvodné pohyby a aliasy zachováva; ostatné kontroly fyzickej histórie nemení.
-Pri publikačnej prekážke uvedie konkrétnu tabuľku. Chýbajúci alebo JSON `null`
-náhľad AI publikácie sa nepovažuje za čakajúci zápis; neznámy obsah ho blokuje.
-Implementácia má syntetické integračné testy; konkrétna živá dávka vyžaduje
-samostatné posúdenie aktuálneho náhľadu a výsledku.
-
-## Trvalé odovzdanie úlohy Atomeru so zachovanými kartami (8. 11. 2026)
-
-Samostatný [handoff pozastavenej úlohy](docs/atomer-catalog-handoff.md) zachová
-vytvorené/znovu použité karty, pôvodné dôkazy a review. Nový čítací
-`jobs/handoff-control` a potvrdený `jobs/handoff` vyžadujú úplnú rodinu,
-čerstvý hash a úplnú kontrolu aktuálnych zápisov vrátane skrytých mapovaní,
-kanonických aliasov a konfliktných vlastníkov. Podporovaný stav `pending`
-má skutočné SQL NULL dokumentu, doslovné `{}` potvrdenie a nulovú revíziu
-riadenia; neisté či neúplné natívne zámery zostávajú zablokované. Migrácia 050
-pridáva nemenný audit a trvalý SQL zákaz obnovenia odovzdanej úlohy. Fyzický
-sklad ani história sa nemenia a kampaň zostáva pozastavená. Počty odovzdaných
-rodín sú samostatné; publikovanie zostáva nedokončené a pôvodné čiastočné dôkazy
-sa nemenia na overené. Implementácia má syntetické PostgreSQL testy; živé
-odovzdanie, následná konsolidácia a overenie nasadenia sú samostatné kroky.
-
-[Diagnostika limitov handoffu](docs/atomer-catalog-handoff.md#scope-limit-diagnostics)
-rozlišuje úplný počet vybraných riadkov, veľkosť konkrétnej časti, rozšírenie
-identít a počet iterácií. Čítací GET pri prekročení limitu vráti neúplný,
-neprípustný výsledok s nulovým potvrdzovacím hashom a meraním bez obsahu
-zdrojových dát. Úplný počet identity/alokačného výberu overí ešte pred načítaním
-jeho obmedzeného tela. Limity, rozsah vlastníkov a natívnych súrodencov, zámky,
-potvrdzovaný dôkaz aj vrátenie neúspešného POSTu zostávajú zachované.
-
-## Čítací detail dôkazov jednej úlohy Atomeru (8. 11. 2026)
-
-[Riadiaci GET jednej úlohy](docs/atomer-catalog-job-control.md#optional-retained-history-diagnostics)
-prijíma voliteľné `include_evidence=true`. V tom istom čítacom snímku ukáže
-typované pôvodné a aktuálne review, potvrdenia kariet, natívne zámery, identity
-a presný rozsah kontroly historickej alokácie. Voľný text a konfiguračné hodnoty
-zastúpia hashe; neznáma štruktúra alebo prekročený limit zostane výslovne neúplný.
-Pôvodné rozhodovanie o odobratí úlohy, hash, zámky a CAS sa nemenia. Detail
-nepotvrdzuje neprítomnosť minulých natívnych účinkov ani dokončenú migráciu.
-Bez ďalších databázových dotazov, SQL migrácie, vzdialeného volania, obnovy
-žiurnálu alebo aktivácie skladu; overené synteticky na izolovanej databáze.
-
-## Odovzdanie nezačatého prepojenia Atomeru na ručné spracovanie (8. 11. 2026)
-
-[Riadenie jednej úlohy](docs/atomer-catalog-job-control.md#existing-targets-awaiting-their-first-reconciliation)
-rozpoznáva úzky stav `cards`, do ktorého príprava prešla pre už existujúce natívne
-identity xTreku. Withdrawal vyžaduje skutočné SQL NULL dokumentu, doslovné `{}`
-potvrdenie, nulové pokusy a revíziu riadenia, žiadne potvrdenia ani zdrojové karty
-a nezmenené úplné zdroje a review. Doterajšie zámky, kontrola historickej alokácie,
-audit, pozastavenie kampane a porovnanie aktuálneho snímku zostávajú účinné.
-Pozorované, čiastočne spracované alebo znova naplánované úlohy tento dôkaz nemajú.
-Syntetické testy overujú skutočnú prípravu, potvrdenia spracovania aj vrátenie
-čiastočného lokálneho zápisu pri chybe kvóty. Ide o podporované odovzdanie plánu
-na ručné spracovanie, nie o potvrdenie migrácie. Bez SQL migrácie, natívneho zápisu
-alebo zmeny skladu; živý withdrawal a následná konsolidácia sú samostatné kroky.
-
-## Zlučovanie kariet priamo v produktoch (8. 11. 2026)
-
-Výber 2–10 kariet v **Sklad → Produkty** otvára akciu **Zlúčiť karty**.
-Operátor vyberie zachovanú kartu, skontroluje všetky väzby a doloží identitu
-rovnakej kompletnej predajnej jednotky. Čítací endpoint
-`GET /product-consolidations/selection` zahŕňa aj nezobrazené a neaktívne
-väzby; samotný náhľad a potvrdenie používajú existujúci
-[mechanizmus konsolidácie](docs/product-consolidation.md#operator-workflow-in-products).
-Prekážky zostávajú viditeľné a blokujú potvrdenie. Rozpracovaná operácia sa dá
-obnoviť po prerušení spojenia s rovnakým UUID a presným pôvodným požiadavkom.
-Ďalšie podporované zlúčenia nevyžadujú úpravu kódu ani samostatný PR.
-Skladové množstvá, ceny a história zostávajú zachované; bez novej SQL migrácie
-alebo konfigurácie. Implementáciu a syntetické testy treba odlišovať od
-overenia konkrétnych živých zlúčení a úspešného nasadenia.
-
-## Dodávateľský dôkaz identity zachovanej karty (8. 11. 2026)
-
-[Konsolidácia](docs/product-consolidation.md#keeper-identified-by-one-linked-supplier-offer)
-prijíma výslovné `use_keeper_supplier_gtin=true`, ak zachovaná karta ešte nemá
-registrovaný EAN. Presná jediná aktívna dodávateľská väzba, článok výrobcu,
-overený GTIN na vybranej druhej karte a čerstvé natívne identity musia dokazovať
-ten istý kompletný variant. Pôvodné identifikátory sa nemenia ani nepresúvajú;
-po úspešnej konsolidácii ich sprístupní existujúci kanonický alias. Náhľad
-zobrazuje úplný typovaný dôkaz s pôvodnými osami a hashmi podkladov. Iba v tejto
-overenej vetve sa veľkosti XXXL/3XL porovnajú ako rovnaké; ostatné osi a bežný
-normalizér sa nemenia. Súbežné zmeny zdroja náhľad zneplatnia alebo vrátia
-obsadený vstup. Parser v5 kontroluje aj uložený nový dôkaz. Bez SQL migrácie,
-zmeny cien, skladovej autority či histórie; živé dokončenie sa overuje osobitne.
-
-## Pôvodné identity a konflikty v reporte Atomeru (8. 11. 2026)
-
-[Kontrola rozsahu konsolidácie](docs/product-consolidation.md#typed-catalog-dependency-scope)
-číta historické EAN z Atomeru ako pôvodné auditné identity. Zachová aj neplatný
-token a preverí každý platný člen zloženého zápisu; checksum neopravuje a z
-textu nevytvára nové EAN. Známe navigačné URL uložených potvrdení nemenia ich
-kontrolu vlastníctva. Výslovne zaznamenaný rozdiel druhu zdroja a natívneho
-produktu zachová obe identity aj možné zásahy do rodiča; konflikt tým nie je
-vyriešený. Neznámy tvar zostáva blokovaný. Syntetické testy overujú pôvodné
-reporty, potvrdenie, opakovanie a zmenu podkladov bez zmeny skladu či histórie.
-Bez nových dotazov, SQL migrácie, aktivácie úloh alebo natívnych zápisov.
-
-Uzavretý parser zachová aj doložené historické článkové tvary, apostrof či
-bodku pri čísliciach a abecedné slová ako doslovné neoverené identity; nevytvára
-z nich opravený GTIN. Každý presný token sa ďalej porovná s registrovanými
-aliasmi. Známy typovaný rozdiel dostupnosti zostáva nevyriešeným konfliktom
-s úplným rozsahom natívneho variantu a rodiča. Neznáme oddeľovače, polia
-a zmena podkladov držia blokovanie. Overenie je syntetické; živý diagnostický
-priechod po nasadení je samostatný krok.
-
-## Opakované podklady konsolidácie (8. 11. 2026)
-
-[Kontrola závislostí konsolidácie](docs/product-consolidation.md) opakovane používa
-úplné nemenné podklady tej istej kampane, rodiny či prípravy importu v rámci
-jedného databázového snímku. Každú operáciu znovu overí a zachová všetky hashované
-riadky aj logické väzby; samostatne vykáže ušetrené databázové čítania.
-Cache zdieľa existujúci limit 64 MB s aktuálnou operáciou a nemení limit práce,
-identitu, skladové kontroly ani históriu. Nová migrácia či konfigurácia nie je
-potrebná; starší nepotvrdený náhľad treba vytvoriť nanovo. Implementácia a
-syntetické kontroly samy nepotvrdzujú dokončenie živej konsolidácie.
-
-Úplné štatistiky a prvá ohraničená stránka novej väzby sa môžu načítať jedným
-databázovým dotazom. Pri tesnej pamäti zostáva pôvodné oddelené čítanie, aby
-predbežná rezerva nevytláčala uložené dôkazy. Rozsah, hashe a limity sa nemenia.
-
-Parser `typed-catalog-scope-v5` overuje aj
-[výslovne nahradené prípravy AI a známe historické schémy](docs/product-consolidation-ai-lineage.md).
-Nahradenie musí dokazovať úplná aktuálna príprava, nové väzby a nezmenené
-pôvodné identity; publikácie a všetky súčasné riadky zostávajú kontrolované.
-Starý odhad obsahu zachová celý natívny rozsah a historické Sloger pozorovanie
-musí zodpovedať uzavretej čítacej schéme. Samotný stav, archivácia ani chýbajúca
-väzba operáciu nevylučujú. Potvrdenie opakuje kontrolu pod existujúcimi zámkami
-a zmena podkladov zneplatní náhľad.
-
-## Rozsah závislostí po zmene revízie Atomeru (8. 11. 2026)
-
-[Kontrola závislostí konsolidácie](docs/product-consolidation.md#typed-catalog-dependency-scope)
-rozpoznáva uložený prezentačný názov rodiny Atomeru a pri platnej zmene revízie
-kontroluje celý pôvodný aj aktuálny rozsah. Zahŕňa všetkých členov rovnakej
-rodiny, pôvodné aj aktuálne rozsahy e-shopov, Hub karty, GTIN a možné zápisy
-do rodiča xTreku vrátane uložených natívnych potvrdení. Neznámy formát,
-neúplná história alebo zmena členstva rodiny zostávajú blokované.
-Ide o čítaciu kontrolu; úlohy Atomeru sa tým neaktivujú. Syntetické testy
-overujú skutočné ukončenie revízie, zachovanie skladu a opätovnú kontrolu
-závislostí pri potvrdení. Bez SQL migrácie; živé dokončenie sa overuje osobitne.
-
-## Prázdne manuálne úpravy pri konsolidácii (8. 11. 2026)
-
-Doslovné celé `{}` v známej schéme editora už samo neblokuje konsolidáciu.
-Kontrola zachová pôvodný riadok, revíziu, audit aj uložené výsledky a zahrnie
-ich do úplného hashu. Každá neprázdna, neznáma či neplatná hodnota zostáva
-blokovaná. Existujúci zámok produktu a ochranný databázový trigger bránia
-súbežnému zápisu do vyradenej karty; zmena podkladov zneplatní náhľad.
-Bez novej migrácie, mazania histórie alebo zmeny skladových množstiev.
-
-## Pôvodné a aktuálne identity importu (8. 11. 2026)
-
-[Kontrola katalógových podkladov](docs/product-consolidation.md#typed-catalog-dependency-scope)
-rozpoznáva presný obrázkový objekt variantu zo známeho importéra. Pri zmene
-uloženého hashu kontroluje celý pôvodný náhľad aj aktuálnu prípravu importu,
-vrátane oboch sád kódov, GTIN a vlastníkov Hub kariet. Starší formát bez mapy
-uložených vlastníkov používa existujúcu väzbu cez aktuálny riadok prípravy.
-Chýbajúca identita alebo neznámy formát zostáva blokovaný; neistý import sa tým
-nepovažuje za dokončený. Produkčné kontroly publikácie zostávajú nezmenené
-a zmena ktoréhokoľvek podkladu zneplatní náhľad konsolidácie. Bez novej migrácie
-alebo vzdialeného zápisu; dokončenie konkrétnych živých operácií sa overuje osobitne.
-
-Položka, ktorú skutočný importér odmietol ešte pred odoslaním, môže mať prázdny
-payload `{}`. Kontrola rozpozná iba presný stav `invalid` s chybami, bez pokusu
-o odoslanie a s úplnou zhodou zdrojového výberu. Všetky zdrojové aj aktuálne
-identity a hash celého záznamu zostávajú súčasťou dôkazu; neistá, odoslaná alebo
-neúplná položka sa tým nevyčistí. Testy overujú skutočný zapisovací postup,
-neodoslanie produktu a zmenu podkladu medzi náhľadom a potvrdením.
-
-## Výslovne skontrolovaná obnova bežných väzieb (7. 11. 2026)
-
-[Produktové väzby](docs/product-links.md#výslovne-skontrolované-migračné-opravy)
-majú dva voliteľné API postupy: doplnenie celej staršej rodiny s chybným
-náhradným kódom rodiča a náhradu vymazaného cieľa s overenou podmnožinou
-kanonických GTIN alebo bez čiarového kódu pri nezmenenom presnom SKU.
-Vyžadujú pripnuté ID mapovania a natívneho cieľa, konkrétny dôkaz a výslovné
-potvrdenie rovnakej fyzickej položky. Bez čiarového kódu sa navyše zmrazí
-existujúca bežná väzba druhého e-shopu alebo priradená dodávateľská položka.
-Predvolené pravidlá resolvera a presnej zhody EAN zostávajú zachované.
-Kontroly vlastníctva, neprítomnosti vymazaného cieľa, objednávok a neistých
-zápisov sa opakujú pri potvrdení; pôvodná cache zostane v audite.
-Zachovajú sa karty, mapovacie ID, identifikátory a celá skladová história.
-Bez novej migrácie, ovládača UI, vzdialeného zápisu či aktivácie skladu.
-Kód a syntetické testy nepotvrdzujú dokončenie konkrétnej živej dávky.
-
-## Výmena väzby po vymazaní samostatného produktu (7. 11. 2026)
-
-[API pre existujúce väzby](docs/product-links.md#nahradenie-už-vymazaného-samostatného-produktu)
-prijíma výslovné `replace_deleted_product=true` pre staré samostatné produkty.
-Náhľad aj potvrdenie dokazujú neprítomnosť pôvodného natívneho ID produktu
-v nearchivovanej aj archivovanej časti `GET /products/simple`. Premenovaný,
-neaktívny, archivovaný alebo na variantového rodiča zmenený produkt výmenu blokuje.
-Nový cieľ môže byť samostatný produkt alebo presný variant; vyžaduje rovnakú
-neprázdnu množinu overených EAN a voľné vlastníctvo. Zachovajú sa ID karty aj
-mapovania, SKU, identifikátory, sklad, FIFO a história. Objednávkové, publikačné
-a synchronizačné kontroly sa opakujú pred zápisom; príslušná stará cache sa
-archivuje v tej istej transakcii ako zmena väzby.
-Pôvodný príznak `replace_deleted_variant` a uložené request hashe zostávajú
-kompatibilné. Bez novej SQL migrácie, ovládača v UI alebo vzdialeného zápisu.
-
-## Výmena väzby na nový variant (4. 11. 2026)
-
-Existujúci postup [náhrady vymazaného pokladňového variantu](docs/product-links.md#nahradenie-už-vymazaného-pokladňového-variantu)
-prijíma aj presný variant pod iným produktom. Zachováva kartu, SKU, EAN,
-sklad a históriu, vyžaduje zhodný EAN a overené natívne ID a auditne zaznamená
-obe väzby. Náhľad oddeľuje konfliktné riadky; potvrdenie znovu kontroluje
-vymazanie starého variantu, vlastníctvo cieľa a rozpracované operácie oboch
-rodičov. Bez novej migrácie či automatického mazania v e-shope. Živé prepojenie
-konkrétnych kariet sa overuje samostatne po importe cieľových produktov.
-Pri opätovnom použití kódu rodiča explicitná overená výmena archivuje jeho
-starú kompletnú cache vo výsledku operácie a ponechá iba nové navigačné
-metadáta. Bežné prepojenie či obnovenie odkazov nemôže meniť natívnu identitu;
-archív, väzba a výsledok sa uložia v tej istej transakcii. Bez novej migrácie.
-
-## Denné dostupnosti a objednávkové webhooky (28. 10. 2026)
-
-Migrácie **034–036** a príslušné služby obmedzujú dodávateľské načítanie na
-najviac raz denne a uchovávajú požadovanú a potvrdenú dostupnosť podľa karty a
-cieľového e-shopu. Nový identický feed sám nevyvolá ďalšie produktové API volania.
-Existujúce zapnuté kratšie intervaly sa spomalia; vypnuté a týždenné zdroje sa
-neaktivujú ani nezrýchlia. Dodávateľské údaje nevytvárajú vlastnú zásobu.
-
-Prehľad objednávok obsahuje správu troch Upgates webhookov. Samostatne
-autentizované oznámenie sa najprv trvalo uloží, potom sa načíta aktuálna dotknutá
-objednávka a použije existujúce spracovanie rezervácií a výdajov. Pravidelný
-inkrementálny kontrolný zber zachytáva zmeškané oznámenia. Zmeny skladu a natívnych
-účinkov budia prenos vybraných SKU cez existujúci protokol rozdielov; úspech
-jedného e-shopu nepotvrdzuje druhý cieľ ani novšiu zmenu. Neisté zápisy zostávajú
-blokované. Podrobnosti: [objednávky](docs/order-automation.md),
-[dostupnosti](docs/supplier-availability.md), [prenos zásob](docs/stock-sync.md).
-
-Nasadenie kódu samo nezapína webhooks, zber objednávok, lokálnu automatiku ani
-skladovú autoritu. Aktivácia spoločných vlastných zásob naďalej vyžaduje
-zosúladenie a pilot; xTrek Atomer nie je týmto pripojený ako živý Upgates kanál.
-
-[Prvý import obsahu z Atomeru](docs/atomer-content-import.md) rozširuje existujúce
-odosielanie vybraných polí o dlhý HTML popis a SEO existujúcich xTrek kariet.
-Má úplné overenie rodiny, trvalé pred/po dôkazy, no-op opakovanie a chránený
-návrat dotknutých polí. Nové produkty, sklad, ceny a dostupnosti zostávajú
-mimo tohto postupu; nasadenie samo nespúšťa pilot.
-Voliteľne prenáša aj presné parametre samostatných produktov podľa overenej
-mapy zdrojových názvov. Deterministická úprava HTML prispôsobí prezentáciu
-šablóne Upgates pri zachovaní pôvodného znenia. Galérie sa overujú samostatne;
-parametre variantov a všeobecné dopĺňanie katalógu týmto nie sú implementované.
-Ručne spúšťaný `scripts/atomer_direct_batch.py` umožňuje osobitne autorizovaný
-priamy dávkový prenos samostatných kariet s rovnakými obsahovými validátormi,
-čerstvým porovnaním a súkromným súborovým žurnálom. Nemá DB zámky ani obnovu
-cache Hubu; prevádzkové hranice a pokračovanie opisuje dokumentácia importu.
-Samostatná voľba `--atomer-prices-from` prenáša výslovne schválenú predajnú cenu
-z Atomeru iba pre cenové konflikty predchádzajúceho behu, v novom žurnále.
-Ostatné kontroly vrátane galérie zostávajú; akčné alebo neznáme zľavy sa neprepisujú.
-
-Pre migračnú analýzu je v prehľade e-shopov [čítací export katalógu a väzieb](docs/migration-export.md).
-Pravidlá analytickej etapy a otvorené podmienky prechodu sú v [xTrek migračnom audite](docs/xtrek-atomer-migration-audit.md).
-Samostatný `GET /api/migration/upgates-export` dopĺňa úplné API sekcie katalógu,
-parametre a číselníky cez uložené napojenie. Kontroluje stránkovanie a natívne ID;
-nemení katalóg ani sklad a nepotrebuje databázovú migráciu.
-ZIP spája čerstvý katalóg vybraného Upgates pripojenia s konzistentným lokálnym
-snímkom kariet, identít, väzieb a skladových podkladov. Nevykonáva import ani
-prevzatie autority; xTrek Upgates sa výslovne odlišuje od Atomeru.
-Produktový importer v prehľade Obchody umožňuje nahradiť výber vložením
-presného zoznamu kódov po riadkoch, s hlásením nezaradených kódov a
-samostatným potvrdením importu. Používa existujúce kontroly identity a nemení
-fyzický sklad; postup je v dokumentácii migračných podkladov.
-Voliteľný výber jednotlivých predajných položiek obmedzí pull na konkrétne
-varianty alebo samostatné produkty. Čerstvé overenie natívnej identity
-a poskytnutých parametrov chráni výber pred zmenou; nevybraní súrodenci sa nevytvoria.
-Nevyžaduje migráciu ani nezapisuje do Upgates.
-
-[Zjednodušený dátový model](docs/warehouse-model.md) používa interné `products.id` a výslovné databázové väzby. Podľa zadania vlastníka z 23. 10. nové fyzické produkty dostávajú SKU `<dvojpísmenová predpona výrobcu>-<kód výrobku u výrobcu>`. Kód dodávateľa je samostatný údaj a nesmie ho nahradiť. Potvrdené mapovanie výrobného kódu vo feede umožní automatické prideľovanie; bez takého podkladu treba overiť výrobcu a konkrétny kód pri príprave novej karty. Existujúce Hub aj e-shopové SKU zostávajú, vrátane kariet prevzatých existujúcim Upgates importom. Jedinečnosť prefixov a cieľové kolízie kontroluje systém. Základná karta môže predchádzať e-shopovému obsahu, cenám aj fyzickému príjmu; služby majú výslovný neskladový typ a vlastné servisné kódy. Podrobnosti sú v [politike SKU](docs/sku-policy.md).
-
-Migrácie **030–032** dopĺňajú jednoznačné natívne ID produktov/variantov e-shopov, typ karty a skladovú jednotku, výslovný prepočet nákupného balenia pri príjme a jednotné dodávateľské väzby. Jedna Hub karta má najviac jednu reprezentáciu v jednom e-shope. Servisná karta nevytvára fyzickú zásobu ani FIFO. Nasadenie neaktivuje skladovú autoritu a samo neodstraňuje živé pokladňové varianty.
-
-Existujúce karty majú samostatný [náhľad prevodu SKU](docs/sku-migration.md) s kontrolou identity, kolízií, natívnych väzieb a závislostí. Voliteľné čerstvé overenie v e-shopoch používa iba GET. Náhľad neprečísluje produkty ani neukladá schválenie migrácie; chýbajúci postup premenovania v Upgates, reklamné identifikátory a otvorené objednávky zostávajú osobitnými podmienkami pilotu. Táto etapa nemá novú databázovú migráciu ani skladové zápisy.
-
-Objednávky so starým SKU majú osobitné overenie cez presný alias, existujúci audit premenovania, aktuálne shopové mapovanie a natívnu identitu. Natívne podklady po kódovej zmene zachovávajú historické udalosti; vydaná objednávka zostáva idempotentná. Všeobecný produktový resolver ani hranice začiatku evidencie sa neuvoľňujú. Pripravený serverový `scripts/backup_inventory.py` zálohuje DB, aplikačné/deploy súbory a supplier secrets a vyžaduje kontrolnú obnovu v izolovanom kontajneri. Nejde o vykonanú produkčnú zálohu ani všeobecné premenovanie značkového SKU; podmienky a pilot sú v [migračnom postupe](docs/sku-migration.md).
-
-Prevádzkový kontext pre ďalší prechod: **BIKETREK** je produkčný Upgates, **xTrek** naďalej používa Atomer. Pripojenie prípravného xTrek Upgates sa nesmie považovať za zdroj všetkých živých predajov.
-
-[Plán spustenia skladu](docs/stock-start-plan.md) odporúča zachovať existujúce
-SKU a nové karty prideľovať podľa spoločnej politiky. Hromadné prečíslovanie
-nie je podmienkou inventúry. Produktový pull s neprázdnym výberom `codes`
-obnovuje iba vybrané rodiny aj pri `update_existing=true`; rodina zahŕňa všetky
-svoje varianty. Atomer pred migráciou potrebuje samostatne vyriešenú evidenciu
-predajov spoločných zásob. Tento plán ani oprava pullu nezapínajú skladové zápisy.
-
-Inventory Hub je interná aplikácia pre **BIKETREK**, **xTrek** a predajňu. Obsahuje správu dodávateľov a faktúr, príjem, prehľad skladu, dodávateľský katalóg a viacero integračných ciest s Upgates. Obsahuje lokálne spracovanie objednávok, kontrolované skladové operácie, FIFO a tabuľkový editor. Obsahuje aj oddelené plánované čítanie dodávateľských dostupností, pravidelný prenos zásob a potvrdené odoslanie vybraných produktových polí. Prevzatie skladovej autority zostáva výslovne zapínateľné; nasadenie kódu nie je ostrý pilot.
-
-**Posledné porovnanie s kódom:** 24. 9. 2026, dostupnosti, pravidelný prenos a jednotná tabuľka nad `main 6bdfd71` (nasadený PR #34). Aktuálny stav overenia a nadväzujúce priority sú v [MVP postupe](docs/mvp-progress.md). Popis kódu nepotvrdzuje obsah produkčnej DB ani celú serverovú konfiguráciu.
-
-## Bezpečnostná hranica API (14. 10. 2026)
-
-Všetky prevádzkové API aj dokumenty vyžadujú prihlásenie; verejné sú iba presné bootstrap autentizačné cesty a sanitizovaný health check. Cookie zápisy majú spoločnú CSRF ochranu, integračné nastavenia spravuje administrátor a uložené tajomstvá sa nevracajú do formulárov. Dokumenty majú osobitnú cestovú allowlist ochranu aj po prihlásení. Deployment overuje anonymné odmietnutie aj autorizovaný prístup; skladové autority/automatizácie sa tým nezapínajú. Podrobný kontrakt a rotácia údajov: [docs/user-accounts.md](docs/user-accounts.md). Stav implementácie treba odlíšiť od potvrdeného výsledku konkrétneho nasadenia.
-
-## Čiastočné načítanie dostupností (15. 10. 2026)
-
-Dodávateľské nastavenia zobrazujú celý feed, bez jedného vybraného produktu. Platné položky sa prijmú aj pri chybných, neznámych či duplicitných riadkoch; súhrn a stránkovaný zoznam ukážu počty, kód, hodnotu a dôvod. Preskočené pozorovania zachovajú pôvodnú expiráciu. Menší feed vyvolá upozornenie namiesto odmietnutia všetkých dát. Northfinder má oddelené čítanie skladových hodnôt a test opakovaného automatického cyklu. Nová migrácia ani zapnutie skladových zápisov nie sú potrebné. [Kontrakt a produkčná diagnostika](docs/supplier-availability.md).
+Tento prehľad opisuje aktuálnu implementáciu v repozitári. Výsledok konkrétneho nasadenia patrí k jeho Actions behu; výsledok migrácie alebo externého zápisu k uloženému auditu danej operácie. Historické implementačné poznámky sú dostupné v Git histórii.
 
 ## Kde začať
 
-Pravidlá objednávok (15. 10. 2026) umožňujú rezerváciu pri úspešnej platbe a výslovne potvrdený výdaj pri vlastných stavoch odovzdania alebo pokladňového predaja. Operácia sa ukladá podľa ID stavu; presný názov neobmedzuje voľbu. Formulár vypíše stavy s výdajom. Vratky, neúspešné platby, aktivačné hranice a ochrana pred dvojitým výdajom zostávajú kontrolované. Zmena nepotrebuje migráciu ani neaktivuje produkčné pravidlá alebo automatiku. [Nastavenie a význam operácií](docs/order-workflows.md#pravidlá-stavov-objednávok).
-
-Skladová tabuľka a detail ponúkajú opravu chýbajúcich odkazov cez čítanie presného prepojeného produktu; náhľad už prepojených kariet má dokončenie bez nového zápisu väzieb. Dodávateľské párovanie umožňuje výslovne doplniť overené EAN do prázdnej karty s kontrolou konfliktov a auditom. Dostupnosť uvádza konkrétny dôvod chýbajúceho údaja a otvorí nastavenie celého príslušného dodávateľa. Tieto zmeny nepotrebujú migráciu a neaktivujú skladové zápisy ani plánovanie. Konkrétne produkčné nastavenie zdroja zostáva samostatným overením. Podrobnosti: [editor](docs/product-editor.md), [väzby e-shopov](docs/product-links.md), [dodávateľské väzby](docs/supplier-card-links.md), [dostupnosti](docs/supplier-availability.md).
-
-Existujúcu skladovú kartu možno ručne prepojiť s odlišným kódom dodávateľského katalógu cez náhľad a potvrdenie. Príprava nových kariet upozorňuje na zhodu EAN/kódov aj podobnosť názvu/SKU a umožňuje vybrať existujúcu kartu. Potvrdené prepojenie zachová SKU, obsah, zásoby a históriu. Implementácia, kontrola duplicít a aditívna migrácia 028 sú opísané v [dodávateľských väzbách kariet](docs/supplier-card-links.md); produkčné overenie konkrétnej väzby je samostatný krok.
-
-Príjem faktúry sa prepája s rovnakou prípravou produktov cez **Založiť skladové karty**. Položky rozlišujú existujúcu kartu, základnú kartu z príjmu, produkt iba vo feede, nenájdený produkt a nejasnú či neoverenú zhodu. Vlastný potvrdený sklad sa zobrazuje samostatne. Vybrané položky možno doplniť z feedu, ručne alebo voliteľne cez AI a vrátiť sa k tej istej príjemke so zachovanými množstvami. Uloženie kariet nemení zásoby ani faktúrové ceny; fyzický príjem zostáva samostatným potvrdením. [Postup a API](docs/receiving-identity.md), [spoločný editor](docs/product-imports.md).
-
-Príprava importu podporuje samostatné ciele **BIKETREK** a **xTrek** pri každom produkte, predvolený e-shop dodávateľa a uloženie iba do Hubu. Každý cieľ má vlastný náhľad a trvalý výsledok; úspešné alebo neisté odoslanie sa nenahrádza novou dávkou. AI v tejto príprave vždy pracuje s feedom a oficiálnymi zdrojmi. Existujúca overená identita si zachová SKU aj pri pridaní ďalšieho dodávateľa. Odkazy na produkt a administráciu pochádzajú z odpovede Upgates. Podrobnosti: [príprava importu](docs/product-imports.md), [dodávateľské vlastné pole](docs/upgates-supplier-metadata.md).
-
-Sloger používa priame B2B čítanie ako bežný zdroj dát bez AI. Prihlásenie sa uloží raz v nastavení dodávateľa; príprava importu potom po dávkach načíta presné vybrané SKU, EAN-y, nákupnú ponuku a dostupnosť. Po zlyhaní môže obsluha výslovne pokračovať iba s údajmi z feedu; chýbajúca nákupná cena a neoverená dostupnosť zostanú neznáme. Dokončená alebo takto preskočená príprava umožní úpravy a voliteľné AI podľa spoločných nastavení. Čítač rozlišuje spoločnú cenu rodiny a vlastné ceny jednotlivých variantov. DMOC z feedu ostáva predvolenou predajnou cenou. [Ručný refresh dostupností](docs/supplier-availability.md) prechádza iba aktívne produkty evidované v Hube s väzbou na Sloger, vrátane nulovej vlastnej zásoby; automatické spúšťanie je pre Sloger zakázané aj na serveri. Dodávateľské údaje nemenia vlastné množstvá ani FIFO. Podrobnosti: [príprava importu](docs/product-imports.md), [oddelenie B2B od AI](docs/ai-content.md).
-
-Chránené GET/PUT `/api/suppliers/sloger/lookup/credentials` vracajú iba stav a meno, nikdy heslo. Tajomstvá ostávajú v samostatnom trvalom API-only úložisku. Pôvodné výsledky AI testu sú čitateľné, ale jeho platený POST je zrušený (410). Presný návrat prihlásenia na `/shop/` s HTTP 404 môže raz pokračovať cez overenú `/sk/b2b` bez opakovania POST; pred vyhľadávaním je povinný dôkaz prihlásenia. Spoločná služba serializuje B2B čítanie naprieč importom a dostupnosťami. Tieto zmeny nevyžadujú SQL migráciu; stav implementácie nie je dôkazom produkčného overenia všetkých tokov.
-
-Aktuálna oprava evidencie pridáva [potvrdený začiatok skladu](docs/stock-tracking.md) (migrácia 019). Historické importy a testy zostávajú neoverené; aktívne množstvá, rezervácie a synchronizácia vyžadujú nový potvrdený príjem alebo fyzický počet pre konkrétne SKU/sklad. V nasledujúcich starších popisoch má tento kontrakt prednosť pred odvodzovaním potvrdenia zo samotnej existencie pohybov.
-
-Výbery skladu v editore, histórii, počiatočnom stave, FIFO a nastaveniach používajú pri prvom načítaní serverový aktívny `is_default` sklad. Uložený kontext e-shopu alebo dávky a ručný výber majú prednosť; **Všetky sklady** zostávajú súhrnným pohľadom. Predvolenie výberu nemení zásoby, potvrdenie evidencie ani povolenia automatických zápisov.
-
-| Zdroj | Úloha |
-| --- | --- |
-| [AGENTS.md](AGENTS.md) | Rozsah práce, platnosť udelených oprávnení a pravidlá zmien. |
-| Tento dokument | Mapa projektu, hranice implementácie a prevádzkové súvislosti. |
-| [Dodávateľský katalóg](docs/supplier-catalog.md) | Kontrakty feedov, identity, náhľadov, importu a obnovy. |
-| [Mapovanie produktových feedov](docs/product-feed-mapping.md) | Zdrojové polia, transformácie, parametre a kategórie podľa dodávateľa a e-shopu. |
-| [Príprava importu](docs/product-imports.md) | Uložený editovateľný náhľad, voliteľné AI, uloženie do Hubu a samostatné odoslanie do e-shopu. |
-| [Prepojenie existujúcich kariet](docs/product-links.md) | Jednotlivé aj hromadné párovanie s existujúcimi produktmi e-shopov, náhľad, konflikty a obnova. |
-| [Rôzne počty kusov z jednej karty](docs/shared-stock-sales.md) | Výslovne overené predajné násobky, zmrazené jednotky objednávok, spoločná fyzická zásoba a samostatné predajné ciele. |
-| [Spoločná identita a nové SKU](docs/sku-policy.md) | Automatický značkový prefix a kód predajnej jednotky; spoločné kontroly identity. |
-| [Dátový model skladu](docs/warehouse-model.md) | Diagram ID, autorita údajov, služby, jednotky a hranice migrácie. |
-| [Prevod existujúcich SKU](docs/sku-migration.md) | Čítací náhľad pilotu, kontrola natívnych ID, závislosti, obnova indexov a návrat. |
-| [Dodávateľská identita](docs/supplier-identity.md) | Historické prefixy a doplnenie väzieb dostupností z už načítaných údajov. |
-| [Centrálny sklad](docs/central-stock.md) | Schválené obchodné pravidlá, prvý bezpečnostný balík a hranice ďalšej implementácie. |
-| [Objednávky — návod pre obsluhu](docs/order-workflows.md) | Prvé spustenie, nastavenia, ručná kontrola a riešenie výnimiek. |
-| [Automatika — vývojársky kontrakt](docs/order-automation.md) | Konfigurácia, fronta, transakcie, API a obnova. |
-| [AI obsah](docs/ai-content.md) | Príprava a kontrola obsahu, existujúce produkty, pravidlá, fronta a konfigurácia. |
-| [Nákupné ceny v e-shopoch](docs/fifo-purchase-costs.md) | Prenos ďalšej FIFO ceny produktu, nákladov vydaných objednávok a konkrétnej historickej opravy. |
-| [PR kontroly](.github/workflows/ci.yml) | Štyri paralelné backendové skupiny s vlastnou DB, kontrola úplnosti a frontendové testy. |
-| [Build a deployment](.github/workflows/build.yml) | Paralelné zostavenie obrazov a serializované nasadenie po zmene `main`; dokumentačné zmeny sú vynechané. |
-| [CI a meranie nasadenia](docs/ci-deployment.md) | Pokrytie testov, časové reporty, cache a vykonanie migrácií. |
-
-Dokumentácia je mapa; pri rozhodovaní over aktívny kód. Staré datované súbory a kópie nepovažuj za používané iba preto, že sú v repozitári. Tabuľka alebo tlačidlo samy osebe nedokazujú dokončený pracovný postup.
-
-AI registre podporujú zdieľané bloky pre vybrané profily, označené návrhy parametrov, nepovinné čiastočné údaje a rozsah podľa skutočnej variantovej osi. Presné zadanie možno stiahnuť bez generovania; detaily a hranice sú v [AI obsah](docs/ai-content.md). Nové úlohy zostavujú obsahové zadanie z relevantných overených kapitol, s auditom vynechaných technických a nesúvisiacich blokov; staré uložené úlohy zostávajú zmrazené. Nasadenie kódu samo nepublikuje súkromnú knihu pravidiel.
-
-AI podklady majú explicitný formát URL, kompatibilitu so starším prefixom `official:https://…`, chyby po jednotlivých riadkoch a opravu zdroja, citátu aj tvrdenia v detaile úlohy. Feedové citáty tolerujú typografické spojovníky a presné dvojice názov: hodnota z parametrov rovnakého produktu. Výhrady k citátom a evidencii otvorenia zdrojov sú neblokujúce upozornenia aj pri automatickom schválení. Chýbajúce rozhodujúce fakty môže prijať ručné schválenie; automatické schválenie ich neprijíma. Technické chyby produktu zostávajú blokujúce. Uloženie konceptu zruší schválenie a vykoná plnú kontrolu bez generovania.
-
-AI úlohy pre spoločnú importnú tabuľku zobrazujú stav obsahu oddelene od skutočného výsledku odoslania. Dokončené importy otvárajú uložený výsledok; opakovaný náhľad ho nenahrádza. Pri zapnutom AI treba pred publikáciou prevziať jeho výsledok do tabuľky alebo AI výslovne vypnúť. Nové prípravy rešpektujú zdedený odhad, schválenie, potvrdenie importu a aktivitu produktu; úplná schválená AI dávka môže pokračovať automaticky cez pôvodný importer. Úprava tabuľky po spustení automatické pokračovanie pozastaví, historické úlohy sa spätne neaktivujú. Staršie importy bez prevzatého AI zostávajú pravdivo označené. Podrobnosti sú v [príprave importu](docs/product-imports.md).
-
-AI produktové názvy, oba popisy a SEO/H1 texty používajú bežné `-`; normalizácia pomlčiek prebehne pri spracovaní AI odpovede, uložení úprav aj zostavení obsahu pre e-shop.
-
-HTML dlhého AI popisu už neblokujú bežné značky ani formátovacie atribúty. Zostáva kontrola aktívneho kódu a vložených dokumentov; uložený výsledok možno znovu overiť bez plateného generovania. Rozsah a postup obnovy sú v [AI dokumentácii](docs/ai-content.md).
-
-Príprava produktov (15. 10. 2026) umožňuje vybrať aj neaktívne a nadradené produktové kategórie, obnoviť ich strom bez straty úprav a otvoriť produkt/fotku priamo pri zaraďovaní. Jediné SKU s pevnou farbou či veľkosťou sa pripraví bez umelej varianty; skutočné varianty sa odosielajú bez hlavného variantu. Nové AI zadanie verzie 4 skracuje názvy a obmedzuje duplicitu parametrov v dlhom popise. Staré dávky a produkty sa spätne neprepisujú. Podrobnosti a hranice sú v [príprave importu](docs/product-imports.md) a [AI obsahu](docs/ai-content.md).
-
-## Prevádzkový kontext
-
-Prehľad **Obchody** sprístupňuje existujúci náhľad a výberový import produktov
-z Upgates do Hubu. Import zachováva SKU, oddeľuje konflikty a nemení fyzické
-zásoby. Voliteľný režim iba existujúcich kariet prepojí identifikované varianty
-aj zo zmiešaných skupín a chýbajúce karty nevytvára. ZIP export zostáva
-samostatným čítaním; [postup migrácie](docs/migration-export.md).
-
-Načítanie dodávateľských dostupností po spracovaní odstraňuje vlastnú dočasnú XML
-kópiu; importné katalógy a databázová história zostávajú uložené. Samostatný hostiteľský
-skript ponúka náhľad a explicitné čistenie starých skladových XML. Postup a hranice
-sú v [dodávateľských dostupnostiach](docs/supplier-availability.md#súbory-načítania-a-miesto-na-disku).
-
-- Repozitár: [mpriesol/inventory_hub](https://github.com/mpriesol/inventory_hub). Starý `OLD_inventory_hub` sa pri bežnej práci nepoužíva.
-- Hub: [hub.biketrek.sk](https://hub.biketrek.sk).
-- Podľa posledného zadania vlastníka je BIKETREK produkčný Upgates e-shop na [biketrek.sk](https://www.biketrek.sk); xTrek má testovaciu prevádzku na Upgates. Doména [xtrek.site](https://xtrek.site) podľa tohto zadania zatiaľ nefunguje, čo samo osebe neznamená nefunkčné API.
-- Cieľom sú dva Upgates e-shopy a jedna predajňa s fyzickým skladom. Migrácia pôvodného xTrek z Atomeru je prevádzkový kontext; nový Atomer konektor nie je súčasťou aktuálneho skladového cieľa.
-- Technické kódy `biketrek` a `xtrek` zostávajú zachované. Nové texty používajú značky BIKETREK a xTrek.
-- Konkrétne účty, nastavenia, feedy a údaje sú mimo Git. Použi skutočnú konfiguráciu a over dostupnosť príslušnej integrácie.
+- [AGENTS.md](AGENTS.md): pravidlá práce, platné oprávnenia, doménové hranice a overovanie.
+- [Inštalácia, aktualizácia a obnova](api/POSTGRES_SETUP.md): prostredie, poradie migrácií a obnova oboch úložísk.
+- [CI a nasadzovanie](docs/ci-deployment.md): úplnosť testov, zostavenie obrazov, deployment a diagnostika.
+- [Priority a zostávajúca práca](docs/mvp-progress.md): otvorený produktový rozsah a prevádzkové overenie.
 
 ## Aktuálny stav funkcií a obrazoviek
 
-„Implementované“ znamená existujúcu cestu v kóde. Funkčnosť konkrétneho dodávateľa alebo e-shopu závisí aj od konfigurácie a dát.
+„Implementované“ znamená existujúcu cestu v kóde. Dostupnosť konkrétnej integrácie závisí aj od jej konfigurácie a dát.
 
-| Oblasť / cesta UI | Stav podľa kódu | Hranice a zdroje |
+| Oblasť / cesta UI | Implementované | Kontrakt a hranice |
 | --- | --- | --- |
-| Dashboard `/` | Údaje zo skladu a reálne posledné pohyby | Súčet fyzických, rezervovaných, voľných a karanténnych kusov, nákupná hodnota a rozpracované objednávky evidované Hubom. Žiadne ukážkové udalosti ani vymyslené percentá synchronizácie. Chyba nie je nulový stav. |
-| Faktúry `/invoices`, `/invoices/:invoiceId` | Dodávateľské a stiahnuté e-shopové doklady, presný filter dodávateľa, radenie cez hlavičky, pridanie dokumentu/skenu pod tlačidlom, automatický zápis do databázy; úhrady, skrytý kalendár s týždennými/mesačnými doplatkami a ZIP pre účtovníčku | [Kontrakt archívu](docs/invoice-archive.md). Doklady vystavujú dodávatelia/e-shopy; import nemení sklad. Neznáme formáty zostávajú uložené bez tvrdenia o univerzálnom OCR. |
-| EAN prehľad `/product-trace` | Obrázok, odkazy na e-shopy a administráciu, zásoby, ceny s menou, faktúry, predaje, pohyby a vyhľadanie v uložených feedoch | Presná identita, výber pri nejednoznačnosti, fakturované jednotky a skladové výdaje oddelene. |
-| Príjem `/receiving`, `/receiving/:invoiceId` | Príjem naviazaný na faktúru | Skenovanie, množstvá, pozastavenie a finalizácia v `routers/receiving_db.py`. Finalizácia zapisuje nemenné pohyby a FIFO pri nových/aktivovaných zásobách; staršie zostatky zostávajú na váženom priemere do explicitného prechodu. Opakovanie vracia uložený výsledok. Samostatný potvrdený príjem vrátane neznámej ceny je v detaile Nákupné ceny. Nové skeny majú request UUID; replay nepridá druhý kus. [Kontrakt identity a skenera](docs/receiving-identity.md). |
-| Sklad `/stock` | Jednotná produktová a skladová tabuľka | Obrázky, parametre, manuálne bunky, označenie zmenenej bunky aj riadka, prítomnosť/odkazy BIKETREK a xTrek, detail po kliknutí na SKU/názov. Samostatné prepojenie jednej alebo vybraných existujúcich kariet s e-shopom cez [náhľad väzieb](docs/product-links.md). Oddelené uloženie v Hube a potvrdené odoslanie vybraných polí. Fyzické množstvo cez [opravný pohyb](docs/stock-adjustments.md). |
-| História `/stock/movements` | Chránené čítanie nemennej evidencie | Filtre celého skladu alebo presného SKU, doklad, dôvod, pôvodný náklad a množstvo pred/po. Bez zápisov a Upgates volaní. [Návod a API](docs/stock-history.md). |
-| Počiatočný stav `/stock/opening` | Chránený náhľad a zaúčtovanie | Existujúce SKU, fyzicky spočítané celé kusy a explicitná cena EUR bez DPH. Zaúčtovanie vytvorí `INITIAL` pohyby iba bez potvrdeného začiatku evidencie daného tovaru v sklade; neoverený historický zostatok sa auditne uzavrie. Výpadok sa overuje čítaním uloženého výsledku. |
-| Dodávatelia `/suppliers` | Implementovaná správa | Aktívny `SuppliersPage.tsx`; nepomýliť so zástupnou funkciou rovnakého názvu. Rozhoduje export v `pages/index.ts`. |
-| Katalóg `/suppliers/:supplier/catalog` | Implementovaný dodávateľský katalóg | Vyhľadávanie, filtre, stránkovanie, obrázky, explicitné variantné skupiny, mapovanie zalistovania a importný náhľad. Natívne parsery pre Paul Lange, Northfinder, Sloger, SK Profi Bike, Schindler, Cyklo Žitný, Bike Brothers (EUR bez DPH, samostatné skladové položky bez rodičovských súčtov a upozornenie na český zdroj) a Silvini (iba katalóg, ceny a update dostupnosti vyžadujú samostatné overenie); ostatní dodávatelia používajú konfigurovateľné mapovanie. |
-| Mapovanie `/suppliers/:supplier/feed-mapping` | Konfigurátor produktového feedu | Automatická analýza XML/CSV/JSON, vizuálne prepojenie polí a produktových kategórií vrátane nadradených a neaktívnych, CSV export kategórií a kontrolovaný import priradení do grafického prehľadu bez skrytých stromov, pomenované parametre feedu → Upgates/publikované registre kategórií, uložené verzie podľa dodávateľa a e-shopu. Odlišné od mapovania faktúr. |
-| Import `/product-import` | Jednotný uložený náhľad pre feed a AI | Editácia buniek a hromadné zmeny, ochrana ručných úprav, voliteľné AI pre produktovú rodinu. Uloženie do Hubu je oddelené od potvrdeného založenia v e-shope; bez fyzických skladových pohybov. |
-| Shopy `/shops` | „V príprave“ | `ShopsPage` z `PlaceholderPages.tsx`. Konfiguračné API a modaly existujú inde; táto samostatná stránka nie je hotová. |
-| Nastavenia `/settings` | AI a prevádzkové nastavenia skladu | `/settings/stock`: predvolené hodnoty skladu, odchýlky e-shopu, intervaly a výslovné režimy automatického spracovania. `/settings/ai-content` zachováva AI nastavenia. |
-| Publikovanie `/stock/publication` | Kontrolované zosúladenie vybraných SKU počas údržby | Trvalá blokácia lokálneho skladu, porovnanie presných variantov, jedno odoslanie a obnova nejasného výsledku. Serverový zápis je predvolene vypnutý; pozri [návod](docs/stock-publication.md). |
-| AI obsah | Implementovaný samostatný workflow | Pravidlá, profily, príprava, kontrola, náhľad importu a aktualizácia vybraných polí. Limity v `docs/ai-content.md`. |
-| Kontrola objednávok `/orders` | Chránený čítací audit | Jedna stránka objednávok, klasifikácia identity a kandidát na operáciu. Nevytvára rezerváciu ani skladový výdaj; používa spoločné prihlásenie alebo operátorský token. |
-| Skladové spracovanie `/orders/stock` | Kontrolované rezervácie, uvoľnenie a jednorazový výdaj | Jedna čerstvo načítaná objednávka, potvrdené stavové ID a pevný začiatok evidencie pre každý e-shop. Náhľad a výslovné zaúčtovanie; bez automatického prechodu histórie, pollingu či zápisov do e-shopov. Len celé kusy. |
-| Automatický zber `/orders/inbox` | Zapínateľný čítací worker, trvalý inbox a obnova | Hlavičky objednávok od potvrdeného začiatku evidencie, kontrolné prechody a viditeľné chyby. Samotné načítanie nemení rezervácie ani zásobu; otvorenie objednávky vedie na čerstvý potvrdený postup. |
-| Návrh zásob v `/orders/inbox` | Čítacia projekcia 1–100 SKU | Vlastné voľné celé kusy z potvrdeného skladu, presné mapovanie jednotlivých variantov vrátane rodiča xTrek. Neznámy stav nie je nula. Bez outboxu a externého odosielania. |
-| Automatické skladové spracovanie | Voliteľný samostatný worker a trvalá fronta | Režimy ručne / rezervácie / rezervácie a výdaj, nové objednávky od výslovnej aktivácie, opakovanie nedostatku a kontrola vydaných objednávok. Predvolene vypnuté. |
-| Dostupnosti a prenos `/settings/availability` | Oddelené dodávateľské a e-shopové plánovanie | Intervaly a ručné spustenie, platnosť dodávateľských údajov, predvoľby skladu a výnimky e-shopu, výsledky a obnova. Nové plánovanie je vypnuté. [Návod](docs/availability-sync.md), [dodávateľský kontrakt](docs/supplier-availability.md), [pravidelný prenos](docs/stock-sync.md). |
-| Inventúry a nové vratky | Širšia agenda zostáva plánovaná | Jednotlivá zdokumentovaná korekcia množstva a existujúce fyzické vratky/nákupné vrstvy sú dostupné; neznamenajú kompletnú inventúrnu agendu. |
-| Produkty `/products` | Kompatibilné presmerovanie do Skladu | Jediný editor je na `/stock`, bez duplicitnej položky navigácie. [Postup](docs/product-editor.md). |
-| Nákupné ceny `/settings/purchase-costs` | Samostatný zapínateľný prenos FIFO cien | Nastavenia skladu/e-shopu, ručné a pravidelné spustenie, výsledky a neisté zápisy. Produkt používa ďalšiu FIFO vrstvu; objednávka vážený náklad svojich vydaných kusov. Staršie doložené objednávky cez konkrétny náhľad. [Postup](docs/fifo-purchase-costs.md). |
-| Nákupné ceny v detaile produktu | Vrstvy, výdaje, vratky a opravy ceny | Kontrolovaný prechod starých zásob, príjem bez faktúry, karanténa, uvoľnenie, opravy s históriou. [Postup](docs/fifo.md). |
-| Účty `/login`, `/settings/users` | Implementované meno/heslo a trvalé relácie | Správca spravuje účty, obsluha používa doterajšie chránené funkcie. Operátorský token zostáva pre prvé prihlásenie a integrácie. Úplné rozdelenie prevádzkových oprávnení je plánované. [Postup](docs/user-accounts.md). |
+| Dashboard `/` | Súhrny skladu a posledné pohyby | [História skladu](docs/stock-history.md); neznámy alebo chybný údaj nie je nula. |
+| Sklad `/stock`, detail `/products/:sku` | Jednotný editor, parametre, obrázky, ručné hodnoty a vybrané publikovanie | [Editor](docs/product-editor.md); `/products` presmeruje na `/stock`. Uloženie v Hube je samostatné od odoslania do e-shopu. |
+| Väzby a zlučovanie kariet | Náhľad, potvrdenie, konflikty a obnova podľa UUID | [E-shopy](docs/product-links.md), [dodávatelia](docs/supplier-card-links.md), [konsolidácia](docs/product-consolidation.md). Ďalšie podporované zlúčenie nevyžaduje nový PR. |
+| Príjem `/receiving` | Faktúra, skenovanie, ručné množstvá, pozastavenie a idempotentná finalizácia | [Identita príjmu](docs/receiving-identity.md), [potvrdený začiatok skladu](docs/stock-tracking.md). Príprava karty sama nevytvára zásobu. |
+| História a množstvá `/stock/movements`, `/stock/opening` | Nemenné pohyby, potvrdený počiatočný stav a opravy fyzického počtu | [História](docs/stock-history.md), [opravné pohyby](docs/stock-adjustments.md), [jednotky](docs/stock-units.md). Širšia inventúrna agenda zostáva plánovaná. |
+| Nákupné ceny v detaile produktu | FIFO vrstvy, výdaje, fyzické vratky, karanténa a zdokumentované opravy ceny | [FIFO](docs/fifo.md); staré zásoby potrebujú výslovný prechod, chýbajúca cena zostáva neznáma. |
+| Faktúry `/invoices` a EAN prehľad `/product-trace` | Externé doklady, úhrady, účtovnícky ZIP a dohľadanie vzťahov produktu | [Archív](docs/invoice-archive.md), [finančné údaje](docs/invoice-finance.md), [e-shopové faktúry](docs/shop-invoices.md). Import faktúry nevystavuje nový doklad ani nemení sklad. |
+| Dodávatelia `/suppliers` a katalóg | Konfigurácia, feedy, vyhľadávanie, identita a importné náhľady | [Katalóg](docs/supplier-catalog.md), [dodávateľská identita](docs/supplier-identity.md), [Zookee](docs/zookee.md). Adaptér a podporované polia treba overiť pre konkrétny zdroj. |
+| Mapovanie feedu a `/product-import` | Verzie mapovania, zdrojová analýza, uložená editovateľná príprava, ochrana ručných hodnôt a ciele oboch e-shopov | [Mapovanie](docs/product-feed-mapping.md), [importy](docs/product-imports.md), [dodávateľské metadáta](docs/upgates-supplier-metadata.md). |
+| E-shopy `/shops` | Zoznam, konfigurácia, Upgates import/export a mapovanie | Aktívna stránka je implementovaná; [existujúce väzby](docs/product-links.md) zachovávajú overené natívne identity. |
+| Objednávky `/orders`, `/orders/stock`, `/orders/inbox` | Čítací audit, samostatný zber, náhľad a potvrdené lokálne rezervácie/výdaje | [Postup obsluhy](docs/order-workflows.md), [automatika](docs/order-automation.md), [pravidlá centrálneho skladu](docs/central-stock.md). Automatické spracovanie vyžaduje vlastnú aktiváciu a časovú hranicu. |
+| Dostupnosti `/settings/availability` | Čerstvosť dodávateľských údajov, ručné spustenie, intervaly a pravidelný skladový prenos | [Ovládanie](docs/availability-sync.md), [dodávateľské údaje](docs/supplier-availability.md), [rozdielový prenos](docs/stock-sync.md). Dodávateľská ponuka nie je fyzická zásoba Hubu. |
+| Údržbová publikácia `/stock/publication` | Výslovná blokácia skladu, porovnanie, jedno odoslanie a riešenie neistého výsledku | [Údržbový postup](docs/stock-publication.md); odlišný od pravidelného rozdielového prenosu. |
+| Ceny `/settings/purchase-costs` | Voliteľný prenos ďalšej FIFO ceny produktu a nákladov vydaných objednávok | [Nákupné ceny](docs/fifo-purchase-costs.md); účtovné tržby a úplná hrubá marža ešte nie sú hotové. |
+| AI `/ai-content`, `/settings/ai-content` | Pravidlá, profily, príprava, kontrola a vybrané obsahové aktualizácie | [AI obsah](docs/ai-content.md); uložený koncept, schválenie a skutočné odoslanie sú odlišné stavy. |
+| Účty `/login`, `/settings/users` | Meno/heslo, trvalá relácia, správca účtov a kompatibilný operátorský token | [Účty](docs/user-accounts.md), [tajné konfigurácie](docs/configuration-secrets.md). Všeobecné prevádzkové RBAC zostáva plánované. |
+| Atomer `/migration/atomer`, `/migration/atomer-progress` | Príprava obsahu/katalógu, pôvodné a aktuálne identity, review, pozastavenie a riadené odovzdanie | [Obsah](docs/atomer-content-import.md), [prehľad migrácie](docs/atomer-migration-progress.md), [riadenie kampane](docs/atomer-catalog-control.md), [riadenie úlohy](docs/atomer-catalog-job-control.md), [handoff](docs/atomer-catalog-handoff.md). Dokončená konsolidácia kariet sama nedokazuje dokončené publikovanie obsahu. |
 
-Zdroj navigácie: [App.tsx](frontend/src/App.tsx), [exporty stránok](frontend/src/pages/index.ts), [zástupné stránky](frontend/src/pages/PlaceholderPages.tsx).
+Zdroj navigácie: [App.tsx](frontend/src/App.tsx) a [exporty stránok](frontend/src/pages/index.ts). Názov súboru `PlaceholderPages.tsx` sám neurčuje stav exportovanej stránky.
 
 ## Architektúra a aktívne moduly
 
-Frontend komunikuje s FastAPI cez Caddy. Relačné dáta sú v PostgreSQL; konfigurácie, zdrojové súbory a časť importných stavov vo filesysteme. AI worker, čítací objednávkový worker a oddelený worker lokálneho skladového spracovania bežia v API procese a používajú PostgreSQL. Zber vyžaduje zapnutie alebo jednorazovú požiadavku; skladová automatika vyžaduje samostatnú aktiváciu e-shopu. Prítomnosť Redis v Compose nedokazuje, že ním beží AI alebo všeobecná synchronizačná fronta.
+React frontend komunikuje s FastAPI cez rovnaký HTTPS pôvod a prefix `/api`. Caddy obsluhuje frontend a reverse proxy. Backend používa Python 3.12, async SQLAlchemy a PostgreSQL 16. Workery bežia v API procese a svoje trvalé stavy ukladajú do PostgreSQL.
 
-| Vrstva | Technológia |
+| Miesto | Úloha |
 | --- | --- |
-| Frontend | React 18, TypeScript, Vite, Tailwind CSS v4, existujúce UI komponenty a SK/EN preklady. |
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2 async a asyncpg. |
-| Databáza | PostgreSQL 16. |
-| Dodávatelia | Parsery a B2B adaptéry; niektoré používajú Playwright. |
-| Prevádzka | Docker Compose, Caddy 2, PostgreSQL a Redis 7 v referenčnej zostave. |
+| [api/inventory_hub/main.py](api/inventory_hub/main.py) | Registrácia routerov, autentizačná hranica a životný cyklus workerov. |
+| [api/inventory_hub/routers/](api/inventory_hub/routers/), [services/](api/inventory_hub/services/) | HTTP rozhranie a zdieľané obchodné pravidlá. |
+| [api/inventory_hub/adapters/](api/inventory_hub/adapters/) | Dodávateľské parsery a B2B konektory. |
+| [api/inventory_hub/db_models.py](api/inventory_hub/db_models.py) a ďalšie modely | Relačné entity; samotný model nie je hotový používateľský postup. |
+| [frontend/src/App.tsx](frontend/src/App.tsx), [pages/](frontend/src/pages/) | Navigácia a aktívne obrazovky. |
+| [frontend/src/api/](frontend/src/api/) | Typované klientské rozhrania; prihlasovanie a spoločný transport chránia súkromné požiadavky. |
+| [infra/db-init/](infra/db-init/), [migrate.py](api/inventory_hub/migrate.py) | Nemenné očíslované SQL a explicitné poradie aktualizácií. |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml), [build.yml](.github/workflows/build.yml) | Kontroly PR a nasadenie `main`. |
 
-Backendové cesty v tabuľke sú pod `api/inventory_hub/`:
+`USE_POSTGRES=true` je aktuálny skladový režim. Legacy režim nie je rovnocenný náhradný sklad pri výpadku databázy. Referenčný Compose obsahuje aj Redis; to nie je dôkaz používania Redis fronty v aktívnej aplikácii.
 
-| Modul | Zodpovednosť |
-| --- | --- |
-| `main.py`, `database.py`, `settings.py` | Routery, životný cyklus API/AI workeru, spojenia a konfigurácia. |
-| `db_models.py`, `db_models_ext.py`, `ai_content_models.py` | Hlavné relačné modely; ďalšie modely sú aj v príslušných feature moduloch. |
-| `config_io.py`, `config_normalize.py` | Súborové konfigurácie. |
-| `routers/receiving_db.py`, `routers/stock.py`, `routers/stock_history.py`, `services/stock_history.py` | Príjem, čítanie skladových údajov a nemennej histórie. |
-| `routers/opening_stock.py`, `services/opening_stock.py`, `services/stock_balances.py` | Počiatočný stav a spoločné transakčné zámky bilancií s príjmom. |
-| `routers/order_stock.py`, `services/order_stock.py`, `order_stock_source.py`, `order_stock_ledger.py` | Potvrdená politika stavov, čerstvý zdroj objednávky, rezervácie a jednorazový výdaj. Posledné dva moduly sú v `services/`. |
-| `routers/stock_settings.py`, `services/stock_settings.py`, `routers/order_processing.py`, `services/order_processing*.py` | Dedené nastavenia, samostatná autorizácia automatiky, trvalé úlohy a lokálne skladové spracovanie. |
-| `routers/order_collection.py`, `services/order_collection*.py`, `services/stock_projection.py` | Chránené nastavenie, obnoviteľný čítací zber, inbox a lokálny návrh zásob bez externých zápisov. |
-| `routers/stock_publication.py`, `services/stock_publication*.py` | Chránené dávky, blokácia skladu a samostatné odoslanie absolútneho stavu počas potvrdenej údržby. |
-| `routers/stock_sync.py`, `services/stock_sync.py`, `services/stock_delta.py`, `services/stock_native.py` | Pravidelný `stock_increment`, kontrolné body po údržbe a evidencia natívnych objednávkových účinkov; bez automatickej aktivácie. |
-| `routers/shared_stock_sales.py`, `services/shared_stock_sales.py`, `services/sale_units.py` | Chránený náhľad a atómové potvrdenie skupiny predajných položiek s explicitným počtom kusov jednej karty; nemení fyzické množstvo ani aktivácie. |
-| `routers/upgates_sync.py`, `services/upgates.py` | Načítanie produktov a vybrané operácie ich prenosu. |
-| `services/upgates_budget.py` | Spoločný rozpočet a jedna súbežná API požiadavka na HTTPS origin naprieč procesmi, cez samostatné autocommit PostgreSQL spojenie. |
-| `routers/catalog.py`, `services/catalog.py`, `services/catalog_import.py` | Katalóg, identita, náhľad a založenie produktov. |
-| `routers/feed_mapping.py`, `services/feed_mapping*.py` | Uložené mapovanie feedov a zdrojová analýza. |
-| `routers/product_import.py`, `services/product_import.py` | Trvalé náhľady, ručné hodnoty, AI príprava a riadené uloženie/import. |
-| `services/identifiers.py`, `adapters/` | Identifikátory a dodávateľské spracovanie. |
-| `routers/ai_content.py`, `services/ai_content*.py` | AI príprava, review, aktualizácie obsahu a worker. |
-| `routers/invoices.py`, `routers/invoices_unified.py`, `routers/imports.py` | Faktúry a existujúce súborové/CSV postupy. |
+### Dve úložiská
 
-`USE_POSTGRES=true` registruje databázový príjem, sklad, katalóg, Upgates API integráciu a AI cesty. Režim `false` používa legacy príjem; nejde o rovnocenný náhradný sklad pri výpadku DB. Nevyvodzuj automatický funkčný failover iba z logov pri štarte.
+PostgreSQL obsahuje karty, identifikátory, dodávateľské a e-shopové väzby, doklady, pohyby, FIFO, objednávkové stavy, prípravy a audity operácií. Filesystem obsahuje konfigurácie dodávateľov/e-shopov, zdrojové faktúry, feedy, exporty a niektoré importné denníky. Prihlasovacie údaje sú v samostatnom chránenom mount-e mimo verejných dát.
 
-## Dátový model a úložiská
+Dodávateľské zmeny môžu potrebovať databázu aj súbory. Záloha a obnova musia zachovať všetky tieto časti z konzistentného bodu; postup je v [sprievodcovi obnovou](api/POSTGRES_SETUP.md#záloha-a-obnova).
 
-### PostgreSQL
+## Identita, sklad a obnova operácií
 
-| Tabuľky | Význam |
-| --- | --- |
-| `suppliers`, `supplier_feeds`, `supplier_feed_runs`, `supplier_products` | Dodávatelia a normalizované feedové dáta. |
-| `product_feed_mappings`, `product_feed_mapping_revisions` | Konfigurácia a nemenné verzie mapovania podľa dodávateľa, feedu a e-shopu. |
-| `product_import_drafts` | Uložená zdrojová snímka, editované hodnoty, väzby na AI a výsledok uloženia/importu. |
-| `product_groups`, `products`, `product_identifiers`, `product_variant_attributes` | Rodiny, predajné položky, identifikátory a variantné atribúty. |
-| `product_supply_sources` | Väzby skladovej položky na dodávateľské ponuky; používané dostupnosťami, importmi a lokálnou opravou párovania. |
-| `uploaded_invoices`, `uploaded_invoice_lines` | Nahrané faktúry a položky. |
-| `receiving_sessions`, `receiving_lines`, `scan_events`, `receiving_scan_requests` | Príjem a skenovanie. |
-| `warehouses`, `stock_balances`, `stock_movements` | Sklady, aktuálne množstvá a nemenná história pohybov. |
-| `opening_stock_batches`, `opening_stock_lines` | Uložené náhľady, pôvod, riadky a výsledky zaúčtovania počiatočného stavu. |
-| `shops`, `shop_products`, `shop_product_content` | Kanály, mapovania a zachytený obsah z Upgates. |
-| `shared_stock_sale_previews` | Overené skupiny predajných väzieb, faktory, pôvod a trvalý výsledok uloženia. |
-| `availability_profiles`, `shop_product_availability` | Model dostupnosti; nie dôkaz hotovej automatizácie. |
-| `shop_orders`, `shop_order_items`, `reservations`, `order_stock_policies`, `order_stock_previews` | Kontrolované skladové spracovanie objednávok, potvrdené politiky a trvalé náhľady/výsledky. Existujúce nespravované objednávky sa automaticky nepreberajú. |
-| `stock_warehouse_settings`, `stock_shop_settings`, `order_processing_jobs` | Predvolené hodnoty, výslovné aktivácie a trvalá fronta lokálneho spracovania. |
-| `order_collection_settings`, `order_collection_runs`, `order_inbox` | Aktivácia čítacieho zberu, kontrolné body/behy a stručné hlavičky objednávok; oddelené od skladového zaúčtovania. |
-| `stock_native_orders`, `stock_native_events`, `stock_native_lines` | Auditovaný natívny skladový účinok vlastných Upgates objednávok; žiadne fiktívne lokálne príjmy alebo výdaje. |
-| `stock_sync_checkpoints`, `stock_sync_baseline_events` | Revízie lokálneho/natívneho stavu a audit počiatočného zosúladenia v údržbe pre rozdielový prenos. |
-| `upgates_api_budget` | Zdieľané zostatky API a odloženie požiadaviek; iba hash originu, bez prihlasovacích údajov. |
-| `inventory_counts`, `inventory_count_lines`, `shop_sync_outbox` | Modely pre širšie workflow; over ich skutočných producentov a konzumentov. |
-| `ai_rule_versions`, `ai_rule_state`, `ai_content_batches`, `ai_content_jobs`, `ai_content_revisions` | AI pravidlá, úlohy, náklady a história kontroly. |
+- Každá predajná položka má jednu kanonickú skladovú kartu. Nové fyzické SKU používa dvojpísmenový prefix **výrobcu** a potvrdený článok výrobcu. Existujúce SKU, zdrojové kódy a overené natívne identity sa zachovávajú. [SKU](docs/sku-policy.md), [dátový model](docs/warehouse-model.md), [náhľad prevodu existujúcich SKU](docs/sku-migration.md).
+- Aktívne dodávateľské vlastníctvo určuje `product_supply_sources`. Názov, prefix, podobnosť kódov ani samotný EAN nesmú vytvoriť nepreukázanú väzbu.
+- Výslovne overené predajné násobky môžu zdieľať jednu kusovú kartu. Predajné množstvá a fyzické kusy ostávajú oddelené; prepočet sa neodvodzuje z názvu či starého zostatku. [Zdieľané predaje](docs/shared-stock-sales.md), [dávky](docs/shared-stock-sale-batches.md).
+- Fyzické zásoby vyžadujú potvrdený začiatok evidencie. Dodávateľský feed, založenie karty, importný zostatok ani faktúra samy nepotvrdzujú prijatý tovar. Desať nových skenovacích UUID znamená desať operácií; opakovanie jedného UUID vracia jeho výsledok.
+- Pohyby, FIFO alokácie, pôvodné ceny a audit sa nemenia upratovaním. Opravy množstva sú nové kompenzačné pohyby; neznáma cena je `NULL`, nie nula. Služby nevytvárajú fyzický sklad. [FIFO](docs/fifo.md), [jednotky](docs/stock-units.md).
+- Neistý externý zápis sa automaticky neopakuje. Zachovať pôvodnú požiadavku, UUID, dôkazy a blokácie; konkrétnu obnovu určuje dokument daného workflow. Samotná zhoda aktuálneho vzdialeného množstva nevyrieši neistý skladový PUT.
 
-Produkt nemá databázový stĺpec `primary_ean`; identifikátory sú v `product_identifiers`. ORM má kompatibilnú odvodenú vlastnosť rovnakého názvu. Podporované typy a unikátnosť over v modeli a službe identifikátorov. EAN je text a nie je jediným párovacím kľúčom.
+### Zlučovanie a jednorazová migrácia
 
-Trvalý výber AI modelu pridáva prázdnu tabuľku migráciou 023; deployment ju vykoná po 022 a nemení pôvodné úlohy ani výber modelu.
+Bežné **Zlúčiť karty** v produktovej tabuľke aj operátorské API `product-consolidations/one-off/preview`, `one-off/apply` a `one-off/{request_id}` sú súčasťou implementácie. Jednorazová cesta prijíma presný overený zoznam skupín, opätovne kontroluje náhľad pod zámkami a ukladá celú dávku v jednej databázovej transakcii. Nevolá vzdialené API ani nesčítava fyzické množstvá.
 
-Mapovanie a náhľady importu pridávajú aditívne migrácie 021 a 022. Obe sú zabalené v API obraze a deployment ich vykoná po 020 pred reštartom API. Nemenia staršie produkty ani pohyby a nespúšťajú automatické AI či publikovanie. Návrat kódu ponechá tabuľky a uložené náhľady; po použití nového postupu uprednostni kompatibilnú opravu vpred.
+Kanonické aliasy, pôvodná história, potvrdenia a výsledky zostávajú zachované. Konsolidácia neruší pozastavenie Atomer kampaní ani ich pôvodné či čiastočné potvrdenia. Podrobný [operátorský kontrakt](docs/product-consolidation.md#one-off-atomic-identity-migration), [pravidlá rozsahu](docs/product-consolidation-rules-scope.md), [dôkazy](docs/product-consolidation-evidence.md), [diagnostika](docs/product-consolidation-diagnostics.md) a [AI pôvod](docs/product-consolidation-ai-lineage.md) zostávajú zdrojom pravidiel a obnovy.
 
-### Filesystem
-
-Koreň určuje `INVENTORY_DATA_ROOT`. Referenčný produkčný mount je `/opt/inventory-data` na hostiteľovi → `/data/inventory-data` v API kontajneri.
-
-| Relatívna oblasť | Obsah |
-| --- | --- |
-| `suppliers/<kod>/config.json` | Konfigurácia dodávateľa a adaptérov. |
-| `suppliers/<kod>/feeds/` | Zdrojové a konvertované feedy. |
-| `suppliers/<kod>/invoices/` | Originálne doklady, spracované súbory a indexy podľa existujúceho workflow. |
-| `suppliers/<kod>/imports/upgates/` | CSV výstupy. |
-| `shops/<kod>/` | Konfigurácia, exporty/cache a logy e-shopu. |
-| `shops/<kod>/catalog-imports/` | Trvalé náhľady, výsledky a importný denník. |
-
-Dodávateľská konfigurácia a relačná identita musia zodpovedať rovnakému kódu. Pri zmene over obe reprezentácie a existujúce vytváracie cesty; nepredpokladaj, že ručný SQL INSERT je vždy potrebný. Súborové indexy a DB nemajú automaticky spoločnú transakciu.
-
-Obnova projektu potrebuje databázu aj relevantné súbory a chránenú konfiguráciu. Existujúci produkčný plán záloh a úspešný restore test táto kontrola repozitára nepotvrdila.
-
-## Príjem, sklad a oceňovanie
-
-Databázový príjem používa cesty pod `/api/suppliers/{supplier_code}/receiving/sessions`. Skenovanie a finalizácia patria ku konkrétnej relácii; všeobecné `/receiving/sessions` z predchádzajúcej dokumentácie nebolo správnym popisom tohto kontraktu.
-
-SK Profi Bike má validovaný adaptér textových PDF faktúr cez dodávateľské `upload-invoice` v postupe Príjem. Spracuje aj viacstranové doklady, opakované hlavičky, zalomené názvy, rôzne fakturované jednotky a zľavy vrátane bonusov; overuje strany, poradie položiek a finančné súčty. Uloží PDF, CSV s nákupnými cenami bez DPH po zľave a index, ktorý používa existujúci príjem; nevytvára vlastné skladové množstvá. Používa `pypdf`, bez SQL migrácie. Opakovaný doklad zachová stav, iný obsah pod rovnakým číslom sa odmietne. Obmedzenia formátu, chýbajúce EAN a test príjmu/inventúry sú v [receiving-identity.md](docs/receiving-identity.md#sk-profi-bike-pdf-invoices).
-
-CSV je interný normalizovaný podklad príjmu; pôvodný doklad a dodávateľský parser zostávajú rozhodujúce. Priame nahrávanie CSV do príjmu je obmedzené a Excel patrí iba overenému formátu Northfinder. Nový príjem aj dokončenie rozpracovaného príjmu overujú pôvod údajov, EUR a nákupné ceny bez DPH; neplatné čísla, zmenený zdroj a duplicitný doklad sa odmietnu pred zápisom zásob. Dokončené príjmy zachovávajú uložený výsledok pri opakovaní. Podrobnosti sú v [kontrakte príjmu](docs/receiving-identity.md).
-
-Existujúcu dokončenú zálohu možno znovu overiť cez `scripts/backup_inventory.py --verify-existing <backup-dir>` bez odstavenia produkcie. Kontroluje manifest, všetky archívy a obnovu DB do izolovaného kontajnera; pôvodnú zálohu nemení. Testy programu samy nepreukazujú obnoviteľnosť konkrétnej produkčnej zálohy. [Prevádzkový postup](docs/sku-migration.md).
-
-Finalizácia v `routers/receiving_db.py` vytvára `RECEIVING_IN` pohyby, aktualizuje `stock_balances` a podľa pravidiel môže založiť chýbajúcu položku. Má identifikačný kľúč pohybu pre reláciu a riadok, zámok relácie a bilancií a uložený výsledok pre opakovanie. Prijaté riadky bez identity alebo platnej nákupnej ceny blokujú celý príjem; nulové množstvo nevytvorí pohyb. Súborový index faktúry sa označí až po DB commite. Presný kontrakt a dočasné obmedzenie príjmu bez ceny sú v [centrálnom sklade](docs/central-stock.md).
-
-Príjem predvolene zobrazuje zoznam položiek, známe EAN s pôvodom údaja a šípky na ručnú zmenu prijatého množstva. Neúplnú aj nulovú historickú faktúru možno výslovne dokončiť; do skladu vstupuje iba potvrdené prijaté množstvo. Zobrazenie EAN z dodávateľského katalógu je čítanie, nie automatické priradenie identity. Podrobnosti a regresie sú v [kontrakte príjmu](docs/receiving-identity.md).
-
-Nové zásoby bez predchádzajúcich pohybov a explicitne prevedené zostatky používajú **FIFO**. Staršie zostatky zostávajú na pôvodnom váženom priemere do overeného prechodu. Voľné množstvo je fyzické mínus rezervované mínus karanténa. Neznáme ceny zostávajú `NULL`; neúplné ocenenie sa neukazuje ako nula. Podrobnosti prechodu, vrstiev a nákladov sú v [FIFO](docs/fifo.md). Kontrolované spracovanie jednotlivých objednávok rezervuje dostupné kusy, zvyšok eviduje ako nedostatok a pred výdajom vyžaduje celú zásobu pri zachovaní rezervácií ostatných objednávok. Automatické lokálne účtovanie je voliteľné pre každý e-shop; samostatný čítací zberač stále iba zachytáva hlavičky a samostatný procesor načítava celé aktuálne objednávky. Nový `SALE_OUT.total_cost` zachytáva presnú odobratú hodnotu vrátane zaokrúhlenia; historické pohyby sa nedopočítavajú. Podrobnosti sú v [centrálnom sklade](docs/central-stock.md).
-
-`stock_movements` sa pri oprave minulosti nemajú meniť ani mazať; používajú sa korekčné pohyby. Nákupná cena, predajná cena a aktuálna feedová cena majú odlišný význam. Chránený počiatočný stav používa vlastný CSV náhľad a výslovné potvrdenie; nepoužíva množstvá ani predajné ceny e-shopu. Prvá verzia podporuje iba celé `ks`, odmieta existujúcu bilanciu aj predchádzajúci pohyb a nenahrádza historické nákupné vrstvy. Pred fyzickým otvorením treba odsúhlasiť hranicu počítania a rozpracované príjmy podľa [centrálneho skladu](docs/central-stock.md).
-
-## Upgates: samostatné integračné cesty
-
-Označenie „synchronizácia“ nie je zárukou rovnakého správania všetkých tlačidiel:
-
-| Cesta | Čo robí | Hranice |
-| --- | --- | --- |
-| Legacy CSV | Príprava súborov, načítanie exportu e-shopu a rozdelenie importných výstupov. | Nie je priebežnou API synchronizáciou celého skladu. |
-| Upgates → Hub | Náhľad a načítanie produktov, variantov, mapovaní a obsahu; fyzický sklad ani obstarávacie ceny nemení. | `include_stock=true` je odmietnuté; párovanie používa kanálové prepojenie, spoločné SKU a overené čiarové kódy. Rozdielni parenti vrátane pokladňového „xTrek“ sú podporovaní. Obnova zachováva spoločné produktové údaje a môže doplniť chýbajúce overené EAN. Konflikty sa zobrazia; počiatočný stav je samostatná chránená operácia. |
-| Hub → e-shop cez `push_products_to_shop` | Prenos vybraných produktov zo zachyteného obsahu. | Vyžaduje výber všetkých prenášaných variantov a preskakuje už namapované položky v cieli; nejde o všeobecnú aktualizáciu existujúcich produktov alebo automatickú stock sync službu. |
-| Dodávateľský katalóg → e-shop | Výber, náhľad a založenie nových produktov cez API, skrytých a označených `validation_required=1`. | Neaktualizuje existujúce produkty a neposiela vlastné skladové množstvá. |
-| Upgates objednávky → inbox | Zapínateľný pravidelný zber hlavičiek so začiatkom podľa skladovej politiky. | Samotný zber nemení sklad. Voliteľný procesor má vlastnú aktiváciu a pravidlá. Stránkovanie nie je snapshot; prekrývanie a kontrolné prechody zlepšujú zachytenie zmien. |
-| Lokálny návrh vlastných zásob | Voľné množstvo potvrdeného skladu a samostatné mapovanie vybraných variantov. | Žiadny PUT, outbox, zmena dostupnosti či viditeľnosti. Vyžaduje úplné účtovanie objednávok pred budúcim publikovaním. |
-| AI aktualizácia existujúceho produktu | Porovnanie pred/po a aktualizácia povolených polí s kontrolou identity a výsledku. | Všeobecná aktualizácia obsahu neposiela ceny, vlastné množstvo, aktivitu, identifikátory ani nové varianty. |
-
-Podmienky náhľadov, potvrdenia, kontrol identity, stavu `uncertain` a obnovy sú v [katalógovej](docs/supplier-catalog.md) a [AI dokumentácii](docs/ai-content.md). Existuje aj osobitná obmedzená AI cesta aktualizácie dodávateľskej dostupnosti; jej podmienky neplatia automaticky pre všetky produkty a varianty.
-
-Dodávateľská zásoba je oddelená od našej. `6+` je dolná hranica, nie presný počet. Obnova katalógu a zalistovanie z feedu nevytvárajú fyzický príjem. Texty dostupnosti vlastní `adapter_settings.availability` dodávateľa, s predvolenými `do 5 dní` a `overíme`. AI pravidlá ich neprepisujú; `overíme` je objednateľné. Zachovaj čerstvosť údajov, neznáme hodnoty a pravidlá konkrétneho integračného kontraktu.
-
-Sloger podporuje jeden katalóg z viacerých značkových XML zdrojov (`feeds.sources.products.remote.urls`), s atómovou obnovou a filtrovaním výrobcu. Natívny parser zachováva explicitné varianty a blokuje kolidujúce kódy aj medzi značkami. DMOC je predajná cena s DPH; chýbajúca nákupná cena sa do Upgates neposiela. Karta **Ceny** v nastavení dodávateľa upravuje koeficienty značiek; `1` cenu nemení. Bez nastavenia sa predvolené koeficienty Paul Lange nepoužijú na iného dodávateľa. Zmena nepotrebuje migráciu a sama nezapína dodávateľa ani B2B zber. Konfigurácia a overovanie sú v [dodávateľskom katalógu](docs/supplier-catalog.md#sloger-listing-feeds).
-
-Značkové GET zdroje Sloger sa sťahujú postupne s odstupom jednej sekundy. Pri HTTP 429 sa zdroj skúsi najviac trikrát so zohľadnením `Retry-After`; čakanie dlhšie než 60 sekúnd ukončí obnovu. Časové a veľkostné limity aj zachovanie posledného úspešného katalógu ostávajú v platnosti.
-
-SK Profi Bike (`sk-profi-bike`, prefix `SKP-`) používa natívny XML parser rodičov a variantov, plný produktový aj zjednodušený skladový feed. Nákupná ponuka `voc`/`voc_akcia` je bez DPH, MOC je s DPH; predvolený koeficient je 1. Feedové údaje vstupujú do spoločnej editovateľnej prípravy s voliteľným AI. Existujúce spoločné produkty si ponechajú SKU. Neznáme alebo záporné dodávateľské množstvo sa neprevedie na nulu. Samostatné API objednávok nie je potrebné ani aktivované. Podrobnosti sú v [katalógovej dokumentácii](docs/supplier-catalog.md#sk-profi-bike-listing-feeds).
-
-## AI obsah
-
-Úplné súkromné pravidlá možno pripraviť offline nástrojom `ai_rule_package`; nejde o publikovanie do databázy. Rozsahy, obmedzenia a postup sú v [AI dokumentácii](docs/ai-content.md). Overený návrh prepojenia príjmu s existujúcim importom a prenosom vybraných SKU je v [príjem → Upgates](docs/receiving-upgates-plan.md); samotné prepojenie zostáva plánované.
-
-AI workflow používa existujúci katalóg/importer a vlastné DB tabuľky. Worker beží v API procese s databázovými zámkami. Podporuje prípravu z feedu, existujúce produkty, pravidlá a kategórie, odhad nákladov, revízie a kontrolované odoslanie výsledku.
-
-Oficiálny prieskum môže vyhľadávať weby výrobcov/dodávateľov bez povinného prednastaveného zoznamu domén. Vyhľadávanie nezaručuje dostupnosť správnej hodnoty a chýbajúce povinné parametre naďalej vyžadujú vyriešenie.
-
-AI, audit, skladové spracovanie a ostatné doteraz tokenom chránené funkcie používajú spoločný `access.py`: prihlásený účet s HttpOnly reláciou alebo pôvodný operátorský token. [Účty](docs/user-accounts.md) pridávajú iba rozdiel medzi správcom účtov a obsluhou, nie úplné prevádzkové RBAC. AI model sa dá trvalo vybrať v **Nastavenia → AI obsah produktov → Model a náklady**; serverové `AI_CONTENT_MODEL` je predvoľba, kým sa výber neuloží; bez explicitnej konfigurácie kód používa lacnejší `gpt-6-luna`. Nasadenie neprepisuje uložený model ani serverové nastavenie. Nové úlohy si model zmrazia, existujúce sa neprepnú. Ostatná konfigurácia zostáva `AI_CONTENT_ENABLED`, `AI_CONTENT_ACCESS_TOKEN`, `OPENAI_API_KEY`, `AI_CONTENT_MONTHLY_USD`, `AI_CONTENT_JOB_USD`. Tajné hodnoty do dokumentácie ani logov nepatria.
-
-Nové AI prípravy rozlišujú umiestnenie v kategórii a odborný profil pravidiel. Jednoznačné mapovanie použije profil bez klasifikačného volania; pri zadanej kategórii bez mapovania AI vyberie iba profil. Bez kategórie vyberie koncovú kategóriu aj profil. Ručný odborný profil sa zachová. Pôvodný importer doplní produktových predkov. Rozpočet zahŕňa obe fázy a žiadna sa po nejasnom výsledku automaticky neopakuje. Výsledky sa otvárajú v modálnom okne. Kontrakty, ručné výnimky a aktuálne limity sú v [docs/ai-content.md](docs/ai-content.md).
+Automatické Atomer workery vyžadujú `ATOMER_CATALOG_WORKER_ENABLED=true`; predvolená hodnota je `false`. Existujúci [export migrácie](docs/migration-export.md) podporuje `local_only=true` bez volania Upgates. Manuálny `scripts/atomer_direct_batch.py` je samostatný obsahový nástroj s vlastným denníkom a [postupom obnovy](docs/atomer-content-import.md), nie všeobecné zlučovanie kariet.
 
 ## Databázové migrácie
 
-V [infra/db-init](infra/db-init) sú tieto SQL súbory:
+Repozitár obsahuje 50 SQL súborov `001`–`050`. Aktuálny upgrade runner má 39 modulov: `005`–`038`, potom `046`–`050`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 46 upgrade SQL súborov `005`–`050`.
 
-| Súbor | Úloha |
-| --- | --- |
-| `001_schema.sql` | Základná relačná schéma, typy a databázové pravidlá. |
-| `002_invoice_management.sql` | Rozšírenia fakturačnej evidencie. |
-| `003_uploaded_invoices.sql` | Nahrané faktúry a položky. |
-| `004_shop_product_content.sql` | Kompletný obsah produktov podľa e-shopu a parent kódu. |
-| `005_ai_content.sql` | AI pravidlá, dávky, úlohy a revízie. |
-| `006_opening_stock.sql` | Dávky a riadky kontrolovaného počiatočného stavu; nemení existujúcu zásobu. |
-| `007_order_stock.sql` | Politiky, náhľady a stav skladového spracovania; presný náklad nového výdaja. Neznáme predajné ceny a mena objednávky smú byť `NULL`. Žiadny historický výdaj ani rezervácia sa nevytvorí migráciou. |
-| `008_order_collection.sql` | Aktivácia zberu, trvalé behy a inbox hlavičiek. Migrácia nezapína e-shopy a nemení fyzický sklad. |
-| `009_stock_automation.sql` | Dedené prevádzkové nastavenia, jednorazové načítanie a trvalá fronta spracovania. Predvolene ručný režim; žiadne spätné zaúčtovanie. |
-| `010_stock_publication.sql` | Kontrolované publikovanie, dávky a trvalé skladové blokácie. Zápis do e-shopov zostáva predvolene vypnutý. |
-| `011_fifo.sql` | FIFO vrstvy, alokácie výdajov, prechody, príjmy, vratky, karanténa a opravy ceny. Nullable ocenenie a prepočet generovaného voľného množstva; nezakladá historické vrstvy. |
-| `012_product_editor.sql` | Ručné produktové overrides, revízie, uložené výsledky dávok a audit; prirodzené radenie kódov. |
-| `013_receiving_scan_requests.sql` | Atómové potvrdenia UUID skenov a rozšírenie compound EAN riadka na 255 znakov. Obnovuje iba odvodený fingerprint a známy faktúrový view so zachovaním definície a prístupov, v transakcii bez CASCADE; nemení pohyby ani nastavenia. |
-| `010_stock_publication.sql` | Politiky odosielania, trvalé blokácie skladov, dávky a položky s auditom jedného pokusu. Bez aktivácie odosielania či zmeny zásob. |
-| `024_upgates_api_budget.sql` | Spoločná evidencia API rozpočtu; bez aktivácie skladových zápisov alebo nákupu kvóty. |
-| `025_stock_native.sql` | Natívne objednávkové účinky s auditom a kontrolou pokrytia; nemení fyzickú skladovú históriu. |
-| `026_stock_delta.sql` | Rozdielový protokol, kontrolné body po údržbe a zmrazené podklady pokusov; bez prevzatia starého oprávnenia či automatickej aktivácie. |
-| `027_product_links.sql` | Trvalé náhľady a výsledky prepojenia existujúcich kariet s e-shopmi. |
-| `028_supplier_card_links.sql` | Trvalé náhľady a výsledky ručného priradenia dodávateľskej položky k existujúcej karte. |
-| `046_shared_stock_sales.sql` | Explicitné predajné násobky jednej kusovej karty, zmrazené jednotky objednávky a kľúče publikovania po predajných väzbách; bez prepočtu histórie alebo aktivácie zásob. |
-
-**Deployment spúšťa `005` až `038` a následne `046` v jednom API kontajneri** cez `python -m inventory_hub.migrate`. Inštalátory `039`–`045` si ponechávajú svoje doterajšie spúšťanie. [Spúšťač](api/inventory_hub/migrate.py) volá moduly v explicitnom poradí; zachováva ich transakcie a DB zámky. `020_user_sessions.sql` vytvára účty, relácie a limity prihlasovania cez [user_sessions_migrate.py](api/inventory_hub/user_sessions_migrate.py). Chyba migrácie preruší nasadenie pred reštartom API; už dokončené migrácie zostanú potvrdené. [API Dockerfile](api/Dockerfile) balí potrebné upgrade SQL súbory do obrazu. Spúšťač nehľadá nové číslované SQL automaticky. Migrácie `024`–`026` a `046` neaktivujú synchronizáciu.
-
-Adresár `/docker-entrypoint-initdb.d` v referenčnom Compose inicializuje nové databázové úložisko; automaticky neaktualizuje existujúce. Pred upgrade over aplikovanú schému a priprav postup iba pre potrebné chýbajúce zmeny. Pridanie ďalšieho SQL súboru bez zmeny migračného postupu samo nespôsobí jeho vykonanie pri deployi.
-
-Pri čistej lokálnej inštalácii over postupnosť `001`–`033` v izolovanej DB a ukončenie pri SQL chybe. Historická úplná inicializačná cesta nebola počas tejto aktualizácie spustená; izolované CI testy samy nepotvrdzujú celý produkčný bootstrap. Už nasadené migrácie sa spätne neprepisujú.
-
-## Lokálny vývoj a overovanie
-
-Použi Python 3.12, Node.js 20 a vlastný PostgreSQL 16. Nastav lokálne `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` a `USE_POSTGRES=true`; nepoužívaj produkčné prístupy. Ďalšie možnosti sú v [settings.py](api/inventory_hub/settings.py).
-
-Z koreňa repozitára, po príprave izolovanej DB a príslušnej schémy:
-
-```bash
-python -m pip install -r api/requirements.txt
-export INVENTORY_DATA_ROOT=/tmp/inventory-hub-dev
-mkdir -p "$INVENTORY_DATA_ROOT"
-PYTHONPATH=api uvicorn inventory_hub.main:app --reload --port 8000
-```
-
-Dočasný dátový adresár je len na reprodukovateľné lokálne dáta. Pre B2B cesty používajúce prehliadač priprav aj Playwright Chromium; produkčný Dockerfile ho inštaluje.
-
-Frontend v druhom termináli z koreňa repozitára:
-
-```bash
-npm --prefix frontend ci
-npm --prefix frontend run dev
-```
-
-API základ a lokálny proxy over vo [Vite konfigurácii](frontend/vite.config.ts). Konfigurácie ani dáta nevymýšľaj, aby sa aplikácia tvárila funkčne.
-
-Overovacie príkazy sú v [AGENTS.md](AGENTS.md) a [CI](.github/workflows/ci.yml): kompilácia a `unittest`, frontendový build a jsdom sady vrátane počiatočného stavu, skladového spracovania, čítacieho zberu a návrhu zásob. DB testy preverujú migrácie, rollback, zmeny objednávky, konkurujúce rezervácie, opakovanie výdaja aj súbeh s príjmom. Používajú samostatný lokálny PostgreSQL a `CATALOG_TEST_DATABASE_URL` s názvom DB končiacim `_catalog_test`. Ak sa DB prípady preskočia, uveď to. Interakčné testy neoverujú vizuálny layout v reálnom prehliadači.
-
-CI rozdelí celý backendový zoznam do štyroch paralelných skupín podľa trvania modulov. Každá má vlastný PostgreSQL; záverečná povinná kontrola `backend-compile` odmietne chýbajúce, duplicitné aj preskočené testy. Váhy nemenia výber testov. Súhrny ukazujú najpomalšie testy a čas ich prípravy, vykonania a upratania; JSON reporty zostávajú dostupné 14 dní. Novší commit zruší zastarané kontroly rovnakého PR. Podrobný kontrakt je v [CI a nasadzovaní](docs/ci-deployment.md).
+Inicializácia prázdnej DB, aktualizácia existujúcej DB a obnova zálohy majú odlišný postup. Presný stav overenia, zdroje poradia a limity sú v [jednotnom návode](api/POSTGRES_SETUP.md). Už nasadené SQL sa neupravujú a nový súbor sám neznamená zapojenie do deploymentu.
 
 ## Produkčné nasadzovanie a diagnostika
 
-Autoritatívny postup je v [build.yml](.github/workflows/build.yml):
+`main` je produkčná vetva. Autoritatívny postup je [build.yml](.github/workflows/build.yml): paralelné obrazy, serializovaný deployment, migrácie pred obnovením API a autentizované bezpečnostné overenie verejného HTTPS. Zmeny iba Markdown/docs release nespúšťajú; PR kontroly sa zachovávajú.
 
-1. Push do `main` s aspoň jednou zmenou mimo `**/*.md` a `docs/**`, alebo ručne spustený workflow na `main`, zostaví API a frontend paralelne. Obrazy používajú oddelené cache `api` a `frontend`. Bežné nasadenie publikuje do GHCR tagy `main` a `sha-<commit>`.
-2. Deploy job sa pripojí na server a pracuje v `/opt/inventory-hub`.
-3. Pripraví Compose overlay pre chránený súbor `ai-content.env` a pripojenie Caddy do existujúcej externej siete `sps-proxy`; jeho vytvorenie neznamená vyplnené AI prístupy. Pred ďalšími krokmi overí existenciu siete a platnosť zlúčenej Compose konfigurácie.
-4. Cez `docker compose pull` stiahne obrazy, aplikuje migrácie `005` až `033` jedným spúšťačom v jednom kontajneri a obnoví služby `api`, `frontend-build` a `caddy` cez `--force-recreate` s overlayom.
-5. Overuje verejné `/api/health` a `/api/ai-content/status` so spoločným limitom 60 sekúnd. Požiadavky majú najviac 5 sekúnd a kontrola sa pri chybe opakuje s krátkou pauzou; úspech vyžaduje HTTP 200 z oboch ciest v jednom kole. Log obsahuje HTTP stav a návratový kód curl, nie telá odpovedí či prístupy. Neúspešná kontrola ukončí deployment chybou; čistenie nepoužívaných obrazov nasleduje iba po úspechu.
+Server používa vlastné Compose súbory a generovaný overlay s tajnými konfiguráciami a sieťou SPS. [Produkčný Compose](infra/docker-compose.prod.yml) je referencia, nie dôkaz aktuálneho serverového stavu. Pri diagnostike najprv overiť Actions a chybovú fázu; podrobnosti sú v [CI a nasadzovaní](docs/ci-deployment.md). Oprávnenia pre merge, serverový prístup a živé operácie zostávajú v [AGENTS.md](AGENTS.md).
 
-Workflow je serializovaný s vypnutým rušením rozbehnutého nasadenia. Zmeny iba Markdown súborov alebo `docs/**` produkčný workflow nespúšťajú, úplné PR kontroly však zostávajú. Ručné spustenie na `main` s `deploy=false` slúži na meranie zostavenia/cache: publikuje iba SHA tag, nemení produkčný tag `main` a nepripája sa na produkčný server. Predvolená hodnota je `deploy=true`.
+Návrat kódu nevracia databázové migrácie ani už vykonané externé zápisy. Po použití nových dátových kontraktov treba kompatibilnú opravu vpred. Uchovať blokácie, denníky a výsledky; [postup obnovy](api/POSTGRES_SETUP.md#záloha-a-obnova) nenahrádza overenie konkrétnej operácie.
 
-SSH bootstrap od 8. 11. 2026 používa oficiálny obraz `drone-ssh` 1.8.0 pripnutý na digest. Obsahuje rovnakú verziu klienta ako pôvodná akcia a nevyžaduje jej ďalšie sťahovanie binárky z GitHub Releases. Zachováva existujúce tajné premenné, celý vzdialený skript a limity 30 sekúnd na spojenie a 10 minút na príkaz. Dočasný kontajner beží bez hostiteľských mountov a ďalších oprávnení; chyba sa prenesie do výsledku workflow. [Kontrakt bootstrapu](docs/ci-deployment.md#ssh-bootstrap) odlišuje túto zmenu kódu od úspešného produkčného nasadenia.
+## Zostávajúca práca
 
-Actions súhrn zobrazuje namerané časy zostavenia a nasadenia; deploy log samostatne meria sťahovanie, migrácie, reštart, pripravenosť a čistenie. Každá migrácia vypíše aj vlastný čas. Východiskové meranie a interpretácia sú v [CI a nasadzovaní](docs/ci-deployment.md). Platnosť oprávnenia na merge a živé zásahy rieši `AGENTS.md`; existujúci súhlas sa neopakuje, ale samotný návrh nie je pokynom na nasadenie implementácie.
-
-[infra/docker-compose.prod.yml](infra/docker-compose.prod.yml) je referencia. Server používa vlastný `docker-compose.yml` a deploy pridáva `docker-compose.ai-content.yml`; ich celý aktuálny obsah nebol touto kontrolou repozitára overený. Pred manuálnym zásahom over nasadené súbory a oprávnenia. Starý návod cez `docker compose down` a `up -d` nevystihoval tento postup a nie je štandardným krokom bežného nasadenia.
-
-Oprava SPS z 23. 10. 2026 pridáva do generovaného overlayu aj referencie sieť `sps-proxy` iba pre Caddy, popri jeho pôvodnej sieti Hubu. Samostatná SPS služba poskytuje alias `sps-receiver`. Po kontrole Hubu deployment overí aj verejné `/sps/healthz` pred čistením obrazov. Pri ručnom obnovení Caddy treba použiť rovnaký overlay; samotné `docker network connect` neprežije vytvorenie náhradného kontajnera. Podrobnosti a hranice overenia sú v [CI a nasadzovaní](docs/ci-deployment.md#sps-proxy-network-23-october-2026).
-
-| Referenčná položka | Význam |
-| --- | --- |
-| `/opt/inventory-hub` | Serverové Compose súbory a konfigurácia. |
-| `/opt/inventory-data` | Aplikačné súbory na hostiteľovi. |
-| `/data/inventory-data` | Pripojenie dát v API kontajneri. |
-| `postgres`, `redis`, `api`, `frontend-build`, `caddy` | Služby referenčnej zostavy. |
-| `ROOT_PATH=/api` | Prefix API za reverse proxy. |
-| `ai-content.env` → `/run/secrets/hub-ai.env` | Chránená AI konfigurácia pripojená overlayom. |
-| Docker volume `supplier_secrets` → `/var/lib/inventory-hub-secrets` | Trvalé prihlásenie Sloger, iba API; adresár `0700`, súbor `0600`, mimo verejného `/data`; zachovať pri obnove aj rollbacku. |
-
-Diagnostiku začni výsledkom Actions a relevantnými jobmi. [Swagger](https://hub.biketrek.sk/api/docs), [ReDoc](https://hub.biketrek.sk/api/redoc) a [OpenAPI JSON](https://hub.biketrek.sk/api/openapi.json) opisujú nasadenú API verziu, pokiaľ sú dostupné. Logy a detaily kontajnera vyžadujú skutočný serverový prístup; bez neho ich stav netvrď ako overený.
-
-Návrat kódu rieš kontrolovaným revert PR a bežným nasadením. Revert nevracia DB ani už vykonané Upgates zápisy. Taká zmena potrebuje osobitný postup pre dáta a kontrolu spätnej kompatibility.
-
-## Ďalšie kroky centrálneho skladu
-
-Lokálne rezervácie/výdaje, FIFO, editácia produktov a odoslanie podporovaných vybraných polí sú implementované; prevádzkové zapnutie a overenie každého kanála zostáva samostatným krokom. Zostáva najmä:
-
-- rozšírenie podporovaných editovateľných polí a používateľské overenie publikovania na konkrétnom variante;
-- kompletné tržby bez DPH, zľavy a refundácie pre výpočet hrubej marže; FIFO zatiaľ poskytuje náklady;
-- historické vratky bez FIFO alokácií, odpis poškodeného tovaru, všeobecné merné jednotky a roly;
-- prevádzkové zosúladenie objednávok vrátane tvrdých zmazaní a pilot pravidelného prenosu zásob s jednotným rozsahom vybraných SKU.
-
-Po aktivácii FIFO sa nemožno vrátiť k starému kódu váženého priemeru bez kontrolovaného plánu. Ponechaj nové tabuľky aj nemenné pohyby a použi opravu vpred; podrobnosti v [FIFO](docs/fifo.md).
-
-Kontrolované údržbové publikovanie absolútneho množstva je v [stock-publication.md](docs/stock-publication.md); pravidelný prenos používa [rozdielový protokol `delta_v1`](docs/stock-sync.md). Kontrolný bod po výslovne potvrdenej údržbe ukladá lokálne množstvo a auditovaný natívny účinok konkrétneho e-shopu. Prenos `stock_increment` odčíta natívnu zmenu od lokálnej, aby sa vlastná objednávka neodpočítala dvakrát. Neistý PUT sa neopakuje a samotná zhoda aktuálneho množstva ho nevyrieši. Údržbová lokálna blokácia sama nezatvára predaj. Natívne audity, kontrolné body a zámery sa nemažú; návrat k starému absolútnemu pravidelnému zapisovateľovi nie je bezpečný rollback.
-
-Nepodporované alebo nepreukázané natívne objednávkové účinky blokujú bežný prenos. Inkrementálny zber zachytáva aj čerstvé zmeny objednávok vytvorených od roku 1900, ale historické fyzické účtovanie automaticky neprehráva. Živý objednávkový cyklus nového protokolu ešte nie je potvrdený a implementácia neaktivuje produkčné zápisy. [Presné hranice, kapacitný model a pilot](docs/upgates-sync-readiness.md) odlišujú kód, historické čítacie merania a overenie prevádzky.
-
-Nezmenený kontrolný bod a dostupnosť potrebujú 0 vzdialených volaní medzi šesťhodinovými auditmi. Potrebné čítania zostávajú dávkové; model plne zmeneného priechodu je `G + K` (skupiny GET + jednotlivé PUT), bez okamžitého kontrolného GET. Všetky relácie `UpgatesClient.from_shop` navyše zdieľajú limit jednej súbežnej požiadavky na HTTPS origin naprieč procesmi, hodinový/denný rozpočet a `Retry-After`. PostgreSQL výpadok blokuje odoslanie; iba výslovný legacy režim má slabšiu procesnú ochranu. Cudzie integrácie nie sú riadené a kvóta sa automaticky nekupuje.
-
-## Nové oddelené workflow (014–017)
-
-Dodávateľský worker `supplier_availability_worker` uchováva prijaté pozorovania a vyhodnocuje ich platnosť. Zlyhanie alebo neúplný feed nikdy nevynuluje fyzickú zásobu. `stock_sync_worker` prenáša vlastné voľné kusy, dostupnosť a objednateľnosť iba pri výslovne nastavenej skladovej autorite, čerstvých objednávkach a povolenom serverovom zápise `STOCK_SYNC_WRITE_ENABLED` (default false). Údržbový publisher zostáva samostatný.
-
-Pravidelný prenos odlišuje čakajúcu objednávku od nespracovaného skladového podkladu. Zaúčtovaná nekrytá rezervácia neblokuje celý sklad, ak čítací prepočet potvrdí rovnaké alokácie; nový príjem sa najprv pridelí čakajúcej objednávke. Pre vratky a storná po výdaji je v objednávkovom inboxe samostatné potvrdenie skladovej výnimky s nemenným auditom. Nevytvára automatickú vratku a pri zmene podkladu sa zneplatní. Podrobnosti: [prenos zásob](docs/stock-sync.md), [objednávky](docs/order-workflows.md). Táto oprava neaktivuje živú synchronizáciu ani nepotvrdzuje pilot na reálnych objednávkach.
-
-Migrácie `014_supplier_availability.sql`, `015_stock_sync.sql`, `016_product_publication.sql` a `017_stock_adjustments.sql` sú aditívne, zabalené v API obraze a zapojené do deploymentu po `013` pred spustením nového API. Nezapínajú nové plánovanie ani hromadné zápisy. Príslušné zámery, nejasné pokusy a účtovné výsledky sa pri návrate verzie nemažú; pre riešenie nasadenej chyby uprednostni kompatibilnú doprednú opravu.
-
-## Dodávateľské väzby dostupností
-
-Aktívne dodávateľské vzťahy určuje `product_supply_sources`, nie prefix SKU ani údaj o pôvode založenia. Historická konfigurácia dodávateľských prefixov sa nepoužíva na domýšľanie nových väzieb. Automatické obnovenie feedu opravuje identifikátory už prepojených kariet; odpojený zdroj samo nepripája. Nové SKU prideľuje samostatná spoločná značková politika. Migrácia 032 jednorazovo doplní iba jednoznačné historické vzťahy a vynúti jedného vlastníka ponuky; existujúce SKU a skladová história zostávajú.
-
-`services/supplier_links.py` prepája iba jednoznačné lokálne identity. Chránené `POST /supplier-availability/{supplier}/links/reconcile` a tlačidlo **Prepojiť dostupnosti** doplnia väzby aj z už prijatých dát bez nového sťahovania či Upgates volaní. Skladová tabuľka rozlišuje chýbajúcu väzbu a konflikt od chýbajúceho alebo starého pozorovania. Migrácia 032 ani lokálne prepojenie nezapínajú prenos zásob či cien. Podrobný kontrakt: [supplier-identity.md](docs/supplier-identity.md). Nasadenie a testy sú vedené samostatne v `docs/mvp-progress.md`.
-
-AI content context v2 adds category reference-product snapshots (read-only Upgates preview followed by versioned rule publication), frozen high reasoning for new Luna jobs, usage reasoning-token details and bounded Paul Lange technical-table/document sources. See `docs/ai-content.md` for selection, snapshot compatibility and the remaining single-category-branch limit. No schema migration is required.
-AI zadanie verzie 3 zoskupuje parametre vzorových produktov do výstupnej schémy. Nové duše zlučujú iba opakované skupiny štyroch schválených rozmerových parent parametrov, bez nových hodnôt; ostatné konflikty a variantové kontroly zostávajú. Podrobnosti sú v `docs/ai-content.md`.
-
-Sklad `/stock` umožňuje vytvoriť samostatnú lokálnu kartu, upraviť jej aktivitu a kombinovať filtre aktivity a existencie dodávateľskej väzby. Vytvorenie má UUID ochranu opakovania, zmena stavu revíziu a audit; operácie nezakladajú zásoby ani e-shopové produkty. Bez migrácie. [Postup a význam filtrov](docs/product-editor.md#karty-aktivita-a-dodávateľská-väzba).
-
-### Zookee and scan-first receiving (implemented in code)
-
-- Native `zookee` rich-catalog and independent stock-feed readers preserve raw SKU, EAN and explicit variant axes. Stock-only identities remain usable for existing-card links but cannot publish an incomplete new product. Source CZK retail prices never become EUR purchase costs.
-- Original Zookee PDFs with embedded ISDOC use the shared durable invoice store and exact EUR line totals, including EANs. Upload is separate from physical receiving.
-- Authenticated `GET /receiving/lookup` discovers invoices from the receiving landing-page scan. Choices remain explicit; the initial scan keeps one UUID and closed receipts open for review without quantity changes.
-- Optional same-brand existing-shop supplier matching and scoped availability publication reuse shared identity, link and durable publication services. Availability-only payloads preserve own quantities; no central stock authority is activated. See [Zookee](docs/zookee.md).
-- Operational table routes use the available main-content width; the fixed 1280px wrapper remains for settings and other form pages. This change does not redesign tablet navigation.
-- No schema migration is required. Deployment, supplier configuration, exact live match counts and scheduled publication outcomes must be verified separately from code/fixture tests.
-
-- The one-off `TOPEAK-` → `ZOO-` code reconciliation is retired. Fresh requests return HTTP 410; the UI reads saved history and recovers an already completed operation by its UUID. Previous aliases, identity audits and stock history remain intact. Ordinary mapping refresh uses the shared product-links workflow. See [Zookee](docs/zookee.md).
-- Scoped supplier availability keeps bounded reads in batches of up to 20 leaves, individual durable intents/fences and availability-only envelopes with native-ID acknowledgement/readback. Retiring the historical code writer does not disable this regular workflow.
-- Automatic supplier batches require verified native mappings and exact mapped leaf codes. Availability settings count current per-card results while retaining unresolved-write visibility and complete history.
-
-- Optional catalog image fallback fills missing supplier photographs from explicitly linked, identity-checked cached shop products in catalog list/detail and new preparations. Source images and raw snapshots remain intact; no API call, stock write or migration is required. See [Zookee](docs/zookee.md#missing-catalog-images).
-
-## Archív faktúr a EAN prehľad
-
-Migrácia033 a nové služby sú opísané v [invoice-archive.md](docs/invoice-archive.md). Existujúce skladové a príjmové procesy zostávajú samostatné. Faktúry sa v Hube nevystavujú; dodávateľské dokumenty a Upgates originály sa archivujú pod jednoznačným zdrojom, položky sa indexujú pre EAN vyhľadanie a úhrady majú nemenný záznam s ochranou opakovania. Dodávateľské uploady aj staršie lokálne indexy sa dopĺňajú do databázy automaticky cez `invoice_archive_worker`; chránené `GET /invoices/archive-status` hlási rozpracovanie a konflikty. Kurzory sa ukladajú až po databázovom commite do `invoices/archive-state/`, bez novej migrácie a bez príjmu na sklad. Nasadenie a skutočné naplnenie archívu sa overujú oddelene.
-
-Prehľad načítava živé parametre podľa natívnych rodičov a kontroluje úplnosť katalógu. Spoločné čítanie a zápis vybraných rodín s auditom po jednotlivých produktoch pod `/migration/atomer-progress/review-batch` a kontrolované opravy parametrov a doložených GTIN existujúcich variantov xTrek používa [migračný prehľad](docs/atomer-migration-progress.md) a súkromný audit v migrácii 039.
-
-Pri obsadenej kombinácii môže operátor rozlíšiť generácie variantov v xTreku a doplniť presné SKU z Atomeru cez ten istý súkromný migračný prehľad. Po vzniku skladových kariet možno potvrdiť väzby a uložiť overené variantové osi.
-
-Spätná kontrola nových generácií umožňuje podľa pôvodného zámeru obnoviť cenu rodiča a preniesť presné natívne ID do skladového importu.
-
-Pri nezhode dostupnosti môže Hub doložiť kartu a presný parameter generácie, pričom riadok ostáva blokovaný do potvrdenia natívnej dostupnosti.
-
-The Atomer migration report supports audited batch acceptance of the displayed proposals and scoped availability reconciliation after a shop policy change. See [migration progress](docs/atomer-migration-progress.md).
-
-Atomer catalog migration has a durable, operator-started worker, per-family verification and per-item receipts for both shop links. Automatic catalog and source-card workers now require `ATOMER_CATALOG_WORKER_ENABLED=true` (default `false`); restarting with the default preserves all campaign journals without resuming them. See [migration progress](docs/atomer-migration-progress.md). The existing authenticated [catalog export](docs/migration-export.md) supports `local_only=true` for a Hub snapshot without any Upgates request.
-
-The migration records Hub card preparation separately from xTrek verification. Existing native families have a guarded content check, and unresolved writes keep their original receipt across API quota windows.
-
-The Atomer campaign records API capacity separately for each shop and phase. Verified supplier evidence can trigger a recheck of the precise card, and large BIKETREK till products support direct checks of individual sellable variants.
-
-The operator’s Atomer table reconciles confirmed card and shop receipts with current Hub identities when reading the report. Snapshot totals retain their original check date.
+Úplné tržby/marža, širšia inventúrna agenda, nepodporované historické vratky a všeobecné RBAC zostávajú samostatné témy. Existujúce jednotky, účty, FIFO a korekcie tým nie sú označené za nedokončené. [Aktuálne priority](docs/mvp-progress.md) odlišujú produktový rozsah od [prevádzkového pilotu zásob](docs/upgates-sync-readiness.md).

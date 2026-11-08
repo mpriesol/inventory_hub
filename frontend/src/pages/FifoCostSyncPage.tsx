@@ -79,7 +79,7 @@ function CostPanel({ shop, onBusy }: { shop: string; onBusy: (value: boolean) =>
       setPendingPreview(previous => previous?.id === id ? null : previous);
     });
   }
-  function prepareOrder(request = { id: crypto.randomUUID(), orderNumber: orderNumber.trim() }) {
+  function prepareOrder(request: { id: string; orderNumber: string } = { id: crypto.randomUUID(), orderNumber: orderNumber.trim() }) {
     if (operation.isRunning()) return;
     setPendingPreview(request);
     operation.run(true, () => previewFifoOrderCost(shop, request.orderNumber, request.id), value => {

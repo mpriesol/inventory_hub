@@ -38,6 +38,7 @@ export interface ValidationResult {
 
 export interface SupplierConfig {
   // Server-owned identity metadata; editable configuration cannot unlock a prefix.
+  code?: string;
   product_prefix?: string;
   product_prefix_locked?: boolean;
   product_prefix_lock_reason?: string | null;
