@@ -13,6 +13,104 @@ original IDs. They do not become a confirmed quantity of 5 on the surviving card
 Current stock still requires the existing separately confirmed opening or
 receiving workflow.
 
+## One-off atomic identity migration
+
+The separate operator API supports an explicitly reviewed set of up to 64
+disjoint groups in **one local database transaction**. This route is for a
+bounded migration whose physical identities have already been reviewed. Its
+native inputs are operator-attested saved catalog evidence; the server performs
+no remote requests. It does not assert that the global publication graph is
+clear, that historical native effects never occurred, or that source/content
+publication has completed. The ordinary UI workflow below keeps its existing
+fresh native reads and dependency admission.
+
+All three routes require operator access and return `Cache-Control: no-store`:
+
+| Route | Contract |
+| --- | --- |
+| `POST /api/product-consolidations/one-off/preview` | Read-only, repeatable-read local snapshot; returns the exact request hash, preview hash, groups, plans and preserved-row hashes |
+| `POST /api/product-consolidations/one-off/apply` | `{ "request": <exact preview request>, "preview_hash": "<returned hash>", "confirmed": true }`; rechecks all groups and commits all or none |
+| `GET /api/product-consolidations/one-off/{request_id}` | Returns the complete immutable batch result, or 404 when no committed batch is visible |
+
+The preview request has one fresh `request_id`, `approved_scope_sha256`,
+`groups`, `native_catalogs`, and three literal acknowledgements:
+`identity_scope_confirmed=true`, `preserve_all_raw_history=true` and
+`keep_catalog_campaigns_paused=true`. Each group uses the ordinary consolidation
+request fields with **no `request_id`**. The server derives its new child UUID
+from the batch UUID and exact keeper/retired IDs; it never reuses an earlier
+single-group preview UUID. Product IDs, existing mapping IDs, target native
+identities and target codes must be disjoint across the batch. The approval-file
+hash is provenance; a separate canonical request hash binds the actual full
+group/evidence/acknowledgement body.
+
+Each native catalog supplies `shop_code`, the current connection `fingerprint`,
+timezone-aware `captured_at`, `export_sha256`, `complete=true`,
+`unfiltered_products_export=true`, the exact selected `leaves`, `absent_native`
+tuples and `absent_codes`. Leaf fields are the normalized
+`product_link_source._leaf` output, including supplier identity when required.
+An absent tuple is `{is_variant, parent_id, external_id}` with native IDs as
+positive decimal strings. The selected leaf and absence sets must exactly
+match all plans; unrelated extras, omitted claims, contradictory codes and
+changed parent/native identities are rejected. The input records a complete
+unfiltered products export, **not independent verification of separate archived
+partitions**. Its absence claims remain explicit operator-reviewed evidence.
+Capture age is limited to four hours, and the server rechecks current local
+connection fingerprints without HTTP.
+
+If an embedded catalog variant omits axes, previously reviewed axes can be
+supplied separately as `reviewed_attributes`, `reviewed_attributes_sha256`
+(the canonical compact sorted-key JSON hash of that list), and
+`reviewed_attributes_source_sha256` (the retained evidence-file hash). This
+requires an empty catalog `attributes` list. The original list remains in
+`catalog_attributes`; the effective comparison is labelled
+`operator_reviewed_retained_evidence`. This does not turn the older evidence
+into a fresh observation. Exact local/supplier GTIN, article and axis checks
+still run. Raw native barcodes are independently classified by the existing
+normalizer; a caller cannot hide an invalid barcode by omitting it from the
+supplied classification.
+
+Before any mutation, the server reuses the existing complete mapping plan,
+whole-piece units, active keeper, alias exclusion, GTIN/axis, supplier and
+foreign-owner checks. The one-off route preserves all original typed product
+references, including invoice/receiving and source-card evidence, on their
+original IDs. It still rejects confirmed nonlegacy physical movements,
+reservations, quarantine, FIFO/tracking and order/native stock dependencies.
+Indexed current publication gates cover selected IDs/codes and parent codes;
+pending external delivery cannot be waived by the acknowledgements. Atomer
+worker/review/local locks require runnable campaigns to remain explicitly
+paused. Retained pending jobs and category intents are neither completed nor
+withdrawn by this operation.
+
+Apply takes the identity and warehouse/product locks, then fences the complete
+installed product-FK tables and relevant writers. A fixed census checks the
+enabled 047 audit, mapping, alias, retired-reference and shared-sale guards.
+Full original row hashes cover every typed product reference; protected product
+fields and original mapping price/quantity observations are also compared
+before and after. No identifier, supplier relation, balance, movement, invoice
+or source-proof foreign key is transferred. Existing maps are retired with the
+normal audit stamps, new current mappings point to the keeper, and former
+cards become inactive with normal one-hop canonical aliases. All normal child
+audits become completed before the existing deferred constraints are checked.
+Only then does the single batch transaction commit. A failure in the last
+group rolls back every earlier group and child audit too.
+
+The route adds no schema. Batch metadata lives inside the ordinary child's
+`dependencies.one_off_batch`; the first child also retains the exact normalized
+batch request. This is explicit migration admission, not a fabricated complete
+typed dependency scan. Completed children remain readable by the existing
+strict consolidation parser. The stored result includes all child IDs/results,
+the batch request and preview hashes, and the unchanged full-history hash.
+
+Save the exact request and UUID before sending. After a lost response or a busy
+error, use GET for that same batch UUID. A 404 while an earlier POST may still
+be running is **not proof of rollback**. No batch error claims `known_unapplied`
+merely because the current invocation rolled back. An exact replay returns the
+completed immutable result; a changed body or preview hash under a completed
+UUID is rejected. Do not allocate a replacement UUID to work around an unknown
+outcome. Payload/proof size is bounded at 5 MB, each scoped history selection at
+100,000 rows, and local capture/apply at 180 seconds. Limit and lock failures
+never admit a partial batch.
+
 ## Operator workflow in Products
 
 The unified **Sklad → Produkty** editor exposes **Zlúčiť karty** for 2–10

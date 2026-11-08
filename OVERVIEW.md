@@ -1,5 +1,22 @@
 # Inventory Hub — prehľad projektu
 
+## Jednorazová atómová migrácia overených identít (8. 11. 2026)
+
+Samostatné operátorské API `product-consolidations/one-off/preview`,
+`one-off/apply` a `one-off/{request_id}` prijíma presný, vopred overený zoznam
+skupín a zachytené úplné katalógové podklady BIKETREK/xTrek. Čítací náhľad
+vypočíta hash aktuálnych kariet, mapovaní a pôvodnej histórie; potvrdenie
+znovu overí rovnaký rozsah pod zámkami a uloží všetky skupiny v jednej
+databázovej transakcii. Používa existujúce audity, odchod starých mapovaní
+a kanonické aliasy z migrácie 047, bez novej schémy, presunu histórie či súčtu
+množstiev. Pozastavené katalógové úlohy a ich dôkazy zostávajú nezmenené.
+Žiadna časť dávky nevolá vzdialené API. Predchádzajúce overené variantové osi
+sú výslovne oddelené od čerstvého katalógového pozorovania. Bežný interaktívny
+postup a jeho kontrola závislostí zostávajú samostatné. Podrobnosti vrátane
+obnovy po neistej odpovedi sú v [operátorskom kontrakte](docs/product-consolidation.md#one-off-atomic-identity-migration).
+Implementácia má syntetické integračné testy; konkrétna živá dávka vyžaduje
+samostatné posúdenie aktuálneho náhľadu a výsledku.
+
 ## Trvalé odovzdanie úlohy Atomeru so zachovanými kartami (8. 11. 2026)
 
 Samostatný [handoff pozastavenej úlohy](docs/atomer-catalog-handoff.md) zachová
