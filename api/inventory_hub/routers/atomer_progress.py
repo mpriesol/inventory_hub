@@ -286,9 +286,10 @@ async def catalog_campaign_control_receipt(request_id: UUID, db: AsyncSession = 
 @router.get("/catalog-engine/campaigns/{campaign_id}/jobs/control")
 async def catalog_job_control(campaign_id: atomer_catalog_control.CampaignID,
                               family: str = Query(min_length=1, max_length=260),
+                              include_evidence: bool = False,
                               db: AsyncSession = Depends(get_session)):
     try:
-        return await atomer_catalog_job_control.get(db, campaign_id, family)
+        return await atomer_catalog_job_control.get(db, campaign_id, family, include_evidence=include_evidence)
     except ReviewError as error:
         raise HTTPException(error.status, detail={"code": error.code}) from None
 

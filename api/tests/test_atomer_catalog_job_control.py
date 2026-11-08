@@ -53,6 +53,7 @@ class JobControlContractTests(unittest.TestCase):
         base = '/migration/atomer-progress/catalog-engine'
         cid = 'a' * 64
         calls = [('GET', f'{base}/campaigns/{cid}/jobs/control?family=v:P', None, 'get'),
+                 ('GET', f'{base}/campaigns/{cid}/jobs/control?family=v:P&include_evidence=true', None, 'get'),
                  ('GET', f'{base}/job-control-requests/{uuid4()}', None, 'receipt'),
                  ('POST', f'{base}/campaigns/{cid}/jobs/withdraw', request(), 'change'),
                  ('POST', f'{base}/campaigns/{cid}/jobs/replan', request(), 'change')]
@@ -71,6 +72,8 @@ class JobControlContractTests(unittest.TestCase):
                     self.assertEqual(response.headers['cache-control'], 'no-store')
                     if name == 'change':
                         self.assertEqual(operation.await_args.args[-1], 'operator-token')
+                    if name == 'get':
+                        self.assertIs(operation.await_args.kwargs['include_evidence'], 'include_evidence=true' in path)
 
 
 @unittest.skipUnless(fixture.TEST_URL, 'Requires dedicated localhost *_catalog_test database')
