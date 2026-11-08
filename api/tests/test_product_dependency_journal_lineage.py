@@ -8,7 +8,7 @@ from catalog_fixtures import product
 import test_product_consolidation_db as fixture
 import test_product_dependency_scope_db as original
 from inventory_hub import config_io
-from inventory_hub.catalog_types import CatalogParameter, ShopImportOptions
+from inventory_hub.catalog_types import CatalogParameter, CatalogProduct, ShopImportOptions
 from inventory_hub.db_models import Product
 from inventory_hub.product_import_models import ProductImportDraft
 from inventory_hub.services import catalog_import, product_import, product_links as links
@@ -52,7 +52,115 @@ def inspect(job, draft, *, hubs=(), skus=(), barcodes=(), sales=()):
     return proof, settled
 
 
+def empty_invalid_job(*, grouped=False, with_result=False):
+    source = product()
+    source.eans = [OLD_EAN]
+    sources = [source]
+    if grouped:
+        source.group_code, source.variant_relationship = 'SYN-INVALID', 'explicit'
+        source.variant_attributes = [CatalogParameter(name='Size', value='M')]
+        other = product(2, group_code=source.group_code, variant_relationship='explicit',
+                        variant_attributes=deepcopy(source.variant_attributes))
+        other.eans = [CURRENT_EAN]
+        sources.append(other)
+    else:
+        source.import_blockers = ['synthetic_source_blocker']
+    item = catalog_import.build_item(sources, ShopImportOptions(), {}, True).model_dump(mode='json')
+    job = {'preview': {'preview_id': 'f' * 32, 'shop': 'biketrek', 'supplier': source.supplier,
+                      'items': [item]},
+           'sources': [source.model_dump(mode='json') for source in sources], 'result': None}
+    if with_result:
+        job['result'] = {'preview_id': 'f' * 32, 'shop': 'biketrek', 'status': 'completed',
+                         'items': [deepcopy(item)]}
+    return job
+
+
+def invalidate_staged_job(job):
+    source = CatalogProduct.model_validate(job['sources'][0])
+    source.import_blockers = ['synthetic_source_blocker']
+    item = catalog_import.build_item([source], ShopImportOptions(), {}, True).model_dump(mode='json')
+    job['sources'] = [source.model_dump(mode='json')]
+    job['preview']['items'] = [item]
+    job['result']['items'] = [deepcopy(item)]
+
+
 class JournalLineageTests(unittest.TestCase):
+    def test_real_empty_invalid_writer_items_keep_all_source_identities(self):
+        for grouped in (False, True):
+            with self.subTest(grouped=grouped):
+                job = empty_invalid_job(grouped=grouped, with_result=True)
+                item = job['preview']['items'][0]
+                self.assertEqual((item['status'], item['payload']), ('invalid', {}))
+                self.assertEqual(item['errors'], ['variant_attributes_ambiguous' if grouped else 'synthetic_source_blocker'])
+                before = scope.digest(job)
+                for source in job['sources']:
+                    proof, settled = inspect(job, None, skus=[source['shop_code']], barcodes=source['eans'])
+                    self.assertFalse(settled)
+                    self.assertEqual(proof.result()['classification'], 'reference')
+                    self.assertEqual({q['code'] for q in proof.queries}, {p['shop_code'] for p in job['sources']})
+                    self.assertTrue(any(m['path'].startswith('/sources/') for m in proof.matches))
+                self.assertEqual(scope.digest(job), before)
+
+    def test_unconfirmed_empty_invalid_preview_is_known_but_not_settled(self):
+        proof, settled = inspect(empty_invalid_job(), None)
+        self.assertFalse(settled)
+        self.assertEqual(proof.result()['classification'], 'context_only')
+        self.assertEqual(proof.contexts[0]['reason'], 'invalid_before_dispatch_retains_source_scope')
+
+    def test_empty_invalid_item_preserves_frozen_and_current_staged_owners(self):
+        job, draft = staged()
+        invalidate_staged_job(job)
+        proof, settled = inspect(job, draft, hubs=[81, 82], skus=['SYN-JOURNAL-OLD', 'SYN-JOURNAL-CURRENT'])
+        self.assertFalse(settled)
+        self.assertEqual({m['value'] for m in proof.matches if m['namespace'] == 'hub_product_id'}, {81, 82})
+        self.assertTrue(any(m['path'].startswith('/sources/') for m in proof.matches))
+        self.assertTrue(any(m['path'].startswith('/linked_draft/document/rows/') for m in proof.matches))
+
+    def test_missing_code_is_not_a_generic_empty_payload_exemption(self):
+        for payload in (None, [], False, {'ean': OLD_EAN}, {'images': [], 'prices': []},
+                        {'future_identity': {'product_id': 81}}):
+            with self.subTest(payload=payload):
+                job = empty_invalid_job()
+                job['preview']['items'][0]['payload'] = payload
+                with self.assertRaises(scope.Unverified):
+                    inspect(job, None)
+
+    def test_empty_payload_requires_invalid_errors_and_absent_or_false_send_intent(self):
+        mutations = [*[lambda item, state=state: item.update(status=state)
+                       for state in ('ready', 'failed', 'uncertain', 'created', 'exists', 'skipped')],
+                     *[lambda item, value=value: item.update(product_write_attempted=value)
+                       for value in (True, None, 0, 'false')],
+                     *[lambda item, value=value: item.update(errors=value)
+                       for value in (None, [], [''], [None])]]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                job = empty_invalid_job()
+                mutate(job['preview']['items'][0])
+                with self.assertRaises(scope.Unverified):
+                    inspect(job, None)
+        job = empty_invalid_job()
+        job['preview']['items'][0]['product_write_attempted'] = False
+        self.assertFalse(inspect(job, None)[1])
+
+    def test_empty_invalid_source_selection_and_result_must_match_writer(self):
+        mutations = [lambda j: j['preview']['items'][0].update(code='SYN-OTHER'),
+                     lambda j: j['preview']['items'][0].update(variants_count=True),
+                     lambda j: j['preview']['items'][0].update(variants_count=2),
+                     lambda j: j['preview']['items'][0].update(future_identity={'product_id': 81}),
+                     lambda j: j['result']['items'][0].update(status='uncertain'),
+                     lambda j: j['result']['items'][0].update(product_write_attempted=True),
+                     lambda j: j['result']['items'][0].update(errors=['different_error'])]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                job = empty_invalid_job(with_result=True)
+                mutate(job)
+                with self.assertRaises(scope.Unverified):
+                    inspect(job, None)
+        job = empty_invalid_job(grouped=True)
+        job['sources'][1]['group_code'] = 'SYN-OTHER-GROUP'
+        with self.assertRaisesRegex(scope.Unverified, 'journal_empty_payload_source_lineage_changed'):
+            inspect(job, None)
+
     def test_real_variant_writer_image_is_known_without_hiding_leaf_identity(self):
         source = product(group_code='JOURNAL', variant_relationship='explicit',
                          variant_attributes=[CatalogParameter(name='Size', value='M')])
@@ -245,6 +353,42 @@ class JournalLineageDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
         job['preview']['items'][0]['payload']['descriptions'] = [{'language': 'sk', 'title': 'Changed frozen content'}]
         job['result']['items'][0]['payload'] = deepcopy(job['preview']['items'][0]['payload'])
+        path.write_text(json.dumps(job))
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_changed'):
+            await self.apply(preview)
+
+    async def test_empty_invalid_journal_keeps_history_and_full_file_on_apply(self):
+        path, job, _ = await self.save_journal()
+        invalidate_staged_job(job)
+        path.write_text(json.dumps(job))
+        before, stock = path.read_bytes(), await self.stock()
+        with patch.object(catalog_import, 'import_result', side_effect=AssertionError('No recovery reader')):
+            preview = await self.preview()
+            self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+            record = self.report(preview)['catalog_journals'][0]
+            self.assertFalse(record['settled'])
+            self.assertEqual(record['classification'], 'context_only')
+            self.assertEqual((await self.apply(preview))['status'], 'completed')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(await self.stock(), stock)
+
+    async def test_empty_invalid_item_still_blocks_its_current_owner(self):
+        path, job, _ = await self.save_journal(selected='current')
+        invalidate_staged_job(job)
+        path.write_text(json.dumps(job))
+        preview = await self.preview()
+        self.assertFalse(preview['eligible'])
+        self.assertIn('consolidation_catalog_journal_pending', {x['code'] for x in preview['dependencies']['blockers']})
+        self.assertEqual(self.report(preview)['catalog_journals'][0]['classification'], 'reference')
+
+    async def test_empty_invalid_journal_change_after_review_rejects_apply(self):
+        path, job, _ = await self.save_journal()
+        invalidate_staged_job(job)
+        path.write_text(json.dumps(job))
+        preview = await self.preview()
+        self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+        for item in (job['preview']['items'][0], job['result']['items'][0]):
+            item['errors'] = ['changed_synthetic_source_blocker']
         path.write_text(json.dumps(job))
         with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_changed'):
             await self.apply(preview)

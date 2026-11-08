@@ -96,6 +96,34 @@ def observe(shop_codes):
     return records, manifests
 
 
+def _unsent_invalid(item, path):
+    """The writer's invalid pre-dispatch item has no product payload or intent."""
+    errors = s.array(item.get('errors'), path + '/errors', nonempty=True)
+    if (item['status'] != 'invalid'
+            or 'product_write_attempted' in item and item['product_write_attempted'] is not False
+            or any(not isinstance(error, str) or not error.strip() for error in errors)):
+        raise s.Unverified('journal_empty_payload_not_unsent_invalid', path + '/payload')
+
+
+def _empty_invalid_payload(proof, item, sources, ids, path):
+    # build_item leaves its default {} on source blockers or a construction
+    # error. Its complete frozen source selection is still resolved above;
+    # execute_import never dispatches an item whose state remains invalid.
+    from inventory_hub.services.catalog_identity import parent_shop_code
+    _unsent_invalid(item, path)
+    selected = [sources[sid] for sid in ids]
+    first = selected[0]
+    grouped = bool(first.group_code and first.variant_relationship == 'explicit')
+    group_keys = {('g', source.group_code) if source.group_code and source.variant_relationship == 'explicit'
+                  else ('p', source.id) for source in selected}
+    if (len(group_keys) != 1 or {parent_shop_code(source) for source in selected} != {item['code']}
+            or type(item.get('variants_count')) is not int
+            or item['variants_count'] != (len(selected) if grouped else 0)):
+        raise s.Unverified('journal_empty_payload_source_lineage_changed', path)
+    s.code(item['code'], path + '/code')
+    proof.context(path + '/payload', 'invalid_before_dispatch_retains_source_scope')
+
+
 def _staging(proof, staging, sources, supplier, drafts, *, settled):
     """Retain frozen intent and every current draft owner, including old previews.
 
@@ -161,7 +189,7 @@ def parse(proof, job, namespace, identifier, drafts):
             raise s.Unverified('journal_source_lineage_unverified', '/sources')
         sources[source.id] = source
         proof.importer(source, f'/sources/{i}', supplier=supplier, targets=[namespace])
-    previews, all_ids = {}, set()
+    previews, all_ids, empty_invalid = {}, set(), set()
     for i, item in enumerate(s.array(preview['items'], '/preview/items', nonempty=True)):
         s.obj(item, set(ImportItem.model_fields) | {'product_write_attempted'}, ('code', 'product_ids', 'payload', 'status'), f'/preview/items/{i}')
         ids = [s.positive(value) for value in s.array(item['product_ids'], '/preview/items/product_ids', nonempty=True)]
@@ -172,9 +200,13 @@ def parse(proof, job, namespace, identifier, drafts):
         if not set(item.get('existing_product_ids', [])) <= set(ids):
             raise s.Unverified('journal_existing_source_ids_changed', '/preview/items/existing_product_ids')
         # ImportItem.existing_product_ids are source IDs, never Hub card IDs.
-        payload_codes = s.payload(proof, item['payload'], namespace, f'/preview/items/{i}/payload')
-        if payload_codes != {sources[source_id].shop_code for source_id in ids}:
-            raise s.Unverified('journal_payload_source_codes_changed', '/preview/items')
+        if isinstance(item['payload'], dict) and not item['payload']:
+            _empty_invalid_payload(proof, item, sources, ids, f'/preview/items/{i}')
+            empty_invalid.add(item['code'])
+        else:
+            payload_codes = s.payload(proof, item['payload'], namespace, f'/preview/items/{i}/payload')
+            if payload_codes != {sources[source_id].shop_code for source_id in ids}:
+                raise s.Unverified('journal_payload_source_codes_changed', '/preview/items')
     if all_ids != set(sources):
         raise s.Unverified('journal_unselected_source_scope', '/sources')
     for i, line in enumerate(s.array(preview.get('price_lines', []), '/preview/price_lines')):
@@ -210,6 +242,10 @@ def parse(proof, job, namespace, identifier, drafts):
             if (original is None or item['code'] in found or original['payload'] != item['payload']
                     or original['product_ids'] != item['product_ids']):
                 raise s.Unverified('journal_result_item_changed', '/result/items')
+            if item['code'] in empty_invalid:
+                _unsent_invalid(item, f'/result/items/{i}')
+                if item['errors'] != original['errors']:
+                    raise s.Unverified('journal_empty_payload_result_changed', f'/result/items/{i}')
             found.add(item['code'])
             states.append(item['status'])
         if found != set(previews):
