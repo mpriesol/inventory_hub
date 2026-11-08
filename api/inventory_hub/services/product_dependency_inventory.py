@@ -12,7 +12,7 @@ from inventory_hub.services import product_dependency_scope as s
 KEYS = {'product_import_drafts': ('id',), 'ai_content_jobs': ('id',),
     'atomer_catalog_jobs': ('campaign', 'family_key'), 'product_consolidations': ('id',),
     'suppliers': ('id',), 'supplier_products': ('id',), 'supplier_feeds': ('id',),
-    'atomer_catalog_campaigns': ('id',), 'atomer_progress_items': ('run_id', 'code'),
+    'atomer_catalog_campaigns': ('id',), 'atomer_progress_runs': ('id',), 'atomer_progress_items': ('run_id', 'code'),
     'atomer_review_work': ('kind', 'key'), 'shop_products': ('id',), 'shops': ('id',)}
 TEXT_KEYS = {('product_import_drafts', 'id'), ('ai_content_jobs', 'id'),
     ('atomer_catalog_jobs', 'campaign'), ('atomer_catalog_jobs', 'family_key'),
@@ -57,7 +57,10 @@ class Budget:
     peak_payload: int = 0
     query_keys: set = field(default_factory=set)
     reuse: object | None = None
+    linked_reuse: object | None = None
     retained: int = 0
+    reused_linked_rows: int = 0
+    reused_linked_bytes: int = 0
 
     def check_time(self):
         if self.max_seconds is not None and time.monotonic() - self.started > self.max_seconds:
@@ -75,12 +78,18 @@ class Budget:
     def retain(self, size):
         """Keep optimization storage inside the existing payload allowance."""
         self.retained = size
-        if self.reuse is not None:
-            self.reuse.reserve(size, self.max_payload)
         self.account_reuse()
 
     def account_reuse(self):
-        cached = self.reuse.bytes if self.reuse is not None else 0
+        # Both caches share the raw-operation allowance. Refresh the other's
+        # headroom after every put, before it can allocate another result.
+        if self.reuse is not None:
+            self.reuse.reserve(self.retained + (self.linked_reuse.bytes if self.linked_reuse else 0),
+                               self.max_payload)
+        if self.linked_reuse is not None:
+            self.linked_reuse.reserve(self.retained + (self.reuse.bytes if self.reuse else 0),
+                                      self.max_payload)
+        cached = sum(memo.bytes for memo in (self.reuse, self.linked_reuse) if memo is not None)
         self.peak_payload = max(self.peak_payload, self.retained + cached)
 
 
@@ -217,7 +226,7 @@ async def documents(db, table, condition, params, *, budget, page_rows, manifest
 
 
 class Closure:
-    """Only one operation's complete linked inputs are retained at a time."""
+    """One complete operation, with bounded immutable inputs from this scan."""
     def __init__(self, db, *, budget, page_rows, page_bytes, retained, max_linked_rows):
         self.db, self.budget = db, budget
         self.page_rows, self.page_bytes = page_rows, page_bytes
@@ -228,7 +237,15 @@ class Closure:
         self.edges = self.bytes = 0
 
     async def rows(self, role, table, condition, params):
-        expected = await statistics(self.db, table, condition, params)
+        if table not in KEYS:
+            raise s.Unverified('unknown_inventory_table')
+        memo = self.budget.linked_reuse
+        key = (table, condition, s.digest(params))
+        # These facts are retained only with a complete successful selection,
+        # inside this inspection's RR snapshot or apply's complete table fences.
+        expected = memo.metadata(key) if memo is not None else None
+        if expected is None:
+            expected = await statistics(self.db, table, condition, params)
         self.budget.check_time()
         if expected['count'] > self.max_linked_rows:
             raise s.Unverified('linked_identity_scope_limit', role)
@@ -237,15 +254,36 @@ class Closure:
         # Evict reusable results before materializing this complete closure.
         # A cache must never make a previously admissible operation too large.
         self.budget.retain(self.retained + expected['bytes'])
+        if expected['largest'] > self.budget.max_row:
+            raise s.Unverified('database_document_limit', table)
         root = Manifest(['linked', role, table])
-        result = []
-        async for page in pages(self.db, table, condition, params, budget=self.budget,
-                page_rows=self.page_rows, page_bytes=self.page_bytes, manifest=root, expected=expected,
-                payload_retained=self.retained):
-            result.extend(page)
-            size = sum(row['bytes'] for row in page)
-            self.retained += size
-            self.budget.peak_payload = max(self.budget.peak_payload, self.retained)
+        # Reserve the entire raw closure before decoding. Eviction can turn a
+        # hit into a miss; no serialized entry is held outside that allowance.
+        result = memo.get(key) if memo is not None else None
+        if result is not None:
+            for row in result:
+                self.budget.check_time()
+                root.row(row)
+            observed = root.result()
+            if (observed['count'] != expected['count'] or observed['bytes'] != expected['bytes']
+                    or max((row['bytes'] for row in result), default=0) != expected['largest']):
+                raise s.Unverified('database_scope_changed_during_read', table)
+            self.retained += observed['bytes']
+            self.budget.reused_linked_rows += observed['count']
+            self.budget.reused_linked_bytes += observed['bytes']
+        else:
+            result = []
+            async for page in pages(self.db, table, condition, params, budget=self.budget,
+                    page_rows=self.page_rows, page_bytes=self.page_bytes, manifest=root, expected=expected,
+                    payload_retained=self.retained):
+                result.extend(page)
+                size = sum(row['bytes'] for row in page)
+                self.retained += size
+            # Only a complete selection may enter the per-inspection cache.
+            # Fresh JSON decoding preserves the caller's mutation isolation.
+            if memo is not None:
+                memo.put(key, result, metadata=expected)
+                self.budget.account_reuse()
         summary = root.result()
         self.root.add_frame([role, table, s.digest(params), summary])
         self.edges += summary['count']

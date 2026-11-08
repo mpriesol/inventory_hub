@@ -34,6 +34,9 @@ def inspect(proof, raw, drafts, catalog_sources):
     if raw.get('kind') == 'rules':
         from inventory_hub.services.product_dependency_rule_scope import inspect as inspect_rule
         return inspect_rule(proof, raw)
+    if raw.get('kind') == 'supplier_lookup':
+        from inventory_hub.services.product_dependency_ai_lineage import supplier_lookup
+        return supplier_lookup(proof, raw)
     ctx = s.obj(raw.get('context'), CONTEXT, ('shop', 'code'), '/context')
     if raw.get('kind') != 'product':
         # Other job kinds use different executors and schemas. A new
@@ -64,8 +67,11 @@ def inspect(proof, raw, drafts, catalog_sources):
         linked = [row for row in rows if row.get('ai_job_id') == raw['id']]
         ids = s.array(ctx.get('product_ids'), '/context/product_ids', nonempty=True)
         ids = [s.positive(value) for value in ids]
-        if len(ids) != len(set(ids)) or set(ids) != set(by_id) or set(ids) != {row['id'] for row in linked}:
+        if len(ids) != len(set(ids)) or set(ids) != set(by_id):
             raise s.Unverified('ai_draft_selection_changed', '/context/product_ids')
+        if set(ids) != {row['id'] for row in linked}:
+            from inventory_hub.services.product_dependency_ai_lineage import superseded_rows
+            linked = superseded_rows(proof, raw, draft, rows, ids)
         for row in linked:
             baseline = s.model(ImportValues, row.get('ai_baseline'), '/linked_draft/ai_baseline')
             fact = by_id[row['id']]
@@ -84,13 +90,16 @@ def inspect(proof, raw, drafts, catalog_sources):
         proof.linked_drafts.add(staging)
         proof.context('/context/code', 'proven_staged_family_container_full_draft_checked')
     elif source_kind == 'shop':
-        if ctx.get('update_only') is not True or ctx.get('source_parameters_loaded') is not True:
+        if ctx.get('update_only') is not True:
             raise s.Unverified('shop_ai_source_incomplete', '/context')
         snapshot = s.obj(ctx.get('source_snapshot'),
             {'product_id', 'code', 'ean', 'brand', 'descriptions', 'parameters', 'variants'},
             ('product_id', 'code', 'variants'), '/context/source_snapshot')
         if snapshot['code'] != ctx['code']:
             raise s.Unverified('shop_ai_source_code_changed', '/context/code')
+        if ctx.get('source_parameters_loaded') is not True:
+            from inventory_hub.services.product_dependency_ai_lineage import legacy_shop_estimate
+            legacy_shop_estimate(proof, raw, snapshot, by_id)
         native_identity(proof, {key: snapshot.get(key) for key in ('product_id', 'code', 'ean', 'variants')},
                         namespace, '/context/source_snapshot')
         proof.parent_write(namespace, ctx['code'], snapshot['product_id'], '/context/code')

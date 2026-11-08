@@ -1,5 +1,46 @@
 # Inventory Hub — prehľad projektu
 
+## Opakované podklady konsolidácie (8. 11. 2026)
+
+[Kontrola závislostí konsolidácie](docs/product-consolidation.md) opakovane používa
+úplné nemenné podklady tej istej kampane, rodiny či prípravy importu v rámci
+jedného databázového snímku. Každú operáciu znovu overí a zachová všetky hashované
+riadky aj logické väzby; samostatne vykáže ušetrené databázové čítania.
+Cache zdieľa existujúci limit 64 MB s aktuálnou operáciou a nemení limit práce,
+identitu, skladové kontroly ani históriu. Nová migrácia či konfigurácia nie je
+potrebná; starší nepotvrdený náhľad treba vytvoriť nanovo. Implementácia a
+syntetické kontroly samy nepotvrdzujú dokončenie živej konsolidácie.
+
+Parser `typed-catalog-scope-v4` overuje aj
+[výslovne nahradené prípravy AI a známe historické schémy](docs/product-consolidation-ai-lineage.md).
+Nahradenie musí dokazovať úplná aktuálna príprava, nové väzby a nezmenené
+pôvodné identity; publikácie a všetky súčasné riadky zostávajú kontrolované.
+Starý odhad obsahu zachová celý natívny rozsah a historické Sloger pozorovanie
+musí zodpovedať uzavretej čítacej schéme. Samotný stav, archivácia ani chýbajúca
+väzba operáciu nevylučujú. Potvrdenie opakuje kontrolu pod existujúcimi zámkami
+a zmena podkladov zneplatní náhľad.
+
+## Rozsah závislostí po zmene revízie Atomeru (8. 11. 2026)
+
+[Kontrola závislostí konsolidácie](docs/product-consolidation.md#typed-catalog-dependency-scope)
+rozpoznáva uložený prezentačný názov rodiny Atomeru a pri platnej zmene revízie
+kontroluje celý pôvodný aj aktuálny rozsah. Zahŕňa všetkých členov rovnakej
+rodiny, pôvodné aj aktuálne rozsahy e-shopov, Hub karty, GTIN a možné zápisy
+do rodiča xTreku vrátane uložených natívnych potvrdení. Neznámy formát,
+neúplná história alebo zmena členstva rodiny zostávajú blokované.
+Ide o čítaciu kontrolu; úlohy Atomeru sa tým neaktivujú. Syntetické testy
+overujú skutočné ukončenie revízie, zachovanie skladu a opätovnú kontrolu
+závislostí pri potvrdení. Bez SQL migrácie; živé dokončenie sa overuje osobitne.
+
+## Prázdne manuálne úpravy pri konsolidácii (8. 11. 2026)
+
+Doslovné celé `{}` v známej schéme editora už samo neblokuje konsolidáciu.
+Kontrola zachová pôvodný riadok, revíziu, audit aj uložené výsledky a zahrnie
+ich do úplného hashu. Každá neprázdna, neznáma či neplatná hodnota zostáva
+blokovaná. Existujúci zámok produktu a ochranný databázový trigger bránia
+súbežnému zápisu do vyradenej karty; zmena podkladov zneplatní náhľad.
+Bez novej migrácie, mazania histórie alebo zmeny skladových množstiev.
+
 ## Výslovne skontrolovaná obnova bežných väzieb (7. 11. 2026)
 
 [Produktové väzby](docs/product-links.md#výslovne-skontrolované-migračné-opravy)

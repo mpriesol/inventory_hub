@@ -24,16 +24,17 @@ PAGE_ROWS = 64
 PAGE_BYTES = 4000000
 MAX_ROW_BYTES = 16000000
 MAX_TOTAL_BYTES = 64000000  # Aggregate retained serialized payload, not an RSS claim.
-MAX_WORK_BYTES = 256000000  # Admitted DB body work, including repeated linked rows.
+MAX_WORK_BYTES = 256000000  # Admitted DB body reads; cached logical edges are reported separately.
 MAX_SCAN_SECONDS = 120
 MAX_EXTRA_ROWS = 20000  # One indivisible linked operation, not the cumulative family inventory.
 MAX_IDENTITY_QUERIES = 20000
 MAX_RESOLUTION_REUSE_BYTES = 4000000
+MAX_LINKED_REUSE_BYTES = 16000000
 MAX_RECORDS_PER_TABLE = 25
 MAX_SAMPLE_BYTES = 1000000
 MAX_JOURNAL_SAMPLES = 100
 MAX_REASON_SAMPLES = 100
-LOCK_TABLES = sorted(TABLES | {'atomer_catalog_campaigns', 'atomer_progress_items', 'atomer_review_work',
+LOCK_TABLES = sorted(TABLES | {'atomer_catalog_campaigns', 'atomer_progress_runs', 'atomer_progress_items', 'atomer_review_work',
     'suppliers', 'supplier_products', 'supplier_feeds', 'shops', 'sku_brands', 'sku_brand_aliases'})
 
 
@@ -225,8 +226,8 @@ async def _record(db, table, row, *, scope, budget, suppliers, available_journal
         drafts, products = await linked.ai(closure, raw)
         _catch(proof, ai_scope.inspect, raw, drafts, products)
     elif table == 'atomer_catalog_jobs':
-        family, campaign, claims = await linked.atomer(closure, raw)
-        _catch(proof, atomer_scope.inspect, raw, family, campaign, claims)
+        family, campaign, claims, head = await linked.atomer(closure, raw)
+        _catch(proof, atomer_scope.inspect, raw, family, campaign, claims, head)
     else:
         _catch(proof, s.consolidation, raw)
     await _resolve(db, [proof], {}, suppliers=suppliers, budget=budget)
@@ -271,7 +272,8 @@ async def _journal(db, namespace, identifier, record, *, scope, budget, supplier
 
 async def inspect(db, *, scope, columns, open_condition, request_id):
     budget = inventory.Budget(MAX_ROW_BYTES, MAX_TOTAL_BYTES, MAX_WORK_BYTES, MAX_SCAN_SECONDS,
-        reuse=ResolutionMemo(MAX_RESOLUTION_REUSE_BYTES))
+        reuse=ResolutionMemo(MAX_RESOLUTION_REUSE_BYTES),
+        linked_reuse=ResolutionMemo(MAX_LINKED_REUSE_BYTES, sort_keys=False))
     checkpoint = {}
     try:
         # Cancellation also interrupts a long awaited SQL operation. This
@@ -319,6 +321,9 @@ async def _inspect(db, *, scope, columns, open_condition, request_id, budget, ch
                 'peak_retained_payload_bytes': budget.peak_payload,
                 'distinct_identity_queries': len(budget.query_keys),
                 'identity_reuse': budget.reuse.result() if budget.reuse is not None else None,
+                'linked_input_reuse': budget.linked_reuse.result() if budget.linked_reuse is not None else None,
+                'reused_linked_rows': budget.reused_linked_rows,
+                'reused_linked_bytes': budget.reused_linked_bytes,
                 'journal_observation_bytes': file_bytes, 'journal_limit_per_pass_bytes': journals.MAX_TOTAL_BYTES},
             'blockers': blockers}
     try:
@@ -353,8 +358,8 @@ async def _inspect(db, *, scope, columns, open_condition, request_id, budget, ch
             unsafe = counts[table]['unknown'] + counts[table]['reference']
             if unsafe:
                 blockers.append({'code': 'consolidation_pending_document', 'table': table, 'count': unsafe})
-        # Base/linked bodies above have operation-local lifetime. File sets are
-        # likewise parsed one at a time, never retained as a global body map.
+        # Decoded bodies have operation-local lifetime; reusable serialized
+        # linked inputs remain bounded. File sets are parsed one at a time.
         row = None
         first_files = inventory.Manifest('journal-files')
         observed_directories = {}
