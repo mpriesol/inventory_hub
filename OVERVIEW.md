@@ -1,5 +1,19 @@
 # Inventory Hub — prehľad projektu
 
+## Odovzdanie nezačatého prepojenia Atomeru na ručné spracovanie (8. 11. 2026)
+
+[Riadenie jednej úlohy](docs/atomer-catalog-job-control.md#existing-targets-awaiting-their-first-reconciliation)
+rozpoznáva úzky stav `cards`, do ktorého príprava prešla pre už existujúce natívne
+identity xTreku. Withdrawal vyžaduje skutočné SQL NULL dokumentu, doslovné `{}`
+potvrdenie, nulové pokusy a revíziu riadenia, žiadne potvrdenia ani zdrojové karty
+a nezmenené úplné zdroje a review. Doterajšie zámky, kontrola historickej alokácie,
+audit, pozastavenie kampane a porovnanie aktuálneho snímku zostávajú účinné.
+Pozorované, čiastočne spracované alebo znova naplánované úlohy tento dôkaz nemajú.
+Syntetické testy overujú skutočnú prípravu, potvrdenia spracovania aj vrátenie
+čiastočného lokálneho zápisu pri chybe kvóty. Ide o podporované odovzdanie plánu
+na ručné spracovanie, nie o potvrdenie migrácie. Bez SQL migrácie, natívneho zápisu
+alebo zmeny skladu; živý withdrawal a následná konsolidácia sú samostatné kroky.
+
 ## Zlučovanie kariet priamo v produktoch (8. 11. 2026)
 
 Výber 2–10 kariet v **Sklad → Produkty** otvára akciu **Zlúčiť karty**.

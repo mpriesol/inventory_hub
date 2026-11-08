@@ -12,12 +12,15 @@ an uncertain write or change an inventory quantity.
 The operator-only, no-store read uses a read-only repeatable-read transaction.
 It returns the snapshot hash, selected codes, campaign/job revisions, current
 state, proof counts, blockers and separate `eligible` / `replan_eligible` flags.
+An eligible withdrawal also identifies its `withdrawal_basis`; a blocked job
+or a replan does not receive a positive withdrawal classification.
 It makes no remote request and does not call recovery helpers that update
 journals. The response omits full source documents and stored review text.
 
 Eligibility requires the exact current source/run and every sibling review
-revision to agree with the saved guards. The job must be `pending`, its document
-must be SQL NULL, and the complete receipt must have a known no-effect shape.
+revision to agree with the saved guards. In the original `unsent_pending`
+class, the job must be `pending`, its document must be absent, and the complete
+receipt must have a known no-effect shape.
 Only optional scheduling isolation metadata and explicit `dispatched: false`
 are admitted. Unknown keys, content intents, native origins, created or reused
 card IDs, ambiguous effects, prepared/sending/observation stages and incomplete
@@ -30,6 +33,36 @@ earlier Atomer allocation under any family leaf SKU, including original SKUs in
 immutable editor audit; a later null-ID diagnostic or SKU rename cannot hide
 that allocation. Unknown job columns require a reviewed contract update.
 The scope is bounded to 500 leaves and 5 MB of evidence.
+
+### Existing targets awaiting their first reconciliation
+
+`pre_reconcile_existing_targets` recognizes the narrow `cards` state written
+directly by `_prepare` when every selected xTrek target already has a native
+identity in the current report. At least one xTrek target must be selected;
+every such target needs a positive native product ID and a positive variant ID
+when its kind is `variant`. IDs are exact positive integers or canonical decimal
+strings, as written by the progress report. This proves a lifecycle branch, not
+the physical identity or completed migration of those products.
+
+The document must be actual SQL NULL (JSON `null` is not sufficient), the full
+receipt must be exactly `{}`, and there must be no catalog proof or source-card
+row. Both attempt counters and the job control revision must be integer zero;
+the control UUID must be NULL and the source lane must still be `pending`.
+All original source, sibling review, schema, allocation and rename-history
+checks still apply. The snapshot hash includes the SQL-NULL fact; obtain a
+fresh control read before requesting withdrawal.
+
+Native observation retains its document and receipt. Card reconciliation and
+its card receipts/proofs commit together; quota failure rolls back partial
+local changes before rescheduling. Neither path is silently treated as this
+untouched branch. Even a previously withdrawn and replanned job with a newly
+empty receipt has a nonzero control revision and cannot enter this class.
+Unknown or partly reconciled `cards` jobs remain blocked.
+
+Withdrawing this class hands an unsent plan to explicit manual work while the
+campaign remains paused. It does not mark any source item done or any product
+migrated. The existing withdrawal, immutable audit and replan transitions are
+otherwise unchanged; this extension adds no SQL migration or native writes.
 
 ## Withdraw with explicit comparison and swap
 
