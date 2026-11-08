@@ -22,6 +22,7 @@ Use **BIKETREK** and **xTrek** in new documentation and user-facing copy. Keep e
 - `infra/db-init/`: ordered PostgreSQL schema/migration SQL.
 - `.github/workflows/ci.yml`: current PR validation commands, four isolated backend test shards and the required `backend-compile` coverage gate.
 - `.github/workflows/build.yml`: parallel image builds and serialized production deployment on `main`; Markdown/docs-only pushes skip this workflow.
+- `api/POSTGRES_SETUP.md`: installation, database initialization/upgrades and backup/recovery guide.
 - `docs/ci-deployment.md`: CI coverage, timing reports, caches, migration execution and deployment measurement.
 - `infra/docker-compose.prod.yml`: deployment reference, not proof of the server's current configuration.
 - `OVERVIEW.md`: project map, implementation status and operational context.
@@ -36,7 +37,7 @@ Use **BIKETREK** and **xTrek** in new documentation and user-facing copy. Keep e
 - `docs/stock-adjustments.md`: physical recounts through immutable corrective movements.
 - `docs/receiving-identity.md`: shared receiving/catalog identity, scanner request UUIDs, ambiguity and replay recovery.
 - `docs/stock-history.md`: read-only movement history, dashboard facts, date/pagination and cost limits.
-- `docs/mvp-progress.md`: approved priorities and implementation handoff; distinguish planned, tested and deployed.
+- `docs/mvp-progress.md`: current priorities and remaining product/operational work; distinguish implemented, tested and deployed.
 - `docs/fifo.md`: FIFO layers, legacy cutover, nullable costs, physical returns and cost corrections.
 - `docs/fifo-purchase-costs.md`: opt-in next-layer product purchase prices, issued-order weighted costs and explicit historical corrections.
 - `docs/ai-content.md`: AI preparation, review, selected-field updates, access configuration and recovery.
@@ -119,46 +120,22 @@ From the repository root:
 
 ```bash
 npm --prefix frontend ci
+npm --prefix frontend run typecheck
 npm --prefix frontend run build
-node frontend/tests/catalog-ui.cjs
-node frontend/tests/invoices-ui.cjs
-node frontend/tests/invoice-calendar-ui.cjs
-node frontend/tests/product-trace-ui.cjs
-node frontend/tests/feed-mapping-ui.cjs
-node frontend/tests/product-import-ui.cjs
-node frontend/tests/ai-content-ui.cjs
-node frontend/tests/accounts-ui.cjs
-node frontend/tests/upgates-import-ui.cjs
-node frontend/tests/supplier-config-ui.cjs
-node frontend/tests/zookee-codes-ui.cjs
-node frontend/tests/order-audit-ui.cjs
-node frontend/tests/opening-stock-ui.cjs
-node frontend/tests/order-stock-ui.cjs
-node frontend/tests/order-collection-ui.cjs
-node frontend/tests/stock-settings-ui.cjs
-node frontend/tests/stock-publication-ui.cjs
-node frontend/tests/product-editor-ui.cjs
-node frontend/tests/product-links-ui.cjs
-node frontend/tests/supplier-links-ui.cjs
-node frontend/tests/product-import-identity-ui.cjs
-node frontend/tests/fifo-ui.cjs
-node frontend/tests/receiving-scan-ui.cjs
-node frontend/tests/receiving-lookup-ui.cjs
-node frontend/tests/stock-history-ui.cjs
-node frontend/tests/availability-sync-ui.cjs
-node frontend/tests/stock-adjustments-ui.cjs
-node frontend/tests/fifo-cost-sync-ui.cjs
+for suite in frontend/tests/*.cjs; do
+  node "$suite" || exit 1
+done
 ```
 
-Run the relevant UI interaction checks above for changed workflows; CI runs the interaction suites listed above. They use jsdom and do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
+Run the relevant UI interaction suites for changed workflows; the loop runs the full local inventory. CI explicitly lists every current `frontend/tests/*.cjs` suite in `.github/workflows/ci.yml`; update that list when adding a suite. Type checking (`tsc --noEmit`), Vite build and jsdom interaction checks cover different failures. The interaction suites do not verify browser layout. Use browser inspection for material layout changes when available, and state any limitation.
 
-For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/i18n/en.json`. Keep the corresponding types in `frontend/src/api/`, `frontend/src/types/` and `frontend/src/types.ts` aligned with API responses.
+For user-facing text, update both `frontend/src/i18n/sk.json` and `frontend/src/i18n/en.json`. Keep the corresponding types in `frontend/src/api/` and `frontend/src/types/` aligned with API responses.
 
 ### Containers and infrastructure
 
 For Docker-related changes, build locally when available. Do not use the production compose definition as a test environment. Validate SQL and migration order in an isolated database; applying a production migration must be covered by the task's authorization and rollback plan.
 
-The deployment runs `python -m inventory_hub.migrate` in one API container before restarting services. Its explicit `MIGRATIONS` tuple calls thirty-five migration modules in order `005`–`038`, then `046`, preserving each module's own transaction and advisory lock. Existing feature installers `039`–`045` retain their own activation paths. It stops on the first failure; completed migrations remain committed and the API restart is not reached. The upgrade SQL files are packaged in the image. `024_upgates_api_budget.sql`, `025_stock_native.sql` and `026_stock_delta.sql` add shared API admission, native-order evidence and delta checkpoints respectively; they do not activate stock writes. `027_product_links.sql` adds durable previews and results for explicit links to existing shop products. `028_supplier_card_links.sql` adds the corresponding reviewed supplier-card link records. `046_shared_stock_sales.sql` adds explicitly reviewed sale-to-piece factors and per-sale publication keys, without linking or converting historical data. Adding another numbered SQL file does not automatically make it run on an existing production database: update the explicit runner, image packaging and verification together. Docker's initialization directory is not a general upgrade runner. Production workflows are serialized with cancellation disabled; never interrupt a migration to speed up another release. See `docs/ci-deployment.md` for timing and recovery.
+The repository contains fifty SQL files, `001`–`050`. Deployment runs `python -m inventory_hub.migrate` in one API container before restarting services. Its explicit `MIGRATIONS` tuple calls thirty-nine modules in order `005`–`038`, then `046`–`050`, preserving each module's own transaction and advisory lock. `atomer_review_migrate` executes SQL `038`–`045` together in its transaction; those files are therefore included in the deployment runner. It stops on the first failure; completed modules remain committed and the API restart is not reached. All forty-six upgrade SQL files `005`–`050` are packaged in the image. `024_upgates_api_budget.sql`, `025_stock_native.sql` and `026_stock_delta.sql` add shared API admission, native-order evidence and delta checkpoints respectively; they do not activate stock writes. `027_product_links.sql` adds durable previews and results for explicit links to existing shop products. `028_supplier_card_links.sql` adds the corresponding reviewed supplier-card link records. `046_shared_stock_sales.sql` adds explicitly reviewed sale-to-piece factors and per-sale publication keys, without linking or converting historical data. Adding another numbered SQL file does not automatically make it run on an existing production database: update the explicit runner, image packaging and verification together. Docker's initialization directory is only for an empty database volume, not a general upgrade runner. See `api/POSTGRES_SETUP.md` for initialization and recovery. Production workflows are serialized with cancellation disabled; never interrupt a migration to speed up another release. See `docs/ci-deployment.md` for timing and deployment diagnostics.
 
 Test schemas using current `StockMovement` or order ORM models need migration `007` too; collector/settings/processing tests also need `008` and `009`. Physical writer tests now also need `010`, since all balance writers check its persistent publication hold. The read-only order collector is opt-in per shop and must never call stock apply or populate the sync outbox. Its metadata is not a complete stock snapshot. The separate opt-in order processor may mutate the local ledger under an explicit per-shop mode and activation cutoff. It must not fabricate manual physical confirmations or publish shop stock. Warehouse settings pause automatic order processing only; they do not freeze manual receiving or other confirmed stock operations. Controlled publication uses a separate persistent hold that gates all local stock writers. `STOCK_PUBLICATION_WRITE_ENABLED` defaults to false and is never enabled by migration. Never retry an ambiguous stock PUT or release its hold merely because a read matches; follow the explicit resolution protocol in `docs/stock-publication.md`.
 

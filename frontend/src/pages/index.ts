@@ -1,7 +1,6 @@
 export { DashboardPage } from './DashboardPage';
 export { ReceivingPage } from './ReceivingPage';
 export { ReceivingSessionPage } from './ReceivingSessionPage';
-export { StockPage } from './StockPage';
 export { StockHistoryPage } from './StockHistoryPage';
 export { OpeningStockPage } from './OpeningStockPage';
 export { OrdersAuditPage } from './OrdersAuditPage';

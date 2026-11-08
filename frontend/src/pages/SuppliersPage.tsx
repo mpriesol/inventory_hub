@@ -1020,7 +1020,11 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
   };
 
   const FeedCard = ({ feedKey, label, description }: { feedKey: string; label: string; description: string }) => {
-    const source = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
+    const source: {
+      mode: 'remote' | 'local';
+      local_path?: string | null;
+      remote?: Partial<SupplierConfig['feeds']['sources'][string]['remote']>;
+    } = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
     const multiSource = supplier === 'sloger' && feedKey === 'products';
     const configured = !!source.remote?.url || !!source.remote?.urls?.length ||
       !!source.remote?.url_configured || !!source.remote?.urls_configured ||
@@ -1219,7 +1223,7 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
 function InvoicesTab({ config, updateConfig, showPasswords, onUpload, uploading }: TabProps & { onUpload: () => void; uploading: boolean }) {
   const { t } = useTranslation();
   const download = config.invoices?.download || { strategy: 'manual', web: { login: {} } };
-  const webLogin = download.web?.login || {};
+  const webLogin: Partial<SupplierConfig['invoices']['download']['web']['login']> = download.web?.login || {};
 
   const updateDownload = (updates: any) => {
     updateConfig((cfg) => ({
@@ -1405,7 +1409,7 @@ function InvoicesTab({ config, updateConfig, showPasswords, onUpload, uploading 
 }
 
 function MappingTab({ config, updateConfig }: TabProps) {
-  const mapping = config.adapter_settings?.mapping || {};
+  const mapping: Partial<SupplierConfig['adapter_settings']['mapping']> = config.adapter_settings?.mapping || {};
   const invoiceToCanon = mapping.invoice_to_canon || {};
 
   const updateInvoiceToCanon = (field: string, value: string | null) => {

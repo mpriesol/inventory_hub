@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
             print("✓ PostgreSQL connected")
         except Exception as e:
             print(f"⚠ PostgreSQL connection failed: {e}")
-            print("  Falling back to JSON-based storage")
+            print("  PostgreSQL remains enabled; database-backed operations are unavailable")
     worker = None
     catalog_worker = None
     source_card_worker = None

@@ -1,99 +1,34 @@
-# MVP — rozhodnutia a stav pokračovania
+# Priority a zostávajúca práca
 
-Aktualizované 24. 9. 2026. Vlastník odsúhlasil implementáciu podľa odpovedí k 30 bodom a N1–N8. Základ aktuálnej etapy: `main 6bdfd71` (nasadený PR #34). Tento súbor odlišuje rozpracovanie, overenie a nasadenie; plán nie je hotová funkcia.
+Aktualizované podľa kódu 8. 11. 2026. Tento súbor nahrádza priebežný denník balíkov A–E zo septembra; jeho staršie verzie zostávajú v Git histórii. Stav konkrétneho nasadenia alebo živej operácie sa overuje v Actions a v uloženom výsledku, nie podľa starej poznámky „pripravené“.
 
-## Platné rozhodnutia
+## Čo už má implementáciu
 
-- Spoločný kód variantu identifikuje fyzický produkt v oboch e-shopoch. Pokladňový parent xTrek v BIKETREK je iba technické zoskupenie.
-- Desať nových skenov rovnakého EAN pridá desať kusov. Retry jedného request ID nepridá nič; rovnaký EAN sa časovo neblokuje.
-- Nákupné ceny zostávajú podľa príjmov; výdaj oceňuje najstaršie nevyčerpané príjmy. V bežnom UI použiť Nákupné ceny/Príjmy/Náklad predaja, nie skratku FIFO. Technické názvy zostávajú.
-- Priorita: jednotná identita, používateľská tabuľka, nemenná história pohybov za celý sklad aj variant, dodávateľské dostupnosti, pravidelný prenos a hrubá marža.
-- Tabuľka: nastaviteľná šírka/poradie/viditeľnosť stĺpcov, uložené preferencie v prehliadači, pomenované variantné parametre, viac obchodných polí. Finálny vizuálny redesign neskôr.
-- Každá dátová akcia má ukázať účinok Hub čítanie/zmena alebo Upgates čítanie/zápis, vrátane nadväzujúcej úlohy. Počet API volaní iba meraný alebo podložený odhad; inak neznámy. Lokálny browser request nie je počet Upgates volaní.
-- Real-time nie je podmienkou MVP. Intervaly ponechať pre test podľa aktuálnej konfigurácie, neskôr môže používateľ nastaviť 15 minút aj dlhšie. Neaktivovať publikovanie ani meniť live intervaly migráciou.
-- Metráž/balenia, účty/RBAC, nové vratky/odpisy, zálohy a N1–N8 odložené. Manuálne rezervácie a veľká inventúrna agenda nižšia priorita. Existujúce ochrany a funkcie zachovať.
-- Manuálne bezkódové riadky sú mimo skladu. Odoslaná/Vyzdvihnutá znamená jeden celý uzamknutý výdaj; žiadne čiastočné odovzdanie. Opravy pohybov kompenzáciou, nie editáciou histórie.
-- Dostupnosť: vlastná voľná zásoba SKLADOM; čerstvá dodávateľská ponuka konfigurovaná lehota (default do 5 dní); inak objednateľné overíme. Nezamieňať dodávateľský a vlastný sklad.
-- Ostré prevzatie spoločného skladu prebehne spolu s vlastníkom po pilote.
+Spoločná identita kariet, skenovacie UUID, jednotný produktový editor, história pohybov, potvrdený začiatok skladu, FIFO, dostupnosti, vybrané publikovanie, účty, archív dokladov a riadené zlučovanie sú implementované. Presný rozsah a dokumenty sú v [prehľade projektu](../OVERVIEW.md). Existujúce automatizácie majú vlastné aktivácie; prítomnosť kódu neznamená zapnutú skladovú autoritu.
 
-## Implementačné balíky
+## Zostávajúce priority
 
-| Balík | Obsah | Stav |
-| --- | --- | --- |
-| A | Identita príjmu/importov, request ID skenera, opravy prehľadu, označenie akcií a história pohybov | Nasadené cez [PR #34](https://github.com/mpriesol/inventory_hub/pull/34); CI 658 backend testov vrátane PostgreSQL bez preskočenia, build a 14 UI sád; deployment 35989256455 a zdravá DB overené |
-| B1 | Šírky/poradie/stĺpce tabuľky, variantné parametre a práca so skupinami | Implementované súbežne s A; interakčné testy prešli |
-| B2 | Editor → náhľad → publikovanie vybraných polí do konkrétneho shopu | Implementované v PR #35; overenie a nasadenie podľa záznamu nižšie. Samotné uloženie zostáva lokálne |
-| C | Scheduler feedov, čerstvosť, dostupnosti, automatický dávkový skladový prenos a porovnávanie | Implementované v PR #35; prevádzková aktivácia je samostatný krok, predvolene vypnutá |
-| D | Dokončenie jednoduchého príjmu/dokladov, skutočné tržby a hrubá marža, malý servisný výdaj | Čaká; nákladové vrstvy už existujú |
-| E | Pilot aktuálneho rozsahu a spoločný prechod | Čaká |
+| Téma | Čo ešte treba rozhodnúť alebo dokončiť |
+| --- | --- |
+| Tržby a hrubá marža | Doplniť skutočné tržby bez DPH, zľavy, refundácie a ich väzbu na vydané kusy. Existujúce FIFO náklady a archív úhrad samy netvoria úplné vyúčtovanie marže. |
+| Prevádzkový pilot spoločného skladu | Overiť konkrétne shop pravidlá, potvrdený začiatok evidencie, objednávkový cyklus a jedinú autoritu zápisov. Podmienky sú v [pripravenosti Upgates](upgates-sync-readiness.md); nasadenie kódu nie je aktivácia pilotu. |
+| Širšia inventúra a manuálne rezervácie | Samostatná používateľská agenda zostáva nižšou prioritou. Existujúce počiatočné stavy a [opravné pohyby](stock-adjustments.md) sa zachovávajú. |
+| Rozšírené vratky, odpisy a servis | Doriešiť scenáre mimo existujúcich fyzických vratiek/FIFO alokácií, najmä historické vratky bez alokácie a širší servisný postup. Pravidlá nemenných nákladov a pohybov zostávajú. |
+| Ďalšie jednotky a oprávnenia | Rozšírenia nad aktuálne [explicitné jednotky a balenia](stock-units.md) a [zdieľané kusové predaje](shared-stock-sales.md); všeobecné prevádzkové RBAC nad existujúcou správou účtov. |
+| Používateľské doladenie | Rozšírenie podporovaných publikovaných polí a overenie konkrétnych variantov. Vizuálny redesign je samostatná neskoršia etapa, nie podmienka zachovania dnešných funkcií. |
 
-## Pokračovanie po prerušení
+Prioritu konkrétneho ďalšieho zásahu určuje aktuálne zadanie vlastníka. Staré číslovanie balíkov ani historické zoznamy testov nie sú zoznamom otvorených PR.
 
-1. Over aktuálny remote main, otvorený PR a pracovnú vetvu; zachovaj rozpracované zmeny.
-2. Prečítaj tento súbor, AGENTS, OVERVIEW a dokumentáciu dotknutých modulov.
-3. Doplň výsledky testov a číslo PR/commit až po skutočnom vykonaní. Nenasadené funkcie neoznačuj ako dostupné na produkcii.
-4. Dokonči prvý súdržný balík, over ho v CI s PostgreSQL a cez relevantné UI testy, potom merge/deployment podľa už udeleného oprávnenia.
-5. Ďalšie balíky rieš postupne v samostatných PR. Nasadenie aplikácie nie je aktivácia skladovej autority ani povolenie hromadnej zmeny živých zásob.
+## Platné obchodné rozhodnutia
 
-Prvý balík používa migráciu `013` pre idempotentné požiadavky skenera; je zapojená do obrazu a deploymentu pred reštartom API. Záznam o overení a nasadení sa doplní pri dokončení.
+- Každá predajná položka má jednu kanonickú kartu. Nové SKU vychádza z dvojpísmenového prefixu **výrobcu** a jeho overeného článku podľa [pravidiel SKU](sku-policy.md); stará politika dodávateľského prefixu nie je pravidlom pre nové karty. Existujúce SKU a overené väzby sa zachovávajú.
+- Desať nových skenov pridá desať kusov. Opakovanie jedného request UUID nepridá ďalší kus; EAN sa časovo neblokuje.
+- Nákupný náklad vychádza z príjmu a konkrétnych vydaných vrstiev. V obslužných textoch používať Nákupné ceny/Príjmy/Náklad predaja; technické pomenovanie FIFO zostáva.
+- Dodávateľská ponuka a vlastná fyzická zásoba sú oddelené. Čerstvosť a lehoty majú vlastnú konfiguráciu; chýbajúci údaj nie je nula.
+- Manuálne bezkódové riadky sú mimo fyzického skladu. Potvrdený výdaj je jeden uzamknutý celok; oprava histórie používa kompenzačný pohyb.
+- Dátová akcia má zrozumiteľne označiť čítanie/zmenu Hubu a čítanie/zápis Upgates vrátane nadväzujúcej úlohy. Počet API volaní uvádzať ako meranie alebo doložený odhad, inak ako neznámy.
+- Real-time nie je podmienkou MVP. Nasadenie ani migrácia nesmie samo zapnúť publikovanie alebo ostrú skladovú autoritu. Prechod spoločného skladu zostáva výslovným prevádzkovým krokom s vlastníkom.
 
-## Overenie prvého balíka (24. 9. 2026)
+## Pokračovanie v práci
 
-- Lokálny backend po oprave migrácie: 658 testov, bez zlyhania; 251 PostgreSQL prípadov preskočených, keďže lokálna izolovaná DB nie je dostupná. Pred merge musia prejsť v PR CI.
-- Vite build a všetkých 14 jsdom sád prešli. Nové regresie skenera navyše overujú prerušené telo HTTP 200, nesúlad UUID, prepínanie relácií počas požiadavky a oneskorený súhrn. Neoverený výsledok zachová pôvodnú požiadavku na retry.
-- Nezávislá kontrola našla a oprava pokryla dlhé compound EAN pri ručnej úprave množstva a rozdiel ORM defaultu `None` od explicitne neaktívneho produktu. Objednávkové očakávania zostali zachované.
-- Migrácia 013 je zabalená v API obraze a spúšťa sa pred reštartom. Neaktivuje žiadny worker, publikovanie ani nové intervaly. Pri chybe neznámej závislosti sa transakcia vráti späť; potvrdenia skenov sa pri oprave nemažú.
-- Reálny vizuálny layout v prehliadači nebol overený. Celkový `tsc` má existujúce chyby aj v starších kópiách; build a cielené interakčné kontroly nie sú tvrdenie o čistej globálnej typovej kontrole.
-- [PR #34](https://github.com/mpriesol/inventory_hub/pull/34), prvý CI beh `35986870111`: frontend/build a 14 UI sád prešli; backend 630 z 655 prešlo, 25 príjmových testov zastavila závislosť existujúceho view `v_invoice_lines_detail` na rozširovanom EAN. Oprava migrácie obnovuje tento známy odvodený pohľad v transakcii; tri ďalšie testy overujú existujúce údaje, práva, opakovanie a rollback pri neznámych závislostiach. Opakované CI a deploy musia byť overené pred označením balíka za nasadený. Aktuálny výsledok je pri PR a jeho následnom main workflow; tento záznam zachytáva stav pred merge.
-
-## Aktuálna požiadavka vlastníka (24. 9. 2026)
-
-Vlastník presunul **dodávateľské dostupnosti a pravidelný prenos zásob** pred B2. Súbežne požaduje opravu odchodu z dokončeného príjmu, prázdnych parametrov, jednu tabuľku Sklad/Produkty s obrázkami a stĺpcami oboch e-shopov, manuálnymi bunkami a odoslaním. Pôvodné poradie B2→C už neplatí.
-
-[PR #35](https://github.com/mpriesol/inventory_hub/pull/35), vetva `codex/supplier-sync-unified-stock`: scheduler feedov a čerstvosť, samostatný pravidelný publisher s dedičnými intervalmi a ručným spustením, jednotná tabuľka, vybrané produktové publikovanie a dokumentované korekčné pohyby. Migrácie 014–017. Nasadenie tejto etapy a overenia budú doplnené podľa skutočných výsledkov PR; prítomnosť súborov nie je dôkaz nasadenia.
-
-Naďalej platí automatické schvaľovanie/merge PR a následné nasadenie až do odvolania, výslovne znovu potvrdené vlastníkom. Neaktivuje to samo osebe ostrú skladovú autoritu, dodávateľské intervaly ani hromadné živé zápisy.
-
-Dodatočné kontroly: spoločný trvalý zámok AI a ručného produktového odosielania, výslovné uzavretie neistého AI pokusu, Unicode kolízie SKU a audit prvého fyzického počtu 0 pre dodávateľské produkty. Lokálne prešli build a všetkých 16 UI sád. Databázové scenáre sa overujú v PR CI s PostgreSQL; presný posledný výsledok a nasadenie sú v PR.
-
-Prvý CI beh `36004823470`: frontend prešiel; backend odhalil tri regresie importu parametrov a tri chyby pokračovania synchronizácie po rollbacku položky. Oprava obnovila odmietnutie neplatnej rodiny, obmedzila dopĺňanie kanonických parametrov na presnú zhodu SKU a uchováva identifikátor behu mimo expirovaného ORM objektu. Pôvodné regresné očakávania zostali zachované. Tento výsledok nie je schválením nasadenia; rozhoduje opakované CI opraveného commitu.
-
-## Nákupné ceny produktov a objednávok (24. 9. 2026)
-
-PR #35 bol následne nasadený ako `d8b44e2`; CI `36006570205` prešlo 731 backendových testov vrátane PostgreSQL, build a 16 UI sád. Deployment `36007429688` potvrdil migrácie 014–017 a zdravú databázu.
-
-Vlastník potom výslovne požiadal implementovať odosielanie FIFO nákupných cien. Vetva `codex/fifo-purchase-cost-sync` dopĺňa produktovú cenu najbližšieho kusa po príjme/výdaji a vážený priemer nákladov konkrétnych vydaných kusov v objednávke. Samostatný náhľad umožňuje opravu staršej objednávky z jej pôvodných FIFO alokácií bez nového výdaja. Migrácia 018 je aditívna a predvolene nič neaktivuje. [Používateľský a vývojársky postup](fifo-purchase-costs.md).
-
-Nasadenie a posledné výsledky tejto etapy treba overiť v jej PR/Actions; tento záznam vzniká pri implementácii a sám ich nepotvrdzuje. Oprava dodávateľského párovania diagnostikovaná po PR #35 zostáva samostatná téma; tento balík ju neoznačuje za vyriešenú.
-
-## Prefixy a párovanie dostupností (25. 9. 2026)
-
-Vlastník určil opravu Paul Lange dostupností za bezprostrednú prioritu a schválil implementáciu. Platí spoločné SKU `prefix dodávateľa + jeho kód variantu`, vlastné nemenné interné ID produktu a samostatné dodávateľské kódy. Pri ďalšom dodávateľovi zostáva pôvodné SKU. Prefix je jedinečný, po použití uzamknutý aj voči konfigurácii cez API a obnove histórie. Existujúce neprázdne prefixy sa pri zavedení ochrany uzamknú; staré SKU sa neprečíslujú.
-
-Vetva `codex/supplier-prefix-availability` pridáva register prefixov, jednotný parser, automatické dopĺňanie jednoznačných väzieb a lokálne tlačidlo **Prepojiť dostupnosti** nad už stiahnutými údajmi. Chýbajúca väzba, konflikt, chýbajúce pozorovanie a starý feed sú rozlíšené. Nepridáva SQL migráciu, nezapína prenos zásob/cien ani pilotnú skladovú autoritu. [Návod a kontrakt](supplier-identity.md).
-
-Lokálne prešli priebežné testy prefixov, chráneného opravného API, príjmových pomocných funkcií a tri dotknuté UI sady s buildom. Úplná finálna sada, databázové CI, číslo PR a nasadenie sa doplnia podľa skutočného výsledku; táto implementačná poznámka ich sama nepotvrdzuje. PostgreSQL sa lokálne nepodarilo zriadiť pre obmedzenia prostredia, databázové scenáre preto musí overiť PR CI.
-
-
-## 25. 9. 2026 — potvrdený začiatok skladu (pripravené, nenasadené)
-
-Vetva `codex/confirmed-stock-start` oddeľuje historické importy/testy od nových potvrdených zásob cez aditívnu migráciu 019. Podrobný postup a hranice: [stock-tracking.md](stock-tracking.md). Register je po nasadení prázdny; historické pohyby ani vrstvy sa nemažú. Nový príjem 3 kusov k starému neoverenému stavu 100 kusov začne evidenciu na 3 kusoch. Potvrdená nula zostáva odlíšená od neovereného stavu vrátane detailu produktu a prenášania zásob/cien.
-
-Lokálne overenie: kompilácia backendu, 503 úspešných testov bez PostgreSQL (335 databázových testov preskočených), frontend build a 9 UI sád: product-editor, stock-history, fifo, opening-stock, stock-adjustments, stock-publication, order-stock, fifo-cost-sync a upgates-import. Databázové scenáre sú doplnené, ale tu neboli vykonané: prostredie nepodporuje lokálneho používateľa na spustenie PostgreSQL. Pred merge musia prejsť izolované PostgreSQL testy v existujúcom PR workflow.
-
-Vzdialená vetva bola založená na `main 45d33c6`. Používateľ 25. 9. v nadväzujúcom chate výslovne potvrdil zápis opravy do `mpriesol/inventory_hub` a postup PR → databázové testy → merge a nasadenie po úspešných kontrolách. Výsledky vzdialených testov a nasadenia treba overiť v príslušnom PR/workflow. Žiadny nový produkčný skladový stav ani prenos do e-shopu nebol vyvolaný.
-
-[PR #39](https://github.com/mpriesol/inventory_hub/pull/39), prvý CI beh `36149351097`: frontend build a všetkých 17 UI sád prešli. Backend vykonal všetkých 838 testov vrátane PostgreSQL bez preskočenia; 835 prešlo. Dve chyby opravuje doplnenie migrácie do testov importu a spustenie viacpríkazovej SQL migrácie priamo cez asyncpg. Tretia odhalila potrebu zachovať ochranu pred nevysvetleným nenulovým stavom po potvrdení nuly: okrem začiatku evidencie sa vyžaduje nový aktuálny pohyb alebo stále nulové množstvá. Pôvodná regresná podmienka zostáva zachovaná. Nové scenáre príjmu 100→3, inventúry, potvrdenej nuly, oddelenia skladov, opakovania a rollbacku prešli. Opakované CI opraveného commitu je podmienkou merge; následný deployment a živé čítanie súhrnu musia potvrdiť nasadenie.
-
-
-## 7. 10. 2026 — účty, automatické kategórie a detail AI
-
-Vetva `codex/ai-category-accounts` dopĺňa používateľské meno/heslo a trvalú HttpOnly reláciu spoločnú pre doterajšie chránené funkcie. Správca môže vytvárať a deaktivovať účty; operátorský token ostáva pre prvé prihlásenie a integrácie. Aditívna migrácia 020 sa vykonáva po 019 pred reštartom API. Podrobnosti a návrat: [user-accounts.md](user-accounts.md).
-
-Nová AI príprava predvolene samostatne vyberie existujúcu koncovú kategóriu a profil pred tvorbou obsahu. Najbližšie mapovanie v strome obmedzuje profil, správny register sa použije už pri generovaní a pôvodný importer doplní produktových predkov bez systémového menu. Neisté zaradenie nepokračuje na generovanie obsahu. Rezervácia pokrýva obe fázy a pri prerušení sa nesmie vykonať automatický platený pokus. Detail sa otvára v modálnom okne, chráni neuložené zmeny a upozorňuje na novšie pravidlá.
-
-Lokálne overené: kompilácia backendu, 901 testov (550 úspešných, 351 PostgreSQL prípadov preskočených pre nedostupný lokálny server), frontend build a všetkých 18 UI sád. Nové izolované DB scenáre kontrolujú obe fázy AI vrátane skutočného importného payloadu s predkami, náklady pri timeout-e, relácie, roly, odhlásenie, deaktiváciu, limity a opakovateľnosť migrácie 020. Pred merge musia prejsť v PR CI. Globálny TypeScript check hlási existujúce problémy mimo nových komponentov; Vite build a interakčné kontroly prešli. Táto poznámka sama nepotvrdzuje produkčné nasadenie; výsledok treba overiť v PR a deployment workflow.
-
-Diagnostika konkrétneho plášťa potvrdila uloženú šírku v AI aj Upgates. Viditeľnosť parametra na verejnom e-shope rieši vlastník v Upgates. Produkčné pravidlá ani parametre sa pri tejto implementácii neprepisujú.
-
-[PR #45](https://github.com/mpriesol/inventory_hub/pull/45), CI beh `37692719526`: všetkých 901 backendových testov vrátane izolovanej PostgreSQL databázy prešlo bez preskočenia; frontend build a 18 UI sád prešli. Záverečný commit navyše overuje zákaz cache prihlasovacích odpovedí pri produkčnom `root_path=/api`; jeho CI musí prejsť pred merge.
+Overiť aktuálny `main`, otvorené zmeny a [AGENTS.md](../AGENTS.md), potom aktívny kód a dokument konkrétnej oblasti. Dokončiť najmenšiu súdržnú zmenu a uviesť skutočne vykonané kontroly. Platné oprávnenia pre PR, merge a nasadenie sa riadia AGENTS a aktuálnym zadaním; tento zoznam nepridáva nové oprávnenia.
