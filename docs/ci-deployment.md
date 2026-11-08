@@ -71,6 +71,36 @@ The entire release workflow uses a common concurrency group with
 `cancel-in-progress: false`, including image publication. An active release is
 not interrupted by a newer run. Do not use cancellation to speed up deployment.
 
+### SSH bootstrap
+
+The deployment step runs the official `ghcr.io/appleboy/drone-ssh:1.8.0` image,
+pinned to OCI index digest
+`sha256:cd14570676f022faf800e7a92ef26025fcb834e0943c199b6a6aa8d8802e383f`.
+Its upstream revision is `883f947b4f1d140f8fbc30c5917d8225256991ad`.
+The [upstream Dockerfile](https://github.com/appleboy/drone-ssh/blob/v1.8.0/docker/Dockerfile)
+copies the compiled SSH binary into the image; its entrypoint does not download
+another executable. This is the same SSH client version used by the previous
+`appleboy/ssh-action@v1.2.0` bootstrap, whose separate GitHub release download
+failed before SSH with repeated HTTP 504 responses in the
+[8 November 2026 release](https://github.com/mpriesol/inventory_hub/actions/runs/42464779809).
+
+The existing host, user and raw multiline private-key secrets are passed through
+the client's `INPUT_*` environment variables. The unchanged remote script uses
+`INPUT_SCRIPT`; neither the private key nor the script is inserted into the
+local command line. Connection and command timeouts remain 30 seconds and
+10 minutes. Host authentication retains the existing client configuration; this
+change does not introduce a host fingerprint or claim independent host-key
+verification.
+
+The explicit `docker run --rm` uses the image's non-root user, a read-only root
+filesystem, dropped capabilities and `no-new-privileges`. It adds no host mounts,
+host network, ports or Docker socket. It passes only the named client variables,
+does not enable debug or environment forwarding, and removes the container when
+it exits. A failed pull, SSH connection or remote command fails the deployment
+step; there is no automatic second SSH attempt or alternative deployment path.
+The image must still be available from GHCR. The release's image tags, serial
+execution, migration order, phase errors and readiness checks are unchanged.
+
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
 temporary API container. Its explicit list invokes thirty-two upgrade
 modules, `005` through `036`, in their existing order. Each module retains its

@@ -72,12 +72,15 @@ jobs:
       runs-on: ubuntu-latest
       steps:
         - name: Deploy to hub.biketrek.sk
-          uses: appleboy/ssh-action@v1.2.0
-          with:
-            host: ${{ secrets.DEPLOY_HOST }}
-            username: ${{ secrets.DEPLOY_USER }}
-            key: ${{ secrets.DEPLOY_SSH_KEY }}
-            script: |
+          shell: bash
+          env:
+            GITHUB: 'true'
+            INPUT_HOST: ${{ secrets.DEPLOY_HOST }}
+            INPUT_USERNAME: ${{ secrets.DEPLOY_USER }}
+            INPUT_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+            INPUT_TIMEOUT: 30s
+            INPUT_COMMAND_TIMEOUT: 10m
+            INPUT_SCRIPT: |
               set -eu
               cd /opt/inventory-hub
               if [ ! -f ai-content.env ]; then
@@ -152,6 +155,15 @@ jobs:
               printf 'DEPLOY_TIMING readiness %ss success\n' "$(( $(date +%s) - readiness_started ))"
               run_phase sps-readiness curl --fail --silent --show-error --max-time 10 --retry 3 --retry-delay 2 --output /dev/null https://hub.biketrek.sk/sps/healthz
               run_phase cleanup docker image prune -f
+          run: |
+            # Same drone-ssh 1.8.0 as ssh-action v1.2.0, already in the image.
+            # Pass names only: never interpolate the private key into arguments.
+            docker run --rm --read-only --cap-drop=ALL \
+              --security-opt=no-new-privileges \
+              --env GITHUB --env INPUT_HOST --env INPUT_USERNAME \
+              --env INPUT_KEY --env INPUT_TIMEOUT --env INPUT_COMMAND_TIMEOUT \
+              --env INPUT_SCRIPT \
+              ghcr.io/appleboy/drone-ssh:1.8.0@sha256:cd14570676f022faf800e7a92ef26025fcb834e0943c199b6a6aa8d8802e383f
 
   timing-summary:
     if: always()
