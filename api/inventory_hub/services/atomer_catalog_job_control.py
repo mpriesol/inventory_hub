@@ -269,9 +269,14 @@ def inspect(data):
                 remote_requests=0, remote_write_performed=False)
 
 
-async def get(db, campaign_id, family_key):
+async def get(db, campaign_id, family_key, *, include_evidence=False):
     await db.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'))
-    return inspect(await _snapshot(db, campaign_id, family_key))
+    data = await _snapshot(db, campaign_id, family_key)
+    result = inspect(data)
+    if include_evidence:
+        from inventory_hub.services.atomer_catalog_job_evidence import build
+        result['evidence'] = build(data)
+    return result
 
 
 async def receipt(db, request_id):

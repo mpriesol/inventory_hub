@@ -17,6 +17,62 @@ or a replan does not receive a positive withdrawal classification.
 It makes no remote request and does not call recovery helpers that update
 journals. The response omits full source documents and stored review text.
 
+### Optional retained-history diagnostics
+
+Append `&include_evidence=true` to the same GET to inspect the captured evidence
+for that exact campaign and family. Authorization, `Cache-Control: no-store`,
+the read-only repeatable-read transaction and the original summary are unchanged.
+The helper projects the single existing snapshot; it issues no additional query,
+native request, recovery call or write. `snapshot_hash`, eligibility, blockers,
+withdrawal and replan still use the original control contract.
+
+`evidence` contains the full captured-snapshot manifest and typed projections of
+the campaign, current head, job, saved guards, current sibling reviews, catalog
+proofs, source-card receipts and allocation/audit query results. Every record has
+a `canonical` manifest (`sha256`, UTF-8 `bytes`, JSON `type`) and projected
+`fields`. The encoding is explicitly sorted-key, compact canonical JSON, not
+PostgreSQL's JSONB text or original wire bytes. The captured snapshot digest is
+the existing `snapshot_hash`; the older allocation-audit `row_hash` remains its
+explicitly labeled PostgreSQL MD5 projection.
+
+The projection preserves SQL NULL versus JSON `null` for the job document,
+attempt/control counters, dispatch flags, content/related intents, native IDs,
+card IDs, link IDs and previous receipts/documents. Created and reused source
+receipts, nested `creation_evidence` and `source_card` history remain distinct;
+none of these alone proves an absence of past enrichment or native writes.
+Known source visibility fields and barcode-correction/sentinel identities are
+typed too. Free review/error/contact text, URLs, connection fingerprints and
+general campaign configuration values are redacted to exact manifests.
+Uninterpreted native content bodies produce an explicit hold, even though their
+complete captured bytes are hashed. Unknown fields never pass through: their
+key and value have separate canonical manifests, with a hashed key segment in
+the diagnostic path so a credential placed in a field name cannot leak.
+
+The scope lists every saved and current row, including excluded, blocked and
+done siblings, historical `previous_guards`, and retained proof/source-card
+codes. Native parent/variant and card references retain their exact paths and
+types. `source_allocation_query` labels the unchanged query's precise
+`current_family_codes_only` scope and lists any historical union codes it did
+not cover. That gap is an explicit hold; the GET does not silently broaden the
+withdrawal query or claim missing allocation history was inspected.
+
+The projection admits at most 500 entries per collection, a 500-code family
+union, 5 MB of canonical input and 5 MB of output, with bounded nesting, node and
+problem counts. A proof/source query returning its 501st sentinel is explicitly
+incomplete; its hash describes only the captured selection, not every database
+row. Oversize projections are omitted under a hold instead of returning a
+truncated clean result. Missing/unknown/malformed schema fields include a path,
+type and manifest; their values are not exposed.
+
+`complete: true` / `review_state: typed_snapshot` means only that the captured
+lifecycle projection is understood and fits these limits. Configuration and
+free-text manifests remain intentionally redacted. This is **not** a complete
+historical event log, a native readback, a settlement certificate or new mutation
+permission. `historical_native_effects` remains `not_determined` in every case.
+Overwritten older rows cannot be reconstructed by this endpoint. Jobs with
+earlier effects continue to fail the original unsent-withdrawal checks; a future
+audited handoff requires a separate reviewed contract and concrete evidence.
+
 Eligibility requires the exact current source/run and every sibling review
 revision to agree with the saved guards. In the original `unsent_pending`
 class, the job must be `pending`, its document must be absent, and the complete

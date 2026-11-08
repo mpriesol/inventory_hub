@@ -1,5 +1,17 @@
 # Inventory Hub — prehľad projektu
 
+## Čítací detail dôkazov jednej úlohy Atomeru (8. 11. 2026)
+
+[Riadiaci GET jednej úlohy](docs/atomer-catalog-job-control.md#optional-retained-history-diagnostics)
+prijíma voliteľné `include_evidence=true`. V tom istom čítacom snímku ukáže
+typované pôvodné a aktuálne review, potvrdenia kariet, natívne zámery, identity
+a presný rozsah kontroly historickej alokácie. Voľný text a konfiguračné hodnoty
+zastúpia hashe; neznáma štruktúra alebo prekročený limit zostane výslovne neúplný.
+Pôvodné rozhodovanie o odobratí úlohy, hash, zámky a CAS sa nemenia. Detail
+nepotvrdzuje neprítomnosť minulých natívnych účinkov ani dokončenú migráciu.
+Bez ďalších databázových dotazov, SQL migrácie, vzdialeného volania, obnovy
+žiurnálu alebo aktivácie skladu; overené synteticky na izolovanej databáze.
+
 ## Odovzdanie nezačatého prepojenia Atomeru na ručné spracovanie (8. 11. 2026)
 
 [Riadenie jednej úlohy](docs/atomer-catalog-job-control.md#existing-targets-awaiting-their-first-reconciliation)
