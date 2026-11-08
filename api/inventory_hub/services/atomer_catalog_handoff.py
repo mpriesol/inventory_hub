@@ -31,11 +31,15 @@ LOCAL_KEYS = {'status', 'reason', 'card_id', 'hub_sku', 'ean', 'gtins', 'source_
     'created', 'action', 'gtin_added', 'barcode_evidence', 'cached_native_target', 'source_card_input',
     'verification_scope', 'source_card', 'creation_evidence', 'xtrek', 'biketrek'}
 READY_FIELDS = {'status', 'card_id', 'hub_sku', 'ean', 'gtins', 'source_native_id', 'source_ean', 'created', 'action'}
+PROOF_ENCODING = 'python-json-default-separators-ensure-ascii-false-utf8'
 
 
-def _proof_hash(value):
-    if len(json.dumps(value, ensure_ascii=False).encode()) > controls.MAX_BYTES:
-        raise ReviewError('catalog_handoff_scope_limit')
+def _proof_hash(value, *, section='retained_proof'):
+    size = len(json.dumps(value, ensure_ascii=False).encode())
+    if size > controls.MAX_BYTES:
+        raise scope_inventory.ScopeLimit('proof_bytes', section, size, controls.MAX_BYTES, encoding=PROOF_ENCODING,
+            section_sizes={key: len(json.dumps(value[key], ensure_ascii=False).encode())
+                           for key in ('retained', 'identities', 'current_writers') if key in value})
     return controls._digest(value)
 
 
@@ -186,20 +190,22 @@ def inspect(data):
 async def _capture(db, campaign_id, family_key, columns, *, lock=False):
     data = await controls._snapshot(db, campaign_id, family_key, lock=lock, allocations=False)
     own = inspect(data)
+    _retained_limits(data, own)
     codes = own['scope_codes']
     # Replace the old read-only control's current-family-only allocation query
     # with the entire saved/current/proof/source union, including renamed cards.
     data['source_allocations'] = await scope_inventory.rows(db, '''SELECT id,sku,created_from_source FROM products
         WHERE created_from_source='atomer' AND lower(sku)=ANY(CAST(:codes AS text[])) ORDER BY id''',
-        codes=sorted({code.casefold() for code in codes}))
+        section='source_allocations', codes=sorted({code.casefold() for code in codes}))
     data['source_allocation_audits'] = await scope_inventory.rows(db, '''SELECT a.id,a.product_id,
         a.before_data->>'sku' AS before_sku,a.after_data->>'sku' AS after_sku,md5(to_jsonb(a)::text) AS row_hash
         FROM product_editor_audit a JOIN products p ON p.id=a.product_id
         WHERE p.created_from_source='atomer' AND (lower(a.before_data->>'sku')=ANY(CAST(:codes AS text[]))
              OR lower(a.after_data->>'sku')=ANY(CAST(:codes AS text[]))) ORDER BY a.id''',
-        codes=sorted({code.casefold() for code in codes}))
+        section='source_allocation_audits', codes=sorted({code.casefold() for code in codes}))
     data = controls._plain(data)
     own = inspect(data)
+    _retained_limits(data, own)
     result = dict(schema=VERSION, campaign_id=campaign_id, family_key=family_key,
         stage=data['job']['stage'], operator_paused=data['campaign']['operator_paused'],
         job_revision=data['job']['operator_control_revision'], **own,
@@ -219,14 +225,34 @@ async def _capture(db, campaign_id, family_key, columns, *, lock=False):
         row_hash = await db.scalar(text('''SELECT encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex')
             FROM atomer_catalog_jobs t WHERE campaign=:c AND family_key=:f'''), dict(c=campaign_id, f=family_key))
         candidate = dict(row_identity=dict(campaign=campaign_id, family_key=family_key), row_hash=row_hash,
-            proof_hash=_proof_hash(proof))
+            proof_hash=_proof_hash(proof, section='candidate_proof'))
         writers = await scope_inventory.writers(db, columns, scope, identities, candidate)
         proof['current_writers'] = {k: v for k, v in writers.items() if k != 'diagnostics'}
         result.update(complete=writers['complete'], eligible=writers['complete'] and not writers['blockers'],
             blockers=writers['blockers'], writer_inventory=writers,
             retained_card_ids=sorted(scope.hubs), mapping_count=len(identities['mappings']))
-    result['snapshot_hash'] = _proof_hash(proof)
+    result['snapshot_hash'] = _proof_hash(proof, section='final_proof' if 'current_writers' in proof else 'retained_proof')
     return data, result, proof
+
+
+def _retained_limits(data, own):
+    """Keep inspect's existing bounds, with no applicable hash on a limit."""
+    if 'catalog_handoff_scope_limit' not in own['blockers']:
+        return
+    size = len(own['scope_codes'])
+    if not size:
+        raise scope_inventory.ScopeLimit('empty_family_scope', 'scope_codes', 0, 1, encoding='minimum_members')
+    for section in ('proofs', 'source_cards'):
+        if len(data[section]) > controls.MAX_LEAVES:
+            raise scope_inventory.ScopeLimit('retained_rows', section, len(data[section]), controls.MAX_LEAVES,
+                encoding='rows', count_is_exact=False)
+    if size > controls.MAX_LEAVES:
+        raise scope_inventory.ScopeLimit('family_scope_rows', 'scope_codes', size, controls.MAX_LEAVES, encoding='members')
+    raise scope_inventory.ScopeLimit('retained_snapshot_bytes', 'retained',
+        len(json.dumps(data, ensure_ascii=False).encode()), controls.MAX_BYTES, encoding=PROOF_ENCODING,
+        section_sizes={key: len(json.dumps(data[key], ensure_ascii=False).encode())
+                       for key in ('campaign', 'job', 'head', 'group', 'rows', 'proofs', 'source_cards',
+                                   'source_allocations', 'source_allocation_audits')})
 
 
 async def get(db, campaign_id, family_key):
@@ -236,6 +262,14 @@ async def get(db, campaign_id, family_key):
             columns = await scope_inventory.schema(db)
             _, result, _ = await _capture(db, campaign_id, family_key, columns)
         return result
+    except scope_inventory.ScopeLimit as error:
+        # End the read-only snapshot. Diagnostic measurements are not a
+        # confirmation proof, and must never freeze an applicable review.
+        await db.rollback()
+        return dict(schema=VERSION, campaign_id=campaign_id, family_key=family_key, eligible=False,
+            complete=False, snapshot_hash=None, blockers=[error.blocker],
+            historical_native_effects='not_determined', source_publication_completed=False,
+            content_publication_completed=False, remote_requests=0, remote_write_performed=False)
     except scan.InventoryTimeout as error:
         # The scanner already rolled back. Never issue a later query/read from
         # an expired ORM object and never supply an applicable confirmation hash.

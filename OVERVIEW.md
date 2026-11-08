@@ -15,6 +15,14 @@ rodín sú samostatné; publikovanie zostáva nedokončené a pôvodné čiasto�
 sa nemenia na overené. Implementácia má syntetické PostgreSQL testy; živé
 odovzdanie, následná konsolidácia a overenie nasadenia sú samostatné kroky.
 
+[Diagnostika limitov handoffu](docs/atomer-catalog-handoff.md#scope-limit-diagnostics)
+rozlišuje úplný počet vybraných riadkov, veľkosť konkrétnej časti, rozšírenie
+identít a počet iterácií. Čítací GET pri prekročení limitu vráti neúplný,
+neprípustný výsledok s nulovým potvrdzovacím hashom a meraním bez obsahu
+zdrojových dát. Úplný počet identity/alokačného výberu overí ešte pred načítaním
+jeho obmedzeného tela. Limity, rozsah vlastníkov a natívnych súrodencov, zámky,
+potvrdzovaný dôkaz aj vrátenie neúspešného POSTu zostávajú zachované.
+
 ## Čítací detail dôkazov jednej úlohy Atomeru (8. 11. 2026)
 
 [Riadiaci GET jednej úlohy](docs/atomer-catalog-job-control.md#optional-retained-history-diagnostics)

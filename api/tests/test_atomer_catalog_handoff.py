@@ -35,6 +35,39 @@ def request(**changes):
 
 
 class HandoffContractTests(unittest.TestCase):
+    def test_proof_limit_diagnostics_are_sanitized_and_do_not_change_admitted_hashes(self):
+        proof = dict(version=service.VERSION, retained={'text': 'Never expose this private value. ' * 20},
+                     identities={'tokens': ['žltá']}, current_writers={'manifest': 'a' * 64})
+        self.assertEqual(service._proof_hash(proof), controls._digest(proof))
+        for section in ('retained_proof', 'candidate_proof', 'final_proof'):
+            with self.subTest(section=section), patch.object(controls, 'MAX_BYTES', 100):
+                with self.assertRaises(service.scope_inventory.ScopeLimit) as raised:
+                    service._proof_hash(proof, section=section)
+                blocker = raised.exception.blocker
+                self.assertEqual((blocker['reason'], blocker['section'], blocker['limit']), ('proof_bytes', section, 100))
+                self.assertEqual(blocker['observed'], len(json.dumps(proof, ensure_ascii=False).encode()))
+                self.assertEqual(blocker['encoding'], service.PROOF_ENCODING)
+                self.assertEqual(set(blocker['section_sizes']), {'retained', 'identities', 'current_writers'})
+                self.assertNotIn('Never expose', json.dumps(blocker))
+                self.assertNotIn('žltá', json.dumps(blocker, ensure_ascii=False))
+
+    def test_retained_sentinel_and_closure_set_limits_do_not_claim_complete_counts(self):
+        data = dict(proofs=[{}] * 501, source_cards=[])
+        own = dict(blockers=['catalog_handoff_scope_limit'], scope_codes=['a'])
+        with self.assertRaises(service.scope_inventory.ScopeLimit) as raised:
+            service._retained_limits(data, own)
+        self.assertEqual(raised.exception.blocker, dict(code='catalog_handoff_scope_limit', reason='retained_rows',
+            section='proofs', observed=501, limit=500, encoding='rows', count_is_exact=False))
+        async def expand():
+            with patch.object(service.scope_inventory, 'seed', return_value=(set(), {'token-' + str(i) for i in range(5001)}, set(), [], set())):
+                await service.scope_inventory.closure(None, {}, [])
+        with self.assertRaises(service.scope_inventory.ScopeLimit) as raised:
+            asyncio.run(expand())
+        self.assertEqual(raised.exception.blocker['reason'], 'closure_set')
+        self.assertEqual((raised.exception.blocker['section'], raised.exception.blocker['observed'],
+                          raised.exception.blocker['iteration']), ('tokens', 5001, 1))
+        self.assertTrue(raised.exception.blocker['count_is_exact'])
+
     def test_explicit_full_scope_and_acknowledgements(self):
         body = request()
         self.assertEqual(service.HandoffRequest(**body).scope_codes, ['a', 'b'])
@@ -73,6 +106,34 @@ class HandoffContractTests(unittest.TestCase):
             invalid = client.post(base + 'handoff', json={**request(), 'scope_codes': ['a', 'a']},
                 headers={'Authorization': 'Bearer ' + token})
             self.assertEqual((invalid.status_code, invalid.headers['cache-control']), (422, 'no-store'))
+
+    def test_get_limit_is_a_nonapplicable_nostore_diagnostic_and_post_remains_conflict(self):
+        db = SimpleNamespace(execute=AsyncMock(), rollback=AsyncMock())
+        async def session():
+            yield db
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[get_session] = session
+        base = '/migration/atomer-progress/catalog-engine/campaigns/' + 'a' * 64 + '/jobs/'
+        token = 'synthetic-limit-' + 'x' * 32
+        headers = {'Authorization': 'Bearer ' + token}
+        limit = service.scope_inventory.ScopeLimit('selection_rows', 'mappings', 6001, 5000, encoding='rows', iteration=3)
+        with patch.object(settings, 'AI_CONTENT_ACCESS_TOKEN', SecretStr(token)), TestClient(app) as client:
+            with patch.object(service.scope_inventory, 'schema', AsyncMock(return_value={})), \
+                    patch.object(service, '_capture', AsyncMock(side_effect=limit)):
+                response = client.get(base + 'handoff-control?family=v:P', headers=headers)
+            self.assertEqual((response.status_code, response.headers['cache-control']), (200, 'no-store'))
+            result = response.json()
+            self.assertFalse(result['eligible'])
+            self.assertFalse(result['complete'])
+            self.assertIsNone(result['snapshot_hash'])
+            self.assertEqual(result['blockers'], [limit.blocker])
+            db.rollback.assert_awaited_once()
+            self.assertIn('REPEATABLE READ READ ONLY', str(db.execute.await_args.args[0]))
+            with patch.object(service, 'change', AsyncMock(side_effect=limit)):
+                response = client.post(base + 'handoff', json=request(), headers=headers)
+            self.assertEqual((response.status_code, response.headers['cache-control']), (409, 'no-store'))
+            self.assertEqual(response.json(), {'detail': {'code': 'catalog_handoff_scope_limit'}})
 
 
 @unittest.skipUnless(fixture.TEST_URL, 'Requires dedicated localhost *_catalog_test database')
@@ -152,6 +213,89 @@ class HandoffDatabaseTests(unittest.IsolatedAsyncioTestCase):
             return {table: await db.scalar(text(f"""SELECT encode(sha256(convert_to(coalesce(
                 string_agg(to_jsonb(t)::text,E'\\n' ORDER BY to_jsonb(t)::text),''),'UTF8')),'hex') FROM {table} t"""))
                 for table in tables}
+
+    async def test_full_mapping_census_returns_exact_readonly_limit_and_post_rolls_back(self):
+        payload = await self.payload()
+        async with self.base.transaction() as db:
+            await db.execute(text("""WITH added AS (
+                INSERT INTO products(sku,name) SELECT 'synthetic-sibling-'||n,'Synthetic sibling'
+                FROM generate_series(1,5005) n RETURNING id,sku)
+                INSERT INTO shop_products(shop_id,product_id,external_product_id,
+                external_variant_id,external_code,parent_code,is_variant)
+                SELECT :s,id,'9001',(10000+id)::text,sku,'synthetic-parent',true FROM added"""),
+                {'s': self.base.shop_id})
+        protected = await self.protected()
+        async with self.sessions() as db:
+            original_job = await db.scalar(text('SELECT to_jsonb(t) FROM atomer_catalog_jobs t'))
+        current = await self.current()
+        self.assertFalse(current['eligible'])
+        self.assertFalse(current['complete'])
+        self.assertIsNone(current['snapshot_hash'])
+        self.assertEqual(current['blockers'], [dict(code='catalog_handoff_scope_limit', reason='selection_rows',
+            section='mappings', observed=5007, limit=5000, encoding='rows', count_is_exact=True, iteration=2)])
+        self.assertEqual(current['remote_requests'], 0)
+        self.assertFalse(current['remote_write_performed'])
+        self.assertEqual(current['historical_native_effects'], 'not_determined')
+        # A separate row census must not materialize any over-bound payload.
+        async with self.sessions() as db:
+            with patch.object(db, 'execute', side_effect=AssertionError('over-bound body must not be fetched')):
+                with self.assertRaises(service.scope_inventory.ScopeLimit) as raised:
+                    await service.scope_inventory.rows(db, 'SELECT n FROM generate_series(1,9283) n', section='synthetic_census')
+                self.assertEqual(raised.exception.blocker['observed'], 9283)
+        with self.assertRaises(service.scope_inventory.ScopeLimit):
+            await self.change(payload)
+        self.assertEqual(await self.protected(), protected)
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT to_jsonb(t) FROM atomer_catalog_jobs t')), original_job)
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM atomer_catalog_job_controls')), 0)
+            self.assertTrue(await db.scalar(text('SELECT pg_try_advisory_xact_lock(:k)'), {'k': IDENTITY_WRITE_LOCK}))
+
+    async def test_full_product_body_byte_limit_is_sanitized_without_confirmation_hash(self):
+        marker = 'PRIVATE_SYNTHETIC_FEED_BODY_DO_NOT_EXPOSE'
+        async with self.base.transaction() as db:
+            await db.execute(text('UPDATE products SET supplier_feed_data=CAST(:d AS jsonb) WHERE id=:id'),
+                {'id': self.base.keeper, 'd': json.dumps({'description': marker * 500})})
+        payload = await self.payload()
+        protected = await self.protected()
+        with patch.object(service.scope_inventory, 'MAX_BYTES', 10000):
+            current = await self.current()
+            self.assertIsNone(current['snapshot_hash'])
+            self.assertFalse(current['eligible'])
+            self.assertFalse(current['complete'])
+            blocker = current['blockers'][0]
+            self.assertEqual((blocker['reason'], blocker['section'], blocker['iteration']), ('selection_bytes', 'products', 1))
+            self.assertGreater(blocker['observed'], blocker['limit'])
+            self.assertGreater(blocker['largest_row_bytes'], 10000)
+            self.assertEqual(blocker['encoding'], service.scope_inventory.ROW_ENCODING)
+            self.assertNotIn(marker, json.dumps(current))
+            with self.assertRaises(service.scope_inventory.ScopeLimit):
+                await self.change(payload)
+        self.assertEqual(await self.protected(), protected)
+        self.assertEqual((await self.current())['snapshot_hash'], payload.expected_snapshot_hash)
+
+    async def test_iteration_and_combined_identity_limits_are_distinct_readonly_holds(self):
+        before = await self.current()
+        protected = await self.protected()
+        with patch.object(service.scope_inventory, 'MAX_ITERATIONS', 1):
+            current = await self.current()
+        self.assertIsNone(current['snapshot_hash'])
+        self.assertEqual(current['blockers'][0]['reason'], 'closure_iterations')
+        self.assertEqual(current['blockers'][0]['section'], 'fixed_point')
+        self.assertEqual(current['blockers'][0]['iteration'], 1)
+        async with self.sessions() as db:
+            data = await controls._snapshot(db, self.campaign, 'v:P')
+            _, identity = await service.scope_inventory.closure(db, data, before['scope_codes'])
+        body_max = max(len(json.dumps([{'data': row} for row in identity[key]]).encode())
+                       for key in ('products', 'identifiers', 'sku_identities', 'mappings', 'aliases'))
+        self.assertGreater(len(json.dumps(identity).encode()), body_max + 1)
+        with patch.object(service.scope_inventory, 'MAX_BYTES', body_max + 1):
+            current = await self.current()
+        self.assertIsNone(current['snapshot_hash'])
+        self.assertFalse(current['eligible'])
+        self.assertEqual(current['blockers'][0]['reason'], 'identity_snapshot_bytes')
+        self.assertEqual(set(current['blockers'][0]['section_sizes']), set(identity))
+        self.assertEqual(await self.protected(), protected)
+        self.assertEqual((await self.current())['snapshot_hash'], before['snapshot_hash'])
 
     async def test_retained_local_effects_repeatable_read_exact_replay_and_immutable_history(self):
         protected = await self.protected()
