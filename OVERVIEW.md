@@ -1,5 +1,31 @@
 # Inventory Hub — prehľad projektu
 
+## Dodávateľský dôkaz identity zachovanej karty (8. 11. 2026)
+
+[Konsolidácia](docs/product-consolidation.md#keeper-identified-by-one-linked-supplier-offer)
+prijíma výslovné `use_keeper_supplier_gtin=true`, ak zachovaná karta ešte nemá
+registrovaný EAN. Presná jediná aktívna dodávateľská väzba, článok výrobcu,
+overený GTIN na vybranej druhej karte a čerstvé natívne identity musia dokazovať
+ten istý kompletný variant. Pôvodné identifikátory sa nemenia ani nepresúvajú;
+po úspešnej konsolidácii ich sprístupní existujúci kanonický alias. Náhľad
+zobrazuje úplný typovaný dôkaz s pôvodnými osami a hashmi podkladov. Iba v tejto
+overenej vetve sa veľkosti XXXL/3XL porovnajú ako rovnaké; ostatné osi a bežný
+normalizér sa nemenia. Súbežné zmeny zdroja náhľad zneplatnia alebo vrátia
+obsadený vstup. Parser v5 kontroluje aj uložený nový dôkaz. Bez SQL migrácie,
+zmeny cien, skladovej autority či histórie; živé dokončenie sa overuje osobitne.
+
+## Pôvodné identity a konflikty v reporte Atomeru (8. 11. 2026)
+
+[Kontrola rozsahu konsolidácie](docs/product-consolidation.md#typed-catalog-dependency-scope)
+číta historické EAN z Atomeru ako pôvodné auditné identity. Zachová aj neplatný
+token a preverí každý platný člen zloženého zápisu; checksum neopravuje a z
+textu nevytvára nové EAN. Známe navigačné URL uložených potvrdení nemenia ich
+kontrolu vlastníctva. Výslovne zaznamenaný rozdiel druhu zdroja a natívneho
+produktu zachová obe identity aj možné zásahy do rodiča; konflikt tým nie je
+vyriešený. Neznámy tvar zostáva blokovaný. Syntetické testy overujú pôvodné
+reporty, potvrdenie, opakovanie a zmenu podkladov bez zmeny skladu či histórie.
+Bez nových dotazov, SQL migrácie, aktivácie úloh alebo natívnych zápisov.
+
 ## Opakované podklady konsolidácie (8. 11. 2026)
 
 [Kontrola závislostí konsolidácie](docs/product-consolidation.md) opakovane používa
@@ -11,7 +37,7 @@ identitu, skladové kontroly ani históriu. Nová migrácia či konfigurácia ni
 potrebná; starší nepotvrdený náhľad treba vytvoriť nanovo. Implementácia a
 syntetické kontroly samy nepotvrdzujú dokončenie živej konsolidácie.
 
-Parser `typed-catalog-scope-v4` overuje aj
+Parser `typed-catalog-scope-v5` overuje aj
 [výslovne nahradené prípravy AI a známe historické schémy](docs/product-consolidation-ai-lineage.md).
 Nahradenie musí dokazovať úplná aktuálna príprava, nové väzby a nezmenené
 pôvodné identity; publikácie a všetky súčasné riadky zostávajú kontrolované.
@@ -40,6 +66,18 @@ ich do úplného hashu. Každá neprázdna, neznáma či neplatná hodnota zost�
 blokovaná. Existujúci zámok produktu a ochranný databázový trigger bránia
 súbežnému zápisu do vyradenej karty; zmena podkladov zneplatní náhľad.
 Bez novej migrácie, mazania histórie alebo zmeny skladových množstiev.
+
+## Pôvodné a aktuálne identity importu (8. 11. 2026)
+
+[Kontrola katalógových podkladov](docs/product-consolidation.md#typed-catalog-dependency-scope)
+rozpoznáva presný obrázkový objekt variantu zo známeho importéra. Pri zmene
+uloženého hashu kontroluje celý pôvodný náhľad aj aktuálnu prípravu importu,
+vrátane oboch sád kódov, GTIN a vlastníkov Hub kariet. Starší formát bez mapy
+uložených vlastníkov používa existujúcu väzbu cez aktuálny riadok prípravy.
+Chýbajúca identita alebo neznámy formát zostáva blokovaný; neistý import sa tým
+nepovažuje za dokončený. Produkčné kontroly publikácie zostávajú nezmenené
+a zmena ktoréhokoľvek podkladu zneplatní náhľad konsolidácie. Bez novej migrácie
+alebo vzdialeného zápisu; dokončenie konkrétnych živých operácií sa overuje osobitne.
 
 ## Výslovne skontrolovaná obnova bežných väzieb (7. 11. 2026)
 

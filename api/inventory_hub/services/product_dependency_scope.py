@@ -17,7 +17,7 @@ from inventory_hub.product_import_types import ImportValues
 from inventory_hub.services.product_identity import barcode_keys, verified_barcodes
 
 
-VERSION = 'typed-catalog-scope-v4'
+VERSION = 'typed-catalog-scope-v5'
 MAX_ITEMS = 20000
 MAX_NODES = 400000
 MAX_MATCHES = 100
@@ -384,7 +384,13 @@ def payload(proof, value, namespace, path, *, parent_update=False, pid=None):
     seen = set()
     for i, child in enumerate(children):
         at = f'{path}/variants/{i}'
-        obj(child, fields, ('code',), at)
+        obj(child, fields | {'image'}, ('code',), at)
+        if 'image' in child:
+            # catalog_import.build_item emits one image reference per variant.
+            # It cannot carry arbitrary nested identity or update instructions.
+            image = obj(child['image'], {'url'}, ('url',), at + '/image')
+            if not isinstance(image['url'], str) or not image['url'].strip():
+                raise Unverified('invalid_variant_image_reference', at + '/image/url')
         leaf_code = code(child['code'], at + '/code')
         if leaf_code in seen:
             raise Unverified('duplicate_payload_leaf', at)
@@ -405,7 +411,33 @@ def consolidation(proof, raw, path='/document'):
     proof.hub(request.keeper_product_id, path + '/request/keeper_product_id')
     for pid in request.retired_product_ids:
         proof.hub(pid, path + '/request/retired_product_ids')
-    local = obj(document['local'], {'products', 'product_hash', 'identifiers', 'mappings', 'shops'}, ('products', 'mappings', 'shops'), path + '/local')
+    from inventory_hub.services import product_consolidation_supplier_identity as supplier_identity
+    enabled = request.use_keeper_supplier_gtin
+    allowed_local = {'products', 'product_hash', 'identifiers', 'mappings', 'shops'}
+    if enabled:
+        allowed_local.add(supplier_identity.LOCAL_KEY)
+    local = obj(document['local'], allowed_local, ('products', 'mappings', 'shops'), path + '/local')
+    if enabled:
+        identity = obj(document.get('identity'), {'verified_gtin_keys', 'physical_axes',
+            'same_complete_retail_unit_factor', supplier_identity.PROOF_KEY},
+            ('verified_gtin_keys', 'physical_axes', 'same_complete_retail_unit_factor', supplier_identity.PROOF_KEY),
+            path + '/identity')
+        try:
+            supplier_proof = supplier_identity.validate_frozen(document['request'], local, document['native'], identity)
+        except (KeyError, TypeError, ValueError, ValidationError, supplier_identity.links.LinkError):
+            raise Unverified('consolidation_supplier_proof_unverified', path + '/identity/' + supplier_identity.PROOF_KEY) from None
+        source = supplier_proof['source']
+        proof.supplier_pins.append({'supplier': source['supplier_code'], 'id': source['supplier_id'],
+                                   'path': path + '/identity/' + supplier_identity.PROOF_KEY + '/source'})
+        proof.eans(source['eans'], path + '/identity/' + supplier_identity.PROOF_KEY + '/source/eans')
+        if source['supplier_sku'].casefold() in proof.scope.aliases:
+            proof.hit(path + '/identity/' + supplier_identity.PROOF_KEY + '/source/supplier_sku',
+                      'supplier_sku', source['supplier_sku'])
+        for item in supplier_proof['registered_identifiers']:
+            proof.hub(item['product_id'], path + '/identity/' + supplier_identity.PROOF_KEY + '/registered_identifiers/product_id')
+            proof.eans([item['value']], path + '/identity/' + supplier_identity.PROOF_KEY + '/registered_identifiers/value')
+    elif supplier_identity.PROOF_KEY in (document.get('identity') or {}):
+        raise Unverified('consolidation_supplier_proof_without_optin', path + '/identity')
     from inventory_hub.services.product_consolidation import _plan
     try:
         if _plan(document['request'], local) != document['plan']:

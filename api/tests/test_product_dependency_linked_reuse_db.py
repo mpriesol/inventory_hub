@@ -202,3 +202,49 @@ class LinkedInputReuseDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(report['work']['reused_linked_bytes'], 256000000)
         self.assertTrue(any(row['classification'] == 'reference' for row in report['records']))
         self.assertEqual(before, await self.stock())
+
+    async def test_projected_headers_and_full_reads_have_identical_complete_proofs(self):
+        campaign = await self.families(4, 2, tail_reference=True)
+        async with self.transaction() as db:
+            await db.execute(text("""UPDATE atomer_catalog_campaigns SET
+                options=jsonb_build_object('synthetic_display',repeat('x',650000)),
+                selection=jsonb_build_object('barcode_corrections',
+                  jsonb_build_object('SYN-UNRELATED',jsonb_build_object('required_card_id',CAST(:pid AS bigint))))
+                WHERE id=:id"""), {'id': campaign, 'pid': self.retired})
+        original_rows = inventory.Closure.rows
+        async def full_rows(closure, *args, **kwargs):
+            kwargs.pop('header_projection', None)
+            return await original_rows(closure, *args, **kwargs)
+        with patch.object(inventory.Closure, 'rows', full_rows):
+            full = await self.current()
+        projected = await self.current()
+        self.assertEqual(self.logical(full), self.logical(projected))
+        self.assertTrue(projected['complete'])
+        self.assertEqual(projected['classification_counts']['atomer_catalog_jobs']['reference'], 2)
+        self.assertLess(projected['work']['linked_input_reuse']['retained_bytes'],
+                        full['work']['linked_input_reuse']['retained_bytes'])
+        self.assertEqual(projected['work']['charged_bytes'], full['work']['charged_bytes'])
+        self.assertEqual(projected['work']['reused_linked_bytes'], full['work']['reused_linked_bytes'])
+
+    async def test_projected_header_cache_never_supplies_a_full_row_caller(self):
+        campaign = await self.families(1, 1)
+        memo = ResolutionMemo(16000000, sort_keys=False)
+        budget = inventory.Budget(16000000, 64000000, 256000000, None, linked_reuse=memo)
+        async with self.transaction() as db:
+            await db.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'))
+            async def read(profile):
+                closure = inventory.Closure(db, budget=budget, page_rows=1, page_bytes=4000000,
+                    retained=0, max_linked_rows=20000)
+                rows = await closure.rows('atomer_campaign', 'atomer_catalog_campaigns',
+                    't.id=:id', {'id': campaign}, header_projection=profile)
+                return rows, closure.result()
+            projected, proof = await read('atomer-campaign-v1')
+            full, full_proof = await read(None)
+            self.assertEqual(proof, full_proof)
+            self.assertIn('options', full[0]['document'])
+            self.assertNotIn('options', projected[0]['document'])
+            self.assertEqual(projected, (await read('atomer-campaign-v1'))[0])
+            self.assertEqual(full, (await read(None))[0])
+            budget.max_row = projected[0]['bytes'] - 1
+            with self.assertRaisesRegex(scope.Unverified, 'database_document_limit'):
+                await read('atomer-campaign-v1')

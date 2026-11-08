@@ -20,6 +20,37 @@ TEXT_KEYS = {('product_import_drafts', 'id'), ('ai_content_jobs', 'id'),
     ('atomer_progress_items', 'code'), ('atomer_review_work', 'kind'), ('atomer_review_work', 'key')}
 
 
+# Only these two shared headers have a closed interpreter input contract. The
+# original complete row still supplies its hash/bytes to every logical edge.
+# In particular, selection is kept whole: barcode_corrections carries identity.
+HEADER_PROJECTIONS = {
+    'atomer-campaign-v1': ('atomer_campaign', 'atomer_catalog_campaigns',
+        ('id', 'state', 'checked_run_id', 'source_sha', 'admin_sha', 'selection')),
+    'atomer-current-run-v1': ('atomer_current_run', 'atomer_progress_runs',
+        ('id', 'source_sha256', 'admin_export_sha256')),
+}
+
+
+def header_fields(profile, role, table):
+    if profile is None:
+        return None
+    configured = HEADER_PROJECTIONS.get(profile) if isinstance(profile, str) else None
+    if configured is None or configured[:2] != (role, table):
+        raise s.Unverified('unknown_linked_header_projection', table)
+    return configured[2]
+
+
+def project_headers(rows, fields, *, cached=False):
+    result = []
+    for row in rows:
+        document = row.get('document')
+        if (not isinstance(document, dict) or not set(fields) <= document.keys()
+                or cached and set(document) != set(fields)):
+            raise s.Unverified('linked_header_projection_incomplete')
+        result.append({**row, 'document': {key: document[key] for key in fields}})
+    return result
+
+
 def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
 
@@ -236,11 +267,15 @@ class Closure:
         self.root = Manifest('linked-closure')
         self.edges = self.bytes = 0
 
-    async def rows(self, role, table, condition, params):
+    async def rows(self, role, table, condition, params, *, header_projection=None):
         if table not in KEYS:
             raise s.Unverified('unknown_inventory_table')
+        fields = header_fields(header_projection, role, table)
         memo = self.budget.linked_reuse
         key = (table, condition, s.digest(params))
+        if fields is not None:
+            # A full-row caller can never receive a projected cached body.
+            key += (header_projection,)
         # These facts are retained only with a complete successful selection,
         # inside this inspection's RR snapshot or apply's complete table fences.
         expected = memo.metadata(key) if memo is not None else None
@@ -261,6 +296,8 @@ class Closure:
         # hit into a miss; no serialized entry is held outside that allowance.
         result = memo.get(key) if memo is not None else None
         if result is not None:
+            if fields is not None:
+                result = project_headers(result, fields, cached=True)
             for row in result:
                 self.budget.check_time()
                 root.row(row)
@@ -279,6 +316,8 @@ class Closure:
                 result.extend(page)
                 size = sum(row['bytes'] for row in page)
                 self.retained += size
+            if fields is not None:
+                result = project_headers(result, fields)
             # Only a complete selection may enter the per-inspection cache.
             # Fresh JSON decoding preserves the caller's mutation isolation.
             if memo is not None:

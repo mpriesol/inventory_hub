@@ -26,6 +26,15 @@ def body():
 
 
 class ProductConsolidationInputTests(unittest.TestCase):
+    def test_supplier_gtin_requires_a_strict_optin_without_client_exemption_fields(self):
+        for value in (1, 0, 'true', 'false', None):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                ProductConsolidationPreviewRequest(**{**body(), 'use_keeper_supplier_gtin': value})
+        self.assertFalse(ProductConsolidationPreviewRequest(**body()).use_keeper_supplier_gtin)
+        for key in ('supplier_gtin_proof', 'verified_gtin_keys', 'ignore_barcode_owner', 'ignore_axes'):
+            with self.subTest(key=key), self.assertRaises(ValidationError):
+                ProductConsolidationPreviewRequest(**{**body(), key: True})
+
     def test_unverified_claim_retirement_is_explicit_and_cannot_supply_old_identity_or_target(self):
         request = body()
         request['additional_sales'] = []

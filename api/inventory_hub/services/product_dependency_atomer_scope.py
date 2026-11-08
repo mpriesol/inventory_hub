@@ -1,12 +1,17 @@
 """Read the selected Atomer leaves and actual current-family write anchors."""
+import re
+
 from inventory_hub.services import product_dependency_scope as s
+from inventory_hub.services.identifiers import ProductIdentifierService
+from inventory_hub.services.product_link_source import _url
 
 
 DOCUMENT = set('payload availability flags related missing_related seo_keywords ambiguous_source_references missing_source_references variant_axis_origins missing_categories admin_price_changes title_from_code barcode_corrections source_barcode_placeholders description_sources manufacturer_origin source_manufacturer_hint unspecified_weights source_parent_barcode shipping_weight_rounding partial_vat new_parent_only source_bonus_points missing_source_features variant_main_origin source_family_codes deferred_leaves source_duplicate_ids source_parent_code_alias parent_vat_from_leaves managed_label_ids issues vat_create_only extension extension_plan remaining_create_variants'.split())
 RECEIPT = set('dispatched ack status issues deferred identity_verified verified_fields product_id variants cards content_requested content_result content_codes content_anchors content_attempts content_intent related_intent catalog_deferred rollover previous_stage previous_guards previous_receipt previous_document adopt_content reexpand rebuild_after_observation isolate isolate_phase tranche_verified remaining_content'.split())
 EVIDENCE = set('status reason card_id hub_sku xtrek biketrek ean scope source_state verification_scope content_pending content_product_id card_action biketrek_check barcode_evidence source_card'.split())
 DETAIL = set('code card_state family_key variant_label family_title family_name shop_url shop_admin_url kind state parent name ean hub_id hub_sku candidates target_code target_parent target_ean product_id variant_id match reasons bike_state bike source_state'.split())
-NATIVE = {'product_id', 'variant_id', 'code', 'parent', 'link_id'}
+NAVIGATION = ('shop_url', 'shop_admin_url')
+NATIVE = {'product_id', 'variant_id', 'code', 'parent', 'link_id'} | set(NAVIGATION)
 REVIEW_SCOPES = ('default', 'both', 'xtrek', 'biketrek')
 
 
@@ -81,11 +86,40 @@ def _native_summary(proof, value, path, rows, *, variants_key='variants'):
                           path + '/' + variants_key + '/' + code)
 
 
-def _barcode_correction(proof, value, path, *, saved=False):
+def _barcodes(proof, value, path, *, source_code):
+    """Audit the original scalar, without promoting a legacy token to a GTIN.
+
+    Progress reports preserve raw source/target barcodes even when the card
+    writer rejects them. Use its shared splitter, never a digit-extraction
+    regex; an unsupported separator cannot hide a possible compound member.
+    """
+    s.code(value, path, blank=True)
+    if not value:
+        return
+    parts = ProductIdentifierService.split_compound_ean(value)
+    if not parts or len(parts) > 50:
+        raise s.Unverified('atomer_barcode_tokens_unverified', path)
+    tokens = [token for token, _ in parts]
+    repeats_sku = (value == source_code and re.fullmatch(r'[A-Za-z0-9_.-]+', value)
+                   and any(char.isalpha() for char in value))
+    if not repeats_sku and any(re.fullmatch(r'[A-Za-z0-9]+', token) is None for token in tokens):
+        raise s.Unverified('atomer_barcode_tokens_unverified', path)
+    for token in dict.fromkeys([value, *tokens]):
+        if token.casefold() in proof.scope.aliases or token.casefold() in proof.scope.skus:
+            proof.hit(path, 'atomer_raw_barcode', token)
+    valid = list(s.verified_barcodes(tokens))
+    proof.eans(valid, path)
+    if tokens != valid or len(tokens) != 1 or value != tokens[0]:
+        proof.context(path, 'audited_atomer_raw_barcode_tokens')
+
+
+def _barcode_correction(proof, value, path, *, source_code, saved=False):
     allowed = {'before', 'ean', 'parent', 'manufacturer_or_supplier', 'evidence', 'required_card_id', 'required_atomer_id'}
     s.obj(value, allowed | ({'type', 'native_id'} if saved else set()), path=path)
-    if value.get('ean'):
+    if value.get('ean') is not None:
         proof.eans([value['ean']], path + '/ean')
+    if value.get('before') is not None:
+        _barcodes(proof, value['before'], path + '/before', source_code=source_code)
     proof.hub(value.get('required_card_id'), path + '/required_card_id')
 
 
@@ -98,6 +132,11 @@ def _selected_code(proof, value, path):
 
 def _native(proof, value, namespace, path, *, card_id, claims, parent_effect=False):
     s.obj(value, NATIVE, ('product_id', 'code'), path)
+    for key in NAVIGATION:
+        if value.get(key) is not None:
+            if _url(value[key]) != value[key]:
+                raise s.Unverified('atomer_navigation_shape_unknown', path + '/' + key)
+            proof.context(path + '/' + key, 'known_shop_navigation_url')
     pid, vid = s.positive(value['product_id']), s.positive(value.get('variant_id'), nullable=True)
     proof.native_leaf(namespace, pid, vid, path)
     proof.leaf(value['code'], namespace, path + '/code')
@@ -116,6 +155,34 @@ def _native(proof, value, namespace, path, *, card_id, claims, parent_effect=Fal
             proof.parent_write(namespace, value['parent'], pid, path + '/parent')
     elif value.get('parent'):
         proof.context(path + '/parent', 'historical_other_shop_container_exact_leaf_owner_checked')
+
+
+def _native_kind(proof, detail, family_key, path):
+    """The report stores source kind and an independently observed target leaf.
+
+    A recorded kind_differs review is still a conflict for the migration
+    writer. Its exact native scope remains knowable, including parent writes.
+    """
+    pid = s.positive(detail['product_id'], path + '/product_id')
+    vid = s.positive(detail.get('variant_id'), path + '/variant_id', nullable=True)
+    if (detail['kind'] == 'variant') != (vid is not None):
+        parent = s.code(detail.get('parent'), path + '/parent', blank=True)
+        variant = bool(parent and parent != detail['code'])
+        expected = ('v:' + parent) if variant else ('s:' + detail['code'])
+        reasons = s.array(detail.get('reasons'), path + '/reasons', nonempty=True)
+        if (variant != (detail['kind'] == 'variant') or family_key != expected
+                or detail.get('state') != 'review' or 'kind_differs' not in reasons
+                or any(not isinstance(reason, str) for reason in reasons)):
+            raise s.Unverified('atomer_native_leaf_kind_changed', path)
+        s.code(detail.get('target_code'), path + '/target_code')
+        target_parent = detail.get('target_parent')
+        if (vid is not None and not target_parent or vid is None and target_parent not in (None, '')
+                or target_parent is not None and not isinstance(target_parent, str)):
+            raise s.Unverified('atomer_native_leaf_kind_changed', path)
+        if target_parent:
+            s.code(target_parent, path + '/target_parent')
+        proof.context(path, 'reported_atomer_source_native_kind_conflict')
+    return pid, vid
 
 
 def inspect(proof, raw, family, campaign, claims, head):
@@ -188,16 +255,18 @@ def inspect(proof, raw, family, campaign, claims, head):
         if detail.get('hub_sku'):
             proof.leaf(detail['hub_sku'], None, at + '/hub_sku', canonical=True)
         for key in ('ean', 'target_ean'):
-            if detail.get(key):
-                proof.eans([detail[key]], at + '/' + key)
+            if detail.get(key) is not None:
+                _barcodes(proof, detail[key], at + '/' + key, source_code=value)
         if detail.get('target_code'):
             proof.leaf(detail['target_code'], 'xtrek', at + '/target_code')
-        if detail.get('product_id'):
-            if (detail['kind'] == 'variant') != bool(detail.get('variant_id')):
-                raise s.Unverified('atomer_native_leaf_kind_changed', at)
-            proof.native_leaf('xtrek', detail['product_id'], detail.get('variant_id'), at)
+        if detail.get('product_id') is not None:
+            pid, vid = _native_kind(proof, detail, raw['family_key'], at)
+            proof.native_leaf('xtrek', pid, vid, at)
             if value in parent_codes or pending_parent and scopes[value] != 'biketrek':
                 proof.parent_write('xtrek', detail.get('target_parent') or detail.get('target_code'), detail['product_id'], at)
+        elif (detail.get('variant_id') is not None or detail.get('target_code') not in (None, '')
+              or detail.get('target_parent') not in (None, '')):
+            raise s.Unverified('atomer_native_leaf_incomplete', at)
         saved = cards.get(value)
         if saved is not None:
             s.obj(saved, {'state', 'evidence'}, ('state', 'evidence'), '/receipt/cards/' + value)
@@ -206,11 +275,11 @@ def inspect(proof, raw, family, campaign, claims, head):
                 raise s.Unverified('atomer_frozen_source_card_unverified', '/receipt/cards/' + value + '/evidence/source_card')
             if evidence.get('barcode_evidence') is not None:
                 _barcode_correction(proof, evidence['barcode_evidence'],
-                                    '/receipt/cards/' + value + '/evidence/barcode_evidence', saved=True)
+                                    '/receipt/cards/' + value + '/evidence/barcode_evidence', source_code=value, saved=True)
             card_id = s.positive(evidence.get('card_id'), nullable=True)
             proof.hub(card_id, '/receipt/cards/' + value + '/evidence/card_id')
-            if evidence.get('ean'):
-                proof.eans([evidence['ean']], '/receipt/cards/' + value + '/evidence/ean')
+            if evidence.get('ean') is not None:
+                _barcodes(proof, evidence['ean'], '/receipt/cards/' + value + '/evidence/ean', source_code=value)
             if evidence.get('hub_sku'):
                 proof.leaf(evidence['hub_sku'], None, '/receipt/cards/' + value + '/evidence/hub_sku', canonical=True)
             for namespace in ('biketrek', 'xtrek'):
@@ -274,4 +343,4 @@ def inspect(proof, raw, family, campaign, claims, head):
     for value in potential:
         correction = corrections.get(value)
         if correction is not None:
-            _barcode_correction(proof, correction, '/campaign/selection/barcode_corrections/' + value)
+            _barcode_correction(proof, correction, '/campaign/selection/barcode_corrections/' + value, source_code=value)

@@ -96,6 +96,57 @@ def observe(shop_codes):
     return records, manifests
 
 
+def _staging(proof, staging, sources, supplier, drafts, *, settled):
+    """Retain frozen intent and every current draft owner, including old previews.
+
+    A changed content hash prevents a fresh product POST in assert_snapshot;
+    it does not settle an old uncertain result. register_created may still
+    reconcile its frozen sources, using saved owners or the legacy draft lookup.
+    This proof models both scopes without changing either writer guard.
+    """
+    s.obj(staging, {'draft_id', 'hash', 'saved_product_ids', 'supplier_availability_expires_at',
+                   'supplier_availability_observed_at'}, ('draft_id', 'hash'), '/staging')
+    identifier, frozen_hash = staging['draft_id'], staging['hash']
+    if not isinstance(identifier, str) or not s.UUID32.fullmatch(identifier):
+        raise s.Unverified('journal_draft_link_unverified', '/staging/draft_id')
+    if (not isinstance(frozen_hash, str) or len(frozen_hash) != 64
+            or any(char not in '0123456789abcdef' for char in frozen_hash)):
+        raise s.Unverified('journal_draft_hash_unverified', '/staging/hash')
+    saved = s.obj(staging.get('saved_product_ids', {}), path='/staging/saved_product_ids')
+    if saved and set(saved) != {str(sid) for sid in sources}:
+        raise s.Unverified('journal_saved_source_ids_changed', '/staging/saved_product_ids')
+    for sid, pid in saved.items():
+        proof.hub(s.positive(pid, '/staging/saved_product_ids/' + sid), '/staging/saved_product_ids/' + sid)
+    linked = drafts.get(identifier)
+    if linked is None:
+        raise s.Unverified('journal_draft_missing', '/staging/draft_id')
+    if linked.get('id') != identifier or linked.get('supplier') != supplier:
+        raise s.Unverified('journal_draft_source_lineage_changed', '/staging/draft_id')
+    rows = s.draft(proof, linked, '/linked_draft/document')
+    proof.linked_drafts.add(identifier)
+    by_id = {row['id']: row for row in rows}
+    if not set(sources) <= set(by_id) or any(
+            source.feed_key != by_id[sid]['source'].get('feed_key', 'products')
+            for sid, source in sources.items()):
+        raise s.Unverified('journal_draft_source_lineage_changed', '/linked_draft/document/rows')
+    # All selected current owners must remain explicit, even when the frozen
+    # map names a different owner. s.draft above also retains current codes,
+    # GTINs, expected owners, AI baselines and every other row/publication.
+    for sid in sources:
+        pid = by_id[sid].get('hub_product_id')
+        if not pid:
+            raise s.Unverified('journal_saved_owner_changed', '/linked_draft/document/rows')
+    if not saved:
+        proof.context('/staging/saved_product_ids', 'legacy_current_draft_owner_lookup')
+    if not settled:
+        # Keep the old settled-journal cost: full row/file hashes already freeze
+        # its evidence; this extra content digest only explains an old intent.
+        from inventory_hub.services.product_import import content_hash
+        if (frozen_hash != linked['document'].get('saved_hash')
+                or frozen_hash != content_hash(linked['document'])):
+            proof.context('/staging/hash', 'changed_snapshot_retains_frozen_and_current_scope')
+
+
 def parse(proof, job, namespace, identifier, drafts):
     s.obj(job, {'preview', 'sources', 'target', 'prices_with_vat', 'supplier_availability', 'result',
                 'supplier_meta', 'staging', 'content_approval'}, ('preview', 'sources', 'result'), '/journal')
@@ -166,25 +217,5 @@ def parse(proof, job, namespace, identifier, drafts):
     settled = bool(states) and set(states) <= TERMINAL
     staging = job.get('staging')
     if staging:
-        s.obj(staging, {'draft_id', 'hash', 'saved_product_ids', 'supplier_availability_expires_at',
-                       'supplier_availability_observed_at'}, ('draft_id', 'hash'), '/staging')
-        saved = s.obj(staging.get('saved_product_ids', {}), path='/staging/saved_product_ids')
-        if saved and set(saved) != {str(sid) for sid in sources}:
-            raise s.Unverified('journal_saved_source_ids_changed', '/staging/saved_product_ids')
-        for sid, pid in saved.items():
-            proof.hub(pid, '/staging/saved_product_ids/' + sid)
-        linked = drafts.get(staging['draft_id'])
-        if linked is None:
-            raise s.Unverified('journal_draft_missing', '/staging/draft_id')
-        rows = s.draft(proof, linked, '/linked_draft/document')
-        proof.linked_drafts.add(staging['draft_id'])
-        if not settled:
-            from inventory_hub.services.product_import import content_hash
-            if (staging['hash'] != linked['document'].get('saved_hash')
-                    or staging['hash'] != content_hash(linked['document'])):
-                raise s.Unverified('journal_draft_snapshot_changed', '/staging/hash')
-            by_id = {row['id']: row for row in rows}
-            if not set(sources) <= set(by_id) or any(not saved.get(str(sid))
-                    or saved[str(sid)] != by_id[sid].get('hub_product_id') for sid in sources):
-                raise s.Unverified('journal_saved_owner_changed', '/staging/saved_product_ids')
+        _staging(proof, staging, sources, supplier, drafts, settled=settled)
     return settled
