@@ -1,5 +1,20 @@
 # Inventory Hub — prehľad projektu
 
+## Zlučovanie kariet priamo v produktoch (8. 11. 2026)
+
+Výber 2–10 kariet v **Sklad → Produkty** otvára akciu **Zlúčiť karty**.
+Operátor vyberie zachovanú kartu, skontroluje všetky väzby a doloží identitu
+rovnakej kompletnej predajnej jednotky. Čítací endpoint
+`GET /product-consolidations/selection` zahŕňa aj nezobrazené a neaktívne
+väzby; samotný náhľad a potvrdenie používajú existujúci
+[mechanizmus konsolidácie](docs/product-consolidation.md#operator-workflow-in-products).
+Prekážky zostávajú viditeľné a blokujú potvrdenie. Rozpracovaná operácia sa dá
+obnoviť po prerušení spojenia s rovnakým UUID a presným pôvodným požiadavkom.
+Ďalšie podporované zlúčenia nevyžadujú úpravu kódu ani samostatný PR.
+Skladové množstvá, ceny a história zostávajú zachované; bez novej SQL migrácie
+alebo konfigurácie. Implementáciu a syntetické testy treba odlišovať od
+overenia konkrétnych živých zlúčení a úspešného nasadenia.
+
 ## Dodávateľský dôkaz identity zachovanej karty (8. 11. 2026)
 
 [Konsolidácia](docs/product-consolidation.md#keeper-identified-by-one-linked-supplier-offer)

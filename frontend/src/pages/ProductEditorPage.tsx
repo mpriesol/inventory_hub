@@ -9,10 +9,12 @@ import { FifoPanel } from '../components/product/FifoPanel';
 import { StockAdjustmentPanel } from '../components/product/StockAdjustmentPanel';
 import { ProductPublicationPanel } from '../components/product/ProductPublicationPanel';
 import { ProductShopLinksPanel } from '../components/product/ProductShopLinksPanel';
+import { ProductConsolidationPanel } from '../components/product/ProductConsolidationPanel';
 import { ProductSupplierLinksPanel } from '../components/product/ProductSupplierLinksPanel';
 import { ProductCardCreateForm } from '../components/product/ProductCardCreateForm';
 import { SkuMigrationPreviewDialog } from '../components/product/SkuMigrationPreviewDialog';
 import { pendingProductLink, refreshProductLinkMetadata } from '../api/productLinks';
+import { pendingProductConsolidation } from '../api/productConsolidation';
 import { pendingSupplierLink } from '../api/supplierCardLinks';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { defaultWarehouseCode } from '../utils/warehouses';
@@ -92,6 +94,8 @@ export function ProductEditorPage() {
   const [detailTab, setDetailTab] = useState<'product' | 'audit' | 'fifo' | 'adjustment'>('product'), [detailError, setDetailError] = useState('');
   const [publication, setPublication] = useState<{ shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[] } | null>(null);
   const [linkingRows, setLinkingRows] = useState<ProductEditorRow[] | null>(null);
+  const [consolidatingRows, setConsolidatingRows] = useState<ProductEditorRow[] | null>(null);
+  const consolidationChanged = useRef(false);
   const [supplierLink, setSupplierLink] = useState<{ product?: ProductEditorRow; fillEans?: boolean } | null>(null);
   const [skuMigrationProduct, setSkuMigrationProduct] = useState<ProductEditorRow | null>(null);
   const [linkRefresh, setLinkRefresh] = useState<Record<string, { kind: 'info' | 'error'; message: string }>>({});
@@ -106,7 +110,7 @@ export function ProductEditorPage() {
   const locked = busy === 'save' || busy === 'recover' || uncertain;
   const filtersPending = !!loaded && JSON.stringify({ ...filters, page: 1 }) !== JSON.stringify({ ...loaded.filters, page: 1 });
   const selectedRows = filtersPending ? [] : shownRows.filter(row => selected.has(row.id));
-  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate || !!skuMigrationProduct, t('productEditor.leaveChanges'));
+  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate || !!skuMigrationProduct || !!consolidatingRows, t('productEditor.leaveChanges'));
   function remember(scroll = scrollRef.current?.scrollTop || 0) {
     if (loaded) try { sessionStorage.setItem(CONTEXT_KEY, JSON.stringify({ filters: loaded.filters, selected: [...selected], scroll })); } catch { /* Optional browser context. */ }
   }
@@ -115,6 +119,7 @@ export function ProductEditorPage() {
   function replaceDrafts(value: Drafts) { draftsRef.current = value; setDrafts(value); }
   function stage(value: Drafts) { if (Object.keys(value).length > 100) { setError('draft_limit'); return; } replaceDrafts(value); setSavedCount(0); }
   function reset() {
+    setConsolidatingRows(null); consolidationChanged.current = false;
     setSkuMigrationProduct(null);
     setShowCreate(false);
     resizing.current?.(); setCollapsedGroups(new Set());
@@ -172,6 +177,11 @@ export function ProductEditorPage() {
   function openLinks(rows: ProductEditorRow[]) {
     if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current || rows.length > 100) return;
     linksChanged.current = false; closeDetail(); setLinkingRows(rows.map(row => structuredClone(row)));
+  }
+  function openConsolidation(rows: ProductEditorRow[]) {
+    if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current ||
+        (rows.length ? rows.length < 2 || rows.length > 10 : !pendingProductConsolidation())) return;
+    consolidationChanged.current = false; closeDetail(); setConsolidatingRows(rows.map(row => structuredClone(row)));
   }
   function openSupplierLink(product?: ProductEditorRow, fillEans = false) {
     if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current) return;
@@ -508,6 +518,8 @@ export function ProductEditorPage() {
           <Button data-testid="save" size="sm" icon={<Save size={14} />} disabled={(!dirtyCount && !editing) || !!busy || uncertain} onClick={save}>{t('productEditor.save')}</Button>
           {(['biketrek', 'xtrek'] as const).map(shop => <Button key={shop} data-testid={`upload-${shop}`} variant="secondary" size="sm" icon={<Upload size={14} />} disabled={!selectedRows.length || dirtyCount > 0 || !!editing || locked || !!busy} title={t('productEditor.saveBeforeUpload')} onClick={() => setPublication({ shop, rows: selectedRows.map(row => structuredClone(row)) })}>{t('productEditor.uploadTo', { shop: shop === 'biketrek' ? 'BIKETREK' : 'xTrek' })}</Button>)}
           <Button data-testid="link-selected-products" variant="secondary" size="sm" icon={<Link2 size={14} />} disabled={!selectedRows.length || selectedRows.length > 100 || dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : t('productLinks.limit')} onClick={() => openLinks(selectedRows)}>{t('productEditor.linkSelected')}</Button>
+          <Button data-testid="merge-selected-products" variant="secondary" size="sm" disabled={selectedRows.length < 2 || selectedRows.length > 10 || dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : t('productConsolidation.selectionHelp')} onClick={() => openConsolidation(selectedRows)}>{t('productConsolidation.open')}</Button>
+          {pendingProductConsolidation() && <Button data-testid="resume-product-consolidation" variant="secondary" size="sm" disabled={dirtyCount > 0 || !!editing || locked || !!busy} onClick={() => openConsolidation([])}>{t('productConsolidation.resume')}</Button>}
           {pendingProductLink() && <Button data-testid="resume-product-links" variant="secondary" size="sm" disabled={dirtyCount > 0 || !!editing || locked || !!busy} onClick={() => openLinks([])}>{t('productLinks.resume')}</Button>}
           {pendingSupplierLink() && <Button data-testid="resume-supplier-link" variant="secondary" size="sm" disabled={dirtyCount > 0 || !!editing || locked || !!busy} onClick={() => openSupplierLink()}>{t('supplierLinks.resume')}</Button>}
         </div>
@@ -605,6 +617,9 @@ export function ProductEditorPage() {
       {publication && <ProductPublicationPanel shop={publication.shop} rows={publication.rows} onClose={() => { setPublication(null); load(loaded?.filters || filters); }} />}
       {linkingRows && <ProductShopLinksPanel rows={linkingRows} onChanged={() => { linksChanged.current = true; }} onClose={() => {
         setLinkingRows(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }
+      }} />}
+      {consolidatingRows && <ProductConsolidationPanel rows={consolidatingRows} onChanged={() => { consolidationChanged.current = true; }} onClose={() => {
+        setConsolidatingRows(null); if (consolidationChanged.current) { consolidationChanged.current = false; void load(loaded?.filters || filters); }
       }} />}
       {supplierLink && <ProductSupplierLinksPanel product={supplierLink.product} fillEans={supplierLink.fillEans} onChanged={() => { linksChanged.current = true; }} onClose={() => {
         setSupplierLink(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }

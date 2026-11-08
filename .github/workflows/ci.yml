@@ -175,6 +175,9 @@ jobs:
       - name: Existing product link interaction checks
         run: node frontend/tests/product-links-ui.cjs
 
+      - name: Product card consolidation and recovery interactions
+        run: node frontend/tests/product-consolidation-ui.cjs
+
       - name: Supplier card link interaction checks
         run: node frontend/tests/supplier-links-ui.cjs
 

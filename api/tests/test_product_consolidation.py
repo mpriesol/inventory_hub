@@ -136,7 +136,9 @@ class ProductConsolidationRouteTests(unittest.TestCase):
         self.requests = [('POST', '/product-consolidations/preview', body(), 'preview'),
             ('GET', '/product-consolidations/' + identifier, None, 'get'),
             ('POST', '/product-consolidations/' + identifier + '/apply',
-             {'preview_hash': 'a' * 64, 'confirmed': True}, 'apply')]
+             {'preview_hash': 'a' * 64, 'confirmed': True}, 'apply'),
+            ('POST', '/product-consolidations/' + identifier + '/discard',
+             {'preview_hash': 'a' * 64, 'confirmed': True}, 'discard')]
 
     def test_every_route_authenticates_before_db_or_source_and_never_caches(self):
         with ExitStack() as stack:
@@ -185,3 +187,33 @@ class ProductConsolidationRouteTests(unittest.TestCase):
                 'X-Hub-Request': '1', 'Sec-Fetch-Site': 'same-origin'})
             self.assertEqual(accepted.status_code, 200, accepted.text)
             self.assertEqual(operation.await_args.kwargs['actor'], {'user_id': 7})
+
+    def test_discard_requires_exact_hash_and_literal_confirmation(self):
+        _, path, data, _ = self.requests[3]
+        with patch.object(service, 'discard', AsyncMock()) as operation:
+            for invalid in ({'preview_hash': 'PRIVATE-HASH', 'confirmed': True},
+                            {'preview_hash': 'a' * 64, 'confirmed': False},
+                            {'preview_hash': 'a' * 64, 'confirmed': 1},
+                            {**data, 'keeper_product_id': 999}):
+                response = self.client.post(path, json=invalid, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                self.assertNotIn('PRIVATE-HASH', response.text)
+            operation.assert_not_awaited()
+
+    def test_cookie_discard_requires_shared_same_origin_protection(self):
+        _, path, data, _ = self.requests[3]
+        @self.app.middleware('http')
+        async def principal(request, call_next):
+            request.state.hub_user = {'id': 7, 'role': 'operator'}
+            request.state.hub_bearer = False
+            return await call_next(request)
+        with patch.object(service, 'discard', AsyncMock(return_value={'status': 'expired'})) as operation:
+            response = self.client.post(path, json=data)
+            self.assertEqual(response.status_code, 403)
+            operation.assert_not_awaited()
+            response = self.client.post(path, json=data, headers={'Origin': 'http://testserver',
+                'X-Hub-Request': '1', 'Sec-Fetch-Site': 'same-origin'})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['cache-control'], 'no-store')
+            operation.assert_awaited_once()

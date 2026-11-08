@@ -13,6 +13,57 @@ original IDs. They do not become a confirmed quantity of 5 on the surviving card
 Current stock still requires the existing separately confirmed opening or
 receiving workflow.
 
+## Operator workflow in Products
+
+The unified **Sklad → Produkty** editor exposes **Zlúčiť karty** for 2–10
+selected cards. Save or discard outstanding editor changes first. The dialog
+loads the complete current selection, shows each card's SKU, barcode and axes,
+and requires an explicit choice of the card to keep. Search and selection use
+the existing product editor; the dialog does not infer that similar names prove
+the same physical unit.
+
+Every existing mapping is shown, including unlisted mappings and mappings to
+inactive or unsupported shops. Complete native identities can prefill the
+unchanged keeper `retain` and duplicate `bind` actions. Missing IDs remain
+missing and require an explicit exact target; they are never derived from a
+title or SKU. Advanced mapping decisions reuse the existing reviewed absence
+and replacement contracts below. A shop or identity conflict remains visible
+and must pass the server's original checks.
+
+Enter the physical retail unit, the reason the cards describe that same unit,
+and primary-source HTTPS links. Confirm the physical identity and preservation
+of existing history, then prepare the preview. The preview displays the exact
+keeper, retired cards, mapping plan and dependency blockers. Applying requires
+an eligible preview and a separate final confirmation of that displayed plan.
+Editing a prepared review first explicitly expires that saved review; otherwise
+its pending dependency would block the replacement preview. The original
+request and audit remain stored. Closing the dialog instead retains the review
+for recovery.
+The optional keeper-invoice/receiving and supplier-GTIN proofs remain explicit
+opt-ins; opening the dialog does not activate them.
+
+The form keeps the original request UUID and exact preview/apply payload in
+this tab's session storage before submission. **Obnoviť zlúčenie** reopens that
+operation after closing the dialog or reloading. After a lost response, read
+the original result or retry exactly that operation. A prepared GET following
+an uncertain apply is not evidence that apply did not run. The UI keeps that
+operation frozen until a completed result or the server's explicit
+`known_unapplied` response or persisted `expired` state settles it. Discarding a
+review also has a persisted exact request and recovery path; it never treats a
+missing response as successful cancellation. It never starts a replacement operation
+to work around an uncertain result. Credentials stay outside browser storage.
+
+Completion reloads the editor when the dialog closes. The original IDs, codes,
+identifiers and history remain auditable through the saved operation. This
+reusable workflow needs no per-card code change or PR. Existing limitations on
+alias groups, supplier ownership, physical stock and dependencies still apply.
+
+The UI and selection API add no migration or configuration requirement. A
+code rollback can remove the controls while retaining the existing consolidation
+tables and records; never reverse completed consolidations by deleting their
+history. Automated checks use synthetic data and do not establish that any
+particular live group has been merged.
+
 ## Physical identity and allowed scope
 
 The keeper and every duplicate must be `item_type=stock`, `stock_unit=pcs`. The
@@ -126,9 +177,27 @@ same-origin protection. Responses have `Cache-Control: no-store`.
 
 | Endpoint | Effect |
 | --- | --- |
+| `GET /api/product-consolidations/selection?product_ids=101&product_ids=102` | Reads complete local card and mapping context for 2–10 distinct IDs, without native requests or writes. |
 | `POST /api/product-consolidations/preview` | Reads exact current native identities and stores a durable review. |
 | `GET /api/product-consolidations/{id}` | Returns the original review and any completed result. |
 | `POST /api/product-consolidations/{id}/apply` | Rechecks the frozen review and atomically records local ownership changes. |
+| `POST /api/product-consolidations/{id}/discard` | Explicitly expires the exact saved preview under the same identity/review fences; returns completion if apply already won. |
+
+Selection context is a read-only repeatable-read observation, not merge
+eligibility or a durable preview. It includes all selected mappings, not only
+the editor's active-shop projection; missing cards or an oversized selection
+fail as a whole instead of returning partial scope. Preview and apply still
+re-read and validate every mapping and dependency under their existing fences.
+
+Discard accepts the exact `preview_hash` and `confirmed=true`. It verifies the
+stored document hash, then serializes against apply with the identity advisory
+lock and review-row lock. A completed operation stays completed; an expired one
+replays its expired result; a prepared one becomes expired. Blocked and older
+parser-version reviews can be discarded without weakening the checks required
+to apply. This performs no native requests, product/stock writes or deletion,
+and preserves the original proof and any completed result. A fresh preview
+rechecks the actual current state. Merely reaching `expires_at` while a review
+still reads `prepared` is not the same as this persisted fenced decision.
 
 A preview contains one `keeper_product_id`, one to nine `retired_product_ids`,
 the exact mode `identity_only_preserve_unconfirmed_history`, and two literal

@@ -88,10 +88,19 @@ const rowForWarehouse = (row, warehouseCode) => ({ ...clone(row), warehouse: war
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options', '/api/sku-policy/'].some(prefix => path.startsWith(prefix)), 'The grid calls only its protected editing and explicit linking APIs');
+  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options', '/api/sku-policy/', '/api/product-consolidations/selection'].some(prefix => path.startsWith(prefix)), 'The grid calls only its protected editing and explicit review APIs');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   assert(!path.includes('synthetic-'), 'Credentials never enter query strings');
   const url = new URL(path, dom.window.location.origin);
+  if (url.pathname === '/api/product-consolidations/selection') {
+    assert.equal(init.method, 'GET');
+    const ids = url.searchParams.getAll('product_ids').map(Number);
+    return reply({ products: ids.map(id => { const row = rows.get(id); return {
+      id, sku: row.sku, name: row.common.name, is_active: row.is_active,
+      item_type: row.item_type, stock_unit: row.stock_unit, eans: row.eans,
+      manual_eans: null, attributes: row.attributes, canonical_product_id: null,
+    }; }), mappings: [], blockers: [] });
+  }
   if (url.pathname === '/api/sku-policy/migration-preview') {
     assert.equal(init.method,'POST'); assert.equal(body.items.length,1); assert.equal(body.items[0].product_id,1);
     assert.deepEqual(Object.keys(body).sort(),['items','verify_remote']);
@@ -324,7 +333,26 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.deepEqual(sortEditorRows([unknown, expensive, cheap], 'sale_price_gross', 'asc', 'sk').map(row => row.id), [1, 2, 3]);
   assert.deepEqual(sortEditorRows([cheap, unknown, expensive], 'sale_price_gross', 'desc', 'sk').map(row => row.id), [2, 1, 3], 'Unknown prices remain unknown and last in either direction');
   assert(cannotUse('link-selected-products'), 'Linking requires explicit current-page selection');
-  await click('select-1'); await click('select-2');
+  assert(cannotUse('merge-selected-products'), 'Merging requires at least two explicitly selected cards');
+  await click('select-1');
+  assert(cannotUse('merge-selected-products'), 'One selected card cannot start a merge');
+  await click('select-2');
+  assert(!cannotUse('merge-selected-products'));
+  const beforeMergeOpen = calls.length; await click('merge-selected-products');
+  assert(element('consolidation-card-1') && element('consolidation-card-2') && !element('consolidation-card-3'),
+    'Merge context contains exactly the selected cards');
+  const mergeOpenCalls = calls.slice(beforeMergeOpen);
+  assert(mergeOpenCalls.length > 0 && mergeOpenCalls.every(call => call.method === 'GET' &&
+    new URL(call.path, dom.window.location).pathname === '/api/product-consolidations/selection'),
+    'Opening merge reads selection only; it neither prepares nor applies an operation');
+  assert.deepEqual(new URL(mergeOpenCalls[0].path, dom.window.location).searchParams.getAll('product_ids'), ['1', '2']);
+  await click('consolidation-close');
+  await edit(1, 'name', 'Unsaved merge entry fixture');
+  assert(cannotUse('merge-selected-products'), 'Unsaved changes cannot be merged from a stale selection');
+  await click('discard');
+  for (let id = 3; id <= 11; id++) await click(`select-${id}`);
+  assert(cannotUse('merge-selected-products'), 'More than ten selected cards cannot start a partial merge');
+  for (let id = 3; id <= 11; id++) await click(`select-${id}`);
   const beforeLinkOpen = calls.length; await click('link-selected-products');
   assert(element('product-links-row-1') && element('product-links-row-2') && !element('product-links-row-3'), 'Bulk linking includes only the explicitly selected cards');
   assert.equal(calls.length, beforeLinkOpen, 'Opening linking does not run any shop request');

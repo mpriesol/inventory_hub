@@ -23,6 +23,13 @@ async def preview(payload: ProductConsolidationPreviewRequest, request: Request,
     return await call(service.preview(db, payload, actor=actor(request)))
 
 
+@router.get('/selection')
+async def selection(product_ids: list[Annotated[int, Field(gt=0, le=9007199254740991)]] = Query(min_length=2, max_length=10),
+                    db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import product_consolidation_selection
+    return await call(product_consolidation_selection.inspect(db, product_ids))
+
+
 @router.get('/{identifier}')
 async def get(identifier: UUID, db: AsyncSession = Depends(get_session)):
     return await call(service.get(db, str(identifier)))
@@ -46,3 +53,9 @@ async def dependency_evidence(identifier: UUID,
 async def apply(identifier: UUID, payload: ProductConsolidationApplyRequest, request: Request,
                 db: AsyncSession = Depends(get_session)):
     return await call(service.apply(db, str(identifier), payload, actor=actor(request)))
+
+
+@router.post('/{identifier}/discard')
+async def discard(identifier: UUID, payload: ProductConsolidationApplyRequest,
+                  db: AsyncSession = Depends(get_session)):
+    return await call(service.discard(db, str(identifier), payload))
