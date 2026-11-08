@@ -411,6 +411,33 @@ documented placeholder meaning. Unsupported separators, non-string values and
 unbounded compounds remain holds. This does not change barcode registration,
 the worker's rejection, or strict barcode validation in other document types.
 
+The closed raw-token grammar also recognizes the source/report writer's
+historical 13-digit value with one leading ASCII apostrophe or one trailing
+period, a numeric `6.3.2` article, bounded manufacturer articles
+(`AAA-1234-567`, `AA0-1234`, `AA-1234BB-123xs`), and alphabetic words including
+Unicode letters. These are literal unverified tokens, not alternative GTIN
+spellings. Neither punctuation nor letters are removed; `.0`, arbitrary
+numeric punctuation compounds and embedded numeric substrings remain
+unsupported. Words split by the existing whitespace rule are each compared
+against registered raw aliases/SKUs too: a word such as `13` can conservatively
+match that exact registered code, but is never padded or extracted as a GTIN.
+Each checksum-valid member of a supported compound is still inspected in the
+barcode namespace. Synthetic tests use the real XML/report writer, retain its
+publication rejection, and exercise exact raw ownership, hostile separators,
+apply/replay and literal-only drift without rewriting the original records.
+
+`apply_availability_reviews` can persist exactly
+`availability_review={atomer: string, xtrek: string|null}` on a variant report.
+The parser requires the recorded `review` state, `availability_differs` reason,
+unchanged source/target code, complete positive native variant IDs, and
+different case-insensitive labels. The labels are context, including a missing
+observed label; the ordinary Hub, barcode, native leaf and possible parent-write
+scope is still checked. Extra keys, nested values, a different lifecycle or
+missing native identity remain unknown. This does not resolve the availability
+conflict, change stock or restart a worker. The complete field stays in the
+frozen row hash, so a later label change invalidates the old preview. No new
+database query, scan budget or writer exception is introduced.
+
 Saved native card receipts may include exactly `shop_url` and
 `shop_admin_url`, each a nullable URL sanitized by the existing link-source
 writer. They are navigation context; every code, native ID, mapping and Hub
@@ -496,6 +523,20 @@ serialization for those same statistics in the stable snapshot. Proven empty
 selections are included. No partial page, standalone statistics, classification
 or truncated projection is reused.
 
+On a linked-selection cache miss, complete selection statistics and the first
+bounded primary-key page can share one SQL round trip. The statistics still
+cover every matched row; bodies are gated by the whole-selection row/payload
+limits and the original per-page row/work/byte rules. Before the query, the
+reader reserves sufficient payload headroom for the largest possible decoded
+prefix. If that speculative reservation would evict cached evidence, it uses
+the original statistics-only query and exact-size reservation instead, so a
+small or empty miss cannot cause extra charged re-reads. Observed payload
+accounting records the actual decoded prefix, not unused reservation space.
+Continuation starts only after the last accepted row; a gated tail is read
+again under the usual cursor and full count/byte checks. Synthetic PostgreSQL
+comparisons require identical complete classifications and manifests, including
+late references and tight payload/work boundaries. No scan limit is raised.
+
 Only the shared Atomer campaign and current source-run headers use fixed,
 versioned interpreter profiles. The campaign profile retains `id`, `state`,
 `checked_run_id`, `source_sha`, `admin_sha` and the **entire raw `selection`**,
@@ -537,6 +578,21 @@ The catalog variant writer's singular `image` is recognized only as an exact
 objects and the same unrecognized field on a parent remain blocked. Image
 content does not replace code, GTIN or native-leaf checks; the entire payload
 remains part of the unchanged journal hash.
+
+`catalog_import.build_item` can also retain its default literal `{}` payload
+when a source blocker or construction error makes an item `invalid` before
+dispatch. That exact shape is known only with nonempty textual errors and no
+product-send intent (the marker is absent or exactly `false`). The item code,
+source grouping and variant count must agree with its complete frozen source
+selection. A saved result must preserve the same invalid, unsent item and its
+errors. Ready, failed, uncertain or sent items, partial payloads without a code,
+unknown fields and inconsistent lineage remain holds. All source identity
+queries, current draft owners and complete journal hashes are retained; the
+item remains unsettled and a matching source still blocks consolidation.
+Tests construct this shape through the real builder and queue/executor, verify
+that no product is sent, and exercise disjoint apply and file drift. This does
+not change import validation, recovery or publication, and does not by itself
+verify the shape of a particular historical production journal.
 
 A staged journal retains both its complete frozen source/payload scope and the
 complete linked current draft. The draft UUID, supplier, selected source IDs and

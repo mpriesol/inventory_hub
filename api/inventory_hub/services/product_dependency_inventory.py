@@ -106,12 +106,12 @@ class Budget:
         self.bytes += size
         self.rows += 1
 
-    def retain(self, size):
+    def retain(self, size, *, record_peak=True):
         """Keep optimization storage inside the existing payload allowance."""
         self.retained = size
-        self.account_reuse()
+        self.account_reuse(record_peak=record_peak)
 
-    def account_reuse(self):
+    def account_reuse(self, *, record_peak=True):
         # Both caches share the raw-operation allowance. Refresh the other's
         # headroom after every put, before it can allocate another result.
         if self.reuse is not None:
@@ -121,7 +121,8 @@ class Budget:
             self.linked_reuse.reserve(self.retained + (self.reuse.bytes if self.reuse else 0),
                                       self.max_payload)
         cached = sum(memo.bytes for memo in (self.reuse, self.linked_reuse) if memo is not None)
-        self.peak_payload = max(self.peak_payload, self.retained + cached)
+        if record_peak:
+            self.peak_payload = max(self.peak_payload, self.retained + cached)
 
 
 async def statistics(db, table, condition, params):
@@ -134,8 +135,86 @@ async def statistics(db, table, condition, params):
     return {key: int(row[key]) for key in ('count', 'bytes', 'largest')}
 
 
+async def selection_head(db, table, condition, params, *, budget, page_rows,
+                         page_bytes, retained, max_linked_rows):
+    """Complete selection facts and a bounded first page in one round trip.
+
+    Facts cover every matched row, even when no body is admissible. Reserve
+    the largest possible first page before decoding it; the caller then uses
+    the same whole-closure admission and pagination checks as an ordinary
+    metadata-only read. Both branches run in the caller's existing snapshot.
+    """
+    if table not in KEYS:
+        raise s.Unverified('unknown_inventory_table')
+    if page_rows < 1 or page_bytes < 1:
+        raise s.Unverified('invalid_inventory_page_budget')
+    available = budget.max_payload - retained
+    if available < 0:
+        raise s.Unverified('database_payload_limit', table)
+    reserve = min(max(budget.max_row, page_bytes), available,
+                  max(0, budget.max_work - budget.bytes))
+    cached = sum(memo.bytes for memo in (budget.reuse, budget.linked_reuse) if memo is not None)
+    if retained + reserve + cached > budget.max_payload:
+        # A speculative prefix must not evict evidence that the exact body
+        # would leave cached. Otherwise a tiny/empty miss can force later
+        # re-reads and change admission near the work-byte limit.
+        budget.check_time()
+        return await statistics(db, table, condition, params), None
+    # This is admission headroom, not an observed body size. Cache allowances
+    # are enforced now; record the actual decoded prefix immediately below.
+    budget.retain(retained + reserve, record_peak=False)
+    budget.check_time()
+    columns = KEYS[table]
+    order = [f't."{key}"' + (' COLLATE "C"' if (table, key) in TEXT_KEYS else '') for key in columns]
+    key_sql = 'jsonb_build_array(' + ','.join(f't."{name}"' for name in columns) + ')'
+    order_sql = ','.join(order)
+    values = {**params, 'inventory_page_rows': page_rows, 'inventory_page_bytes': page_bytes,
+        'inventory_max_row': budget.max_row, 'inventory_remaining_work': budget.max_work - budget.bytes,
+        'inventory_remaining_payload': available, 'inventory_max_linked_rows': max_linked_rows}
+    rows = (await db.execute(text(f'''WITH facts AS MATERIALIZED (
+        SELECT count(*) AS count,coalesce(sum(octet_length(to_jsonb(t)::text)),0) AS bytes,
+            coalesce(max(octet_length(to_jsonb(t)::text)),0) AS largest
+        FROM {table} t WHERE {condition}
+        ) SELECT facts.count AS selection_count,facts.bytes AS selection_bytes,
+            facts.largest AS selection_largest,body.key,body.hash,body.bytes,body.document
+        FROM facts LEFT JOIN LATERAL (
+            WITH selected AS (
+                SELECT {key_sql} AS key,to_jsonb(t) AS document,
+                    octet_length(to_jsonb(t)::text) AS bytes,
+                    encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') AS hash,
+                    row_number() OVER(ORDER BY {order_sql}) AS position
+                FROM {table} t WHERE ({condition}) AND facts.count>0
+                    AND facts.count<=:inventory_max_linked_rows
+                    AND facts.bytes<=:inventory_remaining_payload
+                    AND facts.largest<=:inventory_max_row
+                ORDER BY {order_sql} LIMIT :inventory_page_rows
+            ), sized AS (SELECT *,sum(bytes) OVER(ORDER BY position) AS total_bytes FROM selected)
+            SELECT key,hash,bytes,position,CASE WHEN bytes<=:inventory_max_row
+                AND total_bytes<=:inventory_remaining_work
+                AND total_bytes<=:inventory_remaining_payload
+                AND (total_bytes<=:inventory_page_bytes OR position=1)
+                THEN document ELSE NULL END AS document
+            FROM sized
+        ) body ON true ORDER BY body.position'''), values)).mappings().all()
+    if not rows:
+        raise s.Unverified('database_scope_changed_during_read', table)
+    decoded = sum(int(row['bytes']) for row in rows if row['document'] is not None)
+    if decoded > reserve:
+        raise s.Unverified('database_payload_limit', table)
+    budget.retain(retained + decoded)
+    budget.check_time()
+    expected = {name: int(rows[0]['selection_' + name]) for name in ('count', 'bytes', 'largest')}
+    result = []
+    for row in rows:
+        if any(int(row['selection_' + name]) != expected[name] for name in expected):
+            raise s.Unverified('database_scope_changed_during_read', table)
+        if row['key'] is not None:
+            result.append({name: row[name] for name in ('key', 'hash', 'bytes', 'document')})
+    return expected, result
+
+
 async def pages(db, table, condition, params, *, budget, page_rows, page_bytes,
-                manifest, expected, payload_retained=0):
+                manifest, expected, payload_retained=0, initial=None):
     """Fetch a byte-bounded PK prefix; never advance over an unfetched row."""
     columns = KEYS[table]
     order = [f't."{key}"' + (' COLLATE "C"' if (table, key) in TEXT_KEYS else '') for key in columns]
@@ -161,7 +240,10 @@ async def pages(db, table, condition, params, *, budget, page_rows, page_bytes,
             inventory_remaining_payload=budget.max_payload-payload_retained)
         key = 'jsonb_build_array(' + ','.join(f't."{name}"' for name in columns) + ')'
         order_sql = ','.join(order)
-        rows = (await db.execute(text(f'''WITH selected AS (
+        if initial is not None:
+            rows, initial = initial, None
+        else:
+            rows = (await db.execute(text(f'''WITH selected AS (
             SELECT {key} AS key,to_jsonb(t) AS document,
                 octet_length(to_jsonb(t)::text) AS bytes,
                 encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') AS hash,
@@ -279,8 +361,11 @@ class Closure:
         # These facts are retained only with a complete successful selection,
         # inside this inspection's RR snapshot or apply's complete table fences.
         expected = memo.metadata(key) if memo is not None else None
+        initial = None
         if expected is None:
-            expected = await statistics(self.db, table, condition, params)
+            expected, initial = await selection_head(self.db, table, condition, params,
+                budget=self.budget, page_rows=self.page_rows, page_bytes=self.page_bytes,
+                retained=self.retained, max_linked_rows=self.max_linked_rows)
         self.budget.check_time()
         if expected['count'] > self.max_linked_rows:
             raise s.Unverified('linked_identity_scope_limit', role)
@@ -312,7 +397,7 @@ class Closure:
             result = []
             async for page in pages(self.db, table, condition, params, budget=self.budget,
                     page_rows=self.page_rows, page_bytes=self.page_bytes, manifest=root, expected=expected,
-                    payload_retained=self.retained):
+                    payload_retained=self.retained, initial=initial):
                 result.extend(page)
                 size = sum(row['bytes'] for row in page)
                 self.retained += size

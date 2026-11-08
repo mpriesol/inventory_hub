@@ -9,10 +9,17 @@ from inventory_hub.services.product_link_source import _url
 DOCUMENT = set('payload availability flags related missing_related seo_keywords ambiguous_source_references missing_source_references variant_axis_origins missing_categories admin_price_changes title_from_code barcode_corrections source_barcode_placeholders description_sources manufacturer_origin source_manufacturer_hint unspecified_weights source_parent_barcode shipping_weight_rounding partial_vat new_parent_only source_bonus_points missing_source_features variant_main_origin source_family_codes deferred_leaves source_duplicate_ids source_parent_code_alias parent_vat_from_leaves managed_label_ids issues vat_create_only extension extension_plan remaining_create_variants'.split())
 RECEIPT = set('dispatched ack status issues deferred identity_verified verified_fields product_id variants cards content_requested content_result content_codes content_anchors content_attempts content_intent related_intent catalog_deferred rollover previous_stage previous_guards previous_receipt previous_document adopt_content reexpand rebuild_after_observation isolate isolate_phase tranche_verified remaining_content'.split())
 EVIDENCE = set('status reason card_id hub_sku xtrek biketrek ean scope source_state verification_scope content_pending content_product_id card_action biketrek_check barcode_evidence source_card'.split())
-DETAIL = set('code card_state family_key variant_label family_title family_name shop_url shop_admin_url kind state parent name ean hub_id hub_sku candidates target_code target_parent target_ean product_id variant_id match reasons bike_state bike source_state'.split())
+DETAIL = set('code card_state family_key variant_label family_title family_name shop_url shop_admin_url kind state parent name ean hub_id hub_sku candidates target_code target_parent target_ean product_id variant_id match reasons bike_state bike source_state availability_review'.split())
 NAVIGATION = ('shop_url', 'shop_admin_url')
 NATIVE = {'product_id', 'variant_id', 'code', 'parent', 'link_id'} | set(NAVIGATION)
 REVIEW_SCOPES = ('default', 'both', 'xtrek', 'biketrek')
+# Known raw report/source spellings, never normalized into barcodes. Numeric
+# component lengths are bounded so a new GTIN/GTIN separator is not accepted
+# as a manufacturer article. The shared compound splitter remains unchanged.
+RAW_TOKEN = re.compile(r"(?:'[0-9]{13}|[0-9]{13}\."
+    r"|[0-9]{6}\.[0-9]{3}\.[0-9]{2}"
+    r"|[A-Z]{2}[A-Z0-9]-[0-9]{4}(?:-[0-9]{3})?"
+    r"|[A-Z]{2}-[0-9]{4}[A-Z]{2}-[0-9]{3}[a-z0-9]{1,3})")
 
 
 def _review_guard(value, path):
@@ -102,7 +109,8 @@ def _barcodes(proof, value, path, *, source_code):
     tokens = [token for token, _ in parts]
     repeats_sku = (value == source_code and re.fullmatch(r'[A-Za-z0-9_.-]+', value)
                    and any(char.isalpha() for char in value))
-    if not repeats_sku and any(re.fullmatch(r'[A-Za-z0-9]+', token) is None for token in tokens):
+    if not repeats_sku and any(not (re.fullmatch(r'[A-Za-z0-9]+', token)
+            or RAW_TOKEN.fullmatch(token) or token.isalpha()) for token in tokens):
         raise s.Unverified('atomer_barcode_tokens_unverified', path)
     for token in dict.fromkeys([value, *tokens]):
         if token.casefold() in proof.scope.aliases or token.casefold() in proof.scope.skus:
@@ -185,6 +193,32 @@ def _native_kind(proof, detail, family_key, path):
     return pid, vid
 
 
+def _availability_review(proof, detail, path):
+    """Read the exact unresolved label pair emitted by apply_availability_reviews.
+
+    The generation writer records this only for an exact native variant whose
+    source code is unchanged. Labels add no identity; the ordinary leaf, owner
+    and possible parent-write checks still run below.
+    """
+    if 'availability_review' not in detail:
+        return
+    at = path + '/availability_review'
+    value = s.obj(detail['availability_review'], {'atomer', 'xtrek'}, ('atomer', 'xtrek'), at)
+    expected = s.code(value['atomer'], at + '/atomer')
+    actual = value['xtrek']
+    if actual is not None:
+        s.code(actual, at + '/xtrek', blank=True)
+    reasons = s.array(detail.get('reasons'), path + '/reasons', nonempty=True)
+    if (detail.get('kind') != 'variant' or detail.get('state') != 'review'
+            or detail.get('target_code') != detail['code']
+            or 'availability_differs' not in reasons or any(not isinstance(reason, str) for reason in reasons)
+            or (actual or '').casefold() == expected.casefold()):
+        raise s.Unverified('atomer_availability_review_unverified', at)
+    s.positive(detail.get('product_id'), path + '/product_id')
+    s.positive(detail.get('variant_id'), path + '/variant_id')
+    proof.context(at, 'recorded_atomer_availability_conflict')
+
+
 def inspect(proof, raw, family, campaign, claims, head):
     if raw.get('stage') not in ('pending', 'prepared', 'sending', 'observe', 'cards', 'related',
                               'fidelity', 'updating', 'partial', 'blocked', 'verified', 'excluded'):
@@ -249,6 +283,7 @@ def inspect(proof, raw, family, campaign, claims, head):
             raise s.Unverified('atomer_source_leaf_changed', at)
         if 'family_name' in detail and not isinstance(detail['family_name'], str):
             raise s.Unverified('atomer_family_name_shape_unknown', at + '/family_name')
+        _availability_review(proof, detail, at)
         proof.hub(detail.get('hub_id'), at + '/hub_id')
         for candidate in s.array(detail.get('candidates', []), at + '/candidates'):
             proof.hub(candidate, at + '/candidates')

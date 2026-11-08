@@ -26,6 +26,14 @@ vyriešený. Neznámy tvar zostáva blokovaný. Syntetické testy overujú pôvo
 reporty, potvrdenie, opakovanie a zmenu podkladov bez zmeny skladu či histórie.
 Bez nových dotazov, SQL migrácie, aktivácie úloh alebo natívnych zápisov.
 
+Uzavretý parser zachová aj doložené historické článkové tvary, apostrof či
+bodku pri čísliciach a abecedné slová ako doslovné neoverené identity; nevytvára
+z nich opravený GTIN. Každý presný token sa ďalej porovná s registrovanými
+aliasmi. Známy typovaný rozdiel dostupnosti zostáva nevyriešeným konfliktom
+s úplným rozsahom natívneho variantu a rodiča. Neznáme oddeľovače, polia
+a zmena podkladov držia blokovanie. Overenie je syntetické; živý diagnostický
+priechod po nasadení je samostatný krok.
+
 ## Opakované podklady konsolidácie (8. 11. 2026)
 
 [Kontrola závislostí konsolidácie](docs/product-consolidation.md) opakovane používa
@@ -36,6 +44,10 @@ Cache zdieľa existujúci limit 64 MB s aktuálnou operáciou a nemení limit pr
 identitu, skladové kontroly ani históriu. Nová migrácia či konfigurácia nie je
 potrebná; starší nepotvrdený náhľad treba vytvoriť nanovo. Implementácia a
 syntetické kontroly samy nepotvrdzujú dokončenie živej konsolidácie.
+
+Úplné štatistiky a prvá ohraničená stránka novej väzby sa môžu načítať jedným
+databázovým dotazom. Pri tesnej pamäti zostáva pôvodné oddelené čítanie, aby
+predbežná rezerva nevytláčala uložené dôkazy. Rozsah, hashe a limity sa nemenia.
 
 Parser `typed-catalog-scope-v5` overuje aj
 [výslovne nahradené prípravy AI a známe historické schémy](docs/product-consolidation-ai-lineage.md).
@@ -78,6 +90,13 @@ Chýbajúca identita alebo neznámy formát zostáva blokovaný; neistý import 
 nepovažuje za dokončený. Produkčné kontroly publikácie zostávajú nezmenené
 a zmena ktoréhokoľvek podkladu zneplatní náhľad konsolidácie. Bez novej migrácie
 alebo vzdialeného zápisu; dokončenie konkrétnych živých operácií sa overuje osobitne.
+
+Položka, ktorú skutočný importér odmietol ešte pred odoslaním, môže mať prázdny
+payload `{}`. Kontrola rozpozná iba presný stav `invalid` s chybami, bez pokusu
+o odoslanie a s úplnou zhodou zdrojového výberu. Všetky zdrojové aj aktuálne
+identity a hash celého záznamu zostávajú súčasťou dôkazu; neistá, odoslaná alebo
+neúplná položka sa tým nevyčistí. Testy overujú skutočný zapisovací postup,
+neodoslanie produktu a zmenu podkladu medzi náhľadom a potvrdením.
 
 ## Výslovne skontrolovaná obnova bežných väzieb (7. 11. 2026)
 

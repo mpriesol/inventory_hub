@@ -156,6 +156,27 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
             await imports.execute_import("test-shop", self.id)
         return imports.import_result("test-shop", self.id)
 
+    async def test_invalid_empty_payload_stays_unsent_and_has_a_complete_dependency_scope(self):
+        from inventory_hub.services import product_dependency_journals as journals, product_dependency_scope as scope
+        source = product(import_blockers=['synthetic_source_blocker'])
+        source.eans = ['4006381333931']
+        item = imports.build_item([source], ShopImportOptions(), {}, True)
+        self.assertEqual((item.status, item.payload), ('invalid', {}))
+        self.document['sources'] = [source.model_dump(mode='json')]
+        self.document['preview']['items'] = [item.model_dump(mode='json')]
+        imports._write(self.path, self.document)
+        result = await self.run_import()
+        self.assertEqual(result['items'][0]['status'], 'invalid')
+        self.assertIs(result['items'][0]['product_write_attempted'], False)
+        self.assertEqual(self.client.sent, [])
+        self.register.assert_not_awaited()
+        saved = imports._load_job(self.path)
+        proof = scope.Proof(scope.Scope(set(), set(), {source.shop_code.casefold()}, set(), set(),
+                                        set(), set(), set(), set()))
+        self.assertFalse(journals.parse(proof, saved, 'test-shop', self.id, {}))
+        self.assertEqual(proof.result()['classification'], 'reference')
+        self.assertEqual(proof.queries[0]['code'], source.shop_code)
+
     async def test_product_send_intent_is_durable_under_identity_lock_and_http_runs_after_release(self):
         state = {'inside': False, 'locked': False, 'intent': False}
         checkpoint, post = imports._item_checkpoint, self.client.post
