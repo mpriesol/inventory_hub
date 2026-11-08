@@ -14,6 +14,11 @@ množstiev. Pozastavené katalógové úlohy a ich dôkazy zostávajú nezmenen�
 sú výslovne oddelené od čerstvého katalógového pozorovania. Bežný interaktívny
 postup a jeho kontrola závislostí zostávajú samostatné. Podrobnosti vrátane
 obnovy po neistej odpovedi sú v [operátorskom kontrakte](docs/product-consolidation.md#one-off-atomic-identity-migration).
+Jednorazová dávka rozpoznáva aj pôvodné SKU importného pohybu cez presný
+interný alias tej istej karty bez dodávateľského rozsahu a cudzieho vlastníka.
+Pôvodné pohyby a aliasy zachováva; ostatné kontroly fyzickej histórie nemení.
+Pri publikačnej prekážke uvedie konkrétnu tabuľku. Chýbajúci alebo JSON `null`
+náhľad AI publikácie sa nepovažuje za čakajúci zápis; neznámy obsah ho blokuje.
 Implementácia má syntetické integračné testy; konkrétna živá dávka vyžaduje
 samostatné posúdenie aktuálneho náhľadu a výsledku.
 

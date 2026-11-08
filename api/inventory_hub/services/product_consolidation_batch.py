@@ -219,11 +219,21 @@ async def _admission(db, raw, groups, history):
     for key, fact in history.items():
         _need(key.split('.', 1)[0] not in FORBIDDEN_STOCK or fact['count'] == 0,
               'consolidation_batch_confirmed_stock_dependency')
+    # A later SKU rename preserves the import's original reference. Only an
+    # exact unscoped internal alias on that same raw card can attest it; another
+    # owner (even in this group) must not make the old reference ambiguous.
     invalid = await db.scalar(text('''SELECT count(*) FROM stock_movements m JOIN products p ON p.id=m.product_id
         WHERE m.product_id=ANY(CAST(:ids AS bigint[])) AND (
           m.movement_type::text='INITIAL' AND m.reference_type IS NOT DISTINCT FROM 'upgates_import'
           AND m.created_by='upgates_import' AND m.reference_source IN ('upgates:biketrek','upgates:xtrek')
-          AND m.reference_id IS NOT DISTINCT FROM p.sku AND p.created_from_source=m.reference_source) IS NOT TRUE'''), params)
+          AND (m.reference_id IS NOT DISTINCT FROM p.sku OR (
+            EXISTS (SELECT 1 FROM product_identifiers i WHERE i.product_id=m.product_id
+              AND i.identifier_type='internal_sku' AND i.supplier_id IS NULL AND i.value=m.reference_id)
+            AND NOT EXISTS (SELECT 1 FROM products other WHERE other.id<>m.product_id
+              AND lower(other.sku)=lower(m.reference_id))
+            AND NOT EXISTS (SELECT 1 FROM product_identifiers other WHERE other.product_id<>m.product_id
+              AND other.identifier_type='internal_sku' AND lower(other.value)=lower(m.reference_id))))
+          AND p.created_from_source=m.reference_source) IS NOT TRUE'''), params)
     _need(not invalid, 'consolidation_nonlegacy_stock_history')
     _need(not await db.scalar(text('''SELECT count(*) FROM stock_balances WHERE product_id=ANY(CAST(:ids AS bigint[]))
         AND (qty_reserved<>0 OR qty_quarantined<>0)'''), params), 'consolidation_reserved_or_quarantined_stock')
@@ -235,11 +245,11 @@ async def _admission(db, raw, groups, history):
         'stock_sync_items': "shop_id=ANY(CAST(:shops AS bigint[])) AND sku=ANY(CAST(:tokens AS text[])) AND status NOT IN ('verified','skipped')",
         'stock_publication_items': "sku=ANY(CAST(:tokens AS text[])) AND status NOT IN ('verified','cancelled')",
         'fifo_cost_publications': "shop_id=ANY(CAST(:shops AS bigint[])) AND status NOT IN ('verified','skipped','resolved')",
-        'ai_content_jobs': "context->>'code'=ANY(CAST(:tokens AS text[])) AND context->'update_preview' IS NOT NULL AND coalesce(context->'update_preview'->>'state','') NOT IN ('verified','completed','expired','cancelled','rejected','resolved')",
+        'ai_content_jobs': "context->>'code'=ANY(CAST(:tokens AS text[])) AND context->'update_preview' IS NOT NULL AND context->'update_preview'<>'null'::jsonb AND coalesce(context->'update_preview'->>'state','') NOT IN ('verified','completed','expired','cancelled','rejected','resolved')",
     }
     for table, condition in conditions.items():
         _need(not await db.scalar(text('SELECT count(*) FROM ' + core.dependencies.quoted(table) + ' WHERE ' + condition), params),
-              'consolidation_batch_pending_publication')
+              'consolidation_batch_pending_publication_' + table)
     paused = [dict(row) for row in (await db.execute(text('''SELECT id,state,operator_paused,operator_control_revision,
         checked_run_id,source_sha,admin_sha FROM atomer_catalog_campaigns ORDER BY id'''))).mappings()]
     _need(all(row['operator_paused'] and row['state'] == 'paused' or row['state'] in ('done', 'source_changed', 'review')

@@ -1,6 +1,7 @@
 """Atomic local migration, exact replay and unchanged original physical facts."""
 from copy import deepcopy
 import asyncio
+from decimal import Decimal
 import json
 from types import SimpleNamespace
 import unittest
@@ -12,11 +13,13 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import select, text
 
+from inventory_hub.ai_content_models import AiBatch, AiJob
 from inventory_hub.database import get_session
-from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier
-from inventory_hub.db_models_ext import ShopProduct
+from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier
+from inventory_hub.db_models_ext import ShopProduct, StockBalance, StockMovement
 from inventory_hub.product_consolidation_models import ProductConsolidation
 from inventory_hub.product_consolidation_batch_types import BatchApplyRequest, BatchPreviewRequest
+from inventory_hub.product_editor_models import ProductEditorPublication
 from inventory_hub.routers import product_consolidation as routes
 from inventory_hub.services import product_consolidation_batch as batch
 from inventory_hub.services import product_consolidation as core
@@ -165,6 +168,108 @@ class BatchDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             return {table: await batch._summary(db, table, 'true', {}) for table in tables}
 
+    async def renamed_import_history(self):
+        async with self.base.transaction() as db:
+            for pid, old_sku in ((self.base.keeper, 'SYN-KEEP'), (self.base.retired, 'SYN-OLD')):
+                product = await db.get(Product, pid)
+                product.sku = 'RENAMED-' + old_sku
+                db.add(ProductIdentifier(product_id=pid, identifier_type=IdentifierType.internal_sku,
+                    value=old_sku, supplier_id=None))
+            db.add(StockBalance(product_id=self.base.retired, warehouse_id=self.base.warehouse_id,
+                qty_on_hand=Decimal(1), qty_reserved=0, qty_quarantined=0))
+            db.add(StockMovement(idempotency_key='synthetic-renamed-import', product_id=self.base.retired,
+                warehouse_id=self.base.warehouse_id, movement_type='INITIAL', quantity=Decimal(1),
+                balance_after=Decimal(1), reference_type='upgates_import', reference_source='upgates:biketrek',
+                reference_id='SYN-OLD', created_by='upgates_import'))
+
+    async def test_exact_old_skus_on_both_raw_owners_preserve_all_import_history(self):
+        await self.renamed_import_history()
+        before = await self.original_rows()
+        preview = await self.preview()
+        self.assertTrue(preview['eligible'])
+        self.assertEqual(await self.original_rows(), before)
+        result = await self.apply(preview)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['history_hash'], preview['history_hash'])
+        self.assertFalse(result['physical_stock_changed'])
+        after = await self.original_rows()
+        for table in ('product_identifiers', 'stock_balances', 'stock_movements'):
+            self.assertEqual(after[table], before[table])
+        self.assertEqual(after['stock_movements']['count'], 2)
+
+    async def test_old_reference_requires_exact_unscoped_internal_alias_on_same_raw_owner(self):
+        await self.renamed_import_history()
+        async with self.base.transaction() as db:
+            supplier = Supplier(code='synthetic-alias-supplier', name='Synthetic alias supplier')
+            db.add(supplier)
+            await db.flush()
+            supplier_id = supplier.id
+            alias_id = await db.scalar(select(ProductIdentifier.id).where(
+                ProductIdentifier.product_id == self.base.keeper,
+                ProductIdentifier.identifier_type == IdentifierType.internal_sku))
+        for name, pid, kind, supplier_id_value, value in (
+            ('missing', self.base.keeper, 'internal_sku', None, 'UNRELATED'),
+            ('other-card-in-group', self.base.retired, 'internal_sku', None, 'SYN-KEEP'),
+            ('supplier-code', self.base.keeper, 'supplier_sku', supplier_id, 'SYN-KEEP'),
+            ('scoped-internal-code', self.base.keeper, 'internal_sku', supplier_id, 'SYN-KEEP'),
+            ('case-only', self.base.keeper, 'internal_sku', None, 'syn-keep'),
+        ):
+            with self.subTest(name=name):
+                async with self.base.transaction() as db:
+                    await db.execute(text('''UPDATE product_identifiers SET product_id=:pid,
+                        identifier_type=CAST(:kind AS identifier_type), supplier_id=:supplier, value=:value
+                        WHERE id=:id'''), dict(pid=pid, kind=kind, supplier=supplier_id_value,
+                                              value=value, id=alias_id))
+                before = await self.original_rows()
+                with self.assertRaisesRegex(core.links.LinkError, 'consolidation_nonlegacy_stock_history'):
+                    await self.preview()
+                self.assertEqual(await self.original_rows(), before)
+
+    async def test_old_reference_collision_with_same_group_sku_or_alias_still_blocks(self):
+        await self.renamed_import_history()
+        async with self.base.transaction() as db:
+            await db.execute(text('UPDATE products SET sku=:sku WHERE id=:id'),
+                dict(sku='syn-old', id=self.base.keeper))
+        before = await self.original_rows()
+        with self.assertRaisesRegex(core.links.LinkError, 'consolidation_nonlegacy_stock_history'):
+            await self.preview()
+        self.assertEqual(await self.original_rows(), before)
+        async with self.base.transaction() as db:
+            await db.execute(text('UPDATE products SET sku=:sku WHERE id=:id'),
+                dict(sku='RENAMED-SYN-KEEP', id=self.base.keeper))
+            db.add(ProductIdentifier(product_id=self.base.keeper, identifier_type=IdentifierType.internal_sku,
+                value='syn-old'))
+        before = await self.original_rows()
+        with self.assertRaisesRegex(core.links.LinkError, 'consolidation_nonlegacy_stock_history'):
+            await self.preview()
+        self.assertEqual(await self.original_rows(), before)
+
+    async def test_old_alias_does_not_waive_any_other_movement_provenance(self):
+        await self.renamed_import_history()
+        before = await self.original_rows()
+        raw = batch._request(BatchPreviewRequest(**self.value))
+        async with self.sessions() as db:
+            proof = await batch._capture(db, raw)
+            for change in ({'reference_source': 'upgates:xtrek'}, {'reference_source': 'manual'},
+                           {'created_by': 'operator'}, {'reference_type': 'receiving_session'},
+                           {'movement_type': 'RECEIVING_IN'}):
+                with self.subTest(change=change):
+                    savepoint = await db.begin_nested()
+                    try:
+                        values = dict(idempotency_key='synthetic-invalid-' + uuid4().hex,
+                            product_id=self.base.retired, warehouse_id=self.base.warehouse_id,
+                            movement_type='INITIAL', quantity=Decimal(1), balance_after=Decimal(2),
+                            reference_type='upgates_import', reference_source='upgates:biketrek',
+                            reference_id='SYN-OLD', created_by='upgates_import')
+                        db.add(StockMovement(**{**values, **change}))
+                        await db.flush()
+                        history = await batch._history(db, raw, proof['reference_schema'])
+                        with self.assertRaisesRegex(core.links.LinkError, 'consolidation_nonlegacy_stock_history'):
+                            await batch._admission(db, raw, proof['groups'], history)
+                    finally:
+                        await savepoint.rollback()
+        self.assertEqual(await self.original_rows(), before)
+
     async def test_atomic_two_group_commit_replay_and_complete_fk_conservation(self):
         await self.second_group()
         before = await self.original_rows()
@@ -258,6 +363,53 @@ class BatchDatabaseTests(unittest.IsolatedAsyncioTestCase):
             db.add(ProductIdentifier(product_id=third.id, identifier_type=IdentifierType.internal_sku, value='SYN-KEEP'))
         with self.assertRaisesRegex(core.links.LinkError, 'consolidation_foreign_identity_owner'):
             await self.preview()
+
+    async def test_pending_publication_names_only_its_fixed_gate(self):
+        async with self.base.transaction() as db:
+            db.add(ProductEditorPublication(id=str(uuid4()), product_id=self.base.keeper,
+                shop_id=self.base.shop_id, state='ready', document={'private': 'synthetic-marker'}))
+        before = await self.original_rows()
+        with self.assertRaises(core.links.LinkError) as failure:
+            await self.preview()
+        self.assertEqual(failure.exception.code,
+            'consolidation_batch_pending_publication_product_editor_publications')
+        self.assertFalse(failure.exception.known_unapplied)
+        self.assertEqual(await self.original_rows(), before)
+
+    async def ai_jobs(self, contexts):
+        async with self.base.transaction() as db:
+            group = AiBatch(id=uuid4().hex, request_hash='f' * 64)
+            db.add(group)
+            await db.flush()
+            jobs = [AiJob(id=uuid4().hex, batch_id=group.id, status='review', context=context)
+                    for context in contexts]
+            db.add_all(jobs)
+            return [job.id for job in jobs]
+
+    async def test_absent_and_json_null_ai_previews_allow_batch_without_changing_jobs(self):
+        await self.ai_jobs([{'code': 'SYN-KEEP'}, {'code': 'SYN-OLD', 'update_preview': None}])
+        async with self.sessions() as db:
+            before = await batch._summary(db, 'ai_content_jobs', 'true', {})
+        result = await self.apply()
+        self.assertEqual(result['status'], 'completed')
+        async with self.sessions() as db:
+            self.assertEqual(await batch._summary(db, 'ai_content_jobs', 'true', {}), before)
+
+    async def test_pending_and_malformed_nonnull_ai_previews_still_block(self):
+        job_id, = await self.ai_jobs([{'code': 'SYN-KEEP'}])
+        for value in ({'state': 'prepared'}, {'state': 'sending'}, {'state': 'uncertain'},
+                      {'state': 'unknown'}, {'state': None}, {}, [], 'malformed', 1, False):
+            with self.subTest(value=value):
+                async with self.base.transaction() as db:
+                    job = await db.get(AiJob, job_id)
+                    job.context = {'code': 'SYN-KEEP', 'update_preview': value}
+                async with self.sessions() as db:
+                    before = await batch._summary(db, 'ai_content_jobs', 'true', {})
+                with self.assertRaises(core.links.LinkError) as failure:
+                    await self.preview()
+                self.assertEqual(failure.exception.code, 'consolidation_batch_pending_publication_ai_content_jobs')
+                async with self.sessions() as db:
+                    self.assertEqual(await batch._summary(db, 'ai_content_jobs', 'true', {}), before)
 
     async def test_concurrent_same_uuid_busy_is_not_a_false_unapplied_receipt(self):
         preview = await self.preview()

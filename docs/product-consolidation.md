@@ -75,11 +75,25 @@ foreign-owner checks. The one-off route preserves all original typed product
 references, including invoice/receiving and source-card evidence, on their
 original IDs. It still rejects confirmed nonlegacy physical movements,
 reservations, quarantine, FIFO/tracking and order/native stock dependencies.
+An imported `INITIAL` movement may retain a SKU from before a rename. The
+one-off route accepts that original reference only when it equals the current
+SKU or an exact `internal_sku` on the same raw product ID with no supplier
+scope. The historical alias must not also identify another product through a
+current SKU or internal alias, including another card in the reviewed group.
+The import type, creator and matching Upgates source must still satisfy all
+legacy-history checks. Movement references and identifier rows remain unchanged;
+the ordinary consolidation route keeps its existing admission.
 Indexed current publication gates cover selected IDs/codes and parent codes;
 pending external delivery cannot be waived by the acknowledgements. Atomer
 worker/review/local locks require runnable campaigns to remain explicitly
 paused. Retained pending jobs and category intents are neither completed nor
 withdrawn by this operation.
+An unresolved publication returns
+`consolidation_batch_pending_publication_<table>`, where the suffix names the
+fixed gate that blocked the request; it contains no publication payload.
+An AI job with no `update_preview`, or the JSON `null` written by review/reopen,
+is not an unresolved update at this gate. Actual unresolved previews and malformed
+non-null values still block the batch; the operation never edits those jobs.
 
 Apply takes the identity and warehouse/product locks, then fences the complete
 installed product-FK tables and relevant writers. A fixed census checks the
