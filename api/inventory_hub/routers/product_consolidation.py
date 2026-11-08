@@ -9,6 +9,8 @@ from inventory_hub.database import get_session
 from inventory_hub.product_consolidation_types import ProductConsolidationApplyRequest, ProductConsolidationPreviewRequest
 from inventory_hub.routers.product_links import NoStoreRoute, actor, call
 from inventory_hub.services import product_consolidation as service
+from inventory_hub.services import product_consolidation_batch as batch
+from inventory_hub.product_consolidation_batch_types import BatchApplyRequest, BatchPreviewRequest
 
 class ConsolidationRoute(NoStoreRoute):
     validation_error_code = 'consolidation_invalid_request'
@@ -28,6 +30,21 @@ async def selection(product_ids: list[Annotated[int, Field(gt=0, le=900719925474
                     db: AsyncSession = Depends(get_session)):
     from inventory_hub.services import product_consolidation_selection
     return await call(product_consolidation_selection.inspect(db, product_ids))
+
+
+@router.post('/one-off/preview')
+async def one_off_preview(payload: BatchPreviewRequest, db: AsyncSession = Depends(get_session)):
+    return await call(batch.preview(db, payload))
+
+
+@router.post('/one-off/apply')
+async def one_off_apply(payload: BatchApplyRequest, request: Request, db: AsyncSession = Depends(get_session)):
+    return await call(batch.apply(db, payload, actor=actor(request)))
+
+
+@router.get('/one-off/{identifier}')
+async def one_off_get(identifier: UUID, db: AsyncSession = Depends(get_session)):
+    return await call(batch.get(db, str(identifier)))
 
 
 @router.get('/{identifier}')
