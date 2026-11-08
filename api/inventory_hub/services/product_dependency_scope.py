@@ -17,7 +17,7 @@ from inventory_hub.product_import_types import ImportValues
 from inventory_hub.services.product_identity import barcode_keys, verified_barcodes
 
 
-VERSION = 'typed-catalog-scope-v2'
+VERSION = 'typed-catalog-scope-v4'
 MAX_ITEMS = 20000
 MAX_NODES = 400000
 MAX_MATCHES = 100

@@ -193,8 +193,18 @@ quarantine, nonlegacy movement, receiving or inventory-count dependency blocks
 the group by default. A narrowly verified keeper receipt can use the explicit
 option below. Existing order lines by product ID, sale mapping or former/current
 sales code also block it. Supplier bindings and editor/SKU overrides can remain
-on the keeper; such dependencies on a duplicate require a later supported
-design. They are not silently moved.
+on the keeper. A duplicate's editor row is preserved only when its entire stored
+`data` document is exactly `{}`, its positive revision and timestamp are valid,
+and the installed table has the complete known columns and types. This is the
+normalized inheritance state retained by an editor reset. The full original row
+hash remains in the dependency inventory, with a separate
+`preserved_empty_editor_overrides` proof; its row, revision and audit are never
+deleted, moved or changed. A projection of null common/variant/shop fields is
+insufficient: warehouse settings, publication receipts, unknown keys, null or
+malformed documents and every nonempty value still block a duplicate. Existing
+Product locks and the required retired-reference trigger fence concurrent
+writers, and any row drift invalidates the preview. Other duplicate supplier,
+editor or SKU dependencies still require a later supported design.
 
 The dependency inventory reads the installed PostgreSQL catalog. Unknown
 nonempty product references, missing required tables, missing or disabled
@@ -307,6 +317,31 @@ Atomer receipt can be context only when its exact current code, native leaf,
 mapping and Hub owner are independently consistent. Pending Atomer selections
 remain blockers; pausing a campaign does not withdraw its jobs.
 
+Atomer's persisted `family_name` is a display label. Its source code, Hub owner,
+GTINs and native anchors remain identity inputs. Completing an automatic review
+advances the current review revision while retaining the job's frozen guards.
+A well-formed revision difference is inspected as the union of the saved
+selection and every member of the exact current family, with both saved and
+current effective shop scopes. Previously blocked or excluded members are
+included in that union. No campaign or job status makes the job harmless.
+Every saved/current guard is validated before comparison; a missing or added
+family member, unknown field or malformed scope retains an explicit hold.
+
+Possible xTrek parent effects include the current native family, frozen card
+receipts and their exact mapping-owner lineage, the old document, and native
+IDs in acknowledgements and content results. A later content phase is included
+even before a job reaches that phase. Unproved nested `previous_*` receipts or
+source-card history, pending content intents and extension plans remain holds;
+they are not discarded when current reviews differ. The complete raw and
+linked rows still participate in preview hashes and apply's input fences.
+The latest progress-run header is included too: its ID and source/admin hashes
+must agree with the campaign's checked run, matching the executor's next read.
+A newer run or a concurrent header writer blocks the existing preview.
+This changes only read-only dependency classification, with no SQL migration
+or activation of an Atomer job. Synthetic tests exercise the real review
+completion transition, affected owners, changed parents, malformed guards and
+preview-to-apply drift while preserving the stock ledger.
+
 Staged AI requires the actual stored draft ID, reciprocal row/job links, exact
 source selection and the original AI baseline. The complete current draft is
 checked because one finished family can advance save/publication for every
@@ -329,7 +364,8 @@ and reuse bytes, and 256,000,000 charged database body bytes per scan.
 These are decimal bytes, not resident-memory guarantees. A linked selection
 for a single indivisible operation remains limited to 20,000 rows, and distinct
 identity queries to 20,000. Charged work includes repeated source/draft reads;
-an admitted row can be charged before a cancelled fetch finishes. Overflow
+an immutable cache hit is reported as reused input instead of a new database
+body read. An admitted row can be charged before a cancelled fetch finishes. Overflow
 produces an explicit incomplete hold, never a successful prefix of the scope.
 Samples share a 1,000,000-byte allowance, normally retain 25 rows per table and
 prioritize bounded examples of later unknown/reference reasons. Full counts,
@@ -341,13 +377,36 @@ serialized resolver results. The key includes the full path-independent query
 (including supplier, GTINs, expected owner and SKU-policy inputs) and the exact
 supplier namespace. This reuse lives only inside the current repeatable-read
 snapshot or apply's held input fences. Every proof still records its own paths,
-owner references and full resolution hash; no raw row, linked draft or journal
-is skipped. A later inspection, including apply after preview, resolves fresh.
+owner references and full resolution hash. A later inspection, including apply
+after preview, resolves fresh.
 The optimization keeps at most 4,000,000 serialized bytes **within** the existing
 64,000,000-byte retained allowance. Deterministic eviction makes room for each
 complete raw operation; cache pressure causes another read, never a new
 eligibility exception or limit increase. Work metadata reports the bounded
 reuse footprint and hit/miss counts separately from logical link coverage.
+
+Complete linked selections also reuse immutable serialized inputs within that
+same inspection. Their key includes the exact table, selection predicate and
+all parameters. A hit decodes a fresh copy in the original dictionary order;
+the parser runs again and every operation still contributes its complete row
+hashes and logical edges. Selection statistics and the per-operation row,
+largest-row and retained-payload guards are checked on every use. The original
+count, bytes and largest row are kept only alongside a fully read, verified
+selection and compared with its decoded rows; a hit needs no repeated SQL
+serialization for those same statistics in the stable snapshot. Proven empty
+selections are included. No partial page, standalone statistics, classification
+or truncated projection is reused.
+
+Linked-input reuse has a 16,000,000-byte sublimit inside the same 64,000,000-byte
+allowance, shared with the full current operation and the identity cache.
+Deterministic eviction happens before decoding; lack of cache headroom falls
+back to a fresh bounded read. Every actual repeated body read is still charged
+against 256,000,000 bytes. `work.linked_input_reuse`, `reused_linked_rows` and
+`reused_linked_bytes` distinguish avoided reads from the unchanged complete
+`linked_manifest` coverage. Cache accounting is included in dependency equality,
+so a review prepared before this change needs a fresh preview. No identity,
+stock, history, lifecycle or unknown-shape guard is relaxed, and no SQL migration
+or operator configuration is required.
 
 Catalog journals use the pure merged base/result/event loader. No recovery
 reader, AI public serializer or network request runs during dependency proof.

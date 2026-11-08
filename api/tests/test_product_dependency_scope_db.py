@@ -22,6 +22,7 @@ from inventory_hub.product_consolidation_models import ProductCanonicalAlias, Pr
 from inventory_hub.services import product_consolidation as service, product_links as links
 from inventory_hub.services import product_dependency_scan as scan, product_dependency_scope as scope
 from inventory_hub.services import product_dependency_atomer_scope as atomer_scope
+from inventory_hub.services import atomer_catalog_engine as atomer_engine
 from inventory_hub.services import product_dependency_journals as journals
 from inventory_hub.services import ai_content, product_import, catalog_import
 
@@ -391,7 +392,10 @@ class ProductDependencyScopeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         campaign, family_key = 'f' * 64, 's:synthetic-scope'
         async with self.transaction() as db:
             await db.execute(text("INSERT INTO atomer_progress_sources(sha256,source_rows,identities) VALUES(:sha,1,'[]')"), {'sha': 'a' * 64})
-            run = await db.scalar(text("INSERT INTO atomer_progress_runs(source_sha256,checked_at,totals) VALUES(:sha,now(),'{}') RETURNING id"), {'sha': 'a' * 64})
+            await db.execute(text("INSERT INTO atomer_review_exports(sha256,format,compressed) VALUES(:sha,'admin_csv',:content)"),
+                             {'sha': 'b' * 64, 'content': b'synthetic-source'})
+            run = await db.scalar(text('''INSERT INTO atomer_progress_runs(source_sha256,admin_export_sha256,checked_at,totals)
+                VALUES(:sha,:admin,now(),'{}') RETURNING id'''), {'sha': 'a' * 64, 'admin': 'b' * 64})
             detail = {'code': selected, 'kind': 'standalone', 'state': 'needs_both', 'hub_id': None,
                       'ean': None, 'target_code': None, 'target_parent': None, 'product_id': None, 'variant_id': None}
             receipt = {}
@@ -429,6 +433,99 @@ class ProductDependencyScopeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(preview['eligible'])
         atomer = next(r for r in self.report(preview)['records'] if r['table'] == 'atomer_catalog_jobs')
         self.assertIn('/guards/rows/SYN-OLD', {p['path'] for p in atomer['matched_paths']})
+
+    async def test_actual_atomer_finish_keeps_complete_disjoint_scope_and_immutable_stock(self):
+        campaign, family_key = await self.atomer()
+        before = await self.stock()
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO atomer_review_work
+                (kind,key,revision,status,scope,decision,note,instruction,result,updated_by)
+                VALUES('item','SYN-UNRELATED',2,'working','default','undecided','','','','operator')'''))
+            guards = {'group': [0, 'open', 'default'], 'rows': {'SYN-UNRELATED': [2, 'working', 'default']},
+                'scope': {'SYN-UNRELATED': 'default'}, 'own': [['item', 'SYN-UNRELATED', 2]], 'excluded': {}, 'blocked': {}}
+            await db.execute(text('''UPDATE atomer_catalog_jobs SET guards=CAST(:guards AS jsonb)
+                WHERE campaign=:c AND family_key=:f'''), {'guards': json.dumps(guards), 'c': campaign, 'f': family_key})
+            await db.execute(text('''UPDATE atomer_progress_items SET detail=detail ||
+                '{"family_name":"SYN-OLD is a display label"}'::jsonb WHERE family_key=:f'''), {'f': family_key})
+            job = dict((await db.execute(text('''SELECT * FROM atomer_catalog_jobs
+                WHERE campaign=:c AND family_key=:f'''), {'c': campaign, 'f': family_key})).mappings().one())
+            await atomer_engine._finish(db, {'id': campaign, 'actor': 'operator'}, job,
+                {'SYN-UNRELATED': ('blocked', {'reason': 'Synthetic no outbound intent'})})
+            current = (await db.execute(text("SELECT revision,status FROM atomer_review_work WHERE kind='item' AND key='SYN-UNRELATED'"))).one()
+            self.assertEqual(tuple(current), (3, 'blocked'))
+            saved = await db.scalar(text('SELECT guards FROM atomer_catalog_jobs WHERE campaign=:c AND family_key=:f'),
+                                    {'c': campaign, 'f': family_key})
+            self.assertEqual(saved, guards)
+        preview = await self.preview()
+        self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+        atomer = next(r for r in self.report(preview)['records'] if r['table'] == 'atomer_catalog_jobs')
+        self.assertEqual(atomer['classification'], 'context_only')
+        self.assertIn('saved_and_current_atomer_review_scope_union', {p['reason'] for p in atomer['context_paths']})
+        self.assertEqual((await self.apply(preview))['status'], 'completed')
+        self.assertEqual(await self.stock(), before)
+
+    async def test_atomer_drift_union_still_revalidates_affected_current_owner_at_apply(self):
+        campaign, family_key = await self.atomer(fidelity=True)
+        before = await self.stock()
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO atomer_review_work
+                (kind,key,revision,status,scope,decision,note,instruction,result,updated_by)
+                VALUES('item','SYN-UNRELATED',3,'blocked','default','undecided','','','','operator')'''))
+        preview = await self.preview()
+        self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+        async with self.transaction() as db:
+            await db.execute(text('''UPDATE atomer_progress_items SET detail=detail ||
+                jsonb_build_object('hub_id',CAST(:owner AS bigint)) WHERE family_key=:f'''),
+                {'owner': self.retired, 'f': family_key})
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_changed'):
+            await self.apply(preview)
+        self.assertEqual(await self.stock(), before)
+        fresh = await self.preview()
+        self.assertFalse(fresh['eligible'])
+        atomer = next(r for r in self.report(fresh)['records'] if r['table'] == 'atomer_catalog_jobs')
+        self.assertEqual(atomer['classification'], 'reference')
+        self.assertIn('hub_product_id', {p['namespace'] for p in atomer['matched_paths']})
+
+    async def test_malformed_saved_atomer_guard_remains_unknown_after_current_review_changed(self):
+        campaign, family_key = await self.atomer()
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO atomer_review_work
+                (kind,key,revision,status,scope,decision,note,instruction,result,updated_by)
+                VALUES('item','SYN-UNRELATED',3,'blocked','default','undecided','','','','operator')'''))
+            await db.execute(text('''UPDATE atomer_catalog_jobs SET guards=jsonb_set(guards,
+                '{rows,SYN-UNRELATED}','[true,"working","default"]'::jsonb) WHERE campaign=:c AND family_key=:f'''),
+                {'c': campaign, 'f': family_key})
+        preview = await self.preview()
+        self.assertFalse(preview['eligible'])
+        atomer = next(r for r in self.report(preview)['records'] if r['table'] == 'atomer_catalog_jobs')
+        self.assertEqual(atomer['classification'], 'unknown')
+        self.assertIn('atomer_review_guard_shape_unknown', {p['code'] for p in atomer['problems']})
+
+    async def test_new_atomer_run_invalidates_preview_and_stale_campaign_scope(self):
+        await self.atomer()
+        before = await self.stock()
+        preview = await self.preview()
+        self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+        async with self.transaction() as db:
+            await db.execute(text('''INSERT INTO atomer_progress_runs(source_sha256,admin_export_sha256,checked_at,totals)
+                VALUES(:sha,:admin,now(),'{}')'''), {'sha': 'a' * 64, 'admin': 'b' * 64})
+        with self.assertRaisesRegex(links.LinkError, 'consolidation_dependencies_changed'):
+            await self.apply(preview)
+        self.assertEqual(await self.stock(), before)
+        fresh = await self.preview()
+        self.assertFalse(fresh['eligible'])
+        atomer = next(r for r in self.report(fresh)['records'] if r['table'] == 'atomer_catalog_jobs')
+        self.assertEqual(atomer['classification'], 'unknown')
+        self.assertIn('atomer_current_run_changed', {p['code'] for p in atomer['problems']})
+
+    async def test_atomer_source_header_writer_is_fenced_before_apply(self):
+        await self.atomer()
+        preview = await self.preview()
+        async with self.sessions() as writer:
+            await writer.execute(text("UPDATE atomer_progress_runs SET totals=totals || jsonb_build_object('changed',true)"))
+            with self.assertRaisesRegex(links.LinkError, 'consolidation_dependency_writer_busy'):
+                await asyncio.wait_for(self.apply(preview), 3)
+            await writer.rollback()
 
     async def test_historical_other_shop_parent_requires_current_exact_leaf_owner(self):
         await self.atomer(fidelity=True)

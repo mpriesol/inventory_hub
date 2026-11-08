@@ -55,7 +55,10 @@ async def atomer(closure, raw):
         't.id=:campaign', {'campaign': raw['campaign']}))
     campaign = campaigns.get(raw['campaign'])
     if campaign is None:
-        return None, None, {}
+        return None, None, {}, None
+    heads = await closure.rows('atomer_current_run', 'atomer_progress_runs',
+        't.id=(SELECT max(id) FROM atomer_progress_runs)', {})
+    head = heads[0]['document'] if len(heads) == 1 else None
     # Binding the pair through this exact campaign's checked_run_id avoids an
     # independent campaign-IN/family-IN cross product and the former global join.
     source_rows = await closure.rows('atomer_family', 'atomer_progress_items',
@@ -87,4 +90,4 @@ async def atomer(closure, raw):
         't.id=ANY(CAST(:ids AS bigint[]))', {'ids': sorted({row['document']['shop_id'] for row in maps})}))
     claims = {row['document']['id']: {**row['document'], 'shop_code': shops.get(row['document']['shop_id'], {}).get('code')}
               for row in maps}
-    return family, campaign, claims
+    return family, campaign, claims, head

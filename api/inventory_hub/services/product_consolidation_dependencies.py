@@ -18,6 +18,9 @@ from inventory_hub.services.product_dependency_scope import Scope
 PRESERVED = {'product_identifiers', 'product_variant_attributes', 'stock_balances', 'stock_movements',
              'shop_products', 'product_editor_audit'}
 KEEPER_ONLY = {'product_supply_sources', 'product_editor_overrides', 'product_sku_identities'}
+EDITOR_OVERRIDE_SCHEMA = {'product_id': 'bigint', 'revision': 'integer', 'data': 'jsonb',
+                          'updated_at': 'timestamp with time zone'}
+EMPTY_EDITOR_OVERRIDE = "t.data='{}'::jsonb AND t.revision>0 AND t.updated_at IS NOT NULL"
 PREVIEWS = {'product_link_previews', 'shared_stock_sale_previews', 'supplier_card_link_previews',
             'order_stock_previews', 'product_consolidations'}
 # These facts cannot execute a frozen product write. Typed references are still
@@ -139,7 +142,20 @@ async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, target
         if not summary['count'] or table in PRESERVED:
             continue
         if table in KEEPER_ONLY:
-            summary = await _summary(db, table, f't.{quoted(column)}=ANY(CAST(:retired AS bigint[]))', params)
+            retired_condition = f't.{quoted(column)}=ANY(CAST(:retired AS bigint[]))'
+            if ((table, column) == ('product_editor_overrides', 'product_id')
+                    and columns[table] == EDITOR_OVERRIDE_SCHEMA):
+                # A normal editor reset retains an empty row/revision and its
+                # audit. Prove the entire stored JSON is {}, not a projection
+                # of common/variant/shop fields that could hide another scope.
+                empty = await _summary(db, table,
+                    retired_condition + f' AND ({EMPTY_EDITOR_OVERRIDE}) IS TRUE', params)
+                if empty['count']:
+                    facts['preserved_empty_editor_overrides'] = empty
+                # SQL/JSON null, malformed rows, future columns and every
+                # nonempty document remain ordinary duplicate dependencies.
+                retired_condition += f' AND ({EMPTY_EDITOR_OVERRIDE}) IS NOT TRUE'
+            summary = await _summary(db, table, retired_condition, params)
         elif keeper_dependencies is not None and (table, column) in (
                 ('uploaded_invoice_lines', 'matched_product_id'), ('receiving_lines', 'product_id')):
             # Only complete server-discovered, independently proven rows receive

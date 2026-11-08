@@ -137,8 +137,11 @@ class DependencyPagingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             db.add(AiBatch(id=batch, request_hash='e' * 64)); await db.flush()
             for number in range(1, 32):
+                # Both known lifecycles reach the same incomplete-context
+                # reason, so the late kind must earn its own sample.
                 db.add(AiJob(id=f'{number:032x}', batch_id=batch,
-                    kind='product' if number < 31 else 'supplier_lookup', status='ready', revision=1, context={}))
+                    kind='product' if number < 31 else 'supplier_lookup',
+                    status='ready' if number < 31 else 'lookup_failed', revision=1, context={}))
         report = await self.current()
         self.assertTrue(report['complete'])
         self.assertEqual(report['classification_counts']['ai_content_jobs']['unknown'], 31)
@@ -235,7 +238,11 @@ class DependencyPagingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.stock(), before)
 
     async def test_representative_large_inventory_benchmark_is_complete_and_bounded(self):
-        await self.families(4425, 8, padding=2200)
+        campaign = await self.families(4425, 8, padding=2200)
+        async with self.transaction() as db:
+            await db.execute(text("""UPDATE atomer_catalog_campaigns
+                SET selection=jsonb_build_object('synthetic_context',repeat('x',1200000)) WHERE id=:id"""),
+                {'id': campaign})
         queries = 0
         def query(*args):
             nonlocal queries
@@ -255,5 +262,7 @@ class DependencyPagingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report['blockers'])
         self.assertGreater(report['work']['charged_bytes'], 83000000)
         self.assertLess(report['work']['charged_bytes'], scan.MAX_WORK_BYTES)
+        self.assertGreater(report['work']['reused_linked_bytes'], 5000000000)
+        self.assertGreater(report['linked_manifest']['bytes'], 5000000000)
         self.assertLessEqual(report['work']['peak_retained_payload_bytes'], scan.MAX_TOTAL_BYTES)
         self.assertLess(metrics['seconds'], scan.MAX_SCAN_SECONDS)
