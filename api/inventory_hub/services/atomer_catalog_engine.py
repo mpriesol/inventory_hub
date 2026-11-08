@@ -231,6 +231,13 @@ async def process(db,selection,mode,actor):
                 reason=f"{len(entries)} rodín, {count} predajných kódov. " + ('Dávka je uložená.' if mode=='apply' else 'Pripravené na spracovanie.'))
 
 
+async def _handoff_counts(db, campaign_id):
+    return dict(await _one(db, """SELECT count(*) AS handoff_families,
+          coalesce(sum(jsonb_array_length(a.request->'scope_codes')),0) AS handoff_leaves
+        FROM atomer_catalog_jobs j JOIN atomer_catalog_job_controls a ON a.request_id=j.operator_control_id
+        WHERE j.campaign=:c AND a.action='handoff'""", c=campaign_id))
+
+
 async def status(db):
     from inventory_hub.services import atomer_catalog_source_cards as local
     campaign=await _one(db,'SELECT * FROM atomer_catalog_campaigns ORDER BY updated_at DESC LIMIT 1')
@@ -254,6 +261,9 @@ async def status(db):
           +proof_from,c=cid,run=campaign['checked_run_id'])
     counts.update(dict(scopes))
     counts.update(await local.counts(db,campaign))
+    # Retained local receipts still count in their original proof states. A
+    # terminal handoff is separate outstanding publication work, never verified.
+    counts.update(await _handoff_counts(db, cid))
     counts['pending']=counts['total']-sum(counts[x] for x in ('verified','partial','blocked','excluded'))
     origin,examples=await outcomes.summary(db,campaign,counts['native_families'])
     counts.update(origin)
@@ -1247,6 +1257,7 @@ async def _step(db,c):
             await _exec(db,"UPDATE atomer_catalog_campaigns SET state='waiting',next_at=:n,problem=coalesce(nullif(problem,''),'Čaká sa na spätnú kontrolu.'),updated_at=now() WHERE id=:c",n=next_at,c=c['id'])
         else:
             residual=await db.scalar(text("SELECT count(*) FROM atomer_catalog_jobs WHERE campaign=:c AND stage IN ('partial','blocked')"),dict(c=c['id']))
+            handoff = await _handoff_counts(db, c['id'])
             uncovered=await db.scalar(text("""SELECT count(*) FROM atomer_progress_items i
                  JOIN atomer_catalog_jobs j ON j.campaign=:c AND j.family_key=i.family_key
                  LEFT JOIN atomer_catalog_proofs p ON p.campaign=j.campaign AND p.family_key=i.family_key AND p.code=i.code
@@ -1254,8 +1265,10 @@ async def _step(db,c):
             reason=f'Zostáva {residual} rodín na kontrolu.' if residual else ''
             if uncovered:
                 reason=(reason+' '+f'{uncovered} predajných kódov bez overenia.').strip()
+            if handoff['handoff_families']:
+                reason=(reason+' '+f"{handoff['handoff_families']} rodín odovzdaných na ručnú migráciu; publikovanie zostáva nedokončené.").strip()
             await _exec(db,"UPDATE atomer_catalog_campaigns SET state=:s,problem=:p,updated_at=now() WHERE id=:c",
-                        s='review' if residual or uncovered else 'done',p=reason,c=c['id'])
+                        s='review' if residual or uncovered or handoff['handoff_families'] else 'done',p=reason,c=c['id'])
         return False
     action={'pending':_prepare,'prepared':_dispatch,'sending':_observe,'observe':_observe,'cards':_cards,'related':_related,
             'fidelity':fidelity.prepare,'updating':fidelity.observe}[batch[0]['stage']]

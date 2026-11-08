@@ -81,7 +81,7 @@ def _plain(value):
     return json.loads(json.dumps(value, default=encode))
 
 
-async def _snapshot(db, campaign_id, family_key, *, lock=False):
+async def _snapshot(db, campaign_id, family_key, *, lock=False, allocations=True):
     # Proof UPDATE owns its row before its trigger takes job FOR SHARE. Never
     # wait here while holding the inverse job->proof order.
     suffix = ' FOR UPDATE NOWAIT' if lock else ''
@@ -104,6 +104,11 @@ async def _snapshot(db, campaign_id, family_key, *, lock=False):
     # Full rows pin current source identity and every operator-owned sibling.
     data['rows'] = _plain(rows)
     data['group'] = _plain(group)
+    if not allocations:
+        # The retained-job handoff reads a bounded complete saved/current union
+        # itself. Keep the original withdrawal query and response unchanged.
+        data.update(source_allocations=[], source_allocation_audits=[])
+        return data
     # A historic failed readback can have lost its newly allocated card ID in
     # a diagnostic receipt. The source writer allocates the exact source SKU;
     # inspect raw products including inactive/retired cards independently.
@@ -273,6 +278,11 @@ async def get(db, campaign_id, family_key, *, include_evidence=False):
     await db.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'))
     data = await _snapshot(db, campaign_id, family_key)
     result = inspect(data)
+    if data['job']['operator_control_id'] is not None and await db.scalar(text(
+            "SELECT action='handoff' FROM atomer_catalog_job_controls WHERE request_id=:id"),
+            {'id': data['job']['operator_control_id']}):
+        result['replan_eligible'] = False
+        result['blockers'] = sorted(set(result['blockers']) | {'catalog_handoff_terminal'})
     if include_evidence:
         from inventory_hub.services.atomer_catalog_job_evidence import build
         result['evidence'] = build(data)
@@ -315,6 +325,10 @@ async def change(db, campaign_id, action: Action, payload: JobControlRequest, ac
             await db.commit()
             return saved
         data = await _snapshot(db, campaign_id, payload.family_key, lock=True)
+        if data['job']['operator_control_id'] is not None and await db.scalar(text(
+                "SELECT action='handoff' FROM atomer_catalog_job_controls WHERE request_id=:id"),
+                {'id': data['job']['operator_control_id']}):
+            raise ReviewError('catalog_handoff_terminal')
         before = inspect(data)
         if before['snapshot_hash'] != payload.expected_snapshot_hash or before['selected_codes'] != payload.selected_codes:
             raise ReviewError('catalog_job_control_changed')

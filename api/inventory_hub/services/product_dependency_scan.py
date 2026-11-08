@@ -270,7 +270,7 @@ async def _journal(db, namespace, identifier, record, *, scope, budget, supplier
         'linked_input_manifest': edge, **proof.result()}, edge
 
 
-async def inspect(db, *, scope, columns, open_condition, request_id):
+async def inspect(db, *, scope, columns, open_condition, request_id, handoff_candidate=None):
     budget = inventory.Budget(MAX_ROW_BYTES, MAX_TOTAL_BYTES, MAX_WORK_BYTES, MAX_SCAN_SECONDS,
         reuse=ResolutionMemo(MAX_RESOLUTION_REUSE_BYTES),
         linked_reuse=ResolutionMemo(MAX_LINKED_REUSE_BYTES, sort_keys=False))
@@ -280,7 +280,7 @@ async def inspect(db, *, scope, columns, open_condition, request_id):
         # boundary contains reads only, never preview persistence or commit.
         async with asyncio.timeout(MAX_SCAN_SECONDS):
             return await _inspect(db, scope=scope, columns=columns, open_condition=open_condition,
-                request_id=request_id, budget=budget, checkpoint=checkpoint)
+                request_id=request_id, budget=budget, checkpoint=checkpoint, handoff_candidate=handoff_candidate)
     except TimeoutError:
         await db.rollback()
         report = checkpoint['report']
@@ -290,7 +290,7 @@ async def inspect(db, *, scope, columns, open_condition, request_id):
         raise InventoryTimeout(report) from None
 
 
-async def _inspect(db, *, scope, columns, open_condition, request_id, budget, checkpoint):
+async def _inspect(db, *, scope, columns, open_condition, request_id, budget, checkpoint, handoff_candidate=None):
     facts, inputs, blockers, conditions = {}, {}, [], {}
     samples = Samples()
     counts = {table: Counter() for table in sorted(TABLES)}
@@ -326,13 +326,14 @@ async def _inspect(db, *, scope, columns, open_condition, request_id, budget, ch
                 'reused_linked_bytes': budget.reused_linked_bytes,
                 'journal_observation_bytes': file_bytes, 'journal_limit_per_pass_bytes': journals.MAX_TOTAL_BYTES},
             'blockers': blockers}
+    candidate_seen = False
     try:
         for table in sorted(TABLES):
             fields = columns.get(table)
             if fields is None or {key for key, kind in fields.items() if kind == 'jsonb'} != JSON_COLUMNS[table]:
                 raise s.Unverified('known_table_schema_changed', table)
             condition = 'true' if table == 'product_import_drafts' else open_condition(table, fields)
-            if table == 'product_consolidations':
+            if table == 'product_consolidations' and request_id is not None:
                 condition += ' AND t.id<>:request_id'
             conditions[table] = condition
             stats = await inventory.statistics(db, table, condition, {'request_id': str(request_id)})
@@ -346,8 +347,24 @@ async def _inspect(db, *, scope, columns, open_condition, request_id, budget, ch
             root = inventory.Manifest(['table', table])
             async for row in inventory.documents(db, table, conditions[table], {'request_id': str(request_id)},
                     budget=budget, page_rows=PAGE_ROWS, manifest=root, expected=facts[table]):
-                record, edge = await _record(db, table, row, scope=scope, budget=budget,
-                    suppliers=suppliers, available_journals=available_journals)
+                if (table == 'atomer_catalog_jobs' and handoff_candidate is not None
+                        and _identity(table, row['document']) == handoff_candidate['row_identity']):
+                    # The separate handoff service has proved this complete
+                    # current job and local history under its worker fences.
+                    # Bind the exemption to the exact DB row, inside the full
+                    # enumeration, never to a sampled diagnostic projection.
+                    if candidate_seen or row['hash'] != handoff_candidate['row_hash']:
+                        raise s.Unverified('handoff_candidate_changed', table)
+                    candidate_seen = True
+                    edge = {'hash': handoff_candidate['proof_hash'], 'edges': 1, 'bytes': 0}
+                    proof = s.Proof(scope)
+                    proof.context('/handoff_candidate', 'independently_validated_handoff_candidate')
+                    record = {'table': table, 'row_identity': _identity(table, row['document']),
+                        'row_hash': row['hash'], 'linked_input_manifest': edge,
+                        **proof.result(), 'handoff_candidate': True}
+                else:
+                    record, edge = await _record(db, table, row, scope=scope, budget=budget,
+                        suppliers=suppliers, available_journals=available_journals)
                 counts[table][record['classification']] += 1
                 count_reasons(table, record)
                 proof_root.add_frame([table, row['key'], record])
@@ -358,6 +375,8 @@ async def _inspect(db, *, scope, columns, open_condition, request_id, budget, ch
             unsafe = counts[table]['unknown'] + counts[table]['reference']
             if unsafe:
                 blockers.append({'code': 'consolidation_pending_document', 'table': table, 'count': unsafe})
+        if handoff_candidate is not None and not candidate_seen:
+            raise s.Unverified('handoff_candidate_missing', 'atomer_catalog_jobs')
         # Decoded bodies have operation-local lifetime; reusable serialized
         # linked inputs remain bounded. File sets are parsed one at a time.
         row = None
