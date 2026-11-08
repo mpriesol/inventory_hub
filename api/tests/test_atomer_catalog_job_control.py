@@ -115,6 +115,208 @@ class JobControlDatabaseTests(unittest.IsolatedAsyncioTestCase):
         return {table: await self.conn.fetchval(f"SELECT coalesce(jsonb_agg(t ORDER BY to_jsonb(t)::text),'[]')::text FROM {table} t")
                 for table in tables}
 
+    async def campaign_action(self, action):
+        async with self.factory() as db:
+            current = await campaign_control.get(db, self.campaign)
+            payload = campaign_control.ControlRequest(request_id=uuid4(), expected_revision=current['revision'],
+                expected_updated_at=current['updated_at'], reason='Synthetic worker lifecycle boundary.', confirmed=True)
+            await campaign_control.change(db, self.campaign, action, payload, 'operator')
+
+    async def prepare_existing_targets(self):
+        # Match the progress writer's string native IDs. Exercise the actual
+        # shortcut, without a constructed payload or any native observation.
+        await self.conn.execute("""UPDATE atomer_progress_items SET detail=detail ||
+            jsonb_build_object('kind','variant','product_id','901','variant_id',CASE code WHEN 'a' THEN '91' ELSE '92' END)
+            WHERE family_key='v:P'""")
+        await self.campaign_action('resume')
+        async with self.factory() as db:
+            campaign = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_campaigns'))
+            job = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_jobs'))
+            with patch.object(engine, '_source', AsyncMock(side_effect=AssertionError('source/native preparation forbidden'))) as source:
+                await engine._prepare(db, campaign, [job])
+                source.assert_not_awaited()
+            await db.commit()
+        await self.campaign_action('pause')
+
+    async def test_actual_existing_target_prepare_can_withdraw_but_replan_does_not_recreate_pristine_class(self):
+        await self.prepare_existing_targets()
+        state = await self.current()
+        self.assertEqual(state['stage'], 'cards')
+        self.assertTrue(state['eligible'], state)
+        self.assertEqual(state['withdrawal_basis'], 'pre_reconcile_existing_targets')
+        self.assertEqual((state['proof_count'], state['source_card_count']), (0, 0))
+        protected = await self.protected()
+        original = json.loads(await self.conn.fetchval('SELECT to_jsonb(t)::text FROM atomer_catalog_jobs t'))
+        payload = await self.payload()
+        result = await self.change(payload=payload)
+        self.assertEqual(result['withdrawal_basis'], 'pre_reconcile_existing_targets')
+        self.assertFalse(result['remote_write_performed'])
+        self.assertFalse(result['physical_stock_changed'])
+        self.assertEqual(json.loads(await self.conn.fetchval('SELECT before_job::text FROM atomer_catalog_job_controls')), original)
+        self.assertTrue(await self.conn.fetchval("SELECT (evidence->>'document_is_sql_null')::boolean FROM atomer_catalog_job_controls"))
+        self.assertEqual(await self.protected(), protected)
+        self.assertTrue((await self.current())['replan_eligible'])
+        await self.change('replan')
+        self.assertEqual((await self.current())['withdrawal_basis'], 'unsent_pending')
+        self.assertEqual(await self.change(payload=payload), result)
+        await self.prepare_existing_targets()
+        state = await self.current()
+        self.assertEqual((state['stage'], state['job_revision']), ('cards', 2))
+        self.assertEqual(await self.conn.fetchval('SELECT receipt::text FROM atomer_catalog_jobs'), '{}')
+        self.assertFalse(state['eligible'], state)
+        self.assertIsNone(state['withdrawal_basis'])
+        self.assertEqual(await self.protected(), protected)
+
+    async def test_existing_target_class_requires_literal_empty_history_and_positive_complete_native_ids(self):
+        await self.prepare_existing_targets()
+        async with self.factory() as db:
+            base = await control._snapshot(db, self.campaign, 'v:P')
+        fields = ({'receipt': {'dispatched': False}}, {'receipt': {'isolate': False}}, {'receipt': []},
+                  {'document': {}}, {'attempts': 1}, {'attempts': False}, {'attempts': 0.0},
+                  {'source_card_attempts': 1}, {'source_card_attempts': False}, {'source_card_stage': 'blocked'},
+                  {'operator_control_revision': 1}, {'operator_control_revision': False},
+                  {'operator_control_id': str(uuid4())}, {'operator_withdrawn': True})
+        for changes in fields:
+            data = deepcopy(base); data['job'].update(changes)
+            with self.subTest(changes=changes):
+                self.assertFalse(control.inspect(data)['eligible'])
+        for field in ('product_id', 'variant_id'):
+            for value in (None, False, True, 0, -1, 0.0, 1.0, '', '0', '01', '-1', '+1', '1.0', ' 1', '١'):
+                data = deepcopy(base); data['rows']['b']['detail'][field] = value
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(control.inspect(data)['eligible'])
+        for detail in ({'kind': 'unknown'}, {'kind': 'standalone'}, {'code': 'other'}):
+            data = deepcopy(base); data['rows']['b']['detail'].update(detail)
+            with self.subTest(detail=detail):
+                self.assertFalse(control.inspect(data)['eligible'])
+        for key in ('proofs', 'source_cards'):
+            data = deepcopy(base)
+            row = dict(campaign=self.campaign, family_key='v:P', code='a', state='blocked',
+                       evidence={'reason': 'atomer_source_card_requires_review'}, checked_at='2026-01-01T00:00:00Z')
+            if key == 'source_cards':
+                row.update(run_id=1, card_id=None, created=None)
+            data[key] = [row]
+            self.assertFalse(control.inspect(data)['eligible'])
+        data = deepcopy(base); data['job']['guards']['scope'] = dict.fromkeys(('a', 'b'), 'biketrek')
+        self.assertFalse(control.inspect(data)['eligible'])
+        for detail in ({'product_id': 901, 'variant_id': 92}, {'kind': 'standalone', 'variant_id': None}):
+            data = deepcopy(base); data['rows']['b']['detail'].update(detail)
+            self.assertTrue(control.inspect(data)['eligible'])
+
+    async def test_json_null_document_is_not_sql_null_for_existing_target_class(self):
+        await self.prepare_existing_targets()
+        await self.conn.execute("UPDATE atomer_catalog_jobs SET document='null'::jsonb")
+        async with self.factory() as db:
+            data = await control._snapshot(db, self.campaign, 'v:P')
+        self.assertIsNone(data['job']['document'])
+        self.assertFalse(data['document_is_sql_null'])
+        self.assertFalse(control.inspect(data)['eligible'])
+        with self.assertRaisesRegex(engine.ReviewError, 'catalog_job_not_unsent_pending'):
+            await self.change()
+        self.assertEqual(await self.conn.fetchval('SELECT count(*) FROM atomer_catalog_job_controls'), 0)
+
+    async def test_existing_target_snapshot_pins_native_ids_and_current_review_guards(self):
+        await self.prepare_existing_targets()
+        payload = await self.payload()
+        await self.conn.execute("""UPDATE atomer_progress_items SET detail=detail || '{"variant_id":"93"}'
+            WHERE code='b'""")
+        with self.assertRaisesRegex(engine.ReviewError, 'catalog_job_control_changed'):
+            await self.change(payload=payload)
+        self.assertTrue((await self.current())['eligible'])
+        await self.conn.execute("UPDATE atomer_review_work SET revision=revision+1 WHERE key='b'")
+        state = await self.current()
+        self.assertFalse(state['eligible'])
+        self.assertIn('catalog_job_reviews_changed', state['blockers'])
+        with self.assertRaisesRegex(engine.ReviewError, 'catalog_job_reviews_changed'):
+            await self.change()
+        self.assertEqual(await self.conn.fetchval('SELECT count(*) FROM atomer_catalog_job_controls'), 0)
+
+    async def test_existing_target_shortcut_still_rejects_source_allocation_and_rename_history(self):
+        await self.prepare_existing_targets()
+        await self.conn.execute("INSERT INTO products VALUES(81,'a','atomer')")
+        self.assertIn('catalog_job_prior_source_allocation', (await self.current())['blockers'])
+        await self.conn.execute("UPDATE products SET sku='renamed-source' WHERE id=81")
+        await self.conn.execute('''INSERT INTO product_editor_audit VALUES(7,81,'{"sku":"a"}','{"sku":"renamed-source"}')''')
+        self.assertIn('catalog_job_prior_source_allocation', (await self.current())['blockers'])
+        with self.assertRaisesRegex(engine.ReviewError, 'catalog_job_prior_source_allocation'):
+            await self.change()
+
+    async def test_actual_observation_into_cards_is_not_an_unsent_existing_target_shortcut(self):
+        from inventory_hub.services import atomer_new_native as native
+        await self.prepare_existing_targets()
+        document = {'payload': {'code': 'P', 'variants': [{'code': 'a'}, {'code': 'b'}]}}
+        observed = dict(status='verified', issues=[], identity_verified=True, verified_fields=True,
+                        product_id=901, variants={'a': 91, 'b': 92}, native={'product_id': 901, 'code': 'P'})
+        async with self.factory() as db:
+            campaign = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_campaigns'))
+            await engine._job(db, self.campaign, 'v:P', 'observe', document=document, receipt={'dispatched': True})
+            job = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_jobs'))
+            with patch.object(native, 'observe', return_value={'P': observed}) as read:
+                await engine._observe(db, campaign, [job])
+                read.assert_called_once()
+            await db.commit()
+        state = await self.current()
+        self.assertEqual(state['stage'], 'cards')
+        self.assertFalse(state['eligible'])
+        self.assertIn('catalog_job_document_present', state['blockers'])
+        self.assertIn('catalog_job_effects_unverified', state['blockers'])
+
+    async def test_committed_card_reconciliation_keeps_receipts_and_proofs_that_block_withdrawal(self):
+        from inventory_hub.services import atomer_card_batch as cards
+        await self.prepare_existing_targets()
+        # This local table models an existing mapping write at the reconcile
+        # boundary. The actual _cards writer must retain its paired receipt.
+        await self.conn.execute('CREATE TABLE test_existing_links(id int PRIMARY KEY,native_id int); INSERT INTO test_existing_links VALUES(1,700)')
+        async def reconciled(db, run, codes, **kwargs):
+            self.assertTrue(kwargs['apply'])
+            await db.execute(text('UPDATE test_existing_links SET native_id=901 WHERE id=1'))
+            return {code: dict(status='verified', card_id=81 + pos, xtrek={'product_id': 901, 'variant_id': 91 + pos})
+                    for pos, code in enumerate(codes)}
+        async with self.factory() as db:
+            campaign = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_campaigns'))
+            job = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_jobs'))
+            with patch.object(cards, 'reconcile', side_effect=reconciled):
+                await engine._cards(db, campaign, [job])
+            await db.commit()
+        self.assertEqual(await self.conn.fetchval('SELECT native_id FROM test_existing_links'), 901)
+        state = await self.current()
+        self.assertFalse(state['eligible'])
+        self.assertEqual(state['proof_count'], 2)
+        self.assertIn('catalog_job_effects_unverified', state['blockers'])
+        receipt = json.loads(await self.conn.fetchval('SELECT receipt::text FROM atomer_catalog_jobs'))
+        self.assertEqual(set(receipt['cards']), {'a', 'b'})
+        with self.assertRaises(engine.ReviewError):
+            await self.change()
+
+    async def test_quota_failure_before_or_after_partial_local_write_rolls_back_before_rescheduling(self):
+        from inventory_hub.services import atomer_card_batch as cards
+        from inventory_hub.services.product_link_source import SourceError
+        await self.prepare_existing_targets()
+        await self.conn.execute('CREATE TABLE test_existing_links(id int PRIMARY KEY,native_id int); INSERT INTO test_existing_links VALUES(1,700)')
+        for after_write in (False, True):
+            with self.subTest(after_write=after_write):
+                await self.campaign_action('resume')
+                await self.conn.execute('UPDATE atomer_catalog_jobs SET next_at=now()')
+                async def rejected(db, run, codes, **kwargs):
+                    if after_write:
+                        await db.execute(text('UPDATE test_existing_links SET native_id=901 WHERE id=1'))
+                        self.assertEqual(await db.scalar(text('SELECT native_id FROM test_existing_links')), 901)
+                    raise SourceError('synthetic_quota_exhausted', 429, 60)
+                async with self.factory() as db:
+                    campaign = dict(await engine._one(db, 'SELECT * FROM atomer_catalog_campaigns'))
+                    with patch.object(cards, 'reconcile', side_effect=rejected) as reconcile:
+                        self.assertTrue(await engine._step(db, campaign))
+                        reconcile.assert_awaited_once()
+                    await db.commit()
+                await self.campaign_action('pause')
+                self.assertEqual(await self.conn.fetchval('SELECT native_id FROM test_existing_links'), 700)
+                state = await self.current()
+                self.assertEqual((state['stage'], state['proof_count'], state['source_card_count']), ('cards', 0, 0))
+                self.assertTrue(state['eligible'], state)
+                self.assertEqual(state['withdrawal_basis'], 'pre_reconcile_existing_targets')
+                self.assertEqual(await self.conn.fetchval('SELECT receipt::text FROM atomer_catalog_jobs'), '{}')
+                self.assertTrue(await self.conn.fetchval('SELECT next_at>now() FROM atomer_catalog_jobs'))
+
     async def test_withdraw_and_explicit_replan_preserve_all_proofs_and_review_history(self):
         await self.conn.execute("""UPDATE atomer_catalog_jobs SET attempts=6,receipt='{"isolate_phase":"pending"}',
             source_card_stage='blocked',source_card_attempts=3,problem='registry temporarily unavailable'""")

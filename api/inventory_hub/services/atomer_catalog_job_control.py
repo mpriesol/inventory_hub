@@ -89,11 +89,11 @@ async def _snapshot(db, campaign_id, family_key, *, lock=False):
                                  c=campaign_id)
     if not campaign:
         raise ReviewError('catalog_campaign_not_found', 404)
-    job = await engine._one(db, 'SELECT to_jsonb(t) AS data FROM atomer_catalog_jobs t '
+    job = await engine._one(db, 'SELECT to_jsonb(t) AS data,document IS NULL AS document_is_sql_null FROM atomer_catalog_jobs t '
                             'WHERE campaign=:c AND family_key=:f' + suffix, c=campaign_id, f=family_key)
     if not job:
         raise ReviewError('catalog_job_not_found', 404)
-    data = dict(campaign=campaign['data'], job=job['data'])
+    data = dict(campaign=campaign['data'], job=job['data'], document_is_sql_null=job['document_is_sql_null'])
     for table, key in (('atomer_catalog_proofs', 'proofs'), ('atomer_catalog_source_cards', 'source_cards')):
         rows = await engine._rows(db, f'SELECT to_jsonb(t) AS data FROM {table} t '
             'WHERE campaign=:c AND family_key=:f ORDER BY code LIMIT 501' + suffix, c=campaign_id, f=family_key)
@@ -164,6 +164,49 @@ def _negative_evidence(value, *, source=False):
     return all(v is None or isinstance(v, str) and len(v) <= 4000 for v in value.values())
 
 
+def _native_id(value):
+    # The progress writer stores IDs as decimal strings; observed API values
+    # may be integers. Neither truthiness nor int(value) is a positive proof.
+    return (type(value) is int and value > 0 or isinstance(value, str) and bool(value)
+            and value.isascii() and value.isdecimal() and value[0] != '0')
+
+
+def _pre_reconcile_cards(data, selected):
+    """Recognize only _prepare's untouched existing-target shortcut.
+
+    _observe retains a document and native receipt. _cards commits its complete
+    card receipts/proofs with reconciliation in the same transaction; a quota
+    failure rolls those changes back before rescheduling. Replan can reset a
+    receipt, but can never erase the control revision. All other inspect guards
+    (including raw prior allocations and rename audits) still apply.
+    """
+    j = data['job']
+    if (j.get('stage') != 'cards' or j.get('operator_withdrawn') is not False
+            or data.get('document_is_sql_null') is not True or j.get('document') is not None
+            or type(j.get('receipt')) is not dict or j['receipt'] != {}
+            or j.get('source_card_stage') != 'pending'
+            or any(type(j.get(k)) is not int or j[k] != 0
+                   for k in ('attempts', 'source_card_attempts', 'operator_control_revision'))
+            or j.get('operator_control_id') is not None or data['proofs'] or data['source_cards'] or not selected):
+        return False
+    targets = [k for k in selected if j['guards']['scope'][k] != 'biketrek']
+    # Keep the all-BIKETREK shortcut outside this contract: the new class must
+    # positively contain current native targets, not pass an empty all().
+    if not targets:
+        return False
+    for code in targets:
+        row = data['rows'].get(code)
+        detail = row.get('detail') if isinstance(row, dict) else None
+        if not isinstance(detail, dict) or detail.get('code') != code or not _native_id(detail.get('product_id')):
+            return False
+        if detail.get('kind') == 'variant':
+            if not _native_id(detail.get('variant_id')):
+                return False
+        elif detail.get('kind') != 'standalone' or detail.get('variant_id') is not None:
+            return False
+    return True
+
+
 def inspect(data):
     c, j = data['campaign'], data['job']
     problems = []
@@ -211,7 +254,8 @@ def inspect(data):
     if len(json.dumps(data, ensure_ascii=False).encode()) > MAX_BYTES:
         problems.append('catalog_job_evidence_limit')
     withdrawn = j.get('operator_withdrawn') is True
-    valid_stage = j['stage'] == ('excluded' if withdrawn else 'pending')
+    pre_reconcile = _pre_reconcile_cards(data, selected)
+    valid_stage = j['stage'] == ('excluded' if withdrawn else 'pending') or pre_reconcile
     if not valid_stage:
         problems.append('catalog_job_not_unsent_pending')
     return dict(snapshot_hash=_digest(data), campaign_id=c['id'], family_key=j['family_key'],
@@ -219,6 +263,8 @@ def inspect(data):
                 job_revision=j['operator_control_revision'], operator_withdrawn=withdrawn,
                 last_control_request=j['operator_control_id'], stage=j['stage'], selected_codes=selected or [],
                 eligible=not problems and not withdrawn, replan_eligible=not problems and withdrawn,
+                withdrawal_basis=('pre_reconcile_existing_targets' if pre_reconcile else 'unsent_pending')
+                    if not problems and not withdrawn else None,
                 blockers=sorted(set(problems)), proof_count=len(data['proofs']), source_card_count=len(data['source_cards']),
                 remote_requests=0, remote_write_performed=False)
 
@@ -285,6 +331,7 @@ async def change(db, campaign_id, action: Action, payload: JobControlRequest, ac
         result = dict(status='completed', action=action, request_id=str(payload.request_id), request_hash=request_hash,
                       campaign_id=campaign_id, family_key=payload.family_key, actor=actor, reason=payload.reason,
                       selected_codes=before['selected_codes'], before_snapshot_hash=before['snapshot_hash'],
+                      withdrawal_basis=before['withdrawal_basis'] if action == 'withdraw' else None,
                       before_job_hash=_digest(old), after_job_hash=_digest(new), job_revision=new['operator_control_revision'],
                       operator_withdrawn=new['operator_withdrawn'], stage=new['stage'],
                       proofs_preserved=True, review_history_preserved=True, original_job_preserved=True,
