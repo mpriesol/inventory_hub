@@ -50,7 +50,9 @@ async def source_export(kind: Literal['buyers', 'admin'], run_id: int = Query(ge
         result = await atomer_source_export.download(db, run_id, kind)
     except ReviewError as error:
         raise HTTPException(error.status, detail={'code': error.code}) from None
-    return Response(result['body'], media_type=result['media_type'], headers={
+    return Response(result['body'], headers={
+        # CSV archives may be CP1250. Do not invent a charset for original bytes.
+        'Content-Type': result['media_type'],
         'Content-Disposition': f'attachment; filename="{result["filename"]}"',
         'X-Content-SHA256': result['sha256'], 'X-Atomer-Run-Id': str(result['run_id']),
         'X-Content-Type-Options': 'nosniff'})

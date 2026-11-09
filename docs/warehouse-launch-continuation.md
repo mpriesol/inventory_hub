@@ -1,8 +1,10 @@
 # Warehouse launch and correction work — continuation record
 
-Updated: 2026-11-09 08:59 UTC. Status: implementation in progress; order policies,
+Updated: 2026-11-09 09:16 UTC. Status: PR validation in progress; order policies,
 read-only collection and webhook registration have been configured. Test reset,
 stock adoption and live stock authority have NOT been applied.
+Current costs from the nine evidenced test FIFO roots have been revised to
+unknown with audit, without changing quantities or movement history.
 
 This is the durable continuation record for the owner's 9 November instruction.
 Read it together with AGENTS.md; do not depend on a previous chat.
@@ -159,13 +161,37 @@ OVERVIEW.md and AGENTS.md integration. Invoice agent coordinates both locale fil
   `Hub_obnova_20261109.zip`. The latter holds operation intents/results and
   source snapshots, never the API token or a repository copy. Obtain the latest
   versions from the owner when continuing in another account.
+- Completed feature checkpoint:
+  `2bf023c302c0e114599f43b466c81e38eccc32ac`,
+  [PR #185](https://github.com/mpriesol/inventory_hub/pull/185).
+  First full CI run 42590664662 passed the frontend but found four receiving
+  integration cases in three test fixtures missing the invoice schema. Those
+  fixtures now include 003/033/051/052; all four affected cases passed in isolated
+  reruns. Full CI must pass on the final updated head before merge.
+- The follow-up also preserves original CP1250 source-export bytes without
+  declaring an invented UTF-8 charset; the four export tests passed again.
+- 09:10–09:11 UTC: fresh API reads confirmed all three runtime write switches
+  (regular stock, maintenance publication and FIFO cost publication) are false.
+  Both stock-sync authorities/schedulers remain off with zero baselines. These
+  env flags have no API setter; deployment preserves existing server values.
+  Authorized runtime configuration access is still required for activation.
+  The owner's current request covers activation work; do not invent a new
+  generic approval request. Do not bypass unavailable server access with a new
+  deployment workflow. External writer/checkout pause must be verified before
+  claiming the baseline maintenance prerequisites.
+- 09:12–09:15 UTC: used the existing FIFO cost-revision API for exactly nine
+  current roots proven to originate from the frozen test receipts. All are now
+  `unknown`/NULL at cost revision 1 with the original prices retained in audit.
+  Readback verified 54 units, zero reserved/quarantined, nine confirmed cards
+  and unchanged movement history (2,746 rows, latest ID 3,164). Current valuation
+  is unknown, not zero. This operation did not archive documents or adopt stock.
 
 ## Next concrete work
 
-1. Finish collector date-boundary correction and source-archive re-upload guard;
-   integrate the reviewed UI acknowledgment/recovery checks.
-2. Publish the completed branch checkpoint, open PR, pass full CI, review and
-   merge/deploy under standing permission. Verify deployed routes separately.
+1. Preserve the reviewed collector, source-archive and UI recovery fixes already
+   in the branch. Do not start competing implementations.
+2. Pass full CI on the final PR head, review and merge/deploy under standing
+   permission. Verify deployed routes separately.
 3. Use the pinned Atomer admin source export to resolve remaining source IDs;
    produce the exact quantity selection manifest with provenance. No guessed
    identities/units, no zero for missing source rows, no duplicated shared stock.

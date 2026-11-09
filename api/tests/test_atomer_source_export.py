@@ -56,10 +56,16 @@ class SourceExportRoutes(unittest.TestCase):
             self.assertEqual(reply.headers['x-content-type-options'], 'nosniff')
             self.assertIn('attachment;', reply.headers['content-disposition'])
             self.assertEqual(download.call_args.args[1:], (7, 'buyers'))
+            csv = 'Katalógové číslo;Názov\nA;Žltý\n'.encode('cp1250')
+            download.return_value = {**result, 'body': csv, 'sha256': sha256(csv).hexdigest(),
+                                     'filename': 'atomer-admin-run-7.csv', 'media_type': 'text/csv'}
+            csv_reply = client.get('/migration/atomer-progress/source-export/admin?run_id=7', headers=headers)
+            self.assertEqual(csv_reply.content, csv)
+            self.assertEqual(csv_reply.headers['content-type'], 'text/csv')
             for suffix in ('other?run_id=7', 'buyers', 'buyers?run_id=0', 'buyers?run_id=9223372036854775808'):
                 self.assertEqual(client.get('/migration/atomer-progress/source-export/' + suffix,
                                             headers=headers).status_code, 422)
-            self.assertEqual(download.await_count, 1)
+            self.assertEqual(download.await_count, 2)
             download.side_effect = ReviewError('atomer_source_export_invalid', 409)
             rejected = client.get(url, headers=headers)
             self.assertEqual(rejected.status_code, 409)
@@ -83,7 +89,7 @@ class SourceExportDatabase(unittest.IsolatedAsyncioTestCase):
             connect_args={'server_settings': {'search_path': self.schema}})
         self.sessions = async_sessionmaker(self.pg, expire_on_commit=False)
         self.xml = b'<PRODUCTS><PRODUCT><PRODUCT_ID>EXACT-1</PRODUCT_ID></PRODUCT></PRODUCTS>'
-        self.csv = 'Interne cislo;Katalogove cislo;Pocet kusov\n17;EXACT-1;3\n'.encode()
+        self.csv = 'Interné číslo;Katalógové číslo;Názov\n17;EXACT-1;Žltý\n'.encode('cp1250')
         self.xml_sha, self.csv_sha = sha256(self.xml).hexdigest(), sha256(self.csv).hexdigest()
         for fmt, raw, digest in (('buyers', self.xml, self.xml_sha), ('admin_csv', self.csv, self.csv_sha)):
             await self.conn.execute('INSERT INTO atomer_review_exports(sha256,format,compressed) VALUES($1,$2,$3)',
