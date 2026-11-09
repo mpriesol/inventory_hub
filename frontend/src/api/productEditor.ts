@@ -8,12 +8,17 @@ export interface ProductEditorOptions {
   shops: { id: number; code: string; name: string }[]; warehouses: { id: number; code: string; name: string; is_default?: boolean }[];
   brands: string[]; page_sizes: number[]; currency: 'EUR'; price_basis: 'incl_vat';
 }
-export interface ProductShopValues { name: string | null; sale_price_gross: string | null; visible: boolean | null }
+export interface ProductShopValues { name: string | null; sale_price_gross: string | null; visible: boolean | null; shop_url?: string | null; shop_admin_url?: string | null }
+export interface ProductCardSupplier {
+  supplier_id: number; supplier_code: string; supplier_name: string; supplier_product_id: number;
+  supplier_sku: string; product_url: string | null; is_primary: boolean; is_active: boolean;
+}
 export interface ProductEditorRow {
   canonical_product_id?: number; retired?: boolean;
   is_active: boolean; supplier_linked: boolean; item_type: ProductItemType; stock_unit: StockUnit; item_definition_locked?: boolean;
   id: number; sku: string; group: { id: number; code: string; name: string } | null;
   attributes: { name: string; value: string }[]; eans: string[]; supplier_codes: { supplier_code: string; code: string }[]; image_url: string | null;
+  suppliers?: ProductCardSupplier[];
   supplier_availability?: {
     available: boolean | null; fresh: boolean; label: string; source: string | null;
     quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown';
@@ -25,7 +30,7 @@ export interface ProductEditorRow {
     last_error?: string | null; refresh_state?: 'idle' | 'queued' | 'running';
     action?: 'configure' | 'refresh' | 'check_source' | 'wait' | 'link';
   };
-  revision: number; snapshot_hash: string; common: { name: string; brand: string | null; internal_note: string | null; image_url?: string | null };
+  revision: number; snapshot_hash: string; common: { name: string; brand: string | null; internal_note: string | null; image_url?: string | null; description?: string | null };
   variant: { sale_price_gross: string | null; vat_rate: string | null; note: string | null; attributes?: { name: string; value: string }[] | null; eans?: string[] | null };
   warehouse: { code: string; location: string | null; min_quantity: string | null } | null;
   stock: { managed?: boolean; known: boolean; tracking_status?: 'confirmed' | 'unconfirmed' | 'no_warehouse' | 'nonstock'; started_at?: string | null; qty_on_hand: string | null; qty_reserved: string | null; qty_quarantined: string | null; qty_available: string | null; avg_cost: string | null; total_value: string | null };
@@ -48,7 +53,7 @@ export interface ProductEditorPageData { items: ProductEditorRow[]; total: numbe
 export interface ProductEditorChange {
   is_active?: boolean; item_type?: ProductItemType; stock_unit?: StockUnit;
   product_id: number; expected_revision: number; snapshot_hash: string;
-  common?: Partial<Record<'name' | 'brand' | 'internal_note' | 'image_url', string | null>>;
+  common?: Partial<Record<'name' | 'brand' | 'internal_note' | 'image_url' | 'description', string | null>>;
   variant?: Partial<Record<'sale_price_gross' | 'vat_rate' | 'note', string | null>> & { attributes?: { name: string; value: string }[] | null; eans?: string[] | null; sku?: string | null };
   warehouse?: Partial<Record<'location' | 'min_quantity', string | null>>;
   shops?: Record<string, Partial<ProductShopValues>>;
@@ -59,7 +64,10 @@ export interface ProductEditorSave {
   results: { product_id: number; status: 'saved' | 'conflict' | 'invalid' | 'missing'; row?: ProductEditorRow; errors: { code: string; field?: string }[] }[];
 }
 export type ProductEditorSnapshot = Pick<ProductEditorRow, 'common' | 'variant' | 'warehouse' | 'shops' | 'overrides'> & Partial<Pick<ProductEditorRow, 'is_active' | 'item_type' | 'stock_unit' | 'sku' | 'eans' | 'attributes' | 'image_url'>>;
-export interface ProductEditorDetail extends ProductEditorRow { audit: { id: number; created_at: string; before: ProductEditorSnapshot; after: ProductEditorSnapshot }[] }
+export interface ProductEditorDetail extends ProductEditorRow {
+  warehouse_context?: { id: number; code: string; name: string } | null;
+  audit: { id: number; created_at: string; before: ProductEditorSnapshot; after: ProductEditorSnapshot }[];
+}
 export interface ProductEditorSaveBody { request_id: string; warehouse_code: string | null; confirmed: true; changes: ProductEditorChange[] }
 const base = '/api/product-editor';
 export interface ProductCardCreate { request_id: string; sku?: string; name: string; is_active: boolean; item_type?: ProductItemType; stock_unit?: StockUnit; sku_identity?: SkuIdentityInput; eans?: string[]; supplier_id?: number; supplier_sku?: string }
@@ -88,6 +96,11 @@ export const getEditorProducts = async (filters: ProductEditorFilters, signal?: 
   return { ...first, items: visible, page: filters.page, page_size: filters.page_size };
 };
 export const getEditorProduct = (id: number, warehouse: string, signal?: AbortSignal) => hubRequest<ProductEditorDetail>(`${base}/products/${id}${warehouse ? `?warehouse_code=${encodeURIComponent(warehouse)}` : ''}`, undefined, signal);
+export const getEditorProductBySku = (sku: string, warehouse: string, signal?: AbortSignal) => {
+  const params = new URLSearchParams({ sku });
+  if (warehouse) params.set('warehouse_code', warehouse);
+  return hubRequest<ProductEditorDetail>(`${base}/products/resolve?${params}`, undefined, signal);
+};
 export const saveEditorProducts = (body: ProductEditorSaveBody) => hubRequest<ProductEditorSave>(`${base}/save`, body);
 export const getEditorSave = (id: string, signal?: AbortSignal) => hubRequest<ProductEditorSave>(`${base}/saves/${encodeURIComponent(id)}`, undefined, signal);
 

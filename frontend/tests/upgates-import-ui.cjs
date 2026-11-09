@@ -19,7 +19,6 @@ const React = require('react');
 const { act } = React;
 const { createRoot } = require('react-dom/client');
 const { UpgatesImportModal } = require('../src/components/UpgatesImportModal.tsx');
-const { ProductDetailView } = require('../src/components/product/ProductDisplay.tsx');
 const requests = [];
 let imported = 0;
 let preview = {
@@ -30,15 +29,6 @@ let preview = {
 let importResult = { message: 'Product data imported', skipped: [], stock_initialized: 0 };
 let previewAfterImport;
 let failPreview = false;
-let productDetail = {
-  sku: 'SHARED-1', name: 'Shared item', brand: 'Test', group: null, image_url: null,
-  attributes: [], identifiers: [], stock: { on_hand: 0, reserved: 0, available: 0 },
-  shops: [
-    { shop: 'biketrek', external_code: 'SHARED-1', parent_code: 'xTrek', variant_code: 'SHARED-1' },
-    { shop: 'xtrek', external_code: 'SHARED-1', parent_code: 'WEB-PARENT', variant_code: 'SHARED-1' },
-  ],
-};
-let pushReason = 'selection_expands_family';
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   requests.push({ path, body });
@@ -51,8 +41,6 @@ global.fetch = async (path, init = {}) => {
     data = structuredClone(importResult);
     if (previewAfterImport) preview = structuredClone(previewAfterImport);
   }
-  else if (path === '/api/stock/product/SHARED-1') data = structuredClone(productDetail);
-  else if (path.endsWith('/upgates/products/push')) data = { shop: 'xtrek', pushed_products: 0, skipped: [{ sku: 'SHARED-1', reason: pushReason }], message: 'Skipped', batches: [] };
   else throw new Error(`Unexpected request: ${path}`);
   return { ok: true, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(data) };
 };
@@ -251,34 +239,10 @@ async function mount(key) {
   await click(leavesCheckbox());
   assert(importButton().disabled, 'Leaving individual mode does not silently select whole families');
 
-  await act(async () => root.render(React.createElement(ProductDetailView, { key: 'shop-parent-codes', sku: 'SHARED-1' })));
-  assert(document.body.textContent.includes('V shope biketrek: xTrek / SHARED-1'), 'The BIKETREK cash register parent is visible separately from its item');
-  assert(document.body.textContent.includes('V shope xtrek: WEB-PARENT / SHARED-1'), 'Each shop shows its own parent, independent of the canonical item group');
-  assert(!document.body.textContent.includes('SHARED-1 / SHARED-1'), 'A known parent does not repeat the leaf code');
-
-  productDetail = { ...productDetail, shops: [{ shop: 'biketrek', external_code: 'LEGACY-PARENT', variant_code: 'SHARED-1' }] };
-  await act(async () => root.render(React.createElement(ProductDetailView, { key: 'legacy-parent-fallback', sku: 'SHARED-1' })));
-  assert(document.body.textContent.includes('V shope biketrek: LEGACY-PARENT / SHARED-1'), 'Older responses without parent_code keep external_code as a fallback');
-  await click(button('Upload do xtrek'));
-  sent = requests.filter(request => request.body).at(-1);
-  assert.deepEqual(sent.body, { skus: ['SHARED-1'] }, 'The detail submits only its explicitly selected item');
-  assert(document.body.textContent.includes('Prenos by zahŕňal aj nevybrané varianty.'), 'A blocked family expansion has an understandable Slovak reason');
-  assert(!document.body.textContent.includes('selection_expands_family'));
-
-  pushReason = 'identity_alias_push_blocked';
-  await click(button('Upload do xtrek'));
-  assert(document.body.textContent.includes('Táto skupina používa rozdielne kódy e-shopu a Hubu.'));
-  assert(!document.body.textContent.includes('identity_alias_push_blocked'));
-  await act(async () => i18n.changeLanguage('en'));
-  await click(button('Upload do xtrek'));
-  assert(document.body.textContent.includes('This family uses different shop and Hub codes.'));
-  pushReason = 'selection_expands_family';
-  await click(button('Upload do xtrek'));
-  assert(document.body.textContent.includes('The transfer would include unselected variants.'));
-  pushReason = 'future_push_reason';
-  await click(button('Upload do xtrek'));
-  assert(document.body.textContent.includes('future_push_reason'), 'Unknown skipped reasons keep their existing diagnostic fallback');
-  await act(async () => i18n.changeLanguage('sk'));
+  // Full product detail now lives in StockCard. Its exact shop identities and
+  // selected-field publication guards are covered by the stock-card suites.
+  assert(!requests.some(request => request.path.includes('/stock/product/') || request.path.endsWith('/upgates/products/push')),
+    'Product import never calls the retired detail or unscoped legacy push flow');
   await act(async () => root.unmount());
-  console.log('Upgates UI passed: safe pull, conflicts, snapshot refresh, shop parents and translated push guards.');
+  console.log('Upgates UI passed: safe pull, conflicts, snapshot refresh, explicit leaf selection and no legacy push.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -121,8 +121,13 @@ async def get(db, identifier):
 
 
 async def history(db, product_id):
+    # Recovery must remain discoverable even after many newer previews for the
+    # other shop. The existing fence admits at most one pending operation per
+    # product/shop; keep these ahead of recent history without unbounding reads.
+    pending = ProductEditorPublication.state.in_(['sending', 'uncertain'])
     items = (await db.scalars(select(ProductEditorPublication).where(ProductEditorPublication.product_id == product_id)
-        .order_by(ProductEditorPublication.created_at.desc()).limit(20))).all()
+        .order_by(case((pending, 0), else_=1), ProductEditorPublication.created_at.desc(),
+                  ProductEditorPublication.id.desc()).limit(20))).all()
     return {'items': [summary(item) for item in items]}
 
 

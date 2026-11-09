@@ -67,7 +67,7 @@ global.fetch = async (path, options = {}) => {
   if (path.endsWith('/resume')) { sessionStatus = 'in_progress'; return response({ session_id: 'session-A' }); }
   if (path.endsWith('/summary')) {
     if (failSummary) { failSummary = false; throw new TypeError('Synthetic local refresh lost'); }
-    const snapshot = { invoice_no: 'test-invoice', status: sessionStatus, lines: [line(), ...extraLines], summary: summary() };
+    const snapshot = { invoice_no: 'test-invoice', warehouse: { id: 1, code: 'receipt-secondary', name: 'Receipt warehouse' }, status: sessionStatus, lines: [line(), ...extraLines], summary: summary() };
     if (holdSummary) { holdSummary = false; return new Promise(resolve => { resolveSummary = () => resolve(response(snapshot)); }); }
     return response(snapshot);
   }
@@ -466,11 +466,11 @@ async function mountReceipt(status = 'in_progress') {
   assert(find('receiving-product-stock-0').textContent.includes(i18n.t('receiving.products.stockUnverified')), 'Unknown stock is never displayed as zero');
   assert(find('receiving-product-stock-2').textContent.includes('5'), 'Own confirmed warehouse stock is separate from received quantity');
   assert(find('receiving-product-match-1').textContent.includes(i18n.t('receiving.products.completeCard')), 'Basic cards offer enrichment');
-  assert.equal(find('receiving-product-open-2').getAttribute('href'), '/products/EXISTING-1', 'Existing cards preserve and open their canonical code');
+  assert.equal(find('receiving-product-open-2').getAttribute('href'), '/products/card/101?warehouse=receipt-secondary', 'Existing cards preserve stable identity and the receipt warehouse');
   assert(find('receiving-product-select-4').disabled, 'Ambiguous identity is never eligible for automatic creation');
   const conflict = find('receiving-product-conflicts-4');
   assert(conflict.textContent.includes('FEED-CONFLICT') && conflict.textContent.includes('0123456789012'), 'Ambiguity details show exact source evidence');
-  assert(conflict.querySelector('a[href="/products/EXISTING%20CONFLICT"]'), 'Ambiguous candidate can be reviewed in its existing card');
+  assert(conflict.querySelector('a[href="/products/card/900?warehouse=receipt-secondary"]'), 'Ambiguous candidate can be reviewed in its existing card');
   assert(!find('receiving-product-select-5').disabled, 'A missing feed still permits preparation from invoice evidence');
   await act(async () => { find('receiving-products-filter-review').click(); await tick(); });
   assert.equal(find('receiving-product-match-0'), null);

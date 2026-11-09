@@ -66,6 +66,7 @@ const router = createBrowserRouter(createRoutesFromElements(
 
           {/* Products */}
           <Route path="/products" element={<Navigate to="/stock" replace />} />
+          <Route path="/products/card/:productId" element={<ProductDetailPage />} />
           <Route path="/products/:sku" element={<ProductDetailPage />} />
           <Route path="/product-import" element={<ProductImportPage />} />
           <Route path="/product-trace" element={<ProductTracePage />} />

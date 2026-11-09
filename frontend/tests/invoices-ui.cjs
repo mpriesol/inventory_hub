@@ -322,7 +322,7 @@ global.fetch = async (path, init = {}) => {
   const receipt = new URL(required('invoice-receiving-link').href);
   assert.equal(decodeURIComponent(receipt.pathname), '/receiving/SUP/2026 98'); assert.equal(receipt.searchParams.get('supplier'), 'fixture-vendor'); assert.equal(receipt.searchParams.get('session'), '67');
   assert(!calls.some(call => /undefined|NaN/.test(call.path)), 'Detail uses the real invoiceId route parameter');
-  assert(document.querySelector('a[href="/product-trace?product_id=18"]'), 'Linked invoice products open the full product overview');
+  assert(document.querySelector('a[href="/products/card/18"]'), 'Linked invoice products use the shared stock card');
   await click('invoice-payment-open');
   assert.equal(required('invoice-payment-amount').value, '100.00');
   assert.equal(required('invoice-payment-date').value, todayDate());

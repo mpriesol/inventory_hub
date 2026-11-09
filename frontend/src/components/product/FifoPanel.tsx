@@ -25,7 +25,10 @@ const readPending = (key: string): Pending | null => {
   } catch { return null; }
 };
 
-export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: number; warehouseCode: string; onChanged?: () => void }) {
+export function FifoPanel({ productId, warehouseCode, onChanged, embedded = false, view = 'all', readOnly = false, refreshKey = 0, onReadRefresh, onDirtyChange, onBusyChange }: {
+  productId: number; warehouseCode: string; onChanged?: () => void; embedded?: boolean; view?: 'all' | 'costs' | 'history';
+  readOnly?: boolean; refreshKey?: number; onReadRefresh?: () => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
+}) {
   const { t, i18n } = useTranslation();
   const credential = useSyncExternalStore(subscribeAccess, accessRevision);
   const language = i18n.language.startsWith('sk') ? 'sk' : 'en';
@@ -65,6 +68,10 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
   const [pending, setPending] = useState<Pending | null>(() => readPending(storageKey));
   const context = useRef(0);
   const immutable = busy || !!pending || !!preview;
+  const dirty = !!operation || !!pending;
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); onBusyChange?.(false); }, [onDirtyChange, onBusyChange]);
   const amount = (value: string | null | undefined) => value == null ? c.unknown : `${value} €`;
   const status = (value: CostStatus) => c[value];
   const reset = () => { setOperation(null); setPreview(null); setConfirmed(false); setReturnData(null); setCostData(null); setSelectedLayer(null); };
@@ -99,10 +106,10 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
       .catch(e => { if (!controller.signal.aborted) setError(failure(e, c.readFailed)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [productId, warehouse, layerOffset, historyOffset, refresh, credential]);
+  }, [productId, warehouse, layerOffset, historyOffset, refresh, refreshKey, credential]);
 
   const open = (kind: Operation, layer?: FifoLayer) => {
-    if (busyRef.current || pending) return;
+    if (readOnly || busyRef.current || pending) return;
     reset(); setOperation(kind); setSelectedLayer(layer || null); setMessage(''); setError('');
     setLayers(kind === 'cutover' && Number(stock?.balance?.qty_on_hand) === 0 ? [] : [blankLayer()]);
     setSource(''); setOperator(''); setReason(''); setQuantity(''); setCost(''); setCostStatus('unknown'); setDate(localDate());
@@ -128,14 +135,16 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
     try { if (command) sessionStorage.setItem(storageKey, JSON.stringify(command)); else sessionStorage.removeItem(storageKey); } catch { /* In-memory retry remains available. */ }
   };
   const execute = async (command: Pending) => {
-    if (busyRef.current || !hubUnlocked()) return;
+    if (readOnly || busyRef.current || !hubUnlocked()) return;
     busyRef.current = true; remember(command); setBusy(true); setError(''); setMessage(''); const generation = context.current;
+    const frozen = JSON.stringify(command);
+    const clearOriginal = () => { try { if (sessionStorage.getItem(storageKey) === frozen) sessionStorage.removeItem(storageKey); } catch { /* No credentials are stored. */ } };
     try {
       const result = await fifoCommand<FifoPreview>(command.path, command.body);
       // A durable local request UUID makes a repeated POST return the same result.
-      try { sessionStorage.removeItem(storageKey); } catch { /* No credentials are stored. */ }
+      clearOriginal();
       if (generation !== context.current) return;
-      remember(null);
+      setPending(null);
       if (command.path.endsWith('/preview')) {
         const data = result.preview_data as any;
         const kind = command.path.includes('/cutovers/') ? 'cutover' : 'receive';
@@ -153,12 +162,12 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
         setError(failure(e, c.failed));
         // Structured API failures rolled back. Unknown network outcomes retain
         // the exact command for idempotent recovery, including after remount.
-        if (e.code && e.code !== 'request_failed') remember(null);
+        if (e.code && e.code !== 'request_failed') { clearOriginal(); setPending(null); }
       }
     } finally { if (generation === context.current) { busyRef.current = false; setBusy(false); } }
   };
   const submit = async () => {
-    if (busyRef.current || pending) return;
+    if (readOnly || busyRef.current || pending) return;
     if (!stock || !operation || !confirmed) { setError(c.validation); return; }
     const body: Record<string, unknown> = { request_id: uuid(), confirmed: true, reason: reason.trim() };
     let path = '';
@@ -196,18 +205,18 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
   };
   const allocationTable = (rows: FifoAllocation[]) => <div className="fifo-scroll"><table><thead><tr><th>{c.layers}</th><th>{c.quantity}</th><th>{c.returned}</th><th>{c.originalCost}</th><th>{c.currentCost}</th></tr></thead><tbody>{rows.map(row => <tr key={row.id}><td>#{row.layer_id}</td><td>{row.quantity}</td><td>{row.returned_quantity}</td><td>{amount(row.total_cost_at_issue)} · {status(row.cost_status_at_issue)}</td><td>{amount(row.total_cost_current)} · {status(row.cost_status_current)}</td></tr>)}</tbody></table></div>;
   return <section className="fifo-panel" data-testid="fifo-panel">
-    <div className="fifo-toolbar"><h3>{c.title}</h3><label>{c.warehouse}<select data-testid="fifo-warehouse" value={warehouse} disabled={busy || !!pending} onChange={e => { warehouseInitialized.current = true; setWarehouse(e.target.value); }}><option value="">{c.chooseWarehouse}</option>{warehouses.map(w => <option key={w.id} value={w.code}>{w.name}</option>)}</select></label><span className="action-control"><button type="button" disabled={busy || loading} onClick={() => setRefresh(v => v + 1)}>{c.refresh}</button><ActionScope effects={['hub-read']} /></span></div>
+    <div className="fifo-toolbar">{!embedded && <><h3>{c.title}</h3><label>{c.warehouse}<select data-testid="fifo-warehouse" value={warehouse} disabled={busy || !!pending} onChange={e => { warehouseInitialized.current = true; setWarehouse(e.target.value); }}><option value="">{c.chooseWarehouse}</option>{warehouses.map(w => <option key={w.id} value={w.code}>{w.name}</option>)}</select></label></>}<span className="action-control"><button type="button" data-testid="fifo-refresh" disabled={busy || loading || !!operation || !!pending} onClick={() => { setRefresh(v => v + 1); onReadRefresh?.(); }}>{c.refresh}</button><ActionScope effects={['hub-read']} /></span></div>
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
-    {pending && <div role="alert"><p>{c.pending}</p><span className="action-control"><button type="button" data-testid="fifo-retry" disabled={busy} onClick={() => execute(pending)}>{c.retry}</button><ActionScope effects={['hub-write']} /></span></div>}
+    {pending && <div role="alert"><p>{c.pending}</p>{!readOnly && <span className="action-control"><button type="button" data-testid="fifo-retry" disabled={busy} onClick={() => execute(pending)}>{c.retry}</button><ActionScope effects={['hub-write']} /></span>}</div>}
     {loading && <p role="status">{c.loading}</p>}
     {stock && <>
       <p>{t('productEditor.fields.stock_unit')}: {t(`productEditor.units.${stock.stock_unit || 'pcs'}`)}</p>
       {stock.stock_unit === 'm' && <p role="note">{t('productEditor.meterLimit')}</p>}
       {stock.valuation.mode !== 'fifo' && <p className="fifo-notice">{stock.valuation.mode === 'legacy' ? c.legacy : stock.valuation.mode === 'unconfirmed' ? c.unconfirmed : c.missing}</p>}
-      <div className="fifo-metrics">{[[c.physical, stock.balance?.qty_on_hand], [c.reserved, stock.balance?.qty_reserved], [c.quarantine, stock.balance?.qty_quarantined], [c.available, stock.balance?.qty_available], [c.knownValue, amount(stock.valuation.known_value)], [c.provisionalValue, amount(stock.valuation.provisional_value)], [c.unknownQty, stock.valuation.unknown_qty], [c.avg, amount(stock.valuation.avg_cost)], [c.next, stock.valuation.next_layer ? `${amount(stock.valuation.next_layer.unit_cost)} · ${status(stock.valuation.next_layer.cost_status)}` : c.unknown], [c.last, `${amount(stock.balance?.last_purchase_price)} · ${stock.valuation.last_purchase_cost_status === 'legacy' ? c.legacyCost : status(stock.valuation.last_purchase_cost_status || 'unknown')}`]].map(([label, value]) => <div key={label}><small>{label}</small><strong>{value ?? c.unknown}</strong></div>)}</div>
-      <p>{stock.valuation.value_complete ? c.complete : c.incomplete}. {c.prices}</p>
-      <div className="fifo-toolbar"><button type="button" data-testid="fifo-receive" disabled={busy || !!pending} onClick={() => open('receive')}>{c.receive}</button>{stock.valuation.mode === 'legacy' && <button type="button" data-testid="fifo-cutover" disabled={busy || !!pending} onClick={() => open('cutover')}>{c.cutover}</button>}</div>
-      {operation && <div className="fifo-form" data-testid="fifo-form"><h4>{c[operation]}</h4><p>{c[`${operation}Help` as 'receiveHelp']}</p>
+      {view !== 'history' && <><div className="fifo-metrics">{[...(!embedded ? [[c.physical, stock.balance?.qty_on_hand], [c.reserved, stock.balance?.qty_reserved], [c.quarantine, stock.balance?.qty_quarantined], [c.available, stock.balance?.qty_available]] : []), [c.next, stock.valuation.next_layer ? `${amount(stock.valuation.next_layer.unit_cost)} · ${status(stock.valuation.next_layer.cost_status)}` : c.unknown], [c.knownValue, amount(stock.valuation.known_value)], [c.provisionalValue, amount(stock.valuation.provisional_value)], [c.unknownQty, stock.valuation.unknown_qty], [c.avg, amount(stock.valuation.avg_cost)], [c.last, `${amount(stock.balance?.last_purchase_price)} · ${stock.valuation.last_purchase_cost_status === 'legacy' ? c.legacyCost : status(stock.valuation.last_purchase_cost_status || 'unknown')}`]].map(([label, value]) => <div key={label}><small>{label}</small><strong>{value ?? c.unknown}</strong></div>)}</div>
+      <p>{stock.valuation.value_complete ? c.complete : c.incomplete}. {c.prices}</p></>}
+      {!readOnly && view !== 'history' && <div className="fifo-toolbar"><button type="button" data-testid="fifo-receive" disabled={busy || !!pending} onClick={() => open('receive')}>{c.receive}</button>{stock.valuation.mode === 'legacy' && <button type="button" data-testid="fifo-cutover" disabled={busy || !!pending} onClick={() => open('cutover')}>{c.cutover}</button>}</div>}
+      {operation && !readOnly && <div className="fifo-form" data-testid="fifo-form"><h4>{c[operation]}</h4><p>{c[`${operation}Help` as 'receiveHelp']}</p>
         {returnData && <><p>{c.issue} #{returnData.issue_movement_id} · {c.returnable}: {returnData.returnable_quantity}</p>{allocationTable(returnData.allocations)}<p>{c.notMargin}</p></>}
         {costData && <><p>{c.netCost}: {amount(costData.net_consumption.total_cost)} · {costData.net_consumption.value_complete ? c.complete : c.incomplete}</p>{allocationTable(costData.allocations)}
           {costData.revisions.length > 0 && <details><summary>{c.revisions}</summary><ul>{costData.revisions.map(row => <li key={row.revision}>{row.document_reference}: {amount(row.previous_cost)} → {amount(row.new_cost)} · {row.reason}</li>)}</ul></details>}</>}
@@ -231,10 +240,10 @@ export function FifoPanel({ productId, warehouseCode, onChanged }: { productId: 
         <label className="fifo-confirm"><input type="checkbox" data-testid="fifo-confirm" disabled={busy || !!pending} checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />{c.confirmed}</label>
         <div className="fifo-toolbar"><span className="action-control"><button type="button" data-testid="fifo-submit" disabled={busy || !!pending || !confirmed || (operation === 'return' && !returnData) || (operation === 'revise' && !costData)} onClick={submit}>{!preview && ['receive', 'cutover'].includes(operation) ? c.preview : c.apply}</button><ActionScope effects={['hub-write']} /></span><button type="button" disabled={busy || !!pending} onClick={reset}>{c.cancel}</button></div>
       </div>}
-      <h4>{c.layers}</h4><div className="fifo-scroll"><table><thead><tr><th>{c.date}</th><th>{c.source}</th><th>{c.remaining}</th><th>{c.cost}</th><th>{c.state}</th><th /></tr></thead><tbody>{stock.layers.map(layer => <tr key={layer.id}><td>#{layer.id}<br />{new Date(layer.physical_received_at).toLocaleString()}</td><td>{String(layer.provenance.source_reference || layer.provenance.case_reference || '')}</td><td>{layer.quantity_remaining} / {layer.quantity_original}</td><td>{amount(layer.unit_cost)}</td><td>{status(layer.cost_status)} · {layer.stock_status === 'quarantine' ? c.quarantine : c.available}</td><td><span className="action-control"><button type="button" data-testid={`fifo-revise-${layer.id}`} disabled={busy || !!pending} onClick={() => inspectCost(layer)}>{c.revise}</button><ActionScope effects={['hub-read']} /></span>{layer.stock_status === 'quarantine' && Number(layer.quantity_remaining) > 0 && <button type="button" data-testid={`fifo-release-${layer.id}`} disabled={busy || !!pending} onClick={() => open('release', layer)}>{c.release}</button>}</td></tr>)}</tbody></table></div>
-      {stock.layers.length === 0 && <p>{c.noLayers}</p>}<div className="fifo-toolbar"><span className="action-control"><button type="button" disabled={loading || layerOffset === 0} onClick={() => setLayerOffset(v => Math.max(0, v - 50))}>{c.previous}</button><ActionScope effects={['hub-read']} /></span><span>{Math.min(layerOffset + 50, stock.total)} / {stock.total}</span><span className="action-control"><button type="button" disabled={loading || layerOffset + 50 >= stock.total} onClick={() => setLayerOffset(v => v + 50)}>{c.following}</button><ActionScope effects={['hub-read']} /></span></div>
-      <h4>{c.history}</h4><div className="fifo-scroll"><table><thead><tr><th>{c.date}</th><th>{c.state}</th><th>{c.quantity}</th><th>{c.originalCost}</th><th /></tr></thead><tbody>{movements.map(row => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString()}</td><td>{row.movement_type} #{row.id}<br />{row.reference_id}</td><td>{row.quantity}</td><td>{amount(row.total_cost)}</td><td>{row.movement_type.toUpperCase() === 'SALE_OUT' && <span className="action-control"><button type="button" data-testid={`fifo-return-${row.id}`} disabled={busy || !!pending} onClick={() => inspectIssue(row.id)}>{c.inspect}</button><ActionScope effects={['hub-read']} /></span>}</td></tr>)}</tbody></table></div>
-      {movements.length === 0 && <p>{c.noMovements}</p>}<div className="fifo-toolbar"><span className="action-control"><button type="button" disabled={loading || historyOffset === 0} onClick={() => setHistoryOffset(v => Math.max(0, v - 50))}>{c.previous}</button><ActionScope effects={['hub-read']} /></span><span>{Math.min(historyOffset + 50, historyTotal)} / {historyTotal}</span><span className="action-control"><button type="button" disabled={loading || historyOffset + 50 >= historyTotal} onClick={() => setHistoryOffset(v => v + 50)}>{c.following}</button><ActionScope effects={['hub-read']} /></span></div>
+      {view !== 'history' && <><h4>{c.layers}</h4><div className="fifo-scroll"><table><thead><tr><th>{c.date}</th><th>{c.source}</th><th>{c.remaining}</th><th>{c.cost}</th><th>{c.state}</th><th /></tr></thead><tbody>{stock.layers.map(layer => <tr key={layer.id}><td>#{layer.id}<br />{new Date(layer.physical_received_at).toLocaleString()}</td><td>{String(layer.provenance.source_reference || layer.provenance.case_reference || '')}</td><td>{layer.quantity_remaining} / {layer.quantity_original}</td><td>{amount(layer.unit_cost)}</td><td>{status(layer.cost_status)} · {layer.stock_status === 'quarantine' ? c.quarantine : c.available}</td><td>{!readOnly && <><span className="action-control"><button type="button" data-testid={`fifo-revise-${layer.id}`} disabled={busy || !!pending} onClick={() => inspectCost(layer)}>{c.revise}</button><ActionScope effects={['hub-read']} /></span>{layer.stock_status === 'quarantine' && Number(layer.quantity_remaining) > 0 && <button type="button" data-testid={`fifo-release-${layer.id}`} disabled={busy || !!pending} onClick={() => open('release', layer)}>{c.release}</button>}</>}</td></tr>)}</tbody></table></div>
+      {stock.layers.length === 0 && <p>{c.noLayers}</p>}<div className="fifo-toolbar"><span className="action-control"><button type="button" disabled={loading || layerOffset === 0} onClick={() => setLayerOffset(v => Math.max(0, v - 50))}>{c.previous}</button><ActionScope effects={['hub-read']} /></span><span>{Math.min(layerOffset + 50, stock.total)} / {stock.total}</span><span className="action-control"><button type="button" disabled={loading || layerOffset + 50 >= stock.total} onClick={() => setLayerOffset(v => v + 50)}>{c.following}</button><ActionScope effects={['hub-read']} /></span></div></>}
+      {view !== 'costs' && <><h4>{c.history}</h4><div className="fifo-scroll"><table><thead><tr><th>{c.date}</th><th>{c.state}</th><th>{c.quantity}</th><th>{c.originalCost}</th><th /></tr></thead><tbody>{movements.map(row => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString()}</td><td>{row.movement_type} #{row.id}<br />{row.reference_id}</td><td>{row.quantity}</td><td>{amount(row.total_cost)}</td><td>{!readOnly && row.movement_type.toUpperCase() === 'SALE_OUT' && <span className="action-control"><button type="button" data-testid={`fifo-return-${row.id}`} disabled={busy || !!pending} onClick={() => inspectIssue(row.id)}>{c.inspect}</button><ActionScope effects={['hub-read']} /></span>}</td></tr>)}</tbody></table></div>
+      {movements.length === 0 && <p>{c.noMovements}</p>}<div className="fifo-toolbar"><span className="action-control"><button type="button" disabled={loading || historyOffset === 0} onClick={() => setHistoryOffset(v => Math.max(0, v - 50))}>{c.previous}</button><ActionScope effects={['hub-read']} /></span><span>{Math.min(historyOffset + 50, historyTotal)} / {historyTotal}</span><span className="action-control"><button type="button" disabled={loading || historyOffset + 50 >= historyTotal} onClick={() => setHistoryOffset(v => v + 50)}>{c.following}</button><ActionScope effects={['hub-read']} /></span></div></>}
     </>}
   </section>;
 }

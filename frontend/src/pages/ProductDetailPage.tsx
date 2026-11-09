@@ -1,24 +1,16 @@
-// src/pages/ProductDetailPage.tsx — tenký wrapper nad zdieľaným ProductDetailView
 import React from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
-import { Button } from '../components/ui/Button.new';
-import { ProductDetailView } from '../components/product/ProductDisplay';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { StockCard } from '../components/product/StockCard';
 
+/** Direct and legacy links open exactly the same card as an in-place link. */
 export function ProductDetailPage() {
-  const { sku } = useParams<{ sku: string }>();
+  const { sku, productId: idText } = useParams<{ sku: string; productId: string }>();
+  const [params] = useSearchParams();
   const navigate = useNavigate();
-
-  return (
-    <div className="p-6 max-w-5xl">
-      <Button variant="secondary" size="sm" onClick={() => navigate('/stock')}>
-        <ArrowLeft size={14} /> Späť na sklad
-      </Button>
-      <div className="mt-4">
-        {sku ? <ProductDetailView sku={sku} /> : <div style={{ color: 'var(--color-error)' }}>Chýba SKU</div>}
-      </div>
-    </div>
-  );
+  const productId = idText && /^\d+$/.test(idText) && Number.isSafeInteger(Number(idText)) && Number(idText) > 0 ? Number(idText) : undefined;
+  const warehouseCode = params.has('warehouse') ? params.get('warehouse') : undefined;
+  return <StockCard key={`${idText || sku}:${warehouseCode}`} productId={productId} sku={sku}
+    warehouseCode={warehouseCode} onClose={() => navigate('/stock')} />;
 }
 
 export default ProductDetailPage;

@@ -100,7 +100,7 @@ async function mountHistory(path = '/stock/history') {
   const rows = [...required('history-table').querySelectorAll('tbody tr')];
   assert.equal(rows[0].querySelectorAll('td')[10].textContent, i18n.t('stockHistory.unknown'), 'Unknown purchase cost remains visibly unknown');
   assert.equal(rows[1].querySelectorAll('td')[10].textContent, '0', 'Known zero cost remains distinct from unknown');
-  assert.equal(rows[0].querySelector('a').getAttribute('href'), `/products/${encodeURIComponent(oddSku)}`);
+  assert.equal(rows[0].querySelector('a').getAttribute('href'), '/products/card/100?warehouse=main');
   assert(rows[0].textContent.includes('BT-100') && rows[0].textContent.includes('fixture-operator'));
   assert(required('history-previous').disabled);
 

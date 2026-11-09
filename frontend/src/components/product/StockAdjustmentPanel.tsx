@@ -25,8 +25,9 @@ const definitiveRejections = new Set(['fifo_invalid_request', 'fifo_request_conf
   'adjustment_no_change', 'adjustment_below_committed', 'adjustment_quantity_invalid',
   'adjustment_issue_cost_derived', 'stock_publication_warehouse_held', 'stock_item_required', 'stock_quantity_unit_mismatch']);
 
-export function StockAdjustmentPanel({ productId, sku, warehouseCode, stockUnit = 'pcs', onChanged }: {
+export function StockAdjustmentPanel({ productId, sku, warehouseCode, stockUnit = 'pcs', onChanged, embedded = false, refreshKey = 0, onReadRefresh, onDirtyChange, onBusyChange }: {
   productId: number; sku: string; warehouseCode: string; stockUnit?: StockUnit; onChanged?: () => void;
+  embedded?: boolean; refreshKey?: number; onReadRefresh?: () => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
 }) {
   const { t } = useTranslation();
   const c = (key: string, values?: Record<string, unknown>) => t(`stockAdjustment.${key}`, values);
@@ -60,6 +61,15 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, stockUnit 
   const valid = (unit === 'm' ? /^\d{1,9}(?:\.\d{1,3})?$/.test(normalizedCount) : /^\d{1,9}$/.test(count)) && !!reason.trim() && !!source.trim() && !!operator.trim()
     && (!incoming || !known || /^\d+(\.\d{1,4})?$/.test(cost));
   const immutable = busy || !!pending || !!preview;
+  const dirty = !!pending || !!preview || !!reason || !!source || !!operator || !!cost || known ||
+    (stock !== null && count !== (stock.balance?.qty_on_hand == null ? '' : String(Number(stock.balance.qty_on_hand))));
+  const seenRefresh = useRef(refreshKey);
+  useEffect(() => {
+    if (seenRefresh.current !== refreshKey && !dirty && !busy) { seenRefresh.current = refreshKey; setRefresh(value => value + 1); }
+  }, [refreshKey, dirty, busy]);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); onBusyChange?.(false); }, [onDirtyChange, onBusyChange]);
   const explainError = (value: any) => {
     const code = value?.code || '';
     return t(`stockAdjustment.errors.${code}`, { defaultValue: c('failed') });
@@ -109,7 +119,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, stockUnit 
     } });
   };
   return <section className="fifo-panel" data-testid="stock-adjustment-panel">
-    <h3>{c('title')}</h3><p>{c('help')}</p>
+    {!embedded && <h3>{c('title')}</h3>}<p>{c('help')}</p>
     {!hubUnlocked() && <p>{c('unlock')}</p>}
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     {pending && <div><p>{c('uncertain')}</p><button type="button" data-testid="adjustment-retry" disabled={busy} onClick={() => void command(pending)}>{c('retry')}</button></div>}
@@ -127,7 +137,7 @@ export function StockAdjustmentPanel({ productId, sku, warehouseCode, stockUnit 
       <label><input data-testid="adjustment-confirm" type="checkbox" disabled={busy || !!pending} checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />{c(preview?.preview.initial_zero_count ? 'confirmInitialZero' : preview ? 'confirmApply' : 'confirmCount')}</label>
       <div className="fifo-actions"><span className="action-control"><button type="button" data-testid="adjustment-submit" disabled={busy || !!pending || !confirmed || (!preview && !valid)} onClick={submit}>{c(preview?.preview.initial_zero_count ? 'recordInitialZero' : preview ? 'apply' : 'preview')}</button><ActionScope effects={['hub-write']} /></span>
         {preview && !pending && <button type="button" disabled={busy} onClick={() => { setPreview(null); setConfirmed(false); }}>{c('edit')}</button>}
-        <button type="button" data-testid="adjustment-reload" disabled={busy || !!pending} onClick={() => setRefresh(value => value + 1)}>{c('reload')}</button></div>
+        <button type="button" data-testid="adjustment-reload" disabled={busy || !!pending} onClick={() => { setRefresh(value => value + 1); onReadRefresh?.(); }}>{c('reload')}</button></div>
     </>}
   </section>;
 }

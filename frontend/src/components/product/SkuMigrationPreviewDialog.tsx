@@ -10,7 +10,10 @@ import { ActionScope } from '../ui/ActionScope';
 import { SkuIdentityForm } from './SkuIdentityForm';
 import './SkuMigrationPreviewDialog.css';
 
-export function SkuMigrationPreviewDialog({ product, onClose }: { product: ProductEditorRow; onClose: () => void }) {
+export function SkuMigrationPreviewDialog({ product, onClose, embedded = false, onDirtyChange, onBusyChange }: {
+  product: ProductEditorRow; onClose: () => void; embedded?: boolean;
+  onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
+}) {
   const { t, i18n } = useTranslation();
   const c = (key: string, vars: Record<string, unknown> = {}) => t(`skuMigration.${key}`, vars);
   const [identity, setIdentity] = useState(() => emptySkuIdentity(product.common.brand || ''));
@@ -24,7 +27,7 @@ export function SkuMigrationPreviewDialog({ product, onClose }: { product: Produ
   const reason = (code: string) => t(`skuMigration.reasons.${code}`, { defaultValue: t(`skuPolicy.errors.${code}`, { defaultValue: t(`productLinks.errors.${code}`, { defaultValue: t(`catalog.codes.${code}`, { defaultValue: c('unknownReason') }) }) }) });
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null, overflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden'; panel.current?.querySelector<HTMLElement>('button,input')?.focus();
+    if (!embedded) { document.body.style.overflow = 'hidden'; panel.current?.querySelector<HTMLElement>('button,input')?.focus(); }
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
       if (event.key === 'Tab') {
@@ -33,9 +36,13 @@ export function SkuMigrationPreviewDialog({ product, onClose }: { product: Produ
         else if (!event.shiftKey && document.activeElement === nodes[nodes.length - 1]) { event.preventDefault(); nodes[0]?.focus(); }
       }
     };
-    document.addEventListener('keydown', key);
-    return () => { generation.current++; controller.current?.abort(); document.body.style.overflow = overflow; document.removeEventListener('keydown', key); previous?.focus(); };
+    if (!embedded) document.addEventListener('keydown', key);
+    return () => { generation.current++; controller.current?.abort(); if (!embedded) { document.body.style.overflow = overflow; document.removeEventListener('keydown', key); previous?.focus(); } };
   }, []);
+  const dirty = JSON.stringify(identity) !== JSON.stringify(emptySkuIdentity(product.common.brand || ''));
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(!!busy); }, [busy, onBusyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); onBusyChange?.(false); }, [onDirtyChange, onBusyChange]);
   useEffect(() => {
     let stopped = false;
     supplierLinkOptions(product.id).then(value => { if (!stopped) setSuppliers(value.suppliers); }).catch(() => { if (!stopped) setSupplierError(true); });
@@ -67,7 +74,7 @@ export function SkuMigrationPreviewDialog({ product, onClose }: { product: Produ
     } catch { setError('download_failed'); }
   }
   const shopName = (code: string) => code === 'biketrek' ? 'BIKETREK' : code === 'xtrek' ? 'xTrek' : code;
-  return createPortal(<div className="sku-migration-backdrop"><section ref={panel} className="sku-migration-dialog" role="dialog" aria-modal="true" aria-label={c('title')} data-testid="sku-migration-dialog">
+  const content = <div className={embedded ? 'stock-card-embedded' : 'sku-migration-backdrop'}><section ref={panel} className="sku-migration-dialog" role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={c('title')} data-testid="sku-migration-dialog">
     <header><div><h2>{c('title')}</h2><p>{product.common.name}</p><small>{c('hubId', { id: product.id })} · <code>{product.sku}</code></small></div><Button data-testid="sku-migration-close" variant="ghost" onClick={onClose}>{t('common.close')}</Button></header>
     <div className="sku-migration-body">
       <p className="sku-migration-notice" data-testid="sku-migration-readonly">{c('readOnly')}</p>
@@ -102,5 +109,6 @@ export function SkuMigrationPreviewDialog({ product, onClose }: { product: Produ
         <Button data-testid="sku-migration-download" variant="secondary" disabled={!!busy} onClick={download}>{c('download')}</Button>
       </section>}
     </div>
-  </section></div>, document.body);
+  </section></div>;
+  return embedded ? content : createPortal(content, document.body);
 }

@@ -10,6 +10,26 @@ Uloženie mení ručné údaje v Hube. **Samotné uloženie neposiela zmeny do U
 
 ### Karty, aktivita a dodávateľská väzba
 
+**Jednotná skladová karta** sa otvára nad aktuálnou obrazovkou zo Skladu,
+faktúry, príjemky, histórie aj Atomer prehľadu. Rozmery okna sa pri prepínaní
+**Prehľad / Sklad / Ceny a FIFO / E-shopy / História** nemenia. Na telefóne
+je karta cez celú obrazovku, hlavné menu Hubu sa vysúva tlačidlom v hornej
+lište. [Rozloženie, spoločné API a pokračovanie implementácie](stock-card.md).
+
+V prehľade sú údaje v poradí **Dodávateľ, Značka, EAN, Dodávateľský kód,
+Umiestnenie v sklade, Typ / skladová jednotka**. Odkaz na produkt dodávateľa
+pochádza z jeho konkrétneho katalógového záznamu; chýbajúca adresa zostáva
+označená ako nedostupná. V karte možno upraviť lokálny popis a obnoviť jeho
+zdrojovú hodnotu. Úprava odkazov e-shopu mení len navigačné adresy, nikdy
+natívne prepojenie produktu.
+
+V **Ceny a FIFO** najprv upravte a uložte predajnú cenu v Hube. Potom označte
+**BIKETREK**, **xTrek** alebo oba, pripravte náhľad a potvrďte odoslanie.
+Každý obchod má vlastný náhľad aj výsledok. Pri čiastočnom úspechu sa úspešný
+obchod znova neposiela; pri nejasnom výsledku použite obnovu existujúcej
+operácie. Týmto panelom sa posiela iba základná predajná cena. Zľavy a
+akciové ceny sa zobrazujú v náhľade a zostávajú zachované.
+
 Formulár **Nová skladová karta** je dostupný v Sklade. Najprv vyhľadá existujúcu kartu podľa SKU alebo EAN; pre nový výrobok vyžaduje názov a [overenú identitu podľa spoločnej politiky SKU](sku-policy.md). Náhľad odvodí SKU z registrovanej značky a konkrétneho zdrojového kódu. Existujúca jednoznačná karta sa použije znova bez prepísania názvu či aktivity; voliteľná dodávateľská väzba sa doplní samostatne. Uloženie nevytvára e-shopový produkt, skladové množstvo ani potvrdenie vlastných zásob. Po strate odpovede použite **Overiť / zopakovať vytvorenie**; formulár zachová identický požiadavkový UUID a údaje.
 
 V **Skladovej evidencii** zvoľte **Všetky produkty**, aby ste videli aj karty bez potvrdených zásob. Nezávislé filtre **Stav karty v Hube** a **Dodávateľská väzba** možno kombinovať a následne potvrdiť načítanie. Rovnako pomenované stĺpce zobrazujú stav na každom riadku; stav karty možno upraviť v bunke alebo hromadne nad vybranými riadkami a uložiť bežným postupom. Dodávateľ sa pripája cez existujúci náhľad a potvrdenie v detaile karty.
@@ -43,10 +63,10 @@ Pri prázdnom EAN v detaile použite **Doplniť EAN od dodávateľa**. Existujú
 
 | Oblasť | Polia | Význam |
 | --- | --- | --- |
-| Spoločné | Názov, značka, interná poznámka, HTTPS URL obrázka | Ručné hodnoty konkrétneho fyzického riadka. Zmena názvu neprepisuje názov rodiny ani ostatné varianty. |
+| Spoločné | Názov, značka, popis, interná poznámka, HTTPS URL obrázka | Ručné hodnoty konkrétneho fyzického riadka. Zmena názvu neprepisuje názov rodiny ani ostatné varianty. |
 | Variant | Základná predajná cena, sadzba DPH, poznámka, farba, veľkosť, parametre, čiarové kódy | Predajná cena je EUR s DPH. Sadzba DPH je samostatný ručný údaj; chýbajúca sadzba sa neodhaduje. |
 | Vybraný sklad | Umiestnenie, minimálne množstvo | Platí len pre zvolený sklad. Samotné uloženie nevytvorí skladovú bilanciu. |
-| BIKETREK / xTrek | Požadovaný názov, predajná cena, viditeľnosť | Samostatné ručné hodnoty e-shopu; vybrané polia možno odoslať cez samostatné odoslanie. |
+| BIKETREK / xTrek | Požadovaný názov, predajná cena, viditeľnosť, odkazy na produkt a administráciu | Samostatné ručné hodnoty e-shopu; vybrané publikačné polia možno odoslať cez samostatné odoslanie. Odkazy slúžia len na otvorenie stránky. |
 
 Niektoré polia, napríklad interná poznámka, DPH a poznámka variantu, sú predvolene skryté. Zapnete ich cez výber stĺpcov. Čiarové kódy sa upravujú priamo v evidencii identifikátorov; prázdny zoznam ich odstráni. Kolízia s iným produktom sa odmietne. SKU karty s uloženým dôkazom novej politiky sa bežným editorom nemení. Pri historickej karte možno SKU zmeniť len pred vytvorením prepojenia na e-shop, aby nevznikol iný tovar pod existujúcou vzdialenou identitou. Dodávateľské kódy sú zdrojové identifikátory; skladové množstvá a odvodené nákupné hodnoty používajú opravné skladové operácie, nie prepísanie histórie. Nákupná cena je odvodená zo skladu; jej zmena patrí do kontrolovaného [postupu nákupných cien](fifo.md).
 
@@ -83,11 +103,11 @@ Upgates týmto rozhraním nepodporuje samostatný názov variantu, preto odoslan
 
 ### Konflikt alebo prerušené uloženie
 
-Server overuje revíziu ručných údajov aj pôvodné importované hodnoty. Ak ich medzičasom niekto zmenil, daný riadok vráti konflikt. Ostatné platné riadky dávky sa môžu uložiť; neúspešné zostanú rozpracované. V detaile porovnajte aktuálny stav servera s vlastným návrhom. Výslovné potvrdenie nového základu ponechá vlastný návrh na ďalšie uloženie; konflikt sa automaticky neprepisuje.
+Server overuje revíziu ručných údajov aj pôvodné importované hodnoty. Ak ich medzičasom niekto zmenil, daný riadok vráti konflikt. Ostatné platné riadky dávky sa môžu uložiť; neúspešné zostanú rozpracované. Rozpracované riadky tabuľky majú porovnanie a zahodenie priamo pod panelom uloženia. V samostatnej karte sa konflikt rieši v jej formulári. Výslovné potvrdenie nového základu ponechá vlastný návrh na ďalšie uloženie; konflikt sa automaticky neprepisuje. Pri rozpracovaných bunkách zostáva karta na čítanie, aby samostatný zápis neobišiel koncept tabuľky.
 
 Ak sa stratí odpoveď na uloženie, použite obnovu výsledku. Server drží trvalý výsledok pod UUID požiadavky. Ak výsledok ešte neexistuje, editor umožní poslať tú istú požiadavku s tým istým UUID. Opakovanie nevytvorí druhú úpravu ani duplicitný audit. Počas nejasného výsledku editor blokuje ďalšie úpravy.
 
-UUID rozpracovaného odoslania a neuložené koncepty si aktuálne pamätá iba otvorená stránka. Obnovenie stránky, zatvorenie alebo zamknutie ich odstráni; serverový výsledok a audit už uložených zmien zostávajú. Pri nejasnom výsledku preto najprv použite obnovu v otvorenom editore. V detaile je posledných 20 záznamov ručných zmien a oddelený panel **Sklad a nákupné ceny**.
+Neuložené koncepty a dávkové uloženie tabuľky si pamätá otvorená stránka. Samostatná karta pred uložením uchová zmrazenú požiadavku v `sessionStorage` podľa používateľa, produktu a skladu, aby po obnovení tej istej karty vedela overiť výsledok. Obnova najprv číta uložený výsledok; opakovanie po potvrdenom chýbajúcom výsledku používa to isté UUID a údaje. Serverový výsledok a audit pretrvajú aj reštart. V sekcii **História** je posledných 20 ručných zmien; skladové a FIFO záznamy majú vlastné prehľady.
 
 Skladový údaj bez bilancie a preukázaného pohybu je **neznámy**, nie nula. Potvrdená nulová zásoba sa zobrazuje ako nula. Dostupné množstvo odpočítava rezervácie aj karanténu. Pri neúplnom alebo predbežnom ocenení editor nevydáva celkovú nákupnú hodnotu a priemer za definitívnu cenu.
 
@@ -101,7 +121,8 @@ Implemented modules are `product_editor_models.py`, `product_editor_types.py`, `
 | --- | --- |
 | `GET /product-editor/options` | Active Upgates shops, active warehouses, effective brands, page sizes, `currency: EUR`, `price_basis: incl_vat`, `external_write_enabled: false`. |
 | `GET /product-editor/products` | Server-side `q`, `brand`, `shop_code`, `warehouse_code`, `page`, `page_size` (25/50/100), `sort` (`group_sku`, `sku`, `name`) and `direction` (`asc`, `desc`). Returns `items`, `total`, paging and warehouse context. |
-| `GET /product-editor/products/{id}` | Same effective row plus the latest 20 manual audit entries; optional `warehouse_code`. |
+| `GET /product-editor/products/{id}` | Canonical card read, including retired-ID aliases, with the latest 20 manual audit entries and `warehouse_context`; optional `warehouse_code`. |
+| `GET /product-editor/products/resolve?sku=...` | Exact current or historical internal Hub SKU, with the same detail response. Ambiguous identities fail explicitly; supplier/shop codes are not treated as Hub SKUs. |
 | `POST /product-editor/save` | Explicitly confirmed, bounded batch of up to 100 whitelisted row patches. |
 | `GET /product-editor/saves/{request_id}` | Exact durable response for a completed UUID; missing result is 404. |
 
@@ -116,7 +137,7 @@ A save body contains `request_id` (UUID), optional `warehouse_code`, literal boo
 }
 ```
 
-Absent fields are unchanged; explicit null deletes a merchandising override. `variant.eans` is an explicit canonical barcode list (maximum 20); `[]` clears it and null performs no identity edit. `variant.sku` is a validated rename for an unmapped product only. `variant.attributes` is at most 100 `{name,value}` pairs (name 100, value 255 characters), `[]` clears attributes and null removes the manual override. `common.image_url` must be a bounded HTTPS URL without credentials, or null to inherit the imported image. A warehouse patch requires an explicit active warehouse. Shop keys must identify active Upgates shops. Names are at most 500 characters, brand/location 100, notes 4000. Money uses nonnegative decimal **strings**, at most two decimal places and a maximum of `9999999999.99`; VAT is nullable or a string from 0 through 100 with at most two decimal places. Minimum quantity is a whole string from 0 through 999999999. The UI normalizes decimal commas; the API accepts dot-decimal canonical syntax. Boolean and numeric coercion, extra fields, malformed Unicode and control characters are rejected. The encoded batch is bounded to 1 MB.
+Absent fields are unchanged; explicit null deletes a merchandising override. `variant.eans` is an explicit canonical barcode list (maximum 20); `[]` clears it and null performs no identity edit. `variant.sku` is a validated rename for an unmapped product only. `variant.attributes` is at most 100 `{name,value}` pairs (name 100, value 255 characters), `[]` clears attributes and null removes the manual override. `common.image_url` must be a bounded HTTPS URL without credentials, or null to inherit the imported image. `common.description` accepts up to 20,000 characters; an empty string explicitly blanks the description, null restores the source. Source HTML is shown as text, never injected into the DOM. Shop `shop_url` / `shop_admin_url` are absolute HTTP(S) navigation links without credentials or whitespace, at most 2,000 characters; null restores the observed URL. They never replace the native mapping or a publication target. A warehouse patch requires an explicit active warehouse. Shop keys must identify active Upgates shops. Names are at most 500 characters, brand/location 100, notes 4000. Money uses nonnegative decimal **strings**, at most two decimal places and a maximum of `9999999999.99`; VAT is nullable or a string from 0 through 100 with at most two decimal places. Minimum quantity is a whole string from 0 through 999999999. The UI normalizes decimal commas; the API accepts dot-decimal canonical syntax. Boolean and numeric coercion, extra fields, malformed Unicode and control characters are rejected. The encoded batch is bounded to 1 MB.
 
 Results have `status: completed`, `external_write_enabled: false`, and per-row `status` values `saved`, `conflict`, `invalid` or `missing`, plus sanitized errors and an optional effective `row`. Top-level invalid input rejects the request; row validation preserves valid rows. Duplicate product IDs in one batch are invalid. No-op patches return the current row without incrementing revision or creating an audit entry.
 
@@ -136,7 +157,7 @@ Imported product content, `ShopProduct.shop_price`, shop snapshots, supplier fee
 
 The snapshot hash covers imported display/identity facts, observed shop values, selected warehouse and its inherited minimum. Supplier observation freshness and dynamic counts are not editable editor fields. Dynamic stock quantities/costs are excluded; override concurrency is guarded separately by revision. Saves acquire a request-specific advisory lock, the shared product identity write lock, the selected warehouse lock, sorted product locks and relevant mapping/content locks before re-reading facts. Each changed row uses a savepoint. Audit and the completed batch result commit with the successful overrides. This is an optimistic compare-and-swap, not a last-write-wins replacement.
 
-The first accepted UUID stores its normalized request hash and exact result. Same UUID/same body replays that result; same UUID/different body returns `product_editor_request_reused` (409). A replay remains the original result even after later source or override changes. Browser recovery is currently limited to the open page; the durable API result itself survives restarts.
+The first accepted UUID stores its normalized request hash and exact result. Same UUID/same body replays that result; same UUID/different body returns `product_editor_request_reused` (409). A replay remains the original result even after later source or override changes. Grid recovery stays within the open page. Shared-card recovery persists its frozen request in actor/product/warehouse-scoped session storage before dispatch; the durable API result survives restarts. Canonical alias resolution applies to read-only card navigation. Internal exact-ID reads used by writers remain strict and never silently retarget a retired product.
 
 ### Additive schema 012
 
@@ -158,7 +179,7 @@ Migration 012 creates these objects without altering product, balance or movemen
 | `POST /product-editor/products/{id}/publication/preview` | `{shop_code, expected_revision, fields}`; fields are `name`, `sale_price_gross`, `visible`, `ean`, `attributes`, `image_url`. Live exact-leaf GET only, no write. |
 | `POST /product-editor/publications/{id}/send` | `{confirmed:true}`; freezes sending intent before one narrow PUT, then performs readback. Repeated send returns the same durable operation without another PUT. |
 | `GET /product-editor/publications/{id}` | Recovery of ready/sending/completed/uncertain/rejected/resolved state. |
-| `GET /product-editor/products/{id}/publications` | Last 20 publication operations. |
+| `GET /product-editor/products/{id}/publications` | Up to 20 operations, pending `sending` / `uncertain` first, then newest first. Older pending operations remain discoverable when the other shop has many newer previews. |
 | `POST /product-editor/publications/{id}/resolve` | `{confirmed:true, original_request_settled:true, note}`; operator first proves the original request can no longer arrive. Readback alone never releases uncertainty. Sending state must be at least five minutes old. No PUT is sent. |
 | `POST /product-editor/products/{id}/refresh-attributes` | Live read of one exact mapped variant, fills missing canonical axes only; preserves manual values and existing axes, never changes remote product or stock. |
 

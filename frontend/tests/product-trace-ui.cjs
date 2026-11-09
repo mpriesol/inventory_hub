@@ -71,7 +71,7 @@ async function render(entry='/product-trace') {router=createMemoryRouter([{path:
  await search('FEED-ONLY'); assert(!document.querySelector('#trace-product-name'));
  assert(document.body.textContent.includes('Feed-only part'));assert(document.body.textContent.includes('7,20 CZK'));
  assert(document.querySelector('a[href="/suppliers/cyklozitny/catalog?code=000-SUP&feed=products"]'));
- assert(!document.querySelector('a[href="/product-trace?product_id=8"]'),'Feed row IDs never fabricate Hub card links');
+ assert(!document.querySelector('a[href="/products/card/8"]'),'Feed row IDs never fabricate Hub card links');
  await search('SERVICE'); assert(!document.body.textContent.includes('Feed-only part'),'A new lookup clears previous feed results');assert(document.body.textContent.includes(t('serviceSales')));assert(document.body.textContent.includes(i18n.t('productEditor.serviceHelp')));
  await search('SLOW');assert(deferred);const slow=calls.at(-1);await search('NEW-CODE');assert(slow.options.signal.aborted,'A new scan aborts the old request');
  await act(async()=>{deferred();await tick();});assert.equal(document.querySelector('#trace-product-name').textContent,'Latest product','A late response cannot replace the latest lookup');

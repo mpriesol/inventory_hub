@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
+import { StockCardLink } from '../components/product/StockCardLink';
 import { useReceivingScanner } from '../hooks/useReceivingScanner';
 import {
   getReceivingSummary,
@@ -691,7 +692,7 @@ export function ReceivingSessionPage() {
                             <summary className="cursor-pointer underline">{t('receiving.products.reviewMatch')}</summary>
                             <p className="mt-1" style={{ color: 'var(--color-error)' }}>{t('receiving.products.ambiguousHelp')}</p>
                             {!!product.candidate_products?.length && <div className="mt-2"><strong>{t('receiving.products.candidateCards')}</strong><ul className="list-disc pl-4">
-                              {product.candidate_products.map(candidate => <li key={candidate.id}><a className="underline" href={`/products/${encodeURIComponent(candidate.code)}`} target="_blank" rel="noopener noreferrer">{candidate.code} · {candidate.name}</a></li>)}
+                              {product.candidate_products.map(candidate => <li key={candidate.id}><StockCardLink className="underline" productId={candidate.id} sku={candidate.code} warehouseCode={receiptInfo.warehouse?.code ?? null}>{candidate.code} · {candidate.name}</StockCardLink></li>)}
                             </ul></div>}
                             {!!product.candidate_sources?.length && <div className="mt-2"><strong>{t('receiving.products.candidateFeed')}</strong><ul className="list-disc pl-4">
                               {product.candidate_sources.map(candidate => <li key={candidate.id}>{candidate.code} · {candidate.name}{candidate.eans.length > 0 && <div>EAN: {candidate.eans.join(', ')}</div>}</li>)}
@@ -700,7 +701,7 @@ export function ReceivingSessionPage() {
                             <a className="inline-block underline mt-2" href={`/suppliers/${encodeURIComponent(supplier)}/catalog`} target="_blank" rel="noopener noreferrer">{t('receiving.products.openCatalog')}</a>
                           </details>}
                           {product.status !== 'ambiguous' && product.warnings.map((warning, index) => <p key={index} className="max-w-xs" style={{ color: 'var(--color-text-tertiary)' }}>{warning}</p>)}
-                          {product.product_id && product.product_code && <a data-testid={`receiving-product-open-${idx}`} className="inline-block underline mr-3" href={`/products/${encodeURIComponent(product.product_code)}`} target="_blank" rel="noopener noreferrer">{t('receiving.products.openCard')}</a>}
+                          {product.product_id && product.product_code && <StockCardLink data-testid={`receiving-product-open-${idx}`} className="inline-block underline mr-3" productId={product.product_id} sku={product.product_code} warehouseCode={receiptInfo.warehouse?.code ?? null}>{t('receiving.products.openCard')}</StockCardLink>}
                           {(product.can_prepare || product.draft_id) && <button data-testid={`receiving-product-prepare-${idx}`} className="underline disabled:opacity-50 text-left" disabled={productActionsDisabled} onClick={() => line.id !== undefined && prepareProducts([line.id])}>
                             {t(product.draft_id ? 'receiving.products.continuePreparation' : product.status === 'basic_card' ? 'receiving.products.completeCard' : 'receiving.products.createCard')}
                           </button>}

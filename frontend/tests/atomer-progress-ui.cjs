@@ -71,7 +71,7 @@ global.fetch = async (path, init) => {
   await act(async()=>toggle.click());
   const child=document.querySelector('.progress-child');
   assert.ok(child.textContent.includes('Blue · M') && child.textContent.includes('Karta bez väzby'));
-  for(const url of [shop,admin,'/products/HUB-3']) assert.ok(child.querySelector('a[href="'+url+'"]'));
+  for(const url of [shop,admin,'/products/card/3']) assert.ok(child.querySelector('a[href="'+url+'"]'));
   const select=[...document.querySelectorAll('select')].find(x=>x.parentNode.textContent.startsWith('BIKETREK'));
   await act(async()=>{ select.value='unlinked'; select.dispatchEvent(new window.Event('change',{bubbles:true})); });
   await settle();

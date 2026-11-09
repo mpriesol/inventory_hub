@@ -6,6 +6,7 @@ import { getHistoryOptions, getMovements, type HistoryOptions, type MovementFilt
 import { CatalogApiError } from '../api/catalog';
 import { ActionScope } from '../components/ui/ActionScope';
 import { defaultWarehouseCode } from '../utils/warehouses';
+import { StockCardLink } from '../components/product/StockCardLink';
 import './StockHistoryPage.css';
 
 const emptyFilters: MovementFilters = { q: '', sku: '', warehouse_code: '', movement_type: '', date_from: '', date_to: '', tracking_scope: 'current' };
@@ -123,7 +124,7 @@ export function StockHistoryPage() {
           {['time', 'product', 'warehouse', 'type', 'quantity', 'before', 'after', 'reference', 'reason', 'author', 'unitCost'].map(key => <th key={key}>{t(`stockHistory.${key}`)}</th>)}
         </tr></thead><tbody>{data.items.map(row => <tr key={row.id}>
           <td>{new Date(row.created_at).toLocaleString(i18n.language)}<small>#{row.id}</small><small>{row.tracking_scope && t(`stockHistory.scopes.${row.tracking_scope}`)}</small></td>
-          <td><Link to={`/products/${encodeURIComponent(row.sku)}`}>{row.sku}</Link><small>{row.product_name}</small></td>
+          <td><StockCardLink productId={row.product_id} sku={row.sku} warehouseCode={row.warehouse_code}>{row.sku}</StockCardLink><small>{row.product_name}</small></td>
           <td>{row.warehouse_name}</td><td>{t(`stockHistory.types.${row.movement_type}`, row.movement_type)}</td>
           <td className="stock-history-number">{Number(row.quantity) > 0 ? '+' : ''}{readNumber(row.quantity)}</td>
           <td className="stock-history-number">{readNumber(row.balance_before)}</td><td className="stock-history-number">{readNumber(row.balance_after)}</td>

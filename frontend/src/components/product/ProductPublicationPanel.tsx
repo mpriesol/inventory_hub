@@ -7,6 +7,7 @@ import { ActionScope } from '../ui/ActionScope';
 import { accessRevision, subscribeAccess } from '../../api/access';
 import { ProductEditorRow, ProductPublication, ProductPublicationField, previewProductPublication, productPublicationHistory,
   readProductPublication, resolveProductPublication, sendProductPublication } from '../../api/productEditor';
+import './ProductPricePublicationPanel.css';
 
 const fields: ProductPublicationField[] = ['sale_price_gross', 'visible', 'name', 'ean', 'attributes', 'image_url'];
 const lockedStates = new Set(['sending', 'uncertain']);
@@ -17,7 +18,11 @@ function shown(value: unknown): string {
   if (typeof value === 'object') return Object.entries(value).map(([key, item]) => `${key}: ${shown(item)}`).join(' · ');
   return String(value);
 }
-export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[]; onClose: () => void }) {
+export interface ProductPublicationPanelProps {
+  shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[]; onClose: () => void;
+  embedded?: boolean; onBusyChange?: (busy: boolean) => void; onChanged?: () => void;
+}
+export function ProductPublicationPanel({ shop, rows, onClose, embedded = false, onBusyChange, onChanged }: ProductPublicationPanelProps) {
   const { t } = useTranslation();
   const credential = useSyncExternalStore(subscribeAccess, accessRevision);
   const [productId, setProductId] = useState(rows[0].id);
@@ -29,11 +34,14 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [uncertain, setUncertain] = useState(false);
   const [confirmed, setConfirmed] = useState(false), [settled, setSettled] = useState(false), [note, setNote] = useState('');
   const context = useRef(0), busyRef = useRef(false), dialog = useRef<HTMLElement | null>(null);
+  const busyCallback = useRef(onBusyChange); busyCallback.current = onBusyChange;
   const shopName = shop === 'biketrek' ? 'BIKETREK' : 'xTrek';
   const unresolved = uncertain || !!operation && lockedStates.has(operation.state);
   const atomerOperation = operation?.workflow === 'atomer_content';
   const errorText = (code: string) => t(`productPublication.errors.${code}`, { defaultValue: t('productPublication.failed') });
   const remember = (value: ProductPublication) => { setOperation(value); setHistory(items => [value, ...items.filter(item => item.id !== value.id)]); setConfirmed(false); setUncertain(false); };
+  useEffect(() => { busyCallback.current?.(busy); }, [busy]);
+  useEffect(() => () => { busyCallback.current?.(false); }, []);
   useEffect(() => {
     const id = ++context.current, controller = new AbortController();
     setHistory([]); setOperation(null); setConfirmed(false); setUncertain(false); setError(''); setSettled(false); setNote('');
@@ -47,6 +55,7 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
     return () => { context.current++; controller.abort(); };
   }, [productId, shop, credential]);
   useEffect(() => {
+    if (embedded) return;
     dialog.current?.querySelector<HTMLElement>('button')?.focus();
     const listener = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busyRef.current) { event.preventDefault(); onClose(); }
@@ -58,24 +67,25 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
       }
     };
     document.addEventListener('keydown', listener); return () => document.removeEventListener('keydown', listener);
-  }, []);
+  }, [embedded]);
   async function act(kind: 'preview' | 'send' | 'read' | 'resolve') {
     if (busyRef.current) return;
     if (operation?.workflow === 'atomer_content') return;
     if (kind !== 'preview' && !operation) return;
     if (kind === 'send' && (!confirmed || operation?.state !== 'ready' || unresolved)) return;
     const generation = context.current, revision = accessRevision(); busyRef.current = true; setBusy(true); setError('');
+    let changed = false;
     try {
       const result = kind === 'preview' ? await previewProductPublication(row, shop, selectedFields)
         : kind === 'send' ? await sendProductPublication(operation!.id)
         : kind === 'resolve' ? await resolveProductPublication(operation!.id, note.trim())
         : await readProductPublication(operation!.id);
-      if (context.current === generation && revision === accessRevision()) remember(result);
+      if (context.current === generation && revision === accessRevision()) { remember(result); changed = kind !== 'preview' && result.state !== operation?.state; }
     } catch (reason: any) {
       if (context.current === generation && revision === accessRevision()) { setError(reason.code || 'request_failed'); if (kind === 'send') setUncertain(true); }
-    } finally { if (context.current === generation && revision === accessRevision()) { busyRef.current = false; setBusy(false); } }
+    } finally { if (context.current === generation && revision === accessRevision()) { busyRef.current = false; setBusy(false); if (changed) onChanged?.(); } }
   }
-  return <div className="product-editor-modal-backdrop"><section className="product-editor-detail product-publication" ref={dialog} role="dialog" aria-modal="true" aria-label={t('productEditor.uploadTo', { shop: shopName })}>
+  const panel = <section className={`product-editor-detail product-publication${embedded ? ' product-publication-embedded' : ''}`} ref={dialog} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={t('productEditor.uploadTo', { shop: shopName })}>
     <header><div><h2>{t('productEditor.uploadTo', { shop: shopName })}</h2><p className="product-editor-muted">{t('productPublication.intro')}</p></div><button type="button" data-testid="publication-close" aria-label={t('productEditor.closeDetail')} disabled={busy} onClick={onClose}><X size={20} /></button></header>
     <div className="product-editor-detail-body">
       <label>{t('productPublication.product')}<select data-testid="publication-product" value={productId} disabled={busy} onChange={event => setProductId(Number(event.target.value))}>{rows.map(item => <option key={item.id} value={item.id}>{item.sku} · {item.common.name}</option>)}</select></label>
@@ -105,5 +115,6 @@ export function ProductPublicationPanel({ shop, rows, onClose }: { shop: 'biketr
         <Link data-testid={`publication-atomer-history-${item.id}`} to="/migration/atomer" onClick={onClose}>{t('productPublication.atomerOpen')}</Link>
       </> : <button type="button" disabled={busy || unresolved && item.id !== operation?.id} data-testid={`publication-history-${item.id}`} onClick={() => { setOperation(item); setConfirmed(false); setUncertain(false); setSettled(false); setNote(''); }}>{t(`productPublication.states.${item.state}`, { defaultValue: item.state })} · {item.created_at ? new Date(item.created_at).toLocaleString() : item.id}</button>}</li>)}</ul></details>}
     </div>
-  </section></div>;
+  </section>;
+  return embedded ? panel : <div className="product-editor-modal-backdrop">{panel}</div>;
 }

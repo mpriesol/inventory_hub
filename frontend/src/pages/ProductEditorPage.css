@@ -169,3 +169,7 @@
 .product-editor-detail-section > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 .product-editor-detail-section label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .product-editor-detail-section select { padding: 8px; border: 1px solid var(--color-border-subtle); border-radius: 6px; color: inherit; background: var(--color-bg-primary); }
+.product-editor-pending-changes { display: grid; gap: 8px; margin-block: 12px; }
+.product-editor-pending-row { padding: 10px 14px; border: 1px solid var(--color-border-subtle); border-radius: 8px; }
+.product-editor-pending-row > summary { cursor: pointer; min-height: 24px; }
+.product-editor-pending-row[open] > summary { margin-bottom: 10px; }

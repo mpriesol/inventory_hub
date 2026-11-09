@@ -175,6 +175,12 @@ jobs:
       - name: Product editor interaction checks
         run: node frontend/tests/product-editor-ui.cjs
 
+      - name: Unified stock card and selected-shop price publication
+        run: |
+          node frontend/tests/stock-card-ui.cjs
+          node frontend/tests/stock-card-navigation-ui.cjs
+          node frontend/tests/product-price-publication-ui.cjs
+
       - name: Existing product link interaction checks
         run: node frontend/tests/product-links-ui.cjs
 

@@ -38,11 +38,32 @@ def decimal_text(value, *, maximum, places):
     return format(number, f".{places}f") if places else str(int(number))
 
 
+def navigation_url(value):
+    """An explicit browser link, never a product identity or a fetch target."""
+    if value is None:
+        return None
+    safe_text(value, maximum=2000, blank=False)
+    if any(char.isspace() for char in value) or "\\" in value:
+        raise ValueError("An absolute HTTP(S) link is required")
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in ("https", "http") or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
+            raise ValueError("An absolute HTTP(S) link is required")
+        # Accessing port also validates malformed ports instead of returning a
+        # browser-dependent destination. Links are never requested by the Hub.
+        parsed.port
+    except ValueError:
+        raise ValueError("An absolute HTTP(S) link is required") from None
+    return value
+
+
 class CommonPatch(EditorModel):
     name: StrictStr | None = None
     brand: StrictStr | None = None
     internal_note: StrictStr | None = None
     image_url: StrictStr | None = None
+    description: StrictStr | None = None
 
     @field_validator("image_url")
     @classmethod
@@ -69,6 +90,13 @@ class CommonPatch(EditorModel):
     @classmethod
     def note_valid(cls, value):
         return safe_text(value, maximum=4000)
+
+    @field_validator("description")
+    @classmethod
+    def description_valid(cls, value):
+        # Local text/HTML is returned as data; consumers render it as text.
+        # Null removes the override, while an empty string is intentional.
+        return safe_text(value, maximum=20000)
 
 
 class AttributePatch(EditorModel):
@@ -158,6 +186,13 @@ class ShopPatch(EditorModel):
     name: StrictStr | None = None
     sale_price_gross: StrictStr | None = None
     visible: StrictBool | None = None
+    shop_url: StrictStr | None = None
+    shop_admin_url: StrictStr | None = None
+
+    @field_validator("shop_url", "shop_admin_url")
+    @classmethod
+    def link_valid(cls, value):
+        return navigation_url(value)
 
     @field_validator("name")
     @classmethod

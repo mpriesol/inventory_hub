@@ -71,9 +71,15 @@ async def create_product(payload: ProductCardCreateRequest, request: Request, db
     return await _call(service.create_card(db, payload, actor=actor))
 
 
+@router.get("/products/resolve")
+async def resolve_product(sku: Annotated[str, Query(min_length=1, max_length=100)],
+    warehouse_code: WarehouseCode = None, db: AsyncSession = Depends(get_session)):
+    return await _call(service.detail_by_sku(db, sku, warehouse_code=warehouse_code))
+
+
 @router.get("/products/{product_id}")
 async def product(product_id: int, warehouse_code: WarehouseCode = None, db: AsyncSession = Depends(get_session)):
-    return await _call(service.detail(db, product_id, warehouse_code=warehouse_code))
+    return await _call(service.card_detail(db, product_id, warehouse_code=warehouse_code))
 
 
 @router.post("/save")

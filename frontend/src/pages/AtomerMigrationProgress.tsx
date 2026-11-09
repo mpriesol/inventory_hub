@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AtomerReviewEditor, suggestionsFor } from './AtomerReviewEditor';
 import { AtomerCatalogRun } from './AtomerCatalogRun';
+import { StockCardLink } from '../components/product/StockCardLink';
 import { AtomerReviewBatch } from './AtomerReviewBatch';
 import { AtomerReviewLists } from './AtomerReviewLists';
 import { ExternalLink } from 'lucide-react';
@@ -109,8 +110,8 @@ export function AtomerMigrationProgress() {
         {flags(child?meta?.variant_flags:meta?.product_flags)}</td>
       <td>{reviewButton({kind:'item',key:r.code,name:r.name||r.code,work:own,suggestions:suggestionsFor(r,scope)},family)}</td>
       <td className="progress-muted" title={m('inAtomer')}>—</td>
-      <td>{r.card_state==='exists' && r.hub_sku ? <Link className="progress-card-link" to={'/products/'+encodeURIComponent(r.hub_sku)}>
-        {m('yes')} · {r.hub_sku}</Link> : <span className="progress-muted">{m('cardStates.'+r.card_state)}</span>}
+      <td>{r.card_state==='exists' && r.hub_sku ? <StockCardLink className="progress-card-link" productId={r.hub_id} sku={r.hub_sku}>
+        {m('yes')} · {r.hub_sku}</StockCardLink> : <span className="progress-muted">{m('cardStates.'+r.card_state)}</span>}
         {r.hub_id && <small>ID {r.hub_id}</small>}{!!r.candidates.length && <small>{r.candidates.join(', ')}</small>}</td>
       <td title={shopTitle(r.target_code,r.product_id,r.variant_id)}>{r.target_code || '—'}{anchors(r.shop_url,r.shop_admin_url)}</td>
       <td title={bikeRecord ? shopTitle(bikeRecord.code,bikeRecord.product_id,bikeRecord.variant_id) : undefined}>

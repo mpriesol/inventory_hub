@@ -5,21 +5,19 @@ import { Columns, Search, Save, X, PanelRightOpen, Upload, Pencil, Link2, Refres
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
 import { ProductThumb } from '../components/product/ProductDisplay';
-import { FifoPanel } from '../components/product/FifoPanel';
-import { StockAdjustmentPanel } from '../components/product/StockAdjustmentPanel';
+import { StockCard } from '../components/product/StockCard';
 import { ProductPublicationPanel } from '../components/product/ProductPublicationPanel';
 import { ProductShopLinksPanel } from '../components/product/ProductShopLinksPanel';
 import { ProductConsolidationPanel } from '../components/product/ProductConsolidationPanel';
 import { ProductSupplierLinksPanel } from '../components/product/ProductSupplierLinksPanel';
 import { ProductCardCreateForm } from '../components/product/ProductCardCreateForm';
-import { SkuMigrationPreviewDialog } from '../components/product/SkuMigrationPreviewDialog';
 import { pendingProductLink, refreshProductLinkMetadata } from '../api/productLinks';
 import { pendingProductConsolidation } from '../api/productConsolidation';
 import { pendingSupplierLink } from '../api/supplierCardLinks';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { defaultWarehouseCode } from '../utils/warehouses';
 import { EditorMode, getEditorProduct, getEditorProducts, getEditorSave, getProductEditorOptions, ProductEditorDetail,
-  ProductEditorFilters, ProductEditorOptions, ProductEditorPageData, ProductEditorRow, ProductEditorSave, ProductEditorSaveBody, refreshEditorAttributes, saveEditorProducts } from '../api/productEditor';
+  ProductEditorFilters, ProductEditorOptions, ProductEditorPageData, ProductEditorRow, ProductEditorSave, ProductEditorSaveBody, saveEditorProducts } from '../api/productEditor';
 import { changeDraft, clampColumnWidth, columnPreferences, COLUMN_PRESETS, defaultColumnWidth, Drafts, draftValue, EDITOR_COLUMNS, EditorColumn,
   editorValueText, EditorValue, fieldPath, loadColumnPreferences, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, normalizeEditorValue, originalValue, parseEditorTsv, saveColumnPreferences, sortEditorRows } from './productEditorGrid';
 import { useUnsavedNavigationGuard } from '../hooks/useUnsavedNavigationGuard';
@@ -90,46 +88,45 @@ export function ProductEditorPage() {
   const [uncertain, setUncertain] = useState(false), [saveMissing, setSaveMissing] = useState(false);
   const request = useRef<ProductEditorSaveBody | null>(null);
   const generation = useRef(0), controller = useRef<AbortController | null>(null), busyRef = useRef<string | null>(null);
-  const [detailId, setDetailId] = useState<number | null>(null), [detail, setDetail] = useState<ProductEditorDetail | null>(null);
-  const [detailTab, setDetailTab] = useState<'product' | 'audit' | 'fifo' | 'adjustment'>('product'), [detailError, setDetailError] = useState('');
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [detailSection, setDetailSection] = useState<'overview' | 'stock' | 'prices' | 'history'>('overview');
+  const cardRefreshSequence = useRef(new Map<number, number>());
+  function advanceCardRefresh(id: number) {
+    const sequence = (cardRefreshSequence.current.get(id) || 0) + 1;
+    cardRefreshSequence.current.set(id, sequence); return sequence;
+  }
   const [publication, setPublication] = useState<{ shop: 'biketrek' | 'xtrek'; rows: ProductEditorRow[] } | null>(null);
   const [linkingRows, setLinkingRows] = useState<ProductEditorRow[] | null>(null);
   const [consolidatingRows, setConsolidatingRows] = useState<ProductEditorRow[] | null>(null);
   const consolidationChanged = useRef(false);
   const [supplierLink, setSupplierLink] = useState<{ product?: ProductEditorRow; fillEans?: boolean } | null>(null);
-  const [skuMigrationProduct, setSkuMigrationProduct] = useState<ProductEditorRow | null>(null);
   const [linkRefresh, setLinkRefresh] = useState<Record<string, { kind: 'info' | 'error'; message: string }>>({});
   const [refreshingShop, setRefreshingShop] = useState('');
   const linksChanged = useRef(false);
-  const [refreshingAttributes, setRefreshingAttributes] = useState(false);
-  const detailDialog = useRef<HTMLElement | null>(null), returnFocus = useRef<HTMLElement | null>(null);
-  const detailGeneration = useRef(0), detailController = useRef<AbortController | null>(null);
   const dirtyCount = Object.keys(drafts).length;
   const editable = (column: EditorColumn) => !!column.editable && (!column.warehouse || !!warehouse);
   const rowEditable = (row: ProductEditorRow, column: EditorColumn) => (row.item_type !== 'service' || !column.warehouse) && editable(column) && (column.key !== 'sku' || !row.shops.some(shop => shop.mapped));
   const locked = busy === 'save' || busy === 'recover' || uncertain;
   const filtersPending = !!loaded && JSON.stringify({ ...filters, page: 1 }) !== JSON.stringify({ ...loaded.filters, page: 1 });
   const selectedRows = filtersPending ? [] : shownRows.filter(row => selected.has(row.id));
-  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate || !!skuMigrationProduct || !!consolidatingRows, t('productEditor.leaveChanges'));
+  useUnsavedNavigationGuard(dirtyCount > 0 || !!editing || uncertain || showCreate || !!consolidatingRows, t('productEditor.leaveChanges'));
   function remember(scroll = scrollRef.current?.scrollTop || 0) {
     if (loaded) try { sessionStorage.setItem(CONTEXT_KEY, JSON.stringify({ filters: loaded.filters, selected: [...selected], scroll })); } catch { /* Optional browser context. */ }
   }
   useEffect(() => { remember(); }, [loaded, selected]);
-  const selectedDetail = detailId ? data?.items.find(row => row.id === detailId) || drafts[detailId]?.base || detail : null;
   function replaceDrafts(value: Drafts) { draftsRef.current = value; setDrafts(value); }
   function stage(value: Drafts) { if (Object.keys(value).length > 100) { setError('draft_limit'); return; } replaceDrafts(value); setSavedCount(0); }
   function reset() {
     setConsolidatingRows(null); consolidationChanged.current = false;
-    setSkuMigrationProduct(null);
     setShowCreate(false);
     resizing.current?.(); setCollapsedGroups(new Set());
-    generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort();
+    generation.current++; controller.current?.abort();
     setLocalSort(null); setOptions(null); setLoaded(null); replaceDrafts({}); setSelected(new Set()); setActive(null); setEditing(null); editingRef.current = null;
-    setDetailId(null); setDetail(null); setDetailError(''); setRefreshingAttributes(false); setPublication(null); setLinkingRows(null); setSupplierLink(null); setLinkRefresh({}); setRefreshingShop(''); linksChanged.current = false; setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
+    setDetailId(null); setPublication(null); setLinkingRows(null); setSupplierLink(null); setLinkRefresh({}); setRefreshingShop(''); linksChanged.current = false; setError(''); setSavedCount(0); setBusy(null); busyRef.current = null; setUncertain(false); setSaveMissing(false); request.current = null; setToken('');
   }
   useEffect(() => { const previous = priorAccess.current; priorAccess.current = { revision, unlocked: hubUnlocked() };
     if (previous && previous.revision !== revision) { try { sessionStorage.removeItem(CONTEXT_KEY); } catch {} remembered.current = { filters: initialFilters }; }
-    reset(); if (hubUnlocked() && (!previous || previous.revision === revision || !previous.unlocked)) void load(remembered.current.filters, true); return () => { generation.current++; controller.current?.abort(); detailGeneration.current++; detailController.current?.abort(); }; }, [revision]);
+    reset(); if (hubUnlocked() && (!previous || previous.revision === revision || !previous.unlocked)) void load(remembered.current.filters, true); return () => { generation.current++; controller.current?.abort(); }; }, [revision]);
   useEffect(() => { setPreferencesSaved(saveColumnPreferences(preferences)); }, [preferences]);
   useEffect(() => () => { resizing.current?.(); }, []);
   useEffect(() => { if (editing) { editor.current?.focus(); if (editor.current?.tagName === 'INPUT') (editor.current as HTMLInputElement).select(); } }, [editing?.row.id, editing?.column.key, editing?.mode]);
@@ -155,7 +152,7 @@ export function ProductEditorPage() {
     if (busyRef.current || !hubUnlocked() || (!restore && locked)) return;
     finishEdit();
     if (Object.keys(draftsRef.current).length && next.warehouse_code !== (loaded?.filters.warehouse_code || '')) { setError('warehouse_dirty'); return; }
-    if (next.warehouse_code !== (loaded?.filters.warehouse_code || '')) { detailGeneration.current++; detailController.current?.abort(); setDetailId(null); setDetail(null); }
+    if (next.warehouse_code !== (loaded?.filters.warehouse_code || '')) setDetailId(null);
     const id = ++generation.current, credential = accessRevision(), abort = new AbortController(); controller.current?.abort(); controller.current = abort;
     busyRef.current = 'load'; setBusy('load'); setError(''); setSelected(new Set());
     const current = () => id === generation.current && credential === accessRevision() && !abort.signal.aborted;
@@ -173,7 +170,7 @@ export function ProductEditorPage() {
     } catch (value) { if (current()) report(value); }
     finally { if (current()) { busyRef.current = null; setBusy(null); } }
   }
-  function closeDetail() { detailGeneration.current++; detailController.current?.abort(); setDetailId(null); setDetail(null); returnFocus.current?.focus(); }
+  function closeDetail() { setDetailId(null); }
   function openLinks(rows: ProductEditorRow[]) {
     if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current || rows.length > 100) return;
     linksChanged.current = false; closeDetail(); setLinkingRows(rows.map(row => structuredClone(row)));
@@ -187,25 +184,6 @@ export function ProductEditorPage() {
     if (Object.keys(draftsRef.current).length || editingRef.current || locked || busyRef.current) return;
     linksChanged.current = false; closeDetail(); setSupplierLink({ product: product && structuredClone(product), fillEans });
   }
-  useEffect(() => {
-    if (!detailId) return;
-    const listener = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); closeDetail(); }
-      if (event.key === 'Tab') {
-        const nodes = Array.from(detailDialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], summary, [tabindex="0"]') || []).filter(node => {
-          for (let parent = node.parentElement; parent && parent !== detailDialog.current; parent = parent.parentElement) {
-            if (parent.tagName === 'DETAILS' && !parent.hasAttribute('open') && !parent.querySelector('summary')?.contains(node)) return false;
-          }
-          return true;
-        });
-        const first = nodes[0], last = nodes[nodes.length - 1];
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-      }
-    };
-    detailDialog.current?.querySelector<HTMLElement>('button')?.focus();
-    document.addEventListener('keydown', listener); return () => document.removeEventListener('keydown', listener);
-  }, [detailId]);
   function focusCell(id: number, field: string) { setActive({ id, field }); setTimeout(() => cells.current.get(`${id}:${field}`)?.focus(), 0); }
   function resizeColumn(key: string, width: number) {
     if (!Number.isFinite(width)) return;
@@ -300,7 +278,7 @@ export function ProductEditorPage() {
   function applyResult(value: ProductEditorSave) {
     const next = { ...draftsRef.current }; const updates = new Map<number, ProductEditorRow>(); let saved = 0;
     for (const item of value.results) {
-      if (item.row) updates.set(item.product_id, item.row);
+      if (item.row) { advanceCardRefresh(item.product_id); updates.set(item.product_id, item.row); }
       if (item.status === 'saved') { delete next[item.product_id]; saved++; }
       else if (next[item.product_id]) next[item.product_id] = { ...next[item.product_id], status: item.status, latest: item.row,
         errors: Object.fromEntries(item.errors.map(error => [error.field || '_row', error.code])) };
@@ -341,33 +319,27 @@ export function ProductEditorPage() {
     } }
     finally { if (current()) { busyRef.current = null; setBusy(null); } }
   }
-  async function openDetail(row: ProductEditorRow, tab: 'product' | 'audit' | 'fifo' | 'adjustment' = 'product') {
+  function openDetail(row: ProductEditorRow, section: 'overview' | 'stock' | 'prices' | 'history' = 'overview') {
     if (busyRef.current === 'refresh-links') return;
-    if (!detailId) returnFocus.current = document.activeElement as HTMLElement;
-    finishEdit(); setDetailId(row.id); setDetailTab(tab); setDetail(null); setDetailError('');
-    const id = ++detailGeneration.current, credential = accessRevision(), scope = warehouse, abort = new AbortController(); detailController.current?.abort(); detailController.current = abort;
-    try { const value = await getEditorProduct(row.id, scope, abort.signal); if (id === detailGeneration.current && credential === accessRevision() && !abort.signal.aborted) {
-      setDetail(value);
-      setLoaded(previous => previous && (previous.filters.warehouse_code || '') === scope ? { ...previous, data: { ...previous.data, items: previous.data.items.map(item => item.id === value.id ? value : item) } } : previous);
-    } }
-    catch (value) { if (id === detailGeneration.current && credential === accessRevision() && !abort.signal.aborted) {
-      const code = (value as Error & { code?: string }).code || 'request_failed';
-      if (code === 'hub_access_required' || code === 'hub_access_not_configured') unlockHub(''); else setDetailError(code);
-    } }
+    finishEdit(); setDetailId(row.id); setDetailSection(section);
   }
-  async function refreshAttributes(row: ProductEditorRow) {
-    if (refreshingAttributes || dirtyCount || locked || busy) return;
-    const credential = accessRevision(), id = detailGeneration.current; setRefreshingAttributes(true); setDetailError('');
-    try { await refreshEditorAttributes(row.id); if (credential === accessRevision() && id === detailGeneration.current) await openDetail(row); }
-    catch (value) { if (credential === accessRevision() && id === detailGeneration.current) setDetailError((value as Error & { code?: string }).code || 'request_failed'); }
-    finally { if (credential === accessRevision()) setRefreshingAttributes(false); }
+  function cardChanged(value: ProductEditorDetail) {
+    // A confirmed mutation invalidates the row even if the card closes before
+    // its own detail reload. Always read in the grid's scope, preserving drafts.
+    const scope = loaded?.filters.warehouse_code || '';
+    const sequence = advanceCardRefresh(value.id);
+    const update = (row: ProductEditorRow) => setLoaded(previous => previous && (previous.filters.warehouse_code || '') === scope
+      ? { ...previous, data: { ...previous.data, items: previous.data.items.map(item => item.id === row.id ? row : item) } } : previous);
+    const access = accessRevision(), current = generation.current;
+    const isCurrent = () => access === accessRevision() && current === generation.current && cardRefreshSequence.current.get(value.id) === sequence;
+    void getEditorProduct(value.id, scope).then(row => {
+      if (isCurrent()) update(row);
+    }).catch(failure => { if (isCurrent()) report(failure); });
   }
   async function refreshShopLinks(row: ProductEditorRow, shopCode: string) {
-    if (busyRef.current || Object.keys(draftsRef.current).length || editingRef.current || locked || refreshingAttributes) return;
+    if (busyRef.current || Object.keys(draftsRef.current).length || editingRef.current || locked) return;
+    advanceCardRefresh(row.id);
     const key = `${row.id}:${shopCode}`, credential = accessRevision(), id = generation.current, scope = warehouse;
-    const refreshingDetail = detailId === row.id;
-    const detailRequest = refreshingDetail ? ++detailGeneration.current : detailGeneration.current;
-    if (refreshingDetail) detailController.current?.abort();
     busyRef.current = 'refresh-links'; setBusy('refresh-links'); setRefreshingShop(key);
     setLinkRefresh(previous => { const next = { ...previous }; delete next[key]; return next; });
     const current = () => credential === accessRevision() && id === generation.current;
@@ -377,7 +349,6 @@ export function ProductEditorPage() {
       if (!current()) return;
       setLoaded(previous => previous && (previous.filters.warehouse_code || '') === scope
         ? { ...previous, data: { ...previous.data, items: previous.data.items.map(item => item.id === value.id ? value : item) } } : previous);
-      if (refreshingDetail && detailGeneration.current === detailRequest) setDetail(value);
       const shop = value.shops.find(item => item.shop_code === shopCode);
       setLinkRefresh(previous => ({ ...previous, [key]: { kind: 'info', message: shop?.shop_url && shop.shop_admin_url ? 'linksLoaded' : 'linksNotProvided' } }));
     } catch (failure: any) {
@@ -406,7 +377,7 @@ export function ProductEditorPage() {
       {shop.mapped && missing && <>
         <small>{t(!shop.shop_url && !shop.shop_admin_url ? 'productEditor.linkUnavailable' : !shop.shop_url ? 'productEditor.shopLinkMissing' : 'productEditor.adminLinkMissing')}</small>
         <button type="button" className="product-editor-inline-action" data-testid={`${scope}-refresh-links-${row.id}-${shop.shop_code}`}
-          disabled={dirtyCount > 0 || !!editing || locked || !!busy || refreshingAttributes}
+          disabled={dirtyCount > 0 || !!editing || locked || !!busy}
           title={t(dirtyCount || editing ? 'productLinks.saveFirst' : 'productEditor.refreshLinksHelp')}
           onClick={() => refreshShopLinks(row, shop.shop_code)}>{t(refreshingShop === key ? 'productEditor.loadingLinks' : 'productEditor.refreshLinks')}</button>
       </>}
@@ -526,6 +497,20 @@ export function ProductEditorPage() {
       </div>
       {uncertain && <div role="alert" className="product-editor-alert"><p>{t(saveMissing ? 'productEditor.saveMissing' : 'productEditor.uncertain')}</p><Button data-testid="recover-save" variant="secondary" disabled={!!busy} onClick={recoverSave}>{t('productEditor.recover')}</Button>{saveMissing && <Button data-testid="retry-save" variant="secondary" disabled={!!busy} onClick={sendSave}>{t('productEditor.retrySame')}</Button>}</div>}
       {error && <div role="alert" className="product-editor-alert product-editor-error">{message(error)}</div>}
+      {dirtyCount > 0 && <section className="product-editor-pending-changes" aria-label={t('productEditor.dirtyCount', { count: dirtyCount })}>
+        {Object.entries(drafts).map(([key, draft]) => {
+          const id = Number(key);
+          return <details key={id} className="product-editor-pending-row" open={draft.status === 'conflict' || undefined}>
+            <summary><code>{draft.base.sku}</code> · {t(`productEditor.rowStates.${draft.status || 'dirty'}`)}</summary>
+            {draft.latest && <div className="product-editor-conflict"><h3>{t('productEditor.conflictTitle')}</h3><p>{t('productEditor.conflictHelp')}</p>
+              <div className="product-editor-diff-scroll"><table data-testid="conflict-diff" className="product-editor-diff"><thead><tr><th>{t('productEditor.field')}</th><th>{t('productEditor.currentServer')}</th><th>{t('productEditor.yourChanges')}</th></tr></thead>
+                <tbody>{editableFields.filter(({ column, scope }) => draftValue(draft, column.key, scope) !== undefined).map(({ column, scope }) => <tr key={`${scope}:${column.key}`}><th>{fieldLabel(column, scope)}</th><td>{changeValue(originalValue(draft.latest!, column.key, scope), column.key)}</td><td>{changeValue(draftValue(draft, column.key, scope), column.key)}</td></tr>)}</tbody>
+              </table></div><Button data-testid={`confirm-rebase-${id}`} variant="secondary" size="sm" disabled={locked} onClick={() => rebase(id)}>{t('productEditor.rebase')}</Button>
+            </div>}
+            <Button data-testid={`discard-row-${id}`} variant="ghost" size="sm" disabled={locked} onClick={() => discardRow(id)}>{t('productEditor.discardRow')}</Button>
+          </details>;
+        })}
+      </section>}
       {savedCount > 0 && <p role="status" className="product-editor-success">{t('productEditor.savedCount', { count: savedCount })}</p>}
       {showColumns && selectedRows.length > 0 && <div className="product-editor-bulk"><span>{t('productEditor.bulkOptions')}</span><strong>{t('productEditor.selectedPage', { count: selectedRows.length })}</strong><select data-testid="bulk-field" aria-label={t('productEditor.bulkField')} disabled={locked || !!busy} value={bulkField} onChange={event => { setBulkField(event.target.value); setBulkValue(''); }}>{columns.filter(editable).map(column => <option key={column.key} value={column.key}>{t(`productEditor.fields.${column.key}`)}</option>)}</select>
         {bulkColumn && (bulkColumn.type === 'visibility' || bulkColumn.type === 'activity') ? <select data-testid="bulk-value" value={bulkValue} disabled={locked || !!busy} onChange={event => setBulkValue(event.target.value)}><option value="">{t(bulkColumn.type === 'activity' ? 'productEditor.fields.is_active' : 'productEditor.inherit')}</option><option value="true">{t(bulkColumn.type === 'activity' ? 'productEditor.activityStates.active' : 'productEditor.visible')}</option><option value="false">{t(bulkColumn.type === 'activity' ? 'productEditor.activityStates.inactive' : 'productEditor.hidden')}</option></select> : <input data-testid="bulk-value" aria-label={t('productEditor.bulkValue')} disabled={locked || !!busy} value={bulkValue} onChange={event => setBulkValue(event.target.value)} />}
@@ -558,7 +543,7 @@ export function ProductEditorPage() {
                   title={code ? message(code) : column.warehouse && !warehouse ? t('productEditor.chooseWarehouse') : ['reserved', 'available'].includes(column.key) ? t('productEditor.derivedStock') : column.key === 'sku' || column.key === 'supplier_codes' ? t('productEditor.identityHelp') : ['attributes', 'color', 'size'].includes(column.key) ? t('productEditor.attributesHint') : undefined}
                   onFocus={() => setActive({ id: row.id, field: column.key })} onClick={event => { if (!(event.target as HTMLElement).closest('button, a, input, select')) beginEdit(row, column); }} onDoubleClick={() => beginEdit(row, column)} onKeyDown={event => key(event, row, column)} onPaste={event => paste(event, row, column)}>
                   {isEditing ? (column.type === 'visibility' || column.type === 'activity') ? <select data-testid="cell-editor" ref={element => { editor.current = element; }} value={editing.value} onChange={event => { const next = { ...editing, value: event.target.value }; editingRef.current = next; setEditing(next); }} onBlur={() => finishEdit()} onKeyDown={event => { if (['Enter', 'Tab', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); finishEdit(event.key === 'Tab' ? event.shiftKey ? -1 : 1 : 0, event.key === 'Escape'); } }}>{column.type !== 'activity' && <option value="">{t('productEditor.inherit')}</option>}<option value="true">{t(column.type === 'activity' ? 'productEditor.activityStates.active' : 'productEditor.visible')}</option><option value="false">{t(column.type === 'activity' ? 'productEditor.activityStates.inactive' : 'productEditor.hidden')}</option></select> : <input data-testid="cell-editor" ref={element => { editor.current = element; }} value={editing.value} inputMode={column.type === 'money' || column.type === 'vat' ? 'decimal' : column.type === 'integer' ? 'numeric' : 'text'} onChange={event => { const next = { ...editing, value: event.target.value }; editingRef.current = next; setEditing(next); }} onBlur={() => finishEdit()} onKeyDown={event => { if (['Enter', 'Tab', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); finishEdit(event.key === 'Tab' ? event.shiftKey ? -1 : 1 : 0, event.key === 'Escape'); } }} /> : <>
-                    <span className="product-editor-cell-value">{column.key === 'sku' ? <button type="button" data-testid={`open-${row.id}-${column.key}`} className="product-editor-product-link" onClick={() => openDetail(row)} onDoubleClick={event => event.stopPropagation()}>{display(row, column)}</button> : row.item_type !== 'service' && ['on_hand', 'cost', 'quarantined', 'total_value'].includes(column.key) ? <button type="button" className="product-editor-product-link" data-testid={`stock-action-${row.id}-${column.key}`} title={t(column.key === 'on_hand' ? 'productEditor.adjustStock' : 'productEditor.adjustCost')} onClick={() => openDetail(row, column.key === 'on_hand' ? 'adjustment' : 'fifo')}>{display(row, column)} <Pencil size={10} /></button> : display(row, column)}</span>{column.key === 'sku' && row.attributes.length > 0 && <small title={row.attributes.map(attribute => `${attribute.name}: ${attribute.value}`).join(' · ')}>{row.attributes.map(attribute => `${attribute.name}: ${attribute.value}`).join(' · ')}</small>}{code && <small className="product-editor-cell-error">{message(code)}</small>}
+                    <span className="product-editor-cell-value">{column.key === 'sku' ? <button type="button" data-testid={`open-${row.id}-${column.key}`} className="product-editor-product-link" onClick={() => openDetail(row)} onDoubleClick={event => event.stopPropagation()}>{display(row, column)}</button> : row.item_type !== 'service' && ['on_hand', 'cost', 'quarantined', 'total_value'].includes(column.key) ? <button type="button" className="product-editor-product-link" data-testid={`stock-action-${row.id}-${column.key}`} title={t(column.key === 'on_hand' ? 'productEditor.adjustStock' : 'productEditor.adjustCost')} onClick={() => openDetail(row, column.key === 'on_hand' ? 'stock' : 'prices')}>{display(row, column)} <Pencil size={10} /></button> : display(row, column)}</span>{column.key === 'sku' && row.attributes.length > 0 && <small title={row.attributes.map(attribute => `${attribute.name}: ${attribute.value}`).join(' · ')}>{row.attributes.map(attribute => `${attribute.name}: ${attribute.value}`).join(' · ')}</small>}{code && <small className="product-editor-cell-error">{message(code)}</small>}
                   </>}
                 </td>;
               })}<td><button data-testid={`detail-${row.id}`} className="product-editor-detail-button" aria-label={t('productEditor.detailOf', { sku: row.sku })} onClick={() => openDetail(row)}><PanelRightOpen size={17} /></button></td>
@@ -567,52 +552,9 @@ export function ProductEditorPage() {
           <footer className="product-editor-pagination">{localSort && <span className="product-editor-local-sort" role="status">{t(data.total <= data.page_size ? 'productEditor.sortedResults' : 'productEditor.sortedPage')} <button type="button" className="product-editor-text-button" onClick={() => { finishEdit(); setLocalSort(null); }}>{t('productEditor.resetSort')}</button></span>}<span>{t('productEditor.range', { from: data.total ? (data.page - 1) * data.page_size + 1 : 0, to: (data.page - 1) * data.page_size + data.items.length, total: data.total })}</span><label>{t('productEditor.pageSize')}<select data-testid="page-size" disabled={locked} value={filters.page_size} onChange={event => load({ ...filters, page: 1, page_size: Number(event.target.value) })}>{PAGE_SIZES.map(value => <option key={value} value={value}>{value === 500 && data.total <= 500 ? t('productEditor.allRows', { count: data.total }) : value}</option>)}</select></label><Button data-testid="previous" variant="ghost" size="sm" disabled={!!busy || uncertain || data.page <= 1} onClick={() => load({ ...loaded!.filters, page: data.page - 1 })}>←</Button><span>{data.page} / {Math.max(1, Math.ceil(data.total / data.page_size))}</span><Button data-testid="next" variant="ghost" size="sm" disabled={!!busy || uncertain || data.page * data.page_size >= data.total} onClick={() => load({ ...loaded!.filters, page: data.page + 1 })}>→</Button></footer>
         </>}
       </div>
-      {detailId && selectedDetail && <div className="product-editor-modal-backdrop" onClick={closeDetail}><section role="dialog" aria-modal="true" ref={detailDialog} className="product-editor-detail" aria-label={t('productEditor.detail')} onClick={event => event.stopPropagation()}>
-        <header><div><code>{selectedDetail.sku}</code><h2>{selectedDetail.common.name}</h2></div><button data-testid="close-detail" aria-label={t('productEditor.closeDetail')} onClick={closeDetail}><X size={20} /></button></header>
-        <div className="product-editor-detail-tabs">{(['product', 'adjustment', 'fifo', 'audit'] as const).filter(tab => selectedDetail.item_type !== 'service' || !['adjustment', 'fifo'].includes(tab)).map(tab => <button key={tab} data-testid={`detail-tab-${tab}`} aria-selected={detailTab === tab} onClick={() => setDetailTab(tab)}>{t(`productEditor.tabs.${tab}`)}</button>)}</div>
-        {selectedDetail.item_type !== 'service' && detailTab === 'adjustment' ? <StockAdjustmentPanel productId={detailId} sku={selectedDetail.sku} warehouseCode={warehouse} stockUnit={selectedDetail.stock_unit} onChanged={() => openDetail(selectedDetail, 'adjustment')} /> : selectedDetail.item_type !== 'service' && detailTab === 'fifo' ? <FifoPanel productId={detailId} warehouseCode={warehouse} onChanged={() => { if (selectedDetail) openDetail(selectedDetail, 'fifo'); }} /> : detailTab === 'audit' ? <div className="product-editor-detail-body"><h3>{t('productEditor.auditTitle')}</h3>{!detail ? <p>{t('productEditor.loading')}</p> : !detail.audit.length ? <p>{t('productEditor.noAudit')}</p> : detail.audit.map(item => {
-          const before = { ...selectedDetail, ...item.before }, after = { ...selectedDetail, ...item.after };
-          const changes = editableFields.filter(({ column, scope }) => JSON.stringify(originalValue(before, column.key, scope)) !== JSON.stringify(originalValue(after, column.key, scope)));
-          return <div className="product-editor-audit" key={item.id}><time>{item.created_at ? new Date(item.created_at).toLocaleString(i18n.language) : '—'}</time><p>{t('productEditor.auditSaved')}</p>{changes.length > 0 && <table data-testid={`audit-diff-${item.id}`} className="product-editor-diff"><thead><tr><th>{t('productEditor.field')}</th><th>{t('productEditor.previousValue')}</th><th>{t('productEditor.savedValue')}</th></tr></thead><tbody>{changes.map(({ column, scope }) => <tr key={`${scope}:${column.key}`}><th>{fieldLabel(column, scope)}</th><td>{changeValue(originalValue(before, column.key, scope), column.key)}</td><td>{changeValue(originalValue(after, column.key, scope), column.key)}</td></tr>)}</tbody></table>}</div>;
-        })}</div> : <div className="product-editor-detail-body">
-          <div className="product-editor-detail-summary"><ProductThumb key={selectedDetail.image_url} url={selectedDetail.image_url} name={selectedDetail.common.name} size={150} /><div>
-            <p>{t(`productEditor.itemTypes.${selectedDetail.item_type || 'stock'}`)}{selectedDetail.item_type !== 'service' && ` · ${t(`productEditor.units.${selectedDetail.stock_unit || 'pcs'}`)}`}</p>
-            {selectedDetail.item_type === 'service' ? <p>{t('productEditor.serviceHelp')}</p> : <><div className="product-editor-stock-stats">{(['on_hand', 'reserved', 'available'] as const).map(key => <div key={key}><small>{t(`productEditor.fields.${key}`)}</small><strong>{price(originalValue(selectedDetail, key, 'common'))}</strong></div>)}</div><p className="product-editor-muted">{warehouse ? t('productEditor.selectedWarehouse', { warehouse }) : t('productEditor.chooseWarehouse')}</p><p>{t(`productEditor.tracking.${selectedDetail.stock.tracking_status || (selectedDetail.stock.known ? 'confirmed' : warehouse ? 'unconfirmed' : 'no_warehouse')}`)}</p></>}
-            <p>{t('productEditor.fields.ean')}: {selectedDetail.eans.join(', ') || '—'}</p>
-          </div></div>
-          <details className="product-editor-detail-section" data-testid="detail-identifiers"><summary>{t('productEditor.detailSections.identifiers')}</summary>
-<dl><dt>{t('productEditor.fields.ean')}</dt><dd>{selectedDetail.eans.join(', ') || <span className="product-editor-presence"><span>{t('productEditor.eanMissing')}</span><button type="button" className="product-editor-inline-action" data-testid="fill-supplier-eans" disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''} onClick={() => openSupplierLink(selectedDetail, true)}>{t('supplierLinks.fillEans')}</button></span>}</dd><dt>{t('productEditor.fields.supplier_codes')}</dt><dd>{selectedDetail.supplier_codes.map(item => `${item.supplier_code}: ${item.code}`).join(', ') || '—'}</dd>{selectedDetail.attributes.map(attribute => <React.Fragment key={attribute.name}><dt>{attribute.name}</dt><dd>{attribute.value}</dd></React.Fragment>)}</dl><div className="product-editor-scoped-action"><Button data-testid="refresh-attributes" size="sm" variant="secondary" disabled={refreshingAttributes || dirtyCount > 0 || !!busy || locked} onClick={() => refreshAttributes(selectedDetail)}>{t('productEditor.refreshAttributes')}</Button><ActionScope effects={['upgates-read', 'hub-write']} /></div>
-          </details>
-          <details className="product-editor-detail-section" data-testid="detail-suppliers"><summary>{t('productEditor.detailSections.suppliers')} · {t(selectedDetail.supplier_linked ? 'productEditor.linkStates.linked' : 'productEditor.linkStates.unlinked')}</summary>
-        <div className="product-editor-history-link"><Button data-testid="link-detail-supplier" variant="secondary" size="sm" icon={<Link2 size={14} />}
-          disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
-          onClick={() => openSupplierLink(selectedDetail)}>{t(selectedDetail.supplier_codes.length ? 'productEditor.manageSupplier' : 'supplierLinks.open')}</Button></div>
-            <div className="product-editor-shop-card"><strong>{t('productEditor.fields.supplier_availability')}</strong>{selectedDetail.item_type === 'service' ? <p>{t('productEditor.nonstock')}</p> : supplierAvailability(selectedDetail)}</div>
-          </details>
-          <details className="product-editor-detail-section" data-testid="detail-shops"><summary>{t('productEditor.detailSections.shops')} · {selectedDetail.shops.filter(shop => shop.mapped).length}/{selectedDetail.shops.length}</summary>
-        <div className="product-editor-history-link"><Button data-testid="link-detail-product" variant="secondary" size="sm" icon={<Link2 size={14} />}
-          disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
-          onClick={() => openLinks([selectedDetail])}>{t('productLinks.openSingle')}</Button></div>
-          {selectedDetail.shops.map(shop => <div className="product-editor-shop-card" key={shop.shop_code}><strong>{shop.shop_code === 'xtrek' ? 'xTrek' : shop.shop_code === 'biketrek' ? 'BIKETREK' : shop.shop_code}</strong><p>{t(shop.mapped ? 'productEditor.mapped' : 'productEditor.unmapped')}</p><div className="product-editor-detail-shop-links">{shopNavigation(selectedDetail, shop, 'detail')}</div><dl><dt>{t('productEditor.observedName')}</dt><dd>{shop.observed.name || '—'}</dd><dt>{t('productEditor.observedPrice')}</dt><dd>{price(shop.observed.price)} <small>{t('productEditor.unknownTax')}</small></dd></dl></div>)}
-          </details>
-          <details className="product-editor-detail-section" data-testid="detail-definition"><summary>{t('productEditor.detailSections.definition')}</summary><p>{t('productEditor.definitionHelp')}</p>
-            <div className="sku-identity-grid"><label>{t('productEditor.fields.item_type')}<select data-testid="detail-item-type" disabled={locked || !!busy || !!editing || selectedDetail.item_definition_locked} value={String(draftValue(drafts[detailId], 'item_type', 'common') ?? selectedDetail.item_type ?? 'stock')} onChange={event => { let next = changeDraft(draftsRef.current, selectedDetail, 'item_type', 'common', event.target.value); if (event.target.value === 'service') next = changeDraft(next, selectedDetail, 'stock_unit', 'common', 'pcs'); stage(next); }}>{(['stock', 'service'] as const).map(type => <option key={type} value={type}>{t(`productEditor.itemTypes.${type}`)}</option>)}</select></label>
-            <label>{t('productEditor.fields.stock_unit')}<select data-testid="detail-stock-unit" disabled={locked || !!busy || !!editing || selectedDetail.item_definition_locked || (draftValue(drafts[detailId], 'item_type', 'common') ?? selectedDetail.item_type) === 'service'} value={String(draftValue(drafts[detailId], 'stock_unit', 'common') ?? selectedDetail.stock_unit ?? 'pcs')} onChange={event => stage(changeDraft(draftsRef.current, selectedDetail, 'stock_unit', 'common', event.target.value))}>{(['pcs', 'pair', 'pack', 'm'] as const).map(unit => <option key={unit} value={unit}>{t(`productEditor.units.${unit}`)}</option>)}</select></label></div>
-            {(draftValue(drafts[detailId], 'stock_unit', 'common') ?? selectedDetail.stock_unit) === 'm' && <p role="note">{t('productEditor.meterLimit')}</p>}
-            {selectedDetail.item_definition_locked && <p>{t('productEditor.errors.item_definition_locked')}</p>}
-            <p>{t('productEditor.fields.is_active')}: {t(selectedDetail.is_active ? 'productEditor.activityStates.active' : 'productEditor.activityStates.inactive')}</p>
-            {drafts[detailId] && <div role="status">{t('productEditor.definitionPending')} <Button data-testid="detail-save" size="sm" disabled={locked || !!busy} onClick={() => { closeDetail(); void save(); }}>{t('productEditor.save')}</Button></div>}
-          </details>
-          <details className="product-editor-detail-section" data-testid="detail-diagnostics"><summary>{t('productEditor.detailSections.diagnostics')}</summary>
-        <div className="product-editor-history-link"><Link data-testid="movement-history" to={`/stock/movements?sku=${encodeURIComponent(selectedDetail.sku)}`}>{t('productEditor.movementHistory')}</Link><ActionScope effects={['hub-read']} /></div>
-        <div className="product-editor-history-link"><Button data-testid="sku-migration-open" variant="secondary" size="sm"
-          disabled={dirtyCount > 0 || !!editing || locked || !!busy} title={dirtyCount || editing ? t('productLinks.saveFirst') : ''}
-          onClick={() => { const product = structuredClone(selectedDetail); closeDetail(); setSkuMigrationProduct(product); }}>{t('skuMigration.title')}</Button><ActionScope effects={['hub-read']} /></div>
-          </details>
-          {drafts[detailId]?.latest && <div className="product-editor-conflict"><h3>{t('productEditor.conflictTitle')}</h3><p>{t('productEditor.conflictHelp')}</p><div className="product-editor-diff-scroll"><table data-testid="conflict-diff" className="product-editor-diff"><thead><tr><th>{t('productEditor.field')}</th><th>{t('productEditor.currentServer')}</th><th>{t('productEditor.yourChanges')}</th></tr></thead><tbody>{editableFields.filter(({ column, scope }) => draftValue(drafts[detailId], column.key, scope) !== undefined).map(({ column, scope }) => <tr key={`${scope}:${column.key}`}><th>{fieldLabel(column, scope)}</th><td>{changeValue(originalValue(drafts[detailId].latest!, column.key, scope), column.key)}</td><td>{changeValue(draftValue(drafts[detailId], column.key, scope), column.key)}</td></tr>)}</tbody></table></div><Button data-testid={`confirm-rebase-${detailId}`} variant="secondary" size="sm" disabled={locked} onClick={() => rebase(detailId)}>{t('productEditor.rebase')}</Button></div>}
-          {drafts[detailId] && <Button data-testid={`discard-row-${detailId}`} variant="ghost" size="sm" disabled={locked} onClick={() => discardRow(detailId)}>{t('productEditor.discardRow')}</Button>}
-        </div>}{detailError && <p className="product-editor-error">{message(detailError)}</p>}
-      </section></div>}
+      {detailId && <StockCard key={`${detailId}:${warehouse}`} productId={detailId} warehouseCode={warehouse}
+        initialSection={detailSection} onClose={closeDetail} onChanged={cardChanged}
+        readOnlyReason={dirtyCount || editing || uncertain ? t('productLinks.saveFirst') : busy ? t('productEditor.loading') : undefined} />}
       </div>
       {publication && <ProductPublicationPanel shop={publication.shop} rows={publication.rows} onClose={() => { setPublication(null); load(loaded?.filters || filters); }} />}
       {linkingRows && <ProductShopLinksPanel rows={linkingRows} onChanged={() => { linksChanged.current = true; }} onClose={() => {
@@ -624,7 +566,6 @@ export function ProductEditorPage() {
       {supplierLink && <ProductSupplierLinksPanel product={supplierLink.product} fillEans={supplierLink.fillEans} onChanged={() => { linksChanged.current = true; }} onClose={() => {
         setSupplierLink(null); if (linksChanged.current) { linksChanged.current = false; load(loaded?.filters || filters); }
       }} />}
-      {skuMigrationProduct && <SkuMigrationPreviewDialog product={skuMigrationProduct} onClose={() => setSkuMigrationProduct(null)} />}
     </>}
   </div>;
 }

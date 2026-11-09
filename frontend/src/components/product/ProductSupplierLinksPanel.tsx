@@ -11,8 +11,9 @@ import { ActionScope } from '../ui/ActionScope';
 import { IdentityFacts } from './IdentityFacts';
 import './ProductSupplierLinksPanel.css';
 
-export function ProductSupplierLinksPanel({ product: initialProduct, fillEans = false, onClose, onChanged }: {
+export function ProductSupplierLinksPanel({ product: initialProduct, fillEans = false, onClose, onChanged, embedded = false, onDirtyChange, onBusyChange }: {
   product?: ProductEditorRow; fillEans?: boolean; onClose: () => void; onChanged: () => void;
+  embedded?: boolean; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
   const c = (key: string, args: Record<string, unknown> = {}) => t(`supplierLinks.${key}`, args);
@@ -107,8 +108,8 @@ export function ProductSupplierLinksPanel({ product: initialProduct, fillEans = 
   useEffect(() => {
     mounted.current = true;
     const previous = document.activeElement as HTMLElement | null;
-    const overflow = document.body.style.overflow; document.body.style.overflow = 'hidden';
-    dialog.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    const overflow = document.body.style.overflow;
+    if (!embedded) { document.body.style.overflow = 'hidden'; dialog.current?.querySelector<HTMLButtonElement>('button')?.focus(); }
     void perform(pendingRef.current ? 'read' : 'options');
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busyRef.current) { event.preventDefault(); closeRef.current(); }
@@ -118,9 +119,13 @@ export function ProductSupplierLinksPanel({ product: initialProduct, fillEans = 
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     };
-    document.addEventListener('keydown', key);
-    return () => { mounted.current = false; document.body.style.overflow = overflow; document.removeEventListener('keydown', key); previous?.focus(); };
+    if (!embedded) document.addEventListener('keydown', key);
+    return () => { mounted.current = false; if (!embedded) { document.body.style.overflow = overflow; document.removeEventListener('keydown', key); previous?.focus(); } };
   }, []);
+  const dirty = !!pending || !!uncertain || preview?.status !== 'completed' && (!!selected || !!query.trim());
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(!!busy); }, [busy, onBusyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); onBusyChange?.(false); }, [onDirtyChange, onBusyChange]);
   // A recovered preview carries its actual card, even when Resume was opened
   // without a table selection or while another card was visible.
   useEffect(() => { if (product && !options && optionsAttempted.current !== product.id && !busy && !frozen) void perform('options'); }, [product?.id, options, busy, frozen]);
@@ -130,7 +135,7 @@ export function ProductSupplierLinksPanel({ product: initialProduct, fillEans = 
     setCopyEans(fill && !product?.eans.length && !!source.eans.length);
   };
   const SearchSection = fillEans && selected ? 'details' : 'div';
-  return <div className="product-editor-modal-backdrop"><section ref={dialog} className="product-editor-detail supplier-links-panel" role="dialog" aria-modal="true" aria-labelledby="supplier-links-title">
+  return <div className={embedded ? 'stock-card-embedded' : 'product-editor-modal-backdrop'}><section ref={dialog} className="product-editor-detail supplier-links-panel" role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-labelledby="supplier-links-title">
     <header><div><h2 id="supplier-links-title">{c(fillEans ? 'fillEans' : 'title')}</h2><p className="product-editor-muted">{c('intro')}</p></div>
       <button type="button" data-testid="supplier-links-close" disabled={!!busy} onClick={onClose} aria-label={t('productEditor.closeDetail')}><X size={20} /></button></header>
     <div className="product-editor-detail-body">

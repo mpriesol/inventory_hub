@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useSyncExternalStore } from 'react';
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { setLanguage, getLanguage } from '../../i18n';
@@ -15,6 +15,7 @@ import {
   FileText,
   ClipboardList,
   Search,
+  X,
 } from 'lucide-react';
 
 import { accessRevision, hubUser, subscribeAccess } from '../../api/access';
@@ -41,12 +42,40 @@ const navigation: NavItem[] = [
   { id: 'settings', nameKey: 'nav.settings', href: '/settings', icon: Settings, badge: null },
 ];
 
-export function Sidebar() {
+export function Sidebar({ mobileOpen = false, onClose, returnFocus }: {
+  mobileOpen?: boolean; onClose?: () => void; returnFocus?: React.RefObject<HTMLButtonElement>;
+}) {
   const location = useLocation();
   useSyncExternalStore(subscribeAccess, accessRevision);
   const user = hubUser();
   const { t, i18n } = useTranslation();
   const [currentLang, setCurrentLang] = useState(getLanguage());
+  const sidebar = useRef<HTMLElement>(null);
+  const closeMenu = useRef(onClose); closeMenu.current = onClose;
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const background = Array.from(sidebar.current?.parentElement?.children || [])
+      .filter(element => element !== sidebar.current && !element.classList.contains('hub-mobile-backdrop'));
+    const inertBefore = background.map(element => element.hasAttribute('inert'));
+    background.forEach(element => element.setAttribute('inert', ''));
+    sidebar.current?.querySelector<HTMLElement>('button, a[href]')?.focus();
+    const keys = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeMenu.current?.(); }
+      if (event.key !== 'Tab') return;
+      const controls = Array.from(sidebar.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled)') || []);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !sidebar.current?.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !sidebar.current?.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', keys);
+    return () => {
+      document.removeEventListener('keydown', keys); document.body.style.overflow = priorOverflow;
+      background.forEach((element, index) => { if (!inertBefore[index]) element.removeAttribute('inert'); });
+      returnFocus?.current?.focus();
+    };
+  }, [mobileOpen, returnFocus]);
 
   useEffect(() => {
     setCurrentLang(i18n.language);
@@ -68,7 +97,11 @@ export function Sidebar() {
 
   return (
     <aside
-      className="fixed left-0 top-0 h-screen flex flex-col border-r"
+      id="hub-navigation" ref={sidebar}
+      role={mobileOpen ? 'dialog' : undefined} aria-modal={mobileOpen || undefined}
+      className={`hub-sidebar fixed left-0 top-0 h-screen flex flex-col border-r${mobileOpen ? ' is-mobile-open' : ''}`}
+      aria-label={t('nav.navigation')}
+      onClick={event => { if ((event.target as HTMLElement).closest('a[href]')) closeMenu.current?.(); }}
       style={{
         width: 'var(--sidebar-width)',
         backgroundColor: 'var(--color-bg-primary)',
@@ -103,9 +136,10 @@ export function Sidebar() {
             className="text-xs"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            BikeTrek + xTrek
+            BIKETREK + xTrek
           </div>
         </div>
+        <button className="hub-sidebar-close" type="button" aria-label={t('nav.closeMenu')} onClick={onClose}><X size={20} /></button>
       </div>
 
       {/* Navigation */}

@@ -13,8 +13,9 @@ import './ProductShopLinksPanel.css';
 type Manual = Record<number, { parent: string; variant: string; replace?: boolean }>;
 type SelectedCard = { id: number; sku: string; name: string };
 
-export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
+export function ProductShopLinksPanel({ rows, onClose, onChanged, embedded = false, onDirtyChange, onBusyChange }: {
   rows: ProductEditorRow[]; onClose: () => void; onChanged: () => void;
+  embedded?: boolean; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [shop, setShop] = useState<ProductLinkShop>('biketrek');
@@ -126,7 +127,7 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
   useEffect(() => {
     mounted.current = true;
     const originalFocus = document.activeElement as HTMLElement;
-    dialog.current?.querySelector<HTMLElement>('button')?.focus();
+    if (!embedded) dialog.current?.querySelector<HTMLElement>('button')?.focus();
     if (pendingRef.current) { setShop(pendingRef.current.request.shop_code); void perform('read'); }
     const keyboard = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busyRef.current) { event.preventDefault(); closeRef.current(); }
@@ -136,9 +137,13 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     };
-    document.addEventListener('keydown', keyboard);
-    return () => { mounted.current = false; document.removeEventListener('keydown', keyboard); originalFocus?.focus(); };
+    if (!embedded) document.addEventListener('keydown', keyboard);
+    return () => { mounted.current = false; if (!embedded) { document.removeEventListener('keydown', keyboard); originalFocus?.focus(); } };
   }, []);
+  const dirty = !!pending || !!uncertain || !settled && (Object.values(manual).some(value => !!value.parent.trim() || !!value.variant.trim()) || !!batch);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(!!busy); }, [busy, onBusyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); onBusyChange?.(false); }, [onDirtyChange, onBusyChange]);
 
   function changeManual(id: number, key: 'parent' | 'variant', value: string) {
     if (frozen || busyRef.current) return;
@@ -151,7 +156,7 @@ export function ProductShopLinksPanel({ rows, onClose, onChanged }: {
     setShop(value); setBatch(null); setSelected([]); setError('');
   };
   const statuses: ProductLinkRow['status'][] = ['ready', 'already_linked', 'conflict', 'not_found'];
-  return <div className="product-editor-modal-backdrop"><section ref={dialog} role="dialog" aria-modal="true"
+  return <div className={embedded ? 'stock-card-embedded' : 'product-editor-modal-backdrop'}><section ref={dialog} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true}
     aria-labelledby="product-links-title" className="product-editor-detail product-links-panel">
     <header><div><h2 id="product-links-title">{t('productLinks.title')}</h2><p className="product-editor-muted">{t('productLinks.intro')}</p></div>
       <button data-testid="product-links-close" type="button" disabled={!!busy} aria-label={t('productEditor.closeDetail')} onClick={onClose}><X size={20} /></button></header>
