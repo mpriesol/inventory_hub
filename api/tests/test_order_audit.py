@@ -3,7 +3,7 @@ from current_schema_fixture import apply_current_core_schema
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -249,6 +249,37 @@ class OrderTransportTests(unittest.TestCase):
         self.assertEqual((params["page"], params["order_by"], params["order_dir"]), (2, "creation_time", "desc"))
         self.assertNotIn("current_page_items", params)  # Not documented as an orders request parameter.
         client.session.close.assert_called_once()
+
+    def test_fetch_lower_bound_covers_fractional_window_in_whole_utc_seconds(self):
+        cases = (
+            (NOW.replace(microsecond=987654), "2026-09-16T10:00:00+00:00"),
+            (datetime(2027, 1, 1, 0, 0, 0, 1, tzinfo=timezone.utc), "2026-12-25T00:00:00+00:00"),
+            (datetime(2026, 9, 23, 0, 0, 0, 999999,
+                      tzinfo=timezone(timedelta(hours=2))), "2026-09-15T22:00:00+00:00"),
+            (NOW, "2026-09-16T10:00:00+00:00"),
+        )
+        for at, expected in cases:
+            with self.subTest(at=at):
+                # An accepted query must retain the subsecond edge; returned
+                # order timestamps remain the source's exact observation.
+                timestamp = NOW.replace(microsecond=123456).isoformat()
+                orders = page(order(creation_time=timestamp, last_update_time=timestamp))
+                client = self.client()
+                client.session.get.side_effect = [self.response(orders), self.response(STATUSES)]
+                with patch.object(UpgatesClient, "from_shop", return_value=client):
+                    actual, statuses = audit._fetch_page("biketrek", 7, 2, at)
+                params = client.session.get.call_args_list[0].kwargs["params"]
+                self.assertEqual(params, {"page": 2, "order_by": "creation_time",
+                    "order_dir": "desc", "creation_time_from": expected})
+                bound = datetime.fromisoformat(params["creation_time_from"])
+                exact = at.astimezone(timezone.utc) - timedelta(days=7)
+                self.assertLessEqual(bound, exact)
+                self.assertLess(exact - bound, timedelta(seconds=1))
+                self.assertEqual(actual["orders"][0]["creation_time"], timestamp)
+                self.assertEqual(actual["orders"][0]["last_update_time"], timestamp)
+                self.assertEqual(statuses, STATUSES)
+                self.assertEqual(client.session.get.call_count, 2)
+                client.session.close.assert_called_once()
 
 
 class ProtectedOrderRouteTests(unittest.TestCase):
