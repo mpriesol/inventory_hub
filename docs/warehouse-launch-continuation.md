@@ -1,0 +1,130 @@
+# Warehouse launch and correction work — continuation record
+
+Updated: 2026-11-09. Status: implementation in progress; no launch/reset writes applied by this work yet.
+
+This is the durable continuation record for the owner's 9 November instruction.
+Read it together with AGENTS.md; do not depend on a previous chat.
+
+## Repository and work location
+
+- Repository: https://github.com/mpriesol/inventory_hub
+- Base production commit: 50cc0f3b85534b715ad315f5218b010c75f1414d.
+- Feature branch: codex/warehouse-launch-recovery.
+- Do not use OLD_inventory_hub. Do not redo the completed card consolidation.
+- Before resuming, inspect branch/main heads, open PRs, CI/deployment, and the latest
+  section below. A commit or green CI is not evidence that live operations ran.
+
+## Owner decisions (confirmed 9 November 2026)
+
+1. Implement the outstanding warehouse and basic supplier-invoice launch work.
+   Keep it simple; one-off data preparation uses the existing API/service layer.
+2. Adopt existing own-stock quantities once, then correct differences during
+   inventory counts. Record this as an owner-adopted operational baseline, not a
+   claim that every product was physically counted.
+3. For an actual conflict between Atomer and Upgates own-stock quantities, use
+   Atomer. For other unresolved quantity conflicts use the owner's explicit
+   fallback of 5 base units. This is not a default for every missing/zero product
+   and does not justify guessing identity or sale-to-base-unit factors.
+4. The previously mentioned 5-versus-8 quantities were an illustrative example,
+   not an identified product.
+5. Goods in the unfinished receipts have physically arrived. All pre-existing
+   receipts and invoices are test work and should be reset for a fresh start.
+   Historical supplier invoices must not be replayed into stock: most goods have
+   already sold, and the current quantity will be established by the baseline and
+   later inventory counts.
+6. Supplier invoices need an explicit “processed without stock effect” action.
+   Require a nonblank operator note, show the effect, record the audit, and allow
+   an audited reversal of the processing state.
+7. Operators must be able to correct states in both directions in the affected
+   managers, including stock effects where applicable. Show what happened and
+   what the correction will do. Correct immutable stock/payment ledgers with new
+   compensating events. Do not quietly edit historical movements.
+8. Undocumented payments will be entered manually. Allow corrections in both
+   directions through the settlement ledger; unknown is not zero.
+9. Sales documents remain in Upgates. Do not make Hub sales invoicing a launch
+   requirement.
+10. BIKETREK and xTrek share the main warehouse. Existing accepted order rules:
+    reserve on received/payment/awaiting pickup; issue once on dispatch or
+    completed handover; cancel before issue releases reservation; cancel after
+    issue/returns require explicit review/physical return.
+
+## Authorization and safeguards
+
+- Implementation, feature branch, reviewed PR, merge and deployment are covered
+  by the current request and standing owner permissions recorded in AGENTS.md.
+- The owner specifically authorizes resetting the pre-existing test invoices and
+  receipts. Prepare an exact snapshot/manifest and verify recoverable backup
+  before destructive reset. Archive/void with preserved original evidence is
+  preferred when it achieves a clean operational start.
+- Preserve product identity, original document bytes, scanner UUID results,
+  immutable stock/FIFO/settlement history, reservations and uncertain-write
+  fences. Never reset unrelated orders/products.
+- Receipt reversal must account for downstream FIFO consumption, reservations,
+  quarantine and cost evidence. If a direct reversal cannot be valid, show the
+  exact dependency and supported corrective workflow.
+- Do not automatically activate live Hub stock authority merely by deploying
+  code. Prepare concrete policy/cutoff/baseline and verify all shared channels
+  and competing writers before the separate live activation step.
+- Never put credentials, production invoice/customer data, private source URLs,
+  database dumps or server configuration secrets into this public repository.
+  A different account must obtain its own authorized credentials.
+
+## Work packages and ownership
+
+| Package | Current status | Files/owner during implementation |
+| --- | --- | --- |
+| Invoice processing without stock, undo and manual settlements | In progress | Invoice services/routes/UI/tests; ops agent; migration 051 reserved |
+| Receipt correction/reversal and clean-start primitives | In progress | Receiving/FIFO services/UI/tests; stock agent; migration 052 reserved |
+| Topeak availability failure diagnosis/recovery and order setup | In progress | Supplier availability/order services/tests; orders agent |
+| Backup, one-off baseline/reset, integration, CI, release | Not applied | Primary agent |
+| Portable handoff and this record | Being checkpointed | Primary agent |
+
+Avoid shared-file conflicts: primary agent owns migrate.py, Dockerfile, CI,
+OVERVIEW.md and AGENTS.md integration. Invoice agent coordinates both locale files.
+
+## Implementation and operational acceptance
+
+- Invoice “processed without stock” requires a note, creates no stock movements,
+  is idempotent and reversible with history, and is separate from payment status.
+- Receipt correction has a before/after preview and explicit reason; repeat
+  requests cannot duplicate stock; consumed stock cannot be silently recreated.
+- Manual payment and reversal preserve exact currency/decimal arithmetic,
+  unknown balances and concurrent-change protection.
+- Existing product/card identity invariant remains true for every native shop
+  leaf; no duplicates introduced.
+- Opening adoption handles confirmed/unconfirmed rows and existing test effects
+  explicitly, without adding historical receipts twice. Costs remain unknown
+  where evidence is absent.
+- Topeak diagnostics distinguish feed parse failures from publication failures,
+  current mapping scope from historical outcomes, and pre-write rejection from
+  uncertain writes.
+- Order collection/webhooks are configured together, with a fresh cutoff and
+  current remote statuses. Old orders are not replayed into the new stock start.
+- Run meaningful targeted tests and the required CI coverage gate on a dedicated
+  localhost database ending _catalog_test. Never test against production.
+- Verify deployed code and every live operation separately. Preserve request IDs,
+  manifests, counts and applied/not-applied evidence in private operational
+  checkpoints. Never retry a timed-out mutation without reading its outcome.
+
+## Exact continuation procedure
+
+1. Read AGENTS.md, this record and git status. Fetch branch/main and check PR/CI.
+2. Preserve unfinished changes; do not start a second competing implementation.
+3. Inspect changed feature docs/tests, migration runner/image packaging and
+   private operational checkpoint (obtain it from the owner if using another
+   account). Never infer “applied” from code availability.
+4. Finish/review the three work packages, reconcile their contracts and run
+   isolated validation.
+5. Establish actual backup/server capabilities; API exports alone are not a
+   verified consistent database-plus-files backup.
+6. Freeze exact test-reset scope and opening source manifest before any reset.
+   Apply only once using stable UUIDs and verify postconditions.
+7. Prepare order/webhook settings and stock baseline. Record any final live
+   activation/access prerequisite explicitly.
+8. Update this record, portable handoff, PR/deployment links and operation
+   receipts after each milestone.
+
+## Checkpoints
+
+- 2026-11-09: main inspected at the base commit above; clean local feature branch
+  created. Implementation assigned. No production data writes by this work.
