@@ -277,7 +277,8 @@
       "date": "Date",
       "actor": "User",
       "stockEffect": "Stock effect",
-      "historyLimit": "Last 50 completed changes."
+      "historyLimit": "Last 50 completed changes.",
+      "archivedReadOnly": "This receipt is archived and read-only. Archiving did not change stock quantities; use receipt recovery to restore it."
     }
   },
   "suppliers": {

@@ -277,7 +277,8 @@
       "date": "Dátum",
       "actor": "Používateľ",
       "stockEffect": "Vplyv na sklad",
-      "historyLimit": "Posledných 50 dokončených zmien."
+      "historyLimit": "Posledných 50 dokončených zmien.",
+      "archivedReadOnly": "Príjemka je archivovaná a je iba na čítanie. Archivácia nezmenila skladové množstvá; návrat nájdete v oprave príjemky."
     }
   },
   "suppliers": {
