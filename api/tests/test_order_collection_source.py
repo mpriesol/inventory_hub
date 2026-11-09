@@ -41,7 +41,7 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
         raw = order(customer={"email": private}, products=[{"title": private, "price": private}], internal_note=private)
         result, fetch = await self.load(payload(raw))
         self.assertNotIn(private, json.dumps(result))
-        self.assertEqual(set(result), {"entries", "page", "number_of_pages", "number_of_items", "has_more"})
+        self.assertEqual(set(result), {"entries", "raw_count", "page", "number_of_pages", "number_of_items", "has_more"})
         self.assertEqual(set(result["entries"][0]), {"order_number", "uuid", "created_at", "updated_at", "deleted", "status_id", "origin"})
         self.assertFalse(result["entries"][0]["deleted"])
         self.assertFalse(result["has_more"])
@@ -69,9 +69,10 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
             self.assertEqual(result['entries'][0]['deleted'], deleted)
         # Widening creation coverage never widens the change window: old,
         # unchanged history must not become a full-history scan every poll.
-        with self.assertRaises(source.CollectionSourceError):
-            await self.load(payload({**raw, 'last_update_time': (START - timedelta(seconds=1)).isoformat()}),
-                            created_from=source.OLDEST_ORDER_CREATION)
+        result, _ = await self.load(payload({**raw, 'last_update_time': (START - timedelta(seconds=1)).isoformat()}),
+                                    created_from=source.OLDEST_ORDER_CREATION)
+        self.assertEqual(result["entries"], [])
+        self.assertEqual(result["raw_count"], 1)
 
     async def test_utc_normalization_inclusive_creation_window_and_no_invented_update_upper_bound(self):
         raw = order(creation_time="2026-09-23T10:00:00+02:00", last_update_time=(END + timedelta(seconds=1)).isoformat())
@@ -111,7 +112,6 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
             (order(creation_time=(START - timedelta(microseconds=1)).isoformat()), 'created_window'),
             (order(creation_time=(END + timedelta(seconds=1, microseconds=1)).isoformat(),
                    last_update_time=(END + timedelta(seconds=2)).isoformat()), 'created_window'),
-            (order(last_update_time=(START + timedelta(minutes=5) - timedelta(microseconds=1)).isoformat()), 'updated_window'),
         ):
             with self.subTest(row=row['order_number']), self.assertRaises(source.CollectionSourceError) as raised:
                 await self.load(payload(row), **changes)
@@ -175,7 +175,6 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
             ("timestamp", payload({**raw, "last_update_time": private}), {}),
             ("created_window", payload({**raw, "creation_time": (START - timedelta(seconds=1)).isoformat()}), {}),
             ("update_before_creation", payload({**raw, "last_update_time": (START - timedelta(seconds=1)).isoformat()}), {}),
-            ("updated_window", payload(raw), {"changed_from": START + timedelta(minutes=6)}),
             ("deleted_scope", payload({**raw, "deleted_yn": True}), {}),
             ("duplicate_identity", payload(raw, {**raw, "order_number": "OTHER"}), {}),
             ("duplicate_identity", payload(raw, {**raw, "uuid": str(uuid4())}), {}),
@@ -201,8 +200,18 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
         for change in bad:
             with self.subTest(fields=list(change)), self.assertRaises(source.CollectionSourceError):
                 await self.load(payload(order(**change)))
-        with self.assertRaises(source.CollectionSourceError):
-            await self.load(payload(order()), changed_from=END)
+        result, _ = await self.load(payload(order()), changed_from=END)
+        self.assertEqual(result["entries"], [])
+
+    async def test_stale_rows_are_filtered_without_losing_raw_page_coverage(self):
+        old = order(order_number="OLD", last_update_time=(START - timedelta(minutes=1)).isoformat(),
+                    creation_time=(START - timedelta(days=1)).isoformat())
+        fresh = order(order_number="NEW")
+        result, _ = await self.load(payload(old, fresh, total=2),
+                                    created_from=source.OLDEST_ORDER_CREATION)
+        self.assertEqual([entry["order_number"] for entry in result["entries"]], ["NEW"])
+        self.assertEqual(result["raw_count"], 2)
+        self.assertEqual(result["number_of_items"], 2)
 
     async def test_invalid_request_never_reaches_upstream(self):
         for change in ({"created_from": START.replace(tzinfo=None)}, {"changed_from": START.isoformat()},
