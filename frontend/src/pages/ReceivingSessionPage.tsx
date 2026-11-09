@@ -527,7 +527,7 @@ export function ReceivingSessionPage() {
       {quantityNeedsRefresh && <Button data-testid="receiving-quantity-refresh" disabled={savingEdit} onClick={refreshQuantities}>{t('receiving.refreshQuantities')}</Button>}
 
       {state?.closedScan && inactive && <p role="status">{t('receiving.lookup.closed')}</p>}
-      {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
+      {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(receiptInfo.archived ? 'receiving.recovery.archivedReadOnly' : `receiving.sessionStatus.${sessionStatus}`)}</div>}
       {sessionStatus === 'paused' && !receiptInfo.archived && <Button data-testid="receiving-resume" disabled={recoveryLocked || pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
       {sessionId && sessionStatus && <ReceivingRecoveryPanel key={receiptKey} supplier={supplier} sessionId={sessionId}
         status={sessionStatus} archived={!!receiptInfo.archived} reversed={!!receiptInfo.reversed}

@@ -277,7 +277,8 @@
       "date": "Dátum",
       "actor": "Používateľ",
       "stockEffect": "Vplyv na sklad",
-      "historyLimit": "Posledných 50 dokončených zmien."
+      "historyLimit": "Posledných 50 dokončených zmien.",
+      "archivedReadOnly": "Príjemka je archivovaná a je iba na čítanie. Archivácia nezmenila skladové množstvá; návrat nájdete v oprave príjemky."
     }
   },
   "suppliers": {
@@ -5039,13 +5040,65 @@
       "order_webhook_order_not_found": "Objednávka sa v odpovedi Upgates nenašla. Skontrolujte ju pred opakovaním načítania.",
       "order_webhook_source_behind": "Upgates zatiaľ vrátil staršiu verziu objednávky než prijaté oznámenie. Uložené oznámenie zostáva čakajúce.",
       "order_webhook_registration_uncertain": "Výsledok pôvodnej požiadavky na registráciu nie je potvrdený. Obnovte overenie existujúcich registrácií. Ak zostáva neistota, overte ukončenie pôvodnej požiadavky v Upgates pred použitím obnovy nižšie.",
-      "order_webhook_registration_busy": "Registráciu práve spracúva Hub. Načítajte aktuálny stav a skúste uložiť overenie po dokončení spracovania."
+      "order_webhook_registration_busy": "Registráciu práve spracúva Hub. Načítajte aktuálny stav a skúste uložiť overenie po dokončení spracovania.",
+      "order_webhook_resolution_not_eligible": "Toto upozornenie nie je možné takto vybaviť. Načítajte aktuálny stav.",
+      "order_webhook_resolution_local_history": "Hub už eviduje objednávku alebo jej históriu. Upozornenie musí zostať na kontrolu.",
+      "order_webhook_resolution_source_exists": "Upgates objednávku našiel. Načítajte ju bežným spracovaním upozornenia.",
+      "order_webhook_resolution_target_changed": "Pripojenie e-shopu sa zmenilo. Pripravte nový náhľad.",
+      "order_webhook_resolution_request_conflict": "Požiadavka nezodpovedá pôvodnému náhľadu alebo používateľovi.",
+      "order_webhook_resolution_stale": "Upozornenie alebo nastavenia sa zmenili. Pripravte nový náhľad.",
+      "order_webhook_resolution_expired": "Platnosť náhľadu vypršala. Pripravte nový náhľad.",
+      "order_webhook_resolution_source_unavailable": "Upgates sa nepodarilo spoľahlivo overiť. Upozornenie zostáva na kontrolu.",
+      "order_webhook_resolution_not_found": "Uložená požiadavka sa nenašla.",
+      "order_webhook_resolution_event_not_found": "Upozornenie sa nenašlo.",
+      "order_webhook_resolution_shop_not_found": "Aktívny e-shop sa nenašiel."
     },
     "resolutionTitle": "Overenie nedokončenej registrácie",
     "resolutionHelp": "Použite až po overení v Upgates alebo u jeho podpory, že pôvodná požiadavka sa už nemôže vykonať neskôr. Samotné zobrazenie aktuálneho nastavenia to nepotvrdzuje. Hub uloží dôkaz, znova načíta registrácie a dokončí uložené nastavenie.",
     "resolutionNote": "Ako ste overili ukončenie pôvodnej požiadavky (10–2000 znakov)",
     "resolutionConfirm": "Overil som, že pôvodná požiadavka v Upgates je ukončená a už sa nemôže dodatočne vykonať.",
-    "resolutionSubmit": "Uložiť overenie a obnoviť kontrolu registrácie"
+    "resolutionSubmit": "Uložiť overenie a obnoviť kontrolu registrácie",
+    "notifications": {
+      "title": "Doriešenie zmazanej objednávky",
+      "scope": "Mení iba stav upozornenia. Nevytvára objednávku, skladový pohyb ani zmenu v Upgates.",
+      "note": "Dôvod rozhodnutia (10–2 000 znakov)",
+      "preview": "Overiť a zobraziť náhľad",
+      "confirm": "Potvrdiť rozhodnutie",
+      "confirmation": "Potvrdzujem uvedený dôvod a zmenu stavu upozornenia.",
+      "cancel": "Zrušiť náhľad",
+      "recover": "Overiť výsledok požiadavky",
+      "pending": "Výsledok požiadavky treba overiť. Pokračujte s uloženou požiadavkou.",
+      "saved": "Rozhodnutie bolo uložené.",
+      "failed": "Rozhodnutie sa nepodarilo overiť alebo uložiť. Skúste načítať stav požiadavky.",
+      "storageUnavailable": "Prehliadač nedokáže bezpečne uložiť požiadavku. Zápis sa neodoslal.",
+      "actorChanged": "Táto požiadavka patrí inému prihláseniu. Prihláste sa pôvodným účtom.",
+      "history": "História rozhodnutí (posledných 50)",
+      "historyEmpty": "Zatiaľ bez rozhodnutí.",
+      "loadHistory": "Načítať históriu",
+      "evidenceTitle": "Výsledok overenia",
+      "activeAbsent": "Objednávka sa nenašla medzi aktívnymi objednávkami v Upgates.",
+      "deletedAbsent": "Objednávka sa nenašla ani medzi zmazanými objednávkami v Upgates.",
+      "noLocalHistory": "Hub nemá k objednávke lokálnu históriu.",
+      "checkedAt": "Overené",
+      "requestId": "Požiadavka",
+      "action": "Rozhodnutie",
+      "state": "Stav",
+      "actor": "Používateľ",
+      "createdAt": "Čas",
+      "phases": {
+        "prepared": "Náhľad",
+        "completed": "Vykonané"
+      },
+      "actions": {
+        "acknowledge_absent_delete": "Uzavrieť upozornenie na neprítomnú objednávku",
+        "reopen": "Vrátiť upozornenie na kontrolu"
+      },
+      "help": {
+        "acknowledge_absent_delete": "Overí aktívne aj zmazané objednávky a lokálnu históriu. Upozornenie možno vybaviť iba bez nájdenej objednávky a lokálnej histórie.",
+        "reopen": "Vráti toto ručné potvrdenie na kontrolu bez zmeny zásob."
+      },
+      "invalidResponse": "Odpoveď nezodpovedá tejto požiadavke. Overte výsledok pôvodnej požiadavky."
+    }
   },
   "atomerContent": {
     "title": "Import obsahu z Atomeru",

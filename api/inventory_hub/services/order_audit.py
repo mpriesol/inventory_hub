@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inventory_hub.db_models import Shop
+from inventory_hub.services.order_collection_source import _wire_instant
 from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
 
@@ -283,7 +284,9 @@ def _fetch_page(shop_code: str, days: int, page: int, at: datetime) -> tuple[dic
         client = UpgatesClient.from_shop(shop_code)
         return client.read_order_audit({
             "page": page, "order_by": "creation_time", "order_dir": "desc",
-            "creation_time_from": (at - timedelta(days=days)).isoformat(),
+            "creation_time_from": _wire_instant(
+                (at - timedelta(days=days)).astimezone(timezone.utc)
+            ).isoformat(timespec="seconds"),
         })
     except UpgatesError as error:
         if error.status_code in (401, 403):

@@ -183,7 +183,9 @@ async def status(db, shop_code):
               'registered_at', 'registration_checked_at', 'last_received_at', 'last_completed_at', 'last_error',
               'registered_events', 'next_registration_at', 'registration_attempts')
     event_fields = ('order_number', 'event', 'notification_at', 'last_received_at', 'last_completed_at',
-                    'status', 'attempts', 'last_error')
+                    'status', 'attempts', 'last_error', 'generation', 'notification_hash')
+    from inventory_hub.services.order_webhook_resolution import status_resolutions
+    resolutions = await status_resolutions(db, shop_code, events)
     return {'shop': {'code': shop.code, 'name': shop.name},
         'webhook': {**{field: getattr(row, field) for field in fields}, 'secret_configured': bool(row.secret_hash),
             'pending_mutations': [{'event': event, **{key: value.get(key) for key in ('method', 'intent_id', 'started_at')}}
@@ -191,7 +193,9 @@ async def status(db, shop_code):
         'pending_count': health['pending_count'] if health else 0, 'review_count': health['review_count'] if health else 0,
         'collector_enabled': bool(collector and collector.enabled),
         'connection_matches': bool(row is None or row.target_fingerprint == collection.target_fingerprint(shop.code)),
-        'events': [{field: getattr(event, field) for field in event_fields} for event in events],
+        'events': [{**{field: getattr(event, field) for field in event_fields},
+                    **({'resolution': resolutions[event.order_number]} if event.order_number in resolutions else {})}
+                   for event in events],
         'external_write_enabled': False}
 
 

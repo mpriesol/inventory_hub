@@ -134,6 +134,12 @@ stránkovanie, kontrola duplicít a poradie zmien zostali overiteľné. Záznam 
 odoslaného okna alebo neplatný identifikátor, čas či metadáta stále odmietnu celú
 stranu.
 
+Čítací audit objednávok používa ten istý prevod dolnej hranice na celé sekundy
+v UTC. Pri výbere posledných 7, 30 alebo 90 dní preto neodošle zlomok sekundy
+a nestratí objednávku na dolnom okraji výberu. Zaokrúhľuje iba filter požiadavky;
+presné časy zo zdrojovej odpovede zachováva. Audit naďalej číta jednu vybranú
+stranu bez importu objednávok alebo skladového zápisu.
+
 Zaokrúhlenie patrí iba GET požiadavke. Pôvodný `policy.starts_at`, ostatné
 aktivačné prahy, uložené hranice priechodu a kurzory zostávajú presné. Ani časy
 objednávok v odpovedi sa nezaokrúhľujú. Objednávka z prekrytia vytvorená tesne pred

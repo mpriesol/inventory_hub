@@ -555,6 +555,114 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.sessions() as db:
                 self.assertEqual((await service.publication_status(db, 'editor-supplier'))['counts'], {'completed': 2})
 
+    async def test_shared_target_is_rejected_once_and_later_valid_target_still_publishes(self):
+        from inventory_hub.supplier_availability_types import SupplierAvailabilityRecheckInput
+        await self.seed_worker_observation(False)
+        async with self.sessions() as db:
+            bad = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-2'],
+                ShopProduct.shop_id == self.shops['biketrek']))
+            bad.shared_stock, bad.sale_barcodes = True, []
+            extra = ShopProduct(product_id=bad.product_id, shop_id=bad.shop_id, external_code='SECOND-SALE',
+                external_product_id='99', shared_stock=True, sale_barcodes=[])
+            db.add(extra)
+            sibling = await self.link_sibling_source(db)
+            good = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-10'],
+                ShopProduct.shop_id == self.shops['biketrek']))
+            good.external_product_id, good.external_variant_id = '11', '23'
+            fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+            db.add(SupplierAvailabilityObservation(supplier_id=self.supplier_id, supplier_sku=sibling.supplier_sku,
+                feed_id=fact.feed_id, run_id=fact.run_id, available=False, quantity=0, quantity_kind='exact', raw={},
+                observed_at=fact.observed_at, expires_at=fact.expires_at))
+            await db.commit()
+            bad_id, extra_id = bad.id, extra.id
+        self.assertLess(self.products['BIKE-2'], self.products['BIKE-10'])
+        remotes = {'BIKE-2': self.remote, 'BIKE-10': copy.deepcopy(self.remote)}
+        remotes['BIKE-10']['identity'].update(code='BIKE-10', variant_code='BIKE-10', variant_id=23)
+        remotes['BIKE-10']['leaf']['code'] = 'BIKE-10'
+        allowed = {'BIKE-10'}
+        async def read_batch(shop, documents, fingerprint):
+            codes = [document['identity']['code'] for document in documents]
+            self.assertTrue(set(codes) <= allowed, 'Unsupported targets must not enter an upstream request')
+            return {code: copy.deepcopy(remotes[code]) for code in codes}
+        async def write(shop, identity, fingerprint, payload):
+            self.assertIn(identity['code'], allowed)
+            leaf = payload['products'][0]['variants'][0]
+            self.assertEqual(set(leaf), {'code', 'availability'})
+            remotes[identity['code']]['leaf']['availability'] = leaf['availability']
+        self.writer.side_effect = write
+        with patch.object(service, 'get_session_context', self.transaction), \
+                patch.object(service, 'read_batch', AsyncMock(side_effect=read_batch)) as reader:
+            self.assertTrue(await service.cycle())
+            self.writer.assert_awaited_once()
+            self.assertEqual(self.writer.await_args.args[1]['code'], 'BIKE-10')
+            calls = reader.await_count
+            for _ in range(3):
+                self.assertFalse(await service.cycle(), 'The two shared mappings must not alternate new failures')
+            await self.seed_worker_observation(False, next_run=True)
+            self.assertFalse(await service.cycle(), 'A fresh unchanged feed must not repeat a permanent failure')
+            async with self.sessions() as db:
+                state = await service.publication_status(db, 'editor-supplier', state='rejected')
+                self.assertEqual(state['counts'], {'completed': 1, 'rejected': 1})
+                failure = state['items'][0]
+                self.assertEqual((failure['product_id'], failure['error'], failure['failure_stage']),
+                    (self.products['BIKE-2'], 'product_publication_shared_sales', 'local_validation'))
+                self.assertTrue(failure['known_prewrite_failure'])
+                self.assertIsNone(failure['retry_at'])
+                record = await db.get(ProductEditorPublication, failure['publication_id'])
+                self.assertEqual(record.document['payload'], {})
+                self.assertEqual(len(record.document['delivery_context']['mappings']), 2)
+                self.assertEqual(len(list(await db.scalars(select(ProductEditorPublication)))), 2)
+                good_delivery = await db.get(SupplierAvailabilityDelivery,
+                    (self.products['BIKE-10'], self.shops['biketrek']))
+                self.assertNotIn('mappings', good_delivery.desired, 'Ordinary contexts retain their original shape')
+                queued = await service.request_recheck(db, 'editor-supplier', SupplierAvailabilityRecheckInput(
+                    expected_revision=state['settings_revision'], product_ids=[self.products['BIKE-2']]))
+                self.assertEqual(queued['queued'], 1)
+                await db.commit()
+            self.assertTrue(await service.cycle(), 'An explicit recheck records one fresh local decision')
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, calls)
+            self.writer.assert_awaited_once()
+            async with self.sessions() as db:
+                self.assertEqual(len(list(await db.scalars(select(ProductEditorPublication)))), 3)
+                await db.delete(await db.get(ShopProduct, extra_id))
+                bad = await db.get(ShopProduct, bad_id)
+                bad.shared_stock, bad.sale_barcodes = False, None
+                await db.commit()
+            allowed.add('BIKE-2')
+            self.assertTrue(await service.cycle(), 'An actual mapping repair changes context without a mass requeue')
+            self.assertFalse(await service.cycle())
+            self.assertEqual([call.args[1]['code'] for call in self.writer.await_args_list], ['BIKE-10', 'BIKE-2'])
+            async with self.sessions() as db:
+                self.assertEqual((await service.publication_status(db, 'editor-supplier'))['counts'], {'completed': 2})
+
+    async def test_local_rejection_cannot_replace_an_uncertain_fence_arriving_after_selection(self):
+        await self.seed_worker_observation(False)
+        async with self.sessions() as db:
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-2'],
+                ShopProduct.shop_id == self.shops['biketrek']))
+            mapping.shared_stock, mapping.sale_barcodes = True, []
+            await db.commit()
+        identifier, original_detail = str(uuid4()), service.editor.detail
+        async def detail_with_new_fence(db, product_id):
+            row = await original_detail(db, product_id)
+            async with self.sessions() as other:
+                other.add(ProductEditorPublication(id=identifier, product_id=product_id,
+                    shop_id=self.shops['biketrek'], state='uncertain', document={'workflow': 'another_publisher'}))
+                await other.commit()
+            return row
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            stack.enter_context(patch.object(service.editor, 'detail', AsyncMock(side_effect=detail_with_new_fence)))
+            self.assertFalse(await service.cycle())
+            reader.assert_not_awaited()
+            self.writer.assert_not_awaited()
+        async with self.sessions() as db:
+            records = list(await db.scalars(select(ProductEditorPublication)))
+            self.assertEqual([(row.id, row.state) for row in records], [(identifier, 'uncertain')])
+            self.assertIsNone(await db.get(SupplierAvailabilityDelivery,
+                (self.products['BIKE-2'], self.shops['biketrek'])))
+
     async def test_bad_leaf_after_send_keeps_only_its_own_uncertain_fence(self):
         identifiers, remotes = await self.prepare_pair()
         reads = 0

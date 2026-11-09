@@ -2,14 +2,18 @@
 import asyncio
 import json
 from typing import Annotated
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import admin_access
 from inventory_hub.database import get_session, get_session_context
 from inventory_hub.order_collection_types import CollectionConfirmation
-from inventory_hub.order_webhook_types import WebhookConfigure, WebhookResolveRegistration
+from inventory_hub.order_webhook_types import (WebhookConfigure, WebhookResolveRegistration,
+    NotificationResolutionPreview, NotificationResolutionApply)
 from inventory_hub.routers.order_collection import NoStoreRoute
 from inventory_hub.services import order_collection, order_webhooks as service
+from inventory_hub.services import order_webhook_resolution as resolution
+from inventory_hub.services.order_collection_source import CollectionSourceError
 
 
 router = APIRouter(prefix='/order-webhooks', tags=['order-webhooks'], route_class=NoStoreRoute,
@@ -21,7 +25,7 @@ ShopCode = Annotated[str, Query(pattern=r'^[a-z0-9][a-z0-9_-]{0,49}$')]
 async def _call(operation):
     try:
         return await operation
-    except (service.WebhookError, order_collection.CollectionError) as error:
+    except (service.WebhookError, order_collection.CollectionError, CollectionSourceError) as error:
         raise HTTPException(error.status, detail={'code': error.code, 'message': error.code}) from None
 
 
@@ -51,6 +55,36 @@ async def resolve_registration(payload: WebhookResolveRegistration, request: Req
     principal = getattr(request.state, 'hub_user', None) or {}
     actor = f"user:{principal['id']}" if principal.get('id') is not None else 'operator-token'
     return await _call(service.resolve_registration(db, payload, actor))
+
+
+def _actor(request):
+    principal = getattr(request.state, 'hub_user', None) or {}
+    return f"user:{principal['id']}" if principal.get('id') is not None else 'operator-token'
+
+
+@router.post('/notifications/preview')
+async def notification_preview(payload: NotificationResolutionPreview, request: Request,
+                               db: AsyncSession = Depends(get_session)):
+    return await _call(resolution.preview(db, payload, _actor(request)))
+
+
+@router.get('/notifications/operations/{request_id}')
+async def notification_operation(request_id: UUID, shop_code: ShopCode,
+                                 db: AsyncSession = Depends(get_session)):
+    return await _call(resolution.get_operation(db, str(request_id), shop_code))
+
+
+@router.post('/notifications/operations/{request_id}/apply')
+async def notification_apply(request_id: UUID, payload: NotificationResolutionApply, request: Request,
+                             db: AsyncSession = Depends(get_session)):
+    return await _call(resolution.apply(db, str(request_id), payload, _actor(request)))
+
+
+@router.get('/notifications/history')
+async def notification_history(shop_code: ShopCode,
+    order_number: Annotated[str, Query(min_length=1, max_length=100, pattern=r'^[^;\x00-\x1f\x7f]+$')],
+    db: AsyncSession = Depends(get_session)):
+    return await _call(resolution.history(db, shop_code, order_number))
 
 
 async def receive(request, event):

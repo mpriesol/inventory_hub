@@ -625,7 +625,7 @@ export function ReceivingPage() {
                           Prebieha {inv.progress}
                         </span>
                       )}
-                      {isProcessed && (
+                      {isProcessed && !inv.archived && (
                         <span
                           className="text-xs px-2 py-0.5 rounded-full font-medium"
                           style={{
