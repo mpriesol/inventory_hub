@@ -21,7 +21,7 @@ from inventory_hub.db_models_ext import Reservation, ShopOrder, ShopOrderItem, S
 from inventory_hub.order_collection_models import OrderCollectionSettings, OrderCollectionRun, OrderInboxEntry
 from inventory_hub.order_collection_types import CollectionConfigure, CollectionConfirmation
 from inventory_hub.order_stock_models import OrderStockPolicy
-from inventory_hub.services import order_collection as service, order_collection_worker as worker
+from inventory_hub.services import order_collection as service, order_collection_worker as worker, order_collection_source
 from inventory_hub.services.order_collection_source import CollectionSourceError
 from inventory_hub.services import stock_settings
 from inventory_hub.stock_settings_types import OperationalValues, WarehouseSettingsInput, ShopSettingsInput
@@ -564,6 +564,27 @@ class OrderCollectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.settings()).cursor_at, NOW)
         run = (await self.runs())[0]
         self.assertEqual((run.status, run.pages, run.observed_count), ("completed", 3, 3))
+
+    async def test_source_rejection_category_persists_without_advancing_cursor_or_accepting_rows(self):
+        await self.enable(delta=True)
+        raw = {"uuid": str(uuid4()), "order_number": "SYNTHETIC-OLD-UPDATE",
+               "creation_time": (CUTOVER - timedelta(days=1)).isoformat(),
+               "last_update_time": (CUTOVER - timedelta(hours=1)).isoformat(),
+               "status_id": 1, "origin": "frontend"}
+        body = {"orders": [raw], "current_page": 1, "current_page_items": 1,
+                "number_of_pages": 1, "number_of_items": 1}
+        self.source.side_effect = order_collection_source.load_changed_page
+        with patch.object(order_collection_source, "_fetch_page", return_value=body) as fetch:
+            self.assertTrue(await worker.cycle())
+        fetch.assert_called_once()
+        state, run = await self.settings(), (await self.runs())[0]
+        code = "order_collection_invalid_response_updated_window"
+        self.assertEqual((state.last_error, run.error), (code, code))
+        self.assertEqual(state.cursor_at, CUTOVER)
+        self.assertEqual((run.status, run.pages, run.observed_count), ("failed", 0, 0))
+        self.assertEqual(await self.inbox_rows(), [])
+        self.assertTrue(state.enabled)
+        self.assertGreater(state.next_poll_at, NOW)
 
     async def test_failed_deleted_pass_keeps_cursor_and_partial_inbox_then_retry_deduplicates(self):
         await self.enable(delta=True)

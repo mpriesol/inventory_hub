@@ -123,7 +123,9 @@ vo statuse; neistá registrácia sa nesmie naslepo opakovať.
 [Dokumentácia Upgates pre zoznam objednávok](https://docs.upgates.com/api-reference/objednavky)
 uvádza `creation_time_from`, `creation_time_to` a `last_update_time_from` ako
 `DateTime`; horná hranica vytvorenia je vrátane uvedeného času. [Schéma DateTime](https://docs.upgates.com/api-reference/~schemas)
-odkazuje na ISO 8601, ale výslovne neurčuje podporu zlomkov sekundy.
+odkazuje na ISO 8601, ale výslovne neurčuje podporu zlomkov sekundy ani osobitné
+pravidlo pre interpretáciu časového pásma filtrov. Z príkladov odpovede sa
+neodvodzuje zmena časového pásma požiadavky.
 
 Zber preto posiela konzervatívny zápis v UTC s celými sekundami. Dolné hranice
 zaokrúhli nadol; hornú hranicu so zlomkom sekundy zaokrúhli nahor na nasledujúcu
@@ -152,6 +154,26 @@ HTTP 400 pri načítaní zoznamu má samostatný kód
 priechodov. Do diagnostiky sa neprenáša telo odpovede, URL, prihlasovacie údaje ani
 zákaznícke údaje. Ostatné chyby prístupu, obmedzenia a spojenia si ponechávajú
 doterajšie kódy; nepridáva sa automatické opakovanie jedného HTTP volania.
+
+Odmietnutá odpoveď má v tých istých poliach stavu a histórie pevný kód
+`order_collection_invalid_response_` s jednou z nasledujúcich prípon:
+
+| Prípona | Odmietnutá podmienka |
+| --- | --- |
+| `metadata` | Neplatný zoznam, metadáta strán alebo počty položiek |
+| `identity` | Neplatný záznam, číslo, UUID, ID stavu alebo pôvod objednávky |
+| `timestamp` | Neplatný čas vytvorenia alebo poslednej zmeny |
+| `created_window` | Vytvorenie mimo odoslaného uzavretého intervalu |
+| `update_before_creation` | Posledná zmena pred vytvorením objednávky |
+| `updated_window` | Posledná zmena pred odoslanou dolnou hranicou zmien |
+| `deleted_scope` | Príznak zmazania odporuje požadovanému výberu |
+| `duplicate_identity` | Opakované číslo objednávky alebo UUID na jednej strane |
+| `ordering` | Časy zmien na strane nie sú zoradené vzostupne |
+
+Kód uvádza prvú zistenú kategóriu, neobsahuje hodnoty zo zdroja ani telo odpovede.
+Staršie priechody si ponechávajú všeobecný `order_collection_invalid_response`.
+Rozlíšenie nemení filtre, prijímané údaje, časové hranice ani opakovanie zberu;
+chybná strana sa stále neuloží a neúspešný priechod neposunie kurzor úplnosti.
 
 Predchádzajúce rýchle zlyhanie priechodu s nulou strán a všeobecným
 `order_collection_source_unavailable` samo nepreukazuje odmietnutie zlomkov
