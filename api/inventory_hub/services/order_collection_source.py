@@ -25,8 +25,9 @@ class CollectionSourceError(SourceError):
         self.retry_after = retry_after
 
 
-def _invalid() -> CollectionSourceError:
-    return CollectionSourceError("order_collection_invalid_response")
+def _invalid(reason: str) -> CollectionSourceError:
+    # Callers supply fixed categories only, never source values or exceptions.
+    return CollectionSourceError(f"order_collection_invalid_response_{reason}")
 
 
 def _instant(value) -> datetime:
@@ -52,55 +53,65 @@ def _wire_instant(value: datetime, *, upper=False) -> datetime:
 
 def _metadata(payload, page: int) -> tuple[list[dict], int, int]:
     if not isinstance(payload, dict) or payload.get("messages"):
-        raise _invalid()
+        raise _invalid("metadata")
     rows = payload.get("orders")
     if not isinstance(rows, list) or len(rows) > MAX_PAGE_SIZE:
-        raise _invalid()
+        raise _invalid("metadata")
     values = {}
     for field in ("current_page", "current_page_items", "number_of_pages", "number_of_items"):
         value = payload.get(field)
         if type(value) is not int or value < 0:
-            raise _invalid()
+            raise _invalid("metadata")
         values[field] = value
     pages, count = values["number_of_pages"], values["number_of_items"]
     if values["current_page"] != page or values["current_page_items"] != len(rows):
-        raise _invalid()
+        raise _invalid("metadata")
     if count == 0:
         if rows or page != 1 or pages not in (0, 1):
-            raise _invalid()
+            raise _invalid("metadata")
     else:
         if not rows or not 1 <= page <= pages:
-            raise _invalid()
+            raise _invalid("metadata")
         # The contract promises a maximum page size, not a configurable fixed
         # size. Every other reported page must contain between 1 and 100 rows.
         if not len(rows) + pages - 1 <= count <= len(rows) + MAX_PAGE_SIZE * (pages - 1):
-            raise _invalid()
+            raise _invalid("metadata")
     return rows, pages, count
 
 
 def _entry(raw, *, created_from: datetime, changed_from: datetime, created_to: datetime, deleted: bool) -> dict:
     if not isinstance(raw, dict) or raw.get("messages"):
-        raise _invalid()
+        raise _invalid("identity")
     try:
         number = _text(raw.get("order_number"), blank=False)
         if number != raw["order_number"] or ";" in number:
-            raise _invalid()
+            raise _invalid("identity")
         identifier = _uuid(raw.get("uuid"))
+    except SourceError:
+        raise _invalid("identity") from None
+    try:
         created = _timestamp(raw.get("creation_time"))
         updated = _timestamp(raw.get("last_update_time"))
+    except SourceError:
+        raise _invalid("timestamp") from None
+    try:
         status_id = _positive_id(raw.get("status_id"))
         origin = _text(raw.get("origin"), 40, blank=False)
     except SourceError:
-        raise _invalid() from None
+        raise _invalid("identity") from None
     created_at, updated_at = datetime.fromisoformat(created), datetime.fromisoformat(updated)
-    if not created_from <= created_at <= created_to or updated_at < max(created_at, changed_from):
-        raise _invalid()
+    if not created_from <= created_at <= created_to:
+        raise _invalid("created_window")
+    if updated_at < created_at:
+        raise _invalid("update_before_creation")
+    if updated_at < changed_from:
+        raise _invalid("updated_window")
     # Deletion membership is established by the query. GET order objects do
     # not promise a deletion flag, but an explicitly contradictory flag is bad.
     for field in ("deleted_yn", "deleted"):
         flag = raw.get(field)
         if flag is not None and (type(flag) is not bool or flag != deleted):
-            raise _invalid()
+            raise _invalid("deleted_scope")
     return {"order_number": number, "uuid": identifier, "created_at": created, "updated_at": updated,
             "deleted": deleted, "status_id": status_id, "origin": origin}
 
@@ -111,10 +122,10 @@ def _normalize_page(payload, *, created_from: datetime, changed_from: datetime, 
     entries = [_entry(row, created_from=created_from, changed_from=changed_from,
                       created_to=created_to, deleted=deleted) for row in rows]
     if len({entry["order_number"] for entry in entries}) != len(entries) or len({entry["uuid"] for entry in entries}) != len(entries):
-        raise _invalid()
+        raise _invalid("duplicate_identity")
     times = [datetime.fromisoformat(entry["updated_at"]) for entry in entries]
     if times != sorted(times):
-        raise _invalid()
+        raise _invalid("ordering")
     return {"entries": entries, "page": page, "number_of_pages": pages, "number_of_items": count,
             "has_more": page < pages}
 

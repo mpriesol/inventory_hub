@@ -107,15 +107,15 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
         changes = dict(created_from=START + timedelta(microseconds=600000),
                        changed_from=START + timedelta(minutes=5, microseconds=700000),
                        created_to=END + timedelta(microseconds=250000))
-        for row in (
-            order(creation_time=(START - timedelta(microseconds=1)).isoformat()),
-            order(creation_time=(END + timedelta(seconds=1, microseconds=1)).isoformat(),
-                  last_update_time=(END + timedelta(seconds=2)).isoformat()),
-            order(last_update_time=(START + timedelta(minutes=5) - timedelta(microseconds=1)).isoformat()),
+        for row, reason in (
+            (order(creation_time=(START - timedelta(microseconds=1)).isoformat()), 'created_window'),
+            (order(creation_time=(END + timedelta(seconds=1, microseconds=1)).isoformat(),
+                   last_update_time=(END + timedelta(seconds=2)).isoformat()), 'created_window'),
+            (order(last_update_time=(START + timedelta(minutes=5) - timedelta(microseconds=1)).isoformat()), 'updated_window'),
         ):
             with self.subTest(row=row['order_number']), self.assertRaises(source.CollectionSourceError) as raised:
                 await self.load(payload(row), **changes)
-            self.assertEqual(raised.exception.code, 'order_collection_invalid_response')
+            self.assertEqual(raised.exception.code, f'order_collection_invalid_response_{reason}')
 
     async def test_fractional_timezone_and_year_boundary_round_outwards_in_utc(self):
         zone = timezone(timedelta(hours=2))
@@ -147,7 +147,7 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
         for body in bad:
             with self.subTest(keys=body.keys()), self.assertRaises(source.CollectionSourceError) as raised:
                 await self.load(body)
-            self.assertEqual(raised.exception.code, "order_collection_invalid_response")
+            self.assertEqual(raised.exception.code, "order_collection_invalid_response_metadata")
         result, _ = await self.load(payload(order(), pages=2, total=101))
         self.assertTrue(result["has_more"])
 
@@ -162,6 +162,34 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
                 await self.load(body)
         # Ties are legitimate: no undocumented secondary sort is imposed.
         await self.load(payload(order(), order(order_number="ORDER-2")))
+
+    async def test_rejection_categories_never_expose_source_values_or_accept_invalid_pages(self):
+        private = "PRIVATE-CUSTOMER-AND-CONNECTION-DATA"
+        raw = order(order_number=private, customer={"email": private}, internal_note=private)
+        cases = (
+            ("metadata", dict(payload(raw), current_page_items=private), {}),
+            ("identity", payload({**raw, "uuid": private}), {}),
+            ("identity", payload({**raw, "status_id": private}), {}),
+            ("identity", payload({**raw, "origin": None}), {}),
+            ("timestamp", payload({**raw, "creation_time": private}), {}),
+            ("timestamp", payload({**raw, "last_update_time": private}), {}),
+            ("created_window", payload({**raw, "creation_time": (START - timedelta(seconds=1)).isoformat()}), {}),
+            ("update_before_creation", payload({**raw, "last_update_time": (START - timedelta(seconds=1)).isoformat()}), {}),
+            ("updated_window", payload(raw), {"changed_from": START + timedelta(minutes=6)}),
+            ("deleted_scope", payload({**raw, "deleted_yn": True}), {}),
+            ("duplicate_identity", payload(raw, {**raw, "order_number": "OTHER"}), {}),
+            ("duplicate_identity", payload(raw, {**raw, "uuid": str(uuid4())}), {}),
+            ("ordering", payload({**raw, "last_update_time": END.isoformat()}, order(order_number="OTHER")), {}),
+        )
+        for reason, body, arguments in cases:
+            with self.subTest(reason=reason), self.assertRaises(source.CollectionSourceError) as raised:
+                await self.load(body, **arguments)
+            error = raised.exception
+            self.assertEqual(error.code, f"order_collection_invalid_response_{reason}")
+            self.assertEqual(str(error), error.code)
+            self.assertEqual(error.status, 502)
+            self.assertLessEqual(len(error.code), 80, "Fits the existing run/settings error columns")
+            self.assertNotIn(private, json.dumps(vars(error)))
 
     async def test_malformed_identifiers_dates_flags_and_out_of_window_rows_fail_whole_page(self):
         bad = [{"order_number": "A;B"}, {"order_number": " ORDER-1"}, {"order_number": "bad\ud800number"},

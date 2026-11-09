@@ -43,7 +43,7 @@ const status = shop => ({ shop: { code: shop, name: shop }, policy: hasPolicy ? 
 const entry = (id, number, changes = {}) => ({ id, order_number: number, source_uuid: `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`, created_at: '2026-09-23T11:00:00Z', updated_at: '2026-09-23T11:30:00Z', deleted: false, origin: 'eshop', status_id: 8,
   observed_at: '2026-09-23T12:00:00Z', last_seen_at: '2026-09-23T12:00:00Z', review_reason: null, stock_state: null, stock_issued_at: null, stock_updated_at: null, ...changes });
 const inbox = offset => ({ entries: offset ? [entry(51, 'NEXT-PAGE')] : [entry(1, 'ACTIVE-1'), entry(2, 'DELETED-1', { deleted: true }), entry(3, 'CONFLICT-1', { review_reason: 'order_collection_identity_conflict' }), entry(4, 'NO-IDENTITY', { source_uuid: null }), entry(5, 'EMPTY-REVIEW', { review_reason: '' })], total: 51, limit: 50, offset });
-const runs = { runs: [{ id: 1, mode: 'delta', status: 'failed', started_at: '2026-09-23T12:00:00Z', completed_at: '2026-09-23T12:00:01Z', from_at: '2026-09-23T11:00:00Z', until_at: '2026-09-23T12:00:00Z', pages: 1, observed_count: 0, error: 'order_collection_source_unavailable' }] };
+const runs = { runs: [{ id: 1, mode: 'delta', status: 'failed', started_at: '2026-09-23T12:00:00Z', completed_at: '2026-09-23T12:00:01Z', from_at: '2026-09-23T11:00:00Z', until_at: '2026-09-23T12:00:00Z', pages: 1, observed_count: 0, error: 'order_collection_invalid_response_updated_window' }] };
 const job = (id, orderNumber, changes = {}) => ({ id, source_uuid: `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`, order_number: orderNumber,
   generation: 1, status: 'pending', next_attempt_at: '2026-09-23T12:10:00Z', last_started_at: '2026-09-23T12:00:00Z',
   last_completed_at: null, last_checked_at: '2026-09-23T12:00:01Z', attempts: 1, error: null, result: null, audit_preview_id: null, ...changes });
@@ -138,6 +138,10 @@ const posts = () => calls.filter(call => call.method === 'POST');
   assert.equal(links[0].getAttribute('href'), '/orders/stock?shop=xtrek&order=ACTIVE-1');
   assert(orderTable.textContent.includes(t('deleted')) && orderTable.textContent.includes(t('stockStates.none')));
   assert(document.body.textContent.includes(t('runStates.failed')));
+  assert(document.body.textContent.includes(t('errors.order_collection_invalid_response_updated_window')),
+    'The failed run explains the rejected source time window');
+  assert(!document.body.textContent.includes('order_collection_invalid_response_updated_window'),
+    'Operators see the translated diagnosis rather than a raw backend code');
   const jobsTable = [...document.querySelectorAll('table')].find(table => table.textContent.includes(reviewOrderNumber));
   assert(jobsTable, 'Processing exceptions appear in their own table');
   assert(jobsTable.textContent.includes(t('jobStates.review')) && jobsTable.textContent.includes(t('jobStates.retry')));
