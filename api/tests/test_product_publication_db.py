@@ -3,6 +3,7 @@ import copy
 import os
 import unittest
 from contextlib import ExitStack
+from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 from sqlalchemy import select
@@ -55,6 +56,34 @@ class PublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             remote['leaf']['active_yn'] = args[3]['products'][0]['variants'][0]['active_yn']
         writer = stack.enter_context(patch.object(source, 'write_once', AsyncMock(side_effect=write)))
         return reader, writer
+
+    async def test_history_keeps_old_pending_operation_ahead_of_other_shop_previews(self):
+        at = service.editor.now()
+        cases = []
+        async with self.transaction() as db:
+            for sku, state in (("BIKE-2", "sending"), ("BIKE-10", "uncertain")):
+                product_id = self.products[sku]
+                document = {"shop_code": "biketrek", "fields": ["sale_price_gross"], "revision": 0,
+                    "before": {"sale_price_gross": "10.00"}, "after": {"sale_price_gross": "12.00"},
+                    "payload": {}, "expires_at": (at + timedelta(minutes=30)).isoformat()}
+                pending_id = str(uuid4())
+                db.add(ProductEditorPublication(id=pending_id, product_id=product_id,
+                    shop_id=self.shops["biketrek"], state=state, document=document,
+                    created_at=at - timedelta(days=2)))
+                newest_id = None
+                for index in range(25):
+                    newest_id = str(uuid4())
+                    db.add(ProductEditorPublication(id=newest_id, product_id=product_id,
+                        shop_id=self.shops["xtrek"], state="ready", document={**document, "shop_code": "xtrek"},
+                        created_at=at + timedelta(seconds=index)))
+                cases.append((product_id, pending_id, newest_id, state))
+        async with self.sessions() as db:
+            for product_id, pending_id, newest_id, state in cases:
+                items = (await service.history(db, product_id))["items"]
+                self.assertEqual(len(items), 20)
+                self.assertEqual((items[0]["id"], items[0]["state"]), (pending_id, state))
+                self.assertEqual(items[1]["id"], newest_id)
+                self.assertTrue(all(item["product_id"] == product_id for item in items))
 
     async def test_success_is_recovered_without_repeated_put_and_receipts_follow_individual_values(self):
         remote = self.remote()

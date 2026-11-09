@@ -38,6 +38,30 @@ def facts():
 
 
 class ProductEditorInputTests(TestCase):
+    def test_navigation_overrides_accept_only_explicit_safe_http_links(self):
+        item = EditorRowPatch(**patch_body(shops={"biketrek": {
+            "shop_url": "https://www.example.test/p/new?variant=10#detail", "shop_admin_url": None}}))
+        self.assertEqual(item.shops["biketrek"].shop_url, "https://www.example.test/p/new?variant=10#detail")
+        self.assertEqual(service._navigation_url("http://supplier.example.test/item"), "http://supplier.example.test/item")
+        for value in ("javascript:alert(1)", "data:text/html,<script>", "//example.test/p", "/p/item",
+                      "https://user:secret@example.test", "https://@example.test", "https://example.test:wrong/p",
+                      "https://example.test\\evil", "https://example.test/with space", "\nhttps://example.test",
+                      "https://example.test/\tsecret", "https://example.test/\x7f", "https://example.test/" + "a" * 2000,
+                      "https://[broken", "", 123, {}):
+            with self.subTest(value=value):
+                self.assertIsNone(service._navigation_url(value))
+                for field in ("shop_url", "shop_admin_url"):
+                    with self.assertRaises(ValidationError):
+                        EditorRowPatch(**patch_body(shops={"xtrek": {field: value}}))
+
+    def test_description_is_bounded_text_with_explicit_blank_and_null_semantics(self):
+        for value in ("Product description\nwith another line", "", None, "<p>Stored as text</p>"):
+            item = EditorRowPatch(**patch_body(common={"description": value}))
+            self.assertEqual(item.common.description, value)
+        for value in ("a" * 20001, "bad\x00text", "bad\ud800text", 3):
+            with self.assertRaises(ValidationError):
+                EditorRowPatch(**patch_body(common={"description": value}))
+
     def test_manual_identity_preserves_source_strings_and_requires_supplier_scope(self):
         body = {"request_id": str(uuid4()), "name": "Simple local card", "supplier_id": 4,
             "supplier_sku": "000123", "eans": ["5901234123457"],
@@ -100,6 +124,42 @@ class ProductEditorInputTests(TestCase):
 
 
 class ProductEditorOverrideTests(TestCase):
+    def test_local_description_and_navigation_override_inherit_without_remapping_or_publication(self):
+        source = facts()
+        source["description"] = "Source description"
+        source["shops"][0]["shop_url"] = "https://example.test/source-product"
+        source["shops"][0]["shop_admin_url"] = "https://example.test/admin/42"
+        item = EditorRowPatch(**patch_body(common={"description": ""},
+            shops={"biketrek": {"shop_url": "https://example.test/new-link"}}))
+        changed = service._apply_patch({}, item, None)
+        row = service._make_row(source, changed, 1, None, {})
+        self.assertEqual(row["common"]["description"], "")
+        shop = row["shops"][0]
+        self.assertEqual(shop["shop_url"], "https://example.test/new-link")
+        self.assertEqual(shop["effective"]["shop_url"], shop["shop_url"])
+        self.assertEqual(shop["shop_admin_url"], "https://example.test/admin/42")
+        self.assertEqual(shop["mapping"], source["shops"][0]["mapping"])
+        self.assertEqual(shop["state"], "inherited")  # Navigation is local, not a pending shop write.
+        published = service.publication_values(row["common"], row["variant"], shop["effective"])
+        self.assertNotIn("description", published)
+        self.assertNotIn("shop_url", published)
+        restored = service._apply_patch(changed, EditorRowPatch(**patch_body(common={"description": None},
+            shops={"biketrek": {"shop_url": None}})), None)
+        self.assertEqual(restored, {})
+        inherited = service._make_row(source, restored, 2, None, {})
+        self.assertEqual(inherited["common"]["description"], "Source description")
+        self.assertEqual(inherited["shops"][0]["shop_url"], "https://example.test/source-product")
+
+    def test_description_and_safe_navigation_sources_participate_in_snapshot_cas(self):
+        source = facts()
+        source["description"] = "Before"
+        before = service._make_row(source, {}, 0, None, {})["snapshot_hash"]
+        source["description"] = "After"
+        self.assertNotEqual(before, service._make_row(source, {}, 0, None, {})["snapshot_hash"])
+        source["description"] = "Before"
+        source["shops"][0]["shop_url"] = "https://example.test/new-source-url"
+        self.assertNotEqual(before, service._make_row(source, {}, 0, None, {})["snapshot_hash"])
+
     def test_shop_desired_price_never_inherits_unknown_basis_observed_price(self):
         row = service._make_row(facts(), {}, 0, None, {"known": False})
         self.assertIsNone(row["variant"]["sale_price_gross"])
@@ -155,6 +215,30 @@ class ProductEditorOverrideTests(TestCase):
 
 
 class ProductEditorQueryTests(IsolatedAsyncioTestCase):
+    async def test_card_navigation_resolves_canonical_owner_without_changing_exact_writer_snapshot(self):
+        db = object()
+        with patch.object(service, "aliases_for", AsyncMock(return_value={7: 9})), \
+             patch.object(service, "detail", AsyncMock(return_value={"id": 9})) as detail:
+            self.assertEqual(await service.card_detail(db, 7, "central"), {"id": 9})
+            detail.assert_awaited_once_with(db, 9, "central")
+
+    async def test_exact_sku_claims_deduplicate_canonical_aliases_and_fail_on_ambiguity(self):
+        db = SimpleNamespace(scalars=AsyncMock(return_value=[7, 9]))
+        with patch.object(service, "aliases_for", AsyncMock(return_value={7: 9})), \
+             patch.object(service, "detail", AsyncMock(return_value={"id": 9})) as detail:
+            self.assertEqual(await service.detail_by_sku(db, "OLD-SKU", "central"), {"id": 9})
+            detail.assert_awaited_once_with(db, 9, "central")
+            sql = str(db.scalars.await_args.args[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+            self.assertIn("product_identifiers.identifier_type = 'internal_sku'", sql)
+            self.assertNotIn("ILIKE", sql)
+        for owners, code in (([], "product_editor_product_missing"), ([7, 9], "product_editor_product_ambiguous")):
+            db.scalars.return_value = owners
+            with patch.object(service, "aliases_for", AsyncMock(return_value={})), \
+                 patch.object(service, "detail", AsyncMock()) as detail, self.assertRaises(service.EditorError) as raised:
+                await service.detail_by_sku(db, "EXACT")
+            self.assertEqual(raised.exception.code, code)
+            detail.assert_not_awaited()
+
     async def test_bounded_listing_and_supplier_sources_compile_without_ambiguous_joins(self):
         class Rows:
             def all(self): return []
@@ -199,13 +283,14 @@ class ProductEditorProtectedRouteTests(TestCase):
         return [("GET", "/product-editor/options", None, "options"),
                 ("POST", "/product-editor/products", {"request_id": request_id, "sku": "LOCAL-CARD", "name": "Local card", "is_active": False}, "create_card"),
                 ("GET", "/product-editor/products?warehouse_code=central&page_size=25&q=diel&sort=sku", None, "list_products"),
-                ("GET", "/product-editor/products/12?warehouse_code=central", None, "detail"),
+                ("GET", "/product-editor/products/resolve?sku=OLD-SKU&warehouse_code=central", None, "detail_by_sku"),
+                ("GET", "/product-editor/products/12?warehouse_code=central", None, "card_detail"),
                 ("POST", "/product-editor/save", save_body(request_id=request_id), "save"),
                 ("GET", "/product-editor/saves/" + request_id, None, "get_save")]
 
     def operations(self, stack):
         return {name: stack.enter_context(patch.object(service, name, AsyncMock(return_value={"ok": name})))
-                for name in ("options", "list_products", "detail", "save", "get_save", "create_card")}
+                for name in ("options", "list_products", "card_detail", "detail_by_sku", "save", "get_save", "create_card")}
 
     def test_every_route_authenticates_before_database_business_or_upstream_calls(self):
         with ExitStack() as stack:
@@ -231,7 +316,8 @@ class ProductEditorProtectedRouteTests(TestCase):
                 self.assertEqual(response.headers["cache-control"], "no-store")
             methods["list_products"].assert_awaited_once_with(self.db, q="diel", brand=None, shop_code=None,
                 warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc", stock_scope="all", activity="all", supplier_link="all")
-            methods["detail"].assert_awaited_once_with(self.db, 12, warehouse_code="central")
+            methods["card_detail"].assert_awaited_once_with(self.db, 12, warehouse_code="central")
+            methods["detail_by_sku"].assert_awaited_once_with(self.db, "OLD-SKU", warehouse_code="central")
             self.assertIsInstance(methods["save"].await_args.args[1], ProductEditorSaveRequest)
 
     def test_invalid_top_level_requests_never_echo_values_or_reach_business_operations(self):
@@ -245,6 +331,8 @@ class ProductEditorProtectedRouteTests(TestCase):
                    ("GET", "/product-editor/products?page_size=24", None),
                    ("GET", "/product-editor/products?page=0", None),
                    ("GET", "/product-editor/products?sort=" + secret, None),
+                   ("GET", "/product-editor/products/resolve?sku=", None),
+                   ("GET", "/product-editor/products/resolve?sku=" + "x" * 101, None),
                    ("GET", "/product-editor/saves/" + secret, None)]
         with ExitStack() as stack:
             methods = self.operations(stack)

@@ -20,6 +20,7 @@ from sqlalchemy.pool import NullPool
 from inventory_hub.db_models import IdentifierType, MovementType, Product, ProductGroup, ProductIdentifier, Shop, Supplier, SupplierProduct, Warehouse
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent, StockBalance, StockMovement
 from inventory_hub.product_editor_models import ProductEditorAudit, ProductEditorOverride, ProductEditorSave
+from inventory_hub.product_consolidation_models import ProductCanonicalAlias, ProductConsolidation
 from inventory_hub.fifo_models import FifoLayer, FifoState
 from inventory_hub.product_editor_types import ProductEditorSaveRequest, ProductCardCreateRequest
 from inventory_hub.services import product_editor as service
@@ -163,6 +164,141 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     for table in ("products", "product_groups", "product_identifiers", "product_variant_attributes",
                         "supplier_products", "product_supply_sources", "shop_products", "shop_product_content",
                         "stock_balances", "stock_movements", "reservations", "shop_order_items", "shop_sync_outbox")}
+
+    async def test_card_supplier_links_and_description_use_only_explicit_source_bindings(self):
+        async with self.transaction() as db:
+            source = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id))
+            source.attributes = {"catalog": {"url": "https://supplier.example.test/exact/product-2"}}
+            source.description = "Primary supplier description"
+            other_supplier = Supplier(code="aaa-alternative", name="Alternative supplier")
+            db.add(other_supplier)
+            await db.flush()
+            other_source = SupplierProduct(supplier_id=other_supplier.id, supplier_sku="OTHER-2", name="Other source",
+                description="Secondary supplier description", attributes={"catalog": {"url": "javascript:alert(1)"}})
+            db.add(other_source)
+            await db.flush()
+            db.add(ProductSupplySource(product_id=self.products["BIKE-2"], supplier_product_id=other_source.id, priority=1))
+            db.add(ProductIdentifier(product_id=self.products["PART-1"], identifier_type=IdentifierType.supplier_sku,
+                supplier_id=self.supplier_id, value="IDENTIFIER-ONLY"))
+        row = await self.detail()
+        self.assertEqual(row["common"]["description"], "Primary supplier description")
+        self.assertEqual([source["supplier_name"] for source in row["suppliers"]], ["Editor supplier", "Alternative supplier"])
+        self.assertEqual(row["suppliers"][0]["supplier_sku"], "SUP-ŽLTÁ-2")
+        self.assertTrue(row["suppliers"][0]["is_primary"])
+        self.assertEqual(row["suppliers"][0]["product_url"], "https://supplier.example.test/exact/product-2")
+        self.assertIsNone(row["suppliers"][1]["product_url"])
+        self.assertEqual((await self.detail("PART-1"))["suppliers"], [])
+        self.assertEqual(row["warehouse_context"], {"id": self.warehouse_id, "code": "editor-central", "name": "Editor central"})
+
+    async def test_description_fallback_reads_exact_leaf_never_pos_parent_or_sibling(self):
+        async with self.transaction() as db:
+            content = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == self.shops["biketrek"]))
+            data = copy.deepcopy(content.data)
+            data["descriptions"][0]["long_description"] = "Unrelated umbrella content"
+            data["variants"][2]["descriptions"][0]["long_description"] = "Exact selected brake"
+            data["variants"][3]["descriptions"][0]["long_description"] = "Unrelated sibling"
+            content.data = data
+        self.assertEqual((await self.detail("PART-1"))["common"]["description"], "Exact selected brake")
+        self.assertIsNone((await self.detail("BIKE-10"))["common"]["description"])
+
+    async def test_description_and_navigation_save_cas_audit_and_source_reset_preserve_identity_stock(self):
+        async with self.transaction() as db:
+            source = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id))
+            source.description = "Initial source description"
+            content = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == self.shops["biketrek"]))
+            data = copy.deepcopy(content.data)
+            data["variants"][0]["descriptions"][0]["url"] = "https://biketrek.example.test/initial"
+            content.data = data
+        row = await self.detail()
+        before = await self.snapshot()
+        result = await self.save([self.change(row, common={"description": "Manual description"}, shops={"biketrek": {
+            "shop_url": "https://biketrek.example.test/manual", "shop_admin_url": "https://biketrek.example.test/admin/42"}})])
+        saved = result["results"][0]["row"]
+        self.assertEqual(result["results"][0]["status"], "saved")
+        self.assertEqual(await self.snapshot(), before)
+        self.assertEqual(saved["shops"][0]["mapping"], row["shops"][0]["mapping"])
+        audit = (await self.detail())["audit"][0]
+        self.assertEqual(audit["before"]["common"]["description"], "Initial source description")
+        self.assertEqual(audit["after"]["common"]["description"], "Manual description")
+        self.assertEqual(audit["after"]["shops"][0]["shop_url"], "https://biketrek.example.test/manual")
+        async with self.transaction() as db:
+            source = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_id == self.supplier_id))
+            source.description = "Refreshed source description"
+            content = await db.scalar(select(ShopProductContent).where(ShopProductContent.shop_id == self.shops["biketrek"]))
+            data = copy.deepcopy(content.data)
+            data["variants"][0]["descriptions"][0]["url"] = "https://biketrek.example.test/refreshed"
+            content.data = data
+        stale = await self.save([self.change(saved, common={"description": "Stale update"})])
+        self.assertEqual(stale["results"][0]["status"], "conflict")
+        current = await self.detail()
+        self.assertEqual(current["common"]["description"], "Manual description")
+        self.assertEqual(current["shops"][0]["shop_url"], "https://biketrek.example.test/manual")
+        result = await self.save([self.change(current, common={"description": None},
+            shops={"biketrek": {"shop_url": None, "shop_admin_url": None}})])
+        inherited = result["results"][0]["row"]
+        self.assertEqual(inherited["common"]["description"], "Refreshed source description")
+        self.assertEqual(inherited["shops"][0]["shop_url"], "https://biketrek.example.test/refreshed")
+        self.assertNotIn("common", inherited["overrides"])
+        self.assertNotIn("shops", inherited["overrides"])
+        self.assertEqual(len((await self.detail())["audit"]), 2)
+
+    async def test_read_card_resolves_former_ids_and_exact_skus_but_writes_keep_retired_guard(self):
+        keeper = self.products["BIKE-2"]
+        async with self.transaction() as db:
+            former = Product(sku="FORMER-CARD", name="Former card", is_active=False)
+            db.add(former)
+            await db.flush()
+            former_id = former.id
+            db.add(ProductIdentifier(product_id=former_id, identifier_type=IdentifierType.internal_sku, value="FORMER-ALIAS"))
+            review = ProductConsolidation(id=str(uuid4()), request_hash="a" * 64, preview_hash="b" * 64,
+                status="completed", expires_at=service.now(), completed_at=service.now(), result={}, document={"request": {
+                    "mode": "identity_only_preserve_unconfirmed_history", "same_physical_retail_unit_confirmed": True,
+                    "keeper_product_id": keeper, "retired_product_ids": [former_id]}})
+            db.add(review)
+            await db.flush()
+            db.add(ProductCanonicalAlias(retired_product_id=former_id, canonical_product_id=keeper, consolidation_id=review.id))
+        async with self.sessions() as db:
+            by_id = await service.card_detail(db, former_id, "editor-central")
+            for sku in ("BIKE-2", "FORMER-CARD", "FORMER-ALIAS"):
+                resolved = await service.detail_by_sku(db, sku, "editor-central")
+                self.assertEqual(resolved, by_id)
+            self.assertEqual(by_id["id"], keeper)
+            self.assertFalse(by_id["retired"])
+            original = await service.detail(db, former_id, "editor-central")
+            self.assertTrue(original["retired"])
+            self.assertEqual(original["id"], former_id)
+        result = await self.save([self.change(original, common={"description": "Must not redirect writer"})])
+        self.assertEqual(result["results"][0]["errors"], [{"code": "product_retired"}])
+        self.assertEqual((await self.detail())["revision"], 0)
+
+    async def test_exact_sku_resolver_rejects_ambiguous_or_scoped_non_hub_codes(self):
+        async with self.transaction() as db:
+            db.add(ProductIdentifier(product_id=self.products["PART-1"], identifier_type=IdentifierType.internal_sku, value="BIKE-2"))
+        async with self.sessions() as db:
+            with self.assertRaises(service.EditorError) as error:
+                await service.detail_by_sku(db, "BIKE-2")
+            self.assertEqual(error.exception.code, "product_editor_product_ambiguous")
+            self.assertEqual(error.exception.candidate_product_ids, sorted([self.products["BIKE-2"], self.products["PART-1"]]))
+            for value in ("BIKE", "bike-2", "SUP-ŽLTÁ-2", "5901234123457"):
+                with self.subTest(value=value), self.assertRaises(service.EditorError) as missing:
+                    await service.detail_by_sku(db, value)
+                self.assertEqual(missing.exception.code, "product_editor_product_missing")
+
+    async def test_retired_mapping_does_not_shadow_current_card_or_create_false_shared_stock(self):
+        async with self.transaction() as db:
+            review = ProductConsolidation(id=str(uuid4()), request_hash="c" * 64, preview_hash="d" * 64,
+                status="completed", expires_at=service.now(), completed_at=service.now(), result={}, document={})
+            db.add(review)
+            await db.flush()
+            db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=self.products["BIKE-2"],
+                external_code="OBSOLETE-NATIVE-CODE", parent_code="OLD-POS", is_variant=True,
+                is_listed=False, retired_at=service.now(), retired_by_consolidation_id=review.id))
+        row = await self.detail()
+        shop = next(item for item in row["shops"] if item["shop_code"] == "biketrek")
+        self.assertTrue(shop["mapped"])
+        self.assertFalse(shop.get("shared_stock", False))
+        self.assertEqual(shop["mapping"]["code"], "BIKE-2")
+        self.assertNotIn("OBSOLETE-NATIVE-CODE", json.dumps(row))
 
     async def test_create_card_replay_conflict_and_no_stock_or_shop_side_effects(self):
         before = await self.snapshot()
