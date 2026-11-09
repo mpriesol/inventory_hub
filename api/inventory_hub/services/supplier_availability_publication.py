@@ -8,6 +8,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import select, exists, func, String, text, case, literal, or_, update
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import aliased
 
 from inventory_hub import config_io
@@ -38,19 +39,37 @@ def _effective_available(fact, setting):
     return case((fresh, fact.available), else_=None)
 
 
+def _json_object(values):
+    return func.jsonb_build_object(*[part for key, value in values.items()
+                                    for part in (literal(key, type_=String), value)])
+
+
+def _mapping_context(mapping):
+    return {'mapping_id': mapping.id, 'code': mapping.external_code, 'parent_code': mapping.parent_code,
+        'product_id': mapping.external_product_id, 'variant_id': mapping.external_variant_id,
+        'is_variant': mapping.is_variant, 'cached_own_stock': mapping.shop_stock > 0,
+        'cached_label': mapping.shop_availability}
+
+
 def _context(policy, cfg, fingerprint):
     """SQL value compared before any remote read; feed timestamps/counts excluded."""
     values = {'supplier': Supplier.code, 'supplier_sku': SupplierProduct.supplier_sku,
         'available': _effective_available(SupplierAvailabilityObservation, SupplierAvailabilitySettings),
         'policy': literal(editor._digest(policy), type_=String),
         'labels': literal(editor._digest((cfg.get('adapter_settings') or {}).get('availability') or {}), type_=String),
-        'connection': literal(fingerprint, type_=String), 'mapping_id': ShopProduct.id,
-        'code': ShopProduct.external_code, 'parent_code': ShopProduct.parent_code,
-        'product_id': ShopProduct.external_product_id, 'variant_id': ShopProduct.external_variant_id,
-        'is_variant': ShopProduct.is_variant,
-        'cached_own_stock': ShopProduct.shop_stock > 0, 'cached_label': ShopProduct.shop_availability}
-    return func.jsonb_build_object(*[part for key, value in values.items()
-                                    for part in (literal(key, type_=String), value)])
+        'connection': literal(fingerprint, type_=String)}
+    mapping = aliased(ShopProduct)
+    scope = (mapping.product_id == Product.id, mapping.shop_id == Shop.id)
+    shared = exists(select(mapping.id).where(*scope,
+        or_(mapping.id != ShopProduct.id, mapping.shared_stock.is_(True)))).correlate(Product, Shop, ShopProduct)
+    mappings = select(func.jsonb_agg(aggregate_order_by(_json_object({**_mapping_context(mapping),
+        'shared_stock': mapping.shared_stock, 'is_listed': mapping.is_listed}), mapping.id)))\
+        .where(*scope).correlate(Product, Shop).scalar_subquery()
+    # One delivery belongs to the whole card/shop. Comparing its different sale
+    # leaves individually would alternate permanent rejections on every tick.
+    # Keep ordinary contexts byte-for-byte equivalent to avoid a blanket recheck.
+    return case((shared, _json_object({**values, 'mappings': mappings})),
+                else_=_json_object({**values, **_mapping_context(ShopProduct)}))
 
 
 async def _remember(db, record):
@@ -269,6 +288,51 @@ async def owns_target(db, shop_code, parent_code):
     return False
 
 
+async def _reject_target(db, product_id, shop_id, supplier, sku, run_id, policy, desired_context):
+    """Record a known local failure once, without releasing any write fence."""
+    await db.rollback()
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': editor.IDENTITY_WRITE_LOCK})
+    fenced = await db.scalar(select(ProductEditorPublication.id).where(
+        ProductEditorPublication.product_id == product_id, ProductEditorPublication.shop_id == shop_id,
+        ProductEditorPublication.state.in_(('sending', 'uncertain'))).limit(1))
+    if fenced:
+        await db.rollback()
+        return False
+    row = await editor.detail(db, product_id)
+    try:
+        publication.target(row, policy['shop_code'])
+    except editor.EditorError as failure:
+        code = failure.code
+    else:
+        # A concurrent identity repair gets a fresh candidate on the next pass.
+        await db.rollback()
+        return False
+    delivery = await db.get(Delivery, (product_id, shop_id), with_for_update=True)
+    if delivery is not None and delivery.desired == desired_context and (
+            delivery.retry_at is None or delivery.retry_at > editor.now()):
+        await db.rollback()
+        return False
+    identifier = str(uuid4())
+    document = {'workflow': WORKFLOW, 'supplier': supplier, 'supplier_sku': sku, 'source_run_id': run_id,
+        'policy_hash': desired_context['policy'], 'labels_hash': desired_context['labels'],
+        'shop_code': policy['shop_code'], 'fields': ['availability'], 'revision': row['revision'],
+        'identity': None, 'signature': None, 'fingerprint': desired_context['connection'], 'options': None,
+        'expires_at': (editor.now() + timedelta(minutes=5)).isoformat(), 'before': {}, 'after': {}, 'payload': {},
+        'supplier_available': desired_context['available'], 'delivery_context': desired_context,
+        'error': code, 'failure_stage': 'local_validation'}
+    db.add(ProductEditorPublication(id=identifier, product_id=product_id, shop_id=shop_id,
+                                    state='rejected', document=document))
+    await db.flush()
+    if delivery is None:
+        db.add(Delivery(product_id=product_id, shop_id=shop_id, desired=desired_context,
+                        publication_id=identifier, state='rejected', retry_at=None))
+    else:
+        delivery.desired, delivery.publication_id = desired_context, identifier
+        delivery.state, delivery.retry_at, delivery.updated_at = 'rejected', None, editor.now()
+    await db.commit()
+    return True
+
+
 async def cycle():
     configured = policies()
     if not configured:
@@ -328,8 +392,8 @@ async def cycle():
                     ShopProduct.native_id.op('~')('^[1-9][0-9]{0,19}$'),
                     Product.item_type == "stock", Product.stock_unit != "m",
                     SupplierProduct.is_active.is_(True), SupplierProduct.is_discontinued.is_(False))
-                .order_by(Product.id).limit(20))).all()
-            contexts = []
+                .distinct().order_by(Product.id).limit(20))).all()
+            contexts, rejected = [], False
             for product_id, shop_id, sku, brand, run_id, desired_context in candidates:
                 if (brand or '').upper() not in policy['brands']:
                     continue
@@ -339,7 +403,12 @@ async def cycle():
                 if fenced:
                     continue
                 row = await editor.detail(db, product_id)
-                _, identity = publication.target(row, policy['shop_code'])
+                try:
+                    _, identity = publication.target(row, policy['shop_code'])
+                except editor.EditorError:
+                    rejected = await _reject_target(db, product_id, shop_id, supplier, sku, run_id,
+                                                    policy, desired_context) or rejected
+                    continue
                 contexts.append((product_id, shop_id, sku, run_id, row, identity, desired_context))
             if contexts:
                 await db.rollback()
@@ -356,6 +425,8 @@ async def cycle():
                             if identity['code'] not in remotes else None), send=False,
                         desired_context=desired_context))
                 await send_batch(db, identifiers)
+                return True
+            if rejected:
                 return True
     return False
 

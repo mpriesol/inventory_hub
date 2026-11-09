@@ -215,6 +215,19 @@ readback. A target rejected before any PUT remains safe to recheck. A missing or
 invalid readback after the PUT leaves that target uncertain; successful siblings
 may complete, but the uncertain target is never automatically repeated.
 
+Local target validation is isolated as well. A card with multiple sales mappings
+or an explicit shared-stock mapping is still unsupported by this label publisher:
+it records `rejected`, `product_publication_shared_sales`, and
+`failure_stage: local_validation`, without an upstream read or PUT for that card.
+Other valid cards in the same batch continue. Its delivery context includes the
+ordered mapping set, so the individual mappings cannot alternate fresh failures
+on each worker tick. Unchanged inputs and ordinary feed refreshes create no new
+attempt; a mapping change or an explicit bounded recheck permits a new local
+decision. Existing sending/uncertain intents retain their original fence. The
+context for ordinary single-mapping cards is unchanged, so deploying this fix
+does not queue a catalogue-wide replay. Already-due rechecks and changed contexts
+remain eligible; unchanged permanent historical failures are not silently retried.
+
 `GET /supplier-availability/{supplier}/publication/status` provides local diagnostics
 for the configured supplier and target shop. Its
 `outcome_scope: latest_recorded_supplier_shop` means the latest recorded outcome
