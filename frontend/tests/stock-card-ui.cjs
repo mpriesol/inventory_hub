@@ -230,6 +230,17 @@ async function editName(value) { await click('stock-card-edit-product'); await i
 
   await remount({ productId: 3, warehouseCode: 'main' });
   assert.equal(required('stock-card-physical').textContent, i18n.t('stockCard.unknown'), 'Unconfirmed stock never renders as a fabricated zero');
+  records.get(3).suppliers[0].is_active = false;
+  await remount({ productId: 3, warehouseCode: 'main' });
+  const supplierWrites = writes.length;
+  assert(required('stock-card-overview-supplier').textContent.includes('Primary supplier'));
+  assert(required('stock-card-overview-supplier').textContent.includes(i18n.t('stockCard.inactiveSupplierSource')));
+  await click('stock-card-edit-product');
+  assert(required('stock-card-editor-supplier').textContent.includes('Primary supplier'), 'Editor retains the same stored inactive supplier as the overview');
+  assert(required('stock-card-editor-supplier').textContent.includes(i18n.t('stockCard.inactiveSupplierSource')));
+  assert(!required('stock-card-editor-supplier').textContent.includes(i18n.t('stockCard.notLinked')));
+  await click('stock-card-cancel-edit');
+  assert.equal(writes.length, supplierWrites, 'Displaying the inactive source does not reactivate or replace its mapping');
   records.get(3).suppliers[0].product_url = 'javascript:alert(1)'; records.get(3).image_url = 'data:text/html,<script>alert(1)</script>';
   records.get(3).shops[1].mapped = false;
   await remount({ productId: 3, warehouseCode: 'main' }); assert.equal(find('stock-card-supplier-link'), null); assert(!required('stock-card-image').querySelector('img'));

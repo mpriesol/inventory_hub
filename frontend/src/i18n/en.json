@@ -5607,6 +5607,7 @@
     "operationScopeChanged": "This operation belongs to another card or warehouse. Open its original card to verify the result.",
     "refreshingStock": "Refreshing current stock…",
     "savePending": "Save result needs verification",
+    "inactiveSupplierSource": "Inactive source",
     "allMovements": "All stock movements",
     "productTrace": "Complete product history",
     "prepareListing": "Prepare listing"

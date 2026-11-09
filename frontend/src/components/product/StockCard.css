@@ -50,7 +50,7 @@
 .stock-card__metric--available strong { color: var(--color-success); }
 .stock-card__readonly { padding: 8px 26px; background: var(--color-warning-subtle); font-size: 12px; border-bottom: 1px solid var(--stock-card-border); }
 .stock-card__layout { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.stock-card__navigation { display: flex; flex: 0 0 190px; flex-direction: column; padding: 18px 10px; gap: 5px; border-right: 1px solid var(--stock-card-border); background: var(--color-bg-secondary); }
+.stock-card__navigation { display: flex; flex: 0 0 190px; flex-direction: column; padding: 18px 10px; gap: 5px; border-right: 1px solid var(--stock-card-border); background: var(--color-bg-secondary); overflow-y: auto; overscroll-behavior-y: contain; }
 .stock-card__navigation > button { display: flex; align-items: center; gap: 11px; padding: 11px 12px; min-height: 44px; border: 0; border-radius: 8px; background: transparent; color: var(--stock-card-muted); text-align: left; font-size: 13px; }
 .stock-card__navigation > button:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 .stock-card__navigation > button.is-selected { background: var(--color-accent-subtle); color: var(--color-accent); font-weight: 600; }
@@ -65,6 +65,7 @@
 .stock-card__details dt { margin-bottom: 5px; font-size: 12px; color: var(--stock-card-muted); }
 .stock-card__details dd { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 .stock-card__detail-secondary { display: block; margin-top: 4px; font-size: 12px; }
+.stock-card__supplier-status { margin-left: 7px; }
 .stock-card__line { display: block; }
 .stock-card__external { display: inline-flex; align-items: center; gap: 5px; width: fit-content; max-width: 100%; color: var(--color-accent); text-decoration: none; overflow-wrap: anywhere; }
 .stock-card__external:hover { text-decoration: underline; }
@@ -246,4 +247,30 @@
   .stock-card__image { width: 58px; height: 58px; flex-basis: 58px; }
   .stock-card__identity h2 { font-size: 19px; margin: 4px 0 6px; }
   .stock-card__summary { padding-top: 9px; padding-bottom: 9px; }
+}
+/* Short phone/zoomed viewports need room for the scrollable form, even while editing. */
+@media (max-width: 640px) and (max-height: 520px) {
+  .stock-card__header { padding: max(3px, env(safe-area-inset-top)) 12px 3px; gap: 8px; }
+  .stock-card__image { width: 32px; height: 32px; flex-basis: 32px; border-radius: 6px; }
+  .stock-card__image svg { width: 20px; }
+  .stock-card__eyebrow { display: none; }
+  .stock-card__identity h2 { margin: 0 0 2px; font-size: 15px; line-height: 18px; }
+  .stock-card__identifiers { flex-wrap: nowrap; line-height: 12px; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .stock-card__identifiers > span { flex-shrink: 0; }
+  .stock-card__identifiers::-webkit-scrollbar { display: none; }
+  .stock-card__close { width: 44px; height: 44px; flex-basis: 44px; margin: 0; align-self: center; }
+  .stock-card__summary { grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(0, 1fr)); padding: 2px 12px; }
+  .stock-card__warehouse { grid-column: auto; flex-direction: column; align-items: stretch; justify-content: center; gap: 0; padding: 0 7px 0 0; }
+  .stock-card__warehouse > span, .stock-card__metric > span { font-size: 9px; line-height: 11px; }
+  .stock-card__warehouse select { width: 100%; max-width: 100%; min-height: 32px; padding: 2px 18px 2px 0; background-position: right 0 center; font-size: 12px; }
+  .stock-card__metric, .stock-card__metric:nth-child(2) { border-left: 1px solid var(--stock-card-border); padding: 0 6px; gap: 1px; }
+  .stock-card__metric strong { font-size: 17px; line-height: 1.1; }
+  .stock-card__metric strong small { font-size: 9px; margin-left: 3px; }
+  .stock-card__readonly { max-height: 24px; padding: 2px 12px; line-height: 12px; }
+  .stock-card__navigation { padding: 2px 4px; }
+  .stock-card__content { padding: 8px 12px 12px; }
+  .stock-card__footer { min-height: 0; padding: 4px 12px max(4px, env(safe-area-inset-bottom)); gap: 8px; }
+  .stock-card__footer-status { flex: 1; min-width: 0; max-width: none; line-height: 12px; }
+  .stock-card__footer .stock-card__button { padding: 5px 10px; white-space: nowrap; }
+  .stock-card__footer .action-control { flex-direction: row; align-items: center; gap: 6px; }
 }
