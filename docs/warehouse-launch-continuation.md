@@ -1,9 +1,10 @@
 # Warehouse launch and correction work — continuation record
 
-Updated: 2026-11-09 09:16 UTC. Status: PR validation in progress; order policies,
-read-only collection and webhook registration have been configured. Test reset,
-stock adoption and live stock authority have NOT been applied.
-Current costs from the nine evidenced test FIFO roots have been revised to
+Updated: 2026-11-09 09:37 UTC. Status: PR #185 passed all CI and merged as
+`fd45035a3f1af21eaaa7830118b49e58b6da571b`; deployment and the new API routes are verified.
+Order policies, read-only collection and webhook registration are configured.
+Test document reset, stock adoption and live stock authority have NOT yet been
+applied. Current costs from nine evidenced test FIFO roots were revised to
 unknown with audit, without changing quantities or movement history.
 
 This is the durable continuation record for the owner's 9 November instruction.
@@ -13,7 +14,10 @@ Read it together with AGENTS.md; do not depend on a previous chat.
 
 - Repository: https://github.com/mpriesol/inventory_hub
 - Base production commit: 50cc0f3b85534b715ad315f5218b010c75f1414d.
-- Feature branch: codex/warehouse-launch-recovery.
+- Merged feature branch: codex/warehouse-launch-recovery (PR #185).
+- Focused follow-up: codex/webhook-delete-recovery. It adds an audited manual
+  decision for an absent DELETE notification using the existing sync journal;
+  there is no additional database migration.
 - Do not use OLD_inventory_hub. Do not redo the completed card consolidation.
 - Before resuming, inspect branch/main heads, open PRs, CI/deployment, and the latest
   section below. A commit or green CI is not evidence that live operations ran.
@@ -77,9 +81,9 @@ Read it together with AGENTS.md; do not depend on a previous chat.
 
 | Package | Current status | Files/owner during implementation |
 | --- | --- | --- |
-| Invoice processing without stock, undo and manual settlements | Implemented; targeted backend/UI checks passed, final review in progress | Invoice services/routes/UI/tests; migration 051 |
-| Receipt correction/reversal and clean-start primitives | Implemented; targeted backend/UI checks passed | Receiving/FIFO services/UI/tests; migration 052 |
-| Topeak availability and source identity recovery | Implemented; targeted checks passed, not deployed | Availability batch reader, diagnostics and pinned read-only Atomer source export |
+| Invoice processing without stock, undo and manual settlements | Merged in PR #185; full CI passed; deployment verified | Invoice services/routes/UI/tests; migration 051 |
+| Receipt correction/reversal and clean-start primitives | Merged in PR #185; full CI passed; deployment verified | Receiving/FIFO services/UI/tests; migration 052 |
+| Topeak availability and source identity recovery | Merged in PR #185; full CI passed; deployment verified | Availability batch reader, diagnostics and pinned read-only Atomer source export |
 | Order setup | Policies, read-only collection and webhooks configured; collector failure under investigation | See checkpoints and docs/order-launch-setup.md |
 | One-off baseline/reset, full CI and release | Not applied | Primary agent |
 | Portable handoff and this record | Being checkpointed | Primary agent |
@@ -204,3 +208,26 @@ OVERVIEW.md and AGENTS.md integration. Invoice agent coordinates both locale fil
 6. Recheck only known pre-write Topeak failures after the availability fix;
    complete collector scans and prepare cutover/baseline before live authority.
 
+
+## Follow-up checkpoint: absent DELETE notification
+
+- Full CI [42592384918](https://github.com/mpriesol/inventory_hub/actions/runs/42592384918)
+  passed all four backend shards, complete-coverage gate and frontend/UI on
+  `a8e85f45d95f12ee6921febec92a9b63e2c32d02`. PR #185 was merged under the
+  standing permission; [build/deploy 42594100734](https://github.com/mpriesol/inventory_hub/actions/runs/42594100734)
+  completed successfully, including migrations 051/052, health/authentication and SPS checks. New availability diagnostic API returned HTTP200.
+- A real BIKETREK DELETE notification remains on review because successful
+  active and deleted Upgates queries no longer return the order. No matching
+  local order, inbox/job/native history or issue was found in the private audit.
+  Do not silently ignore it or fabricate an order. The follow-up adds a required
+  note, server-verified absence/history preview, apply/readback and audited
+  reopen; newer notification generations remain protected. It does not advance
+  collection checkpoints or change stock. See docs/order-automation.md.
+- Follow-up targeted backend and UI tests passed, including concurrent UUID
+  recovery, event generation changes, reopening and recovery after a newer
+  event replaces the visible notification. Independent backend review passed.
+  Full follow-up CI/deployment is still required.
+- The private stock runner now requires `--prepare-plan` to freeze every request
+  UUID offline. Persist that exact plan and final source manifest before any
+  `--apply`; resume original IDs after interruption. Never derive applied state
+  from an earlier chat, a code commit or a successful deployment.

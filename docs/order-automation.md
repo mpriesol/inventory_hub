@@ -212,6 +212,55 @@ UUID a aktuálne metadáta a použije spoločné `order_collection.save_entries`
 Chýbajúce aktívne objednávky overí aj v zmazaných. Zmazanie zostáva na kontrolu;
 nikdy nevytvorí automatickú vratku. Po reštarte sa nedokončené čítanie obnoví.
 Dočasné chyby majú rastúci odklad, po ôsmich pokusoch zostanú viditeľné na kontrolu.
+
+### Ručné doriešenie zmazaného oznámenia bez objednávky
+
+Ak `delete` oznámenie skončilo v `review` s
+`order_webhook_order_not_found`, administrátor môže pripraviť náhľad jeho
+uzavretia. Nejde o označenie obchodnej objednávky za vybavenú. Hub znovu načíta
+presné číslo medzi aktívnymi a zmazanými objednávkami cez existujúce chránené
+Upgates čítanie so spoločným API rozpočtom. Obe odpovede musia byť platné a bez
+objednávky. Chyba spojenia, oprávnenia, limitu alebo formátu nie je dôkazom
+neprítomnosti.
+
+Náhľad aj potvrdenie odmietnu existujúcu lokálnu objednávku vrátane nespravovanej,
+inbox, spracovateľskú úlohu, skladový náhľad, natívnu evidenciu alebo súvisiacu
+históriu pohybov. Nepriradená historická referencia objednávky v rovnakom e-shope
+tiež zostáva na kontrolu. Tento postup nevytvára náhradnú objednávku, UUID zdroja,
+rezerváciu, pohyb, vratku ani vzdialený zápis.
+
+Obsluha uvedie dôvod (10–2 000 znakov), skontroluje 15-minútový náhľad a výslovne
+potvrdí konkrétnu požiadavku. Potvrdenie opakuje obe zdrojové čítania aj lokálne
+kontroly; zmena generácie alebo odtlačku oznámenia, cieľa, politiky alebo revízie
+nastavení zneplatní náhľad. Databázové zámky sa počas siete nedržia. Výsledok sa
+obnovuje pôvodným UUID, bez novej požiadavky po neistej odpovedi.
+
+V existujúcom `sync_log` vzniknú samostatné záznamy náhľadu a dokončeného
+rozhodnutia s `sync_type: order_webhook_resolution`. Obsahujú pôvodné oznámenie,
+overený podklad, dôvod a vykonávateľa z autentizácie. Tieto záznamy sa nemenia ani
+nemažú. Unikátnosť operácie chráni spoločný UUID advisory lock; aktuálne oznámenie
+chráni zámok e-shopu a kontrola jeho zmrazeného stavu. Pridanie tejto cesty
+nepotrebuje migráciu a nezapína skladové odosielanie.
+
+Ručne uzavreté oznámenie sa dá s novým dôvodom a náhľadom vrátiť do `review`,
+iba ak ide stále o tú istú generáciu a pôvodné ručné rozhodnutie. Návrat nevykoná
+sieťové čítanie ani skladovú zmenu. Nová generácia oznámenia ostáva na bežné
+spracovanie. História zobrazuje posledných 50 dokončených rozhodnutí; záznamy
+mimo zobrazeného limitu sa nemažú. Ručné uzavretie neposúva čas úspešného zberu,
+kurzor kolektora ani čas naposledy načítanej objednávky.
+
+Všetky cesty nižšie majú prefix `/order-webhooks`, vyžadujú administrátora a
+vracajú `Cache-Control: no-store`:
+
+| Cesta | Vstup alebo výsledok |
+| --- | --- |
+| `POST /notifications/preview` | `request_id`, `shop_code`, presné `order_number`, `action: acknowledge_absent_delete/reopen`, `note`; uložený náhľad bez zmeny oznámenia. |
+| `POST /notifications/operations/{request_id}/apply` | `shop_code`, `preview_hash`, `confirmed:true`; čerstvé overenie, zmena iba stavu oznámenia a nový audit. |
+| `GET /notifications/operations/{request_id}?shop_code=...` | Pôvodný náhľad alebo už dokončený výsledok na obnovu tej istej požiadavky. |
+| `GET /notifications/history?shop_code=...&order_number=...` | Najviac 50 dokončených rozhodnutí pre konkrétne oznámenie. |
+
+Bežné `POST /retry` zostáva samostatným opätovným načítaním. Riešenie neistej
+registrácie callbacku cez `/resolve-registration` sa oznámení objednávok netýka.
 Spracovateľ inboxu ďalej používa úplný čerstvý zdroj a existujúce aktivačné hranice.
 
 Registrátor pred každým zápisom načíta aktuálne webhooky cez existujúce API

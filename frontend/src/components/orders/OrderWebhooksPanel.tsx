@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { accessRevision, hubUnlocked, hubUser } from '../../api/access';
 import { configureOrderWebhooks, getOrderWebhookStatus, OrderWebhookMutation, OrderWebhookStatus, registerOrderWebhooks, resolveOrderWebhookRegistration, retryOrderWebhooks } from '../../api/orderWebhooks';
 import { Button } from '../ui/Button.new';
 import { ActionScope } from '../ui/ActionScope';
+import { NotificationRecoveryPanel } from './NotificationRecoveryPanel';
 
 function validBaseUrl(value: string) {
   try {
@@ -45,11 +46,13 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
   const [busy, setBusy] = useState(false), [uncertain, setUncertain] = useState(false), [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [resolutions, setResolutions] = useState<Record<string, { note: string; finished: boolean }>>({});
+  const [notificationLocks, setNotificationLocks] = useState<Record<string, boolean>>({});
   const active = useRef(false), generation = useRef(0), controller = useRef<AbortController | null>(null);
   const text = (key: string) => t(`orderWebhooks.${key}`);
   const date = (value?: string | null) => value ? new Date(value).toLocaleString(i18n.language) : '—';
   const operator = hubUser()?.role === 'operator';
-  const locked = busy || blocked || operator;
+  const notificationsLocked = Object.values(notificationLocks).some(Boolean);
+  const locked = busy || blocked || operator || notificationsLocked;
   const settings = status?.webhook;
   const dirty = !!status && (enabled !== (settings?.enabled ?? false)
     || baseUrl !== (settings?.public_base_url ?? `${window.location.origin}/api`)
@@ -59,6 +62,10 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
   const ready = !!status?.collector_enabled && !!status.connection_matches;
   const registrationBusy = ['pending', 'running'].includes(settings?.registration_status || '');
   useEffect(() => () => { generation.current++; controller.current?.abort(); onBusy(false); }, []);
+  useEffect(() => { onBusy(busy || notificationsLocked); }, [busy, notificationsLocked, onBusy]);
+  const notificationLock = useCallback((order: string, value: boolean) => {
+    setNotificationLocks(previous => previous[order] === value ? previous : { ...previous, [order]: value });
+  }, []);
 
   function resolutionReady(mutation: OrderWebhookMutation) {
     const value = resolutions[mutation.intent_id];
@@ -70,6 +77,7 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
   }
   async function run(kind: 'load' | 'save' | 'register' | 'retry' | 'resolve', mutation?: OrderWebhookMutation) {
     if (active.current || blocked || operator || !hubUnlocked()) return;
+    if (kind !== 'load' && notificationsLocked) return;
     if (kind !== 'load' && (!status || uncertain)) return;
     if (kind === 'save' && (!valid || (enabled && !ready))) return;
     if (kind === 'register' && (!settings || dirty || !status?.connection_matches || registrationBusy)) return;
@@ -79,7 +87,7 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
     const context = generation.current, credential = accessRevision();
     const abort = new AbortController(); controller.current = abort;
     const current = () => context === generation.current && credential === accessRevision() && !abort.signal.aborted;
-    active.current = true; setBusy(true); onBusy(true); setError(''); setSaved(false);
+    active.current = true; setBusy(true); setError(''); setSaved(false);
     try {
       const result = checkedStatus(await (kind === 'load' ? getOrderWebhookStatus(shop, abort.signal)
         : kind === 'save' ? configureOrderWebhooks({ shop_code: shop, expected_revision: settings?.revision ?? null,
@@ -99,7 +107,7 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
         setError((value as { code?: string }).code || 'request_failed');
         if (kind !== 'load') setUncertain(true);
       }
-    } finally { if (current()) { active.current = false; setBusy(false); onBusy(false); } }
+    } finally { if (current()) { active.current = false; setBusy(false); } }
   }
 
   return <section className="opening-stock-panel" data-testid="order-webhooks-panel">
@@ -140,7 +148,12 @@ export function OrderWebhooksPanel({ shop, blocked, onBusy }: {
           </div>)}
         </section>}
         {status.review_count > 0 && <span className="action-control"><Button data-testid="order-webhooks-retry" variant="secondary" disabled={locked || uncertain || dirty || !settings.enabled || !ready || registrationBusy} onClick={() => run('retry')}>{text('retry')}</Button><ActionScope effects={['hub-write', 'queued-upgates', 'upgates-read']} shop={shop} calls={{ kind: 'variable' }} /></span>}
-        {status.events.length > 0 && <details><summary>{text('events')}</summary><div className="opening-stock-table-scroll"><table><thead><tr><th>{t('orderCollection.orderNumber')}</th><th>{text('event')}</th><th>{text('state')}</th><th>{text('lastReceived')}</th><th>{t('orderCollection.runError')}</th></tr></thead><tbody>{status.events.map(event => <tr key={event.order_number}><td>{event.order_number}</td><td>{text(`eventsNames.${event.event}`)}</td><td>{t(`orderWebhooks.states.${event.status}`, { defaultValue: event.status })}</td><td>{date(event.last_received_at)}</td><td>{event.last_error ? t(`orderWebhooks.errors.${event.last_error}`, { defaultValue: text('requestFailed') }) : '—'}</td></tr>)}</tbody></table></div></details>}
+        {status.events.length > 0 && <details><summary>{text('events')}</summary><div className="opening-stock-table-scroll"><table><thead><tr><th>{t('orderCollection.orderNumber')}</th><th>{text('event')}</th><th>{text('state')}</th><th>{text('lastReceived')}</th><th>{t('orderCollection.runError')}</th></tr></thead><tbody>{status.events.map(event => <React.Fragment key={event.order_number}>
+          <tr><td>{event.order_number}</td><td>{text(`eventsNames.${event.event}`)}</td><td>{t(`orderWebhooks.states.${event.status}`, { defaultValue: event.status })}</td><td>{date(event.last_received_at)}</td><td>{event.last_error ? t(`orderWebhooks.errors.${event.last_error}`, { defaultValue: text('requestFailed') }) : '—'}</td></tr>
+          <NotificationRecoveryPanel shop={shop} event={event}
+            disabled={busy || blocked || operator || uncertain || dirty || (!notificationLocks[event.order_number] && notificationsLocked)}
+            onLockChange={notificationLock} onChange={() => run('load')} />
+        </React.Fragment>)}</tbody></table></div></details>}
       </>}
     </>}
   </section>;

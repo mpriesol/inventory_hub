@@ -5036,13 +5036,65 @@
       "order_webhook_order_not_found": "The order was not found in the Upgates response. Review it before fetching again.",
       "order_webhook_source_behind": "Upgates returned an order version older than the notification. The saved notification remains pending.",
       "order_webhook_registration_uncertain": "The original registration request is unconfirmed. Check existing registrations again. If uncertainty remains, verify that the original Upgates request finished before using recovery below.",
-      "order_webhook_registration_busy": "The Hub is processing registration. Load the current state and save your evidence after processing finishes."
+      "order_webhook_registration_busy": "The Hub is processing registration. Load the current state and save your evidence after processing finishes.",
+      "order_webhook_resolution_not_eligible": "This notification is not eligible for this decision. Reload its current status.",
+      "order_webhook_resolution_local_history": "The Hub already has an order or related history. The notification must remain on review.",
+      "order_webhook_resolution_source_exists": "Upgates returned the order. Fetch it through ordinary notification processing.",
+      "order_webhook_resolution_target_changed": "The shop connection changed. Prepare a new preview.",
+      "order_webhook_resolution_request_conflict": "The request does not match the original preview or user.",
+      "order_webhook_resolution_stale": "The notification or settings changed. Prepare a new preview.",
+      "order_webhook_resolution_expired": "The preview expired. Prepare a new preview.",
+      "order_webhook_resolution_source_unavailable": "Upgates could not be verified. The notification remains on review.",
+      "order_webhook_resolution_not_found": "The saved request was not found.",
+      "order_webhook_resolution_event_not_found": "The notification was not found.",
+      "order_webhook_resolution_shop_not_found": "The active shop was not found."
     },
     "resolutionTitle": "Resolve an unconfirmed registration request",
     "resolutionHelp": "Use only after verifying in Upgates or with its support that the original request cannot execute later. Viewing the current setting alone does not confirm this. The Hub records the evidence, checks registrations again and completes the saved configuration.",
     "resolutionNote": "How you verified that the original request finished (10–2000 characters)",
     "resolutionConfirm": "I verified that the original Upgates request has finished and cannot execute later.",
-    "resolutionSubmit": "Save evidence and resume registration checks"
+    "resolutionSubmit": "Save evidence and resume registration checks",
+    "notifications": {
+      "title": "Deleted order review",
+      "scope": "Changes only the notification status. It creates no order, stock movement or Upgates change.",
+      "note": "Decision reason (10–2,000 characters)",
+      "preview": "Check and preview",
+      "confirm": "Confirm decision",
+      "confirmation": "I confirm the reason and notification status change.",
+      "cancel": "Discard preview",
+      "recover": "Check request result",
+      "pending": "The request result needs checking. Continue with the saved request.",
+      "saved": "Decision saved.",
+      "failed": "The decision could not be checked or saved. Check the request status.",
+      "storageUnavailable": "The browser cannot safely retain the request. No write was sent.",
+      "actorChanged": "This request belongs to another sign-in. Sign in with the original account.",
+      "history": "Decision history (latest 50)",
+      "historyEmpty": "No decisions yet.",
+      "loadHistory": "Load history",
+      "evidenceTitle": "Check results",
+      "activeAbsent": "The order is absent from active Upgates orders.",
+      "deletedAbsent": "The order is absent from deleted Upgates orders.",
+      "noLocalHistory": "The Hub has no local history for this order.",
+      "checkedAt": "Checked",
+      "requestId": "Request",
+      "action": "Decision",
+      "state": "Status",
+      "actor": "User",
+      "createdAt": "Time",
+      "phases": {
+        "prepared": "Preview",
+        "completed": "Completed"
+      },
+      "actions": {
+        "acknowledge_absent_delete": "Close the absent-order notification",
+        "reopen": "Reopen notification for review"
+      },
+      "help": {
+        "acknowledge_absent_delete": "Checks active and deleted orders and local history. Acknowledgement requires no matching order or local history.",
+        "reopen": "Returns this manual acknowledgement to review without changing stock."
+      },
+      "invalidResponse": "The response does not match this request. Check the original request result."
+    }
   },
   "atomerContent": {
     "title": "Import content from Atomer",
