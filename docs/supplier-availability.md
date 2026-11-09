@@ -200,12 +200,41 @@ safe preview retry. Sending/uncertain intents are never repeated automatically,
 even if another feed arrives, another target succeeds, or a recheck is requested.
 Explicit settlement through the existing publication recovery is adopted locally.
 
+Availability-only reads validate one complete filtered page and then validate
+each exact product/variant separately. A missing target or an invalid quantity,
+identity or availability rejects that target without rejecting valid siblings.
+Page metadata, duplicate/extra codes and incoherent identities still fail safely;
+a truncated page is never accepted. The unrelated `can_add_to_basket_yn` field is
+not required by this label-only workflow. No failed batch fans out into individual
+GETs, and the stock synchronization reader keeps its stricter stock/ordering
+contract. The [Upgates list reference](https://docs.upgates.com/api-reference/produkty-seznamy)
+defines response page counts as returned items, not the number of requested codes.
+
+The same per-target isolation applies to the last read before sending and to
+readback. A target rejected before any PUT remains safe to recheck. A missing or
+invalid readback after the PUT leaves that target uncertain; successful siblings
+may complete, but the uncertain target is never automatically repeated.
+
+`GET /supplier-availability/{supplier}/publication/status` provides local diagnostics
+for the configured supplier and target shop. It returns complete current `counts`
+and `errors`, plus `items` paginated by `offset` and `limit` (1–100, default 50).
+Optional `state` and exact `error` filters apply to `items` and `total`; aggregate
+counts retain the complete scope. As on the overview, an unresolved intent takes
+priority over a later rejection for the same card/shop. Each item exposes its
+publication ID, safe error code, `retry_at`, `known_prewrite_failure` and
+`recheck_eligible`; new attempts also record the failure stage. Older records may
+have no stage. This GET performs no upstream calls, prefix-registry writes,
+publication claims or retry scheduling.
+
 Operators can queue a bounded recheck after correcting a remote-only problem via
 `POST /supplier-availability/{supplier}/publication/recheck`, body
 `{"expected_revision": 1, "product_ids": [123]}` (1–100 distinct positive Hub IDs).
 It checks the supplier revision and configured target, queues local work only, and
 returns a `queued` count. It cannot release an uncertain intent. Ordinary feed
-refreshes do not silently reset permanent publication failures.
+refreshes do not silently reset permanent publication failures. For recovery from
+old batch failures, first inspect the diagnostic endpoint and select only the
+intended `rejected`, `recheck_eligible` IDs. The recheck starts a fresh validated
+attempt; it does not replay or erase an earlier publication.
 
 Migration 034 is replay-safe and leaves all stock authority flags, stock movements
 and historical publications untouched. Rollback is a compatible forward fix or
@@ -214,3 +243,7 @@ to old publication code would restore run-ID-driven repeated checks. Tests cover
 unchanged fresh feeds, changed quantity/boolean, expiry, protected **SKLADOM**,
 multiple sources, crash/retry/uncertain states and migration boundaries. These are
 code/test claims; deployment and a live delivery pilot are reported separately.
+The availability batch tests additionally cover malformed/missing leaves among
+valid siblings, incomplete pages, preserved own-stock priority, isolated
+pre-write/readback failures and diagnostic selection followed by an explicit
+bounded recheck in PostgreSQL.

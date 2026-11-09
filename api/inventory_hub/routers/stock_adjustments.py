@@ -5,7 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.routers.fifo import NoStoreRoute, _call
-from inventory_hub.stock_adjustment_types import StockAdjustmentApply, StockAdjustmentPreview
+from inventory_hub.stock_adjustment_types import (
+    StockAdjustmentApply, StockAdjustmentPreview,
+    StockAdjustmentBatchApply, StockAdjustmentBatchPreview,
+)
 from inventory_hub.services import stock_adjustments as service
 
 router = APIRouter(prefix="/stock-adjustments", tags=["stock-adjustments"],
@@ -15,6 +18,16 @@ router = APIRouter(prefix="/stock-adjustments", tags=["stock-adjustments"],
 @router.post("/preview")
 async def preview(payload: StockAdjustmentPreview, db: AsyncSession = Depends(get_session)):
     return await _call(service.preview(db, payload))
+
+
+@router.post("/batch-preview")
+async def preview_batch(payload: StockAdjustmentBatchPreview, db: AsyncSession = Depends(get_session)):
+    return await _call(service.preview_batch(db, payload))
+
+
+@router.post("/batch-apply")
+async def apply_batch(payload: StockAdjustmentBatchApply, db: AsyncSession = Depends(get_session)):
+    return await _call(service.apply_batch(db, payload))
 
 
 @router.get("/{identifier}")

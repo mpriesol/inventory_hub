@@ -1,5 +1,5 @@
 """Operator-only supplier scheduling and manual queue controls."""
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +60,17 @@ async def run(supplier: SupplierCode, payload: SupplierAvailabilityRunInput, db:
 async def recheck(supplier: SupplierCode, payload: SupplierAvailabilityRecheckInput, db: AsyncSession = Depends(get_session)):
     from inventory_hub.services.supplier_availability_publication import request_recheck
     return await _call(request_recheck(db, supplier, payload))
+
+
+@router.get("/{supplier}/publication/status")
+async def publication_status(supplier: SupplierCode,
+                             offset: Annotated[int, Query(ge=0)] = 0,
+                             limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                             state: Literal['ready', 'sending', 'uncertain', 'completed', 'rejected', 'resolved'] | None = None,
+                             error: Annotated[str | None, Query(pattern=r'^[a-z][a-z0-9_]{0,199}$')] = None,
+                             db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services.supplier_availability_publication import publication_status as status
+    return await _call(status(db, supplier, offset, limit, state, error))
 
 
 @router.post("/{supplier}/links/reconcile")

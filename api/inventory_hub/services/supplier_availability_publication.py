@@ -101,6 +101,76 @@ async def request_recheck(db, supplier, payload):
     return {'supplier': supplier, 'shop_code': policy['shop_code'], 'queued': result.rowcount}
 
 
+def current_publications(supplier, shop_code):
+    """One outcome per card/channel; an unresolved intent outranks later errors."""
+    return select(ProductEditorPublication.id, ProductEditorPublication.product_id,
+        ProductEditorPublication.shop_id, ProductEditorPublication.state,
+        ProductEditorPublication.created_at, ProductEditorPublication.updated_at,
+        ProductEditorPublication.document,
+        func.row_number().over(partition_by=(ProductEditorPublication.product_id, ProductEditorPublication.shop_id),
+            order_by=(case((ProductEditorPublication.state.in_(('sending', 'uncertain')), 0), else_=1),
+                      ProductEditorPublication.created_at.desc(), ProductEditorPublication.id.desc())).label('position'))\
+        .where(ProductEditorPublication.document['workflow'].astext == WORKFLOW,
+               ProductEditorPublication.document['supplier'].astext == supplier,
+               ProductEditorPublication.document['shop_code'].astext == shop_code).subquery()
+
+
+async def publication_status(db, supplier, offset=0, limit=50, state=None, error=None):
+    """Local diagnostics only: complete counts and bounded current outcomes."""
+    supplier_row = await db.scalar(select(Supplier).where(Supplier.code == supplier))
+    settings = await db.get(SupplierAvailabilitySettings, supplier_row.id) if supplier_row else None
+    # Diagnostic reads must not acquire/create the prefix registry used by
+    # load_supplier, even when it is called with write_back_on_load=False.
+    try:
+        cfg = config_io._norm_supplier(config_io._read_supplier_json(config_io.supplier_path(supplier)))
+    except (ValueError, OSError):
+        raise availability.AvailabilityError('supplier_availability_publication_disabled') from None
+    policy = (cfg.get('adapter_settings') or {}).get('availability_publication') or {}
+    if not policy.get('shop_code'):
+        raise availability.AvailabilityError('supplier_availability_publication_disabled')
+    latest = current_publications(supplier, policy['shop_code'])
+    current = select(latest).where(latest.c.position == 1).subquery()
+    code = current.c.document['error'].astext
+    grouped = (await db.execute(select(current.c.state, code.label('error'), func.count().label('count'))
+        .group_by(current.c.state, code).order_by(current.c.state, code))).all()
+    counts = {}
+    for outcome, _code, amount in grouped:
+        counts[outcome] = counts.get(outcome, 0) + amount
+    conditions = []
+    if state is not None:
+        conditions.append(current.c.state == state)
+    if error is not None:
+        conditions.append(code == error)
+    total = await db.scalar(select(func.count()).select_from(current).where(*conditions))
+    fenced = exists(select(ProductEditorPublication.id).where(
+        ProductEditorPublication.product_id == current.c.product_id,
+        ProductEditorPublication.shop_id == current.c.shop_id,
+        ProductEditorPublication.state.in_(('sending', 'uncertain'))))
+    rows = (await db.execute(select(current, Product.sku, Delivery.retry_at,
+        Delivery.publication_id.label('delivery_publication_id'), fenced.label('fenced'))
+        .join(Product, Product.id == current.c.product_id)
+        .outerjoin(Delivery, (Delivery.product_id == current.c.product_id) & (Delivery.shop_id == current.c.shop_id))
+        .where(*conditions).order_by(current.c.product_id, current.c.shop_id).offset(offset).limit(limit))).mappings().all()
+    items = []
+    for row in rows:
+        document = row['document']
+        failure_stage = document.get('failure_stage')
+        if failure_stage not in ('local_validation', 'preview_read', 'before_write', 'after_write'):
+            failure_stage = None
+        items.append({'product_id': row['product_id'], 'sku': row['sku'], 'publication_id': row['id'],
+            'state': row['state'], 'error': availability._safe_error(document.get('error')),
+            'failure_stage': failure_stage, 'created_at': row['created_at'],
+            'updated_at': row['updated_at'], 'retry_at': row['retry_at'],
+            'recheck_eligible': row['state'] in ('completed', 'rejected', 'resolved') and not row['fenced']
+                and row['delivery_publication_id'] == row['id'] and settings is not None and policy.get('enabled') is True,
+            'known_prewrite_failure': row['state'] == 'rejected'})
+    return {'supplier': supplier, 'shop_code': policy['shop_code'], 'enabled': policy.get('enabled') is True,
+        'settings_revision': settings.revision if settings else None, 'counts': counts,
+        'errors': [{'state': outcome, 'error': availability._safe_error(code), 'count': amount}
+                   for outcome, code, amount in grouped], 'total': total, 'offset': offset, 'limit': limit, 'items': items,
+        'external_read_enabled': False, 'external_write_enabled': False}
+
+
 def policies():
     result = []
     for path in sorted((config_io.DATA_ROOT / 'suppliers').glob('*/config.json')):
@@ -280,7 +350,9 @@ async def cycle():
                 identifiers = []
                 for product_id, shop_id, sku, run_id, row, identity, desired_context in contexts:
                     identifiers.append(await _prepare_and_send(db, product_id, shop_id, supplier, sku, run_id, policy, cfg,
-                        row=row, remote=remotes.get(identity['code']), remote_error=remote_error, send=False,
+                        row=row, remote=remotes.get(identity['code']), remote_error=remote_error or (
+                            transport.source.SourceError('stock_publication_source_missing', 409)
+                            if identity['code'] not in remotes else None), send=False,
                         desired_context=desired_context))
                 await send_batch(db, identifiers)
                 return True
@@ -316,13 +388,17 @@ async def _prepare_and_send(db, product_id, shop_id, supplier, sku, run_id, poli
             delivery.desired, delivery.publication_id = desired_context, identifier
             delivery.state, delivery.retry_at, delivery.updated_at = 'rejected', editor.now() + timedelta(minutes=5), editor.now()
     await db.commit()
+    failure_stage = 'local_validation'
     try:
         if desired_context is not None and desired_context['available'] is not document['supplier_available']:
             raise editor.EditorError('supplier_availability_publication_stale')
         await validate(db, document, product_id)
         await db.rollback()
+        failure_stage = 'preview_read'
         if remote_error is not None:
             raise remote_error
+        if isinstance(remote, transport.source.SourceError):
+            raise remote
         remote = remote or await transport.read_remote(policy['shop_code'], identity, fingerprint)
         actual_id = remote['identity']['variant_id'] if identity['variant_code'] else remote['identity']['product_id']
         if not shop['mapping']['external_id'] or str(actual_id) != str(shop['mapping']['external_id']):
@@ -352,18 +428,14 @@ async def _prepare_and_send(db, product_id, shop_id, supplier, sku, run_id, poli
         record = await publication._get(db, identifier, lock=True)
         if record.state in ('ready', 'rejected'):
             record.state = 'rejected'
-            record.document = {**deepcopy(record.document), 'error': error.code}
+            record.document = {**deepcopy(record.document), 'error': error.code, 'failure_stage': failure_stage}
             await _remember(db, record)
             await db.commit()
     return identifier
 
 
 async def read_batch(shop, documents, fingerprint):
-    from inventory_hub.services.stock_sync_source import read_many
-    values = await read_many(shop, [document['identity'] for document in documents], fingerprint)
-    return {code: {'identity': item['observation']['identity'], 'options': None,
-        'leaf': {'code': code, 'stock': item['observation']['stock'], 'availability': item['observation']['availability']}}
-        for code, item in values.items()}
+    return await transport.read_availability_many(shop, [document['identity'] for document in documents], fingerprint)
 
 
 async def send_batch(db, identifiers):
@@ -410,48 +482,66 @@ async def send_batch(db, identifiers):
         for identifier in documents:
             record = await publication._get(db, identifier, lock=True)
             if record.state == 'ready':
-                record.state = 'rejected'; record.document = {**record.document, 'error': error.code}
+                record.state = 'rejected'
+                record.document = {**record.document, 'error': error.code, 'failure_stage': 'local_validation'}
                 await _remember(db, record)
         await db.commit()
         return
-    status, error, observed, write_started = 'uncertain', None, None, False
+    outcomes, pending, write_started = {}, {}, False
     try:
         before = await read_batch(shop, list(documents.values()), fingerprint)
         labels_by_supplier = {supplier: (cfg.get('adapter_settings') or {}).get('availability') or {}
                               for supplier, _policy, cfg in policies()}
-        if any(transport.field_values(before[d['identity']['code']], ['availability'], None) != d['before']
-               or desired_label(before[d['identity']['code']]['leaf'].get('stock'), d['supplier_available'],
-                    labels_by_supplier.get(d['supplier'], {}),
-                    before[d['identity']['code']]['leaf'].get('availability')) != d['after']['availability']
-               for d in documents.values()):
-            status, error = 'rejected', 'product_publication_remote_changed'
-        else:
-            items = [{'identity': d['identity'], 'availability': d['after']['availability']} for d in documents.values()]
+        for identifier, document in documents.items():
+            try:
+                remote = before.get(document['identity']['code'])
+                if isinstance(remote, transport.source.SourceError):
+                    raise remote
+                if remote is None:
+                    raise transport.source.SourceError('stock_publication_source_missing', 409)
+                if (transport.field_values(remote, ['availability'], None) != document['before']
+                        or desired_label(remote['leaf'].get('stock'), document['supplier_available'],
+                            labels_by_supplier.get(document['supplier'], {}), remote['leaf'].get('availability'))
+                        != document['after']['availability']):
+                    raise transport.source.SourceError('product_publication_remote_changed', 409)
+                pending[identifier] = document
+            except transport.source.SourceError as failure:
+                outcomes[identifier] = ('rejected', failure.code, None, 'before_write')
+        if pending:
+            items = [{'identity': d['identity'], 'availability': d['after']['availability']} for d in pending.values()]
             write_started = True
             if len(items) == 1:
-                document = first
+                document = next(iter(pending.values()))
                 await transport.write_once(shop, document['identity'], fingerprint, document['payload'])
             else:
                 await transport.write_availability_batch_once(shop, items, fingerprint)
-            observed = await read_batch(shop, list(documents.values()), fingerprint)
+            observed = await read_batch(shop, list(pending.values()), fingerprint)
+            for identifier, document in pending.items():
+                try:
+                    remote = observed.get(document['identity']['code'])
+                    if isinstance(remote, transport.source.SourceError):
+                        raise remote
+                    if remote is None:
+                        raise transport.source.SourceError('stock_publication_source_missing', 409)
+                    value = transport.field_values(remote, ['availability'], None)
+                    outcomes[identifier] = (('completed', None, value, None) if value == document['after'] else
+                        ('uncertain', 'product_publication_readback_mismatch', value, 'after_write'))
+                except transport.source.SourceError as failure:
+                    outcomes[identifier] = ('uncertain', failure.code, None, 'after_write')
     except transport.source.SourceError as failure:
-        error = failure.code
-        if not write_started:
-            status = 'rejected'
+        for identifier in documents:
+            outcomes.setdefault(identifier, ('uncertain' if write_started else 'rejected', failure.code, None,
+                                            'after_write' if write_started else 'before_write'))
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': editor.IDENTITY_WRITE_LOCK})
     for identifier, document in documents.items():
         record = await publication._get(db, identifier, lock=True)
         if record.state != 'sending':
             continue
-        try:
-            value = transport.field_values(observed[document['identity']['code']], ['availability'], None) if observed else None
-        except transport.source.SourceError as failure:
-            value, error = None, failure.code
-        completed = observed is not None and value == document['after']
-        if completed:
+        state, error, value, failure_stage = outcomes[identifier]
+        if state == 'completed':
             await publication._record_receipt(db, record.product_id, identifier, document)
-        record.state = 'completed' if completed else status
+        record.state = state
         record.updated_at = editor.now()
-        record.document = {**document, 'observed': value, 'error': None if completed else error or 'product_publication_readback_mismatch'}
+        record.document = {**document, 'observed': value, 'error': error, 'failure_stage': failure_stage}
         await _remember(db, record)
     await db.commit()

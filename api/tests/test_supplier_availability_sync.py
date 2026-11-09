@@ -139,7 +139,8 @@ class SupplierRoutesTests(unittest.TestCase):
              patch.object(service, "request_run", AsyncMock(return_value={"queued": True})), \
              patch.object(service, "source_observation", AsyncMock(return_value={"status": "not_loaded"})) as observation_read:
             for method, url in (("GET", "/supplier-availability"), ("GET", "/supplier-availability/paul-lange/runs/1/failures"), ("GET", "/supplier-availability/northfinder/observation?sku=103404-281-103"), ("PUT", "/supplier-availability/paul-lange"),
-                                ("POST", "/supplier-availability/paul-lange/run"), ("POST", "/supplier-availability/paul-lange/publication/recheck")):
+                                ("POST", "/supplier-availability/paul-lange/run"), ("POST", "/supplier-availability/paul-lange/publication/recheck"),
+                                ("GET", "/supplier-availability/paul-lange/publication/status")):
                 response = client.request(method, url, json={"expected_revision": 0})
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.headers["cache-control"], "no-store")

@@ -70,6 +70,8 @@ COPY infra/db-init/047_product_consolidation.sql /app/inventory_hub/migrations/0
 COPY infra/db-init/048_atomer_catalog_control.sql /app/inventory_hub/migrations/048_atomer_catalog_control.sql
 COPY infra/db-init/049_atomer_catalog_job_control.sql /app/inventory_hub/migrations/049_atomer_catalog_job_control.sql
 COPY infra/db-init/050_atomer_catalog_handoff.sql /app/inventory_hub/migrations/050_atomer_catalog_handoff.sql
+COPY infra/db-init/051_invoice_processing.sql /app/inventory_hub/migrations/051_invoice_processing.sql
+COPY infra/db-init/052_receiving_operations.sql /app/inventory_hub/migrations/052_receiving_operations.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

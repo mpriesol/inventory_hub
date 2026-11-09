@@ -39,6 +39,11 @@ export type InvoiceIndexItem = {
   status: "new" | "in_progress" | "processed" | "skipped" | "failed";
   sha1?: string;
   layout_used?: string;
+  invoice_archived?: boolean;
+  receiving_archived?: boolean;
+  source_archived?: boolean;
+  archive_invoice_id?: number;
+  processing_status?: 'unprocessed' | 'processed_without_stock';
   // For in_progress invoices
   current_session_id?: string;
   paused_at?: string;
@@ -60,9 +65,9 @@ export type InvoiceIndexItem = {
   };
 };
 
-export async function getInvoicesIndex(supplier: string) {
+export async function getInvoicesIndex(supplier: string, includeArchived = false) {
   const response = await fetchJSON<{ supplier: string; count: number; invoices: InvoiceIndexItem[] }>(
-    `${API_BASE}/suppliers/${encodeURIComponent(supplier)}/invoices/index`
+    `${API_BASE}/suppliers/${encodeURIComponent(supplier)}/invoices/index${includeArchived ? '?include_archived=true' : ''}`
   );
   // Normalize: backend returns 'invoices', we use 'items' internally
   return {

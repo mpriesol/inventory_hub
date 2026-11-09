@@ -74,7 +74,7 @@ Autoritatívne poradie je v [migrate.py](inventory_hub/migrate.py), SQL balenie 
 | Časť | Aktuálny rozsah |
 | --- | --- |
 | Základ schémy | SQL `001`–`004`; upgrade runner existujúci základ predpokladá. |
-| Upgrade runner | 39 Python modulov: `005`–`038`, potom `046`–`050`. |
+| Upgrade runner | 41 Python modulov: `005`–`038`, potom `046`–`052`. |
 | Spoločný Atomer krok | [atomer_review_migrate.py](inventory_hub/atomer_review_migrate.py) vykonáva SQL `038`–`045` spolu v jednej transakcii. |
 | SQL v API obraze | Všetkých 46 upgrade súborov `005`–`050`. |
 
@@ -100,3 +100,7 @@ Konzistentný bod obnovy zahŕňa PostgreSQL, aplikačné dáta, deployment konf
 4. Skutočná obnova servera vyžaduje výber konzistentnej zálohy, kontrolu oprávnení súborov, konfigurácií, volumes, kompatibility kódu a všetkých externých operácií po bode obnovy. Izolovaná kontrola DB sama nepotvrdzuje kompletnú obnovu aplikácie. Repo nemá automatický príkaz na obnovu produkcie.
 
 Pri neúspešnom upgrade najprv identifikovať fázu a modul. Dokončené migrácie nemaže revert kódu; zachovať nemenné pohyby, FIFO, aliasy, UUID výsledky, denníky a neisté zápisy. Oprava musí byť kompatibilná s uloženými dátami. Obnova DB nevracia už vykonaný Upgates zápis; riadi sa aj [kontraktom dotknutej funkcie](../OVERVIEW.md#aktuálny-stav-funkcií-a-obrazoviek).
+
+### Rozšírenie 051–052
+
+`051_invoice_processing.sql` pridáva ručné spracovanie faktúr, vratnú archiváciu a nemenné audity vrátane vyradenia chybných zdrojových testov. `052_receiving_operations.sql` pridáva náhľady a výsledky opráv príjemiek. Runner ich vykoná po 050 a API obraz balí oba súbory. Ani jedna migrácia neresetuje doklady, nemení zásoby ani nezapína prenos do e-shopov. Prevádzkové operácie sa vykonajú osobitne po overení kódu a konkrétneho náhľadu.

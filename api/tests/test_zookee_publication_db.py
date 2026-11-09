@@ -78,6 +78,24 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             return await db.scalar(select(ProductEditorPublication).order_by(ProductEditorPublication.created_at.desc()))
 
+    async def prepare_pair(self):
+        async with self.sessions() as db:
+            await self.link_sibling_source(db)
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-10'],
+                ShopProduct.shop_id == self.shops['biketrek']))
+            mapping.external_product_id, mapping.external_variant_id = '11', '23'
+            await db.commit()
+        remotes = {'BIKE-2': self.remote, 'BIKE-10': copy.deepcopy(self.remote)}
+        remotes['BIKE-10']['identity'].update(code='BIKE-10', variant_code='BIKE-10', variant_id=23)
+        remotes['BIKE-10']['leaf']['code'] = 'BIKE-10'
+        identifiers = []
+        for code in ('BIKE-2', 'BIKE-10'):
+            async with self.sessions() as db:
+                identifiers.append(await service._prepare_and_send(db, self.products[code], self.shops['biketrek'],
+                    'editor-supplier', self.sku if code == 'BIKE-2' else self.sku + '-SIBLING', 999,
+                    self.policy, self.config, remote=remotes[code], send=False))
+        return identifiers, remotes
+
     async def seed_worker_observation(self, available=False, *, next_run=False):
         self.config['feeds'] = {'sources': {'stock': {'mode': 'remote', 'remote': {'url': 'https://supplier.example.test/stock.xml'}}}}
         config_io.supplier_path('editor-supplier').write_text(json.dumps(self.config))
@@ -469,6 +487,138 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(record.state,'uncertain',record.document)
                 await service.send_batch(db,[first])
             self.assertEqual(self.writer.await_count,1)
+
+    async def test_bad_leaf_before_send_does_not_reject_or_write_its_valid_sibling_twice(self):
+        identifiers, remotes = await self.prepare_pair()
+        async def read_batch(*args):
+            return {'BIKE-2': copy.deepcopy(remotes['BIKE-2']),
+                    'BIKE-10': source.source.SourceError('stock_publication_source_missing', 409)}
+        with patch.object(service, 'read_batch', AsyncMock(side_effect=read_batch)) as reader:
+            async with self.sessions() as db:
+                await service.send_batch(db, identifiers)
+            async with self.sessions() as db:
+                good, bad = [await db.get(ProductEditorPublication, identifier) for identifier in identifiers]
+                self.assertEqual(good.state, 'completed')
+                self.assertEqual((bad.state, bad.document['error'], bad.document['failure_stage']),
+                    ('rejected', 'stock_publication_source_missing', 'before_write'))
+                await service.send_batch(db, identifiers)
+        self.writer.assert_awaited_once()
+        self.assertEqual(self.writer.await_args.args[1]['code'], 'BIKE-2')
+        self.assertEqual(reader.await_count, 2)
+
+    async def test_worker_isolates_preview_failure_and_explicit_recheck_recovers_only_that_target(self):
+        from inventory_hub.supplier_availability_types import SupplierAvailabilityRecheckInput
+        await self.seed_worker_observation(False)
+        async with self.sessions() as db:
+            sibling = await self.link_sibling_source(db)
+            mapping = await db.scalar(select(ShopProduct).where(ShopProduct.product_id == self.products['BIKE-10'],
+                ShopProduct.shop_id == self.shops['biketrek']))
+            mapping.external_product_id, mapping.external_variant_id = '11', '23'
+            fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+            db.add(SupplierAvailabilityObservation(supplier_id=self.supplier_id, supplier_sku=sibling.supplier_sku,
+                feed_id=fact.feed_id, run_id=fact.run_id, available=False, quantity=0, quantity_kind='exact', raw={},
+                observed_at=fact.observed_at, expires_at=fact.expires_at))
+            await db.commit()
+        remotes = {'BIKE-2': self.remote, 'BIKE-10': copy.deepcopy(self.remote)}
+        remotes['BIKE-10']['identity'].update(code='BIKE-10', variant_code='BIKE-10', variant_id=23)
+        remotes['BIKE-10']['leaf']['code'] = 'BIKE-10'
+        broken = True
+        async def read_batch(shop, documents, fingerprint):
+            return {document['identity']['code']: source.source.SourceError('stock_publication_invalid_response')
+                if broken and document['identity']['code'] == 'BIKE-10' else copy.deepcopy(remotes[document['identity']['code']])
+                for document in documents}
+        async def write(shop, identity, fingerprint, payload):
+            leaf = payload['products'][0]['variants'][0]
+            self.assertEqual(set(leaf), {'code', 'availability'})
+            remotes[identity['code']]['leaf']['availability'] = leaf['availability']
+        self.writer.side_effect = write
+        with patch.object(service, 'get_session_context', self.transaction), \
+                patch.object(service, 'read_batch', AsyncMock(side_effect=read_batch)):
+            self.assertTrue(await service.cycle())
+            self.assertFalse(await service.cycle(), 'A permanent read failure must not spin automatically')
+            self.writer.assert_awaited_once()
+            async with self.sessions() as db:
+                state = await service.publication_status(db, 'editor-supplier', state='rejected')
+                self.assertEqual(state['counts'], {'completed': 1, 'rejected': 1})
+                self.assertEqual(state['items'][0]['product_id'], self.products['BIKE-10'])
+                self.assertEqual(state['items'][0]['failure_stage'], 'preview_read')
+                self.assertTrue(state['items'][0]['recheck_eligible'])
+                self.assertIsNone(state['items'][0]['retry_at'])
+                queued = await service.request_recheck(db, 'editor-supplier', SupplierAvailabilityRecheckInput(
+                    expected_revision=state['settings_revision'], product_ids=[self.products['BIKE-10']]))
+                self.assertEqual(queued['queued'], 1)
+                await db.commit()
+            broken = False
+            self.assertTrue(await service.cycle())
+            self.assertFalse(await service.cycle())
+            self.assertEqual([call.args[1]['code'] for call in self.writer.await_args_list], ['BIKE-2', 'BIKE-10'])
+            async with self.sessions() as db:
+                self.assertEqual((await service.publication_status(db, 'editor-supplier'))['counts'], {'completed': 2})
+
+    async def test_bad_leaf_after_send_keeps_only_its_own_uncertain_fence(self):
+        identifiers, remotes = await self.prepare_pair()
+        reads = 0
+        async def read_batch(*args):
+            nonlocal reads
+            reads += 1
+            values = copy.deepcopy(remotes)
+            if reads > 1:
+                values['BIKE-10'] = source.source.SourceError('stock_publication_invalid_response')
+            return values
+        async def write_batch(shop, items, fingerprint):
+            for item in items:
+                remotes[item['identity']['code']]['leaf']['availability'] = item['availability']
+        with patch.object(service, 'read_batch', AsyncMock(side_effect=read_batch)), \
+                patch.object(source, 'write_availability_batch_once', AsyncMock(side_effect=write_batch)) as writer:
+            async with self.sessions() as db:
+                await service.send_batch(db, identifiers)
+            async with self.sessions() as db:
+                good, bad = [await db.get(ProductEditorPublication, identifier) for identifier in identifiers]
+                self.assertEqual(good.state, 'completed')
+                self.assertEqual((bad.state, bad.document['failure_stage']), ('uncertain', 'after_write'))
+                await service.send_batch(db, identifiers)
+            writer.assert_awaited_once()
+        self.writer.assert_not_awaited()
+
+    async def test_current_diagnostics_count_all_reasons_and_page_without_remote_or_config_writes(self):
+        await self.seed_worker_observation(False)
+        now = service.editor.now()
+        async with self.sessions() as db:
+            for product, state, minutes, error, shop, workflow in [
+                ('BIKE-2', 'completed', 8, None, 'biketrek', service.WORKFLOW),
+                ('BIKE-2', 'rejected', 7, 'stock_publication_invalid_response', 'biketrek', service.WORKFLOW),
+                ('BIKE-10', 'uncertain', 6, 'product_publication_write_unconfirmed', 'biketrek', service.WORKFLOW),
+                ('BIKE-10', 'rejected', 5, 'stock_publication_invalid_response', 'biketrek', service.WORKFLOW),
+                ('PART-1', 'rejected', 4, 'stock_publication_source_missing', 'biketrek', service.WORKFLOW),
+                ('BIKE-2', 'rejected', 3, 'stock_publication_invalid_response', 'xtrek', service.WORKFLOW),
+                ('BIKE-2', 'rejected', 2, 'stock_publication_invalid_response', 'biketrek', 'other_workflow')]:
+                record = ProductEditorPublication(id=str(uuid4()), product_id=self.products[product], shop_id=self.shops[shop],
+                    state=state, created_at=now-timedelta(minutes=minutes), document={
+                        'workflow': workflow, 'supplier': 'editor-supplier', 'shop_code': shop, 'error': error})
+                db.add(record)
+                if state == 'rejected' and workflow == service.WORKFLOW and shop == 'biketrek':
+                    await db.flush()
+                    db.add(SupplierAvailabilityDelivery(product_id=record.product_id, shop_id=record.shop_id,
+                        desired={'supplier': 'editor-supplier'}, publication_id=record.id, state=state))
+            await db.commit()
+        with patch.object(config_io, 'load_supplier', side_effect=AssertionError('Diagnostic must not write prefix registry')), \
+                patch.object(source, 'read_availability_many', AsyncMock(side_effect=AssertionError('No upstream diagnostics'))):
+            async with self.sessions() as db:
+                result = await service.publication_status(db, 'editor-supplier', limit=1)
+                self.assertEqual(result['counts'], {'rejected': 2, 'uncertain': 1})
+                self.assertEqual(result['total'], 3)
+                self.assertEqual(len(result['items']), 1)
+                self.assertTrue(result['items'][0]['known_prewrite_failure'])
+                self.assertTrue(result['items'][0]['recheck_eligible'])
+                self.assertEqual({row['error']: row['count'] for row in result['errors']}, {
+                    'stock_publication_invalid_response': 1, 'stock_publication_source_missing': 1,
+                    'product_publication_write_unconfirmed': 1})
+                filtered = await service.publication_status(db, 'editor-supplier', state='uncertain')
+                self.assertEqual(filtered['total'], 1)
+                self.assertFalse(filtered['items'][0]['recheck_eligible'])
+                self.assertFalse(filtered['items'][0]['known_prewrite_failure'])
+                self.assertEqual(len(list(await db.scalars(select(ProductEditorPublication)))), 7)
+                self.assertFalse(db.new or db.dirty or db.deleted)
 
     async def test_sibling_batch_has_one_write_and_individual_receipts(self):
         async with self.sessions() as db:

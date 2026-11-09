@@ -142,6 +142,7 @@ async def valuation(db, balance, lock=False):
     next_layer = next(iter(sorted((row for row in layers if row.stock_status == "available" and row.quantity_remaining > ZERO),
                                  key=lambda row: (row.physical_received_at, row.id))), None)
     latest_purchase = next(iter(sorted((row for row in layers if row.root_cost_layer_id == row.id
+        and not row.provenance.get("receiving_reversal_id")
         and row.provenance.get("kind") in ("receiving", "documented_receipt")),
         key=lambda row: (row.physical_received_at, row.id), reverse=True)), None)
     result["last_purchase_cost_status"] = (latest_purchase.cost_status if latest_purchase is not None

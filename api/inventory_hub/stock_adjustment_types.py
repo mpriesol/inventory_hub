@@ -16,6 +16,7 @@ class StockAdjustmentPreview(FifoInput):
     source_reference: StrictStr = Field(min_length=1, max_length=255)
     operator_name: StrictStr = Field(min_length=1, max_length=100)
     reason: StrictStr = Field(min_length=1, max_length=500)
+    evidence_kind: Literal["physical_count", "owner_adoption"] = "physical_count"
     unit_cost: StrictStr | None = None
     cost_status: Literal["known", "provisional", "unknown"] = "unknown"
 
@@ -45,3 +46,30 @@ class StockAdjustmentPreview(FifoInput):
 
 class StockAdjustmentApply(FifoCutoverApply):
     pass
+
+
+class StockAdjustmentBatchPreview(FifoInput):
+    entries: list[StockAdjustmentPreview] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def distinct_entries(self):
+        ids = [entry.request_id for entry in self.entries]
+        scopes = [(entry.warehouse_code, entry.sku.casefold()) for entry in self.entries]
+        if len(set(ids)) != len(ids) or len(set(scopes)) != len(scopes):
+            raise ValueError("One request and product per warehouse is allowed in a batch")
+        return self
+
+
+class StockAdjustmentBatchEntry(StockAdjustmentApply):
+    request_id: UUID
+
+
+class StockAdjustmentBatchApply(FifoInput):
+    entries: list[StockAdjustmentBatchEntry] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def distinct_requests(self):
+        ids = [entry.request_id for entry in self.entries]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Each request may appear only once")
+        return self

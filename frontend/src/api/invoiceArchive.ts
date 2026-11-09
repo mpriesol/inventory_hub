@@ -27,6 +27,9 @@ export interface ArchivedInvoice {
   payment_status: InvoicePaymentStatus; receiving_status: string; is_overdue: boolean;
   days_until_due: number | null; is_parsed: boolean; created_at: string;
   finance?: InvoiceFinance;
+  processing_status?: 'unprocessed' | 'processed_without_stock';
+  processing_revision?: number;
+  archived_at?: string | null;
 }
 export interface ArchivedInvoiceLine {
   id: number; line_number: number; ean: string | null; supplier_sku: string | null;
@@ -41,6 +44,7 @@ export interface ArchivedInvoiceDetail extends ArchivedInvoice {
   paid_at: string | null; paid_amount: InvoiceAmount | null; parse_error: string | null;
   receiving_session_id: number | null; receiving_invoice_number: string | null;
   notes: string | null; updated_at: string | null; lines: ArchivedInvoiceLine[];
+  processing?: InvoiceProcessingState;
 }
 export interface InvoiceArchiveFilters {
   direction: InvoiceDirection; f_invoice_number: string; f_supplier: string; supplier_code: string;
@@ -48,6 +52,7 @@ export interface InvoiceArchiveFilters {
   f_amount_min: string; f_amount_max: string; f_currency: string;
   payment_status: string; receiving_status: string; is_overdue: string;
   sort_by: string; sort_order: 'asc' | 'desc';
+  include_archived: string;
 }
 export interface InvoiceArchivePage {
   items: ArchivedInvoice[]; total: number; page: number; page_size: number; total_pages: number;
@@ -62,11 +67,13 @@ export interface InvoiceArchiveStats {
   totals_by_currency: InvoiceCurrencyTotals[];
   monthly: { month: string; currency: string | null; total_amount: string | null; invoice_count: number; unknown_amount_count: number }[];
   aging: { bucket: 'not_due' | '1_30' | '31_60' | '61_90' | 'over_90' | 'unknown_due'; currency: string | null; outstanding_amount: string; invoice_count: number }[];
+  include_archived?: boolean;
 }
 export const invoiceArchiveDefaults: InvoiceArchiveFilters = {
   direction: 'purchase', f_invoice_number: '', f_supplier: '', supplier_code: '', date_from: '', date_to: '',
   due_from: '', due_to: '', f_amount_min: '', f_amount_max: '', f_currency: '',
   payment_status: '', receiving_status: '', is_overdue: '', sort_by: 'invoice_date', sort_order: 'desc',
+  include_archived: '',
 };
 const base = '/api/invoices';
 export function invoiceArchiveQuery(values: Partial<InvoiceArchiveFilters> & { page?: number; page_size?: number }) {
@@ -77,7 +84,8 @@ export function invoiceArchiveQuery(values: Partial<InvoiceArchiveFilters> & { p
 export const getInvoiceArchive = (filters: InvoiceArchiveFilters, page: number, signal?: AbortSignal) =>
   hubRequest<InvoiceArchivePage>(`${base}?${invoiceArchiveQuery({ ...filters, page, page_size: 25 })}`, undefined, signal);
 export const getArchivedInvoice = (id: number, signal?: AbortSignal) => hubRequest<ArchivedInvoiceDetail>(`${base}/${id}`, undefined, signal);
-export const getInvoiceArchiveStats = (direction: InvoiceDirection, signal?: AbortSignal) => hubRequest<InvoiceArchiveStats>(`${base}/stats?direction=${direction}`, undefined, signal);
+export const getInvoiceArchiveStats = (direction: InvoiceDirection, signal?: AbortSignal, includeArchived = false) =>
+  hubRequest<InvoiceArchiveStats>(`${base}/stats?direction=${direction}${includeArchived ? '&include_archived=true' : ''}`, undefined, signal);
 export const getArchiveShops = (signal?: AbortSignal) => hubRequest<{ shops: { code: string; name: string }[] }>('/api/product-editor/options', undefined, signal);
 export const uploadArchivedInvoice = (body: FormData) => hubUpload<{ id: number; invoice_number: string | null }>(`${base}/upload`, body);
 export async function getArchiveSuppliers(signal?: AbortSignal): Promise<{ code: string; name: string }[]> {
@@ -109,6 +117,33 @@ export interface InvoicePaymentResult { invoice_id: number; request_id: string; 
 export const addInvoicePayment = (id: number, body: InvoicePaymentRequest) => hubRequest<InvoicePaymentResult>(`${base}/${id}/payments`, body);
 export const reverseInvoicePayment = (id: number, paymentId: number, body: InvoiceReversalRequest) => hubRequest<InvoicePaymentResult>(`${base}/${id}/payments/${paymentId}/reverse`, body);
 export const getInvoicePaymentOperation = (id: number, requestId: string) => hubRequest<InvoicePaymentResult>(`${base}/${id}/payment-operations/${encodeURIComponent(requestId)}`);
+
+export type InvoiceProcessingAction = 'process_without_stock' | 'reopen' | 'archive' | 'restore';
+export interface InvoiceProcessingSnapshot {
+  revision: number; status: 'unprocessed' | 'processed_without_stock' | 'receiving' | 'received';
+  manual_status: 'unprocessed' | 'processed_without_stock'; archived: boolean; archived_at: string | null;
+  receipts: { id: number; invoice_number: string; status: string; archived: boolean; received: boolean; reversed: boolean; posting_revision: number }[];
+  stock_effect: false; payment_effect: false;
+}
+export interface InvoiceProcessingState extends InvoiceProcessingSnapshot {
+  allowed_actions: InvoiceProcessingAction[];
+  action_blockers: Partial<Record<InvoiceProcessingAction, string[]>>;
+  history: { request_id: string; revision: number; action: InvoiceProcessingAction; note: string; actor: string;
+    before_data: InvoiceProcessingSnapshot; after_data: InvoiceProcessingSnapshot; created_at: string }[];
+}
+export interface InvoiceProcessingPreviewRequest { action: InvoiceProcessingAction; expected_revision: number; note: string }
+export interface InvoiceProcessingPreview {
+  invoice_id: number; invoice_number: string | null; action: InvoiceProcessingAction; note: string; preview_hash: string;
+  before: InvoiceProcessingSnapshot; after: InvoiceProcessingSnapshot; stock_effect: false; payment_effect: false;
+}
+export interface InvoiceProcessingApplyRequest extends InvoiceProcessingPreviewRequest { request_id: string; preview_hash: string; confirmed: true }
+export interface InvoiceProcessingResult {
+  invoice_id: number; request_id: string; action: InvoiceProcessingAction; processing_revision: number;
+  processing: InvoiceProcessingSnapshot; stock_effect: false; payment_effect: false;
+}
+export const previewInvoiceProcessing = (id: number, body: InvoiceProcessingPreviewRequest) => hubRequest<InvoiceProcessingPreview>(`${base}/${id}/processing/preview`, body);
+export const applyInvoiceProcessing = (id: number, body: InvoiceProcessingApplyRequest) => hubRequest<InvoiceProcessingResult>(`${base}/${id}/processing/apply`, body);
+export const getInvoiceProcessingOperation = (id: number, requestId: string) => hubRequest<InvoiceProcessingResult>(`${base}/${id}/processing-operations/${encodeURIComponent(requestId)}`);
 
 /** Download through the same credential/session boundary as JSON calls. */
 export async function downloadInvoiceArchive(ids: number[] | number): Promise<void> {

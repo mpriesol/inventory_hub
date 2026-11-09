@@ -490,13 +490,22 @@ async def reconcile_supplier(db, payload, *, source_keys=None):
     if not isinstance(payload, InvoiceReconcileInput):
         payload = InvoiceReconcileInput.model_validate(payload)
     supplier = await resolve_supplier(db, payload.supplier_code)
+    from inventory_hub.services.receiving_source import lock_supplier
+    await lock_supplier(db, supplier.id)
     entries = _index_entries(Path(settings.INVENTORY_DATA_ROOT), supplier.code)
     if source_keys is not None:
         entries = [(key, entry) for key, entry in entries if key in source_keys]
+    excluded = set((await db.execute(text('''SELECT source_key FROM (
+        SELECT DISTINCT ON (source_key) source_key,action FROM invoice_source_archive_events
+        WHERE supplier_id=:supplier ORDER BY source_key,created_at DESC,id DESC
+        ) latest WHERE action='archive' '''), {'supplier': supplier.id})).scalars().all())
+    archived_skipped = sum(key in excluded for key, _entry in entries)
+    entries = [(key, entry) for key, entry in entries if key not in excluded]
     selected = [(key, entry) for key, entry in entries if payload.after_key is None or key > payload.after_key]
     batch = selected[:payload.limit]
     report = {'supplier_code': supplier.code, 'scanned': len(batch), 'created': 0, 'existing': 0,
-              'conflicts': [], 'next_after_key': batch[-1][0] if len(selected) > len(batch) else None}
+              'conflicts': [], 'archived_skipped': archived_skipped,
+              'next_after_key': batch[-1][0] if len(selected) > len(batch) else None}
     for key, candidates in batch:
         try:
             metadata, lines, files, evidence = _indexed_candidates(

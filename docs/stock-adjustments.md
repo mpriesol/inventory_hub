@@ -22,3 +22,29 @@ Ak sa sklad po náhľade zmení, zaúčtovanie sa odmietne a treba nový náhľa
 - Tento postup neodosiela požiadavky do Upgates. Samostatne aktivovaný pravidelný prenos zahrnie nový lokálny stav pri ďalšom prechode.
 
 Pri návrate aplikácie sa tabuľka ani pohyby nemažú. Použi kompatibilný kód podporujúci nákupné vrstvy a údržbové uzávery; chybu oprav doprednou zmenou.
+
+## Jednorazové prevzatie existujúcich zásob
+
+Vlastník 9. 11. 2026 rozhodol prevziať existujúce vlastné zásoby ako prevádzkový
+počiatočný stav a neskôr ich opravovať inventúrou. Výslovný vstup
+`evidence_kind: "owner_adoption"` používa rovnaký náhľad, skladové zámky,
+nemenné opravné pohyby a FIFO. Predvolený vstup zostáva `physical_count`.
+Prevzatie vyžaduje zdrojovú referenciu, čas pozorovania v poli `counted_at`,
+obsluhu a dôvod; nie je tvrdením, že kusy niekto fyzicky spočítal. Nový register
+má `source_type: stock_adoption`, výsledok a nová FIFO vrstva nesú tento pôvod.
+Neznáma cena zostáva `NULL`. Nula musí byť výslovne uvedená a potvrdená.
+
+Tento vstup nevytvára trvalý osobitný skladový režim. Ďalšie príjmy a inventúry
+pokračujú od prevzatého množstva. Už potvrdené položky sa korigujú rozdielom;
+staré faktúry ani príjemky sa znovu neprehrávajú. Výber množstva a prípadný
+konflikt zdrojov musí byť vysvetlený v podklade konkrétnej operácie. Samotný
+import alebo migrácia SQL žiadne zásoby nepotvrdí.
+
+Operátorské `POST /stock-adjustments/batch-preview` a `batch-apply` prijímajú
+`entries` s najviac 100 bežnými požiadavkami. Každá má svoje pôvodné UUID,
+náhľad a výsledok. Náhľad nemení sklad. Zaúčtovanie potvrdzuje položky postupne
+v samostatných transakciách a pri známej chybe zastaví ďalšie položky; odpoveď
+rozlíši `completed`, `blocked` a `not_attempted`. Dávka nie je jedna spoločná
+transakcia. Pri strate odpovede treba cez `GET /stock-adjustments/{uuid}`
+obnoviť výsledok každej pôvodnej položky. Nevytvárať náhradné UUID a nepredpokladať,
+že celá dávka zlyhala. Opakovanie dokončeného UUID nepridá ďalšie kusy.

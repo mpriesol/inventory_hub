@@ -28,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from inventory_hub.database import get_session
 from inventory_hub.services import invoice_finance as finance
+from inventory_hub.services import invoice_processing as processing
+from inventory_hub.invoice_processing_types import InvoiceProcessingApply, InvoiceProcessingPreview
 
 class InvoiceRoute(APIRoute):
     def get_route_handler(self):
@@ -254,6 +256,7 @@ async def upload_invoice(
 @router.get("")
 async def list_invoices(
     direction: Literal["purchase", "sale"] = Query("purchase"),
+    include_archived: bool = Query(False),
     # Filter row parameters
     f_invoice_number: Optional[str] = Query(None, description="Invoice number (partial match)"),
     f_supplier: Optional[str] = Query(None, description="Supplier/shop name or code (partial match)"),
@@ -281,6 +284,8 @@ async def list_invoices(
     """List all invoices with server-side filtering."""
     # Build WHERE conditions
     conditions = ["ui.direction = :direction"]
+    if include_archived is not True:
+        conditions.append("ui.archived_at IS NULL")
     params = {"direction": direction}
     
     if f_invoice_number:
@@ -333,8 +338,10 @@ async def list_invoices(
         params["currency"] = f_currency.upper()
     
     if receiving_status:
-        if receiving_status == "not_started":
-            conditions.append("ui.receiving_session_id IS NULL")
+        if receiving_status == "processed_without_stock":
+            conditions.append("ui.processing_status = 'processed_without_stock'")
+        elif receiving_status == "not_started":
+            conditions.append("ui.receiving_session_id IS NULL AND ui.processing_status = 'unprocessed'")
         else:
             conditions.append("rs.status = :receiving_status")
             params["receiving_status"] = receiving_status
@@ -396,6 +403,7 @@ async def list_invoices(
             s.code as supplier_code,
             s.name as supplier_name,
             ui.direction, ui.document_type, ui.source_kind, ui.payment_revision,
+            ui.processing_status, ui.processing_revision, ui.archived_at,
             sh.code as shop_code, sh.name as shop_name,
             ui.original_filename,
             ui.stored_filename,
@@ -459,6 +467,9 @@ async def list_invoices(
             "document_type": row.document_type,
             "source_kind": row.source_kind,
             "payment_revision": row.payment_revision,
+            "processing_status": row.processing_status,
+            "processing_revision": row.processing_revision,
+            "archived_at": row.archived_at.isoformat() if row.archived_at else None,
             "finance": finances[row.id],
             "original_filename": row.original_filename,
             "stored_filename": row.stored_filename,
@@ -502,10 +513,12 @@ async def list_invoices(
 
 
 @router.get("/stats")
-async def get_invoice_stats(direction: Literal["purchase", "sale"] = Query("purchase"), db: AsyncSession = Depends(get_session)):
+async def get_invoice_stats(direction: Literal["purchase", "sale"] = Query("purchase"),
+                            include_archived: bool = Query(False), db: AsyncSession = Depends(get_session)):
     """Get overall invoice statistics."""
-    rows = await finance.financial_rows(db, conditions="ui.direction=:direction", params={"direction": direction})
-    return {"direction": direction, **finance.summarize(rows)}
+    conditions = "ui.direction=:direction" + ("" if include_archived is True else " AND ui.archived_at IS NULL")
+    rows = await finance.financial_rows(db, conditions=conditions, params={"direction": direction})
+    return {"direction": direction, "include_archived": include_archived is True, **finance.summarize(rows)}
 
 
 @router.get("/{invoice_id}")
@@ -595,6 +608,10 @@ async def get_invoice_detail(invoice_id: int, db: AsyncSession = Depends(get_ses
         "document_type": row.document_type,
         "payment_revision": row.payment_revision,
         "finance": financial,
+        "processing_revision": row.processing_revision,
+        "processing_status": row.processing_status,
+        "archived_at": row.archived_at.isoformat() if row.archived_at else None,
+        "processing": await processing.detail(db, row._mapping),
         "original_filename": row.original_filename,
         "stored_filename": row.stored_filename,
         "file_path": row.file_path,
@@ -692,6 +709,36 @@ async def invoice_payment_result(invoice_id: int, request_id: UUID, db: AsyncSes
     return await _finance_call(db, finance.operation_result(db, invoice_id, request_id))
 
 
+async def _processing_call(db, operation, *, commit=False):
+    try:
+        result = await operation
+        if commit:
+            await db.commit()
+        return result
+    except processing.InvoiceProcessingError as error:
+        await db.rollback()
+        raise HTTPException(error.status, detail={"code": error.code,
+            "known_unapplied": error.code != 'invoice_processing_request_conflict'},
+            headers={"Cache-Control": "no-store"}) from None
+
+
+@router.post("/{invoice_id}/processing/preview")
+async def preview_invoice_processing(invoice_id: int, payload: InvoiceProcessingPreview,
+                                     db: AsyncSession = Depends(get_session)):
+    return await _processing_call(db, processing.preview(db, invoice_id, payload))
+
+
+@router.post("/{invoice_id}/processing/apply")
+async def apply_invoice_processing(invoice_id: int, payload: InvoiceProcessingApply, request: Request,
+                                   db: AsyncSession = Depends(get_session)):
+    return await _processing_call(db, processing.apply(db, invoice_id, payload, actor=_actor(request)), commit=True)
+
+
+@router.get("/{invoice_id}/processing-operations/{request_id}")
+async def invoice_processing_result(invoice_id: int, request_id: UUID, db: AsyncSession = Depends(get_session)):
+    return await _processing_call(db, processing.operation_result(db, invoice_id, request_id))
+
+
 @router.delete("/{invoice_id}")
 async def delete_invoice(invoice_id: int, delete_file: bool = Query(False), db: AsyncSession = Depends(get_session)):
     """Delete invoice record (optionally with file)."""
@@ -701,6 +748,8 @@ async def delete_invoice(invoice_id: int, delete_file: bool = Query(False), db: 
     
     if not row:
         raise HTTPException(404, "Invoice not found")
+    if await db.scalar(text("SELECT request_id FROM invoice_processing_operations WHERE invoice_id=:id LIMIT 1"), {"id": invoice_id}):
+        raise HTTPException(409, detail={"code": "invoice_has_processing_history", "known_unapplied": True})
     if await db.scalar(text("SELECT id FROM invoice_payments WHERE invoice_id=:id LIMIT 1"), {"id": invoice_id}):
         raise HTTPException(409, detail={"code": "invoice_has_payment_history", "known_unapplied": True})
     if await db.scalar(text("SELECT id FROM invoice_files WHERE invoice_id=:id LIMIT 1"), {"id": invoice_id}):

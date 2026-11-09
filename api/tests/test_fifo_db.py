@@ -56,6 +56,8 @@ class FifoDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(migrations), 1, "Exactly one FIFO migration is expected")
             await connection.execute(migrations[0].read_text())
             await apply_current_core_schema(connection)
+            for name in ("003_uploaded_invoices.sql", "033_invoice_archive.sql", "051_invoice_processing.sql", "052_receiving_operations.sql"):
+                await connection.execute((sql_root / name).read_text())
         finally:
             await connection.close()
         self.engine = create_async_engine(TEST_URL.replace("postgresql://", "postgresql+asyncpg://", 1),

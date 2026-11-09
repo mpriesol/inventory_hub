@@ -443,6 +443,7 @@ async def revise_cost(db, payload):
         latest = await db.scalar(select(FifoLayer.id).where(
             FifoLayer.product_id == root.product_id, FifoLayer.warehouse_id == root.warehouse_id,
             FifoLayer.root_cost_layer_id == FifoLayer.id,
+            FifoLayer.provenance["receiving_reversal_id"].astext.is_(None),
             FifoLayer.provenance["kind"].astext.in_(["receiving", "documented_receipt"]))
             .order_by(FifoLayer.physical_received_at.desc(), FifoLayer.id.desc()).limit(1))
         purchase_balance = balances[root.warehouse_id]

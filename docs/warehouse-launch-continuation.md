@@ -128,3 +128,4 @@ OVERVIEW.md and AGENTS.md integration. Invoice agent coordinates both locale fil
 
 - 2026-11-09: main inspected at the base commit above; clean local feature branch
   created. Implementation assigned. No production data writes by this work.
+

@@ -53,6 +53,8 @@ class InvoiceCalendarError(Exception):
 
 def calendar_conditions(query):
     conditions = ["ui.direction=:direction", "ui.due_date BETWEEN :range_from AND :range_to"]
+    if not query.include_archived:
+        conditions.append("ui.archived_at IS NULL")
     params = {"direction": query.direction, "range_from": query.range_from, "range_to": query.range_to}
     if query.supplier_code:
         conditions.append("s.code=:supplier_code")
@@ -80,8 +82,10 @@ def calendar_conditions(query):
         conditions.append("ui.currency=:currency")
         params["currency"] = query.f_currency.upper()
     if query.receiving_status:
-        if query.receiving_status == "not_started":
-            conditions.append("ui.receiving_session_id IS NULL")
+        if query.receiving_status == "processed_without_stock":
+            conditions.append("ui.processing_status='processed_without_stock'")
+        elif query.receiving_status == "not_started":
+            conditions.append("ui.receiving_session_id IS NULL AND ui.processing_status='unprocessed'")
         else:
             conditions.append("rs.status=:receiving_status")
             params["receiving_status"] = query.receiving_status

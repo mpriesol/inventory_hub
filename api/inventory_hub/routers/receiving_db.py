@@ -39,6 +39,8 @@ from inventory_hub.services.stock_balances import lock_stock_balances
 from inventory_hub.services import fifo
 from inventory_hub.services import stock_tracking
 from inventory_hub.services import receiving_source
+from inventory_hub.services import receiving_operations
+from inventory_hub.receiving_operation_types import ReceivingOperationPreview, ReceivingOperationApply
 from inventory_hub.services.item_units import receipt_values, validate_stock_quantity, ItemUnitError
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
 from inventory_hub.config_io import load_supplier as load_supplier_config
@@ -182,6 +184,7 @@ class AcceptAllRequest(BaseModel):
 
 class FinalizeRequest(BaseModel):
     force: bool = False
+    expected_posting_revision: Optional[int] = Field(default=None, ge=0)
 
 
 class PrepareProductsRequest(BaseModel):
@@ -303,6 +306,11 @@ async def _get_supplier(db: AsyncSession, supplier_code: str) -> Supplier:
 async def _get_session_for_supplier(
     db: AsyncSession, supplier_code: str, session_id: int, *, lock: bool = False
 ) -> ReceivingSession:
+    if lock:
+        # Invoice processing takes the same supplier lock before receipt rows.
+        # Keep this order for scanning, finalization and recovery alike.
+        supplier = await _get_supplier(db, supplier_code)
+        await receiving_source.lock_supplier(db, supplier.id)
     stmt = (
         select(ReceivingSession)
         .options(selectinload(ReceivingSession.lines).selectinload(ReceivingLine.product))
@@ -325,6 +333,8 @@ ACTIVE_STATUSES = (ReceivingStatus.new, ReceivingStatus.in_progress, ReceivingSt
 
 
 def _require_mutable_session(session: ReceivingSession) -> None:
+    if receiving_operations.archived(session):
+        raise HTTPException(409, detail={"code": "receiving_archived"})
     if session.status == ReceivingStatus.paused:
         raise HTTPException(400, detail="Session is paused — resume it first")
     if session.status not in (ReceivingStatus.new, ReceivingStatus.in_progress):
@@ -337,6 +347,14 @@ def _request_actor(request: Optional[Request], fallback: str) -> str:
     if user is not None:
         return f"user:{user['id']}" if user.get("id") is not None else "operator-token"
     return fallback  # Internal service calls preserve their existing attribution.
+
+
+async def _require_invoice_receiving(db, supplier_id, invoice_number, session_id=None):
+    from inventory_hub.services.invoice_processing import assert_receiving_allowed, InvoiceProcessingError
+    try:
+        await assert_receiving_allowed(db, supplier_id, invoice_number, session_id)
+    except InvoiceProcessingError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
 
 
 def _receiving_identity(supplier: Supplier, line: ReceivingLine, prefix: str) -> RemoteIdentity:
@@ -513,7 +531,7 @@ async def _write_stock_for_line(
         new_avg = Decimal(projected["avg_cost"]) if projected["avg_cost"] is not None else None
     now = datetime.now(timezone.utc)
     movement = StockMovement(
-        idempotency_key=f"receiving:{session.id}:{line.id}",
+        idempotency_key=receiving_operations.movement_key(session, line.id),
         product_id=product.id,
         warehouse_id=session.warehouse_id,
         movement_type=MovementType.RECEIVING_IN,
@@ -579,6 +597,7 @@ async def _finalize_result(
         "invoice_number": session.invoice_number,
         "invoice_no": session.invoice_number,
         "session_id": session.id,
+        "posting_revision": receiving_operations.posting_revision(session),
         "completed_at": session.finished_at.isoformat() if session.finished_at else None,
         "stats": stats,
         "total_ordered": float(sum((ln.ordered_qty for ln in lines), Decimal("0"))),
@@ -685,6 +704,7 @@ async def create_session(
         await receiving_source.lock_supplier(db, supplier.id)
     except receiving_source.ReceivingSourceError as error:
         raise HTTPException(409, detail=error.detail) from None
+    await _require_invoice_receiving(db, supplier.id, invoice_no)
 
     # Warehouse
     if request.warehouse_code:
@@ -899,6 +919,9 @@ async def get_session_summary(
         "currency": session.invoice_currency,
         "warehouse": {"id": session.warehouse_id, "code": session.warehouse.code, "name": session.warehouse.name},
         "status": session.status.value,
+        "posting_revision": receiving_operations.posting_revision(session),
+        "archived": receiving_operations.archived(session),
+        "last_operation": (session.session_data or {}).get("receiving_last_operation"),
         "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "summary": _summary_counts(session, unexpected),
     }
@@ -1066,6 +1089,12 @@ async def finalize_session(
     """
     session = await _get_session_for_supplier(db, supplier_code, session_id, lock=True)
 
+    revision = receiving_operations.posting_revision(session)
+    if (request.expected_posting_revision is not None and request.expected_posting_revision != revision
+            or revision > 0 and request.expected_posting_revision is None):
+        raise HTTPException(409, detail={"code": "receiving_posting_revision_changed"})
+    if receiving_operations.archived(session):
+        raise HTTPException(409, detail={"code": "receiving_archived"})
     if session.status == ReceivingStatus.completed:
         result = (session.session_data or {}).get("finalize_result")
         if not result:
@@ -1079,7 +1108,7 @@ async def finalize_session(
             skipped = [
                 {"line_number": line.line_number, "reason": "Historical completed line has no receiving movement"}
                 for line in session.lines
-                if line.received_qty > 0 and f"receiving:{session.id}:{line.id}" not in keys
+                if line.received_qty > 0 and receiving_operations.movement_key(session, line.id) not in keys
             ]
             result = await _finalize_result(db, session, len(movements), None, skipped)
             session.session_data = {**(session.session_data or {}), "finalize_result": result}
@@ -1095,6 +1124,7 @@ async def finalize_session(
             400,
             detail=f"{incomplete} lines not fully received. Use force=true to finalize anyway.",
         )
+    await _require_invoice_receiving(db, session.supplier_id, session.invoice_number, session.id)
 
     # Validate the entire receipt before resolving products or writing stock.
     # force only allows quantities not received; it never overrides identity
@@ -1161,7 +1191,8 @@ async def finalize_session(
     session.status = ReceivingStatus.completed
     session.finished_at = datetime.now(timezone.utc)
     result = await _finalize_result(db, session, len(resolved), products_created, skipped)
-    session.session_data = {**(session.session_data or {}), "finalize_result": result}
+    session.session_data = {**{key: value for key, value in (session.session_data or {}).items()
+                              if key != "receiving_reversed"}, "finalize_result": result}
 
     # The index is outside the DB transaction. Commit first, so a failed
     # ledger write never marks the invoice processed in the filesystem.
@@ -1227,6 +1258,7 @@ async def resume_session(
 
     if session.status != ReceivingStatus.paused:
         raise HTTPException(400, detail=f"Cannot resume session in status {session.status.value}")
+    await _require_invoice_receiving(db, session.supplier_id, session.invoice_number, session.id)
 
     session.status = ReceivingStatus.in_progress
     resumed_at = datetime.utcnow()
@@ -1305,104 +1337,54 @@ async def get_active_session(
 
 
 @router.post("/suppliers/{supplier_code}/invoices/{invoice_no}/reopen")
-async def reopen_invoice(
-    supplier_code: str,
-    invoice_no: str,
-    db: AsyncSession = Depends(get_session),
-):
-    """
-    Mark a processed invoice as not finished so it can be received again.
-
-    - If a completed DB session exists: put it into 'paused' (resumable via
-      the standard resume flow) and mark the invoice index as in_progress
-      with current_session_id. Blocked if the session already wrote stock
-      movements (re-finalizing would double the stock).
-    - If no DB session exists (invoice processed via legacy flow): just flip
-      the invoice index back to 'new' so a fresh session can be created.
-    """
+async def reopen_invoice(supplier_code: str, invoice_no: str, db: AsyncSession = Depends(get_session)):
+    """Old status-only toggles must use the reviewed recovery workflow."""
     supplier = await _get_supplier(db, supplier_code)
+    session_id = await db.scalar(select(ReceivingSession.id).where(
+        ReceivingSession.supplier_id == supplier.id, ReceivingSession.invoice_number == invoice_no))
+    raise HTTPException(409, detail={"code": "receiving_recovery_required", "session_id": session_id})
 
-    stmt = (
-        select(ReceivingSession)
-        .options(selectinload(ReceivingSession.lines))
-        .where(
-            ReceivingSession.supplier_id == supplier.id,
-            ReceivingSession.invoice_number == invoice_no,
-            ReceivingSession.status == ReceivingStatus.completed,
-        )
-        .order_by(ReceivingSession.finished_at.desc())
-        .limit(1)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
 
-    if session:
-        movements_cnt = (await db.execute(
-            select(func.count()).where(
-                StockMovement.reference_type == "receiving_session",
-                StockMovement.reference_id == str(session.id),
-            )
-        )).scalar() or 0
-        if movements_cnt:
-            raise HTTPException(
-                409,
-                detail=(
-                    f"Faktúru {invoice_no} nemožno znovu otvoriť — príjem už zapísal "
-                    f"{movements_cnt} skladových pohybov (session {session.id}). "
-                    "Opakované dokončenie by zdvojilo sklad. Ak treba korekciu, "
-                    "použi skladovú úpravu (adjustment), nie reopen."
-                ),
-            )
+async def _operation_call(operation):
+    try:
+        return await operation
+    except (receiving_operations.ReceivingOperationError, fifo.FifoError, StockPublicationHoldError) as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
 
-        session.status = ReceivingStatus.paused
-        session.session_data = {
-            key: value for key, value in (session.session_data or {}).items()
-            if key != "finalize_result"
-        }
-        session.finished_at = None
-        session.paused_at = datetime.utcnow()
 
-        lines = list(session.lines)
-        total_scans = await _count_scans(db, session.id)
-        stats = {
-            "total_lines": len(lines),
-            "received_complete": sum(1 for ln in lines if ln.status == "matched"),
-            "received_partial": sum(1 for ln in lines if ln.status == "partial"),
-            "not_received": sum(1 for ln in lines if ln.status == "pending"),
-            "total_scans": total_scans,
-        }
-        try:
-            _update_invoice_status(supplier_code, invoice_no, "in_progress", {
-                "reopened_at": datetime.utcnow().isoformat(),
-                "processed_at": None,
-                "receiving_stats": None,
-                "current_session_id": str(session.id),
-                "paused_at": session.paused_at.isoformat(),
-                "pause_stats": stats,
-            })
-        except Exception:
-            pass
-        return {
-            "success": True,
-            "session_id": session.id,
-            "message": f"Faktúra {invoice_no} znovu otvorená — pokračuj v príjme (session {session.id}).",
-        }
+@product_router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/operations/preview")
+async def preview_receiving_operation(supplier_code: str, session_id: int,
+    payload: ReceivingOperationPreview, http_request: Request, db: AsyncSession = Depends(get_session)):
+    return await _operation_call(receiving_operations.preview(db, supplier_code, session_id, payload,
+        _request_actor(http_request, "operator")))
 
-    # No DB session — legacy-processed invoice; reset index to 'new'
-    updated = _update_invoice_status(supplier_code, invoice_no, "new", {
-        "reopened_at": datetime.utcnow().isoformat(),
-        "processed_at": None,
-        "receiving_session_id": None,
-        "receiving_stats": None,
-        "current_session_id": None,
-        "paused_at": None,
-        "pause_stats": None,
-    })
-    if not updated:
-        raise HTTPException(404, detail="Invoice not found (no DB session, not in index)")
-    return {"success": True, "message": f"Faktúra {invoice_no} znovu otvorená pre príjem."}
+
+@product_router.get("/suppliers/{supplier_code}/receiving/sessions/{session_id}/operations/{operation_id}")
+async def get_receiving_operation(supplier_code: str, session_id: int, operation_id: UUID,
+                                  db: AsyncSession = Depends(get_session)):
+    return await _operation_call(receiving_operations.get(db, supplier_code, session_id, operation_id))
+
+
+def _sync_receiving_operation(result):
+    """Repairable filesystem projection only; the DB audit is the source of truth."""
+    try:
+        status = "processed" if result["status"] == "completed" else (
+            "in_progress" if result["status"] in ("new", "in_progress", "paused") else "skipped")
+        _update_invoice_status(result["supplier_code"], result["invoice_number"], status, {
+            "receiving_archived": result["archived"], "receiving_session_id": str(result["session_id"]),
+            "current_session_id": str(result["session_id"]) if status == "in_progress" else None,
+            "receiving_operation_id": result["id"], "receiving_operation_reason": result["reason"]})
+    except Exception:
+        logger.warning("Receipt operation %s committed; retry it to repair the invoice index", result["id"], exc_info=True)
+
+
+@product_router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/operations/{operation_id}/apply")
+async def apply_receiving_operation(supplier_code: str, session_id: int, operation_id: UUID,
+    payload: ReceivingOperationApply, http_request: Request, db: AsyncSession = Depends(get_session)):
+    result = await _operation_call(receiving_operations.apply(db, supplier_code, session_id, operation_id, payload,
+        _request_actor(http_request, "operator")))
+    _sync_receiving_operation(result)
+    return result
 
 
 @router.get("/suppliers/{supplier_code}/receiving/sessions")
@@ -1411,6 +1393,7 @@ async def list_sessions(
     status: Optional[str] = None,
     limit: int = Query(default=50, le=100),
     db: AsyncSession = Depends(get_session),
+    include_archived: bool = False,
 ):
     """List receiving sessions for supplier."""
     supplier = await _get_supplier(db, supplier_code)
@@ -1426,6 +1409,8 @@ async def list_sessions(
             stmt = stmt.where(ReceivingSession.status == ReceivingStatus(status))
         except ValueError:
             pass
+    if not include_archived:
+        stmt = stmt.where(ReceivingSession.session_data["receiving_archive"].astext.is_(None))
 
     result = await db.execute(stmt)
     sessions = result.scalars().all()
@@ -1436,6 +1421,8 @@ async def list_sessions(
             "invoice_number": s.invoice_number,
             "invoice_no": s.invoice_number,
             "status": s.status.value,
+            "archived": receiving_operations.archived(s),
+            "posting_revision": receiving_operations.posting_revision(s),
             "total_lines": s.total_lines,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "started_at": s.started_at.isoformat() if s.started_at else None,

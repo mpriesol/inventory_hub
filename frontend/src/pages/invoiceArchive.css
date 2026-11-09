@@ -82,3 +82,7 @@
 .invoice-archive .sort-header span { color: var(--color-text-tertiary); }
 .invoice-archive th[aria-sort=ascending] .sort-header, .invoice-archive th[aria-sort=descending] .sort-header { color: var(--color-accent); }
 @media (max-width: 600px) { .invoice-archive .invoice-dropzone { flex-wrap: wrap; } .invoice-archive .invoice-dropzone > button { width: 100%; } }
+.invoice-archive .invoice-processing-preview { margin-top: 1rem; padding: 1rem; border: 1px solid var(--border-color, #d6dce4); border-radius: .5rem; }
+.invoice-archive .invoice-processing-history { margin-top: 1rem; }
+.invoice-archive .invoice-processing-history summary { cursor: pointer; font-weight: 600; }
+.invoice-archive .invoice-processing-preview dd { overflow-wrap: anywhere; }
