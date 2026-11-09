@@ -108,14 +108,14 @@ The image must still be available from GHCR. The release's image tags, serial
 execution, migration order, phase errors and readiness checks are unchanged.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes thirty-nine upgrade
-modules: `005`–`038`, then `046`–`050`. The `atomer_review_migrate` module
+temporary API container. Its explicit list invokes forty-one upgrade
+modules: `005`–`038`, then `046`–`052`. The `atomer_review_migrate` module
 executes SQL `038`–`045` together in its transaction. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The first failure stops the runner and prevents the service restart. Already
 committed migrations remain applied. No schema SQL is changed by this optimization.
-The image packages all forty-six upgrade SQL files `005`–`050`; the repository
-contains fifty SQL files including the initial `001`–`004` schema. New migrations
+The image packages all forty-eight upgrade SQL files `005`–`052`; the repository
+contains fifty-two SQL files including the initial `001`–`004` schema. New migrations
 require explicit runner and image-packaging updates. Initialization of an empty
 database and backup/recovery are covered by the [setup guide](../api/POSTGRES_SETUP.md).
 The warehouse model changes add `030_shop_identity.sql`, `031_item_units.sql` and

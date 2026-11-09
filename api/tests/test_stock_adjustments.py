@@ -4,7 +4,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 from pydantic import ValidationError
-from inventory_hub.stock_adjustment_types import StockAdjustmentPreview, StockAdjustmentApply
+from inventory_hub.stock_adjustment_types import StockAdjustmentPreview, StockAdjustmentApply, StockAdjustmentBatchPreview
 from inventory_hub.services.stock_adjustments import validate_count
 from inventory_hub.services.fifo import FifoError
 
@@ -52,3 +52,11 @@ class StockAdjustmentInputTests(unittest.TestCase):
         with self.assertRaisesRegex(FifoError, "no_change"):
             validate_count(SimpleNamespace(qty_on_hand=Decimal(3), qty_reserved=Decimal(0), qty_quarantined=Decimal(0)),
                            Decimal(3), initial_zero=True)
+
+    def test_batch_is_bounded_and_cannot_repeat_a_product_or_uuid(self):
+        first = self.data(evidence_kind="owner_adoption")
+        for entries in [[], [first, self.data()], [first, {**first, "sku": "SKU-2"}],
+                        [self.data(sku=f"SKU-{index}") for index in range(101)]]:
+            with self.subTest(size=len(entries)), self.assertRaises(ValidationError):
+                StockAdjustmentBatchPreview(entries=entries)
+        self.assertEqual(StockAdjustmentBatchPreview(entries=[first]).entries[0].evidence_kind, "owner_adoption")

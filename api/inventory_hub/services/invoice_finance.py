@@ -182,6 +182,8 @@ async def update_metadata(db, invoice_id, changes, expected_revision):
     if found is None:
         raise FinanceError("invoice_not_found", 404)
     row = dict(found)
+    if row.get("archived_at") is not None:
+        raise FinanceError("invoice_archived")
     if row["payment_revision"] != expected_revision:
         raise FinanceError("invoice_payment_revision_changed")
     changed_fields = {key for key, value in changes.items() if row.get(key) != value}
@@ -234,6 +236,8 @@ async def apply_payment(db, invoice_id, request, *, actor, reverses_payment_id=N
     if found is None:
         raise FinanceError("invoice_not_found", 404)
     row = dict(found)
+    if row.get("archived_at") is not None:
+        raise FinanceError("invoice_archived")
     if row["payment_revision"] != request.expected_revision:
         raise FinanceError("invoice_payment_revision_changed")
     currency = row.get("currency")

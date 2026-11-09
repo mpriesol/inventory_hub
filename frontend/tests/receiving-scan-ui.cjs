@@ -45,6 +45,7 @@ const summary = () => ({ matched: received >= 20 ? 1 : 0, partial: received > 0 
 global.fetch = async (path, options = {}) => {
   calls.push({ path, method: options.method || 'GET' });
   assert(path.startsWith('/api/suppliers/fixture/'), 'Only local receiving APIs are used');
+  if (path.endsWith('/operations')) return response({ session_id: path.split('/').at(-2), limit: 50, operations: [] });
   if (/\/products(?:\/(?:reconcile|prepare))?$/.test(path)) {
     productRequests.push({ path, method: options.method, headers: options.headers, credentials: options.credentials });
     // Mirror the cookie-authenticated API boundary: a missing CSRF header
@@ -414,7 +415,7 @@ async function mountReceipt(status = 'in_progress') {
   await act(async () => { find('receiving-finalize').click(); await tick(); });
   assert(find('receiving-finalize-incomplete'), 'A complete receipt also shows the impact before posting');
   await act(async () => { find('receiving-finalize-incomplete').click(); await tick(); });
-  assert.deepEqual(finalizations.at(-1), { force: false, received: 20 }, 'Fully received invoice uses normal finalization');
+  assert.deepEqual(finalizations.at(-1), { force: false, received: 20, expected_posting_revision: 0 }, 'Fully received invoice finalizes the reviewed posting cycle');
   assert.equal(find('receiving-finalize'), null, 'A successful finalization immediately switches the receipt to read-only');
   assert(find('receiving-session-status')); assert.equal(find('receiving-scan-code'), null);
   await mountReceipt('completed');
@@ -437,7 +438,7 @@ async function mountReceipt(status = 'in_progress') {
     await act(async () => { find('receiving-finalize').click(); await tick(); });
     await act(async () => { const finish = find('receiving-finalize-incomplete'); finish.click(); finish.click(); await tick(); });
     assert.equal(finalizations.length, beforeFinalizations + 1, 'Double confirmation sends one finalization');
-    assert.deepEqual(finalizations.at(-1), { force: true, received: historicalQuantity }, 'Historical closure submits only the confirmed received quantity');
+    assert.deepEqual(finalizations.at(-1), { force: true, received: historicalQuantity, expected_posting_revision: 0 }, 'Historical closure submits only the confirmed received quantity');
     assert.equal(received, historicalQuantity, 'Closure does not pretend unreceived goods were delivered');
     assert.equal(find('receiving-finalize'), null);
     assert(find('receiving-session-status'));

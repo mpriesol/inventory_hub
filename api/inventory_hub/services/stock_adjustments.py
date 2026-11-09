@@ -46,6 +46,9 @@ async def initial_zero_count(db, product, warehouse, balance, snapshot, counted)
 
 async def preview(db, payload):
     raw = payload.model_dump(mode="json")
+    # Preserve hashes of previews made before evidence provenance was explicit.
+    if raw.get("evidence_kind") == "physical_count":
+        raw.pop("evidence_kind")
     request_hash = fifo.digest(raw)
     # Serialize UUID recovery even before the first balance exists. This lock
     # precedes warehouse/product locks and is never held across external I/O.
@@ -127,7 +130,10 @@ async def apply(db, identifier, payload):
     if was_missing and product.id not in created_ids:
         raise fifo.FifoError("fifo_preview_stale")
     balance = balances[product.id]
-    await stock_tracking.activate(db, balance, source_type="stock_adjustment", source_id=batch.id,
+    evidence_kind = data.get("evidence_kind", "physical_count")
+    await stock_tracking.activate(db, balance,
+                                 source_type="stock_adoption" if evidence_kind == "owner_adoption" else "stock_adjustment",
+                                 source_id=batch.id,
                                  operator_name=data["operator_name"])
     if initial_zero:
         # A confirmed absence is evidence, not a receipt or a zero-cost product.
@@ -143,6 +149,7 @@ async def apply(db, identifier, payload):
         result = {"adjustment_id": batch.id, "movement_id": None, "initial_zero_count": True,
             "product_id": product.id, "warehouse_id": warehouse.id, "before_quantity": None,
             "counted_quantity": "0", "delta": "0", "valuation": await fifo.valuation(db, balance),
+            "evidence_kind": evidence_kind,
             "completed_at": fifo.now().isoformat()}
         batch.status, batch.completed_at, batch.result = "completed", fifo.now(), result
         await db.flush()
@@ -167,7 +174,8 @@ async def apply(db, identifier, payload):
         balance.qty_on_hand += delta
         await fifo.add_receipt(db, balance, movement,
             datetime.fromisoformat(data["counted_at"].replace("Z", "+00:00")), cost, data["cost_status"],
-            {"kind": "physical_adjustment", "adjustment_id": batch.id, "source_reference": data["source_reference"],
+            {"kind": "owner_adoption" if evidence_kind == "owner_adoption" else "physical_adjustment",
+             "adjustment_id": batch.id, "source_reference": data["source_reference"],
              "reason": data["reason"], "operator_name": data["operator_name"]})
     else:
         await fifo.apply_issue(db, balance, movement, data["issue_plan"]["allocations"])
@@ -175,8 +183,44 @@ async def apply(db, identifier, payload):
     result = {"adjustment_id": batch.id, "movement_id": movement.id, "initial_zero_count": False, "product_id": product.id,
               "warehouse_id": warehouse.id, "before_quantity": data["before_quantity"],
               "counted_quantity": data["counted_quantity"], "delta": fifo.number(delta),
+              "evidence_kind": evidence_kind,
               "valuation": await fifo.valuation(db, balance), "completed_at": fifo.now().isoformat()}
     batch.status, batch.completed_at, batch.result = "completed", fifo.now(), result
     await db.flush()
     await db.commit()
     return result
+
+
+async def preview_batch(db, payload):
+    """Bounded orchestration of existing durable UUID previews, without stock writes."""
+    items = []
+    for entry in payload.entries:
+        try:
+            prepared = await preview(db, entry)
+            items.append({"request_id": str(entry.request_id), "status": prepared["status"], "preview": prepared})
+        except fifo.FifoError as error:
+            await db.rollback()
+            items.append({"request_id": str(entry.request_id), "status": "blocked", "error": error.code})
+    return {"ready": all(item["status"] != "blocked" for item in items), "items": items}
+
+
+async def apply_batch(db, payload):
+    """Each entry commits atomically; stop at a known rejection, retain prior results.
+
+    A connection loss has an unknown outcome: the caller recovers every original
+    UUID through get(), never creates a replacement batch or request identifier.
+    """
+    items, blocked = [], False
+    for entry in payload.entries:
+        identifier = str(entry.request_id)
+        if blocked:
+            items.append({"request_id": identifier, "status": "not_attempted"})
+            continue
+        try:
+            result = await apply(db, identifier, entry)
+            items.append({"request_id": identifier, "status": "completed", "result": result})
+        except fifo.FifoError as error:
+            await db.rollback()
+            blocked = True
+            items.append({"request_id": identifier, "status": "blocked", "error": error.code})
+    return {"completed": not blocked, "items": items}

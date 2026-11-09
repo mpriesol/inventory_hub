@@ -184,6 +184,8 @@ class ReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((root / "014_supplier_availability.sql").read_text())
             await connection.execute((root / "029_sku_policy.sql").read_text())
             await apply_current_core_schema(connection)
+            for name in ("003_uploaded_invoices.sql", "033_invoice_archive.sql", "051_invoice_processing.sql", "052_receiving_operations.sql"):
+                await connection.execute((root / name).read_text())
         finally:
             await connection.close()
         self.engine = create_async_engine(

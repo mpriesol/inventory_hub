@@ -28,3 +28,12 @@ API filtra skladu: `stock_scope=all|confirmed|unconfirmed|in_stock`. API filtra 
 Migrácia 019 je aditívna, opakovateľná, zabalená v API obraze a vykonaná po 018 pred reštartom API. Nezapína skladovú autoritu ani žiadny externý zápis. Obnova sa rieši kompatibilnou doprednou opravou; návrat k starému kódu bez registra by znovu ukazoval/importoval neoverené zásoby. Nemažte register, historické pohyby ani pôvodné FIFO vrstvy.
 
 Izolované regresné testy pokrývajú prázdny register po migrácii, 100 + nový príjem 3 → 3, potvrdenú nulu, replay starého aj nového príjmu, zachovanie pôvodných vrstiev, blokáciu objednávok/cien/prenosu, filtre a návrat transakcie pri chybe. Výsledok ich behu a nasadenie sa evidujú v PR; samotný dokument nepotvrdzuje stav produkčnej DB.
+
+## Výslovne prevzatý prevádzkový začiatok
+
+Rozhodnutie vlastníka z 9. 11. 2026 povoľuje jednorazové prevzatie existujúcich
+vlastných zásob pred fyzickou inventúrou. Používa [zdokumentovanú opravu množstva](stock-adjustments.md#jednorazové-prevzatie-existujúcich-zásob)
+s pôvodom `owner_adoption`; register potom uvádza `stock_adoption`.
+Je to výslovná operácia s konkrétnymi množstvami a auditom, nie automatické
+potvrdzovanie každého importu. Náhľad a história rozlišujú tento podklad od
+fyzického počítania. Neskoršia inventúra zaúčtuje rozdiel k aktuálnemu stavu.

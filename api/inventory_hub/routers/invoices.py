@@ -333,7 +333,7 @@ async def invoices_refresh(supplier: str, months_back: Optional[int] = Query(Non
 # ── Routes: index / reindex ───────────────────────────────────────────────────
 
 @router.get("/suppliers/{supplier}/invoices/index")
-def invoices_index(supplier: str):
+async def invoices_index(supplier: str, include_archived: bool = Query(False)):
     sup = _supplier_root(supplier)
     idx = sup / "invoices" / "index.latest.json"
 
@@ -346,7 +346,7 @@ def invoices_index(supplier: str):
         for it in invoices:
             if isinstance(it, dict) and "rel_path" not in it and "csv_path" in it:
                 it["rel_path"] = it["csv_path"]
-        return {"supplier": supplier, "count": len(invoices), "invoices": invoices}
+        return await _invoice_index_response(supplier, invoices, include_archived is True)
 
     # fallback – build from CSV files, status=new
     csv_dir = sup / "invoices" / "csv"
@@ -365,7 +365,20 @@ def invoices_index(supplier: str):
             "status": "new",
         })
     found.sort(key=lambda x: x.get("number", ""))
-    return {"supplier": supplier, "count": len(found), "invoices": found}
+    return await _invoice_index_response(supplier, found, include_archived is True)
+
+
+async def _invoice_index_response(supplier, entries, include_archived):
+    if settings.USE_POSTGRES:
+        from sqlalchemy.exc import SQLAlchemyError
+        from inventory_hub.database import get_session_context
+        from inventory_hub.services.invoice_processing import project_index
+        try:
+            async with get_session_context() as db:
+                entries = await project_index(db, supplier, entries, include_archived=include_archived)
+        except SQLAlchemyError:
+            raise HTTPException(503, detail={'code': 'invoice_index_state_unavailable'}) from None
+    return {'supplier': supplier, 'count': len(entries), 'invoices': entries}
 
 @router.post("/suppliers/{supplier}/invoices/reindex")
 def invoices_reindex(supplier: str, flatten_to_root: bool = Query(False)):

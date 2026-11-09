@@ -11,6 +11,7 @@ class InvoiceCalendarQuery(BaseModel):
     range_from: date
     range_to: date
     direction: Literal["purchase", "sale"] = "purchase"
+    include_archived: bool = False
     supplier_code: str | None = Field(default=None, max_length=100)
     f_supplier: str | None = Field(default=None, max_length=255)
     f_invoice_number: str | None = Field(default=None, max_length=255)

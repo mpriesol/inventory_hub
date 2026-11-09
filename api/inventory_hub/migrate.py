@@ -49,6 +49,8 @@ MIGRATIONS = (
     "atomer_catalog_control_migrate", # 048; no campaign lifecycle changes
     "atomer_catalog_job_control_migrate", # 049; no job lifecycle changes
     "atomer_catalog_handoff_migrate", # 050; no job lifecycle changes
+    "invoice_processing_migrate",    # 051; invoice handling/archival, no stock writes
+    "receiving_operation_migrate",   # 052; receipt correction audits, no automatic reset
 )
 
 

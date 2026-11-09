@@ -8,7 +8,7 @@ import {
 import { Button } from '../components/ui/Button.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem, type RefreshResult } from '../api/invoices';
 import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
-import { createReceivingSession, resumeReceiving, reopenInvoice, getActiveSession, getReceivingSummary, lookupReceivingInvoice, type ReceivingInvoiceCandidate } from '../api/receiving';
+import { createReceivingSession, resumeReceiving, getActiveSession, getReceivingSummary, lookupReceivingInvoice, type ReceivingInvoiceCandidate } from '../api/receiving';
 import { API_BASE } from '../api/client';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 import { duplicateReceivingLink, receivingSourceError } from '../features/receiving/sourceErrors';
@@ -23,6 +23,8 @@ interface InvoiceDisplay {
   progress?: string;
   csvPath: string;
   currentSessionId?: string;
+  receivingSessionId?: string;
+  archived?: boolean;
   pausedAt?: string;
   processedAt?: string;
   note?: string;
@@ -86,6 +88,7 @@ export function ReceivingPage() {
   const [error, setError] = useState<string | null>(null);
   const [duplicateLink, setDuplicateLink] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<FilterTab>('new');
+  const [includeArchived, setIncludeArchived] = useState(false);
 
   // Modal pre dokončené faktúry
   const [modalInvoice, setModalInvoice] = useState<InvoiceDisplay | null>(null);
@@ -171,12 +174,14 @@ export function ReceivingPage() {
         date: formatDate(inv.issue_date),
         items: inv.pause_stats?.total_lines || 0,
         total: 'N/A',
-        status: inv.status as 'new' | 'in_progress' | 'processed',
+        status: (inv.receiving_archived || inv.invoice_archived || inv.source_archived ? 'processed' : inv.status) as 'new' | 'in_progress' | 'processed',
         progress: inv.pause_stats
           ? `${inv.pause_stats.received_complete}/${inv.pause_stats.total_lines}`
           : undefined,
         csvPath: inv.csv_path,
         currentSessionId: inv.current_session_id,
+        receivingSessionId: inv.receiving_session_id || inv.current_session_id,
+        archived: !!(inv.receiving_archived || inv.invoice_archived || inv.source_archived),
         pausedAt: inv.paused_at,
         processedAt: (inv as any).processed_at,
         note: (inv as any).note,
@@ -196,7 +201,7 @@ export function ReceivingPage() {
         setLoading(true);
         setError(null);
         setDuplicateLink(null);
-        const data = await getInvoicesIndex(supplier);
+        const data = await getInvoicesIndex(supplier, includeArchived);
         setInvoices(buildDisplayInvoices(data.items || []));
       } catch (err) {
         setError('Nepodarilo sa načítať faktúry');
@@ -205,7 +210,7 @@ export function ReceivingPage() {
       }
     }
     loadInvoices();
-  }, [supplier]);
+  }, [supplier, includeArchived]);
 
   const counts: Record<FilterTab, number> = {
     new: invoices.filter(i => i.status === 'new').length,
@@ -267,7 +272,7 @@ export function ReceivingPage() {
     setDuplicateLink(null);
     setSuccessMessage(null);
     try {
-      const data = await getInvoicesIndex(supplier);
+      const data = await getInvoicesIndex(supplier, includeArchived);
       setInvoices(buildDisplayInvoices(data.items || []));
     } catch (err) {
       setError('Nepodarilo sa obnoviť zoznam');
@@ -491,6 +496,8 @@ export function ReceivingPage() {
           ))}
           {suppliers.length === 0 && <option value="paul-lange">Paul-Lange</option>}
         </select>
+        <label className="text-sm"><input type="checkbox" data-testid="receiving-include-archived" checked={includeArchived}
+          onChange={event => { setIncludeArchived(event.target.checked); if (event.target.checked) setActiveTab('processed'); }} /> {t('receiving.recovery.includeArchived')}</label>
       </div>
 
       {/* Invoices List */}
@@ -591,6 +598,7 @@ export function ReceivingPage() {
                       <div>
                         <div className="font-medium" style={{ color: 'var(--color-text-primary)' }}>
                           {inv.number}
+                          {inv.archived && <span className="text-xs ml-2" data-testid="receiving-archived-badge">{t('receiving.recovery.archived')}</span>}
                         </div>
                         <div className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
                           {inv.date}
@@ -660,18 +668,19 @@ export function ReceivingPage() {
                             size="sm"
                             onClick={async (e) => {
                               e.stopPropagation();
-                              if (!window.confirm(`Znovu otvoriť faktúru ${inv.number} pre príjem?`)) return;
                               try {
-                                const res = await reopenInvoice(supplier, inv.number);
-                                setSuccessMessage(res.message || `Faktúra ${inv.number} znovu otvorená`);
-                                await handleRefreshList();
+                                const known = inv.receivingSessionId;
+                                const session = known || (await getActiveSession(supplier, inv.number, true)).session?.session_id;
+                                if (!session) { setError(t('receiving.recovery.noReceipt')); return; }
+                                navigate(`/receiving/${encodeURIComponent(inv.number)}?supplier=${encodeURIComponent(supplier)}&session=${encodeURIComponent(String(session))}`,
+                                  { state: { supplier, sessionId: String(session) } });
                               } catch (err: any) {
-                                setError(err?.message || 'Nepodarilo sa znovu otvoriť faktúru');
+                                setError(err?.message || t('receiving.recovery.failed'));
                               }
                             }}
                           >
                             <PlayCircle size={14} />
-                            Znovu otvoriť
+                            {t('receiving.recovery.openRecovery')}
                           </Button>
                         </>
                       ) : (

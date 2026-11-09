@@ -27,13 +27,13 @@ Tento prehľad opisuje aktuálnu implementáciu v repozitári. Výsledok konkré
 | Dodávatelia `/suppliers` a katalóg | Konfigurácia, feedy, vyhľadávanie, identita a importné náhľady | [Katalóg](docs/supplier-catalog.md), [dodávateľská identita](docs/supplier-identity.md), [Zookee](docs/zookee.md). Adaptér a podporované polia treba overiť pre konkrétny zdroj. |
 | Mapovanie feedu a `/product-import` | Verzie mapovania, zdrojová analýza, uložená editovateľná príprava, ochrana ručných hodnôt a ciele oboch e-shopov | [Mapovanie](docs/product-feed-mapping.md), [importy](docs/product-imports.md), [dodávateľské metadáta](docs/upgates-supplier-metadata.md). |
 | E-shopy `/shops` | Zoznam, konfigurácia, Upgates import/export a mapovanie | Aktívna stránka je implementovaná; [existujúce väzby](docs/product-links.md) zachovávajú overené natívne identity. |
-| Objednávky `/orders`, `/orders/stock`, `/orders/inbox` | Čítací audit, samostatný zber, náhľad a potvrdené lokálne rezervácie/výdaje | [Postup obsluhy](docs/order-workflows.md), [automatika](docs/order-automation.md), [pravidlá centrálneho skladu](docs/central-stock.md). Automatické spracovanie vyžaduje vlastnú aktiváciu a časovú hranicu. |
-| Dostupnosti `/settings/availability` | Čerstvosť dodávateľských údajov, ručné spustenie, intervaly a pravidelný skladový prenos | [Ovládanie](docs/availability-sync.md), [dodávateľské údaje](docs/supplier-availability.md), [rozdielový prenos](docs/stock-sync.md). Dodávateľská ponuka nie je fyzická zásoba Hubu. |
+| Objednávky `/orders`, `/orders/stock`, `/orders/inbox` | Čítací audit, samostatný zber, náhľad a potvrdené lokálne rezervácie/výdaje | [Postup obsluhy](docs/order-workflows.md), [automatika](docs/order-automation.md), [príprava spustenia a webhookov](docs/order-launch-setup.md), [pravidlá centrálneho skladu](docs/central-stock.md). Automatické spracovanie vyžaduje vlastnú aktiváciu a časovú hranicu. |
+| Dostupnosti `/settings/availability` | Čerstvosť dodávateľských údajov, ručné spustenie, intervaly a pravidelný skladový prenos | [Ovládanie](docs/availability-sync.md), [dodávateľské údaje a stránkovaná diagnostika publikovania](docs/supplier-availability.md), [rozdielový prenos](docs/stock-sync.md). Dodávateľská ponuka nie je fyzická zásoba Hubu. |
 | Údržbová publikácia `/stock/publication` | Výslovná blokácia skladu, porovnanie, jedno odoslanie a riešenie neistého výsledku | [Údržbový postup](docs/stock-publication.md); odlišný od pravidelného rozdielového prenosu. |
 | Ceny `/settings/purchase-costs` | Voliteľný prenos ďalšej FIFO ceny produktu a nákladov vydaných objednávok | [Nákupné ceny](docs/fifo-purchase-costs.md); účtovné tržby a úplná hrubá marža ešte nie sú hotové. |
 | AI `/ai-content`, `/settings/ai-content` | Pravidlá, profily, príprava, kontrola a vybrané obsahové aktualizácie | [AI obsah](docs/ai-content.md); uložený koncept, schválenie a skutočné odoslanie sú odlišné stavy. |
 | Účty `/login`, `/settings/users` | Meno/heslo, trvalá relácia, správca účtov a kompatibilný operátorský token | [Účty](docs/user-accounts.md), [tajné konfigurácie](docs/configuration-secrets.md). Všeobecné prevádzkové RBAC zostáva plánované. |
-| Atomer `/migration/atomer`, `/migration/atomer-progress` | Príprava obsahu/katalógu, pôvodné a aktuálne identity, review, pozastavenie a riadené odovzdanie | [Obsah](docs/atomer-content-import.md), [prehľad migrácie](docs/atomer-migration-progress.md), [riadenie kampane](docs/atomer-catalog-control.md), [riadenie úlohy](docs/atomer-catalog-job-control.md), [handoff](docs/atomer-catalog-handoff.md). Dokončená konsolidácia kariet sama nedokazuje dokončené publikovanie obsahu. |
+| Atomer `/migration/atomer`, `/migration/atomer-progress` | Príprava obsahu/katalógu, pôvodné a aktuálne identity, review, pozastavenie a riadené odovzdanie; chránený download pôvodných vstupov podľa uloženého behu | [Obsah](docs/atomer-content-import.md), [prehľad migrácie](docs/atomer-migration-progress.md), [riadenie kampane](docs/atomer-catalog-control.md), [riadenie úlohy](docs/atomer-catalog-job-control.md), [handoff](docs/atomer-catalog-handoff.md). Dokončená konsolidácia kariet sama nedokazuje dokončené publikovanie obsahu. |
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx) a [exporty stránok](frontend/src/pages/index.ts). Názov súboru `PlaceholderPages.tsx` sám neurčuje stav exportovanej stránky.
 
@@ -79,7 +79,7 @@ Automatické Atomer workery vyžadujú `ATOMER_CATALOG_WORKER_ENABLED=true`; pre
 
 ## Databázové migrácie
 
-Repozitár obsahuje 50 SQL súborov `001`–`050`. Aktuálny upgrade runner má 39 modulov: `005`–`038`, potom `046`–`050`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 46 upgrade SQL súborov `005`–`050`.
+Repozitár obsahuje 52 SQL súborov `001`–`052`. Aktuálny upgrade runner má 41 modulov: `005`–`038`, potom `046`–`052`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 48 upgrade SQL súborov `005`–`052`.
 
 Inicializácia prázdnej DB, aktualizácia existujúcej DB a obnova zálohy majú odlišný postup. Presný stav overenia, zdroje poradia a limity sú v [jednotnom návode](api/POSTGRES_SETUP.md). Už nasadené SQL sa neupravujú a nový súbor sám neznamená zapojenie do deploymentu.
 
@@ -94,3 +94,7 @@ Návrat kódu nevracia databázové migrácie ani už vykonané externé zápisy
 ## Zostávajúca práca
 
 Úplné tržby/marža, širšia inventúrna agenda, nepodporované historické vratky a všeobecné RBAC zostávajú samostatné témy. Existujúce jednotky, účty, FIFO a korekcie tým nie sú označené za nedokončené. [Aktuálne priority](docs/mvp-progress.md) odlišujú produktový rozsah od [prevádzkového pilotu zásob](docs/upgates-sync-readiness.md).
+
+## Rozpracované spustenie a opraviteľnosť
+
+[Priebežné odovzdanie](docs/warehouse-launch-continuation.md) zaznamenáva potvrdené rozhodnutia, stav implementácie, reset testovacích dokladov, prevzatie počiatočných zásob a presný postup pokračovania. Samotná prítomnosť týchto zmien vo vetve neznamená vykonaný reset ani zapnutú skladovú autoritu. Migrácie 051 a 052 pridávajú audit spracovania/archivácie faktúr a opráv príjemiek bez automatickej zmeny skladových množstiev.

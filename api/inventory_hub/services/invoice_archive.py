@@ -490,13 +490,22 @@ async def reconcile_supplier(db, payload, *, source_keys=None):
     if not isinstance(payload, InvoiceReconcileInput):
         payload = InvoiceReconcileInput.model_validate(payload)
     supplier = await resolve_supplier(db, payload.supplier_code)
+    from inventory_hub.services.receiving_source import lock_supplier
+    await lock_supplier(db, supplier.id)
     entries = _index_entries(Path(settings.INVENTORY_DATA_ROOT), supplier.code)
     if source_keys is not None:
         entries = [(key, entry) for key, entry in entries if key in source_keys]
+    excluded = set((await db.execute(text('''SELECT source_key FROM (
+        SELECT DISTINCT ON (source_key) source_key,action FROM invoice_source_archive_events
+        WHERE supplier_id=:supplier ORDER BY source_key,created_at DESC,id DESC
+        ) latest WHERE action='archive' '''), {'supplier': supplier.id})).scalars().all())
+    archived_skipped = sum(key in excluded for key, _entry in entries)
+    entries = [(key, entry) for key, entry in entries if key not in excluded]
     selected = [(key, entry) for key, entry in entries if payload.after_key is None or key > payload.after_key]
     batch = selected[:payload.limit]
     report = {'supplier_code': supplier.code, 'scanned': len(batch), 'created': 0, 'existing': 0,
-              'conflicts': [], 'next_after_key': batch[-1][0] if len(selected) > len(batch) else None}
+              'conflicts': [], 'archived_skipped': archived_skipped,
+              'next_after_key': batch[-1][0] if len(selected) > len(batch) else None}
     for key, candidates in batch:
         try:
             metadata, lines, files, evidence = _indexed_candidates(
@@ -555,20 +564,31 @@ async def _archive_upload(supplier_code, result, invoice_number=None):
     if not settings.USE_POSTGRES:
         return {'status': 'disabled'}
     from inventory_hub.database import get_session_context
+    from inventory_hub.services.receiving_source import lock_supplier
     from sqlalchemy.exc import SQLAlchemyError
     try:
         async with get_session_context() as db:
+            supplier = await resolve_supplier(db, supplier_code)
+            key = (result.get('invoice_number') or invoice_number or Path(result['csv_path']).stem
+                   if result.get('csv_path') else invoice_number or Path(result['filename']).stem)
+            # All supplier upload paths share the retirement/reconciliation fence.
+            # A source archived while this job waited must not be recreated by
+            # the original-only path, or endlessly retried as a missing CSV.
+            await lock_supplier(db, supplier.id)
+            latest = await db.scalar(text('''SELECT action FROM invoice_source_archive_events
+                WHERE supplier_id=:supplier AND source_key=:key
+                ORDER BY created_at DESC,id DESC LIMIT 1'''), {'supplier': supplier.id, 'key': key})
+            if latest == 'archive':
+                return {'status': 'completed', 'source_key': key, 'created': 0, 'archived_skipped': 1,
+                        'code': 'invoice_source_archived'}
             if result.get('csv_path'):
-                key = result.get('invoice_number') or invoice_number or Path(result['csv_path']).stem
                 report = await reconcile_supplier(db, InvoiceReconcileInput(supplier_code=supplier_code), source_keys={key})
                 if not report['scanned']:
                     raise InvoiceArchiveError('invoice_index_entry_missing', 404)
                 return {'status': 'completed' if not report['conflicts'] else 'attention', **report}
-            supplier = await resolve_supplier(db, supplier_code)
-            number = invoice_number or Path(result['filename']).stem
             path = _source_path(Path(settings.INVENTORY_DATA_ROOT), supplier_code, result['path'])
-            saved = await ingest_invoice(db, direction='purchase', source_kind='supplier', source_key=number,
-                supplier_id=supplier.id, metadata={'invoice_number': number}, files=[{'path': path, 'role': 'original'}],
+            saved = await ingest_invoice(db, direction='purchase', source_kind='supplier', source_key=key,
+                supplier_id=supplier.id, metadata={'invoice_number': key}, files=[{'path': path, 'role': 'original'}],
                 actor='supplier-upload')
             return {'status': 'completed', **saved}
     except (InvoiceArchiveError, HTTPException, SQLAlchemyError, OSError, ValueError) as error:

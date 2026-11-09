@@ -7,7 +7,7 @@ checkpoint persistence and reconciliation. Discovery never authorizes stock.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from inventory_hub.services.order_stock_source import SourceError, _positive_id, _text, _timestamp, _uuid
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError, connection_fingerprint
@@ -33,6 +33,21 @@ def _instant(value) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise CollectionSourceError("order_collection_invalid_request", 422)
     return value.astimezone(timezone.utc)
+
+
+def _wire_instant(value: datetime, *, upper=False) -> datetime:
+    """Whole-second API bounds cover the caller's exact inclusive window.
+
+    Only the read envelope is rounded. Stored run/cursor/cutover timestamps and
+    returned source timestamps retain their precision and review semantics.
+    """
+    rounded = value.replace(microsecond=0)
+    if upper and value.microsecond:
+        try:
+            rounded += timedelta(seconds=1)
+        except OverflowError:
+            raise CollectionSourceError("order_collection_invalid_request", 422) from None
+    return rounded
 
 
 def _metadata(payload, page: int) -> tuple[list[dict], int, int]:
@@ -122,6 +137,10 @@ def _fetch_page(shop_code: str, params: dict, expected_target_fingerprint: str |
             delay = getattr(error, "retry_after", None)
             retry_after = delay if type(delay) is int and 1 <= delay <= 604800 else None
             raise CollectionSourceError("order_collection_rate_limited", 429, retry_after) from None
+        if error.status_code == 400:
+            # Keep only the status; upstream bodies, URLs and headers can carry
+            # customer or connection data and are neither parsed nor logged.
+            raise CollectionSourceError("order_collection_upgates_http_400") from None
         raise CollectionSourceError("order_collection_source_unavailable") from None
     finally:
         if client is not None:
@@ -134,12 +153,19 @@ async def load_changed_page(shop_code: str, *, created_from: datetime, changed_f
     created_from, changed_from, created_to = map(_instant, (created_from, changed_from, created_to))
     if created_from > created_to or type(page) is not int or not 1 <= page <= 1_000_000 or type(deleted) is not bool:
         raise CollectionSourceError("order_collection_invalid_request", 422)
-    params = {"creation_time_from": created_from.isoformat(), "creation_time_to": created_to.isoformat(),
-              "last_update_time_from": changed_from.isoformat(), "page": page,
+    wire_created_from = _wire_instant(created_from)
+    wire_changed_from = _wire_instant(changed_from)
+    wire_created_to = _wire_instant(created_to, upper=True)
+    params = {"creation_time_from": wire_created_from.isoformat(timespec='seconds'),
+              "creation_time_to": wire_created_to.isoformat(timespec='seconds'),
+              "last_update_time_from": wire_changed_from.isoformat(timespec='seconds'), "page": page,
               "order_by": "last_update_time", "order_dir": "asc"}
     if deleted:
         params["deleted_yn"] = "true"
     target_guard = {"expected_target_fingerprint": expected_target_fingerprint} if expected_target_fingerprint is not None else {}
     payload = await asyncio.to_thread(_fetch_page, shop_code, params, **target_guard)
-    return _normalize_page(payload, created_from=created_from, changed_from=changed_from,
-                           created_to=created_to, page=page, deleted=deleted)
+    # Validate every row against precisely the transmitted envelope. Keep its
+    # boundary overlap so page/item counts and cross-page checks remain exact;
+    # save_entries still compares original timestamps with the exact cutover.
+    return _normalize_page(payload, created_from=wire_created_from, changed_from=wire_changed_from,
+                           created_to=wire_created_to, page=page, deleted=deleted)

@@ -10,6 +10,7 @@ import {
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
 import { todayDate } from '../utils/format';
+import { InvoiceProcessingPanel } from '../components/InvoiceProcessingPanel';
 import './invoiceArchive.css';
 
 type PendingPayment = { invoice_id: number; actor: string; payment_id?: number; body: InvoicePaymentRequest | InvoiceReversalRequest };
@@ -21,7 +22,13 @@ function readPending(id: number): PendingPayment | null {
   } catch { return null; }
 }
 function writePending(id: number, value: PendingPayment | null) {
-  try { if (value) sessionStorage.setItem(storageKey(id), JSON.stringify(value)); else sessionStorage.removeItem(storageKey(id)); } catch { /* The mounted page still retains the exact request. */ }
+  if (value) {
+    const serialized = JSON.stringify(value);
+    sessionStorage.setItem(storageKey(id), serialized);
+    if (sessionStorage.getItem(storageKey(id)) !== serialized) throw new Error('storage_unavailable');
+  } else {
+    try { sessionStorage.removeItem(storageKey(id)); } catch { /* A completed UUID can safely be recovered again. */ }
+  }
 }
 const editValues = (invoice: ArchivedInvoiceDetail) => ({
   invoice_number: invoice.invoice_number || '', invoice_date: invoice.invoice_date || '', due_date: invoice.due_date || '',
@@ -52,6 +59,7 @@ export function InvoiceDetailPage() {
   const [reverseId, setReverseId] = useState<number | null>(null);
   const [reverseNote, setReverseNote] = useState('');
   const [conflict, setConflict] = useState(false);
+  const [processingLocked, setProcessingLocked] = useState(false);
   const working = useRef(false);
   const currentId = useRef(id); currentId.current = id;
   const dirty = !!(editing && invoice && edit && JSON.stringify(editValues(invoice)) !== JSON.stringify(edit));
@@ -71,10 +79,11 @@ export function InvoiceDetailPage() {
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [id, access, refresh, t]);
-  const retain = (value: PendingPayment | null) => { request.current = value; setPending(value); writePending(id, value); };
+  const retain = (value: PendingPayment | null) => { writePending(id, value); request.current = value; setPending(value); };
   const fresh = async () => {
+    const startedAccess = accessRevision();
     const value = await getArchivedInvoice(id);
-    if (currentId.current === id) { setInvoice(value); setEdit(editValues(value)); }
+    if (currentId.current === id && startedAccess === accessRevision()) { setInvoice(value); setEdit(editValues(value)); }
     return value;
   };
   const finishPayment = (value: InvoicePaymentResult) => {
@@ -85,14 +94,21 @@ export function InvoiceDetailPage() {
   };
   const recover = async () => {
     const operation = request.current; if (!operation || working.current) return;
+    if (operation.actor !== currentActor() || operation.invoice_id !== id) {
+      setError(t('invoiceArchive.operationActorChanged')); return;
+    }
     const startedAccess = accessRevision(); working.current = true; setBusy(true); setError('');
-    try { const value = await getInvoicePaymentOperation(id, operation.body.request_id); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(value); }
+    try { const value = await getInvoicePaymentOperation(id, operation.body.request_id, operation.body.expected_revision); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(value); }
     catch (reason) { if (startedAccess === accessRevision() && currentId.current === id) setError(invoiceError(reason, t('invoiceArchive.paymentRecoveryPending'))); }
     finally { working.current = false; setBusy(false); }
   };
   const submitPayment = async (operation: PendingPayment) => {
     if (working.current) return;
-    const startedAccess = accessRevision(); working.current = true; setBusy(true); setError(''); setMessage(''); retain(operation);
+    if (operation.actor !== currentActor() || operation.invoice_id !== id) {
+      setError(t('invoiceArchive.operationActorChanged')); return;
+    }
+    try { retain(operation); } catch { setError(t('invoiceArchive.operationStorageUnavailable')); return; }
+    const startedAccess = accessRevision(); working.current = true; setBusy(true); setError(''); setMessage('');
     try {
       const value = operation.payment_id === undefined ? await addInvoicePayment(id, operation.body as InvoicePaymentRequest) : await reverseInvoicePayment(id, operation.payment_id, operation.body);
       if (startedAccess === accessRevision() && currentId.current === id) finishPayment(value);
@@ -102,7 +118,7 @@ export function InvoiceDetailPage() {
       if (failure.knownUnapplied || [400, 401, 403, 422].includes(failure.status || 0)) {
         retain(null); setConflict(failure.status === 409); setError(invoiceError(reason, t(failure.status === 409 ? 'invoiceArchive.conflict' : 'invoiceArchive.paymentFailed')));
       } else {
-        try { const result = await getInvoicePaymentOperation(id, operation.body.request_id); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(result); }
+        try { const result = await getInvoicePaymentOperation(id, operation.body.request_id, operation.body.expected_revision); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(result); }
         catch { if (startedAccess === accessRevision() && currentId.current === id) setError(t('invoiceArchive.paymentUncertain')); }
       }
     } finally { working.current = false; setBusy(false); }
@@ -126,7 +142,7 @@ export function InvoiceDetailPage() {
     try { await downloadInvoiceArchive(id); } catch (reason) { setError(invoiceError(reason, t('invoiceArchive.downloadFailed'))); }
     finally { working.current = false; setBusy(false); }
   };
-  const locked = busy || !!pending || conflict;
+  const locked = busy || !!pending || conflict || processingLocked || !!invoice?.archived_at;
   const money = (value: string | number | null | undefined) => invoiceMoney(value, invoice?.currency, i18n.language);
   const finance = invoice?.finance;
   const sourceReadOnly = ['supplier', 'shop'].includes(invoice?.source_kind || '');
@@ -137,7 +153,7 @@ export function InvoiceDetailPage() {
     <header><div><Link to="/invoices"><ArrowLeft size={15} style={{ display: 'inline', marginRight: '.35rem' }} />{t('invoiceArchive.back')}</Link>
       <h1 style={{ marginTop: '.65rem' }}>{invoice?.invoice_number || invoice?.original_filename || t('invoiceArchive.detailTitle')}</h1>
       {invoice && <p className="muted">{invoice.supplier_name || invoice.shop_name || invoice.shop_code || '—'} · {invoiceDate(invoice.invoice_date, i18n.language)}</p>}
-    </div><div className="actions"><button data-testid="invoice-detail-refresh" disabled={busy || dirty} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16} />{t('common.refresh')}</button>
+    </div><div className="actions"><button data-testid="invoice-detail-refresh" disabled={busy || dirty || processingLocked} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16} />{t('common.refresh')}</button>
       {invoice && <button disabled={busy} data-testid="invoice-original-download" onClick={download}><Download size={16} />{t('invoiceArchive.downloadOriginal')}</button>}</div></header>
     {blocker.state === 'blocked' && <div className="notice warning" role="alert"><p>{t('invoiceArchive.unsaved')}</p><div className="actions"><button onClick={() => blocker.reset()}>{t('invoiceArchive.keepEditing')}</button><button onClick={() => blocker.proceed()}>{t('invoiceArchive.discard')}</button></div></div>}
     {error && <div className="notice error" role="alert" data-testid="invoice-detail-error">{error}</div>}
@@ -169,15 +185,22 @@ export function InvoiceDetailPage() {
             setPayment({ kind: String(amount).startsWith('-') ? 'refund' : 'payment', amount: String(amount).replace(/^-/, ''), paid_at: todayDate(), note: '', opening_paid_amount: '' });
           }
           setPaymentOpen(value => !value);
-        }}>{t('invoiceArchive.addPayment')}</button>
+        }}>{t('invoiceArchive.managePayment')}</button>
       </section>{invoice.direction !== 'sale' && <section className="panel"><h2>{t('invoiceArchive.receiving')}</h2><p>{t(`invoiceArchive.receivingStatus.${invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</p>
         {!!invoice.receiving_session_id && invoice.receiving_invoice_number && invoice.supplier_code && <Link data-testid="invoice-receiving-link" to={`/receiving/${encodeURIComponent(invoice.receiving_invoice_number)}?supplier=${encodeURIComponent(invoice.supplier_code)}&session=${encodeURIComponent(invoice.receiving_session_id)}`}>{t('invoiceArchive.openReceiving')}</Link>}
       </section>}</div></div>
+      <InvoiceProcessingPanel key={invoice.id} invoice={invoice} disabled={busy || !!pending || conflict || editing}
+        onLockChange={setProcessingLocked} onChange={async result => {
+          setInvoice(old => old ? { ...old, processing_revision: result.processing_revision,
+            processing_status: result.processing.manual_status, archived_at: result.processing.archived_at,
+            processing: old.processing ? { ...old.processing, ...result.processing } : undefined } : old);
+          await fresh();
+        }} />
       {paymentOpen && finance && <form className="panel" data-testid="invoice-payment-form" onSubmit={event => { event.preventDefault(); if (!paymentValid || locked) return;
         const body: InvoicePaymentRequest = { request_id: crypto.randomUUID(), expected_revision: finance.payment_revision, kind: payment.kind, amount: decimalInput(payment.amount), paid_at: `${payment.paid_at}T00:00:00Z`, note: payment.note };
         if (finance.opening_required) body.opening_paid_amount = decimalInput(payment.opening_paid_amount);
         submitPayment({ invoice_id: id, actor: currentActor(), body });
-      }}><h2>{t('invoiceArchive.addPayment')}</h2><fieldset disabled={locked}><div className="fields">
+      }}><h2>{t('invoiceArchive.managePayment')}</h2><p className="muted small">{t('invoiceArchive.paymentDirectionHelp')}</p><fieldset disabled={locked}><div className="fields">
         <label>{t('invoiceArchive.paymentKind')}<select data-testid="invoice-payment-kind" value={payment.kind} onChange={event => setPayment({ ...payment, kind: event.target.value as 'payment' | 'refund' })}><option value="payment">{t('invoiceArchive.paymentKinds.payment')}</option><option value="refund">{t('invoiceArchive.paymentKinds.refund')}</option></select></label>
         <label>{t('invoiceArchive.amount')} ({invoice.currency})<input required data-testid="invoice-payment-amount" inputMode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" value={payment.amount} onChange={event => setPayment({ ...payment, amount: event.target.value })} /></label>
         <label>{t('invoiceArchive.paymentDate')}<input required data-testid="invoice-payment-date" type="date" value={payment.paid_at} onChange={event => setPayment({ ...payment, paid_at: event.target.value })} /></label>

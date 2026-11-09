@@ -65,6 +65,79 @@ async def read_remote(shop, target, fingerprint, prices=False):
     return await asyncio.to_thread(_read_remote, shop, target, fingerprint, prices)
 
 
+def _availability_observations(payload, targets):
+    """Validate one complete filtered page, then isolate exact leaf failures.
+
+    The documented page counts describe returned rows, not the requested codes.
+    A missing leaf is an error for that code; it is never an empty stock value.
+    Orderability is unrelated to this availability-only workflow.
+    """
+    key = 'variants' if targets[0]['variant_code'] is not None else 'products'
+    if not isinstance(payload, dict) or not source._messages_ok(payload.get('messages')):
+        raise source.SourceError('stock_publication_invalid_response')
+    rows = payload.get(key)
+    metadata = [payload.get(field) for field in ('current_page', 'current_page_items', 'number_of_items', 'number_of_pages')]
+    if (not isinstance(rows, list) or any(type(value) is not int for value in metadata)
+            or metadata[:3] != [1, len(rows), len(rows)]
+            or metadata[3] not in ((0, 1) if not rows else (1,))
+            or len(rows) > len(targets)
+            or any(not isinstance(row, dict) or not isinstance(row.get('code'), str) for row in rows)):
+        raise source.SourceError('stock_publication_invalid_response')
+    by_code = {row['code']: row for row in rows}
+    if len(by_code) != len(rows) or not set(by_code) <= {target['code'] for target in targets}:
+        raise source.SourceError('stock_publication_identity_changed', 409)
+    result = {}
+    for target in targets:
+        code = target['code']
+        if code not in by_code:
+            result[code] = source.SourceError('stock_publication_source_missing', 409)
+            continue
+        try:
+            row = by_code[code]
+            single = {key: [row], 'current_page': 1, 'current_page_items': 1,
+                      'number_of_items': 1, 'number_of_pages': 1}
+            observed = source._observation(single, target)
+            if not isinstance(row.get('availability'), str):
+                raise source.SourceError('supplier_availability_publication_remote_unknown', 422)
+            result[code] = {'identity': observed['identity'], 'options': None,
+                'leaf': {'code': code, 'stock': observed['quantity'], 'availability': row['availability']}}
+        except source.SourceError as error:
+            result[code] = error
+    return result
+
+
+def _read_availability_many(shop, targets, fingerprint):
+    from inventory_hub.services.stock_sync_source import batch_groups, _consistent_identities
+    groups = batch_groups(targets)
+    client = source._client(shop, fingerprint)
+    try:
+        result = {}
+        for group in groups:
+            # One request per bounded kind/filter group. No per-leaf fallback,
+            # network retry, or parsing of an incomplete page as success.
+            payload = source._request(client, 'get', group['path'], params={
+                group['filter']: ';'.join(target['code'] for target in group['targets']),
+                'page': 1, 'current_page_items': 100})
+            try:
+                result.update(_availability_observations(payload, group['targets']))
+            except source.SourceError as error:
+                result.update({target['code']: error for target in group['targets']})
+        valid = {code: {'observation': {'identity': value['identity']}}
+                 for code, value in result.items() if not isinstance(value, source.SourceError)}
+        try:
+            _consistent_identities(valid)
+        except source.SourceError as error:
+            result.update({code: error for code in valid})
+        return result
+    finally:
+        client.session.close()
+
+
+async def read_availability_many(shop, targets, fingerprint):
+    """Return a remote observation or a safe SourceError for each exact code."""
+    return await asyncio.to_thread(_read_availability_many, shop, targets, fingerprint)
+
+
 def money(value):
     try:
         if value is None or isinstance(value, bool):

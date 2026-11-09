@@ -15,6 +15,7 @@ from inventory_hub.routers import invoices_unified as routes
 from inventory_hub.routers import shop_invoice_sync as shop_routes
 from inventory_hub.services import invoice_archive as archive
 from inventory_hub.services import invoice_finance as finance
+from inventory_hub.services import invoice_processing as processing
 from inventory_hub.services import shop_invoice_sync
 from inventory_hub.services.shop_invoice_source import SourceError
 from inventory_hub.settings import settings
@@ -61,6 +62,10 @@ class InvoiceRouteTests(unittest.TestCase):
             ("GET", "/invoices/stats", None), ("GET", "/invoices/1", None),
             ("GET", "/invoices/1/download", None),
             ("GET", f"/invoices/1/payment-operations/{self.request_id}", None),
+            ("GET", f"/invoices/1/processing-operations/{self.request_id}", None),
+            ("POST", "/invoices/1/processing/preview", {"action": "archive", "expected_revision": 0, "note": "Retire fixture"}),
+            ("POST", "/invoices/1/processing/apply", {"action": "archive", "expected_revision": 0, "note": "Retire fixture",
+                "request_id": self.request_id, "preview_hash": "a" * 64, "confirmed": True}),
             ("POST", "/invoices/1/payments", self.payment),
             ("POST", "/invoices/1/payments/2/reverse", {"request_id": self.request_id, "expected_revision": 1}),
             ("PATCH", "/invoices/1", {"expected_revision": 0, "notes": "Synthetic note"}),
@@ -73,6 +78,7 @@ class InvoiceRouteTests(unittest.TestCase):
             calls = [stack.enter_context(patch.object(service, name, AsyncMock())) for service, name in (
                 (finance, "apply_payment"), (finance, "operation_result"), (finance, "update_metadata"),
                 (archive, "reconcile_supplier"),
+                (processing, "preview"), (processing, "apply"), (processing, "operation_result"),
                 (shop_invoice_sync, "refresh"),
             )]
             for method, path, payload in requests:
@@ -175,6 +181,57 @@ class InvoiceRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["code"], "invoice_payment_ledger_required")
         self.db.execute.assert_not_awaited()
+        self.db.commit.assert_not_awaited()
+
+    def test_processing_requires_note_revision_hash_uuid_and_explicit_confirmation(self):
+        valid = {"action": "process_without_stock", "expected_revision": 0, "note": "Checked paperwork only",
+                 "request_id": self.request_id, "preview_hash": "a" * 64, "confirmed": True}
+        for changes in ({"note": "   "}, {"expected_revision": True}, {"expected_revision": -1},
+                        {"request_id": "invalid"}, {"preview_hash": "invalid"}, {"confirmed": False},
+                        {"confirmed": 1}, {"confirmed": "true"}, {"actor": "private-forged-actor"},
+                        {"stock_effect": True}, {"action": "delete"}):
+            with self.subTest(changes=changes), patch.object(processing, "apply", AsyncMock()) as action:
+                response = self.client.post('/invoices/1/processing/apply', headers=self.headers, json={**valid, **changes})
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()['detail'], {'code': 'invoice_invalid_request', 'known_unapplied': True})
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                self.assertNotIn('private-forged-actor', response.text)
+                action.assert_not_awaited()
+        self.db.commit.assert_not_awaited()
+
+    def test_processing_preview_does_not_commit_and_apply_uses_authenticated_actor_with_recovery(self):
+        body = {"action": "archive", "expected_revision": 2, "note": "  Retire synthetic document  "}
+        with patch.object(processing, 'preview', AsyncMock(return_value={'preview_hash': 'a' * 64})) as preview:
+            response = self.client.post('/invoices/7/processing/preview', headers=self.headers, json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(preview.await_args.args[2].note, 'Retire synthetic document')
+        self.db.commit.assert_not_awaited()
+        result = {'invoice_id': 7, 'request_id': self.request_id, 'processing_revision': 3, 'stock_effect': False}
+        with patch.object(processing, 'apply', AsyncMock(return_value=result)) as apply:
+            response = self.client.post('/invoices/7/processing/apply', headers=self.headers, json={**body,
+                'request_id': self.request_id, 'preview_hash': 'a' * 64, 'confirmed': True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), result)
+        self.assertEqual(apply.await_args.kwargs['actor'], 'operator-token')
+        self.db.commit.assert_awaited_once()
+        with patch.object(processing, 'operation_result', AsyncMock(return_value=result)) as recover:
+            response = self.client.get(f'/invoices/7/processing-operations/{self.request_id}', headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), result)
+        recover.assert_awaited_once_with(self.db, 7, UUID(self.request_id))
+        self.db.commit.assert_awaited_once()
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+
+    def test_processing_stale_rejection_is_unapplied_but_uuid_conflict_retains_uncertainty(self):
+        body = {'action': 'archive', 'expected_revision': 0, 'note': 'Retire fixture',
+                'request_id': self.request_id, 'preview_hash': 'a' * 64, 'confirmed': True}
+        for code in ('invoice_processing_changed', 'invoice_processing_request_conflict'):
+            with self.subTest(code=code), patch.object(processing, 'apply', AsyncMock(side_effect=processing.InvoiceProcessingError(code))):
+                response = self.client.post('/invoices/1/processing/apply', headers=self.headers, json=body)
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertEqual(response.json()['detail'], {'code': code,
+                    'known_unapplied': code != 'invoice_processing_request_conflict'})
+        self.assertEqual(self.db.rollback.await_count, 2)
         self.db.commit.assert_not_awaited()
 
     def test_metadata_changes_have_revision_and_reconciliation_is_bounded(self):

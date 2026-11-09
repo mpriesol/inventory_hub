@@ -21,7 +21,7 @@ const { createMemoryRouter, RouterProvider } = require('react-router-dom');
 const { InvoicesPage } = require('../src/pages/InvoicesPage.tsx');
 const { InvoiceDetailPage } = require('../src/pages/InvoiceDetailPage.tsx');
 const { invoiceMoney, invoiceSourceDiagnostic } = require('../src/pages/invoiceArchiveUi.tsx');
-const { unlockHub } = require('../src/api/access.ts');
+const { unlockHub, setHubUser, hubUser } = require('../src/api/access.ts');
 const { todayDate } = require('../src/utils/format.ts');
 let root = createRoot(document.getElementById('root')), router;
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
@@ -38,6 +38,11 @@ async function dropFiles(files) { await act(async () => {
   Object.defineProperty(event, 'dataTransfer', { value: { types: ['Files'], files } });
   required('invoice-dropzone').dispatchEvent(event); await tick();
 }); }
+async function withUnavailableStorage(silent, action) {
+  const original = dom.window.Storage.prototype.setItem;
+  dom.window.Storage.prototype.setItem = function() { if (!silent) throw new dom.window.DOMException('Synthetic denied storage', 'SecurityError'); };
+  try { await action(); } finally { dom.window.Storage.prototype.setItem = original; }
+}
 async function render(path) {
   await act(async () => {
     root.unmount(); document.getElementById('root').innerHTML = ''; root = createRoot(document.getElementById('root'));
@@ -70,8 +75,11 @@ const stats = direction => ({ direction, total_invoices: 4, unpaid_count: 2, ove
 });
 let paymentMode = 'success', hideRecovery = false, downloadFail = false, deferredList = false, releaseList;
 let shopSyncMode = 'success';
+let processingMode = 'success';
+let processingPreviewMode = 'valid', processingAckMode = 'valid', paymentAckMode = 'valid';
 let paymentCounter = 100;
 const calls = [], operations = new Map(), attempts = new Map(), downloads = [], uploadedFiles = [];
+const processingOperations = new Map(), processingAttempts = new Map();
 global.URL.createObjectURL = blob => { assert(blob instanceof Blob); return 'blob:https://hub.example.test/synthetic-download'; };
 global.URL.revokeObjectURL = () => {};
 dom.window.HTMLAnchorElement.prototype.click = function() { if (this.download) downloads.push({ href: this.href, filename: this.download }); };
@@ -85,10 +93,26 @@ function applyPayment(id, body, paymentId) {
   current.payments.push(row); current.payment_revision += 1; current.opening_required = false; current.status = 'partial'; current.paid_amount = '12.34'; current.outstanding_amount = '87.66'; invoice.payment_revision = current.payment_revision;
   return { invoice_id: id, request_id: body.request_id, payment_revision: current.payment_revision, finance: clone(current) };
 }
+function processingAfter(before, action) {
+  const after = { ...clone(before), revision: before.revision + 1 };
+  if (action === 'process_without_stock') after.status = after.manual_status = 'processed_without_stock';
+  else if (action === 'reopen') after.status = after.manual_status = 'unprocessed';
+  else { after.archived = action === 'archive'; after.archived_at = after.archived ? '2026-11-09T12:00:00Z' : null; }
+  after.allowed_actions = after.archived ? ['restore'] : [after.manual_status === 'unprocessed' ? 'process_without_stock' : 'reopen', 'archive'];
+  return after;
+}
+function acknowledgment(value, mode, kind) {
+  if (mode === 'malformed') return { invoice_id: value.invoice_id, request_id: value.request_id };
+  if (mode === 'wrong-invoice') return { ...value, invoice_id: 9999 };
+  if (mode === 'wrong-uuid') return { ...value, request_id: '00000000-0000-4000-8000-000000000000' };
+  if (mode === 'wrong-action') return { ...value, action: 'unrelated-action' };
+  if (mode === 'wrong-revision') return { ...value, [kind + '_revision']: value[kind + '_revision'] + 1 };
+  return value;
+}
 global.fetch = async (path, init = {}) => {
   assert(path.startsWith('/api/'), 'Only protected API calls');
   const headers = new Headers(init.headers);
-  assert.equal(headers.get('Authorization'), 'Bearer synthetic-invoice-token');
+  assert.equal(headers.get('Authorization'), hubUser() ? null : 'Bearer synthetic-invoice-token');
   assert.equal(headers.get('X-Hub-Request'), '1');
   assert.equal(init.credentials, 'same-origin'); assert.equal(init.cache, 'no-store'); assert.equal(init.redirect, 'error');
   assert(!path.includes('synthetic-invoice-token'));
@@ -108,10 +132,11 @@ global.fetch = async (path, init = {}) => {
     return reply({ id: 20, invoice_number: null });
   }
   if (url.pathname === '/api/product-editor/options') return reply({ shops: [{ code: 'biketrek', name: 'BIKETREK' }] });
-  if (url.pathname === '/api/invoices/stats') return reply(stats(url.searchParams.get('direction')));
+  if (url.pathname === '/api/invoices/stats') return reply({ ...stats(url.searchParams.get('direction')), include_archived: url.searchParams.get('include_archived') === 'true' });
   if (url.pathname === '/api/invoices') {
     const page = Number(url.searchParams.get('page')); const direction = url.searchParams.get('direction');
-    const rows = direction === 'sale' ? [invoices.get(13)] : page === 2 ? [invoices.get(12)] : [invoices.get(10), invoices.get(11), invoices.get(12)];
+    let rows = direction === 'sale' ? [invoices.get(13)] : page === 2 ? [invoices.get(12)] : [invoices.get(10), invoices.get(11), invoices.get(12), ...(invoices.has(14) ? [invoices.get(14)] : [])];
+    if (url.searchParams.get('include_archived') !== 'true') rows = rows.filter(row => !row.archived_at);
     const value = { items: clone(rows), total: 26, page, page_size: 25, total_pages: 2 };
     if (deferredList) { deferredList = false; return new Promise(resolve => { releaseList = () => resolve(reply(value)); }); }
     return reply(value);
@@ -140,18 +165,52 @@ global.fetch = async (path, init = {}) => {
     return reply({ imported: 2, unchanged: 0, failed: 0, items: [], next: body.offset ? null : { page: 1, offset: 10, page_token: 'same-page-token' }, total_in_source: 12, source_pages: 1 });
   }
   const recovery = url.pathname.match(/^\/api\/invoices\/(\d+)\/payment-operations\/(.+)$/);
-  if (recovery) return hideRecovery || !operations.has(recovery[2]) ? failure(404, 'invoice_payment_operation_not_found', true) : reply(operations.get(recovery[2]));
+  if (recovery) return hideRecovery || !operations.has(recovery[2]) ? failure(404, 'invoice_payment_operation_not_found', true) : reply(acknowledgment(operations.get(recovery[2]), paymentAckMode, 'payment'));
   const payment = url.pathname.match(/^\/api\/invoices\/(\d+)\/payments(?:\/(\d+)\/reverse)?$/);
   if (payment) {
     assert.equal(init.method, 'POST'); assert.match(body.request_id, /^[0-9a-f-]{36}$/i);
     if (attempts.has(body.request_id)) assert.deepEqual(body, attempts.get(body.request_id), 'An uncertain retry retains the entire payload and UUID');
     else attempts.set(body.request_id, clone(body));
-    if (operations.has(body.request_id)) return reply(operations.get(body.request_id));
+    if (operations.has(body.request_id)) return reply(acknowledgment(operations.get(body.request_id), paymentAckMode, 'payment'));
     if (paymentMode === 'conflict') return failure(409, 'invoice_payment_revision_changed', true);
     if (paymentMode === 'lost-before') throw new TypeError('Synthetic request lost before persistence');
     const value = applyPayment(Number(payment[1]), body, payment[2] ? Number(payment[2]) : undefined); operations.set(body.request_id, value);
     if (paymentMode === 'lost-after') throw new TypeError('Synthetic response lost after persistence');
-    return reply(value);
+    return reply(acknowledgment(value, paymentAckMode, 'payment'));
+  }
+  const processingRecovery = url.pathname.match(/^\/api\/invoices\/(\d+)\/processing-operations\/(.+)$/);
+  if (processingRecovery) return processingOperations.has(processingRecovery[2]) ? reply(acknowledgment(processingOperations.get(processingRecovery[2]), processingAckMode, 'processing')) : failure(404, 'invoice_processing_operation_not_found', true);
+  const processing = url.pathname.match(/^\/api\/invoices\/(\d+)\/processing\/(preview|apply)$/);
+  if (processing) {
+    assert.equal(init.method, 'POST'); assert(body.note.trim());
+    const invoice = invoices.get(Number(processing[1]));
+    if (processing[2] === 'preview') {
+      assert.equal(body.expected_revision, invoice.processing.revision);
+      const value = { invoice_id: invoice.id, invoice_number: invoice.invoice_number, action: body.action, note: body.note,
+        preview_hash: 'a'.repeat(64), before: invoice.processing, after: processingAfter(invoice.processing, body.action), stock_effect: false, payment_effect: false };
+      if (processingPreviewMode === 'wrong-invoice') value.invoice_id = 9999;
+      if (processingPreviewMode === 'wrong-note') value.note = 'Different operator intent';
+      if (processingPreviewMode === 'wrong-hash') value.preview_hash = 'bad';
+      if (processingPreviewMode === 'malformed') value.before = {};
+      return reply(value);
+    }
+    assert.equal(body.confirmed, true); assert.match(body.request_id, /^[0-9a-f-]{36}$/i);
+    if (processingAttempts.has(body.request_id)) assert.deepEqual(body, processingAttempts.get(body.request_id), 'Processing retry retains exact reason, preview, revision and UUID');
+    else processingAttempts.set(body.request_id, clone(body));
+    if (processingOperations.has(body.request_id)) return reply(acknowledgment(processingOperations.get(body.request_id), processingAckMode, 'processing'));
+    if (processingMode === 'conflict') return failure(409, 'invoice_processing_changed', true);
+    if (processingMode === 'lost-before') throw new TypeError('Synthetic processing request lost before persistence');
+    assert.equal(body.expected_revision, invoice.processing.revision);
+    const before = clone(invoice.processing), after = processingAfter(before, body.action);
+    after.history.unshift({ request_id: body.request_id, revision: after.revision, action: body.action, note: body.note,
+      actor: 'Fixture operator', created_at: '2026-11-09T12:00:00Z', before_data: before, after_data: { ...after, history: [] } });
+    invoice.processing = after; invoice.processing_revision = after.revision;
+    invoice.processing_status = after.manual_status; invoice.archived_at = after.archived_at;
+    const result = { invoice_id: invoice.id, request_id: body.request_id, action: body.action, processing_revision: after.revision,
+      processing: clone(after), stock_effect: false, payment_effect: false };
+    processingOperations.set(body.request_id, result);
+    if (processingMode === 'lost-after') throw new TypeError('Synthetic processing response lost after persistence');
+    return reply(acknowledgment(result, processingAckMode, 'processing'));
   }
   const detail = url.pathname.match(/^\/api\/invoices\/(\d+)$/);
   if (detail) {
@@ -268,6 +327,13 @@ global.fetch = async (path, init = {}) => {
   assert.equal(required('invoice-payment-amount').value, '100.00');
   assert.equal(required('invoice-payment-date').value, todayDate());
   await input('invoice-payment-amount', '12,34'); await input('invoice-payment-date', '2026-10-22');
+  const paymentPostsBeforeStorageFailure = calls.filter(call => /\/10\/payments$/.test(call.path)).length;
+  for (const silent of [false, true]) {
+    await withUnavailableStorage(silent, () => click('invoice-payment-save'));
+    assert.equal(calls.filter(call => /\/10\/payments$/.test(call.path)).length, paymentPostsBeforeStorageFailure, 'Denied or silently discarded pending storage prevents a payment POST');
+    assert.match(required('invoice-detail-error').textContent, /nothing was sent/i);
+    assert(!element('invoice-payment-pending'));
+  }
   paymentMode = 'lost-after'; hideRecovery = true; await click('invoice-payment-save');
   assert(element('invoice-payment-pending')); assert(required('invoice-edit-open').disabled, 'Uncertain payment blocks metadata changes');
   const first = calls.filter(call => /\/10\/payments$/.test(call.path)).at(-1); assert.equal(first.body.amount, '12.34'); assert.equal(typeof first.body.amount, 'string');
@@ -280,6 +346,17 @@ global.fetch = async (path, init = {}) => {
   await input('invoice-payment-amount', '0.01'); await input('invoice-payment-date', '2026-10-22'); await click('invoice-payment-save');
   const lostBody = clone(calls.filter(call => /\/10\/payments$/.test(call.path)).at(-1).body); assert(element('invoice-payment-pending'));
   await render('/invoices/10'); assert(element('invoice-payment-pending'), 'Uncertain UUID survives a page remount');
+  const paymentRetryBeforeSwitch = required('invoice-payment-retry'), paymentRecoverBeforeSwitch = required('invoice-payment-recover');
+  const paymentCallsBeforeSwitch = calls.filter(call => /\/10\/(payments|payment-operations)/.test(call.path)).length;
+  await act(async () => {
+    setHubUser({ id: 42, username: 'other-operator', display_name: 'Other operator', role: 'operator', active: true });
+    paymentRetryBeforeSwitch.click(); paymentRecoverBeforeSwitch.click(); await tick();
+  });
+  assert(!element('invoice-payment-pending'), 'Another account cannot inherit a pending payment');
+  assert.equal(calls.filter(call => /\/10\/(payments|payment-operations)/.test(call.path)).length, paymentCallsBeforeSwitch);
+  assert.deepEqual(JSON.parse(sessionStorage.getItem('hub.invoice-payment.10')).body, lostBody, 'Account change retains the original user\'s pending identity');
+  await act(async () => { setHubUser(null); unlockHub('synthetic-invoice-token'); await tick(); });
+  assert(element('invoice-payment-pending'));
   paymentMode = 'success'; await click('invoice-payment-retry');
   assert.deepEqual(calls.filter(call => /\/10\/payments$/.test(call.path)).at(-1).body, lostBody); assert(!element('invoice-payment-pending'));
   paymentMode = 'conflict'; await click('invoice-payment-open'); await input('invoice-payment-amount', '2.00'); await input('invoice-payment-date', '2026-10-22'); await click('invoice-payment-save');
@@ -298,7 +375,110 @@ global.fetch = async (path, init = {}) => {
   assert.equal(calls.filter(call => /\/11\/payments$/.test(call.path)).at(-1).body.opening_paid_amount, '0.00');
   await render('/invoices/13'); await click('invoice-edit-open'); assert(required('invoice-edit-invoice_number').disabled); assert(required('invoice-edit-total').disabled);
   assert(!element('invoice-receiving-link'), 'Sales archive cannot create a stock receipt');
+  invoices.set(14, makeInvoice(14, { receiving_status: 'not_started', receiving_session_id: null, receiving_invoice_number: null,
+    finance: finance({ paid_amount: null, outstanding_amount: null, status: 'unknown', opening_required: true }),
+    processing_status: 'unprocessed', processing_revision: 0, archived_at: null,
+    processing: { revision: 0, status: 'unprocessed', manual_status: 'unprocessed', archived: false, archived_at: null,
+      receipts: [{ id: 88, invoice_number: 'OLD-TEST-RECEIPT', status: 'cancelled', archived: true, received: true, reversed: false, posting_revision: 0 }],
+      stock_effect: false, payment_effect: false, allowed_actions: ['process_without_stock', 'archive'], action_blockers: {}, history: [] } }));
+  const originalFinance = clone(invoices.get(14).finance), paymentsBeforeProcessing = operations.size;
+  await render('/invoices/14');
+  assert.match(required('invoice-archived-receipts').textContent, /original receipt retained/i, 'Archived stock history remains visible without owning current handling');
+  assert(required('invoice-processing-preview').disabled, 'A reason is mandatory even for a preview');
+  assert(!element('invoice-processing-confirm'));
+  await input('invoice-processing-note', '  Paperwork reviewed; no goods received  ');
+  for (const mode of ['wrong-invoice', 'wrong-note', 'wrong-hash', 'malformed']) {
+    processingPreviewMode = mode; await click('invoice-processing-preview');
+    assert(element('invoice-processing-error')); assert(!element('invoice-processing-preview-result'), 'Malformed or unbound preview never becomes confirmable');
+    assert.equal(processingOperations.size, 0);
+  }
+  processingPreviewMode = 'valid';
+  await click('invoice-processing-preview');
+  assert(element('invoice-processing-preview-result')); assert(element('invoice-processing-no-effects'));
+  assert.equal(processingOperations.size, 0, 'Reviewing a preview never changes invoice handling');
+  assert.equal(invoices.get(14).processing.status, 'unprocessed');
+  const processingPostsBeforeStorageFailure = calls.filter(call => call.path === '/api/invoices/14/processing/apply').length;
+  for (const silent of [false, true]) {
+    await withUnavailableStorage(silent, () => click('invoice-processing-confirm'));
+    assert.equal(calls.filter(call => call.path === '/api/invoices/14/processing/apply').length, processingPostsBeforeStorageFailure, 'Denied or silently discarded pending storage prevents processing writes');
+    assert.match(required('invoice-processing-error').textContent, /nothing was sent/i);
+    assert(!element('invoice-processing-pending'));
+  }
+  processingMode = 'lost-after'; await click('invoice-processing-confirm');
+  assert.equal(processingOperations.size, 1, 'Lost response is recovered without a new operation');
+  assert(!element('invoice-processing-pending')); assert(required('invoice-processing-status').textContent.includes('without stock'));
+  let processingBody = calls.filter(call => call.path === '/api/invoices/14/processing/apply').at(-1).body;
+  assert.equal(processingBody.note, 'Paperwork reviewed; no goods received'); assert.equal(processingBody.confirmed, true);
+  assert.deepEqual(invoices.get(14).finance, originalFinance, 'Handling never guesses or edits unknown payments');
+  await input('invoice-processing-action', 'reopen'); await input('invoice-processing-note', 'Review the paperwork again');
+  await click('invoice-processing-preview'); processingMode = 'lost-before'; await click('invoice-processing-confirm');
+  assert(element('invoice-processing-pending')); assert(required('invoice-payment-open').disabled, 'Pending operation cannot be bypassed through another workflow');
+  const lostProcessingBody = clone(calls.filter(call => call.path === '/api/invoices/14/processing/apply').at(-1).body);
+  await render('/invoices/14'); assert(element('invoice-processing-pending'), 'Exact pending operation survives a remount');
+  const processingRetryBeforeSwitch = required('invoice-processing-retry'), processingRecoverBeforeSwitch = required('invoice-processing-recover');
+  const processingCallsBeforeSwitch = calls.filter(call => /\/14\/(processing\/apply|processing-operations)/.test(call.path)).length;
+  await act(async () => {
+    setHubUser({ id: 42, username: 'other-operator', display_name: 'Other operator', role: 'operator', active: true });
+    processingRetryBeforeSwitch.click(); processingRecoverBeforeSwitch.click(); await tick();
+  });
+  assert(!element('invoice-processing-pending'), 'Another account cannot recover or retry the original operation');
+  assert.equal(calls.filter(call => /\/14\/(processing\/apply|processing-operations)/.test(call.path)).length, processingCallsBeforeSwitch);
+  await act(async () => { setHubUser({ id: 42, username: 'other-operator', display_name: 'Other operator', role: 'admin', active: true }); await tick(); });
+  assert(!element('invoice-processing-pending'), 'Changing role does not adopt another actor\'s saved operation');
+  assert.deepEqual(JSON.parse(sessionStorage.getItem('hub.invoice-processing.14')).body, lostProcessingBody);
+  await act(async () => { setHubUser(null); unlockHub('synthetic-invoice-token'); await tick(); });
+  assert(element('invoice-processing-pending'));
+  processingMode = 'success'; await click('invoice-processing-retry');
+  assert.deepEqual(calls.filter(call => call.path === '/api/invoices/14/processing/apply').at(-1).body, lostProcessingBody);
+  assert.equal(invoices.get(14).processing.status, 'unprocessed'); assert(!element('invoice-processing-pending'));
+  assert.match(required('invoice-archived-receipts').textContent, /original receipt retained/i);
+  await input('invoice-processing-action', 'archive'); await input('invoice-processing-note', 'Retire the synthetic document');
+  await click('invoice-processing-preview'); assert.equal(invoices.get(14).archived_at, null);
+  await click('invoice-processing-confirm'); assert(element('invoice-archived-badge'));
+  assert(required('invoice-payment-open').disabled); assert(required('invoice-edit-open').disabled);
+  await render('/invoices'); assert(!element('invoice-row-14'), 'Default view excludes archived documents');
+  await click('invoice-include-archived'); await click('invoice-apply-filters'); assert(element('invoice-row-14'));
+  assert.equal(new URLSearchParams(router.state.location.search).get('include_archived'), 'true');
+  await click('invoice-summary-toggle');
+  assert(calls.filter(call => call.path.startsWith('/api/invoices/stats')).at(-1).path.includes('include_archived=true'));
+  assert.match(required('invoice-dashboard').textContent, /including archived/i);
+  await render('/invoices/14'); assert.equal(required('invoice-processing-action').value, 'restore');
+  await input('invoice-processing-note', 'Restore the same original'); await click('invoice-processing-preview');
+  processingMode = 'conflict'; await click('invoice-processing-confirm');
+  assert(element('invoice-processing-error')); assert(!element('invoice-processing-pending'), 'Known stale rejection permits a fresh preview');
+  assert(invoices.get(14).archived_at);
+  processingMode = 'success'; await click('invoice-processing-preview'); await click('invoice-processing-confirm');
+  assert.equal(invoices.get(14).archived_at, null); assert(!element('invoice-archived-badge'));
+  assert.equal(invoices.get(14).processing.history.length, 4);
+  assert.deepEqual(invoices.get(14).finance, originalFinance); assert.equal(operations.size, paymentsBeforeProcessing);
+  for (const mode of ['malformed', 'wrong-invoice', 'wrong-uuid', 'wrong-action', 'wrong-revision']) {
+    const action = invoices.get(14).processing.manual_status === 'unprocessed' ? 'process_without_stock' : 'reopen';
+    await input('invoice-processing-action', action); await input('invoice-processing-note', `Verify ${mode} acknowledgment recovery`);
+    await click('invoice-processing-preview'); const count = processingOperations.size;
+    processingAckMode = mode; await click('invoice-processing-confirm');
+    assert(element('invoice-processing-pending'), 'Malformed or unrelated HTTP 200 must retain the pending UUID');
+    assert.equal(processingOperations.size, count + 1);
+    const body = calls.filter(call => call.path === '/api/invoices/14/processing/apply').at(-1).body;
+    assert.equal(JSON.parse(sessionStorage.getItem('hub.invoice-processing.14')).body.request_id, body.request_id);
+    processingAckMode = 'valid'; await click('invoice-processing-recover');
+    assert(!element('invoice-processing-pending')); assert.equal(processingOperations.size, count + 1, 'Recovery never writes a replacement operation');
+  }
+  invoices.get(14).processing = { ...invoices.get(14).processing, status: 'received', allowed_actions: [],
+    action_blockers: { process_without_stock: ['invoice_processing_receipt_owned'], archive: ['invoice_processing_archive_receipt_first'] } };
+  await render('/invoices/14'); assert(!element('invoice-processing-action'), 'A receipt-backed invoice is not offered a no-stock processing action');
+  assert(required('invoice-processing-status').textContent.includes('receipt'));
+  await render('/invoices/10');
+  for (const mode of ['malformed', 'wrong-invoice', 'wrong-uuid', 'wrong-revision']) {
+    await click('invoice-payment-open'); await input('invoice-payment-amount', '0.01');
+    const count = operations.size; paymentAckMode = mode; await click('invoice-payment-save');
+    assert(element('invoice-payment-pending'), 'Malformed or unrelated payment HTTP 200 cannot erase recovery state');
+    const body = calls.filter(call => /\/10\/payments$/.test(call.path)).at(-1).body;
+    assert.equal(JSON.parse(sessionStorage.getItem('hub.invoice-payment.10')).body.request_id, body.request_id);
+    assert.equal(operations.size, count + 1);
+    paymentAckMode = 'valid'; await click('invoice-payment-recover');
+    assert(!element('invoice-payment-pending')); assert.equal(operations.size, count + 1);
+  }
   assert(!calls.some(call => /\/issue|\/billing|\/stock\/|\/payment$/.test(call.path)), 'Archive never issues documents or uses status-only payment shortcuts');
   await act(async () => root.unmount());
-  console.log('invoice UI: exact suppliers, collapsed overview, header sorting, scan drop/chooser validation, authenticated exports, exact payments/recovery and receiving links passed');
+  console.log('invoice UI: suppliers, financial overview, original uploads/exports, payment recovery, reasoned processing/archive, exact UUID retries, archived filters and receipt safeguards passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

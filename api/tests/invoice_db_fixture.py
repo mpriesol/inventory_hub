@@ -44,6 +44,7 @@ class InvoiceDatabaseCase(unittest.IsolatedAsyncioTestCase):
             await apply_current_core_schema(connection)
             await connection.execute((root / "012_product_editor.sql").read_text(encoding="utf-8"))
             await connection.execute((root / "033_invoice_archive.sql").read_text(encoding="utf-8"))
+            await connection.execute((root / "051_invoice_processing.sql").read_text(encoding="utf-8"))
         finally:
             await connection.close()
         self.engine = create_async_engine(

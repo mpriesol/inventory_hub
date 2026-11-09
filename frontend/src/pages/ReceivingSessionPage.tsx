@@ -27,6 +27,8 @@ import {
   type FinalizeResult,
 } from '../api/receiving';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
+import { ReceivingRecoveryPanel } from '../components/ReceivingRecoveryPanel';
+import type { ReceivingOperationResult } from '../api/receivingOperations';
 import { formatNumber, sumDecimals } from '../utils/format';
 import { ApiResponseError } from '../api/client';
 import { API_BASE } from '../api/client';
@@ -48,17 +50,20 @@ export function ReceivingSessionPage() {
   const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[];
     entryScan?: { request_id: string; code: string; qty: number }; highlightLineIds?: number[]; closedScan?: boolean } | null;
   const query = new URLSearchParams(location.search);
-  const sessionId = state?.sessionId || query.get('session') || '';
+  const sessionId = String(state?.sessionId || query.get('session') || '');
   const supplier = state?.supplier || query.get('supplier') || 'paul-lange';
 
   const receiptKey = `${supplier}:${sessionId}`;
   const receiptContext = useRef({ key: receiptKey, revision: 0 });
   if (receiptContext.current.key !== receiptKey) receiptContext.current = { key: receiptKey, revision: 0 };
   const [summaryReady, setSummaryReady] = useState(false);
-  const [receiptInfo, setReceiptInfo] = useState<{ currency?: string; warehouse?: { name: string; code: string } }>({});
+  const [receiptInfo, setReceiptInfo] = useState<{ currency?: string; warehouse?: { name: string; code: string };
+    posting_revision?: number; archived?: boolean; reversed?: boolean;
+    last_operation?: { id: string; action: string; reason: string; actor: string; at: string } }>({});
+  const [recoveryLocked, setRecoveryLocked] = useState(false);
   const [sessionState, setSessionState] = useState<{ key: string; status: ReceivingStatus } | null>(null);
   const sessionStatus = sessionState?.key === receiptKey ? sessionState.status : null;
-  const canEdit = summaryReady && (sessionStatus === 'new' || sessionStatus === 'in_progress');
+  const canEdit = summaryReady && !recoveryLocked && !receiptInfo.archived && (sessionStatus === 'new' || sessionStatus === 'in_progress');
   const inactive = sessionStatus === 'completed' || sessionStatus === 'cancelled' || sessionStatus === 'paused';
 
   const [scannedCode,    setScannedCode]    = useState('');
@@ -249,7 +254,7 @@ export function ReceivingSessionPage() {
     try {
       if (invoiceNote.trim()) await saveNote(invoiceNote.trim());
       await saveReceivedItems();
-      const result = await finalizeReceiving(supplier, sessionId, force);
+      const result = await finalizeReceiving(supplier, sessionId, force, receiptInfo.posting_revision || 0);
       if (receiptContext.current !== context) return;
       setSessionState({ key: receiptKey, status: 'completed' });
       setFinalizeResult(result);
@@ -271,7 +276,7 @@ export function ReceivingSessionPage() {
   };
 
   const handleExit = async () => {
-    if (mutation.current || scanner.busy || (canEdit && scanner.hasPending()) || pausing || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
+    if (recoveryLocked || mutation.current || scanner.busy || (canEdit && scanner.hasPending()) || pausing || bulkLoading || savingEdit || (finalizing && !finalizeResult)) return;
     if (!sessionId || inactive || finalizeResult || !summaryReady) {
       navigate('/receiving');
       return;
@@ -317,7 +322,7 @@ export function ReceivingSessionPage() {
     try {
       const current = await getReceivingSummary(supplier, sessionId);
       if (receiptContext.current !== context) return;
-      setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status });
+      setLines(current.lines); setStats(current.summary); setReceiptInfo(current); setSessionState({ key: receiptKey, status: current.status });
       setSummaryReady(true); setQuantityNeedsRefresh(false); setError(null);
     } catch {
       if (receiptContext.current === context) setError(t('receiving.quantityRefreshRequired'));
@@ -467,21 +472,33 @@ export function ReceivingSessionPage() {
   };
 
   const resumeSession = async () => {
-    if (!sessionId || mutation.current || scanner.hasPending()) return;
+    if (!sessionId || recoveryLocked || receiptInfo.archived || mutation.current || scanner.hasPending()) return;
     const context = receiptContext.current;
     mutation.current = true; setPausing(true); setError(null); context.revision += 1;
     try {
       try { await resumeReceiving(supplier, sessionId); } catch { /* Read the authoritative status after a possible lost acknowledgement. */ }
       const current = await getReceivingSummary(supplier, sessionId);
       if (receiptContext.current !== context) return;
-      setLines(current.lines); setStats(current.summary); setSessionState({ key: receiptKey, status: current.status }); setSummaryReady(true);
+      setLines(current.lines); setStats(current.summary); setReceiptInfo(current); setSessionState({ key: receiptKey, status: current.status }); setSummaryReady(true);
       if (current.status === 'paused') setError(t('receiving.products.resumeError'));
     } catch { if (receiptContext.current === context) setError(t('receiving.products.resumeError')); }
     finally { if (receiptContext.current === context) { mutation.current = false; setPausing(false); } }
   };
 
-  const productActionsDisabled = !summaryReady || loading || savingEdit || bulkLoading || pausing || preparingProducts || (finalizing && !finalizeResult) || quantityNeedsRefresh;
-  const exitDisabled = preparingProducts || pausing || scanner.busy || (canEdit && scanner.pending > 0) || bulkLoading || savingEdit || (finalizing && !finalizeResult);
+  const afterRecovery = async (result: ReceivingOperationResult) => {
+    const context = receiptContext.current; context.revision += 1;
+    setSummaryReady(false); setFinalizeResult(null); setFinalizing(false); setShowConfirm(false); setShowCsvModal(false);
+    setSessionState({ key: receiptKey, status: result.status });
+    setReceiptInfo(previous => ({ ...previous, archived: result.archived, posting_revision: result.posting_revision }));
+    try {
+      const current = await getReceivingSummary(supplier, sessionId);
+      if (receiptContext.current !== context) return;
+      setReceiptInfo(current); setLines(current.lines); setStats(current.summary);
+      setSessionState({ key: receiptKey, status: current.status }); setSummaryReady(true); setQuantityNeedsRefresh(false);
+    } catch (failure) { if (receiptContext.current === context) setQuantityNeedsRefresh(true); throw failure; }
+  };
+  const productActionsDisabled = recoveryLocked || !!receiptInfo.archived || !summaryReady || loading || savingEdit || bulkLoading || pausing || preparingProducts || (finalizing && !finalizeResult) || quantityNeedsRefresh;
+  const exitDisabled = recoveryLocked || preparingProducts || pausing || scanner.busy || (canEdit && scanner.pending > 0) || bulkLoading || savingEdit || (finalizing && !finalizeResult);
 
   return (
     <div className="space-y-6">
@@ -511,7 +528,12 @@ export function ReceivingSessionPage() {
 
       {state?.closedScan && inactive && <p role="status">{t('receiving.lookup.closed')}</p>}
       {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(`receiving.sessionStatus.${sessionStatus}`)}</div>}
-      {sessionStatus === 'paused' && <Button data-testid="receiving-resume" disabled={pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
+      {sessionStatus === 'paused' && !receiptInfo.archived && <Button data-testid="receiving-resume" disabled={recoveryLocked || pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
+      {sessionId && sessionStatus && <ReceivingRecoveryPanel key={receiptKey} supplier={supplier} sessionId={sessionId}
+        status={sessionStatus} archived={!!receiptInfo.archived} reversed={!!receiptInfo.reversed}
+        lastOperation={receiptInfo.last_operation}
+        disabled={!summaryReady || pausing || scanner.busy || scanner.pending > 0 || savingEdit || savingNote || bulkLoading || preparingProducts || (finalizing && !finalizeResult)}
+        onChanged={afterRecovery} onLockChange={setRecoveryLocked} />}
       {scanner.pending > 0 && <p role="status" data-testid="receiving-scan-pending">{t(inactive ? 'receiving.closedPendingScans' : 'actions.receiving.pending', { count: scanner.pending })}</p>}
       {scanner.ambiguous && <section role="dialog" aria-modal="true" aria-label={t('receiving.chooseScanLine')} className="rounded-xl border p-4 space-y-3" data-testid="receiving-ambiguous">
         <h2>{t('receiving.chooseScanLine')}</h2><p>{t('receiving.chooseScanLineHelp', { code: scanner.ambiguous.code })}</p>

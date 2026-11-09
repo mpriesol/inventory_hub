@@ -211,6 +211,24 @@ class InvoiceFinanceDatabaseTests(InvoiceDatabaseCase):
         await self.expect_error("invoice_payment_not_reversible", invoice_id, reversal(4), reverse=opening_id)
         await self.assert_no_inventory_effects()
 
+    async def test_paid_unpaid_paid_corrections_append_settlements_without_rewriting_history(self):
+        invoice_id, _ = await self.invoice()
+        paid = await self.apply(invoice_id, self.request('100.00'))
+        original_id = paid['finance']['payments'][-1]['id']
+        original = dict((await self.rows('SELECT * FROM invoice_payments WHERE id=:id', {'id': original_id}))[0])
+        self.assertEqual((paid['finance']['status'], paid['finance']['outstanding_amount']), ('paid', '0.00'))
+        corrected = await self.apply(invoice_id, finance.ReversalRequest(request_id=uuid4(), expected_revision=1,
+            note='Payment was recorded against the wrong invoice'), reverse=original_id)
+        self.assertEqual((corrected['finance']['status'], corrected['finance']['paid_amount']), ('unpaid', '0.00'))
+        repaid = await self.apply(invoice_id, self.request('100.00', expected_revision=2, note='Verified replacement bank entry'))
+        self.assertEqual((repaid['finance']['status'], repaid['finance']['paid_amount']), ('paid', '100.00'))
+        refunded = await self.apply(invoice_id, self.request('100.00', kind='refund', expected_revision=3, note='Actual full refund'))
+        self.assertEqual((refunded['finance']['status'], refunded['finance']['paid_amount']), ('unpaid', '0.00'))
+        self.assertEqual(dict((await self.rows('SELECT * FROM invoice_payments WHERE id=:id', {'id': original_id}))[0]), original)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM invoice_payments'), 5)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM invoice_payment_operations'), 4)
+        await self.assert_no_inventory_effects()
+
     async def test_credit_note_settlement_is_signed_and_never_offsets_other_invoices(self):
         credit_id, _ = await self.invoice(gross="-100.00", document_type="credit_note")
         other_id, _ = await self.invoice()

@@ -42,7 +42,7 @@ function ArchiveDashboard({ stats }: { stats: InvoiceArchiveStats }) {
     </div>) : <p className="muted small">{t('invoiceArchive.noChartData')}</p>;
   };
   return <section className="panel" data-testid="invoice-dashboard">
-    <header><div><h2>{t(stats.direction === 'sale' ? 'invoiceArchive.salesOverview' : 'invoiceArchive.purchaseOverview')}</h2><p className="muted small">{t('invoiceArchive.dashboardScope', { count: stats.total_invoices })}</p></div>
+    <header><div><h2>{t(stats.direction === 'sale' ? 'invoiceArchive.salesOverview' : 'invoiceArchive.purchaseOverview')}</h2><p className="muted small">{t(stats.include_archived ? 'invoiceArchive.dashboardScopeWithArchived' : 'invoiceArchive.dashboardScope', { count: stats.total_invoices })}</p></div>
       {stats.totals_by_currency.length > 1 && <label>{t('invoiceArchive.currency')}<select data-testid="dashboard-currency" value={currency || ''} onChange={event => setChosen(event.target.value)}>
         {stats.totals_by_currency.map(row => <option key={row.currency || 'unknown'} value={row.currency || ''}>{row.currency || t('invoiceArchive.unknownCurrency')}</option>)}
       </select></label>}
@@ -108,10 +108,10 @@ export function InvoicesPage() {
   useEffect(() => {
     if (!showDashboard) return;
     const controller = new AbortController(); setStats(null); setStatsError(false);
-    getInvoiceArchiveStats(applied.direction, controller.signal).then(value => { if (!controller.signal.aborted) setStats(value); })
+    getInvoiceArchiveStats(applied.direction, controller.signal, applied.include_archived === 'true').then(value => { if (!controller.signal.aborted) setStats(value); })
       .catch(() => { if (!controller.signal.aborted) setStatsError(true); });
     return () => controller.abort();
-  }, [applied.direction, refresh, access, showDashboard]);
+  }, [applied.direction, applied.include_archived, refresh, access, showDashboard]);
   useEffect(() => {
     const controller = new AbortController();
     Promise.allSettled([getArchiveSuppliers(controller.signal), getInvoiceSupplierOptions(controller.signal)]).then(results => {
@@ -283,7 +283,8 @@ export function InvoicesPage() {
         <details style={{ marginTop: '.8rem' }}><summary>{t('invoiceArchive.moreFilters')}</summary><div className="fields">
           {(['due_from', 'due_to', 'f_amount_min', 'f_amount_max', 'f_currency'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.startsWith('due') ? 'date' : 'text'} inputMode={key.startsWith('f_amount') ? 'decimal' : undefined} value={filters[key]} onChange={event => update(key, event.target.value)} /></label>)}
           {applied.direction === 'purchase' && <label>{t('invoiceArchive.supplierSearch')}<input value={filters.f_supplier} onChange={event => update('f_supplier', event.target.value)} /></label>}
-          {applied.direction === 'purchase' && <label>{t('invoiceArchive.receiving')}<select value={filters.receiving_status} onChange={event => update('receiving_status', event.target.value)}>{['', 'not_started', 'in_progress', 'completed'].map(value => <option key={value} value={value}>{t(value ? `invoiceArchive.receivingStatus.${value}` : 'invoiceArchive.status.all')}</option>)}</select></label>}
+          {applied.direction === 'purchase' && <label>{t('invoiceArchive.receiving')}<select value={filters.receiving_status} onChange={event => update('receiving_status', event.target.value)}>{['', 'not_started', 'in_progress', 'completed', 'processed_without_stock'].map(value => <option key={value} value={value}>{t(value ? `invoiceArchive.receivingStatus.${value}` : 'invoiceArchive.status.all')}</option>)}</select></label>}
+          <label className="check"><input type="checkbox" data-testid="invoice-include-archived" checked={filters.include_archived === 'true'} onChange={event => update('include_archived', event.target.checked ? 'true' : '')} />{t('invoiceArchive.processing.includeArchived')}</label>
 
         </div></details>
         <div className="actions"><button type="submit" data-testid="invoice-apply-filters">{t('invoiceArchive.applyFilters')}</button><button type="button" className="quiet" onClick={() => apply({ ...invoiceArchiveDefaults, direction: applied.direction })}>{t('invoiceArchive.clearFilters')}</button></div>
@@ -303,12 +304,12 @@ export function InvoicesPage() {
       </tr></thead><tbody>
         {loading ? <tr><td colSpan={10} className="empty" role="status">{t('common.loading')}</td></tr> : !rows.length ? <tr><td colSpan={10} className="empty"><FileText size={22} style={{ display: 'inline', marginRight: '.5rem' }} />{t('invoiceArchive.empty')}</td></tr> : rows.map(invoice => <tr key={invoice.id} data-testid={`invoice-row-${invoice.id}`}>
           <td><input type="checkbox" disabled={working} aria-label={t('invoiceArchive.selectInvoice', { number: invoiceTitle(invoice) })} checked={selected.has(invoice.id)} onChange={event => setSelected(old => { const next = new Set(old); event.target.checked ? next.add(invoice.id) : next.delete(invoice.id); return next; })} /></td>
-          <td><Link to={`/invoices/${invoice.id}`}>{invoiceTitle(invoice)}</Link><span className="secondary file-name">{invoice.original_filename}</span>{invoice.document_type && invoice.document_type !== 'invoice' && <span className="badge">{t(`invoiceArchive.documentType.${invoice.document_type}`, { defaultValue: invoice.document_type })}</span>}</td>
+          <td><Link to={`/invoices/${invoice.id}`}>{invoiceTitle(invoice)}</Link><span className="secondary file-name">{invoice.original_filename}</span>{invoice.document_type && invoice.document_type !== 'invoice' && <span className="badge">{t(`invoiceArchive.documentType.${invoice.document_type}`, { defaultValue: invoice.document_type })}</span>}{invoice.archived_at && <span className="badge">{t('invoiceArchive.processing.archived')}</span>}</td>
           <td>{invoice.supplier_name || invoice.shop_name || invoice.shop_code || '—'}{invoice.customer_name && <span className="secondary">{invoice.customer_name}</span>}</td>
           <td>{invoiceDate(invoice.invoice_date, i18n.language)}</td><td>{invoiceDate(invoice.due_date, i18n.language)}</td>
           <td className="amount">{invoiceMoney(invoice.finance ? invoice.finance.gross_amount : invoice.total_with_vat ?? invoice.total_amount, invoice.currency, i18n.language)}</td>
           <td className="amount">{invoiceMoney(invoice.finance?.outstanding_amount, invoice.currency, i18n.language)}</td>
-          <td><InvoicePaymentBadge invoice={invoice} /></td>{applied.direction === 'purchase' && <td><span className="badge">{t(`invoiceArchive.receivingStatus.${invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</span></td>}
+          <td><InvoicePaymentBadge invoice={invoice} /></td>{applied.direction === 'purchase' && <td><span className="badge">{t(`invoiceArchive.receivingStatus.${invoice.processing_status === 'processed_without_stock' ? 'processed_without_stock' : invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</span></td>}
           <td><button className="quiet" disabled={working} data-testid={`invoice-download-${invoice.id}`} aria-label={t('invoiceArchive.downloadInvoice', { number: invoiceTitle(invoice) })} onClick={() => download(invoice.id)}><Download size={15} /></button></td>
         </tr>)}
       </tbody></table></div>

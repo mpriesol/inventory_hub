@@ -191,6 +191,7 @@ jobs:
         run: |
           node frontend/tests/receiving-scan-ui.cjs
           node frontend/tests/receiving-lookup-ui.cjs
+          node frontend/tests/receiving-recovery-ui.cjs
 
       - name: Movement history and dashboard interactions
         run: node frontend/tests/stock-history-ui.cjs

@@ -226,6 +226,58 @@
         "stock_quantity_unit_mismatch": "Kusy, páry a balenia vyžadujú celé množstvá; metre môžu mať najviac tri desatinné miesta.",
         "stock_item_required": "Táto operácia vyžaduje skladový tovar. Služby nemajú fyzické skladové zásoby."
       }
+    },
+    "recovery": {
+      "title": "Oprava a archív príjemky",
+      "action": "Akcia",
+      "reason": "Dôvod",
+      "reasonPlaceholder": "Uveďte dôvod opravy alebo archivácie",
+      "preview": "Zobraziť náhľad",
+      "apply": "Použiť",
+      "confirm": "Potvrdiť operáciu",
+      "newPreview": "Nový náhľad",
+      "retry": "Zopakovať pôvodnú operáciu",
+      "checking": "Overujem uložený výsledok…",
+      "applied": "Operácia je uložená.",
+      "failed": "Operáciu sa nepodarilo dokončiť.",
+      "stale": "Príjemka sa medzičasom zmenila. Načítajte nový náhľad.",
+      "pending": "Výsledok zatiaľ nie je potvrdený. Overte ho alebo zopakujte presne tú istú požiadavku.",
+      "noStockChange": "Táto operácia nemení množstvá na sklade.",
+      "undoHelp": "Oprava príjmu pridá opačné skladové pohyby. Pôvodný príjem, skeny a história zostanú zachované.",
+      "archived": "Archivovaná",
+      "includeArchived": "Zobraziť aj archivované",
+      "openRecovery": "Opraviť alebo archivovať",
+      "noReceipt": "Vyberte príjemku s uloženou reláciou.",
+      "before": "Pred",
+      "change": "Zmena",
+      "after": "Po",
+      "availableAfter": "Voľné po oprave",
+      "noImpacts": "Táto operácia nemení zásoby.",
+      "blocked": "Operáciu blokuje stav príjemky. Skontrolujte uvedený dôvod.",
+      "reverse": "Stornovať príjem",
+      "reopen": "Znovu otvoriť príjem",
+      "archive": "Archivovať",
+      "restore": "Obnoviť z archívu",
+      "product": "Produkt",
+      "errors": {
+        "receiving_reversal_used_stock": "Tovar z príjemky už bol použitý. Použite bežnú inventúrnu opravu alebo vrátenie tovaru.",
+        "receiving_reversal_committed_stock": "Rezervované množstvo alebo karanténa bránia presnému vráteniu príjmu.",
+        "receiving_reversal_historical": "Tento historický príjem sa nedá presne vrátiť. Použite bežnú inventúrnu opravu.",
+        "receiving_reversal_missing_movement": "Pôvodný skladový pohyb sa nedá jednoznačne overiť.",
+        "receiving_reversal_fifo_required": "Presné vrátenie vyžaduje pôvodné, neporušené FIFO vrstvy.",
+        "receiving_operation_stale": "Príjemka sa zmenila. Načítajte nový náhľad.",
+        "receiving_operation_expired": "Platnosť náhľadu skončila. Načítajte nový náhľad.",
+        "invoice_archived": "Najskôr obnovte faktúru z archívu.",
+        "invoice_processed_without_stock": "Faktúra je spracovaná bez skladového pohybu. Najskôr ju vráťte na nespracovanú."
+      },
+      "lastOperation": "Posledná zmena príjemky",
+      "history": "História úprav príjemky",
+      "historyEmpty": "Príjemka zatiaľ nemá žiadne opravy ani archívne operácie.",
+      "historyLoadFailed": "Históriu príjemky sa nepodarilo načítať.",
+      "date": "Dátum",
+      "actor": "Používateľ",
+      "stockEffect": "Vplyv na sklad",
+      "historyLimit": "Posledných 50 dokončených zmien."
     }
   },
   "suppliers": {
@@ -1775,7 +1827,8 @@
       "stock_projection_sale_factor_invalid": "Prevod predajnej jednotky na kusy nie je platný. Skontroluj potvrdené prepojenie variantu.",
       "stock_publication_warehouse_held": "Sklad je uzamknutý pre riadené odosielanie. Dokonči a over údržbu, potom zámok výslovne uvoľni.",
       "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie.",
-      "stock_projection_mapping_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu."
+      "stock_projection_mapping_unverified": "Prepojenie s e-shopom ešte nie je overené. Otvorte párovanie produktu, pripravte náhľad a potvrďte správnu väzbu.",
+      "order_collection_upgates_http_400": "Upgates odmietol načítanie zoznamu objednávok (HTTP 400). Treba overiť časové filtre a podporované parametre požiadavky."
     },
     "origins": {
       "cash-register": "Pokladňa",
@@ -4625,7 +4678,7 @@
     "archive": "Doklady",
     "purchaseOverview": "Prehľad dodávateľských faktúr",
     "salesOverview": "Prehľad dokladov z e-shopov",
-    "dashboardScope": "Celý archív tejto evidencie: {{count}} dokladov. Súhrn sa nemení podľa filtrov tabuľky.",
+    "dashboardScope": "Aktívne doklady tohto smeru: {{count}}. Filtre tabuľky tento prehľad nemenia.",
     "invoiceValue": "Hodnota dokladov s DPH",
     "outstanding": "Zostáva uhradiť",
     "documentsCount": "Doklady: {{count}}",
@@ -4657,7 +4710,8 @@
       "in_progress": "Prebieha",
       "completed": "Prijaté",
       "paused": "Pozastavený",
-      "cancelled": "Zrušený"
+      "cancelled": "Zrušený",
+      "processed_without_stock": "Spracovaná bez skladového pohybu"
     },
     "documentType": {
       "invoice": "Faktúra",
@@ -4818,7 +4872,72 @@
     "archiveProcessing": "Automatické spracovanie dodávateľských dokladov",
     "archiveProgress": "Skontrolované doklady: {{count}}. Pokračovanie prebieha automaticky.",
     "archiveWaiting": "Čaká na automatické spracovanie",
-    "archiveIssue": "Doklad vyžaduje kontrolu ({{code}}). Pri dočasnej chybe sa spracovanie zopakuje automaticky."
+    "archiveIssue": "Doklad vyžaduje kontrolu ({{code}}). Pri dočasnej chybe sa spracovanie zopakuje automaticky.",
+    "processing": {
+      "title": "Spracovanie a archív dokladu",
+      "scope": "Tieto akcie menia evidenciu dokladu. Pred potvrdením uvidíte výsledný stav v náhľade.",
+      "active": "Aktívna",
+      "archived": "Archivovaná",
+      "archivedHelp": "Doklad je vyradený z aktívnych zoznamov a finančných súčtov. Pred úpravou platieb, údajov alebo príjmom tovaru ho obnovte.",
+      "includeArchived": "Zobraziť aj archivované doklady",
+      "action": "Akcia",
+      "state": "Stav spracovania",
+      "visibility": "Zobrazenie",
+      "preview": "Zobraziť náhľad",
+      "previewTitle": "Kontrola zmeny dokladu",
+      "confirm": "Potvrdiť zmenu dokladu",
+      "noEffects": "Skladové množstvá, skladové pohyby, nákupné ceny aj evidované úhrady zostanú bez zmeny.",
+      "saved": "Zmena dokladu je uložená s dôvodom a auditom.",
+      "failed": "Zmenu dokladu sa nepodarilo dokončiť.",
+      "uncertain": "Výsledok zatiaľ nie je potvrdený. Overte uložený výsledok alebo zopakujte tú istú požiadavku; nezačínajte ďalšiu operáciu.",
+      "recover": "Overiť uložený výsledok",
+      "retry": "Zopakovať pôvodnú požiadavku",
+      "history": "História spracovania dokladu",
+      "receiptFirst": "Faktúra má príjemku. Pred zmenou stavu faktúry otvorte príjemku a vykonajte opravu alebo archiváciu tam.",
+      "statuses": {
+        "unprocessed": "Nespracovaná",
+        "processed_without_stock": "Spracovaná bez skladového pohybu",
+        "receiving": "Rozpracovaný príjem",
+        "received": "Spracovaná príjemkou"
+      },
+      "actions": {
+        "process_without_stock": "Označiť ako spracovanú bez skladového pohybu",
+        "reopen": "Vrátiť na nespracovanú",
+        "archive": "Archivovať doklad",
+        "restore": "Obnoviť doklad"
+      },
+      "help": {
+        "process_without_stock": "Použite, keď je doklad vybavený a tovar sa cez neho nemá prijímať. Uveďte dôvod. Táto akcia nepotvrdzuje fyzickú zásobu ani úhradu.",
+        "reopen": "Zruší ručné označenie spracovania. Pôvodné označenie aj oba dôvody zostanú v histórii.",
+        "archive": "Skryje doklad z aktívnych zoznamov a súčtov. Pôvodné súbory, história úhrad a dôkazy príjmu zostanú dostupné. Archiváciu možno odvolať.",
+        "restore": "Vráti doklad do aktívnych zoznamov a súčtov. Predchádzajúce spracovanie a úhrady zostanú zachované; pripojená príjemka sa obnovuje samostatne."
+      },
+      "errors": {
+        "invoice_not_found": "Faktúra už neexistuje.",
+        "invoice_processing_changed": "Faktúra alebo jej príjemka sa medzičasom zmenila. Obnovte doklad a pripravte nový náhľad.",
+        "invoice_processing_purchase_required": "Táto zmena spracovania je dostupná iba pre dodávateľské faktúry.",
+        "invoice_archived": "Najprv obnovte archivovanú faktúru.",
+        "invoice_processing_receipt_owned": "Faktúra bola spracovaná skutočným príjmom. Opravte príjemku; nemožno ju označiť ako spracovanú bez skladového pohybu.",
+        "invoice_processing_receiving_active": "Najprv dokončite alebo opravte rozpracovaný príjem.",
+        "invoice_processing_already_processed": "Faktúra je už označená ako spracovaná bez skladového pohybu.",
+        "invoice_processing_not_manually_processed": "Faktúra nemá ručné označenie spracovania, ktoré by sa dalo odvolať.",
+        "invoice_already_archived": "Faktúra je už archivovaná.",
+        "invoice_not_archived": "Faktúra je už aktívna.",
+        "invoice_processing_archive_receipt_first": "Najprv archivujte alebo stornujte pripojenú príjemku.",
+        "invoice_processing_request_conflict": "Toto označenie požiadavky už patrí inej operácii. Obnovte pôvodný výsledok.",
+        "invoice_processing_operation_not_found": "Dokončený výsledok tejto požiadavky zatiaľ nie je uložený. Môžete zopakovať presne tú istú požiadavku.",
+        "invoice_processing_response_invalid": "Odpoveď servera nezodpovedá tejto operácii. Zachovajte pôvodnú operáciu a overte jej výsledok."
+      },
+      "archivedReceiptHelp": "Doklad obsahuje archivované príjemky uvedené nižšie. Ich pôvodné skladové pohyby zostávajú v histórii. Spracovanie bez skladového pohybu nevytvorí nový príjem.",
+      "historicalReceived": "Archivovaná príjemka; pôvodný príjem zachovaný",
+      "historicalReversed": "Archivovaná príjemka; príjem bol vrátený opačnými pohybmi",
+      "historicalUnposted": "Archivovaná príjemka bez dokončeného príjmu"
+    },
+    "managePayment": "Zaznamenať alebo opraviť úhradu",
+    "paymentDirectionHelp": "Úhrada zvýši evidovanú uhradenú sumu, vrátenie ju zníži. Nesprávny záznam môžete odvolať v histórii úhrad.",
+    "dashboardScopeWithArchived": "Vrátane archivovaných dokladov tohto smeru: {{count}}. Filtre tabuľky tento prehľad nemenia.",
+    "operationStorageUnavailable": "Prehliadač nedokáže bezpečne uložiť rozpracovanú operáciu. Nič sa neodoslalo. Povoľte úložisko pre túto stránku a skúste to znova.",
+    "operationActorChanged": "Prihlásený používateľ sa zmenil. Pôvodnú operáciu musí dokončiť ten istý používateľ."
   },
   "invoiceCalendar": {
     "title": "Kalendár splatností",

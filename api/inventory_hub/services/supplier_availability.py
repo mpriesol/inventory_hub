@@ -98,16 +98,8 @@ async def overview(db):
         elif rows.get(code):
             value["latest_run"] = await latest_run(db, rows[code].supplier_id, rows[code].feed_key)
         if value.get("publication"):
-            from inventory_hub.product_editor_models import ProductEditorPublication
-            # One current outcome per card/channel. An unresolved write keeps
-            # priority over later diagnostic rejections until explicitly settled.
-            latest = select(ProductEditorPublication.state, func.row_number().over(
-                partition_by=(ProductEditorPublication.product_id, ProductEditorPublication.shop_id),
-                order_by=(case((ProductEditorPublication.state.in_(("sending", "uncertain")), 0), else_=1),
-                          ProductEditorPublication.created_at.desc(), ProductEditorPublication.id.desc())).label("position"))\
-                .where(ProductEditorPublication.document["workflow"].astext == "supplier_availability",
-                       ProductEditorPublication.document["supplier"].astext == code,
-                       ProductEditorPublication.document["shop_code"].astext == value["publication"]["shop_code"]).subquery()
+            from inventory_hub.services.supplier_availability_publication import current_publications
+            latest = current_publications(code, value["publication"]["shop_code"])
             counts = (await db.execute(select(latest.c.state, func.count()).where(latest.c.position == 1)
                 .group_by(latest.c.state))).all()
             value["publication"] = {**value["publication"], "counts":dict(counts)}
