@@ -7,6 +7,7 @@ import { getProductTrace, type ProductTrace } from '../api/productTrace';
 import { formatNumber } from '../utils/format';
 import { Button } from '../components/ui/Button.new';
 import { ProductThumb } from '../components/product/ProductDisplay';
+import { StockCardLink } from '../components/product/StockCardLink';
 import { catalogImageUrl } from '../api/catalog';
 import './ProductTracePage.css';
 
@@ -76,7 +77,7 @@ export function ProductTracePage() {
           <section className="trace-panel trace-card" aria-labelledby="trace-product-name">
             <ProductThumb key={product.image_url || product.id} url={catalogImageUrl(product.image_url)} name={product.name} size={140} />
             <div className="trace-card-description"><code>{product.sku}</code><h2 id="trace-product-name">{product.name}</h2><p>{product.brand || c('brandUnknown')} · {t(`productEditor.itemTypes.${product.item_type}`)} · {unit(product.stock_unit)}</p><p>EAN: {product.eans.length ? product.eans.join(' · ') : c('unknown')}</p></div>
-            <div className="trace-card-links">{(product.shops || []).map(shop => <div className="trace-shop-links" key={shop.code}><strong>{shop.name}</strong>{shop.url ? <a href={shop.url} target="_blank" rel="noopener noreferrer">{c('storefront')}</a> : <span>{c('linkMissing')}</span>}{shop.admin_url && <a href={shop.admin_url} target="_blank" rel="noopener noreferrer">{c('administration')}</a>}</div>)}<Link to={product.card_url}>{c('openCard')}</Link><Link to={`/stock/movements?${new URLSearchParams({ sku: product.sku })}`}>{c('allMovements')}</Link></div>
+            <div className="trace-card-links">{(product.shops || []).map(shop => <div className="trace-shop-links" key={shop.code}><strong>{shop.name}</strong>{shop.url ? <a href={shop.url} target="_blank" rel="noopener noreferrer">{c('storefront')}</a> : <span>{c('linkMissing')}</span>}{shop.admin_url && <a href={shop.admin_url} target="_blank" rel="noopener noreferrer">{c('administration')}</a>}</div>)}<StockCardLink productId={product.id} sku={product.sku} onChanged={() => setRetry(value => value + 1)}>{c('openCard')}</StockCardLink><Link to={`/stock/movements?${new URLSearchParams({ sku: product.sku })}`}>{c('allMovements')}</Link></div>
           </section>
           <div className="trace-overview">
             <section className="trace-panel"><h2>{c('stock')}</h2>{product.item_type === 'service' ? <p>{t('productEditor.serviceHelp')}</p> : !data.stocks.length ? <p className="trace-empty">{c('noStock')}</p> : <div className="trace-scroll" tabIndex={0} role="region" aria-label={c('stock')}><table className="trace-table"><thead><tr><th scope="col">{c('warehouse')}</th>{['onHand', 'reserved', 'quarantined', 'available'].map(key => <th scope="col" className="trace-number" key={key}>{c(key)}</th>)}</tr></thead><tbody>{data.stocks.map(stock => <tr key={stock.warehouse_code}><th scope="row">{stock.warehouse_name}{!stock.confirmed && <small>{c('notConfirmed')}</small>}</th>{[stock.on_hand, stock.reserved, stock.quarantined, stock.available].map((quantity, index) => <td className="trace-number" key={index}>{stock.confirmed ? `${number(quantity)} ${unit(product.stock_unit)}` : c('unknown')}</td>)}</tr>)}</tbody></table></div>}</section>
@@ -99,7 +100,7 @@ export function ProductTracePage() {
             <ProductThumb url={catalogImageUrl(feed.image_url)} name={feed.name} size={80} />
             <div className="trace-feed-description"><strong>{feed.name}</strong><p>{feed.supplier_name} · <code>{feed.supplier_sku}</code>{feed.manufacturer_sku && ` · ${c('manufacturerCode')}: ${feed.manufacturer_sku}`}</p>
               <p>EAN: {feed.eans.join(' · ') || c('unknown')}</p><small>{c('observedAt', { date: date(feed.last_seen_at, true) })}{!feed.is_active && ` · ${c('feedInactive')}`}</small>
-              <p><Link to={feed.catalog_url}>{c('openCatalog')}</Link>{feed.hub_product_id ? <> · <Link to={`/product-trace?product_id=${feed.hub_product_id}`}>{feed.hub_sku}</Link></> : <> · {c('feedOnly')}</>}</p>
+              <p><Link to={feed.catalog_url}>{c('openCatalog')}</Link>{feed.hub_product_id ? <> · <StockCardLink productId={feed.hub_product_id} sku={feed.hub_sku} onChanged={() => setRetry(value => value + 1)}>{feed.hub_sku}</StockCardLink></> : <> · {c('feedOnly')}</>}</p>
             </div><div className="trace-feed-values"><p>{c('purchaseNet')}: <strong>{money(feed.purchase_price, feed.purchase_currency)}</strong></p><p>{c('retailGross')}: <strong>{money(feed.recommended_price, feed.catalog_currency)}</strong></p><p>{c('supplierStock')}: {number(feed.stock_qty)}{feed.supplier_availability_text && ` · ${feed.supplier_availability_text}`}</p></div>
           </article>)}</div>}
           {data.feed_matches?.truncated && <p>{c('feedTruncated')}</p>}

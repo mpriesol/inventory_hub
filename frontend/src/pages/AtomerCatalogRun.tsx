@@ -1,6 +1,6 @@
 import React, {useEffect, useState} from 'react';
 import {useTranslation} from 'react-i18next';
-import {Link} from 'react-router-dom';
+import {StockCardLink} from '../components/product/StockCardLink';
 import {hubRequest} from '../api/access';
 
 type Family = {family_key:string; reason:string|null; leaves:number};
@@ -100,7 +100,7 @@ export function AtomerCatalogRun({revision,onFamily}:{revision:number;onFamily:(
         <thead><tr>{['SKU','EAN',m('card'),'xTrek','BIKETREK',m('result')].map(k=><th key={k}>{k}</th>)}</tr></thead>
         <tbody>{proofs.map(p=><tr key={p.code}><td>{p.code}</td><td>{p.evidence.ean||'—'}</td>
           <td>{p.evidence.hub_sku && p.evidence.card_id
-            ? <Link to={'/products/'+encodeURIComponent(p.evidence.hub_sku)}>{p.evidence.card_id}</Link>
+            ? <StockCardLink productId={p.evidence.card_id} sku={p.evidence.hub_sku}>{p.evidence.card_id}</StockCardLink>
             : p.evidence.card_id??'—'}</td>
           <td>{nativeId(p.evidence.xtrek)}</td><td>{nativeId(p.evidence.biketrek)}</td><td>{p.evidence.reason||m('proof.'+p.state)}</td></tr>)}</tbody>
       </table></div>}

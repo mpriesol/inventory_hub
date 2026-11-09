@@ -6,6 +6,7 @@ import json
 import os
 import unittest
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -286,19 +287,31 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_retired_mapping_does_not_shadow_current_card_or_create_false_shared_stock(self):
         async with self.transaction() as db:
+            former = await db.scalar(select(ShopProduct).where(ShopProduct.shop_id == self.shops["biketrek"],
+                ShopProduct.product_id == self.products["BIKE-2"]))
+            former_id = former.id
+            # Respect the retirement trigger: only an existing mapping named
+            # in a prepared consolidation review may become historical.
             review = ProductConsolidation(id=str(uuid4()), request_hash="c" * 64, preview_hash="d" * 64,
-                status="completed", expires_at=service.now(), completed_at=service.now(), result={}, document={})
+                status="prepared", expires_at=service.now() + timedelta(minutes=30),
+                document={"local": {"mappings": [{"id": former_id}]}})
             db.add(review)
             await db.flush()
-            db.add(ShopProduct(shop_id=self.shops["biketrek"], product_id=self.products["BIKE-2"],
-                external_code="OBSOLETE-NATIVE-CODE", parent_code="OLD-POS", is_variant=True,
-                is_listed=False, retired_at=service.now(), retired_by_consolidation_id=review.id))
+            former.retired_at, former.retired_by_consolidation_id = service.now(), review.id
+            await db.flush()
+            replacement = ShopProduct(shop_id=self.shops["biketrek"], product_id=self.products["BIKE-2"],
+                external_code="CURRENT-NATIVE-CODE", parent_code="CURRENT-PARENT", is_variant=True)
+            db.add(replacement)
+            await db.flush()
+            replacement_id = replacement.id
+            review.status, review.completed_at, review.result = "completed", service.now(), {"retired_mapping_ids": [former_id]}
         row = await self.detail()
         shop = next(item for item in row["shops"] if item["shop_code"] == "biketrek")
         self.assertTrue(shop["mapped"])
         self.assertFalse(shop.get("shared_stock", False))
-        self.assertEqual(shop["mapping"]["code"], "BIKE-2")
-        self.assertNotIn("OBSOLETE-NATIVE-CODE", json.dumps(row))
+        self.assertEqual(shop["mapping"]["code"], "CURRENT-NATIVE-CODE")
+        self.assertEqual(shop["mapping"]["id"], replacement_id)
+        self.assertNotEqual(shop["mapping"]["id"], former_id)
 
     async def test_create_card_replay_conflict_and_no_stock_or_shop_side_effects(self):
         before = await self.snapshot()
@@ -791,7 +804,8 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         result = await self.save([self.change(row, common={"name": "Common name"}, variant={"sale_price_gross": "150"},
             shops={"biketrek": {"name": "BIKETREK title", "sale_price_gross": "145", "visible": False}})])
         shops = {shop["shop_code"]: shop for shop in result["results"][0]["row"]["shops"]}
-        self.assertEqual(shops["biketrek"]["effective"], {"name": "BIKETREK title", "sale_price_gross": "145.00", "visible": False})
+        self.assertEqual(shops["biketrek"]["effective"], {"name": "BIKETREK title", "sale_price_gross": "145.00", "visible": False,
+            "shop_url": None, "shop_admin_url": None})
         self.assertEqual(shops["xtrek"]["effective"]["name"], "Common name")
         self.assertEqual(shops["xtrek"]["effective"]["sale_price_gross"], "150.00")
         self.assertTrue(all(shop["state"] == "saved_unpublished" for shop in shops.values()))
@@ -800,7 +814,8 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         current = await self.detail()
         reset = await self.save([self.change(current, shops={"biketrek": {"name": None, "sale_price_gross": None, "visible": None}})])
         shop = next(item for item in reset["results"][0]["row"]["shops"] if item["shop_code"] == "biketrek")
-        self.assertEqual(shop["effective"], {"name": "Common name", "sale_price_gross": "150.00", "visible": True})
+        self.assertEqual(shop["effective"], {"name": "Common name", "sale_price_gross": "150.00", "visible": True,
+            "shop_url": None, "shop_admin_url": None})
 
     async def test_editing_one_shared_sku_never_changes_siblings_under_the_pos_umbrella(self):
         row = await self.detail("BIKE-2")

@@ -5,6 +5,7 @@ const ts = require('typescript');
 const { JSDOM } = require('jsdom');
 const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://hub.example.test/products' });
 global.window = dom.window; global.document = dom.window.document;
+global.sessionStorage = dom.window.sessionStorage;
 Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true });
 global.HTMLElement = dom.window.HTMLElement; global.IS_REACT_ACT_ENVIRONMENT = true;
 dom.window.HTMLElement.prototype.scrollIntoView = () => {};
@@ -56,13 +57,17 @@ const hash = (id, revision) => `${id.toString(16).padStart(4, '0')}${revision.to
 const makeRow = id => ({ id, item_type:'stock', stock_unit:'pcs', item_definition_locked:id===1, is_active: true, supplier_linked: true, sku: `SKU-${id}`, group: id < 3 ? { id: 10, code: 'BIKE', name: 'Fixture bike' } : null,
   attributes: [{ name: id === 1 ? 'Veľkosť' : 'Size', value: id === 1 ? 'M' : 'L' }, { name: id === 1 ? 'Farba' : 'Colour', value: 'Blue' }, { name: 'Wheel size', value: '29' }], eans: [`000000000${String(id).padStart(4, '0')}`],
   supplier_availability: { available: true, fresh: ![2, 3, 4, 5].includes(id), status: ({ 2: 'stale', 3: 'missing_link', 4: 'missing_observation', 5: 'conflict' })[id] || 'fresh', label: [2, 3, 4, 5].includes(id) ? 'overíme' : 'do 5 dní', source: 'fixture-supplier', quantity: id === 2 ? '900' : '6', quantity_kind: 'minimum', observed_at: null, expires_at: null, orderable: true },
-  supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }], image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
-  common: { name: `Fixture product ${id}`, brand: 'Fixture', internal_note: '' },
+  supplier_codes: [{ supplier_code: 'fixture-supplier', code: `SUP-${id}` }],
+  suppliers: [{ supplier_id: 8, supplier_code: 'fixture-supplier', supplier_name: 'Fixture supplier', supplier_product_id: 81 + id,
+    supplier_sku: `SUP-${id}`, product_url: `https://supplier.example.test/exact-${id}`, is_primary: true, is_active: true }],
+  image_url: id === 1 ? 'https://images.example.test/item.jpg' : null, revision: 3, snapshot_hash: hash(id, 3),
+  common: { name: `Fixture product ${id}`, brand: 'Fixture', internal_note: '', description: `Source description ${id}` },
   variant: { sale_price_gross: '199.90', vat_rate: '23.00', note: '' },
   warehouse: { code: 'main', location: `A-${String(id).padStart(2, '0')}`, min_quantity: '0' },
   stock: id === 2 ? { known: false, qty_on_hand: null, qty_reserved: null, qty_quarantined: null, qty_available: null, avg_cost: null, total_value: null }
     : { known: true, qty_on_hand: '3', qty_reserved: '3', qty_quarantined: '0', qty_available: '0', avg_cost: '0.0000', total_value: '0.0000' },
   shops: ['biketrek', 'xtrek'].map(shop_code => ({ shop_code, mapped: true, shop_url: `https://${shop_code}.example.test/product-${id}`, shop_admin_url: `https://${shop_code}.example.test/admin/product-${id}`, overrides: { name: null, sale_price_gross: null, visible: null },
+    mapping: { code: `SKU-${id}`, external_product_id: String(1000 + id), external_variant_id: null, parent_code: null, is_variant: false },
     effective: { name: `Fixture product ${id}`, sale_price_gross: '199.90', visible: true },
     observed: { name: `Observed ${shop_code} ${id}`, price: '189.90', price_basis: 'unknown', visible: false }, state: 'inherited' })),
   overrides: { common: {}, variant: {}, warehouses: {}, shops: {} },
@@ -82,16 +87,64 @@ const migrationResult = body => ({created_at:'2026-10-21T16:00:00Z',preview_hash
 const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: [] }, { id: 2, code: 'SV', name: 'Workshop', kind: 'service', aliases: [] }];
 const calls = [], saves = new Map(), saveBodies = new Map();
 const publications = new Map(); let publicationWrites = 0, publicationMode = 'valid';
+const adjustmentPreviews = new Map(); let adjustmentWrites = 0;
+const detailHolds = { card: null, grid: null }, heldDetails = { card: [], grid: [] };
 let listMode = 'valid', saveMode = 'valid', conflictId = null, resolveList, rejectSave, linkRefreshMode = 'complete', detailMode = 'valid', resolveDetail;
 const saveCalls = () => calls.filter(call => call.path === '/api/product-editor/save');
-const rowForWarehouse = (row, warehouseCode) => ({ ...clone(row), warehouse: warehouseCode ? clone(row.warehouse) : null });
+const rowForWarehouse = (row, warehouseCode) => ({ ...clone(row),
+  snapshot_hash: warehouseCode === 'other' ? `${row.snapshot_hash.slice(0, -1)}b` : row.snapshot_hash,
+  warehouse: warehouseCode ? { ...clone(row.warehouse), ...(warehouseCode === 'other' ? { location: `OTHER-${row.id}` } : {}),
+    ...clone(row.overrides.warehouses?.[warehouseCode] || {}), code: warehouseCode } : null,
+  stock: warehouseCode === 'other' ? { ...clone(row.stock), known: true, qty_on_hand: '21', qty_reserved: '1', qty_quarantined: '0', qty_available: '20' } : clone(row.stock),
+  warehouse_context: editorOptions.warehouses.find(value => value.code === warehouseCode) || null });
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
-  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options', '/api/sku-policy/', '/api/product-consolidations/selection'].some(prefix => path.startsWith(prefix)), 'The grid calls only its protected editing and explicit review APIs');
+  assert(['/api/product-editor/', '/api/product-links/refresh', '/api/supplier-card-links/options', '/api/sku-policy/', '/api/product-consolidations/selection', '/api/fifo/', '/api/stock-adjustments/'].some(prefix => path.startsWith(prefix)), 'The grid/card calls only its protected editing, stock read and explicit review APIs');
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-'));
   assert(!path.includes('synthetic-'), 'Credentials never enter query strings');
   const url = new URL(path, dom.window.location.origin);
+  if (url.pathname.startsWith('/api/fifo/')) {
+    assert.equal(init.method, 'GET', 'Opening the shared card never writes physical stock or FIFO');
+    if (url.pathname === '/api/fifo/options') return reply({ warehouses: editorOptions.warehouses });
+    if (url.pathname === '/api/fifo/history') return reply({ movements: [], total: 0 });
+    if (url.pathname === '/api/fifo/stock') {
+      const row = rows.get(Number(url.searchParams.get('product_id')));
+      const warehouse = editorOptions.warehouses.find(value => value.code === url.searchParams.get('warehouse_code'));
+      return reply({ product_id: row.id, sku: row.sku, item_type: row.item_type, stock_unit: row.stock_unit, warehouse,
+        balance: row.stock.known ? { qty_on_hand: row.stock.qty_on_hand, qty_reserved: row.stock.qty_reserved,
+          qty_quarantined: row.stock.qty_quarantined, qty_available: row.stock.qty_available } : null,
+        tracking_confirmed: row.stock.known, snapshot_hash: row.snapshot_hash, layers: [], total: 0, limit: 50, offset: 0,
+        valuation: { mode: row.stock.known ? 'legacy' : 'unconfirmed', revision: 0,
+          known_value: row.stock.total_value, provisional_value: null, unknown_qty: null, provisional_qty: null,
+          quarantined_qty: row.stock.qty_quarantined, value_complete: row.stock.known,
+          avg_cost: row.stock.avg_cost, total_value: row.stock.total_value, next_layer: null } });
+    }
+    throw new Error('Unexpected stock-card FIFO endpoint ' + path);
+  }
+  if (url.pathname === '/api/stock-adjustments/preview') {
+    assert.equal(init.method, 'POST'); assert.equal(body.sku, 'SKU-1'); assert.equal(body.warehouse_code, 'main');
+    const row = rows.get(1), preview = { ...clone(body), before_quantity: row.stock.qty_on_hand,
+      delta: String(Number(body.counted_quantity) - Number(row.stock.qty_on_hand)) };
+    const result = { id: body.request_id, status: 'prepared', preview_hash: 'a'.repeat(64), preview, result: null };
+    adjustmentPreviews.set(result.id, result);
+    return reply(result);
+  }
+  const adjustmentApply = url.pathname.match(/^\/api\/stock-adjustments\/([^/]+)\/apply$/);
+  if (adjustmentApply) {
+    assert.equal(init.method, 'POST');
+    assert.deepEqual(body, { preview_hash: 'a'.repeat(64), confirmed: true, quantities_verified: true, costs_documented: true });
+    const operation = adjustmentPreviews.get(adjustmentApply[1]); assert(operation);
+    const row = rows.get(1), counted = operation.preview.counted_quantity;
+    if (!operation.result) {
+      adjustmentWrites++;
+      row.stock = { ...row.stock, qty_on_hand: counted,
+        qty_available: String(Number(counted) - Number(row.stock.qty_reserved) - Number(row.stock.qty_quarantined)) };
+      operation.result = { adjustment_id: operation.id, movement_id: adjustmentWrites,
+        product_id: row.id, warehouse_id: 7, counted_quantity: counted, delta: operation.preview.delta };
+    }
+    return reply(operation.result);
+  }
   if (url.pathname === '/api/product-consolidations/selection') {
     assert.equal(init.method, 'GET');
     const ids = url.searchParams.getAll('product_ids').map(Number);
@@ -198,11 +251,19 @@ global.fetch = async (path, init = {}) => {
     const before = { common: { ...row.common, name: 'Audit previous name' }, variant: { ...row.variant, sale_price_gross: '109.90' },
       warehouse: clone(row.warehouse), shops: clone(row.shops), overrides: {}, snapshot_hash: hash(row.id, 1) };
     const after = { ...clone(before), common: { ...before.common, name: 'Audit current name' }, variant: { ...before.variant, sale_price_gross: '119.95' }, snapshot_hash: hash(row.id, 2) };
-    return reply({ ...row, audit: [{ id: 81, request_id: '00000000-0000-4000-8000-000000000081', revision: 2,
-      created_at: '2026-09-23T12:00:00Z', before, after }] });
+    const response = { ...row, audit: [{ id: 81, request_id: '00000000-0000-4000-8000-000000000081', revision: 2,
+      created_at: '2026-09-23T12:00:00Z', before, after }] };
+    // Card reads carry their abort signal; the parent grid starts an independent
+    // scoped refresh after a confirmed mutation. Freeze exact response snapshots
+    // so tests can release these requests in the opposite order.
+    const owner = init.signal ? 'card' : 'grid';
+    if (detailHolds[owner] === row.id) return new Promise(resolve => {
+      heldDetails[owner].push({ path, signal: init.signal, row: clone(response), release: () => resolve(reply(response)) });
+    });
+    return reply(response);
   }
   if (url.pathname.endsWith('/save')) {
-    assert.equal(init.method, 'POST'); assert.equal(body.confirmed, true); assert.equal(body.warehouse_code, 'main');
+    assert.equal(init.method, 'POST'); assert.equal(body.confirmed, true); assert(['main', 'other'].includes(body.warehouse_code));
     assert.deepEqual(Object.keys(body).sort(), ['changes', 'confirmed', 'request_id', 'warehouse_code']);
     assert.match(body.request_id, /^[0-9a-f]{8}-[0-9a-f-]{27}$/i);
     if (saveBodies.has(body.request_id)) assert.deepEqual(body, saveBodies.get(body.request_id), 'A retry must preserve the exact request ID, snapshot and edits');
@@ -211,7 +272,7 @@ global.fetch = async (path, init = {}) => {
     if (saveMode === 'missing') throw new TypeError('Synthetic connection lost before persistence');
     const results = body.changes.map(change => {
       const row = rows.get(change.product_id);
-      assert.equal(change.expected_revision, row.revision); assert.equal(change.snapshot_hash, row.snapshot_hash);
+      assert.equal(change.expected_revision, row.revision); assert.equal(change.snapshot_hash, rowForWarehouse(row, body.warehouse_code).snapshot_hash);
       assert(!('stock' in change), 'Stock quantities and acquisition costs cannot be sent by this editor');
       if (change.product_id === conflictId) {
         const changed = { ...clone(row), revision: row.revision + 1, snapshot_hash: hash(row.id, row.revision + 1), common: { ...row.common, name: 'Concurrent server name' } };
@@ -225,7 +286,8 @@ global.fetch = async (path, init = {}) => {
         Object.assign(changed[scope], change[scope]); Object.assign(changed.overrides[scope], change[scope]);
       }
       if (change.warehouse) {
-        Object.assign(changed.warehouse, change.warehouse); changed.overrides.warehouses.main = { ...changed.overrides.warehouses.main, ...change.warehouse };
+        if (body.warehouse_code === 'main') Object.assign(changed.warehouse, change.warehouse);
+        changed.overrides.warehouses[body.warehouse_code] = { ...changed.overrides.warehouses[body.warehouse_code], ...change.warehouse };
       }
       for (const target of changed.shops) target.effective = {
         name: target.overrides.name ?? changed.common.name,
@@ -242,7 +304,7 @@ global.fetch = async (path, init = {}) => {
         target.state = 'saved_unpublished';
       }
       changed.revision += 1; changed.snapshot_hash = hash(changed.id, changed.revision); rows.set(changed.id, changed);
-      return { product_id: changed.id, status: 'saved', row: clone(changed), errors: [] };
+      return { product_id: changed.id, status: 'saved', row: rowForWarehouse(changed, body.warehouse_code), errors: [] };
     });
     const result = { request_id: body.request_id, status: 'completed', results, external_write_enabled: false }; saves.set(body.request_id, result);
     if (saveMode === 'pending') return new Promise((resolve, reject) => { rejectSave = () => reject(new TypeError('Synthetic connection lost')); });
@@ -291,9 +353,10 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(cell(5, 'biketrek').querySelectorAll('a').length, 6, 'Each shared sale leaf keeps its own explicit links');
   assert(!element('grid-refresh-links-5-biketrek'), 'A shared group never refreshes one arbitrary scalar mapping');
   await click('detail-5');
-  assert(required('detail-shared-sales-5-biketrek').textContent.includes('PATCH-100'));
-  assert(!element('detail-refresh-links-5-biketrek'));
-  await click('close-detail');
+  await click('stock-card-tab-shops');
+  assert(document.querySelector('.stock-card__mapping-list').textContent.includes('PATCH-100'));
+  assert(required('stock-card-publish-fields-biketrek').disabled, 'The shared card never treats a shared sale group as one publication target');
+  await click('stock-card-close');
   assert(!cellText(3, 'supplier_quantity').includes('6'), 'An unresolved supplier link never exposes a quantity as current');
   assert(cellText(1, 'available').includes('0'));
   assert(cellText(2, 'available').includes(t('unknown')), 'Unknown stock never silently becomes zero');
@@ -301,7 +364,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(element('new-card'), 'Unified card preparation is available from stock');
   assert(element('view-stock') && element('view-products') && element('view-shops'));
   await click(cell(1, 'name').querySelector('.product-editor-cell-value'));
-  assert(element('cell-editor') && !element('close-detail'), 'Clicking the displayed name edits the cell instead of opening a modal');
+  assert(element('cell-editor') && !element('stock-card'), 'Clicking the displayed name edits the cell instead of opening a modal');
   await input('cell-editor', 'Unsaved clicked name'); await key('cell-editor', 'Escape');
   assert.equal(cellText(1, 'name'), 'Fixture product 1');
   const beforeSort = calls.length; await click('sort-sale_price_gross');
@@ -357,10 +420,11 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(element('product-links-row-1') && element('product-links-row-2') && !element('product-links-row-3'), 'Bulk linking includes only the explicitly selected cards');
   assert.equal(calls.length, beforeLinkOpen, 'Opening linking does not run any shop request');
   await click('product-links-close'); await click('select-1'); await click('select-2');
-  await click('detail-1'); await click('link-detail-product');
+  await click('detail-1'); await click('stock-card-tab-shops'); await click('stock-card-mappings');
   assert(element('product-links-row-1') && !element('product-links-row-2'), 'The detail action links one concrete card');
-  assert(!element('close-detail'), 'Only one modal focus trap stays open');
+  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1, 'The mapping tool shares the card focus trap');
   await click('product-links-close');
+  await click('stock-card-close');
   await input('warehouse', 'other'); await click('load');
   assert.equal(new URL(calls.at(-1).path, dom.window.location).searchParams.get('warehouse_code'), 'other', 'An explicit alternate warehouse is preserved');
   await input('warehouse', ''); await click('load');
@@ -449,18 +513,21 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   const originalCell = cell(1, 'name'), grid = originalCell.closest('table,[role="grid"]');
   assert(grid); const scrollContainer = grid.parentElement; scrollContainer.scrollTop = 147;
   await click('open-1-sku'); assert(document.querySelector('[role=dialog][aria-modal=true]'), 'SKU opens the stock-style popup');
-  assert.equal(required('movement-history').getAttribute('href'), '/stock/movements?sku=SKU-1');
-  assert(!required('detail-identifiers').open && !required('detail-shops').open && !required('detail-diagnostics').open, 'Advanced card information starts collapsed');
-  await click('detail-tab-audit');
-  const audit = document.querySelector('.product-editor-audit');
+  assert(!element('stock-card-edit-product'), 'An open grid draft keeps the shared card read-only');
+  const beforeCardHistory = calls.length;
+  await click('stock-card-tab-history');
+  assert(calls.slice(beforeCardHistory).some(call => call.path.startsWith('/api/fifo/history?product_id=1&')), 'The shared history reads movements for the exact card');
+  assert(calls.slice(beforeCardHistory).every(call => call.method === 'GET'), 'Opening history never writes stock or FIFO');
+  const audit = document.querySelector('.stock-card__audit');
   assert(audit && audit.textContent.includes('Audit previous name') && audit.textContent.includes('Audit current name'), 'Audit history shows the actual before and after names');
-  assert(audit.textContent.includes('109.90') && audit.textContent.includes('119.95') && audit.textContent.includes(t('fields.sale_price_gross')), 'Audit prices are paired with their edited field and retain exact decimal strings');
-  const auditRows = [...required('audit-diff-81').querySelectorAll('tbody tr')];
+  const auditPriceLabel = i18n.t('stockCard.fields.sale_price_gross', { defaultValue: 'sale_price_gross' });
+  assert(audit.textContent.includes('109.90') && audit.textContent.includes('119.95') && audit.textContent.includes(auditPriceLabel), 'Audit prices are paired with their edited field and retain exact decimal strings');
+  const auditRows = [...audit.querySelectorAll('dl > div')];
   assert.equal(auditRows.length, 2, 'Audit differences omit unchanged fields');
-  const auditPriceRow = auditRows.find(row => row.querySelector('th').textContent.includes(t('fields.sale_price_gross')));
-  assert.deepEqual([...auditPriceRow.querySelectorAll('td')].map(cell => cell.textContent), ['109.90', '119.95'], 'Audit shows previous price before the saved price');
+  const auditPriceRow = auditRows.find(row => row.querySelector('dt').textContent.includes(auditPriceLabel));
+  assert.deepEqual([...auditPriceRow.querySelectorAll('del,ins')].map(cell => cell.textContent), ['109.90', '119.95'], 'Audit shows previous price before the saved price');
   assert(!audit.textContent.includes('snapshot_hash') && !audit.textContent.includes('"common":'), 'Audit changes use readable field differences instead of raw snapshot JSON');
-  await click('close-detail');
+  await click('stock-card-close');
   assert.equal(cell(1, 'name'), originalCell, 'Opening detail preserves the grid DOM');
   assert.equal(scrollContainer.scrollTop, 147); assert.equal(cellText(1, 'name'), 'Tab committed name');
 
@@ -486,7 +553,7 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   const beforeInvalidSave = saveCalls().length; await click('save');
   assert.equal(saveCalls().length, beforeInvalidSave, 'Invalid decimals cannot be submitted');
   assert(document.body.textContent.includes(t('errors.invalid_price')));
-  await click('detail-1'); await click('discard-row-1'); await click('close-detail');
+  await click('detail-1'); assert(!element('stock-card-edit-product')); await click('stock-card-close'); await click('discard-row-1');
   assert.equal(cellText(1, 'sale_price_gross'), new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(199.90)); assert(cannotUse('save'));
 
   await edit(1, 'sale_price_gross', '179,90');
@@ -556,8 +623,8 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   await edit(1, 'name', 'Local conflict draft'); await edit(2, 'brand', 'Saved second brand'); conflictId = 1;
   await click('save'); const conflictSaveCount = saveCalls().length;
   assert.equal(cellText(1, 'name'), 'Local conflict draft', 'A row conflict never overwrites the unsaved local value');
-  await click('detail-1');
   assert(element('confirm-rebase-1'), 'Conflicts require an explicit choice before adopting the latest server version');
+  assert(!element('stock-card') && document.querySelector('.product-editor-pending-changes'), 'Grid conflicts are reviewed directly beside the pending grid edits');
   const conflict = document.querySelector('.product-editor-conflict');
   assert(conflict.textContent.includes(t('fields.name')) && conflict.textContent.includes('Concurrent server name') && conflict.textContent.includes('Local conflict draft'),
     'Conflict review pairs each changed field with its current server value and the local draft');
@@ -570,7 +637,6 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   conflictId = null; await click('confirm-rebase-1'); await click('save');
   assert.deepEqual(saveCalls().at(-1).body.changes, [{ product_id: 1, expected_revision: 5, snapshot_hash: hash(1, 5), common: { name: 'Local conflict draft' } }],
     'Only the unresolved row is saved, using the revision explicitly accepted during rebase');
-  await click('close-detail');
 
   await click('columns'); await click('column-internal_note'); await click('columns');
   await edit(1, 'internal_note', 'Page-one draft');
@@ -667,7 +733,8 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert.equal(required('header-brand').nextElementSibling, required('header-name'));
   assert(element('cell-1-ean') && !element('cell-1-size'), 'Visibility, width and order survive a new page instance');
 
-  // Repair is explicit and repaints both the table and the open detail without relinking.
+  // Repair remains explicit in the grid; a fresh shared card uses the same
+  // repaired metadata and a late, closed detail read cannot replace it.
   const repairRow = rows.get(1), repairShop = repairRow.shops.find(item => item.shop_code === 'xtrek');
   repairShop.shop_url = null; repairShop.shop_admin_url = null; repairRow.eans = [];
   repairRow.supplier_availability = { ...repairRow.supplier_availability, available: null, fresh: false, quantity: null, availability_state: 'unknown', status: 'not_loaded', supplier: 'fixture-supplier', supplier_sku: 'SUP-1', action: 'refresh', refresh_state: 'idle' };
@@ -677,21 +744,25 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(cellText(1, 'supplier_availability').includes(t('supplierStatus.not_loaded')));
   assert(!cellText(1, 'supplier_availability').includes('overíme'), 'Unknown availability does not pretend that a refresh is running');
   detailMode = 'pending'; await click('detail-1');
-  const oldDetailRequest = calls.at(-1), oldDetailResponse = resolveDetail; detailMode = 'valid';
-  assert(element('fill-supplier-eans'), 'An empty EAN has a direct supplier action');
+  const oldDetailRequest = calls.findLast(call => /^\/api\/product-editor\/products\/1(?:\?|$)/.test(call.path)), oldDetailResponse = resolveDetail; detailMode = 'valid';
+  await click('stock-card-close');
+  assert(oldDetailRequest.signal.aborted, 'Closing the shared card invalidates its in-flight read');
   const beforeRefresh = calls.length, beforeRepair = clone(repairRow);
-  await act(async () => { required('detail-refresh-links-1-xtrek').click(); required('detail-refresh-links-1-xtrek').click(); await tick(); });
+  await act(async () => { required('grid-refresh-links-1-xtrek').click(); required('grid-refresh-links-1-xtrek').click(); await tick(); });
   assert.equal(calls.slice(beforeRefresh).filter(item => item.path === '/api/product-links/refresh').length, 1, 'Repeated clicks start one metadata refresh');
-  assert(oldDetailRequest.signal.aborted, 'Metadata refresh invalidates the older detail read');
   await act(async () => { oldDetailResponse(); await tick(); });
   assert.deepEqual(calls.slice(beforeRefresh).map(item => item.method), ['POST', 'GET']);
+  assert(!element('stock-card'), 'A late read cannot reopen a closed card');
   assert.equal(cell(1, 'xtrek').querySelector('a').href, 'https://xtrek.example.test/exact-variant');
+  await click('detail-1');
+  assert(element('stock-card-fill-eans'), 'An empty EAN has a direct supplier action');
+  await click('stock-card-tab-shops');
   assert(document.querySelector('[role="dialog"] a[href="https://xtrek.example.test/admin/exact-variant"]'), 'The open detail receives the refreshed links too');
-  assert(!element('detail-refresh-links-1-xtrek') && !element('grid-refresh-links-1-xtrek'));
+  assert(!element('grid-refresh-links-1-xtrek'));
   assert.deepEqual(rows.get(1).stock, beforeRepair.stock); assert.deepEqual(rows.get(1).eans, []);
   assert.deepEqual(rows.get(1).shops.map(item => item.effective), beforeRepair.shops.map(item => item.effective));
 
-  await click('close-detail'); repairShop.shop_url = null; repairShop.shop_admin_url = null; await click('load');
+  await click('stock-card-close'); repairShop.shop_url = null; repairShop.shop_admin_url = null; await click('load');
   linkRefreshMode = 'incomplete'; await click('grid-refresh-links-1-xtrek');
   assert(cellText(1, 'xtrek').includes(t('linksNotProvided')) && !cell(1, 'xtrek').querySelector('a'), 'A successful read without addresses does not claim repaired links');
   linkRefreshMode = 'error'; await click('grid-refresh-links-1-xtrek');
@@ -702,32 +773,106 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   const blockedNavigation = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
   await act(async () => { required('supplier-settings-1').dispatchEvent(blockedNavigation); await tick(); });
   assert(blockedNavigation.defaultPrevented, 'The disabled route prevents navigation');
-  await click('detail-1'); assert(cannotUse('fill-supplier-eans')); await click('discard-row-1'); await click('close-detail');
+  await click('detail-1'); assert(cannotUse('stock-card-fill-eans')); await click('stock-card-close'); await click('discard-row-1');
 
   repairRow.supplier_availability = { ...repairRow.supplier_availability, fresh: true, available: false, quantity: '0', availability_state: 'unavailable', status: 'fresh', action: 'check_source' };
   await click('load');
   assert(cellText(1, 'supplier_quantity').includes('0') && cellText(1, 'supplier_availability').includes(t('supplierOutOfStock')), 'Fresh zero is clearly unavailable, not awaiting verification');
-  await click('detail-1'); const beforeEanFill = calls.length; await click('fill-supplier-eans');
-  assert(!element('close-detail') && document.querySelector('.supplier-links-panel'), 'EAN adoption opens one focused supplier dialog');
+  await click('detail-1'); const beforeEanFill = calls.length; await click('stock-card-fill-eans');
+  assert(document.querySelector('.supplier-links-panel') && document.querySelectorAll('[role="dialog"]').length === 1, 'EAN adoption uses the single shared card focus trap');
   assert.equal(calls.slice(beforeEanFill).filter(item => item.method === 'POST').length, 0, 'Opening EAN adoption never writes or prepares an implicit apply');
   assert(document.querySelector('[role="dialog"]').textContent.includes('8585047234448'), 'The existing supplier EAN is visible without searching the item again');
   await click('supplier-links-close');
+  assert(element('stock-card-dirty-guard'), 'A selected supplier adoption remains an explicit unfinished choice');
+  await click('stock-card-discard');
+  await click('stock-card-close');
   const stockRow = clone(rows.get(1));
   rows.set(1,{...stockRow,item_type:'service',stock:{...stockRow.stock,managed:false,known:false}}); await click('load');
   assert(!element('stock-action-1-on_hand'), 'Services never offer physical stock actions');
-  await click('detail-1'); assert(!element('detail-tab-adjustment') && !element('detail-tab-fifo'), 'Service cards have no stock or FIFO tab');
-  assert(required('detail-item-type').disabled && required('detail-stock-unit').disabled, 'Locked definitions cannot be changed from the detail');
-  await key('close-detail','Tab',{shiftKey:true});
-  assert.equal(document.activeElement,required('detail-diagnostics').querySelector('summary'),'Keyboard focus skips controls inside collapsed sections');
-  await key(document.activeElement,'Tab'); assert.equal(document.activeElement,required('close-detail'),'The visible last control loops to the dialog close button');
-  await click('close-detail'); rows.set(1,stockRow); await click('load');
-  await click('detail-2'); await input('detail-stock-unit','m');
+  await click('detail-1'); await click('stock-card-tab-stock');
+  assert(!element('adjustment-submit') && !document.querySelector('.fifo-panel'), 'Service cards expose no stock mutation or FIFO panel');
+  assert.equal(required('stock-card-physical').textContent, '—', 'Service cards do not imply a physical zero balance');
+  await click('stock-card-tab-overview'); await click('stock-card-edit-product');
+  assert(required('stock-card-input-item_type').disabled && required('stock-card-input-stock_unit').disabled, 'Locked definitions cannot be changed from the detail');
+  await click('stock-card-cancel-edit');
+  await key('stock-card-close','Tab',{shiftKey:true});
+  assert.equal(document.activeElement,document.querySelector('.stock-card__footer button'),'The first dialog control loops to the visible footer control');
+  await key(document.activeElement,'Tab'); assert.equal(document.activeElement,required('stock-card-close'),'The visible last control loops to the dialog close button');
+  await click('stock-card-close'); rows.set(1,stockRow); await click('load');
+  await click('detail-2'); await click('stock-card-edit-product'); await input('stock-card-input-stock_unit','m');
   assert(document.body.textContent.includes(t('meterLimit')), 'Meter quantities clearly disclose channel limitations');
-  await click('detail-save'); assert.equal(saveCalls().at(-1).body.changes[0].stock_unit,'m');
+  await click('stock-card-save'); assert.equal(saveCalls().at(-1).body.changes[0].stock_unit,'m');
   assert.equal(rows.get(2).stock_unit,'m');
+  await click('stock-card-close');
+  // The card can inspect/edit another warehouse without replacing the grid's
+  // stock projection with that other warehouse's quantities or location.
+  const mainQuantity = cellText(1, 'on_hand'), mainLocation = cellText(1, 'location');
+  await click('detail-1'); await input('stock-card-warehouse', 'other');
+  assert.equal(required('stock-card-warehouse').value, 'other');
+  assert(required('stock-card-physical').textContent.includes('21'));
+  await click('stock-card-edit-product');
+  assert.equal(required('stock-card-input-location').value, 'OTHER-1');
+  await input('stock-card-input-location', 'OTHER-EDITED');
+  const beforeOtherSave = calls.length;
+  await click('stock-card-save');
+  assert.equal(saveCalls().at(-1).body.warehouse_code, 'other');
+  assert.deepEqual(saveCalls().at(-1).body.changes[0].warehouse, { location: 'OTHER-EDITED' });
+  await act(async () => { await tick(); await tick(); });
+  assert(calls.slice(beforeOtherSave).some(call => call.method === 'GET' && /^\/api\/product-editor\/products\/1\?/.test(call.path) && new URL(call.path, dom.window.location).searchParams.get('warehouse_code') === 'main'), 'The grid reloads the changed row in its original warehouse scope');
+  await click('stock-card-close');
+  assert.equal(required('warehouse').value, 'main');
+  assert.equal(cellText(1, 'on_hand'), mainQuantity);
+  assert.equal(cellText(1, 'location'), mainLocation);
+  assert.notEqual(cellText(1, 'location'), 'OTHER-EDITED');
+
+  // Two confirmed changes can leave two parent refreshes in flight. The older
+  // snapshot must not win merely because its response arrives last.
+  await click('detail-1');
+  detailHolds.grid = 1;
+  await click('stock-card-edit-product'); await input('stock-card-input-name', 'Older scoped card refresh');
+  await click('stock-card-save');
+  const olderGridReads = heldDetails.grid.splice(0);
+  assert(olderGridReads.length, 'A confirmed save triggers a fresh parent read even in the same warehouse');
+  await click('stock-card-edit-product'); await input('stock-card-input-name', 'Newest scoped card refresh');
+  await click('stock-card-save');
+  const newerGridReads = heldDetails.grid.splice(0);
+  assert(newerGridReads.length, 'The next confirmed save has its own independent refresh');
+  await act(async () => { newerGridReads.forEach(read => read.release()); await tick(); });
+  assert.equal(cellText(1, 'name'), 'Newest scoped card refresh');
+  await act(async () => { olderGridReads.forEach(read => read.release()); await tick(); });
+  assert.equal(cellText(1, 'name'), 'Newest scoped card refresh', 'A late older scoped refresh cannot overwrite the newer card revision');
+  detailHolds.grid = null;
+  await click('stock-card-close');
+
+  // A child confirms a local stock mutation before the card's subsequent read.
+  // Closing that card aborts its read, but not the parent refresh notification.
+  await click('detail-1'); await click('stock-card-tab-stock');
+  await input('adjustment-count', '10'); await input('adjustment-operator', 'Synthetic operator');
+  await input('adjustment-source', 'Synthetic counted fixture'); await input('adjustment-reason', 'Synthetic inventory correction');
+  await click('adjustment-confirm'); await click('adjustment-submit');
+  assert(element('adjustment-preview'));
+  await click('adjustment-confirm');
+  detailHolds.card = 1; detailHolds.grid = 1;
+  const beforeChildApply = adjustmentWrites;
+  await click('adjustment-submit');
+  assert.equal(adjustmentWrites, beforeChildApply + 1, 'Only the explicitly confirmed child apply writes the synthetic balance');
+  const childCardReads = heldDetails.card.splice(0), childGridReads = heldDetails.grid.splice(0);
+  assert(childCardReads.length, 'The card starts its own post-mutation detail read');
+  assert(childGridReads.length, 'The parent is notified immediately, before that card detail read completes');
+  await click('stock-card-close');
+  assert(!element('stock-card'));
+  assert(childCardReads.every(read => read.signal.aborted), 'Closing cancels the card-owned reads');
+  detailHolds.card = null; detailHolds.grid = null;
+  await act(async () => { childGridReads.forEach(read => read.release()); await tick(); });
+  assert.equal(cellText(1, 'on_hand'), '10', 'The independent parent read still updates physical stock after the card has closed');
+  await act(async () => { childCardReads.forEach(read => read.release()); await tick(); });
+  assert(!element('stock-card') && cellText(1, 'on_hand') === '10', 'A late canceled detail cannot reopen the card or restore its stale stock');
+  assert.equal(adjustmentWrites, beforeChildApply + 1, 'Read recovery and close never repeat the child mutation');
+
   // Migration preparation is read-only, including the reused identity controls.
   const beforeMigration = calls.length, originalMigrationRow = clone(rows.get(1));
-  await click('detail-1'); await click('sku-migration-open');
+  await click('detail-1');
+  await click([...document.querySelectorAll('.stock-card button')].find(button => button.textContent.includes(i18n.t('stockCard.skuMigration'))));
   assert(required('sku-migration-readonly').textContent.includes('nič neprečísluje'));
   assert.equal(document.querySelectorAll('[role="dialog"]').length,1,'Only the migration dialog owns keyboard focus');
   assert(required('sku-migration-local').disabled && required('sku-migration-remote').disabled);
@@ -767,8 +912,11 @@ const focusedCell = () => document.activeElement.closest('[data-testid^="cell-"]
   assert(!migrationCalls.some(call=>call.path==='/api/sku-policy/preview'),'Migration never calls the card-creation preview');
   assert.deepEqual(rows.get(1),originalMigrationRow,'The existing card and its state remain unchanged');
   deferMigration=true; await click('sku-migration-local'); await click('sku-migration-close');
+  assert(element('stock-card-dirty-guard'), 'A read-only migration can be closed while waiting, with an explicit choice about its edited evidence');
+  await click('stock-card-discard');
   await act(async()=>{releaseMigration();await tick();});
   assert(!element('sku-migration-dialog') && !element('sku-migration-result'),'A late read cannot reopen the closed dialog');
+  await click('stock-card-close');
   migrationMode='review';
   // Card activity is local, retained with supplier links, and independently filterable.
   const unchangedStock = clone(rows.get(1).stock), unchangedShops = clone(rows.get(1).shops);

@@ -18,7 +18,7 @@ Tento prehľad opisuje aktuálnu implementáciu v repozitári. Výsledok konkré
 | Oblasť / cesta UI | Implementované | Kontrakt a hranice |
 | --- | --- | --- |
 | Dashboard `/` | Súhrny skladu a posledné pohyby | [História skladu](docs/stock-history.md); neznámy alebo chybný údaj nie je nula. |
-| Sklad `/stock`, detail `/products/:sku` | Jednotný editor, parametre, obrázky, ručné hodnoty a vybrané publikovanie | [Editor](docs/product-editor.md); `/products` presmeruje na `/stock`. Uloženie v Hube je samostatné od odoslania do e-shopu. |
+| Sklad `/stock`, karta `/products/card/:id` a pôvodné `/products/:sku` | Jedna responzívna karta zo skladu, faktúr, príjmu a histórie; dodávateľ, stock/FIFO, lokálne úpravy a publikovanie ceny do jedného či oboch e-shopov | [Karta](docs/stock-card.md), [editor](docs/product-editor.md); `/products` presmeruje na `/stock`. Uloženie v Hube je samostatné od odoslania do e-shopu. |
 | Väzby a zlučovanie kariet | Náhľad, potvrdenie, konflikty a obnova podľa UUID | [E-shopy](docs/product-links.md), [dodávatelia](docs/supplier-card-links.md), [konsolidácia](docs/product-consolidation.md). Ďalšie podporované zlúčenie nevyžaduje nový PR. |
 | Príjem `/receiving` | Faktúra, skenovanie, ručné množstvá, pozastavenie a idempotentná finalizácia | [Identita príjmu](docs/receiving-identity.md), [potvrdený začiatok skladu](docs/stock-tracking.md). Príprava karty sama nevytvára zásobu. |
 | História a množstvá `/stock/movements`, `/stock/opening` | Nemenné pohyby, potvrdený počiatočný stav a opravy fyzického počtu | [História](docs/stock-history.md), [opravné pohyby](docs/stock-adjustments.md), [jednotky](docs/stock-units.md). Širšia inventúrna agenda zostáva plánovaná. |

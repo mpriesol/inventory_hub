@@ -11,6 +11,7 @@ import {
 import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
 import { todayDate } from '../utils/format';
 import { InvoiceProcessingPanel } from '../components/InvoiceProcessingPanel';
+import { StockCardLink } from '../components/product/StockCardLink';
 import './invoiceArchive.css';
 
 type PendingPayment = { invoice_id: number; actor: string; payment_id?: number; body: InvoicePaymentRequest | InvoiceReversalRequest };
@@ -217,9 +218,9 @@ export function InvoiceDetailPage() {
       </section>
       <section className="panel"><h2>{t('invoiceArchive.lines', { count: invoice.lines.length })}</h2>{invoice.parse_error && <p className="notice warning">{t('invoiceArchive.parseIncomplete')}</p>}
         {!invoice.lines.length ? <p className="muted">{t('invoiceArchive.noLines')}</p> : <div className="table-scroll"><table><thead><tr>{['line', 'ean', 'code', 'description', 'quantity', 'unitPrice', 'total_amount', 'linkedProduct'].map(key => <th key={key} className={['quantity', 'unitPrice', 'total_amount'].includes(key) ? 'amount' : ''}>{t(`invoiceArchive.${key}`)}</th>)}</tr></thead><tbody>{invoice.lines.map(line => <tr key={line.id}>
-          <td>{line.line_number}</td><td>{line.ean || '—'}</td><td>{line.supplier_sku || '—'}</td><td>{line.matched_product_id ? <Link to={`/product-trace?product_id=${line.matched_product_id}`}>{line.product_name || line.product_sku}</Link> : line.product_name || '—'}</td><td className="amount">{line.quantity ?? '—'} {line.unit || '—'}</td>
+          <td>{line.line_number}</td><td>{line.ean || '—'}</td><td>{line.supplier_sku || '—'}</td><td>{line.matched_product_id ? <StockCardLink productId={line.matched_product_id} sku={line.product_sku}>{line.product_name || line.product_sku}</StockCardLink> : line.product_name || '—'}</td><td className="amount">{line.quantity ?? '—'} {line.unit || '—'}</td>
           <td className="amount">{money(invoice.vat_included ? line.unit_price_with_vat ?? line.unit_price : line.unit_price)}</td><td className="amount">{money(invoice.vat_included ? line.total_price_with_vat ?? line.total_price : line.total_price)}</td>
-          <td>{line.matched_product_id ? <Link to={`/product-trace?product_id=${line.matched_product_id}`}>{line.product_sku || line.product_name}</Link> : t('invoiceArchive.unlinked')}</td>
+          <td>{line.matched_product_id ? <StockCardLink productId={line.matched_product_id} sku={line.product_sku}>{line.product_sku || line.product_name}</StockCardLink> : t('invoiceArchive.unlinked')}</td>
         </tr>)}</tbody></table><p className="muted small">{t(invoice.vat_included ? 'invoiceArchive.pricesGross' : 'invoiceArchive.pricesNet')}</p></div>}
       </section>
     </>}
