@@ -114,9 +114,30 @@ export interface InvoicePaymentRequest {
 }
 export interface InvoiceReversalRequest { request_id: string; expected_revision: number; note: string }
 export interface InvoicePaymentResult { invoice_id: number; request_id: string; payment_revision: number; finance: InvoiceFinance }
-export const addInvoicePayment = (id: number, body: InvoicePaymentRequest) => hubRequest<InvoicePaymentResult>(`${base}/${id}/payments`, body);
-export const reverseInvoicePayment = (id: number, paymentId: number, body: InvoiceReversalRequest) => hubRequest<InvoicePaymentResult>(`${base}/${id}/payments/${paymentId}/reverse`, body);
-export const getInvoicePaymentOperation = (id: number, requestId: string) => hubRequest<InvoicePaymentResult>(`${base}/${id}/payment-operations/${encodeURIComponent(requestId)}`);
+const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const revision = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+const decimal = (value: unknown): value is string => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
+function paymentResult(value: unknown, id: number, requestId: string, expectedRevision: number): InvoicePaymentResult {
+  const finance = record(value) ? value.finance : null;
+  if (!record(value) || value.invoice_id !== id || value.request_id !== requestId
+      || value.payment_revision !== expectedRevision + 1 || !record(finance)
+      || finance.payment_revision !== value.payment_revision || !['unpaid', 'partial', 'paid'].includes(String(finance.status))
+      || ![finance.gross_amount, finance.paid_amount, finance.outstanding_amount].every(decimal)
+      || typeof finance.currency !== 'string' || !/^[A-Z]{3}$/.test(finance.currency)
+      || typeof finance.is_overdue !== 'boolean' || finance.opening_required !== false
+      || !Array.isArray(finance.payments) || !finance.payments.length || !finance.payments.every(payment =>
+        record(payment) && revision(payment.id) && payment.id > 0 && decimal(payment.amount)
+        && ['opening', 'payment', 'refund', 'reversal'].includes(String(payment.kind)) && payment.currency === finance.currency)) {
+    throw new CatalogApiError('invoice_payment_response_invalid', 'Payment acknowledgment does not match the pending operation');
+  }
+  return value as unknown as InvoicePaymentResult;
+}
+export const addInvoicePayment = async (id: number, body: InvoicePaymentRequest) =>
+  paymentResult(await hubRequest<unknown>(`${base}/${id}/payments`, body), id, body.request_id, body.expected_revision);
+export const reverseInvoicePayment = async (id: number, paymentId: number, body: InvoiceReversalRequest) =>
+  paymentResult(await hubRequest<unknown>(`${base}/${id}/payments/${paymentId}/reverse`, body), id, body.request_id, body.expected_revision);
+export const getInvoicePaymentOperation = async (id: number, requestId: string, expectedRevision: number) =>
+  paymentResult(await hubRequest<unknown>(`${base}/${id}/payment-operations/${encodeURIComponent(requestId)}`), id, requestId, expectedRevision);
 
 export type InvoiceProcessingAction = 'process_without_stock' | 'reopen' | 'archive' | 'restore';
 export interface InvoiceProcessingSnapshot {
@@ -141,9 +162,40 @@ export interface InvoiceProcessingResult {
   invoice_id: number; request_id: string; action: InvoiceProcessingAction; processing_revision: number;
   processing: InvoiceProcessingSnapshot; stock_effect: false; payment_effect: false;
 }
-export const previewInvoiceProcessing = (id: number, body: InvoiceProcessingPreviewRequest) => hubRequest<InvoiceProcessingPreview>(`${base}/${id}/processing/preview`, body);
-export const applyInvoiceProcessing = (id: number, body: InvoiceProcessingApplyRequest) => hubRequest<InvoiceProcessingResult>(`${base}/${id}/processing/apply`, body);
-export const getInvoiceProcessingOperation = (id: number, requestId: string) => hubRequest<InvoiceProcessingResult>(`${base}/${id}/processing-operations/${encodeURIComponent(requestId)}`);
+function processingSnapshot(value: unknown): value is InvoiceProcessingSnapshot {
+  return record(value) && revision(value.revision)
+    && ['unprocessed', 'processed_without_stock', 'receiving', 'received'].includes(String(value.status))
+    && ['unprocessed', 'processed_without_stock'].includes(String(value.manual_status))
+    && typeof value.archived === 'boolean' && (value.archived_at === null || typeof value.archived_at === 'string')
+    && value.stock_effect === false && value.payment_effect === false && Array.isArray(value.receipts)
+    && value.receipts.every(receipt => record(receipt) && revision(receipt.id) && receipt.id > 0
+      && typeof receipt.invoice_number === 'string' && typeof receipt.status === 'string'
+      && typeof receipt.archived === 'boolean' && typeof receipt.received === 'boolean' && typeof receipt.reversed === 'boolean'
+      && revision(receipt.posting_revision));
+}
+function processingResult(value: unknown, id: number, requestId: string, expected: InvoiceProcessingPreviewRequest): InvoiceProcessingResult {
+  if (!record(value) || value.invoice_id !== id || value.request_id !== requestId || value.action !== expected.action
+      || value.processing_revision !== expected.expected_revision + 1 || !processingSnapshot(value.processing)
+      || value.processing.revision !== value.processing_revision || value.stock_effect !== false || value.payment_effect !== false) {
+    throw new CatalogApiError('invoice_processing_response_invalid', 'Processing acknowledgment does not match the pending operation');
+  }
+  return value as unknown as InvoiceProcessingResult;
+}
+export async function previewInvoiceProcessing(id: number, body: InvoiceProcessingPreviewRequest) {
+  const value = await hubRequest<unknown>(`${base}/${id}/processing/preview`, body);
+  if (!record(value) || value.invoice_id !== id || value.action !== body.action || value.note !== body.note
+      || typeof value.preview_hash !== 'string' || !/^[0-9a-f]{64}$/.test(value.preview_hash)
+      || !processingSnapshot(value.before) || !processingSnapshot(value.after)
+      || value.before.revision !== body.expected_revision || value.after.revision !== body.expected_revision + 1
+      || value.stock_effect !== false || value.payment_effect !== false) {
+    throw new CatalogApiError('invoice_processing_response_invalid', 'Processing preview does not match this document and request');
+  }
+  return value as unknown as InvoiceProcessingPreview;
+}
+export const applyInvoiceProcessing = async (id: number, body: InvoiceProcessingApplyRequest) =>
+  processingResult(await hubRequest<unknown>(`${base}/${id}/processing/apply`, body), id, body.request_id, body);
+export const getInvoiceProcessingOperation = async (id: number, requestId: string, expected: InvoiceProcessingPreviewRequest) =>
+  processingResult(await hubRequest<unknown>(`${base}/${id}/processing-operations/${encodeURIComponent(requestId)}`), id, requestId, expected);
 
 /** Download through the same credential/session boundary as JSON calls. */
 export async function downloadInvoiceArchive(ids: number[] | number): Promise<void> {

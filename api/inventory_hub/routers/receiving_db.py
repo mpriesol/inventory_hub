@@ -683,9 +683,6 @@ async def lookup_receiving_invoice(code: str = Query(min_length=1, max_length=10
     return await lookup(db, code.strip())
 
 
-router.include_router(product_router)
-
-
 @router.post("/suppliers/{supplier_code}/receiving/sessions")
 async def create_session(
     supplier_code: str,
@@ -921,6 +918,7 @@ async def get_session_summary(
         "status": session.status.value,
         "posting_revision": receiving_operations.posting_revision(session),
         "archived": receiving_operations.archived(session),
+        "reversed": bool((session.session_data or {}).get("receiving_reversed")),
         "last_operation": (session.session_data or {}).get("receiving_last_operation"),
         "lines": await _line_dicts(db, session.supplier_id, _lines_sorted(session), prefix),
         "summary": _summary_counts(session, unexpected),
@@ -1296,6 +1294,7 @@ async def get_active_session(
     supplier_code: str,
     invoice_no: str,
     db: AsyncSession = Depends(get_session),
+    include_closed: bool = False,
 ):
     """Return the active (new/in_progress/paused) session for an invoice, if any."""
     supplier = await _get_supplier(db, supplier_code)
@@ -1306,11 +1305,13 @@ async def get_active_session(
         .where(
             ReceivingSession.supplier_id == supplier.id,
             ReceivingSession.invoice_number == invoice_no,
-            ReceivingSession.status.in_(ACTIVE_STATUSES),
         )
         .order_by(ReceivingSession.created_at.desc())
         .limit(1)
     )
+    if not include_closed:
+        stmt = stmt.where(ReceivingSession.status.in_(ACTIVE_STATUSES),
+            ReceivingSession.session_data["receiving_archive"].astext.is_(None))
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
 
@@ -1322,6 +1323,8 @@ async def get_active_session(
         "has_session": True,
         "session": {
             "session_id": session.id,
+            "status": session.status.value,
+            "archived": receiving_operations.archived(session),
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "is_paused": session.status == ReceivingStatus.paused,
             "paused_at": session.paused_at.isoformat() if session.paused_at else None,
@@ -1352,6 +1355,11 @@ async def _operation_call(operation):
         raise HTTPException(error.status, detail={"code": error.code}) from None
 
 
+@product_router.get("/suppliers/{supplier_code}/receiving/sessions/{session_id}/operations")
+async def receiving_operation_history(supplier_code: str, session_id: int, db: AsyncSession = Depends(get_session)):
+    return await _operation_call(receiving_operations.history(db, supplier_code, session_id))
+
+
 @product_router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/operations/preview")
 async def preview_receiving_operation(supplier_code: str, session_id: int,
     payload: ReceivingOperationPreview, http_request: Request, db: AsyncSession = Depends(get_session)):
@@ -1365,25 +1373,13 @@ async def get_receiving_operation(supplier_code: str, session_id: int, operation
     return await _operation_call(receiving_operations.get(db, supplier_code, session_id, operation_id))
 
 
-def _sync_receiving_operation(result):
-    """Repairable filesystem projection only; the DB audit is the source of truth."""
-    try:
-        status = "processed" if result["status"] == "completed" else (
-            "in_progress" if result["status"] in ("new", "in_progress", "paused") else "skipped")
-        _update_invoice_status(result["supplier_code"], result["invoice_number"], status, {
-            "receiving_archived": result["archived"], "receiving_session_id": str(result["session_id"]),
-            "current_session_id": str(result["session_id"]) if status == "in_progress" else None,
-            "receiving_operation_id": result["id"], "receiving_operation_reason": result["reason"]})
-    except Exception:
-        logger.warning("Receipt operation %s committed; retry it to repair the invoice index", result["id"], exc_info=True)
-
-
 @product_router.post("/suppliers/{supplier_code}/receiving/sessions/{session_id}/operations/{operation_id}/apply")
 async def apply_receiving_operation(supplier_code: str, session_id: int, operation_id: UUID,
     payload: ReceivingOperationApply, http_request: Request, db: AsyncSession = Depends(get_session)):
     result = await _operation_call(receiving_operations.apply(db, supplier_code, session_id, operation_id, payload,
         _request_actor(http_request, "operator")))
-    _sync_receiving_operation(result)
+    # The supplier invoice index overlays the current database state at read time.
+    # Replaying an old operation must not write an older status into source files.
     return result
 
 
@@ -1430,3 +1426,7 @@ async def list_sessions(
         }
         for s in sessions
     ]
+
+
+# Include only after every protected receiving route has been registered.
+router.include_router(product_router)

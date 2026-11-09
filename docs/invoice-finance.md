@@ -20,6 +20,10 @@ Prehľady, mesačný graf a rozdelenie podľa splatnosti oddeľujú jednotlivé 
 
 Oprava platby pridá opačný záznam s väzbou `reverses_payment_id`. Pôvodný záznam zostáva čitateľný. Ten istý záznam možno opraviť iba raz; počiatočný stav a samotnú opravu nemožno týmto tlačidlom zrušiť. Každá operácia musí zachovať uhradený zostatok medzi nulou a sumou príslušného dokladu. Preplatky, cudzie meny a automatické párovanie platieb z banky nie sú súčasťou tejto evidencie.
 
+Tlačidlo **Zaznamenať alebo opraviť úhradu** umožňuje zmenu oboma smermi cez túto históriu. Pri faktúre 100 EUR so známou nulovou úhradou záznam platby 100 EUR vytvorí stav „uhradená“. Oprava chybného záznamu s povinným dôvodom vráti zostatok na 100 EUR a stav „neuhradená“; overenú náhradnú úhradu možno zaznamenať znovu. Skutočne vrátené peniaze sa zapisujú ako `refund`. Oprava omylu a reálne vrátenie peňazí tak zostávajú rozlíšené. Žiadna z týchto operácií nevymazáva pôvodné záznamy.
+
+Spracovanie dokladu bez skladového pohybu je samostatná operácia a nepotvrdzuje jeho úhradu. Archivovaný doklad ponecháva úhrady a originál, ale pred novou úhradou alebo úpravou metadát ho treba obnoviť. Presný výsledok už dokončenej platby možno načítať alebo zopakovať podľa pôvodného UUID aj po archivácii. Bežný prehľad a kalendár nezahŕňajú archivované doklady; zobrazia sa pri výslovnom `include_archived=true`.
+
 ## API a opakovanie
 
 Všetky cesty `/invoices` vyžadujú existujúci prístup obsluhy a vracajú `Cache-Control: no-store`. Finančné mutácie používajú aktuálnu `payment_revision`; kontrola a zápis prebehnú pod zámkom toho istého dokladu.
@@ -34,6 +38,10 @@ Všetky cesty `/invoices` vyžadujú existujúci prístup obsluhy a vracajú `Ca
 | `GET /invoices` a `/invoices/stats` | Filter `direction=purchase|sale`, skupiny `totals_by_currency`, mesačné údaje `monthly` a zostatky `aging`. Predvolený smer je nákup. |
 
 UUID označuje jednu konkrétnu operáciu. Presné zopakovanie vracia pôvodnú odpoveď aj po ďalších úhradách, bez ďalšieho zápisu. Zmenený obsah s rovnakým UUID skončí konfliktom. Pri strate odpovede klient zachová UUID aj obsah; najskôr načíta uložený výsledok a až potom môže výslovne zopakovať tú istú operáciu. Chýbajúci výsledok čítania sám osebe neoprávňuje na nové UUID.
+
+Klient pred odoslaním overí uloženie rozpracovaného UUID a celého obsahu v úložisku prehliadača. Ak uloženie alebo spätné načítanie nefunguje, nič neodošle. Obnovenie a opakovanie patria tomu istému prihlásenému používateľovi; po zmene účtu sa pôvodná operácia automaticky nepreberá.
+
+Ani odpoveď HTTP 200 sama nepotvrdzuje správny výsledok. Klient kontroluje ID faktúry, pôvodné UUID, nasledujúcu revíziu a tvar finančného výsledku. Neúplná odpoveď alebo odpoveď patriaca inej operácii ponechá rozpracovanú požiadavku na overenie; nevytvorí náhradnú platbu s novým UUID.
 
 `known_unapplied=true` označuje preukázané odmietnutie aktuálnej operácie pred zápisom, napríklad zmenenú revíziu. Pri konflikte UUID sa tento príznak neuvádza ako pravdivý, pretože pod daným UUID už mohla byť uložená iná operácia. Staršie priame prepínanie `PATCH /invoices/{id}/payment` vracia `invoice_payment_ledger_required`; nemôže obísť históriu úhrad.
 

@@ -42,7 +42,7 @@ function ArchiveDashboard({ stats }: { stats: InvoiceArchiveStats }) {
     </div>) : <p className="muted small">{t('invoiceArchive.noChartData')}</p>;
   };
   return <section className="panel" data-testid="invoice-dashboard">
-    <header><div><h2>{t(stats.direction === 'sale' ? 'invoiceArchive.salesOverview' : 'invoiceArchive.purchaseOverview')}</h2><p className="muted small">{t('invoiceArchive.dashboardScope', { count: stats.total_invoices })}</p></div>
+    <header><div><h2>{t(stats.direction === 'sale' ? 'invoiceArchive.salesOverview' : 'invoiceArchive.purchaseOverview')}</h2><p className="muted small">{t(stats.include_archived ? 'invoiceArchive.dashboardScopeWithArchived' : 'invoiceArchive.dashboardScope', { count: stats.total_invoices })}</p></div>
       {stats.totals_by_currency.length > 1 && <label>{t('invoiceArchive.currency')}<select data-testid="dashboard-currency" value={currency || ''} onChange={event => setChosen(event.target.value)}>
         {stats.totals_by_currency.map(row => <option key={row.currency || 'unknown'} value={row.currency || ''}>{row.currency || t('invoiceArchive.unknownCurrency')}</option>)}
       </select></label>}

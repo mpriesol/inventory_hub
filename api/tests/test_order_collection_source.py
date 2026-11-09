@@ -80,6 +80,54 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
         self.assertEqual(result["entries"][0]["updated_at"], (END + timedelta(seconds=1)).isoformat())
         await self.load(payload(order(creation_time=END.isoformat(), last_update_time=END.isoformat())))
 
+    async def test_fractional_window_uses_seconds_envelope_without_losing_overlap_or_source_precision(self):
+        cutoff = START + timedelta(microseconds=600000)
+        changed = START + timedelta(minutes=5, microseconds=700000)
+        until = END + timedelta(microseconds=250000)
+        before_cutoff = order(creation_time=(START + timedelta(microseconds=500000)).isoformat(),
+                              last_update_time=(START + timedelta(minutes=5)).isoformat())
+        exact_end = order(order_number='AT-END', creation_time=until.isoformat(), last_update_time=until.isoformat())
+        upper_overlap = order(order_number='WIRE-END', creation_time=(END + timedelta(seconds=1)).isoformat(),
+                              last_update_time=(END + timedelta(seconds=1)).isoformat())
+        for deleted in (False, True):
+            result, fetch = await self.load(payload(before_cutoff, exact_end, upper_overlap),
+                created_from=cutoff, changed_from=changed, created_to=until, deleted=deleted)
+            params = fetch.call_args.args[1]
+            self.assertEqual(params['creation_time_from'], START.isoformat())
+            self.assertEqual(params['last_update_time_from'], (START + timedelta(minutes=5)).isoformat())
+            self.assertEqual(params['creation_time_to'], (END + timedelta(seconds=1)).isoformat())
+            self.assertEqual((len(result['entries']), result['number_of_items']), (3, 3), 'Whole page counts include read overlap')
+            self.assertEqual(result['entries'][1]['created_at'], until.isoformat(), 'Fractional source timestamps are not truncated')
+            self.assertLess(datetime.fromisoformat(result['entries'][0]['created_at']), cutoff,
+                            'A pre-cutover overlap remains identifiable as historical review')
+            self.assertEqual([entry['deleted'] for entry in result['entries']], [deleted] * 3)
+        self.assertEqual((cutoff.microsecond, changed.microsecond, until.microsecond), (600000, 700000, 250000))
+
+    async def test_fractional_response_outside_actual_wire_envelope_still_fails_the_whole_page(self):
+        changes = dict(created_from=START + timedelta(microseconds=600000),
+                       changed_from=START + timedelta(minutes=5, microseconds=700000),
+                       created_to=END + timedelta(microseconds=250000))
+        for row in (
+            order(creation_time=(START - timedelta(microseconds=1)).isoformat()),
+            order(creation_time=(END + timedelta(seconds=1, microseconds=1)).isoformat(),
+                  last_update_time=(END + timedelta(seconds=2)).isoformat()),
+            order(last_update_time=(START + timedelta(minutes=5) - timedelta(microseconds=1)).isoformat()),
+        ):
+            with self.subTest(row=row['order_number']), self.assertRaises(source.CollectionSourceError) as raised:
+                await self.load(payload(row), **changes)
+            self.assertEqual(raised.exception.code, 'order_collection_invalid_response')
+
+    async def test_fractional_timezone_and_year_boundary_round_outwards_in_utc(self):
+        zone = timezone(timedelta(hours=2))
+        start = datetime(2027, 1, 1, 1, 59, 59, 400000, tzinfo=zone)
+        until = datetime(2026, 12, 31, 23, 59, 59, 800000, tzinfo=timezone.utc)
+        row = order(creation_time=start.isoformat(), last_update_time=until.isoformat())
+        result, fetch = await self.load(payload(row), created_from=start, changed_from=start, created_to=until)
+        self.assertEqual(fetch.call_args.args[1]['creation_time_from'], '2026-12-31T23:59:59+00:00')
+        self.assertEqual(fetch.call_args.args[1]['last_update_time_from'], '2026-12-31T23:59:59+00:00')
+        self.assertEqual(fetch.call_args.args[1]['creation_time_to'], '2027-01-01T00:00:00+00:00')
+        self.assertEqual(result['entries'][0]['created_at'], '2026-12-31T23:59:59.400000+00:00')
+
     async def test_empty_results_accept_zero_or_one_reported_page_only(self):
         for pages in (0, 1):
             result, _ = await self.load(payload(pages=pages))
@@ -131,7 +179,7 @@ class CollectionPageTests(IsolatedAsyncioTestCase):
     async def test_invalid_request_never_reaches_upstream(self):
         for change in ({"created_from": START.replace(tzinfo=None)}, {"changed_from": START.isoformat()},
                        {"created_from": END, "created_to": START}, {"page": 0}, {"page": True},
-                       {"deleted": "true"}):
+                       {"deleted": "true"}, {"created_to": datetime.max.replace(tzinfo=timezone.utc)}):
             with patch.object(source, "_fetch_page") as fetch, self.assertRaises(source.CollectionSourceError) as raised:
                 await source.load_changed_page("biketrek", **{"created_from": START, "changed_from": START,
                                                 "created_to": END, "page": 1, **change})
@@ -217,6 +265,26 @@ class CollectionTransportTests(TestCase):
             with patch.object(source.UpgatesClient, "from_shop", return_value=client), self.assertRaises(source.CollectionSourceError) as raised:
                 source._fetch_page("biketrek", {})
             self.assertEqual(raised.exception.retry_after, expected)
+
+    def test_http_400_has_a_sanitized_diagnostic_without_body_url_or_retry(self):
+        client, response = self.client(status=400)
+        response.json.return_value = {'messages': ['PRIVATE-CUSTOMER-AND-CONNECTION']}
+        response.text = 'PRIVATE-CUSTOMER-AND-CONNECTION'
+        response.url = 'https://private.invalid/orders?credential=PRIVATE-CUSTOMER-AND-CONNECTION'
+        with patch.object(source.UpgatesClient, 'from_shop', return_value=client), patch.object(client, '_log') as log, \
+                self.assertRaises(source.CollectionSourceError) as raised:
+            source._fetch_page('biketrek', {'page': 1})
+        self.assertEqual((raised.exception.code, raised.exception.status, raised.exception.retry_after),
+                         ('order_collection_upgates_http_400', 502, None))
+        self.assertEqual(str(raised.exception), 'order_collection_upgates_http_400')
+        self.assertNotIn('PRIVATE', repr(vars(raised.exception)))
+        response.json.assert_not_called()
+        client.session.get.assert_called_once()
+        client.session.post.assert_not_called()
+        client.session.put.assert_not_called()
+        client.session.close.assert_called_once()
+        response.close.assert_called_once()
+        log.assert_not_called()
 
     def test_auth_bad_json_messages_size_and_connection_failures_are_safe_and_close_session(self):
         for mode in ("auth", "json", "messages", "size", "network"):

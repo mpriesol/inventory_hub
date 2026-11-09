@@ -6,11 +6,11 @@ Reversal consumes only this receipt's intact layers, never replacement stock.
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from inventory_hub.db_models import MovementType, Product, ReceivingStatus, Supplier
-from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockMovement
+from inventory_hub.db_models_ext import ReceivingSession, StockMovement
 from inventory_hub.fifo_models import FifoAllocation, FifoLayer
 from inventory_hub.receiving_operation_models import ReceivingOperation
 from inventory_hub.services import fifo, receiving_source, stock_tracking
@@ -212,6 +212,19 @@ async def get(db, supplier_code, session_id, identifier):
     if row is None or row.session_id != session_id:
         raise ReceivingOperationError("receiving_operation_not_found", 404)
     return _dto(row)
+
+
+async def history(db, supplier_code, session_id):
+    """Completed operation summaries only; never expose frozen receipt snapshots."""
+    await _receipt(db, supplier_code, session_id)
+    rows = await db.scalars(select(ReceivingOperation).where(
+        ReceivingOperation.session_id == session_id, ReceivingOperation.status == "completed")
+        .order_by(ReceivingOperation.completed_at.desc(), ReceivingOperation.id.desc()).limit(50))
+    return {"session_id": session_id, "limit": 50, "operations": [
+        {"id": row.id, "action": row.action, "reason": row.result["reason"], "actor": row.result["actor"],
+         "at": row.completed_at.isoformat(), "stock_effect": row.result["stock_effect"],
+         "impacts": row.result["impacts"], "status": row.result["status"], "archived": row.result["archived"]}
+        for row in rows]}
 
 
 async def preview(db, supplier_code, session_id, payload, actor):

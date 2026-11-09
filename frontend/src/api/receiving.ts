@@ -63,6 +63,10 @@ export const lookupReceivingInvoice = (code: string) => hubRequest<{
 
 
 export interface ReceivingSessionSummary {
+  posting_revision?: number;
+  archived?: boolean;
+  reversed?: boolean;
+  last_operation?: { id: string; action: string; reason: string; actor: string; at: string };
   warehouse?: { id: number; code: string; name: string };
   currency?: string;
   invoice_no: string;
@@ -184,12 +188,13 @@ export async function getReceivingSummary(
 export async function finalizeReceiving(
   supplier: string, 
   session_id: string,
-  force: boolean = false
+  force: boolean = false,
+  expectedPostingRevision: number = 0
 ): Promise<FinalizeResult> {
   return fetchJSON<FinalizeResult>(`${API_BASE}/suppliers/${supplier}/receiving/sessions/${session_id}/finalize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ force })
+    body: JSON.stringify({ force, expected_posting_revision: expectedPostingRevision })
   });
 }
 
@@ -239,6 +244,8 @@ export interface ActiveSessionInfo {
   has_session: boolean;
   session: {
     session_id: string;
+    status?: ReceivingStatus;
+    archived?: boolean;
     created_at: string;
     is_paused: boolean;
     paused_at: string | null;
@@ -254,9 +261,10 @@ export interface ActiveSessionInfo {
 
 export async function getActiveSession(
   supplier: string,
-  invoice_no: string
+  invoice_no: string,
+  includeClosed: boolean = false
 ): Promise<ActiveSessionInfo> {
-  return fetchJSON<ActiveSessionInfo>(`${API_BASE}/suppliers/${supplier}/invoices/${invoice_no}/active-session`);
+  return fetchJSON<ActiveSessionInfo>(`${API_BASE}/suppliers/${encodeURIComponent(supplier)}/invoices/${encodeURIComponent(invoice_no)}/active-session${includeClosed ? '?include_closed=true' : ''}`);
 }
 
 export async function reopenInvoice(

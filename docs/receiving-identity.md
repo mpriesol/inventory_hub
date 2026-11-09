@@ -1,5 +1,7 @@
 # Príjem: identita produktu a opakovanie skenov
 
+Dokončenú príjemku možno bezpečne opraviť cez [storno, znovuotvorenie a vratný archív](receiving-recovery.md). Operácie vyžadujú dôvod a potvrdenie náhľadu; pôvodné pohyby ani skeny sa nemažú. Archív nemení množstvá.
+
 Príjem rozlišuje fyzický tovar a služby podľa `products.item_type`. Výslovný prepočet nákupného balenia na základnú skladovú jednotku zachová faktúrové množstvo/cenu; podrobný kontrakt vrátane presnosti, opakovania a migrácie 031 je v [jednotkách skladu](stock-units.md).
 
 Pri chýbajúcej karte použite **Založiť skladové karty** a [spoločnú politiku identity/SKU](sku-policy.md). Zaúčtovanie príjemky už nezakladá novú kartu z dodávateľskej predpony: vráti konkrétny riadok vyžadujúci prípravu. Existujúce overené karty a ich historické kódy zostávajú použiteľné. Uloženie karty, prijaté množstvá a publikovanie sú oddelené; návrat z prípravy nemení faktúrové ceny ani prijaté kusy.

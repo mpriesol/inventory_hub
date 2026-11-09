@@ -1,6 +1,8 @@
 # Warehouse launch and correction work — continuation record
 
-Updated: 2026-11-09. Status: implementation in progress; no launch/reset writes applied by this work yet.
+Updated: 2026-11-09 08:59 UTC. Status: implementation in progress; order policies,
+read-only collection and webhook registration have been configured. Test reset,
+stock adoption and live stock authority have NOT been applied.
 
 This is the durable continuation record for the owner's 9 November instruction.
 Read it together with AGENTS.md; do not depend on a previous chat.
@@ -73,10 +75,11 @@ Read it together with AGENTS.md; do not depend on a previous chat.
 
 | Package | Current status | Files/owner during implementation |
 | --- | --- | --- |
-| Invoice processing without stock, undo and manual settlements | In progress | Invoice services/routes/UI/tests; ops agent; migration 051 reserved |
-| Receipt correction/reversal and clean-start primitives | In progress | Receiving/FIFO services/UI/tests; stock agent; migration 052 reserved |
-| Topeak availability failure diagnosis/recovery and order setup | In progress | Supplier availability/order services/tests; orders agent |
-| Backup, one-off baseline/reset, integration, CI, release | Not applied | Primary agent |
+| Invoice processing without stock, undo and manual settlements | Implemented; targeted backend/UI checks passed, final review in progress | Invoice services/routes/UI/tests; migration 051 |
+| Receipt correction/reversal and clean-start primitives | Implemented; targeted backend/UI checks passed | Receiving/FIFO services/UI/tests; migration 052 |
+| Topeak availability and source identity recovery | Implemented; targeted checks passed, not deployed | Availability batch reader, diagnostics and pinned read-only Atomer source export |
+| Order setup | Policies, read-only collection and webhooks configured; collector failure under investigation | See checkpoints and docs/order-launch-setup.md |
+| One-off baseline/reset, full CI and release | Not applied | Primary agent |
 | Portable handoff and this record | Being checkpointed | Primary agent |
 
 Avoid shared-file conflicts: primary agent owns migrate.py, Dockerfile, CI,
@@ -115,8 +118,10 @@ OVERVIEW.md and AGENTS.md integration. Invoice agent coordinates both locale fil
    account). Never infer “applied” from code availability.
 4. Finish/review the three work packages, reconcile their contracts and run
    isolated validation.
-5. Establish actual backup/server capabilities; API exports alone are not a
-   verified consistent database-plus-files backup.
+5. No full server backup/access has been verified. The scoped reset uses tested
+   reversible archival with preserved originals and ledgers, not deletion. API
+   exports are recovery evidence, not a database-plus-files backup. Destructive
+   reset remains outside this operational procedure.
 6. Freeze exact test-reset scope and opening source manifest before any reset.
    Apply only once using stable UUIDs and verify postconditions.
 7. Prepare order/webhook settings and stock baseline. Record any final live
@@ -128,4 +133,48 @@ OVERVIEW.md and AGENTS.md integration. Invoice agent coordinates both locale fil
 
 - 2026-11-09: main inspected at the base commit above; clean local feature branch
   created. Implementation assigned. No production data writes by this work.
+- 08:37 UTC: work checkpoint pushed as
+  `e85806d75233be65433fd16c3a99497d499a99c5`; this is WIP, not a release.
+- Fresh native product snapshots completed about 08:29 UTC. Every one of the
+  42,375 current sales leaves had exactly one canonical card. Null stock remains
+  unknown. Historical source links absent from current snapshots are retained
+  for history and must not be used as current publication proof.
+- 08:41–08:42 UTC: both shops' accepted status policies, collector revision 1 and
+  webhook revision 1 were configured through the API. Policies start at
+  `2026-11-09T08:41:06.146665Z` (BIKETREK) and
+  `2026-11-09T08:41:37.784409Z` (xTrek). Both remain in manual processing mode;
+  stock publication/automatic issue was not enabled. Do not repeat initial
+  configure requests with an empty expected revision: read current state first.
+- Both sets of create/update/delete callbacks were registered. A real BIKETREK
+  callback arrived at 08:44:03 UTC and completed at 08:44:04 UTC. No xTrek callback
+  delivery had yet been observed. Registration is not proof of delivery.
+- 08:58 UTC: both collectors repeatedly failed before page 1 with
+  `order_collection_source_unavailable`; no completed full scan. Investigate
+  timestamp wire precision and verify a successful full scan after the fix.
+  Do not call collection ready solely because webhook delivery works.
+- Local PostgreSQL 16.2 verification passed all SQL 001–052 and the actual
+  41-module migration runner. Targeted invoice, receiving, availability and
+  adoption tests passed. Full PR CI and production release remain pending.
+- Private portable handoff files are `Hub_pokracovanie_20261109.txt` and
+  `Hub_obnova_20261109.zip`. The latter holds operation intents/results and
+  source snapshots, never the API token or a repository copy. Obtain the latest
+  versions from the owner when continuing in another account.
+
+## Next concrete work
+
+1. Finish collector date-boundary correction and source-archive re-upload guard;
+   integrate the reviewed UI acknowledgment/recovery checks.
+2. Publish the completed branch checkpoint, open PR, pass full CI, review and
+   merge/deploy under standing permission. Verify deployed routes separately.
+3. Use the pinned Atomer admin source export to resolve remaining source IDs;
+   produce the exact quantity selection manifest with provenance. No guessed
+   identities/units, no zero for missing source rows, no duplicated shared stock.
+4. Finish exact receipt scope across all suppliers. Archive frozen test receipts,
+   then invoices, then the two malformed source test entries; compare unchanged
+   stock/settlement history and active-list postconditions. Preserve operation
+   UUIDs and read back uncertain outcomes before any retry.
+5. Adopt approved quantities through bounded stock-adjustment batches, preserving
+   unknown costs and existing receipt effects. Verify identities and quantities.
+6. Recheck only known pre-write Topeak failures after the availability fix;
+   complete collector scans and prepare cutover/baseline before live authority.
 

@@ -216,14 +216,18 @@ invalid readback after the PUT leaves that target uncertain; successful siblings
 may complete, but the uncertain target is never automatically repeated.
 
 `GET /supplier-availability/{supplier}/publication/status` provides local diagnostics
-for the configured supplier and target shop. It returns complete current `counts`
-and `errors`, plus `items` paginated by `offset` and `limit` (1–100, default 50).
+for the configured supplier and target shop. Its
+`outcome_scope: latest_recorded_supplier_shop` means the latest recorded outcome
+per card/channel, including historical targets outside the current brand, active
+product or mapping selection. It returns complete `counts` and `errors` for that
+history scope, plus `items` paginated by `offset` and `limit` (1–100, default 50).
 Optional `state` and exact `error` filters apply to `items` and `total`; aggregate
 counts retain the complete scope. As on the overview, an unresolved intent takes
 priority over a later rejection for the same card/shop. Each item exposes its
 publication ID, safe error code, `retry_at`, `known_prewrite_failure` and
-`recheck_eligible`; new attempts also record the failure stage. Older records may
-have no stage. This GET performs no upstream calls, prefix-registry writes,
+`recheck_eligible`; the latter means its delivery can be queued, not that the
+product passes the current publication policy. New attempts also record the
+failure stage. Older records may have no stage. This GET performs no upstream calls, prefix-registry writes,
 publication claims or retry scheduling.
 
 Operators can queue a bounded recheck after correcting a remote-only problem via
@@ -233,7 +237,8 @@ It checks the supplier revision and configured target, queues local work only, a
 returns a `queued` count. It cannot release an uncertain intent. Ordinary feed
 refreshes do not silently reset permanent publication failures. For recovery from
 old batch failures, first inspect the diagnostic endpoint and select only the
-intended `rejected`, `recheck_eligible` IDs. The recheck starts a fresh validated
+intended `rejected`, `recheck_eligible` IDs, checking their current brand, active
+source and exact native mapping. The recheck starts a fresh validated
 attempt; it does not replay or erase an earlier publication.
 
 Migration 034 is replay-safe and leaves all stock authority flags, stock movements

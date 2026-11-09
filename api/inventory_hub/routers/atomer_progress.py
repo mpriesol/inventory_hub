@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,7 @@ from inventory_hub.services import atomer_missing_native_ean as missing_native_e
 from inventory_hub.services import atomer_catalog_engine, atomer_proposals, atomer_review as review
 from inventory_hub.services import atomer_catalog_control, atomer_catalog_job_control
 from inventory_hub.services import atomer_catalog_handoff
+from inventory_hub.services import atomer_source_export
 from inventory_hub.services import atomer_conflict_resolution, atomer_brand_identity, atomer_standalone_family, atomer_variant_barcode_owners
 from inventory_hub.services import atomer_variant_repair as repairs, atomer_recode, atomer_family_batch, atomer_generations, atomer_generation_cards, atomer_generation_recovery, atomer_generation_availability
 from inventory_hub.services.catalog import CatalogError
@@ -39,6 +41,19 @@ async def progress_page(kind: Literal["variant","standalone"] | None = None,
                         search: str = Query("", max_length=255), offset: int = Query(0,ge=0),
                         limit: int = Query(50,ge=1,le=200), db: AsyncSession = Depends(get_session)):
     return await page(db,kind,state,bike,card,search.strip(),offset,limit,work)
+
+
+@router.get('/source-export/{kind}')
+async def source_export(kind: Literal['buyers', 'admin'], run_id: int = Query(ge=1, le=9223372036854775807),
+                        db: AsyncSession = Depends(get_session)):
+    try:
+        result = await atomer_source_export.download(db, run_id, kind)
+    except ReviewError as error:
+        raise HTTPException(error.status, detail={'code': error.code}) from None
+    return Response(result['body'], media_type=result['media_type'], headers={
+        'Content-Disposition': f'attachment; filename="{result["filename"]}"',
+        'X-Content-SHA256': result['sha256'], 'X-Atomer-Run-Id': str(result['run_id']),
+        'X-Content-Type-Options': 'nosniff'})
 
 
 @router.post("/refresh")

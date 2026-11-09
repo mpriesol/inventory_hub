@@ -118,6 +118,43 @@ vo statuse; neistá registrácia sa nesmie naslepo opakovať.
 
 ## Overenie pripravenosti a neskorší začiatok spracovania
 
+### Časové filtre zberu a diagnostika odmietnutia
+
+[Dokumentácia Upgates pre zoznam objednávok](https://docs.upgates.com/api-reference/objednavky)
+uvádza `creation_time_from`, `creation_time_to` a `last_update_time_from` ako
+`DateTime`; horná hranica vytvorenia je vrátane uvedeného času. [Schéma DateTime](https://docs.upgates.com/api-reference/~schemas)
+odkazuje na ISO 8601, ale výslovne neurčuje podporu zlomkov sekundy.
+
+Zber preto posiela konzervatívny zápis v UTC s celými sekundami. Dolné hranice
+zaokrúhli nadol; hornú hranicu so zlomkom sekundy zaokrúhli nahor na nasledujúcu
+celú sekundu. Presné sekundové hranice nemení. Takto sa na hrane okna nestratí
+objednávka a každý okraj sa môže prekryť o menej než sekundu. Overí celú odpoveď
+proti skutočne odoslanému oknu a ponechá aj toto prekrytie, aby počty položiek,
+stránkovanie, kontrola duplicít a poradie zmien zostali overiteľné. Záznam mimo
+odoslaného okna alebo neplatný identifikátor, čas či metadáta stále odmietnu celú
+stranu.
+
+Zaokrúhlenie patrí iba GET požiadavke. Pôvodný `policy.starts_at`, ostatné
+aktivačné prahy, uložené hranice priechodu a kurzory zostávajú presné. Ani časy
+objednávok v odpovedi sa nezaokrúhľujú. Objednávka z prekrytia vytvorená tesne pred
+pôvodným začiatkom politiky preto naďalej dostane historickú kontrolu
+`stock_native_historical_change`; nestane sa automaticky novou objednávkou
+oprávnenou na skladový výdaj.
+
+HTTP 400 pri načítaní zoznamu má samostatný kód
+`order_collection_upgates_http_400`, viditeľný cez existujúci stav zberu a históriu
+priechodov. Do diagnostiky sa neprenáša telo odpovede, URL, prihlasovacie údaje ani
+zákaznícke údaje. Ostatné chyby prístupu, obmedzenia a spojenia si ponechávajú
+doterajšie kódy; nepridáva sa automatické opakovanie jedného HTTP volania.
+
+Predchádzajúce rýchle zlyhanie priechodu s nulou strán a všeobecným
+`order_collection_source_unavailable` samo nepreukazuje odmietnutie zlomkov
+sekundy. Táto úprava formátu a bezpečná diagnostika sú overené syntetickými
+testami. Úspech na konkrétnom e-shope musí potvrdiť nový dokončený zber po nasadení;
+nenahrádza ho úspešné načítanie jednej objednávky cez webhook.
+
+### Kontrolné endpointy
+
 | GET endpoint | Očakávaný dôkaz |
 | --- | --- |
 | `/api/order-collection/status?shop_code=...` | Collector zapnutý, pripojenie sa zhoduje, úspešný dokončený zber, bez aktuálnej chyby |

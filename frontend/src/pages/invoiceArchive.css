@@ -86,3 +86,4 @@
 .invoice-archive .invoice-processing-history { margin-top: 1rem; }
 .invoice-archive .invoice-processing-history summary { cursor: pointer; font-weight: 600; }
 .invoice-archive .invoice-processing-preview dd { overflow-wrap: anywhere; }
+.invoice-archive .invoice-processing-preview .facts > div { display: contents; }

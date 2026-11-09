@@ -51,7 +51,7 @@ async def source_archive_preview(payload: SourceArchivePreview, db: AsyncSession
 async def source_archive_apply(payload: SourceArchiveApply, request: Request,
                                db: AsyncSession = Depends(get_session)):
     user = getattr(request.state, 'hub_user', None)
-    actor = str(user.get('username') or user.get('id')) if user else 'operator-token'
+    actor = f"user:{user['id']}" if user and user.get('id') is not None else 'operator-token'
     return await _source_call(sources.apply(db, payload, actor))
 
 

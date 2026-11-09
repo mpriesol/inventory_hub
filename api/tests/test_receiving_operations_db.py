@@ -12,9 +12,10 @@ import test_receiving_db as fixture
 from inventory_hub.db_models import MovementType, ReceivingStatus
 from inventory_hub.db_models_ext import ReceivingSession, StockBalance, StockMovement
 from inventory_hub.fifo_models import FifoLayer
+from inventory_hub.fifo_return_types import FifoCostRevisionInput
 from inventory_hub.receiving_operation_models import ReceivingOperation
 from inventory_hub.receiving_operation_types import ReceivingOperationPreview, ReceivingOperationApply
-from inventory_hub.services import fifo, receiving_operations as service
+from inventory_hub.services import fifo, fifo_returns, receiving_operations as service
 from inventory_hub.routers import receiving_db as receiving
 
 
@@ -89,6 +90,33 @@ class ReceivingOperationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(opened["stock_effect"], "unchanged")
         self.assertEqual(len(await self.movements()), 2)
 
+    async def test_pack_conversion_undo_uses_actual_stock_units(self):
+        identifier = await self.make_session([{"product_id": self.product_id, "received_qty": D(2),
+            "unit_price": D(6), "purchase_unit": "pack", "purchase_to_stock_factor": D(3),
+            "conversion_stock_unit": "pcs"}])
+        await self.finalize(identifier)
+        preview = await self.preview(identifier, "reverse")
+        self.assertEqual(D(preview["impacts"][0]["delta"]), D(-6))
+        await self.apply(preview)
+        self.assertEqual((await self.balance())[0], D(0))
+        self.assertEqual([row["quantity"] for row in await self.movements()], [D(6), D(-6)])
+
+    async def test_unknown_revised_cost_is_not_replaced_with_zero_during_undo(self):
+        identifier = await self.make_session()
+        await self.finalize(identifier)
+        async with self.sessions() as db:
+            layer_id = await db.scalar(select(FifoLayer.id))
+            await fifo_returns.revise_cost(db, FifoCostRevisionInput(request_id=uuid4(), root_layer_id=layer_id,
+                expected_revision=0, new_unit_cost=None, cost_status="unknown", reason="Cost evidence needs correction",
+                document_reference="Test cost correction", confirmed=True))
+        originals = await self.movements()
+        await self.apply(await self.preview(identifier, "reverse"))
+        movements = await self.movements()
+        self.assertEqual(movements[:-1], originals)
+        self.assertIsNone(movements[-1]["unit_cost"])
+        self.assertIsNone(movements[-1]["total_cost"])
+        self.assertEqual(await self.balance(), (D(0), D(0), D(0), None))
+
     async def test_reservations_and_consumed_receipt_layers_block_undo(self):
         identifier = await self.make_session()
         await self.finalize(identifier)
@@ -145,6 +173,11 @@ class ReceivingOperationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 all_rows = await receiving.list_sessions("receipt-test", limit=100, db=db, include_archived=True)
                 self.assertNotIn(identifier, [row["session_id"] for row in visible])
                 self.assertIn(identifier, [row["session_id"] for row in all_rows])
+                receipt = await db.get(ReceivingSession, identifier)
+                active = await receiving.get_active_session("receipt-test", receipt.invoice_number, db)
+                closed = await receiving.get_active_session("receipt-test", receipt.invoice_number, db, include_closed=True)
+                self.assertFalse(active["has_session"])
+                self.assertTrue(closed["session"]["archived"])
                 with self.assertRaisesRegex(Exception, "receiving_archived"):
                     await receiving.finalize_session("receipt-test", identifier, receiving.FinalizeRequest(), db)
             restored = await self.apply(await self.preview(identifier, "restore"))
@@ -152,6 +185,9 @@ class ReceivingOperationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(restored["status"], "completed" if completed else "in_progress")
             self.assertEqual(before, await self.movements())
             self.assertEqual(before_balance, await self.balance())
+            if completed:
+                await self.finalize(identifier)
+                self.assertEqual(before, await self.movements())
 
     async def test_same_request_and_concurrent_apply_never_reverse_twice(self):
         identifier = await self.make_session()
@@ -165,6 +201,25 @@ class ReceivingOperationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first["movement_ids"]), 1)
         self.assertEqual(len(await self.movements()), 2)
+
+    async def test_history_has_completed_scoped_summaries_without_private_snapshots(self):
+        identifier = await self.make_session()
+        unrelated = await self.make_session()
+        await self.preview(unrelated, "archive")
+        await self.preview(identifier, "archive")
+        first = await self.apply(await self.preview(identifier, "archive"))
+        await self.apply(await self.preview(identifier, "restore"))
+        async with self.sessions() as db:
+            history = await service.history(db, "receipt-test", identifier)
+            self.assertEqual(history["limit"], 50)
+            self.assertEqual([item["action"] for item in history["operations"]], ["restore", "archive"])
+            self.assertEqual(history["operations"][-1]["id"], first["id"])
+            self.assertEqual(history["operations"][-1]["actor"], "user:18")
+            self.assertEqual(set(history["operations"][0]),
+                {"id", "action", "reason", "actor", "at", "stock_effect", "impacts", "status", "archived"})
+            self.assertEqual((await service.history(db, "receipt-test", unrelated))["operations"], [])
+            with self.assertRaisesRegex(service.ReceivingOperationError, "not_found"):
+                await service.history(db, "not-this-supplier", identifier)
 
     async def test_partial_failure_rolls_back_and_completed_audit_is_immutable(self):
         identifier = await self.make_session([
@@ -210,3 +265,13 @@ class ReceivingOperationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
         with self.assertRaisesRegex(service.ReceivingOperationError, "invoice_archived"):
             await self.preview(identifier, "restore")
+        async with self.sessions() as db:
+            await db.execute(text("UPDATE uploaded_invoices SET archived_at=NULL,processing_status='processed_without_stock'"))
+            await db.commit()
+        with self.assertRaisesRegex(service.ReceivingOperationError, "invoice_processed_without_stock"):
+            await self.preview(identifier, "restore")
+        async with self.sessions() as db:
+            await db.execute(text("UPDATE uploaded_invoices SET processing_status='unprocessed'"))
+            await db.commit()
+        result = await self.apply(await self.preview(identifier, "restore"))
+        self.assertEqual(result["movement_ids"], [])

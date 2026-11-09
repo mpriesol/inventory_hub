@@ -22,7 +22,13 @@ function readPending(id: number): PendingPayment | null {
   } catch { return null; }
 }
 function writePending(id: number, value: PendingPayment | null) {
-  try { if (value) sessionStorage.setItem(storageKey(id), JSON.stringify(value)); else sessionStorage.removeItem(storageKey(id)); } catch { /* The mounted page still retains the exact request. */ }
+  if (value) {
+    const serialized = JSON.stringify(value);
+    sessionStorage.setItem(storageKey(id), serialized);
+    if (sessionStorage.getItem(storageKey(id)) !== serialized) throw new Error('storage_unavailable');
+  } else {
+    try { sessionStorage.removeItem(storageKey(id)); } catch { /* A completed UUID can safely be recovered again. */ }
+  }
 }
 const editValues = (invoice: ArchivedInvoiceDetail) => ({
   invoice_number: invoice.invoice_number || '', invoice_date: invoice.invoice_date || '', due_date: invoice.due_date || '',
@@ -73,10 +79,11 @@ export function InvoiceDetailPage() {
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [id, access, refresh, t]);
-  const retain = (value: PendingPayment | null) => { request.current = value; setPending(value); writePending(id, value); };
+  const retain = (value: PendingPayment | null) => { writePending(id, value); request.current = value; setPending(value); };
   const fresh = async () => {
+    const startedAccess = accessRevision();
     const value = await getArchivedInvoice(id);
-    if (currentId.current === id) { setInvoice(value); setEdit(editValues(value)); }
+    if (currentId.current === id && startedAccess === accessRevision()) { setInvoice(value); setEdit(editValues(value)); }
     return value;
   };
   const finishPayment = (value: InvoicePaymentResult) => {
@@ -87,14 +94,21 @@ export function InvoiceDetailPage() {
   };
   const recover = async () => {
     const operation = request.current; if (!operation || working.current) return;
+    if (operation.actor !== currentActor() || operation.invoice_id !== id) {
+      setError(t('invoiceArchive.operationActorChanged')); return;
+    }
     const startedAccess = accessRevision(); working.current = true; setBusy(true); setError('');
-    try { const value = await getInvoicePaymentOperation(id, operation.body.request_id); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(value); }
+    try { const value = await getInvoicePaymentOperation(id, operation.body.request_id, operation.body.expected_revision); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(value); }
     catch (reason) { if (startedAccess === accessRevision() && currentId.current === id) setError(invoiceError(reason, t('invoiceArchive.paymentRecoveryPending'))); }
     finally { working.current = false; setBusy(false); }
   };
   const submitPayment = async (operation: PendingPayment) => {
     if (working.current) return;
-    const startedAccess = accessRevision(); working.current = true; setBusy(true); setError(''); setMessage(''); retain(operation);
+    if (operation.actor !== currentActor() || operation.invoice_id !== id) {
+      setError(t('invoiceArchive.operationActorChanged')); return;
+    }
+    try { retain(operation); } catch { setError(t('invoiceArchive.operationStorageUnavailable')); return; }
+    const startedAccess = accessRevision(); working.current = true; setBusy(true); setError(''); setMessage('');
     try {
       const value = operation.payment_id === undefined ? await addInvoicePayment(id, operation.body as InvoicePaymentRequest) : await reverseInvoicePayment(id, operation.payment_id, operation.body);
       if (startedAccess === accessRevision() && currentId.current === id) finishPayment(value);
@@ -104,7 +118,7 @@ export function InvoiceDetailPage() {
       if (failure.knownUnapplied || [400, 401, 403, 422].includes(failure.status || 0)) {
         retain(null); setConflict(failure.status === 409); setError(invoiceError(reason, t(failure.status === 409 ? 'invoiceArchive.conflict' : 'invoiceArchive.paymentFailed')));
       } else {
-        try { const result = await getInvoicePaymentOperation(id, operation.body.request_id); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(result); }
+        try { const result = await getInvoicePaymentOperation(id, operation.body.request_id, operation.body.expected_revision); if (startedAccess === accessRevision() && currentId.current === id) finishPayment(result); }
         catch { if (startedAccess === accessRevision() && currentId.current === id) setError(t('invoiceArchive.paymentUncertain')); }
       }
     } finally { working.current = false; setBusy(false); }
@@ -186,7 +200,7 @@ export function InvoiceDetailPage() {
         const body: InvoicePaymentRequest = { request_id: crypto.randomUUID(), expected_revision: finance.payment_revision, kind: payment.kind, amount: decimalInput(payment.amount), paid_at: `${payment.paid_at}T00:00:00Z`, note: payment.note };
         if (finance.opening_required) body.opening_paid_amount = decimalInput(payment.opening_paid_amount);
         submitPayment({ invoice_id: id, actor: currentActor(), body });
-      }}><h2>{t('invoiceArchive.addPayment')}</h2><fieldset disabled={locked}><div className="fields">
+      }}><h2>{t('invoiceArchive.managePayment')}</h2><p className="muted small">{t('invoiceArchive.paymentDirectionHelp')}</p><fieldset disabled={locked}><div className="fields">
         <label>{t('invoiceArchive.paymentKind')}<select data-testid="invoice-payment-kind" value={payment.kind} onChange={event => setPayment({ ...payment, kind: event.target.value as 'payment' | 'refund' })}><option value="payment">{t('invoiceArchive.paymentKinds.payment')}</option><option value="refund">{t('invoiceArchive.paymentKinds.refund')}</option></select></label>
         <label>{t('invoiceArchive.amount')} ({invoice.currency})<input required data-testid="invoice-payment-amount" inputMode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" value={payment.amount} onChange={event => setPayment({ ...payment, amount: event.target.value })} /></label>
         <label>{t('invoiceArchive.paymentDate')}<input required data-testid="invoice-payment-date" type="date" value={payment.paid_at} onChange={event => setPayment({ ...payment, paid_at: event.target.value })} /></label>

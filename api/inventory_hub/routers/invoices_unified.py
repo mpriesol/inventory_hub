@@ -165,7 +165,7 @@ async def supplier_filter_options(db: AsyncSession = Depends(get_session)):
 
 
 @router.get("/suppliers")
-async def list_all_suppliers(db: AsyncSession = Depends(get_session)):
+async def list_all_suppliers(db: AsyncSession = Depends(get_session), include_archived: bool = Query(False)):
     """
     List ALL suppliers (not just those with invoices).
     Uses LEFT OUTER JOIN to include suppliers with 0 invoices.
@@ -178,13 +178,15 @@ async def list_all_suppliers(db: AsyncSession = Depends(get_session)):
             COALESCE(COUNT(ui.id), 0) as invoice_count
         FROM suppliers s
         LEFT OUTER JOIN uploaded_invoices ui ON s.id = ui.supplier_id
+          AND (CAST(:include_archived AS boolean) OR ui.archived_at IS NULL)
         WHERE s.is_active = true
         GROUP BY s.id, s.code, s.name
         ORDER BY s.name
     """)
     
-    result = await db.execute(sql)
-    financial = await finance.financial_rows(db, conditions="ui.direction='purchase'")
+    result = await db.execute(sql, {"include_archived": include_archived is True})
+    financial = await finance.financial_rows(db, conditions="ui.direction='purchase'" +
+        ("" if include_archived is True else " AND ui.archived_at IS NULL"))
     suppliers = [
         {
             "id": row.id,

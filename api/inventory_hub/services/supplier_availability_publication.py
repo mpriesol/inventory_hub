@@ -165,6 +165,7 @@ async def publication_status(db, supplier, offset=0, limit=50, state=None, error
                 and row['delivery_publication_id'] == row['id'] and settings is not None and policy.get('enabled') is True,
             'known_prewrite_failure': row['state'] == 'rejected'})
     return {'supplier': supplier, 'shop_code': policy['shop_code'], 'enabled': policy.get('enabled') is True,
+        'outcome_scope': 'latest_recorded_supplier_shop',
         'settings_revision': settings.revision if settings else None, 'counts': counts,
         'errors': [{'state': outcome, 'error': availability._safe_error(code), 'count': amount}
                    for outcome, code, amount in grouped], 'total': total, 'offset': offset, 'limit': limit, 'items': items,

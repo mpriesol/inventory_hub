@@ -226,6 +226,58 @@
         "stock_quantity_unit_mismatch": "Pieces, pairs and packs require whole quantities; metres allow up to three decimal places.",
         "stock_item_required": "This operation requires a stock card. Services do not have physical inventory."
       }
+    },
+    "recovery": {
+      "title": "Receipt correction and archive",
+      "action": "Action",
+      "reason": "Reason",
+      "reasonPlaceholder": "Explain the correction or archival",
+      "preview": "Preview",
+      "apply": "Apply",
+      "confirm": "Confirm operation",
+      "newPreview": "New preview",
+      "retry": "Retry same operation",
+      "checking": "Checking saved result…",
+      "applied": "Operation saved.",
+      "failed": "The operation could not be completed.",
+      "stale": "The receipt changed. Load a new preview.",
+      "pending": "The result is not confirmed yet. Check it or retry the exact same request.",
+      "noStockChange": "This operation does not change stock quantities.",
+      "undoHelp": "Correcting a receipt appends opposite stock movements. The original receipt, scans and history remain intact.",
+      "archived": "Archived",
+      "includeArchived": "Include archived",
+      "openRecovery": "Correct or archive",
+      "noReceipt": "Choose a receipt with a saved session.",
+      "before": "Before",
+      "change": "Change",
+      "after": "After",
+      "availableAfter": "Available after correction",
+      "noImpacts": "This operation does not change stock.",
+      "blocked": "The receipt state prevents this operation. Check the stated reason.",
+      "reverse": "Reverse receipt",
+      "reopen": "Reopen receipt",
+      "archive": "Archive",
+      "restore": "Restore from archive",
+      "product": "Product",
+      "errors": {
+        "receiving_reversal_used_stock": "Goods from this receipt have already been used. Use an ordinary inventory adjustment or goods return.",
+        "receiving_reversal_committed_stock": "Reservations or quarantine prevent an exact receipt reversal.",
+        "receiving_reversal_historical": "This historical receipt cannot be reversed exactly. Use an ordinary inventory adjustment.",
+        "receiving_reversal_missing_movement": "The original stock movement cannot be verified unambiguously.",
+        "receiving_reversal_fifo_required": "Exact reversal requires the original, intact FIFO layers.",
+        "receiving_operation_stale": "The receipt has changed. Load a new preview.",
+        "receiving_operation_expired": "The preview has expired. Load a new preview.",
+        "invoice_archived": "Restore the invoice from the archive first.",
+        "invoice_processed_without_stock": "The invoice is processed without a stock movement. Reopen it as unprocessed first."
+      },
+      "lastOperation": "Last receipt change",
+      "history": "Receipt change history",
+      "historyEmpty": "This receipt has no corrections or archive operations yet.",
+      "historyLoadFailed": "Could not load receipt history.",
+      "date": "Date",
+      "actor": "User",
+      "stockEffect": "Stock effect",
+      "historyLimit": "Last 50 completed changes."
     }
   },
   "suppliers": {
@@ -1775,7 +1827,8 @@
       "stock_projection_sale_factor_invalid": "The sale unit to piece conversion is invalid. Check the confirmed variant mapping.",
       "stock_publication_warehouse_held": "The warehouse is held for controlled publication. Complete and verify maintenance, then explicitly release the hold.",
       "stock_projection_item_not_stocked": "A service has no physical inventory to publish.",
-      "stock_projection_mapping_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link."
+      "stock_projection_mapping_unverified": "The shop link is not yet verified. Open product matching, prepare a preview and confirm the correct link.",
+      "order_collection_upgates_http_400": "Upgates rejected the order list request (HTTP 400). Check the date filters and supported request parameters."
     },
     "origins": {
       "cash-register": "Cash register",
@@ -4624,7 +4677,7 @@
     "archive": "Documents",
     "purchaseOverview": "Supplier invoice overview",
     "salesOverview": "Shop document overview",
-    "dashboardScope": "Entire archive for this direction: {{count}} documents. Table filters do not change this overview.",
+    "dashboardScope": "Active documents for this direction: {{count}}. Table filters do not change this overview.",
     "invoiceValue": "Document value incl. VAT",
     "outstanding": "Outstanding",
     "documentsCount": "Documents: {{count}}",
@@ -4656,7 +4709,8 @@
       "in_progress": "In progress",
       "completed": "Received",
       "paused": "Paused",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "processed_without_stock": "Processed without stock movement"
     },
     "documentType": {
       "invoice": "Invoice",
@@ -4817,7 +4871,72 @@
     "archiveProcessing": "Automatic supplier document processing",
     "archiveProgress": "Documents checked: {{count}}. Processing continues automatically.",
     "archiveWaiting": "Waiting for automatic processing",
-    "archiveIssue": "Document needs attention ({{code}}). Temporary failures are retried automatically."
+    "archiveIssue": "Document needs attention ({{code}}). Temporary failures are retried automatically.",
+    "processing": {
+      "title": "Document handling and archive",
+      "scope": "These actions change the document record. The preview shows the resulting status before you confirm.",
+      "active": "Active",
+      "archived": "Archived",
+      "archivedHelp": "This document is excluded from active lists and financial totals. Restore it before editing payments, metadata or receiving goods.",
+      "includeArchived": "Include archived documents",
+      "action": "Action",
+      "state": "Processing status",
+      "visibility": "Visibility",
+      "preview": "Preview change",
+      "previewTitle": "Review document change",
+      "confirm": "Confirm document change",
+      "noEffects": "Stock quantities, stock movements, purchase costs and recorded payments stay unchanged.",
+      "saved": "Document change saved with its reason and audit.",
+      "failed": "The document change could not be completed.",
+      "uncertain": "The result is not yet confirmed. Check the saved result or retry the same request; do not start another operation.",
+      "recover": "Check saved result",
+      "retry": "Retry same request",
+      "history": "Document handling history",
+      "receiptFirst": "This invoice has a receiving session. Open that session to correct or archive it before changing the invoice status.",
+      "statuses": {
+        "unprocessed": "Unprocessed",
+        "processed_without_stock": "Processed without stock movement",
+        "receiving": "Receiving in progress",
+        "received": "Processed by receipt"
+      },
+      "actions": {
+        "process_without_stock": "Mark processed without stock movement",
+        "reopen": "Return to unprocessed",
+        "archive": "Archive document",
+        "restore": "Restore document"
+      },
+      "help": {
+        "process_without_stock": "Use this when the document is handled and no goods should be received through it. A reason is required. This does not confirm physical stock or payment.",
+        "reopen": "Remove the manual processed mark. The original mark and both reasons remain in history.",
+        "archive": "Hide the document from active lists and totals. Original files, payment history and receipt evidence remain available. The archive can be reversed.",
+        "restore": "Return the document to active lists and totals. Its previous processing and payment facts remain intact; a linked receiving session is restored separately."
+      },
+      "errors": {
+        "invoice_not_found": "This invoice no longer exists.",
+        "invoice_processing_changed": "The invoice or its receiving session changed. Refresh the document and prepare a new preview.",
+        "invoice_processing_purchase_required": "This processing action is available only for supplier invoices.",
+        "invoice_archived": "Restore the archived invoice first.",
+        "invoice_processing_receipt_owned": "This invoice is processed by a real receipt. Correct the receiving session instead of marking it without stock.",
+        "invoice_processing_receiving_active": "Finish or correct the active receiving session first.",
+        "invoice_processing_already_processed": "The invoice is already marked processed without stock movement.",
+        "invoice_processing_not_manually_processed": "This invoice has no manual processed mark to reverse.",
+        "invoice_already_archived": "The invoice is already archived.",
+        "invoice_not_archived": "The invoice is already active.",
+        "invoice_processing_archive_receipt_first": "Archive or reverse the linked receiving session first.",
+        "invoice_processing_request_conflict": "This request identity was already used for a different operation. Recover the original result.",
+        "invoice_processing_operation_not_found": "No completed result has been saved for this request yet. You can retry the exact same request.",
+        "invoice_processing_response_invalid": "The server response does not match this operation. Keep the original operation and verify its result."
+      },
+      "archivedReceiptHelp": "This document has archived receipts listed below. Their original stock movements remain in history. Processing without a stock movement adds no new receipt.",
+      "historicalReceived": "Archived receipt; original receipt retained",
+      "historicalReversed": "Archived receipt; receipt reversed by counter-movements",
+      "historicalUnposted": "Archived receipt without completed receiving"
+    },
+    "managePayment": "Record or correct payment",
+    "paymentDirectionHelp": "A payment increases the recorded paid balance; a refund decreases it. An incorrect entry can be reversed in payment history.",
+    "dashboardScopeWithArchived": "Including archived documents for this direction: {{count}}. Table filters do not change this overview.",
+    "operationStorageUnavailable": "The browser cannot safely retain this pending operation. Nothing was sent. Allow storage for this page and try again.",
+    "operationActorChanged": "The signed-in user has changed. The original operation must be completed by the same user."
   },
   "invoiceCalendar": {
     "title": "Due date calendar",

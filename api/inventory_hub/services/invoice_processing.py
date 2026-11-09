@@ -30,9 +30,11 @@ def _digest(value):
 def _keys(row):
     keys = {row.get('invoice_number'), row.get('source_key')}
     source = row.get('source_data') or {}
-    for item in source.get('index_candidates', []):
+    candidates = source.get('index_candidates', []) if isinstance(source, dict) else []
+    for item in candidates if isinstance(candidates, list) else []:
         entry = item.get('entry', {}) if isinstance(item, dict) else {}
-        keys.update((entry.get('number'), entry.get('original_number')))
+        if isinstance(entry, dict):
+            keys.update(value for value in (entry.get('number'), entry.get('original_number')) if isinstance(value, str))
     return sorted(value for value in keys if isinstance(value, str) and value)
 
 
@@ -71,7 +73,9 @@ def _receipt(record):
 
 def _snapshot(row, receipts):
     linked = [_receipt(item) for item in receipts]
-    if any(item['received'] for item in linked):
+    # Archived test/history cycles remain visible, but do not own current handling.
+    # Their movements are retained; processing_without_stock adds no new receipt.
+    if any(not item['archived'] and item['received'] for item in linked):
         status = 'received'
     elif any(not item['archived'] and item['status'] in ('new', 'in_progress', 'paused') for item in linked):
         status = 'receiving'
@@ -96,9 +100,13 @@ def _blockers(row, snapshot, action):
             return ['invoice_processing_receiving_active']
         if row['processing_status'] != 'unprocessed':
             return ['invoice_processing_already_processed']
-    elif action == 'reopen' and row['processing_status'] != 'processed_without_stock':
-        return ['invoice_processing_receipt_owned' if snapshot['status'] == 'received'
-                else 'invoice_processing_not_manually_processed']
+    elif action == 'reopen':
+        if snapshot['status'] == 'received':
+            return ['invoice_processing_receipt_owned']
+        if snapshot['status'] == 'receiving':
+            return ['invoice_processing_receiving_active']
+        if row['processing_status'] != 'processed_without_stock':
+            return ['invoice_processing_not_manually_processed']
     elif action == 'archive':
         if snapshot['archived']:
             return ['invoice_already_archived']
@@ -249,17 +257,19 @@ async def project_index(db, supplier_code, entries, *, include_archived=False):
     for item in entries:
         if not isinstance(item, dict):
             continue
-        keys = {item.get('number'), item.get('original_number')}
+        keys = {value for value in (item.get('number'), item.get('original_number'), item.get('invoice_id'))
+                if isinstance(value, str) and value}
         identifier = item.get('invoice_id')
         if isinstance(identifier, str) and identifier.startswith(supplier_code + ':'):
             keys.add(identifier[len(supplier_code) + 1:])
-        keys = {key for key in keys if isinstance(key, str) and key}
         matches = [row for row in invoices if keys.intersection(_keys(row))]
         linked_ids = {row['receiving_session_id'] for row in matches if row['receiving_session_id']}
         sessions = [row for row in receipts if row['invoice_number'] in keys or row['id'] in linked_ids]
+        # Retirement applies to the exact reconciliation key, not any of its aliases.
+        source_key = str(item.get('original_number') or item.get('number') or item.get('invoice_id') or '')
         value = {**item, 'invoice_archived': any(row['archived_at'] is not None for row in matches),
                  'receiving_archived': bool(sessions) and all((row['session_data'] or {}).get('receiving_archive') for row in sessions),
-                 'source_archived': bool(keys.intersection(excluded))}
+                 'source_archived': source_key in excluded}
         if len(matches) == 1:
             value.update(archive_invoice_id=matches[0]['id'], processing_status=matches[0]['processing_status'])
         if len(sessions) == 1:
@@ -268,7 +278,8 @@ async def project_index(db, supplier_code, entries, *, include_archived=False):
             value['current_session_id'] = str(session['id'])
             status = session['status']
             value['status'] = 'processed' if status == 'completed' else 'in_progress' if status in ('in_progress', 'paused') else 'new'
-        if matches and all(row['processing_status'] == 'processed_without_stock' for row in matches):
+        if matches and not any(row['status'] == 'completed' for row in sessions) and all(
+                row['processing_status'] == 'processed_without_stock' for row in matches):
             value.update(status='processed', processing_status='processed_without_stock')
         if not include_archived and any(value[key] for key in ('invoice_archived', 'receiving_archived', 'source_archived')):
             continue

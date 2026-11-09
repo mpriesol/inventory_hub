@@ -38,6 +38,23 @@ Odkaz na rodiča môže obsahovať aj jeho interné číslo z Atomeru. Pri jedno
 
 Migrácia 038 pridáva súkromné tabuľky na podklady, kontroly, rozhodnutia a audit a voliteľný odkaz na CSV pri behu. Predchádzajúce behy sú čitateľné. Pri návrate aplikácie ponechajte všetky tabuľky, podklady a rozhodnutia na mieste.
 
+### Stiahnutie pôvodného podkladu
+
+Operátorský `GET /api/migration/atomer-progress/source-export/{kind}?run_id=<id>`
+vráti presný archivovaný vstup z konkrétneho uloženého behu. Povolené hodnoty
+`kind` sú iba `buyers` (XML) a `admin` (CSV). ID behu pochádza z prehľadu migrácie.
+Download používa existujúci súkromný archív, kontroluje pôvodný SHA-256 a limit
+105 MB rozbalených dát. Hash je aj v hlavičke `X-Content-SHA256`, ID behu v
+`X-Atomer-Run-Id`. Chýbajúci pôvodný súbor vráti 404; poškodený, zamenený,
+neúplný alebo príliš veľký archív sa nevydá.
+
+Toto čítanie neobnovuje prehľad, nespúšťa kampaň a nevolá Atomer ani Upgates.
+Nevytvára skladové pohyby ani potvrdenie zásob. Súkromné zdrojové identifikátory,
+interné čísla a množstvá treba vyhodnotiť podľa významu pôvodných stĺpcov;
+samotný download neurčuje autoritu zásob. Odpoveď vyžaduje operátorský prístup
+a má `Cache-Control: no-store`. Vstup neumožňuje zvoliť cestu, URL ani ľubovoľný
+hash mimo podkladov konkrétneho behu.
+
 ## Opravy parametrov variantov xTrek
 
 Operátor môže v sekcii **Opravy položiek na kontrolu** nahrať súkromný JSON plán. Pole

@@ -39,8 +39,14 @@ export function InvoiceProcessingPanel({ invoice, disabled, onChange, onLockChan
     if (state?.allowed_actions.length && !state.allowed_actions.includes(action)) setAction(state.allowed_actions[0]);
   }, [state?.revision, state?.allowed_actions.join('|')]);
   const retain = (value: Pending | null) => {
+    if (value) {
+      const serialized = JSON.stringify(value);
+      sessionStorage.setItem(key(invoice.id), serialized);
+      if (sessionStorage.getItem(key(invoice.id)) !== serialized) throw new Error('storage_unavailable');
+    } else {
+      try { sessionStorage.removeItem(key(invoice.id)); } catch { /* A completed UUID can safely be recovered again. */ }
+    }
     setPending(value);
-    try { if (value) sessionStorage.setItem(key(invoice.id), JSON.stringify(value)); else sessionStorage.removeItem(key(invoice.id)); } catch { /* Mounted state retains the exact request. */ }
   };
   const explain = (reason: unknown) => {
     const code = (reason as { code?: string })?.code;
@@ -62,7 +68,11 @@ export function InvoiceProcessingPanel({ invoice, disabled, onChange, onLockChan
   };
   const send = async (operation: Pending) => {
     if (working.current || disabled) return;
-    working.current = true; setBusy(true); setError(''); setMessage(''); retain(operation);
+    if (operation.actor !== actor() || operation.invoice_id !== invoice.id) {
+      setError(t('invoiceArchive.operationActorChanged')); return;
+    }
+    try { retain(operation); } catch { setError(t('invoiceArchive.operationStorageUnavailable')); return; }
+    working.current = true; setBusy(true); setError(''); setMessage('');
     const access = accessRevision();
     try {
       const value = await applyInvoiceProcessing(invoice.id, operation.body);
@@ -74,7 +84,7 @@ export function InvoiceProcessingPanel({ invoice, disabled, onChange, onLockChan
         retain(null); setPreview(null); setError(explain(reason));
       } else {
         try {
-          const value = await getInvoiceProcessingOperation(invoice.id, operation.body.request_id);
+          const value = await getInvoiceProcessingOperation(invoice.id, operation.body.request_id, operation.body);
           if (mounted.current && access === accessRevision()) await finish(value);
         } catch { if (mounted.current && access === accessRevision()) setError(t('invoiceArchive.processing.uncertain')); }
       }
@@ -82,9 +92,12 @@ export function InvoiceProcessingPanel({ invoice, disabled, onChange, onLockChan
   };
   const recover = async () => {
     if (!pending || working.current || disabled) return;
+    if (pending.actor !== actor() || pending.invoice_id !== invoice.id) {
+      setError(t('invoiceArchive.operationActorChanged')); return;
+    }
     working.current = true; setBusy(true); setError(''); const access = accessRevision();
     try {
-      const value = await getInvoiceProcessingOperation(invoice.id, pending.body.request_id);
+      const value = await getInvoiceProcessingOperation(invoice.id, pending.body.request_id, pending.body);
       if (mounted.current && access === accessRevision()) await finish(value);
     } catch (reason) { if (mounted.current && access === accessRevision()) setError(explain(reason)); }
     finally { working.current = false; if (mounted.current) setBusy(false); }
@@ -100,6 +113,12 @@ export function InvoiceProcessingPanel({ invoice, disabled, onChange, onLockChan
     </div></header>
     <p className="muted small">{t('invoiceArchive.processing.scope')}</p>
     {state.archived && <p className="notice warning">{t('invoiceArchive.processing.archivedHelp')}</p>}
+    {state.receipts.some(receipt => receipt.archived) && <div className="notice" data-testid="invoice-archived-receipts">
+      <p>{t('invoiceArchive.processing.archivedReceiptHelp')}</p>
+      <ul>{state.receipts.filter(receipt => receipt.archived).map(receipt => <li key={receipt.id}>
+        {receipt.invoice_number} · #{receipt.id} · {t(`invoiceArchive.processing.${receipt.received ? 'historicalReceived' : receipt.reversed ? 'historicalReversed' : 'historicalUnposted'}`)}
+      </li>)}</ul>
+    </div>}
     {error && <p className="notice error" role="alert" data-testid="invoice-processing-error">{error}</p>}
     {message && <p className="notice success" role="status">{message}</p>}
     {pending && <div className="notice warning" data-testid="invoice-processing-pending"><p>{t('invoiceArchive.processing.uncertain')}</p>
