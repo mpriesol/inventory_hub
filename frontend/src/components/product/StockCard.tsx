@@ -350,7 +350,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
             <div hidden={!!editor || !!tool || section !== 'overview'}>
               <div className="stock-card__section-heading"><h3>{c('productData')}</h3>{mutationButton(c('edit'), () => edit('product'), 'stock-card-edit-product')}</div>
               <dl className="stock-card__details" data-testid="stock-card-product-data">
-                <div><dt>{c('supplier')}</dt><dd>{supplier?.supplier_name || c('notLinked')}<span className="stock-card__detail-secondary">{external(supplier?.product_url, c('supplierProduct'), '', 'stock-card-supplier-link')}</span></dd></div>
+                <div><dt>{c('supplier')}</dt><dd data-testid="stock-card-overview-supplier">{supplier?.supplier_name || c('notLinked')}{supplier && !supplier.is_active && <span className="stock-card__badge stock-card__supplier-status">{c('inactiveSupplierSource')}</span>}<span className="stock-card__detail-secondary">{external(supplier?.product_url, c('supplierProduct'), '', 'stock-card-supplier-link')}</span></dd></div>
                 <div><dt>{c('brand')}</dt><dd>{row.common.brand || c('notSet')}</dd></div>
                 <div><dt>{c('ean')}</dt><dd className="stock-card__mono">{row.eans.length ? row.eans.map(value => <span className="stock-card__line" key={value}>{value}</span>) : c('notSet')}</dd></div>
                 <div><dt>{c('supplierCode')}</dt><dd className="stock-card__mono">{supplier?.supplier_sku || row.supplier_codes.map(value => value.code).join(', ') || c('notSet')}</dd></div>

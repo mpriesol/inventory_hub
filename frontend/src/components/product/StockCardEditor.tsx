@@ -10,12 +10,12 @@ export function StockCardEditor({ draft, disabled, onChange }: {
   const { values, base } = draft;
   const input = (key: string, extra: React.InputHTMLAttributes<HTMLInputElement> = {}) => <input
     data-testid={`stock-card-input-${key}`} value={values[key] || ''} onChange={event => onChange(key, event.target.value)} {...extra} />;
-  const supplier = base.suppliers?.find(row => row.is_primary && row.is_active) || base.suppliers?.find(row => row.is_active);
+  const supplier = base.suppliers?.find(row => row.is_primary && row.is_active) || base.suppliers?.find(row => row.is_active) || base.suppliers?.[0];
   return <fieldset disabled={disabled} className="stock-card__editor" data-testid="stock-card-editor">
     {draft.kind === 'product' && <>
       <label className="stock-card__field stock-card__field--full">{c('name')}{input('name', { maxLength: 500, required: true })}</label>
       <div className="stock-card__form-grid">
-        <div className="stock-card__field"><span>{c('supplier')}</span><p className="stock-card__fixed-value">{supplier?.supplier_name || c('notLinked')}</p><small>{c('supplierChangeHelp')}</small></div>
+        <div className="stock-card__field"><span>{c('supplier')}</span><p className="stock-card__fixed-value" data-testid="stock-card-editor-supplier">{supplier?.supplier_name || c('notLinked')}{supplier && !supplier.is_active && <span className="stock-card__badge stock-card__supplier-status">{c('inactiveSupplierSource')}</span>}</p><small>{c('supplierChangeHelp')}</small></div>
         <label className="stock-card__field">{c('brand')}{input('brand', { maxLength: 100 })}</label>
         <label className="stock-card__field">{c('ean')}<textarea data-testid="stock-card-input-eans" value={values.eans} rows={2} onChange={event => onChange('eans', event.target.value)} /><small>{c('eanHelp')}</small></label>
         <div className="stock-card__field"><span>{c('supplierCode')}</span><p className="stock-card__fixed-value stock-card__mono">{supplier?.supplier_sku || base.supplier_codes.map(row => row.code).join(', ') || c('notSet')}</p></div>

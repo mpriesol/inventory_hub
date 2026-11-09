@@ -30,6 +30,16 @@ only its contents scroll. Below 640 px it fills the viewport, with touch-sized
 controls and horizontal section navigation. The Hub layout uses a mobile
 menu below 801 px, including focus restoration and an inert background.
 
+At widths up to 640 px and heights up to 520 px, a compact header and a single
+warehouse/quantity row leave more room for the scrolling content. Section,
+close, footer and form controls retain their mobile touch sizes; ordinary
+portrait and desktop layouts are unchanged. The vertical section navigation
+scrolls when a short viewport cannot fit all tabs. Overview and editing also show
+the same stored supplier when only an inactive source exists, explicitly
+labelled as an inactive source without changing its mapping. The source can be
+inactive because of its supplier, supplier product, or link; the label does not
+claim which of those caused the state.
+
 `StockCardLink.tsx` opens this same component above the parent page on an
 ordinary click. Modified clicks keep a real URL for a new tab. Invoice and
 receiving drafts remain mounted. Receiving and stock history links pass their

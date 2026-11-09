@@ -5610,6 +5610,7 @@
     "operationScopeChanged": "Operácia patrí inej karte alebo skladu. Otvor pôvodnú kartu a over výsledok tam.",
     "refreshingStock": "Obnovujem aktuálne zásoby…",
     "savePending": "Čaká sa na overenie uloženia",
+    "inactiveSupplierSource": "Neaktívny zdroj",
     "allMovements": "Všetky skladové pohyby",
     "productTrace": "Celá história produktu",
     "prepareListing": "Pripraviť zalistovanie"
