@@ -239,6 +239,20 @@
 @media (min-width: 1200px) {
   .stock-card .fifo-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
+@media (min-width: 1280px) {
+  .stock-card__content--prices { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(620px, 1.5fr); align-content: start; align-items: start; column-gap: 24px; }
+  .stock-card__content--prices > * { grid-column: 1 / -1; }
+  .stock-card__content--prices > .stock-card__sales { grid-column: 1; min-width: 0; }
+  .stock-card__content--prices > .stock-card__fifo { grid-column: 2; min-width: 0; }
+  .stock-card__content--prices .stock-card__fifo > div > .stock-card__section-heading { margin-top: 0; min-height: 36px; }
+  .stock-card__content--prices .stock-card__selling-price { flex-wrap: wrap; gap: 8px; }
+  .stock-card__content--prices .stock-card__selling-price > div { min-width: 0; flex-shrink: 1; }
+  .stock-card__content--prices .stock-card__selling-price > p { flex-basis: 100%; }
+  .stock-card__content--prices .stock-card-price-results { grid-template-columns: 1fr; }
+  .stock-card__content--prices .fifo-panel { margin-top: 12px; gap: 8px; }
+  .stock-card__content--prices .fifo-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stock-card__content--prices .fifo-toolbar > .action-control { flex-direction: row; align-items: center; gap: 6px; }
+}
 @media (min-width: 801px) and (max-height: 800px) {
   .stock-card__content { padding: 16px 22px; }
   .stock-card__section-heading { margin-bottom: 14px; }

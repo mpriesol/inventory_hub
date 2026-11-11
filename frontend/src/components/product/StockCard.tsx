@@ -331,7 +331,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
               if (next >= 0) { event.preventDefault(); navigate(sections[next].id); if (!dirty) document.getElementById(`${uid}-tab-${sections[next].id}`)?.focus(); }
             }}><Icon size={18} aria-hidden="true" /><span>{c(`sections.${id}`)}</span><ChevronRight size={14} className="stock-card__nav-arrow" aria-hidden="true" /></button>)}
         </nav>
-        <div className="stock-card__content" ref={content} id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-tab-${section}`} aria-busy={loading}>
+        <div className={`stock-card__content${section === 'prices' && !editor && !tool && row?.item_type !== 'service' && effectiveWarehouse ? ' stock-card__content--prices' : ''}`} ref={content} id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-tab-${section}`} aria-busy={loading}>
           {guard && <div className="stock-card__guard-layer"><div className="stock-card__guard" ref={confirmation} role="alertdialog" aria-labelledby={`${uid}-guard-title`} aria-describedby={`${uid}-guard-help`} aria-modal="true" data-testid="stock-card-dirty-guard">
             <h3 id={`${uid}-guard-title`}>{c('unsavedTitle')}</h3><p id={`${uid}-guard-help`}>{c(pending ? 'pendingLeaveHelp' : 'unsavedHelp')}</p>
             <div className="stock-card__actions"><button type="button" className="stock-card__button stock-card__button--primary" data-testid="stock-card-keep-editing" onClick={() => setGuard(null)}>{c('keepEditing')}</button><button type="button" className="stock-card__button" data-testid="stock-card-discard" onClick={discardAndContinue}>{c(pending ? 'leave' : 'discard')}</button></div>
@@ -378,12 +378,10 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
                 {!readOnlyReason && visited.has('stock') && <section className="stock-card__block"><h4>{c('adjustStock')}</h4><StockAdjustmentPanel key={`adjustment-${row.id}-${effectiveWarehouse}-${childVersion}`} productId={row.id} sku={row.sku} warehouseCode={effectiveWarehouse} stockUnit={row.stock_unit} embedded refreshKey={stockRefresh} onReadRefresh={refreshed} onChanged={changed} onDirtyChange={dirtyCallbacks.adjustment} onBusyChange={busyCallbacks.adjustment} /></section>}
               </>}
             </div>
-            <div hidden={!!editor || !!tool || section !== 'prices'}>
+            <div className="stock-card__sales" hidden={!!editor || !!tool || section !== 'prices'}>
               <div className="stock-card__section-heading"><h3>{c('sellingPrices')}</h3>{mutationButton(c('editPrice'), () => edit('prices'), 'stock-card-edit-price')}</div>
               <div className="stock-card__selling-price"><div><span>{c('sellingPriceGross')}</span><strong>{money(row.variant.sale_price_gross)}</strong><small>{row.variant.vat_rate == null ? c('vatUnknown') : c('vatIncluded', { rate: number(row.variant.vat_rate) })}</small></div><p>{c('priceFlowHelp')}</p></div>
               {!readOnlyReason && visited.has('prices') && <ProductPricePublicationPanel row={row} showSavedPrice={false} onChanged={changed} onBusyChange={busyCallbacks.price} />}
-              <div className="stock-card__section-heading stock-card__section-heading--spaced"><h3>{c('fifoCosts')}</h3></div><p className="stock-card__muted">{c('fifoHelp')}</p>
-              {row.item_type === 'service' && <p className="stock-card__note">{c('nonstockHelp')}</p>}
             </div>
             <div hidden={!!editor || !!tool || section !== 'shops'}>
               <div className="stock-card__section-heading"><h3>{c('shopsTitle')}</h3>{mutationButton(c('manageMappings'), () => openTool('mapping'), 'stock-card-mappings')}</div>
@@ -412,10 +410,12 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
               <div className="stock-card__section-heading stock-card__section-heading--spaced"><h3>{c('stockHistory')}</h3></div>
               {row.item_type === 'service' && <p className="stock-card__note">{c('nonstockHelp')}</p>}
             </div>
-            {showFifo && <div hidden={!!editor || !!tool || !['prices', 'history'].includes(section)}>
-              <FifoPanel key={`fifo-${row.id}-${effectiveWarehouse}-${childVersion}`} productId={row.id} warehouseCode={effectiveWarehouse} embedded readOnly={!!readOnlyReason}
-                view={section === 'history' ? 'history' : 'costs'} refreshKey={stockRefresh} onReadRefresh={refreshed} onChanged={changed} onDirtyChange={dirtyCallbacks.fifo} onBusyChange={busyCallbacks.fifo} />
-            </div>}
+            <div className="stock-card__fifo" hidden={!!editor || !!tool || !['prices', 'history'].includes(section)}>
+              <div hidden={section !== 'prices'}><div className="stock-card__section-heading stock-card__section-heading--spaced"><h3>{c('fifoCosts')}</h3></div><p className="stock-card__muted">{c('fifoHelp')}</p>
+                {row.item_type === 'service' && <p className="stock-card__note">{c('nonstockHelp')}</p>}</div>
+              {showFifo && <FifoPanel key={`fifo-${row.id}-${effectiveWarehouse}-${childVersion}`} productId={row.id} warehouseCode={effectiveWarehouse} embedded readOnly={!!readOnlyReason}
+                view={section === 'history' ? 'history' : 'costs'} refreshKey={stockRefresh} onReadRefresh={refreshed} onChanged={changed} onDirtyChange={dirtyCallbacks.fifo} onBusyChange={busyCallbacks.fifo} />}
+            </div>
             {!readOnlyReason && tool && <div key={`${tool}-${row.id}-${childVersion}`}>
               <button type="button" className="stock-card__back" disabled={isBusy} onClick={closeTool}><ArrowLeft size={16} aria-hidden="true" />{c('backToSection')}</button>
               {(tool === 'supplier' || tool === 'eans') && <ProductSupplierLinksPanel product={row} fillEans={tool === 'eans'} embedded onClose={closeTool} onChanged={changed} onDirtyChange={dirtyCallbacks.supplier} onBusyChange={busyCallbacks.supplier} />}
