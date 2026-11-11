@@ -49,7 +49,7 @@ by the viewport with a 16 px outer margin. The product header, inline stock
 strip and footer use less vertical space. Unknown stock is shown neutrally;
 the available-stock accent is reserved for an actual known quantity.
 
-At widths of at least 1100 px, the six product fields retain their original
+At widths of at least 1000 px, the six product fields retain their original
 order in three columns. Supplier availability follows those fields; description,
 internal note and parameters sit side by side. Product editing uses the same
 three-column field order, with description and note next to each other. E-shop
@@ -62,7 +62,8 @@ The target is a complete routine overview on a desktop or laptop, not clipping
 arbitrarily long descriptions, parameters, validation messages or history. Those
 remain reachable in the existing content scroll container. Narrow layouts,
 mobile touch targets, the short-phone shell and scrollable vertical navigation
-remain supported. No API, stock calculation, mutation or schema changes belong
+remain supported. Desktop screens up to 800 px high use tighter content spacing
+without reducing text or control sizes. No API, stock calculation, mutation or schema changes belong
 to this layout refinement.
 
 `StockCardLink.tsx` opens this same component above the parent page on an
