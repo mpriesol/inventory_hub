@@ -56,6 +56,34 @@
 .product-editor-detail.product-publication-embedded { position: static; width: 100%; max-width: none; max-height: none; overflow: visible; border: 0; border-radius: 0; box-shadow: none; background: transparent; }
 .product-editor-detail.product-publication-embedded > header { position: static; background: transparent; padding: 0 0 16px; }
 .product-publication-embedded .product-editor-detail-body { padding: 0; }
+@media (min-width: 801px) {
+  .stock-card-price-publication .stock-card-price-header p { margin: 4px 0 10px; }
+  .stock-card-price-saved { gap: 6px; margin: 8px 0 12px; }
+  .stock-card-price-targets { margin-bottom: 8px; }
+  .stock-card-price-targets legend { margin-bottom: 7px; }
+  .stock-card-price-target-grid { gap: 10px; }
+  .stock-card-price-target { gap: 3px; padding: 10px 12px; }
+  .stock-card-price-targets > button { margin-top: 2px; }
+  .stock-card-price-actions { gap: 8px; }
+  .stock-card-price-results { gap: 10px; margin-top: 12px; }
+  .stock-card-price-shop-result { padding: 12px; }
+  .stock-card-price-change { gap: 12px; padding: 10px 0 6px; }
+  .stock-card-price-change > div { gap: 3px; }
+  .stock-card-price-publication .stock-card-price-basis { margin: 4px 0 8px; }
+  .stock-card-price-publication details > summary { min-height: 32px; }
+  .stock-card-price-details th, .stock-card-price-details td { padding: 7px 6px; }
+  .stock-card-price-recovery { margin: 10px 0; padding: 10px; }
+  .stock-card-price-note { margin: 10px 0; }
+  .stock-card-price-operation { margin-top: 8px; }
+  .stock-card-price-confirmation { gap: 10px; padding: 12px; margin-top: 12px; }
+  .stock-card-price-warning, .stock-card-price-result { padding: 10px; }
+  .stock-card-price-history { margin-top: 12px; }
+  .stock-card-price-history li { padding: 8px 0; }
+}
+@media (min-width: 1100px) {
+  .stock-card-price-results { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .stock-card-price-results > :only-child { grid-column: 1 / -1; }
+}
 @media (max-width: 560px) {
   .stock-card-price-target-grid { grid-template-columns: 1fr; }
   .stock-card-price-header { flex-wrap: wrap; }

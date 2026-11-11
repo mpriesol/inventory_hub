@@ -34,13 +34,14 @@ type Prepared = { source: string; targets: { shop: ShopCode; id: string | null }
 
 export interface ProductPricePublicationPanelProps {
   row: ProductEditorDetail | ProductEditorRow;
+  showSavedPrice?: boolean;
   onClose?: () => void;
   onChanged?: () => void;
   onBusyChange?: (busy: boolean) => void;
 }
 
 /** Embedded price-only publishing. Saving a Hub price remains the card's job. */
-export function ProductPricePublicationPanel({ row, onClose, onChanged, onBusyChange }: ProductPricePublicationPanelProps) {
+export function ProductPricePublicationPanel({ row, showSavedPrice = true, onClose, onChanged, onBusyChange }: ProductPricePublicationPanelProps) {
   const { t, i18n } = useTranslation();
   const credential = useSyncExternalStore(subscribeAccess, accessRevision);
   const source = JSON.stringify([row.id, row.revision, row.snapshot_hash, row.sku, row.variant,
@@ -209,7 +210,7 @@ export function ProductPricePublicationPanel({ row, onClose, onChanged, onBusyCh
       <div><h3>{t('stockCardPrice.title')}</h3><p>{t('stockCardPrice.intro')}</p></div>
       {onClose && <Button type="button" variant="ghost" disabled={busy} onClick={onClose} icon={<ChevronLeft size={16} />}>{t('stockCardPrice.back')}</Button>}
     </header>
-    <div className="stock-card-price-saved"><span>{t('stockCardPrice.savedPrice')}</span><strong data-testid="price-publication-saved-price">{money(row.variant.sale_price_gross)}</strong><small>{t('stockCardPrice.inclVat')}</small></div>
+    {showSavedPrice && <div className="stock-card-price-saved"><span>{t('stockCardPrice.savedPrice')}</span><strong data-testid="price-publication-saved-price">{money(row.variant.sale_price_gross)}</strong><small>{t('stockCardPrice.inclVat')}</small></div>}
     {loadError && <div className="stock-card-price-warning" role="alert"><p>{errorText(loadError)}</p><p>{t('stockCardPrice.historyRequired')}</p><Button type="button" variant="secondary" disabled={busy} onClick={() => setReload(value => value + 1)}>{t('stockCardPrice.reload')}</Button></div>}
     <fieldset className="stock-card-price-targets" disabled={busy || !historyReady}>
       <legend>{t('stockCardPrice.chooseShops')}</legend>

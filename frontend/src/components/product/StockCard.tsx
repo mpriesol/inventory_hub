@@ -318,7 +318,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
           onChange={event => { const value = event.target.value; request(() => { warehouseSelectionKnown.current = true; setWarehouse(value); setRow(null); setEditor(null); setConflict(null); setPending(null); setSaveMissing(false); setTool(null); setChildDirty({}); setChildVersion(current => current + 1); setError(''); setMessage(''); }); }}>
           <option value="">{c('noWarehouse')}</option>{options?.warehouses.map(value => <option key={value.code} value={value.code}>{value.name}</option>)}
         </select>{stockStale && <small className="stock-card__muted" role="status">{c('refreshingStock')}</small>}</label>
-        {([['physical', 'qty_on_hand'], ['reserved', 'qty_reserved'], ['available', 'qty_available']] as const).map(([label, field]) => <div className={`stock-card__metric ${label === 'available' ? 'stock-card__metric--available' : ''}`} key={label}>
+        {([['physical', 'qty_on_hand'], ['reserved', 'qty_reserved'], ['available', 'qty_available']] as const).map(([label, field]) => <div className={`stock-card__metric ${label === 'available' && row?.item_type !== 'service' && row?.stock.known && !stockStale && row.stock[field] != null ? 'stock-card__metric--available' : ''}`} key={label}>
           <span>{c(label)}</span><strong data-testid={`stock-card-${label}`}>{row?.item_type === 'service' ? '—' : row?.stock.known && !stockStale ? number(row.stock[field]) : c('unknown')}<small>{row?.stock.known && !stockStale && row.stock[field] !== null ? unitLabel : ''}</small></strong>
         </div>)}
       </div>
@@ -330,7 +330,6 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
               const next = event.key === 'Home' ? 0 : event.key === 'End' ? sections.length - 1 : ['ArrowDown', 'ArrowRight'].includes(event.key) ? (index + 1) % sections.length : ['ArrowUp', 'ArrowLeft'].includes(event.key) ? (index + sections.length - 1) % sections.length : -1;
               if (next >= 0) { event.preventDefault(); navigate(sections[next].id); if (!dirty) document.getElementById(`${uid}-tab-${sections[next].id}`)?.focus(); }
             }}><Icon size={18} aria-hidden="true" /><span>{c(`sections.${id}`)}</span><ChevronRight size={14} className="stock-card__nav-arrow" aria-hidden="true" /></button>)}
-          <div className="stock-card__nav-note">{c('sharedCard')}</div>
         </nav>
         <div className="stock-card__content" ref={content} id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-tab-${section}`} aria-busy={loading}>
           {guard && <div className="stock-card__guard-layer"><div className="stock-card__guard" ref={confirmation} role="alertdialog" aria-labelledby={`${uid}-guard-title`} aria-describedby={`${uid}-guard-help`} aria-modal="true" data-testid="stock-card-dirty-guard">
@@ -347,7 +346,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
           {loading && !row && <p className="stock-card__loading" role="status">{c('loading')}</p>}
           {row && <>
             {editor && <><div className="stock-card__section-heading"><h3>{editorTitle}</h3></div><StockCardEditor draft={editor} disabled={isBusy || !!pending || !!readOnlyReason} onChange={(key, value) => { setEditor(previous => previous ? { ...previous, values: { ...previous.values, [key]: value } } : null); setError(''); }} /><p className="stock-card__note">{c('saveLocalHelp')}</p></>}
-            <div hidden={!!editor || !!tool || section !== 'overview'}>
+            <div className="stock-card__overview" hidden={!!editor || !!tool || section !== 'overview'}>
               <div className="stock-card__section-heading"><h3>{c('productData')}</h3>{mutationButton(c('edit'), () => edit('product'), 'stock-card-edit-product')}</div>
               <dl className="stock-card__details" data-testid="stock-card-product-data">
                 <div><dt>{c('supplier')}</dt><dd data-testid="stock-card-overview-supplier">{supplier?.supplier_name || c('notLinked')}{supplier && !supplier.is_active && <span className="stock-card__badge stock-card__supplier-status">{c('inactiveSupplierSource')}</span>}<span className="stock-card__detail-secondary">{external(supplier?.product_url, c('supplierProduct'), '', 'stock-card-supplier-link')}</span></dd></div>
@@ -357,9 +356,12 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
                 <div><dt>{c('location')}</dt><dd>{row.warehouse?.location || c('notSet')}</dd></div>
                 <div><dt>{c('typeUnit')}</dt><dd>{c(row.item_type === 'service' ? 'service' : 'goods')} / {unitLabel}</dd></div>
               </dl>
-              <section className="stock-card__block"><h4>{c('description')}</h4><p className="stock-card__description">{stockCardDescription(row.common.description) || c('noDescription')}</p></section>
-              <div className="stock-card__two-columns"><section className="stock-card__block"><h4>{c('internalNote')}</h4><p className="stock-card__description">{row.common.internal_note || c('notSet')}</p></section><section className="stock-card__block"><h4>{c('attributes')}</h4>{row.attributes.length ? <dl className="stock-card__attribute-list">{row.attributes.map((attribute, index) => <React.Fragment key={`${attribute.name}-${index}`}><dt>{attribute.name}</dt><dd>{attribute.value}</dd></React.Fragment>)}</dl> : <p>{c('notSet')}</p>}</section></div>
-              {row.supplier_availability && <div className="stock-card__note"><strong>{c('supplierAvailability')}</strong><p>{row.supplier_availability.label || c('unknown')}{!row.supplier_availability.fresh && ` · ${c('availabilityNotFresh')}`}</p></div>}
+              {row.supplier_availability && <div className="stock-card__note stock-card__availability"><strong>{c('supplierAvailability')}</strong><p>{row.supplier_availability.label || c('unknown')}{!row.supplier_availability.fresh && ` · ${c('availabilityNotFresh')}`}</p></div>}
+              <div className="stock-card__overview-notes">
+                <section className="stock-card__block"><h4>{c('description')}</h4><p className="stock-card__description">{stockCardDescription(row.common.description) || c('noDescription')}</p></section>
+                <section className="stock-card__block"><h4>{c('internalNote')}</h4><p className="stock-card__description">{row.common.internal_note || c('notSet')}</p></section>
+                <section className="stock-card__block"><h4>{c('attributes')}</h4>{row.attributes.length ? <dl className="stock-card__attribute-list">{row.attributes.map((attribute, index) => <React.Fragment key={`${attribute.name}-${index}`}><dt>{attribute.name}</dt><dd>{attribute.value}</dd></React.Fragment>)}</dl> : <p>{c('notSet')}</p>}</section>
+              </div>
               {suppliers.length > 1 && <details className="stock-card__block"><summary>{c('allSuppliers', { count: suppliers.length })}</summary><ul className="stock-card__supplier-list">{suppliers.map(value => <li key={`${value.supplier_id}-${value.supplier_product_id}`}><strong>{value.supplier_name}</strong><span className="stock-card__mono">{value.supplier_sku}</span>{external(value.product_url, c('supplierProduct'))}{!value.is_active && <small>{c('inactive')}</small>}</li>)}</ul></details>}
               {!readOnlyReason && <details className="stock-card__block stock-card__advanced"><summary>{c('productActions')}</summary><div className="stock-card__actions">
                 <button type="button" className="stock-card__button" disabled={mutationDisabled || dirty} onClick={() => openTool('supplier')}>{c('manageSupplier')}</button>
@@ -379,7 +381,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
             <div hidden={!!editor || !!tool || section !== 'prices'}>
               <div className="stock-card__section-heading"><h3>{c('sellingPrices')}</h3>{mutationButton(c('editPrice'), () => edit('prices'), 'stock-card-edit-price')}</div>
               <div className="stock-card__selling-price"><div><span>{c('sellingPriceGross')}</span><strong>{money(row.variant.sale_price_gross)}</strong><small>{row.variant.vat_rate == null ? c('vatUnknown') : c('vatIncluded', { rate: number(row.variant.vat_rate) })}</small></div><p>{c('priceFlowHelp')}</p></div>
-              {!readOnlyReason && visited.has('prices') && <ProductPricePublicationPanel row={row} onChanged={changed} onBusyChange={busyCallbacks.price} />}
+              {!readOnlyReason && visited.has('prices') && <ProductPricePublicationPanel row={row} showSavedPrice={false} onChanged={changed} onBusyChange={busyCallbacks.price} />}
               <div className="stock-card__section-heading stock-card__section-heading--spaced"><h3>{c('fifoCosts')}</h3></div><p className="stock-card__muted">{c('fifoHelp')}</p>
               {row.item_type === 'service' && <p className="stock-card__note">{c('nonstockHelp')}</p>}
             </div>

@@ -40,6 +40,32 @@ labelled as an inactive source without changing its mapping. The source can be
 inactive because of its supplier, supplier product, or link; the label does not
 claim which of those caused the state.
 
+### Desktop layout refinement (2026-11-11)
+
+The owner requested a larger desktop card with smaller stock totals and a
+routine overview that fits in one view. Branch: `codex/stock-card-desktop-layout`.
+At widths above 800 px the fixed shell grows to at most 1440 × 960 px, bounded
+by the viewport with a 16 px outer margin. The product header, inline stock
+strip and footer use less vertical space. Unknown stock is shown neutrally;
+the available-stock accent is reserved for an actual known quantity.
+
+At widths of at least 1000 px, the six product fields retain their original
+order in three columns. Supplier availability follows those fields; description,
+internal note and parameters sit side by side. Product editing uses the same
+three-column field order, with description and note next to each other. E-shop
+details and FIFO summaries also use the available desktop width. The saved Hub
+selling price appears once in the card; the standalone publication panel still
+shows its own price by default. Preview, confirmation and recovery remain in
+the same persistent panel instances.
+
+The target is a complete routine overview on a desktop or laptop, not clipping
+arbitrarily long descriptions, parameters, validation messages or history. Those
+remain reachable in the existing content scroll container. Narrow layouts,
+mobile touch targets, the short-phone shell and scrollable vertical navigation
+remain supported. Desktop screens up to 800 px high use tighter content spacing
+without reducing text or control sizes. No API, stock calculation, mutation or schema changes belong
+to this layout refinement.
+
 `StockCardLink.tsx` opens this same component above the parent page on an
 ordinary click. Modified clicks keep a real URL for a new tab. Invoice and
 receiving drafts remain mounted. Receiving and stock history links pass their
@@ -122,15 +148,19 @@ publication discovery. CI executes database tests against guarded localhost
 PostgreSQL and rejects skipped coverage.
 
 DOM tests cover interaction and shared-shell identity; they do not measure
-rendered geometry. Actual browser/deployment verification belongs to PR #188
-and its Actions runs. Production verification is read-only, including mobile
+rendered geometry. Actual browser/deployment verification belongs to the
+implementation PR and subsequent layout PRs with their Actions runs. Check the
+current desktop-layout branch/PR for the 2026-11-11 refinement. Production
+verification is read-only, including mobile
 layout checks; no product or price is authorized as a live test target.
 
 ## Continue safely
 
 Read `AGENTS.md`, `OVERVIEW.md`, `docs/product-editor.md` and this document.
-Inspect PR #188, its current head, checks, merge/deployment state and the working
-tree before editing. Do not repeat already completed work. Product editor and publication
+Inspect the relevant implementation/layout PR, its current head, checks,
+merge/deployment state and the working tree before editing. PR #188 contains
+the original implementation; `codex/stock-card-desktop-layout` is the later
+desktop refinement. Do not repeat already completed work. Product editor and publication
 contracts must remain backward compatible. Tests use synthetic fixtures or a
 guarded local `_catalog_test` database. Production verification is read-only;
 no live product or price is authorized as a test target.

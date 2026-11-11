@@ -14,7 +14,7 @@ export function StockCardEditor({ draft, disabled, onChange }: {
   return <fieldset disabled={disabled} className="stock-card__editor" data-testid="stock-card-editor">
     {draft.kind === 'product' && <>
       <label className="stock-card__field stock-card__field--full">{c('name')}{input('name', { maxLength: 500, required: true })}</label>
-      <div className="stock-card__form-grid">
+      <div className="stock-card__form-grid stock-card__form-grid--product">
         <div className="stock-card__field"><span>{c('supplier')}</span><p className="stock-card__fixed-value" data-testid="stock-card-editor-supplier">{supplier?.supplier_name || c('notLinked')}{supplier && !supplier.is_active && <span className="stock-card__badge stock-card__supplier-status">{c('inactiveSupplierSource')}</span>}</p><small>{c('supplierChangeHelp')}</small></div>
         <label className="stock-card__field">{c('brand')}{input('brand', { maxLength: 100 })}</label>
         <label className="stock-card__field">{c('ean')}<textarea data-testid="stock-card-input-eans" value={values.eans} rows={2} onChange={event => onChange('eans', event.target.value)} /><small>{c('eanHelp')}</small></label>
@@ -29,17 +29,19 @@ export function StockCardEditor({ draft, disabled, onChange }: {
           </select>
         </div>{base.item_definition_locked && <small>{c('definitionLocked')}</small>}{values.stock_unit === 'm' && <small>{t('productEditor.meterLimit')}</small>}</div>
       </div>
-      <label className="stock-card__field">{c('description')}<textarea data-testid="stock-card-input-description" rows={6} maxLength={20000} disabled={values.restore_description === 'true'} value={values.description} onChange={event => onChange('description', event.target.value)} /></label>
-      {Object.prototype.hasOwnProperty.call(base.overrides.common || {}, 'description') && <label className="stock-card__check"><input type="checkbox" data-testid="stock-card-restore-description" checked={values.restore_description === 'true'} onChange={event => onChange('restore_description', String(event.target.checked))} />{c('restoreDescription')}</label>}
-      <label className="stock-card__field">{c('imageUrl')}{input('image_url', { type: 'url', maxLength: 2000, placeholder: 'https://' })}
-        {values.image_url && (!stockCardSafeUrl(values.image_url) || !values.image_url.startsWith('https://')) && <small className="stock-card__error">{c('invalidImageUrl')}</small>}</label>
-      <div className="stock-card__form-grid">
+      <div className="stock-card__form-grid stock-card__form-grid--product">
+        <label className="stock-card__field">{c('imageUrl')}{input('image_url', { type: 'url', maxLength: 2000, placeholder: 'https://' })}
+          {values.image_url && (!stockCardSafeUrl(values.image_url) || !values.image_url.startsWith('https://')) && <small className="stock-card__error">{c('invalidImageUrl')}</small>}</label>
         <label className="stock-card__field">{c('minimumStock')}{input('min_quantity', { inputMode: 'numeric', disabled: !base.warehouse_context || values.item_type !== 'stock' })}</label>
         <label className="stock-card__field">{c('activity')}<select value={values.is_active} onChange={event => onChange('is_active', event.target.value)}>
           <option value="true">{c('active')}</option><option value="false">{c('inactive')}</option>
         </select></label>
       </div>
-      <label className="stock-card__field">{c('internalNote')}<textarea data-testid="stock-card-input-internal_note" rows={3} value={values.internal_note} onChange={event => onChange('internal_note', event.target.value)} /></label>
+      <div className="stock-card__editor-texts">
+        <div><label className="stock-card__field">{c('description')}<textarea data-testid="stock-card-input-description" rows={4} maxLength={20000} disabled={values.restore_description === 'true'} value={values.description} onChange={event => onChange('description', event.target.value)} /></label>
+          {Object.prototype.hasOwnProperty.call(base.overrides.common || {}, 'description') && <label className="stock-card__check"><input type="checkbox" data-testid="stock-card-restore-description" checked={values.restore_description === 'true'} onChange={event => onChange('restore_description', String(event.target.checked))} />{c('restoreDescription')}</label>}</div>
+        <label className="stock-card__field">{c('internalNote')}<textarea data-testid="stock-card-input-internal_note" rows={4} value={values.internal_note} onChange={event => onChange('internal_note', event.target.value)} /></label>
+      </div>
     </>}
     {draft.kind === 'prices' && <>
       <div className="stock-card__form-grid">
