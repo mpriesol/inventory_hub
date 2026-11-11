@@ -58,6 +58,14 @@ selling price appears once in the card; the standalone publication panel still
 shows its own price by default. Preview, confirmation and recovery remain in
 the same persistent panel instances.
 
+At widths of at least 1280 px, Prices and FIFO uses two columns: the saved
+selling price and publication controls on the left, acquisition costs and FIFO
+layers on the right. The FIFO column keeps at least 620 px for its table, with
+three metrics per row. The same FIFO instance serves Costs and History; switching
+tabs or opening an editor does not remount it or discard a pending operation.
+Publication results stay in one column inside the narrower sales panel. Below
+1280 px these sections retain their vertical layout and accessible content scroll.
+
 The target is a complete routine overview on a desktop or laptop, not clipping
 arbitrarily long descriptions, parameters, validation messages or history. Those
 remain reachable in the existing content scroll container. Narrow layouts,
