@@ -79,7 +79,8 @@ jobs:
             INPUT_USERNAME: ${{ secrets.DEPLOY_USER }}
             INPUT_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
             INPUT_TIMEOUT: 30s
-            INPUT_COMMAND_TIMEOUT: 10m
+            # Allow the bounded migration deadlock retries to finish before SSH exits.
+            INPUT_COMMAND_TIMEOUT: 20m
             INPUT_SCRIPT: |
               set -eu
               cd /opt/inventory-hub
