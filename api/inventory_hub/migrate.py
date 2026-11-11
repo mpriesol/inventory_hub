@@ -2,10 +2,16 @@
 
 Each migration retains its own transaction and advisory lock. Completed upgrades
 are not rolled back if a later one fails; the existing SQL remains replay-safe.
+Only PostgreSQL deadlocks retry the failed module after its transaction unwinds.
 """
 from importlib import import_module
 import sys
-from time import perf_counter
+from time import perf_counter, sleep
+
+from psycopg2.errors import DeadlockDetected
+
+
+DEADLOCK_MAX_ATTEMPTS = 3
 
 
 # Explicit deployment order: adding a SQL file alone must not start running it.
@@ -61,7 +67,26 @@ def run_migrations() -> None:
         step_started = perf_counter()
         print(f"[migrations] start module={module_name}", flush=True)
         try:
-            import_module(f"inventory_hub.{module_name}").main()
+            module = import_module(f"inventory_hub.{module_name}")
+            for attempt in range(1, DEADLOCK_MAX_ATTEMPTS + 1):
+                try:
+                    module.main()
+                    break
+                except DeadlockDetected:
+                    if attempt == DEADLOCK_MAX_ATTEMPTS:
+                        raise
+                    # All current modules open their own connection/transaction.
+                    # Its context has rolled back before this handler; the next
+                    # call reruns the whole module in a fresh transaction.
+                    print(
+                        f"[migrations] retry module={module_name} "
+                        f"failed_attempt={attempt}/{DEADLOCK_MAX_ATTEMPTS} "
+                        f"next_attempt={attempt + 1}/{DEADLOCK_MAX_ATTEMPTS} "
+                        f"delay_s={attempt} error_type=DeadlockDetected sqlstate=40P01",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    sleep(attempt)
         except Exception as exc:
             # Connection errors can contain credentials or SQL data: log only
             # the type and failing module, never the exception text or traceback.

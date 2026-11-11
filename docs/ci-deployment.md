@@ -93,8 +93,9 @@ failed before SSH with repeated HTTP 504 responses in the
 The existing host, user and raw multiline private-key secrets are passed through
 the client's `INPUT_*` environment variables. The unchanged remote script uses
 `INPUT_SCRIPT`; neither the private key nor the script is inserted into the
-local command line. Connection and command timeouts remain 30 seconds and
-10 minutes. Host authentication retains the existing client configuration; this
+local command line. Connection timeout remains 30 seconds; the command timeout is
+20 minutes to allow the bounded migration deadlock recovery below. Host
+authentication retains the existing client configuration; this
 change does not introduce a host fingerprint or claim independent host-key
 verification.
 
@@ -112,8 +113,26 @@ temporary API container. Its explicit list invokes forty-one upgrade
 modules: `005`–`038`, then `046`–`052`. The `atomer_review_migrate` module
 executes SQL `038`–`045` together in its transaction. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
-The first failure stops the runner and prevents the service restart. Already
-committed migrations remain applied. No schema SQL is changed by this optimization.
+The runner retries only the failed module's `main()` when psycopg2 raises
+`DeadlockDetected` (PostgreSQL SQLSTATE `40P01`). There are at most three attempts,
+with waits of one and two seconds. The module's connection context has already
+rolled back before each retry; calling `main()` again opens a fresh connection and
+reruns its entire transaction, including its advisory lock. Module order stays
+unchanged, previously completed modules are not rerun, and later modules wait for
+success. Imports are not retried. Existing modules contain no external writes or
+intermediate commits; future modules must preserve that transaction boundary to
+remain safe to retry.
+
+Every other error, including connection loss, serialization failure, lock timeout
+or cancellation, stops immediately. A third deadlock also stops the runner and
+prevents the service restart. Retry/failure logs contain module, attempt, timing
+and error-class/code metadata, never exception text, SQL, credentials or a
+traceback. Already committed migrations remain applied. This recovery changes no
+schema SQL, database timeout/locking policy, migration order or warehouse guards.
+It bounds attempt count, not SQL execution time; the existing deployment command
+timeout still limits the whole remote script. Persistent contention must be
+diagnosed from a failed release rather than triggering unlimited retries.
+
 The image packages all forty-eight upgrade SQL files `005`–`052`; the repository
 contains fifty-two SQL files including the initial `001`–`004` schema. New migrations
 require explicit runner and image-packaging updates. Initialization of an empty

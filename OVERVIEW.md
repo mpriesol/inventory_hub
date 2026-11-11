@@ -81,6 +81,8 @@ Automatické Atomer workery vyžadujú `ATOMER_CATALOG_WORKER_ENABLED=true`; pre
 
 Repozitár obsahuje 52 SQL súborov `001`–`052`. Aktuálny upgrade runner má 41 modulov: `005`–`038`, potom `046`–`052`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 48 upgrade SQL súborov `005`–`052`.
 
+Pri databázovom deadlocku (`40P01`) runner obmedzene opakuje celý neúspešný modul až po ukončení jeho transakcie. Poradie, transakcie a kontroly migrácií zostávajú zachované; iné chyby alebo vyčerpané pokusy zastavia nasadenie pred reštartom aplikácie. Podrobnosti sú v [CI a nasadzovaní](docs/ci-deployment.md).
+
 Inicializácia prázdnej DB, aktualizácia existujúcej DB a obnova zálohy majú odlišný postup. Presný stav overenia, zdroje poradia a limity sú v [jednotnom návode](api/POSTGRES_SETUP.md). Už nasadené SQL sa neupravujú a nový súbor sám neznamená zapojenie do deploymentu.
 
 ## Produkčné nasadzovanie a diagnostika
