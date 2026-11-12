@@ -17,6 +17,7 @@ from sqlalchemy import select, text
 
 from inventory_hub.db_models_ext import ReceivingSession
 from inventory_hub.file_access import stored_document_path
+from inventory_hub.adapters import invoice_pdf
 
 
 class ReceivingSourceError(Exception):
@@ -181,12 +182,10 @@ def _load_source(root, supplier, invoice_number, path, parse):
     adapter_cfg, invoice_cfg = cfg.get("adapter_settings") or {}, cfg.get("invoices") or {}
     mapping = adapter_cfg.get("mapping") or invoice_cfg.get("mapping") or {}
     rows = parse(path, mapping.get("invoice_to_canon") if supplier == "paul-lange" else None, content=raw_csv)
-    if supplier in ("sk-profi-bike", "zookee"):
-        from inventory_hub.adapters import sk_profi_bike_invoice, zookee_invoice
-        parser = zookee_invoice.parse_invoice_pdf if supplier == "zookee" else sk_profi_bike_invoice.parse_invoice_pdf
+    if supplier in invoice_pdf.PARSERS:
         original = _source_path(root, supplier, entry.get("raw_path"))
         try:
-            invoice = parser(original.read_bytes())
+            invoice = invoice_pdf.parse_invoice_pdf(supplier, original.read_bytes())
         except (ValueError, OSError):
             raise ReceivingSourceError("receiving_source_unverified") from None
         if (entry.get("source_fingerprint") != invoice.fingerprint() or number != invoice.number
@@ -236,7 +235,7 @@ async def ensure_unique(db, supplier_id, source, root, *, excluding=None):
         proof = (existing.session_data or {}).get("receiving_source") or {}
         if proof.get("document_number") == source.document_number and existing.source_hash != source.source_hash:
             raise ReceivingSourceError("receiving_source_changed", existing=existing)
-        document_adapters = {"sk-profi-bike_pdf", "zookee_pdf", "paul_lange_download"}
+        document_adapters = {*(code + "_pdf" for code in invoice_pdf.PARSERS), "paul_lange_download"}
         distinct_documents = (proof.get("version") == 1
             and proof.get("source_hash") == existing.source_hash
             and source.adapter in document_adapters and proof.get("adapter") == source.adapter

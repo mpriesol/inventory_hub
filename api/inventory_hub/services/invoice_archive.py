@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, text
 
 from inventory_hub import config_io
+from inventory_hub.adapters import invoice_pdf
 from inventory_hub.db_models import Product, Shop, Supplier, SupplierProduct
 from inventory_hub.file_access import code_component, confined_path, stored_document_path
 from inventory_hub.invoice_archive_types import ArchiveLine, ArchiveMetadata, InvoiceReconcileInput
@@ -356,9 +357,7 @@ def _csv_content(raw, mapping=None):
 
 
 def _parsed_pdf(supplier, content):
-    from inventory_hub.adapters import sk_profi_bike_invoice, zookee_invoice
-    parser = zookee_invoice.parse_invoice_pdf if supplier == 'zookee' else sk_profi_bike_invoice.parse_invoice_pdf
-    parsed = parser(content)
+    parsed = invoice_pdf.parse_invoice_pdf(supplier, content)
     metadata = {'invoice_number': parsed.number, 'invoice_date': parsed.issue_date, 'due_date': parsed.due_date,
         'currency': 'EUR', 'total_amount': parsed.gross, 'total_without_vat': parsed.net,
         'vat_amount': parsed.vat, 'total_with_vat': parsed.gross}
@@ -372,7 +371,7 @@ def parse_uploaded_document(supplier, filename, content):
     """Reuse validated supplier/CSV parsers; unsupported originals stay unparsed."""
     suffix = Path(filename).suffix.lower()
     try:
-        if suffix == '.pdf' and supplier in ('sk-profi-bike', 'zookee'):
+        if suffix == '.pdf' and supplier in invoice_pdf.PARSERS:
             metadata, lines = _parsed_pdf(supplier, content)
         elif suffix in ('.csv', '.tsv'):
             config_path = confined_path(settings.INVENTORY_DATA_ROOT,
@@ -432,7 +431,7 @@ def _indexed_document(root, supplier, key, entry):
     # Validated PDF parsers carry source tax amounts; normalized CSV intentionally
     # carries acquisition values only and must not be used to invent invoice VAT.
     original_pdf = next((file['path'] for file in files if file['path'].suffix.lower() == '.pdf'), None)
-    if supplier in ('sk-profi-bike', 'zookee') and original_pdf:
+    if supplier in invoice_pdf.PARSERS and original_pdf:
         metadata, lines = _parsed_pdf(supplier, _bytes(original_pdf))
         return metadata, lines, files
     # Only source-proven dates are accepted. Generic uploads historically put
