@@ -37,6 +37,7 @@ from inventory_hub.supplier_prefix import SupplierPrefixError, get_supplier_pref
 from inventory_hub.config_secrets import ConfigSecretError, config_patch, public_config
 
 from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
+from inventory_hub.adapters import invoice_pdf
 
 router = APIRouter(tags=["suppliers"])
 
@@ -705,18 +706,15 @@ async def upload_invoice(
     if ext in (".xlsx", ".xls") and supplier != "northfinder":
         raise HTTPException(422, detail={"code": "receiving_spreadsheet_supplier_unsupported"})
 
-    if supplier in ("sk-profi-bike", "zookee") and ext == ".pdf":
+    if supplier in invoice_pdf.PARSERS and ext == ".pdf":
         from inventory_hub.adapters.sk_profi_bike_invoice import (
             InvoiceConflictError, InvoiceParseError, save_receiving_invoice,
         )
         try:
             content = await file.read(20 * 1024 * 1024 + 1)
-            kwargs = {}
-            if supplier == "zookee":
-                from inventory_hub.adapters.zookee_invoice import parse_invoice_pdf
-                kwargs["parser"] = parse_invoice_pdf
             result = await asyncio.to_thread(
-                save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number, **kwargs,
+                save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number,
+                parser=lambda data: invoice_pdf.parse_invoice_pdf(supplier, data),
             )
             from inventory_hub.services.invoice_archive import archive_after_upload
             result['archive'] = await archive_after_upload(supplier, result, invoice_number)

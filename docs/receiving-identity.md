@@ -44,7 +44,7 @@ Bežný postup je **pôvodný dodávateľský doklad → konkrétny parser → u
 
 | Zdroj | Overenie pred založením príjmu |
 | --- | --- |
-| SK Profi Bike / Zookee PDF | Pôvodné uložené PDF sa znovu overí existujúcim dodávateľským parserom. Číslo a otlačok dokladu aj normalizované CSV musia zodpovedať pôvodnému dokumentu. Zookee zachová vlastný ISDOC prepočet doložených EUR hodnôt. |
+| SK Profi Bike / Zookee / ARIGA PDF | Pôvodné uložené PDF sa znovu overí existujúcim dodávateľským parserom. Číslo a otlačok dokladu aj normalizované CSV musia zodpovedať pôvodnému dokumentu. Zookee zachová vlastný ISDOC prepočet doložených EUR hodnôt. [ARIGA](ariga.md) overí EUR tabuľku a poštovné; do príjmu vstupujú iba tovarové riadky s pôvodnou cenou bez DPH. |
 | Northfinder XLSX | Uložený originál musí obsahovať konkrétne stĺpce množstva, jednotkovej ceny v EUR, čistého a hrubého súčtu. Overuje sa presnosť čísiel, čistý súčet množstvo × cena, hrubý súčet a zhoda s medzisúborom. Všeobecný stĺpec `Price` ani nahradenie chyby nulou nestačia. |
 | Paul Lange CSV zo sťahovania | Vyžaduje sa dôkaz dodávateľského stiahnutia vrátane čísla dokladu, zhodný otlačok obsahu a výslovne uložená konfigurácia EUR/cena bez DPH. Číslo z dôkazu musí zodpovedať indexu; predvolené hodnoty normalizácie konfigurácie tento dôkaz nenahrádzajú. |
 

@@ -2,6 +2,11 @@
 
 The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike, Schindler, Cyklo Zitny, Silvini and Bike Brothers. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
 
+[ARIGA](ariga.md) can be registered and process its verified PDF invoice format
+before a catalog source exists. Its feed/B2B catalog integration is still pending;
+the agreed net purchase / unchanged gross MOC contract does not by itself provide
+a source or a parser.
+
 Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, browse or search, select individual items or groups, choose the target shop, and prepare an import preview. Empty search lists all items with pagination. The page remembers the target shop. Listing badges use mappings known to Hub; the preview verifies codes and EANs against the target shop.
 
 For a listed item with saved shop content, the listing badge opens its storefront URL; a separate link opens shop administration. Detail responses and rows include `shop_url`, `shop_admin_url` and `shop_active` for the selected shop. Links come from the existing local content snapshot (preferring the Slovak URL); variants use their parent product's content. Missing URLs remain absent, and hidden products are labelled. No additional Upgates request is made to display or open these links.
