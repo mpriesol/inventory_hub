@@ -11,6 +11,7 @@ export interface CatalogProduct {
   prices: { currency: string; vat_percent: string | null; vat_source: 'configured' | 'feed'; purchase_net: string | null; purchase_gross: string | null;
     retail_net: string | null; retail_gross: string | null; discount_net: string | null; discount_gross: string | null };
   supplier_stock: string | null; supplier_stock_min: string | null; supplier_stock_raw: string | null;
+  supplier_available?: boolean | null; supplier_observation_expires_at?: string | null;
   supplier_stock_external: string | null; supplier_stock_external_raw: string | null; supplier_external_available: boolean | null;
   availability: string | null; delivery_date: string | null;
   group_code: string | null; group_name: string | null; variant_relationship: 'explicit' | 'not_provided';

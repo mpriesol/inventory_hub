@@ -403,6 +403,10 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
 def public_product(row: SupplierProduct, *, detail: bool = False, listed: bool = False,
                    display: bool = False) -> CatalogProduct:
     data = dict((row.attributes or {}).get("catalog") or {})
+    if data.get("supplier") == "husky" and "husky_public_stock_only" in data.get("warnings", []):
+        # Older snapshots stored public XML flags as supplier availability.
+        # Project them as unknown without rewriting the historical evidence.
+        data.update(supplier_available=None, supplier_stock=None, supplier_stock_min=None, availability="overíme")
     data.update(id=row.id, listed=listed)
     if not detail:
         for key in ("description", "manufacturer_description", "safety_information", "parameters", "static_parameters",

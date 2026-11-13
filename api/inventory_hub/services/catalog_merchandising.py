@@ -74,7 +74,8 @@ def apply_availability(payload, products, policy):
         unavailable = product.supplier_available is False and product.supplier_external_available is not True
         if product.supplier == 'husky':
             expiry = product.supplier_observation_expires_at
-            fresh = bool(expiry and expiry > datetime.now(timezone.utc))
+            fresh = bool(expiry and expiry > datetime.now(timezone.utc)
+                         and 'husky_public_stock_only' not in product.warnings)
             count = product.supplier_stock if product.supplier_stock is not None else product.supplier_stock_min
             orderable = fresh and orderable and count is not None and count >= 2
             unavailable = fresh and unavailable

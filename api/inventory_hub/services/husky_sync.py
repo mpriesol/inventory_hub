@@ -58,10 +58,13 @@ def combine(records, stock, quotes, cfg):
         raw["public_stock"] = public_stock
         if public_stock is None:
             product.warnings.append("husky_public_stock_unmatched")
-        product.warnings = [w for w in product.warnings if w != "supplier_stock_unverified"]
+        product.warnings = [w for w in product.warnings if w not in ("supplier_stock_unverified", "husky_public_stock_only")]
         if quotes is None:
-            available, quantity, kind = public_stock, None, "boolean" if public_stock is not None else "unknown"
-            stock_raw, source = str(available) if available is not None else None, "husky_public_stock"
+            # This export describes public retail availability, not B2B stock.
+            # Keep it as source evidence only; neither True nor False proves a
+            # wholesale offer, a quantity, or wholesale unavailability.
+            available, quantity, kind = None, None, "unknown"
+            stock_raw, source = None, "husky_public_stock"
             product.warnings.append("husky_public_stock_only")
         else:
             quote = quotes.get(product.manufacturer_code) if counts[product.manufacturer_code] == 1 else None

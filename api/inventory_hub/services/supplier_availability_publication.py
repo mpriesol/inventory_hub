@@ -36,7 +36,9 @@ def _effective_available(fact, setting):
         SupplierFeed.code == setting.feed_key)).correlate(fact, setting)
     fresh = ((fact.observed_at <= editor.now()) & (fact.expires_at > editor.now()) &
              (fact.observed_at + setting.freshness_seconds * text("interval '1 second'") > editor.now()) & correct_feed)
-    return case((fresh, fact.available), else_=None)
+    # Previously saved Husky public XML flags are not wholesale evidence.
+    return case((fact.raw['source'].astext == 'husky_public_stock', None),
+                (fresh, fact.available), else_=None)
 
 
 def _json_object(values):

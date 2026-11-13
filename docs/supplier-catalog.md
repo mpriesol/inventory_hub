@@ -16,7 +16,7 @@ For a listed item with saved shop content, the listing badge opens its storefron
 
 Catalog rows and detail show **SKU Hubu** only when current database evidence uniquely identifies an existing card: a supplier-scoped identifier, validated barcode or stored supplier-source binding. A batch projection checks conflicting identifiers, brand aliases and known variant axes, including current editor overrides. Unresolved or conflicting rows direct the operator to preparation; the supplier code remains separately visible. Collapsed groups show a supplier group code, never a physical card's SKU. The response fields `hub_identity_status`, `hub_product_id`, `hub_sku` and `hub_identity_reasons` describe this read-only projection. The historical `shop_code` proposal and cached shop match index cannot alone prove the Hub identity. Source snapshots, saved import digests, allocation, stock and shop data remain unchanged; the new fields are absent from import source snapshots.
 
-Husky uses a combined catalog/stock XML and optional B2B snapshot through the existing supplier worker. Its refresh button queues the same job used by the configurable daily schedule; see [Husky](husky.md).
+Husky uses a combined catalog/stock XML and optional B2B snapshot through the existing supplier worker. Product content and images come from the feed; public XML stock flags are retained as raw evidence only and never count as wholesale availability. Without verified B2B evidence, supplier stock remains unknown, including for legacy public-only snapshots. Its refresh button queues the same job used by the configurable daily schedule; see [Husky](husky.md).
 
 ## API
 

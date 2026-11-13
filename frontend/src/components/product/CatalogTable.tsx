@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { CatalogProduct, CatalogRow, catalogImageUrl } from '../../api/catalog';
 import { ProductThumb } from './ProductDisplay';
 import { CatalogMatches } from './CatalogMatches';
+import { CatalogStock } from './CatalogStock';
 
 export function CatalogCheckbox({ ids, selected, onToggle, label, disabled = false }: {
   ids: number[]; selected: Set<number>; onToggle: (ids: number[]) => void; label: string; disabled?: boolean;
@@ -54,7 +55,7 @@ export function CatalogTable({ rows, selected, onToggle, onDetail, busy, showPri
           <div className="catalog-muted">{t('catalog.supplierCode')}: <code>{p.code || '—'}</code></div>
           <div className="catalog-muted">{p.eans[0] || t('catalog.noEan')}</div></>}</td>
       {showPrice && <td className="catalog-number">{group ? t('catalog.fromPrice', { price: formatPrice(row.variants.reduce((low, v) => Number(v.prices.retail_gross ?? Infinity) < Number(low.prices.retail_gross ?? Infinity) ? v : low, p)) }) : formatPrice(p)}</td>}
-      {showAvailability && <td>{group ? '—' : <><span>{p.supplier_stock_raw ?? '—'}</span><div className="catalog-muted">{p.availability || ''}</div></>}</td>}
+      {showAvailability && <td>{group ? '—' : <CatalogStock product={p} />}</td>}
       <td>{!group && p.listed && p.shop_url ? <a className="catalog-badge catalog-good" href={p.shop_url} target="_blank" rel="noopener noreferrer" title={t('catalog.openShop')} onClick={e => e.stopPropagation()}>{label} ↗</a>
         : <span className={`catalog-badge ${listedCount && !partial ? 'catalog-good' : ''}`}>{label}</span>}
         {!group && p.listed && p.shop_admin_url && <div className="catalog-muted"><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>{t('catalog.openShopAdmin')} ↗</a></div>}

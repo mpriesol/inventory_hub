@@ -25,6 +25,8 @@ const { CatalogImport } = require('../src/components/product/CatalogImport.tsx')
 let routeSelection;
 function CaptureImport() { routeSelection = useLocation().state.selection; return React.createElement('p', null, 'Unified preparation'); }
 const { SupplierCatalogPage } = require('../src/pages/SupplierCatalogPage.tsx');
+const { CatalogTable } = require('../src/components/product/CatalogTable.tsx');
+const { CatalogDetail } = require('../src/components/product/CatalogDetail.tsx');
 
 const products = [1, 2, 3].map((id) => ({
   id, supplier: 'paul-lange', feed_key: 'products', run_id: 1, code: `A-${id}`, shop_code: `PL-A-${id}`, name: id === 3 ? 'Rukavice' : `Prilba ${id === 1 ? 'M' : 'L'}`,
@@ -272,6 +274,54 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.ok(document.body.textContent.includes('Vybrané položky: 1'));
   assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Excluding existing variants only rebuilds the preview');
   await click(button('Zavrieť')); await settle();
+
+  const fresh = new Date(Date.now() + 3600000).toISOString();
+  const expired = new Date(Date.now() - 3600000).toISOString();
+  const huskyProduct = { ...products[0], supplier: 'husky', listed: false,
+    group_code: null, supplier_stock: null, supplier_stock_min: null,
+    supplier_stock_raw: 'True', supplier_available: true,
+    supplier_observation_expires_at: fresh, warnings: ['husky_public_stock_only'], availability: 'overíme' };
+  const stockCases = [
+    [{}, 'Dostupnosť neznáma', 'B2B sklad nie je overený.'],
+    [{ supplier_stock_raw: 'False', supplier_available: false }, 'Dostupnosť neznáma', 'B2B sklad nie je overený.'],
+    [{ supplier_stock_raw: null, supplier_available: null }, 'Dostupnosť neznáma', 'B2B sklad nie je overený.'],
+    [{ warnings: [], supplier_stock_raw: '4 ks', supplier_stock: '4', availability: 'do 2-4 dní' }, '4 ks', 'do 2-4 dní'],
+    [{ warnings: [], supplier_stock_raw: '>10 ks', supplier_stock_min: '11', availability: 'do 2-4 dní' }, '>10 ks', 'do 2-4 dní'],
+    [{ warnings: [], supplier_stock_raw: '0 ks', supplier_stock: '0', supplier_available: false }, '0 ks', 'overíme'],
+    [{ warnings: [], supplier_stock_raw: '-', supplier_available: null }, 'Dostupnosť neznáma', 'overíme'],
+    [{ supplier_observation_expires_at: expired }, 'Dostupnosť neznáma', 'Údaj nie je aktuálny'],
+    [{ warnings: [], supplier_stock_raw: '4 ks', supplier_stock: '4', availability: 'do 2-4 dní', supplier_observation_expires_at: expired }, 'Dostupnosť neznáma', 'Údaj nie je aktuálny'],
+    [{ supplier_observation_expires_at: null }, 'Dostupnosť neznáma', 'Údaj nie je aktuálny'],
+    [{ supplier_observation_expires_at: 'invalid' }, 'Dostupnosť neznáma', 'Údaj nie je aktuálny'],
+    [{ supplier: 'paul-lange', supplier_stock_raw: '6+' }, '6+', 'overíme'],
+  ];
+  const renderStockTable = async (product, group = false) => act(async () => root.render(React.createElement(CatalogTable, {
+    rows: [{ key: 'stock-test', product, is_group: group, variants_count: group ? 1 : 0, matching_ids: [product.id], variants: group ? [product] : [] }],
+    selected: new Set(), onToggle: () => {}, onDetail: () => {}, busy: false, showPrice: true, showAvailability: true,
+  })));
+  for (const [patch, label, detail] of stockCases) {
+    await renderStockTable({ ...huskyProduct, ...patch });
+    const cell = document.querySelector('tbody tr').children[4];
+    assert.equal(cell.querySelector('span span').textContent, label);
+    assert.ok(cell.textContent.includes(detail));
+    assert.doesNotMatch(cell.textContent, /True|False/);
+    if (detail.includes('nie je aktuálny')) assert.doesNotMatch(cell.textContent, /4 ks|do 2-4 dní|Skladom podľa XML/);
+  }
+  await renderStockTable(huskyProduct, true);
+  assert.equal(document.querySelector('tbody tr').children[4].textContent, '—', 'A parent does not invent aggregate stock');
+  await click(document.querySelector('button[aria-expanded="false"]'));
+  assert.ok(document.querySelector('.catalog-variant').children[4].textContent.includes('B2B sklad nie je overený.'));
+
+  const originalProduct = products[0];
+  products[0] = huskyProduct;
+  await act(async () => root.render(React.createElement(CatalogDetail, {
+    supplier: 'husky', product: huskyProduct, shop: '', onClose: () => {}, onToggle: () => {}, selected: new Set(),
+  })));
+  await settle();
+  assert.ok(document.querySelector('.catalog-detail-head').textContent.includes('B2B sklad nie je overený.'));
+  assert.doesNotMatch(document.querySelector('.catalog-detail-head').textContent, /True|False/);
+  assert.equal(huskyProduct.supplier_stock_raw, 'True', 'Display formatting preserves the source evidence');
+  products[0] = originalProduct;
   await act(async () => root.unmount());
   console.log('Catalog UI passed: variants/images, selection, unified draft navigation, shop freshness, legacy preview price warnings, bulk and individual prices, partial EAN matches, exclusion with preserved drafts, failed recheck protection, snapshot invalidation.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });
