@@ -17,6 +17,8 @@ LISTING = ORIGIN + "/objednavky"
 GRID = "ctl00$MainContent$zbozi$grdList"
 SEARCH = "ctl00$TopSiteBoxContent$txtNazevQuery"
 SEARCH_BUTTON = "ctl00$TopSiteBoxContent$btnOk"
+BRANCH = "ctl00$loginInfo$lvLoginView$cboPobocka"
+LISTING_STATE = "ctl00$ctl33"
 LOGIN_PREFIX = "ctl00$ctl00$MainContent$MainContent$loginPanel$lgLogin$"
 MAX_HTML_BYTES = 2_000_000
 MAX_PAGES = 250
@@ -94,7 +96,8 @@ def form_data(doc, url):
     data = {}
     for node in forms[0].xpath(".//input[@type='hidden']"):
         name = node.get("name", "")
-        if re.fullmatch(r"__(?:VIEWSTATE\d*|VIEWSTATEFIELDCOUNT|VIEWSTATEGENERATOR|VIEWSTATEENCRYPTED|EVENTVALIDATION|CSRFTOKEN|EVENTTARGET|EVENTARGUMENT|LASTFOCUS)", name):
+        if (re.fullmatch(r"__(?:VIEWSTATE\d*|VIEWSTATEFIELDCOUNT|VIEWSTATEGENERATOR|VIEWSTATEENCRYPTED|EVENTVALIDATION|CSRFTOKEN|EVENTTARGET|EVENTARGUMENT|LASTFOCUS)", name)
+                or (url == LISTING and name == LISTING_STATE)):
             if name in data:
                 raise HuskyError()
             data[name] = node.get("value", "")
@@ -106,6 +109,16 @@ def form_data(doc, url):
 
 def listing_post(doc):
     data = form_data(doc, LISTING)
+    # Match the browser's read-only request context, including the empty
+    # placeholder. Never pick another branch or copy cart/order controls.
+    branches = doc.xpath("//select[@name=$name]", name=BRANCH)
+    if len(branches) != 1:
+        raise HuskyError()
+    options = branches[0].xpath("./option")
+    selected = [option for option in options if option.get("selected") is not None] or options[:1]
+    if len(selected) != 1 or selected[0].get("value") is None:
+        raise HuskyError()
+    data[BRANCH] = selected[0].get("value")
     # Preserve only the catalogue tree. Never copy quantity, cart or order inputs.
     for node in doc.xpath("//input[@type='checkbox']"):
         name = node.get("name", "")

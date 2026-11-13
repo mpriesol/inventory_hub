@@ -166,12 +166,49 @@ class HuskyTests(unittest.TestCase):
         for url, data in posts[2:]:
             if data:
                 self.assertEqual(data[b2b.SEARCH], '')
+                self.assertEqual(data[b2b.BRANCH], '')
+                self.assertEqual(data[b2b.LISTING_STATE], 'synthetic-listing-state')
                 self.assertFalse(any('Objednat' in key or 'Cart' in key or 'PouzeSkladem' in key for key in data))
         self.assertNotIn('synthetic-password', repr(quotes))
         documents[:] = [login(),page(),page(),page(next_page=2),page(current=2)]
         with patch.object(b2b.Session,'read',read), self.assertRaises(b2b.HuskyError) as caught:
             b2b.fetch_quotes('synthetic-user','synthetic-password')
         self.assertEqual(caught.exception.code,'husky_b2b_duplicate_identity')
+
+    def test_read_only_context_survives_filter_reset_and_grid_postback(self):
+        for branch in ('', 'synthetic-branch-2'):
+            posts = []
+            def read(_session, url, data=None):
+                if url == b2b.LOGIN:
+                    return b2b.document((login() if data is None else page(branch=branch)).encode())
+                if data is not None:
+                    posts.append(deepcopy(data))
+                    # Require the observed read-only form contract, including
+                    # fresh page state from the preceding filter response.
+                    self.assertEqual(data[b2b.BRANCH], branch)
+                    if data.get('__EVENTARGUMENT') == 'Page$2':
+                        self.assertEqual(data[b2b.LISTING_STATE], 'synthetic-filtered-state')
+                        return b2b.document(page(('MPN-2',), current=2, branch=branch).encode())
+                    self.assertEqual(data[b2b.LISTING_STATE], 'synthetic-listing-state')
+                    return b2b.document(page(next_page=2, branch=branch, page_state='synthetic-filtered-state').encode())
+                return b2b.document(page(next_page=2, branch=branch).encode())
+            with patch.object(b2b.Session, 'read', read):
+                quotes = b2b.fetch_quotes('synthetic-user', 'synthetic-password')
+            self.assertEqual(set(quotes), {'MPN-1', 'MPN-2'})
+            self.assertEqual([p[b2b.BRANCH] for p in posts], [branch, branch])
+            self.assertEqual(posts[0][b2b.SEARCH_BUTTON], 'OK')
+            self.assertEqual(posts[1]['__EVENTARGUMENT'], 'Page$2')
+            self.assertFalse(any('Objednat' in key or 'Cart' in key for post in posts for key in post))
+
+    def test_missing_or_ambiguous_branch_selection_is_rejected(self):
+        for content in (
+            page().replace(f'name="{b2b.BRANCH}"', 'name="unexpected"'),
+            page(branch='synthetic-branch-2').replace('<option value="">', '<option value="" selected>'),
+        ):
+            with self.assertRaises(b2b.HuskyError):
+                b2b.listing_post(b2b.document(content.encode()))
+        implicit = page().replace(' selected>', '>')
+        self.assertEqual(b2b.listing_post(b2b.document(implicit.encode()))[b2b.BRANCH], '')
 
     def test_fixed_https_destinations(self):
         for url in ['https://evil.test/login', b2b.ORIGIN+'/kosik', b2b.LISTING+'?order=1', 'http://b2b.huskysk.sk/login']:
