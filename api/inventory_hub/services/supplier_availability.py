@@ -1,6 +1,6 @@
 """Durable supplier scheduling and freshness-aware availability projection.
 
-Only feed observations are written. Physical stock and catalog content are untouched.
+Feed observations are written; Husky also refreshes its supplier catalog. Physical stock is untouched.
 """
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -22,10 +22,11 @@ def now():
     return datetime.now(timezone.utc)
 
 
-def schedule_values(enabled, interval, freshness):
+def schedule_values(enabled, interval, freshness, supplier=None):
     """Legacy short automated schedules become daily; slower/manual stays intact."""
-    if enabled and interval < 86400:
-        return 86400, max(freshness, 172800)
+    minimum = 3600 if supplier == "husky" else 86400
+    if enabled and interval < minimum:
+        return minimum, max(freshness, 2 * minimum)
     return interval, freshness
 
 
@@ -53,7 +54,7 @@ def _safe_error(value):
 
 def public(supplier, cfg, settings=None):
     manual_only = supplier == "sloger"
-    keys = ["b2b"] if manual_only else _feed_keys(cfg)
+    keys = ["b2b"] if manual_only else [key for key in _feed_keys(cfg) if supplier != "husky" or key == "products"]
     result = {"supplier": supplier, "name": cfg.get("name") or supplier,
         "feed_keys": keys, "feed_key": settings.feed_key if settings else ("b2b" if manual_only else "stock" if "stock" in keys else "products" if "products" in keys else next(iter(keys), "")),
         "revision": settings.revision if settings else 0, "enabled": bool(settings and settings.enabled and not manual_only),
@@ -157,7 +158,7 @@ async def configure(db, supplier, payload):
         row.last_item_count, row.last_success_at = 0, None
     for key in ("enabled", "feed_key", "interval_seconds", "freshness_seconds", "min_coverage_percent"):
         setattr(row, key, getattr(payload, key))
-    row.interval_seconds, row.freshness_seconds = schedule_values(row.enabled, row.interval_seconds, row.freshness_seconds)
+    row.interval_seconds, row.freshness_seconds = schedule_values(row.enabled, row.interval_seconds, row.freshness_seconds, supplier)
     row.revision += 1
     row.next_run_at = now()
     row.last_error = None
@@ -190,8 +191,8 @@ async def start_run(db, supplier_id):
     if not locked:
         return None
     row = await db.get(SupplierAvailabilitySettings, supplier_id, with_for_update=True)
-    if row and row.enabled and supplier.code != "sloger" and row.interval_seconds < 86400:
-        row.interval_seconds, row.freshness_seconds = schedule_values(True, row.interval_seconds, row.freshness_seconds)
+    if row and row.enabled and supplier.code != "sloger" and row.interval_seconds < (3600 if supplier.code == "husky" else 86400):
+        row.interval_seconds, row.freshness_seconds = schedule_values(True, row.interval_seconds, row.freshness_seconds, supplier.code)
         row.revision += 1
         if row.manual_requested_at is None and row.last_started_at is not None:
             row.next_run_at = max(row.next_run_at, row.last_started_at + timedelta(seconds=row.interval_seconds))
@@ -255,7 +256,7 @@ async def accept_run(db, plan, records, source_bytes=0):
         raise AvailabilityError("supplier_availability_changed")
     records = records if isinstance(records, ParsedAvailability) else ParsedAvailability(records)
     covered = coverage_ok(records.total, row.last_item_count, row.min_coverage_percent)
-    report = {**records.report(), "warnings": [] if covered else ["supplier_availability_incomplete_feed"]}
+    report = {**records.report(), "warnings": ([] if covered else ["supplier_availability_incomplete_feed"]) + getattr(records, "warnings", [])}
     run = await db.get(SupplierFeedRun, plan["run_id"])
     if not run or run.status != FeedRunStatus.running:
         raise AvailabilityError("supplier_availability_changed")
@@ -264,6 +265,11 @@ async def accept_run(db, plan, records, source_bytes=0):
     expires = observed + timedelta(seconds=row.freshness_seconds)
     from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    if plan["supplier"] == "husky":
+        from inventory_hub.services.husky_sync import Snapshot, store
+        if not isinstance(records, Snapshot):
+            raise AvailabilityError("husky_catalog_invalid", 422)
+        await store(db, plan, records, row, run, observed, expires)
     products = dict((await db.execute(select(SupplierProduct.supplier_sku, SupplierProduct.id)
                       .where(SupplierProduct.supplier_id == plan["supplier_id"]))).all())
     for start in range(0, len(records), 500):
@@ -329,6 +335,8 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
         expires = min(expires, observation.observed_at + timedelta(seconds=freshness_seconds))
     fresh = bool(observation and observation.observed_at <= at < expires)
     available = observation.available if fresh else None
+    if supplier == "husky" and (not observation or observation.quantity is None or observation.quantity < 2):
+        label = "overíme"
     return {"available": available, "fresh": fresh, "label": label if available is True else "overíme",
         "availability_state": "available" if available is True else "unavailable" if available is False else "unknown",
         "source": supplier, "quantity": str(observation.quantity) if fresh and observation.quantity is not None else None,

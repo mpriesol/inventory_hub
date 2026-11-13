@@ -1,4 +1,6 @@
 """Deterministic category and availability rules; never writes stock quantities."""
+from datetime import datetime, timezone
+
 from inventory_hub.services.catalog import CatalogError
 from inventory_hub.config_normalize import normalize_supplier_availability
 
@@ -70,6 +72,12 @@ def apply_availability(payload, products, policy):
         positive = (product.supplier_stock is not None and product.supplier_stock > 0) or bool(product.supplier_stock_min and product.supplier_stock_min > 0)
         orderable = positive or product.supplier_available is True or product.supplier_external_available is True
         unavailable = product.supplier_available is False and product.supplier_external_available is not True
+        if product.supplier == 'husky':
+            expiry = product.supplier_observation_expires_at
+            fresh = bool(expiry and expiry > datetime.now(timezone.utc))
+            count = product.supplier_stock if product.supplier_stock is not None else product.supplier_stock_min
+            orderable = fresh and orderable and count is not None and count >= 2
+            unavailable = fresh and unavailable
         obj['availability'] = policy['orderable'] if orderable else policy.get('unavailable', policy['unknown']) if unavailable else policy['unknown']
         # Unknown/zero supplier stock is orderable; visibility remains governed
         # by the separate import review/approval contract.

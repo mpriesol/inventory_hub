@@ -26,6 +26,10 @@ alebo politika vyvolá nové overenie; dočasná chyba pred zápisom sa opakuje
 s odstupom. Neistý zápis zostáva na osobitné vyriešenie. Podrobnosti a ohraničené
 ručné preoverenie sú v [dodávateľských dostupnostiach](supplier-availability.md#daily-refresh-and-delivery-of-changed-labels-28-october-2026).
 
+## Husky
+
+[Husky](husky.md) používa zdroj **Produkty** na spoločné obnovenie katalógu, verejnej dostupnosti a zapnutého B2B. Predvolený interval je 24 hodín, nastaviteľný od 1 hodiny do 7 dní. Pri neúplnom čítaní sa neprijme žiadna časť novej snímky. Prah pokrytia je pre Husky blokujúci. B2B prihlasovanie a režim nákupnej ceny sa nastavujú v konfigurácii dodávateľa. Verejné skladom bez počtu kusov ani jeden B2B kus nepotvrdzujú rýchlu dodaciu lehotu.
+
 ## Prenos do BIKETREK a xTrek
 
 Vyberte cieľový e-shop a kliknite **Načítať / obnoviť stav prenosu**. Oba e-shopy majú samostatné povolenie a interval. Hodnoty sa predvolene preberajú zo spoločného skladu:

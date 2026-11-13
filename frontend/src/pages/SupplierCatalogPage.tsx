@@ -150,8 +150,8 @@ export function SupplierCatalogPage() {
   async function refresh() {
     setRefreshing(true); setError(''); setNotice('');
     try {
-      await catalogRequest(`${base}/refresh`, { feed_key: feed });
-      setSelected(new Set()); setPreview(null); setReload(n => n + 1); setNotice('catalog_refreshed');
+      const result = await catalogRequest<{ status?: string }>(`${base}/refresh`, { feed_key: feed });
+      setSelected(new Set()); setPreview(null); setReload(n => n + 1); setNotice(result?.status === 'queued' ? 'catalog_refresh_queued' : 'catalog_refreshed');
     } catch (e: any) { setError(e.code || 'request_failed'); }
     finally { setRefreshing(false); }
   }

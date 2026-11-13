@@ -626,7 +626,9 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
                 item.shop_admin_url = item.shop_admin_url or source.shop_admin_url
     created = now()
     preview = ShopImportPreview(preview_id=uuid4().hex, shop=shop, supplier=request.supplier,
-                                created_at=created, expires_at=created + timedelta(hours=1),
+                                created_at=created, expires_at=min([created + timedelta(hours=1)] + [p.supplier_observation_expires_at
+                                    for p in products if p.supplier == "husky" and p.supplier_observation_expires_at
+                                    and p.supplier_observation_expires_at > created]),
                                 options=options, prices_with_vat=remote["prices_with_vat"], items=items, errors=errors,
                                 create_validation_field=remote["create_validation_field"], shop_check=shop_check,
                                 price_lines=price_lines, sale_price_overrides=request.sale_price_overrides)

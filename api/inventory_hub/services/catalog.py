@@ -30,6 +30,7 @@ from inventory_hub.adapters.cyklo_zitny_catalog import parse_catalog as parse_cy
 from inventory_hub.adapters.silvini_catalog import parse_catalog as parse_silvini
 from inventory_hub.adapters.bike_brothers_catalog import parse_catalog as parse_bike_brothers
 from inventory_hub.adapters.zookee_catalog import parse_catalog as parse_zookee
+from inventory_hub.adapters.husky_catalog import parse_catalog as parse_husky
 from inventory_hub.catalog_types import CatalogDisplayProduct, CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -45,7 +46,7 @@ class CatalogError(Exception):
 
 PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger,
            "sk-profi-bike": parse_sk_profi_bike, "schindler": parse_schindler, "cyklo-zitny": parse_cyklo_zitny,
-           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers, "zookee": parse_zookee}
+           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers, "zookee": parse_zookee, "husky": parse_husky}
 
 
 def folded(value: str) -> str:
@@ -228,11 +229,73 @@ def _lock_key(supplier: str) -> int:
     return int.from_bytes(hashlib.sha256(("supplier-catalog:" + supplier).encode()).digest()[:8], "big", signed=True)
 
 
+async def store_catalog_records(db, feed, run, records, observed_at):
+    """Shared atomic catalog upsert; caller holds supplier and identity locks."""
+    now = observed_at
+    old = {row.supplier_sku: row for row in (await db.execute(
+        select(SupplierProduct.id, SupplierProduct.supplier_sku, SupplierProduct.source_feed_id,
+               SupplierProduct.attributes["catalog"]["source_hash"].astext.label("source_hash"))
+        .where(SupplierProduct.supplier_id == feed.supplier_id)
+    )).all()}
+    new_count = updated_count = 0
+    for start in range(0, len(records), 200):
+        chunk = records[start:start + 200]
+        values = []
+        for product, raw in chunk:
+            previous = old.get(product.code)
+            if previous and previous.source_feed_id not in (None, feed.id):
+                raise CatalogError("catalog_source_conflict", f"Code {product.code} already belongs to another feed", 409)
+            new_count += previous is None
+            updated_count += bool(previous and previous.source_hash != product.source_hash)
+            product.run_id, product.fetched_at = run.id, now
+            catalog = product.model_dump(mode="json", exclude={"id", "listed"})
+            attrs = {"catalog": catalog, "search_name": folded(product.name),
+                     "search_code": folded(product.code), "search_shop_code": folded(product.shop_code)}
+            values.append({
+                "supplier_id": feed.supplier_id, "supplier_sku": product.code,
+                "ean": product.eans[0] if product.eans and not product.import_blockers else None,
+                "manufacturer_sku": product.manufacturer_code, "name": product.name,
+                "brand": product.brand, "category": product.category if len(product.category or "") <= 255 else None,
+                "description": product.description, "images": product.images, "attributes": attrs,
+                "supplier_group_code": product.group_code,
+                "purchase_price": product.prices.purchase_net, "purchase_currency": product.prices.currency,
+                "recommended_price": product.prices.retail_gross,
+                "supplier_availability_text": product.availability, "stock_qty": product.supplier_stock,
+                "is_active": True, "is_discontinued": False, "source_feed_id": feed.id,
+                "last_seen_run_id": run.id, "last_seen_at": now, "updated_at": now,
+            })
+        statement = insert(SupplierProduct).values(values)
+        changes = {key: getattr(statement.excluded, key) for key in values[0] if key not in ("supplier_id", "supplier_sku")}
+        # Preserve unrelated attributes created by another Hub workflow.
+        changes["attributes"] = SupplierProduct.attributes.op("||")(statement.excluded.attributes)
+        id_rows = (await db.execute(statement.on_conflict_do_update(
+            constraint="uq_supplier_products_sku", set_=changes
+        ).returning(SupplierProduct.id, SupplierProduct.supplier_sku))).all()
+        id_map = {row.supplier_sku: row.id for row in id_rows}
+        await db.execute(insert(SupplierFeedItemRaw), [{
+            "feed_id": feed.id, "run_id": run.id, "item_hash": product.source_hash,
+            "raw_data": raw, "processed": True, "processed_at": now,
+            "supplier_product_id": id_map[product.code], "fetched_at": now,
+        } for product, raw in chunk])
+    await db.execute(update(SupplierProduct).where(
+        SupplierProduct.source_feed_id == feed.id,
+        SupplierProduct.last_seen_run_id != run.id,
+    ).values(is_active=False))
+    return new_count, updated_count
+
+
 async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "products", *,
                           source_path: Path | None = None, expected_mapping_revision: int | None = None) -> dict:
     from inventory_hub.services import feed_mapping
     from inventory_hub.feed_mapping_types import MappingDefinition
     cfg = supplier_config(supplier)
+    if supplier == "husky" and feed_key == "products" and source_path is None:
+        from inventory_hub.services.husky_sync import refresh
+        from inventory_hub.services.supplier_availability_source import AvailabilityError
+        try:
+            return await refresh(db, cfg)
+        except AvailabilityError as error:
+            raise CatalogError(error.code, error.code, error.status) from None
     locked = await db.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": _lock_key(supplier)})
     if not locked:
         raise CatalogError("catalog_refresh_running", "This supplier is already being refreshed", 409)
@@ -278,56 +341,8 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
         # repair. Acquire only after the supplier download/parse has finished.
         from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
         await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
-        old = {row.supplier_sku: row for row in (await db.execute(
-            select(SupplierProduct.id, SupplierProduct.supplier_sku, SupplierProduct.source_feed_id,
-                   SupplierProduct.attributes["catalog"]["source_hash"].astext.label("source_hash"))
-            .where(SupplierProduct.supplier_id == feed.supplier_id)
-        )).all()}
         now = datetime.now(timezone.utc)
-        new_count = updated_count = 0
-        for start in range(0, len(records), 200):
-            chunk = records[start:start + 200]
-            values = []
-            for product, raw in chunk:
-                previous = old.get(product.code)
-                if previous and previous.source_feed_id not in (None, feed.id):
-                    raise CatalogError("catalog_source_conflict", f"Code {product.code} already belongs to another feed", 409)
-                new_count += previous is None
-                updated_count += bool(previous and previous.source_hash != product.source_hash)
-                product.run_id, product.fetched_at = run.id, now
-                catalog = product.model_dump(mode="json", exclude={"id", "listed"})
-                attrs = {"catalog": catalog, "search_name": folded(product.name),
-                         "search_code": folded(product.code), "search_shop_code": folded(product.shop_code)}
-                values.append({
-                    "supplier_id": feed.supplier_id, "supplier_sku": product.code,
-                    "ean": product.eans[0] if product.eans and not product.import_blockers else None,
-                    "manufacturer_sku": product.manufacturer_code, "name": product.name,
-                    "brand": product.brand, "category": product.category if len(product.category or "") <= 255 else None,
-                    "description": product.description, "images": product.images, "attributes": attrs,
-                    "supplier_group_code": product.group_code,
-                    "purchase_price": product.prices.purchase_net, "purchase_currency": product.prices.currency,
-                    "recommended_price": product.prices.retail_gross,
-                    "supplier_availability_text": product.availability, "stock_qty": product.supplier_stock,
-                    "is_active": True, "is_discontinued": False, "source_feed_id": feed.id,
-                    "last_seen_run_id": run.id, "last_seen_at": now, "updated_at": now,
-                })
-            statement = insert(SupplierProduct).values(values)
-            changes = {key: getattr(statement.excluded, key) for key in values[0] if key not in ("supplier_id", "supplier_sku")}
-            # Preserve unrelated attributes created by another Hub workflow.
-            changes["attributes"] = SupplierProduct.attributes.op("||")(statement.excluded.attributes)
-            id_rows = (await db.execute(statement.on_conflict_do_update(
-                constraint="uq_supplier_products_sku", set_=changes
-            ).returning(SupplierProduct.id, SupplierProduct.supplier_sku))).all()
-            id_map = {row.supplier_sku: row.id for row in id_rows}
-            await db.execute(insert(SupplierFeedItemRaw), [{
-                "feed_id": feed.id, "run_id": run.id, "item_hash": product.source_hash,
-                "raw_data": raw, "processed": True, "processed_at": now,
-                "supplier_product_id": id_map[product.code], "fetched_at": now,
-            } for product, raw in chunk])
-        await db.execute(update(SupplierProduct).where(
-            SupplierProduct.source_feed_id == feed.id,
-            SupplierProduct.last_seen_run_id != run.id,
-        ).values(is_active=False))
+        new_count, updated_count = await store_catalog_records(db, feed, run, records, now)
         run.status, run.finished_at = FeedRunStatus.completed, now
         run.items_fetched, run.items_new, run.items_updated = len(records), new_count, updated_count
         run.items_unchanged = len(records) - new_count - updated_count
@@ -603,7 +618,8 @@ async def catalog_detail(db: AsyncSession, supplier: str, product_id: int, inclu
     from inventory_hub.services.catalog_shop_images import attach as attach_shop_images
     await attach_shop_images(db, supplier, [product, *variants])
     raw = await db.scalar(select(SupplierFeedItemRaw.raw_data).where(
-        SupplierFeedItemRaw.supplier_product_id == product_id, SupplierFeedItemRaw.run_id == row.last_seen_run_id))
+        SupplierFeedItemRaw.supplier_product_id == product_id, SupplierFeedItemRaw.run_id == row.last_seen_run_id,
+        SupplierFeedItemRaw.raw_data.has_key("xml") if supplier == "husky" else True))
     return {"product": product, "variants": variants, "source_fields": (raw or {}).get("fields", {}),
             "source_xml": (raw or {}).get("xml", ""), "active": row.is_active}
 

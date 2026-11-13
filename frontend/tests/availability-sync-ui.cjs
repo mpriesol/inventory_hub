@@ -111,7 +111,7 @@ global.fetch = async (path, init = {}) => {
     assert.equal(body.expected_revision, sloger.revision); assert.equal(init.method, 'POST');
     sloger.manual_requested_at = '2026-10-13T12:00:00Z'; return reply({ supplier: 'sloger', queued: true });
   }
-  if (url.pathname === '/api/supplier-availability/fixture') {
+  if (url.pathname === '/api/supplier-availability/fixture' || url.pathname === '/api/supplier-availability/husky') {
     assert.equal(init.method, 'PUT'); assert.equal(body.expected_revision, supplier.revision);
     supplier = { ...supplier, ...body, revision: supplier.revision + 1 };
     if (supplierSaveMode === 'pending') return new Promise((resolve, reject) => { rejectSupplier = () => reject(new TypeError('Synthetic lost response')); });
@@ -416,6 +416,17 @@ const writes = () => calls.filter(call => call.method !== 'GET');
   assert.equal(required('supplier-fixture-interval').value, '5400');
   supplierSaveMode = 'ok'; supplier.manual_requested_at = null; await click('load-suppliers');
   await click('all-suppliers'); assert(element('sync-shop'), 'Operator can return to all settings');
+  supplier = {...supplier, supplier:'husky',name:'Husky',feed_keys:['products'],feed_key:'products',revision:0,
+    enabled:false, interval_seconds:86400,freshness_seconds:172800,latest_run:null,status:'unconfigured'};
+  await click('load-suppliers');
+  assert.equal(required('supplier-husky-interval').value,'86400');
+  await click('supplier-husky-enabled');
+  await input('supplier-husky-interval','3600');
+  assert(!required('supplier-husky-save').disabled, 'Husky permits an explicit hourly schedule');
+  await click('supplier-husky-save');
+  assert.equal(writes().at(-1).body.interval_seconds,3600);
+  assert.equal(writes().at(-1).body.enabled,true);
+  assert.equal(writes().at(-1).path,'/api/supplier-availability/husky');
   await act(async () => { root.unmount(); await tick(); });
   console.log('availability-sync-ui: supplier validation, CAS, inheritance, central authority, manual jobs, recovery, credentials and stale responses passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
