@@ -9,6 +9,7 @@ from lxml import etree, html
 import requests
 
 from inventory_hub.adapters.husky_catalog import money
+from inventory_hub import operation_log
 
 
 ORIGIN = "https://b2b.huskysk.sk"
@@ -147,7 +148,13 @@ def parse_page(doc, page):
         next_pages.add(int(match[1]))
     if next_pages or page > 1:
         current = table.xpath("./tr[td/table]//span/text()|./tbody/tr[td/table]//span/text()")
-        if set(value.strip() for value in current if value.strip()) != {str(page)}:
+        markers = set(value.strip() for value in current if value.strip())
+        if markers != {str(page)}:
+            numeric = [int(value) for value in markers if value.isascii() and value.isdigit() and len(value) < 5]
+            operation_log.emit("catalog_validation_failed", component="husky", supplier="husky", level="error",
+                phase="parse_page", page=page, error_code="husky_b2b_incomplete",
+                reason="pager_marker_mismatch" if markers else "pager_marker_missing",
+                **({"observed_page": numeric[0]} if len(numeric) == 1 else {}))
             raise HuskyError("husky_b2b_incomplete")
     rows = []
     for row in table.xpath("./tr|./tbody/tr"):
@@ -167,13 +174,18 @@ def parse_page(doc, page):
             raise HuskyError("husky_b2b_invalid_price") from None
         rows.append(Quote(code, raw, available, number, kind, base, purchase))
     if not 0 < len(rows) <= 60 or (any(p > page for p in next_pages) and page + 1 not in next_pages):
+        operation_log.emit("catalog_validation_failed", component="husky", supplier="husky", level="error",
+            phase="parse_page", page=page, rows=len(rows), error_code="husky_b2b_incomplete",
+            reason="invalid_row_count" if not 0 < len(rows) <= 60 else "next_page_missing")
         raise HuskyError("husky_b2b_incomplete")
+    operation_log.emit("catalog_page_validated", component="husky", supplier="husky", phase="parse_page", page=page, rows=len(rows))
     return rows, page + 1 in next_pages
 
 
 class Session:
     def __init__(self, client, deadline):
         self.client, self.deadline, self.last_request = client, deadline, 0
+        self.phase, self.page = "login_form", None
 
     def read(self, url, data=None):
         method = "POST" if data is not None else "GET"
@@ -185,10 +197,13 @@ class Session:
                 raise HuskyError("husky_b2b_timeout")
             time.sleep(delay)
             self.last_request = time.monotonic()
+            sent_method, target = method, "husky_login" if url == LOGIN else "husky_catalog"
+            status, code = None, None
             try:
                 with self.client.request(method, url, data=data, allow_redirects=False, stream=True,
                         timeout=(min(10, remaining), min(20, remaining)),
                         headers={"Origin": ORIGIN, "Referer": url} if method == "POST" else None) as response:
+                    status = response.status_code
                     if response.status_code in (301, 302, 303):
                         if redirect == 3:
                             raise HuskyError("husky_b2b_unsafe_redirect")
@@ -208,8 +223,17 @@ class Session:
                         if len(raw) > MAX_HTML_BYTES:
                             raise HuskyError("husky_b2b_too_large")
                     return document(bytes(raw))
+            except HuskyError as error:
+                code = error.code
+                raise
             except requests.RequestException:
+                code = "husky_b2b_unavailable"
                 raise HuskyError("husky_b2b_unavailable") from None
+            finally:
+                operation_log.emit("http_request", component="husky", supplier="husky", direction="outbound",
+                    method=sent_method, target=target, status_code=status, phase=self.phase, page=self.page,
+                    redirect=redirect, duration_ms=round((time.monotonic() - self.last_request) * 1000),
+                    level="error" if code else "info", error_code=code)
         raise HuskyError()
 
 
@@ -226,19 +250,27 @@ def fetch_quotes(username, password, *, deadline=None):
                 raise HuskyError()
         data.update({LOGIN_PREFIX + "UserName": username, LOGIN_PREFIX + "Password": password,
                      LOGIN_PREFIX + "LoginButton": login.xpath("//input[@name=$name]", name=LOGIN_PREFIX + "LoginButton")[0].get("value", "")})
+        session.phase = "login_submit"
         signed_in = session.read(LOGIN, data)
         if signed_in.xpath("//input[@type='password']"):
             raise HuskyError("husky_b2b_auth_failed")
+        session.phase = "catalog_open"
         doc = session.read(LISTING)
         # Explicitly clear search and both filters; a persisted filter is not a full catalog.
         if not doc.xpath("//*[@id='loginInfo_lvLoginView_lsLoginStatusLoggedIn']"):
             raise HuskyError("husky_b2b_auth_failed")
         data = listing_post(doc)
         data[SEARCH_BUTTON] = "OK"
+        session.phase, session.page = "catalog_reset", 1
         doc = session.read(LISTING, data)
         output = {}
         for page in range(1, MAX_PAGES + 1):
-            rows, has_next = parse_page(doc, page)
+            try:
+                rows, has_next = parse_page(doc, page)
+            except HuskyError as error:
+                operation_log.emit("catalog_parse_failed", component="husky", supplier="husky", level="error",
+                    phase="parse_page", page=page, error_code=error.code)
+                raise
             for quote in rows:
                 if quote.code in output:
                     raise HuskyError("husky_b2b_duplicate_identity")
@@ -250,5 +282,8 @@ def fetch_quotes(username, password, *, deadline=None):
                 return output
             data = listing_post(doc)
             data.update(__EVENTTARGET=GRID, __EVENTARGUMENT=f"Page${page + 1}")
+            session.phase, session.page = "catalog_page", page + 1
             doc = session.read(LISTING, data)
+        operation_log.emit("catalog_validation_failed", component="husky", supplier="husky", level="error",
+            phase="parse_page", page=MAX_PAGES, error_code="husky_b2b_incomplete", reason="page_limit")
         raise HuskyError("husky_b2b_incomplete")

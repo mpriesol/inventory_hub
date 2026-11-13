@@ -1,0 +1,18 @@
+.operation-logs { display: grid; gap: 1.25rem; }
+.operation-logs header, .operation-log-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.operation-logs h1 { font-size: 1.5rem; font-weight: 600; }
+.operation-log-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1rem; align-items: end; }
+.operation-log-filters label { display: grid; gap: .4rem; font-size: .85rem; color: var(--color-text-secondary); }
+.operation-log-filters input, .operation-log-filters select { width: 100%; padding: .65rem; border: 1px solid var(--color-border-subtle); border-radius: .5rem; color: var(--color-text-primary); background: var(--color-bg-secondary); }
+.operation-log-toolbar { justify-content: flex-start; }
+.operation-log-toolbar small { margin-left: auto; color: var(--color-text-secondary); }
+.operation-log-table { overflow-x: auto; border: 1px solid var(--color-border-subtle); border-radius: .75rem; }
+.operation-log-table table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.operation-log-table th, .operation-log-table td { text-align: left; vertical-align: top; padding: .85rem; border-bottom: 1px solid var(--color-border-subtle); }
+.operation-log-table th { color: var(--color-text-secondary); font-weight: 500; }
+.operation-log-table td:first-child { white-space: nowrap; }
+.operation-log-table td > small, .operation-log-table td > code, .operation-log-table td > span { display: block; margin-top: .25rem; }
+.operation-log-table small { color: var(--color-text-secondary); }
+.operation-log-table code { overflow-wrap: anywhere; font-size: .75rem; }
+.operation-log-table tr[data-level="error"] td:nth-child(3) > span { color: var(--color-error, #ef6464); }
+.operation-log-table tr[data-level="warning"] td:nth-child(3) > span { color: var(--color-accent, #ffad00); }

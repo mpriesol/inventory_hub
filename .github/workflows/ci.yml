@@ -205,6 +205,9 @@ jobs:
       - name: Supplier availability and regular transfer interactions
         run: node frontend/tests/availability-sync-ui.cjs
 
+      - name: Operational log filters and access interactions
+        run: node frontend/tests/operation-logs-ui.cjs
+
       - name: Physical stock correction interactions
         run: node frontend/tests/stock-adjustments-ui.cjs
 

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/ui/Button.new';
 import { ActionScope } from '../components/ui/ActionScope';
+import { HelpHint } from '../components/ui/HelpHint';
 import { getUpgatesCapacity, UpgatesCapacity } from '../api/upgatesCapacity';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
 import { getSupplierAvailability, getSupplierFeedFailures, SupplierFeedRun, SupplierFeedFailures, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
@@ -95,6 +96,8 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
   const blocked = operation.busy || operation.uncertain || configChanged;
   useEffect(() => { onLeaveBlocked(value.supplier, dirty || blocked); return () => onLeaveBlocked(value.supplier, false); }, [dirty, blocked, value.supplier]);
   const status = value.status || (value.revision === 0 ? 'unconfigured' : !value.last_success_at ? 'not_loaded' : stale ? 'stale' : 'fresh');
+  const failed = !!value.last_error || value.latest_run?.status === 'failed';
+  const incomplete = !!value.latest_run?.report && (value.latest_run.report.rejected > 0 || value.latest_run.report.unknown > 0);
   const id = (suffix: string) => `supplier-${value.supplier}-${suffix}`;
   function discard() { resetForm(value); setSaved(false); }
   function save() {
@@ -125,13 +128,13 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
     }, result => setLinkResult(result));
   }
   return <article className={`availability-supplier${dirty ? ' availability-dirty' : ''}`} data-testid={id('card')}>
-    <header><h3>{value.name}</h3><span className="opening-stock-badge">{value.running || value.manual_requested_at ? t(`availabilitySync.${value.running ? 'running' : 'queued'}`) : t(`productEditor.supplierStatus.${status}`, { defaultValue: t(`availabilitySync.${stale ? 'stale' : 'fresh'}`) })}</span></header>
+    <header><h3>{value.name}</h3><span data-testid={id('status')} className="opening-stock-badge">{value.running || value.manual_requested_at ? t(`availabilitySync.${value.running ? 'running' : 'queued'}`) : status !== 'configuration_error' && failed ? t('availabilitySync.runStatus.failed') : status === 'fresh' && incomplete ? t('availabilitySync.runStatus.partial') : t(`productEditor.supplierStatus.${status}`, { defaultValue: t(`availabilitySync.${stale ? 'stale' : 'fresh'}`) })}</span></header>
     {status === 'unconfigured' && <p data-testid={id('setup-help')}>{t('availabilitySync.setupFirst')}</p>}
     {status === 'not_loaded' && !value.last_error && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
     {status === 'configuration_error' && <p role="alert">{t('availabilitySync.configurationHelp')}</p>}
     {value.publication?.enabled && <p data-testid={id('publication')}>{t('availabilitySync.scopedPublication', { shop: value.publication.shop_code, brands: value.publication.brands.join(', '), completed: value.publication.counts?.completed || 0, uncertain: value.publication.counts?.uncertain || 0, rejected: value.publication.counts?.rejected || 0 })}</p>}
-    {!manualOnly && <><p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { hours: value.interval_seconds / 3600 })}</p><p className="opening-stock-muted">{t(value.supplier === 'husky' ? 'husky.syncHelp' : 'availabilitySync.dailyChangesOnly')}</p></>}
-    {value.latest_run && <SupplierRunResult key={value.latest_run.id} supplier={value.supplier} run={value.latest_run} />}
+    {!manualOnly && <><p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { hours: value.interval_seconds / 3600 })}<HelpHint label={t('availabilitySync.scheduleHelpLabel')}>{t(value.supplier === 'husky' ? 'husky.syncHelp' : 'availabilitySync.dailyChangesOnly')}</HelpHint></p></>}
+    {value.latest_run && <><SupplierRunResult key={value.latest_run.id} supplier={value.supplier} run={value.latest_run} /><Link data-testid={id('logs')} to={`/settings/logs?supplier=${encodeURIComponent(value.supplier)}&run_id=${value.latest_run.id}`}>{t('operationLogs.viewRun')}</Link></>}
     <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>
     {manualOnly && <p data-testid={id('manual-help')}>{t('availabilitySync.manualB2bHelp')}</p>}
     <div className="availability-fields">
@@ -163,11 +166,9 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
       {linkResult.issues.length > 0 && <details><summary>{t('availabilitySync.linksIssues')}</summary><ul>{linkResult.issues.map((issue, index) => <li key={`${issue.product_id}-${index}`}><code>{issue.sku}</code>: {t(`availabilitySync.linkReasons.${issue.reason}`, { defaultValue: t('availabilitySync.linkNeedsReview') })}</li>)}</ul></details>}
     </div>}
     <Feedback error={operation.error} uncertain={operation.uncertain} />
-    <div className="availability-actions"><span className="action-control"><Button data-testid={id('save')} disabled={blocked || !valid || (!dirty && value.revision > 0)} onClick={save}>{t('availabilitySync.save')}</Button><ActionScope effects={!manualOnly && enabled ? ['hub-write', 'queued-supplier'] : ['hub-write']} calls={{ kind: 'variable' }} /></span>
-      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.configuration_error != null || !valid || value.running || !!value.manual_requested_at} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => replace({ ...value, manual_requested_at: new Date().toISOString() }))}>{t('availabilitySync.refreshSupplier')}</Button><ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></span>
-      <span className="action-control"><Button data-testid={id('reconcile')} variant="secondary" disabled={blocked || dirty} onClick={repairLinks}>{t('availabilitySync.reconcileLinks')}</Button><ActionScope effects={['hub-write']} /></span></div>
-    <p className="text-sm">{t(manualOnly ? 'availabilitySync.manualB2bHelp' : 'availabilitySync.refreshScopeHelp')}</p>
-    <p className="text-sm">{t('availabilitySync.linksHelp')}</p>
+    <div className="availability-actions"><span className="action-control"><Button data-testid={id('save')} disabled={blocked || !valid || (!dirty && value.revision > 0)} onClick={save}>{t('availabilitySync.save')}</Button><HelpHint label={t('availabilitySync.saveHelpLabel')}><ActionScope effects={!manualOnly && enabled ? ['hub-write', 'queued-supplier'] : ['hub-write']} calls={{ kind: 'variable' }} /></HelpHint></span>
+      <span className="action-control"><Button data-testid={id('run')} variant="secondary" disabled={blocked || dirty || value.revision === 0 || value.configuration_error != null || !valid || value.running || !!value.manual_requested_at} onClick={() => operation.run(true, () => runSupplierAvailability(value.supplier, value.revision), () => replace({ ...value, manual_requested_at: new Date().toISOString() }))}>{t('availabilitySync.refreshSupplier')}</Button><HelpHint label={t('availabilitySync.refreshSupplier')}>{t(manualOnly ? 'availabilitySync.manualB2bHelp' : 'availabilitySync.refreshScopeHelp')}<ActionScope effects={['hub-write', 'queued-supplier']} calls={{ kind: 'variable' }} /></HelpHint></span>
+      <span className="action-control"><Button data-testid={id('reconcile')} variant="secondary" disabled={blocked || dirty} onClick={repairLinks}>{t('availabilitySync.reconcileLinks')}</Button><HelpHint label={t('availabilitySync.reconcileLinks')}>{t('availabilitySync.linksHelp')}<ActionScope effects={['hub-write']} /></HelpHint></span></div>
   </article>;
 }
 

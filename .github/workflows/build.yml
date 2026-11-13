@@ -90,6 +90,11 @@ jobs:
               cat > docker-compose.ai-content.yml <<'YAML'
               services:
                 api:
+                  logging:
+                    driver: json-file
+                    options:
+                      max-size: "10m"
+                      max-file: "3"
                   environment:
                     SUPPLIER_CREDENTIALS_ROOT: /var/lib/inventory-hub-secrets
                   volumes:

@@ -1,6 +1,9 @@
 """One supplier download at a time across replicas, outside DB transactions."""
 import asyncio
 import logging
+import time
+
+from inventory_hub import operation_log
 
 from sqlalchemy import or_, select, text
 
@@ -57,35 +60,41 @@ async def cycle():
             if plan is None:
                 from inventory_hub.services.supplier_availability_publication import cycle as publish_cycle
                 return await publish_cycle()
-            try:
-                timeout = 600 if plan["supplier"] == "husky" else 930 if (plan.get("source") or {}).get("mode") == "ariga-b2b" else 360
-                async with asyncio.timeout(timeout):
-                    if plan["supplier"] == "sloger":
-                        from inventory_hub.services.sloger_data import lookup_products
-                        from inventory_hub.sloger_probe_types import SlogerBatchResult
-                        batch = (await lookup_products(plan["skus"]) if plan["skus"] else
-                                 SlogerBatchResult(items=[], aborted=False))
-                    elif plan["supplier"] == "husky":
-                        from inventory_hub.services.husky_sync import fetch_async
-                        records, size = await fetch_async(plan)
-                    else:
-                        records, size = await asyncio.to_thread(fetch, plan)
-                async with get_session_context() as db:
-                    if plan["supplier"] == "sloger":
-                        from inventory_hub.services.supplier_availability_b2b import accept_batch
-                        await accept_batch(db, plan, batch)
-                    else:
-                        await service.accept_run(db, plan, records, size)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                code = error.code if isinstance(error, (AvailabilityError, CatalogError)) else "supplier_availability_source_unavailable"
-                if code == "sloger_b2b_busy":
-                    # No supplier request was made. Leave the exact cursor queued.
-                    return False
-                logger.warning("Supplier availability pass failed (%s)", code)
-                async with get_session_context() as db:
-                    await service.fail_run(db, plan["supplier_id"], plan["run_id"], code)
+            with operation_log.context(component="supplier_availability", supplier=plan["supplier"], run_id=plan["run_id"]):
+                started = time.monotonic()
+                operation_log.emit("availability_pass_started")
+                try:
+                    timeout = 600 if plan["supplier"] == "husky" else 930 if (plan.get("source") or {}).get("mode") == "ariga-b2b" else 360
+                    async with asyncio.timeout(timeout):
+                        if plan["supplier"] == "sloger":
+                            from inventory_hub.services.sloger_data import lookup_products
+                            from inventory_hub.sloger_probe_types import SlogerBatchResult
+                            batch = (await lookup_products(plan["skus"]) if plan["skus"] else
+                                     SlogerBatchResult(items=[], aborted=False))
+                        elif plan["supplier"] == "husky":
+                            from inventory_hub.services.husky_sync import fetch_async
+                            records, size = await fetch_async(plan)
+                        else:
+                            records, size = await asyncio.to_thread(fetch, plan)
+                    async with get_session_context() as db:
+                        if plan["supplier"] == "sloger":
+                            from inventory_hub.services.supplier_availability_b2b import accept_batch
+                            await accept_batch(db, plan, batch)
+                        else:
+                            await service.accept_run(db, plan, records, size)
+                    operation_log.emit("availability_pass_completed", duration_ms=round((time.monotonic() - started) * 1000))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    code = error.code if isinstance(error, (AvailabilityError, CatalogError)) else "supplier_availability_source_unavailable"
+                    if code == "sloger_b2b_busy":
+                        # No supplier request was made. Leave the exact cursor queued.
+                        return False
+                    logger.warning("Supplier availability pass failed (%s)", code)
+                    async with get_session_context() as db:
+                        await service.fail_run(db, plan["supplier_id"], plan["run_id"], code)
+                    operation_log.emit("availability_pass_failed", level="error", error_code=code,
+                        duration_ms=round((time.monotonic() - started) * 1000))
             return True
         finally:
             await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})

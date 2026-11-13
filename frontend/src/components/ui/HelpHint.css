@@ -1,0 +1,7 @@
+.help-hint { display: inline-flex; vertical-align: middle; margin-inline-start: .5rem; }
+.help-hint-button { display: inline-grid; place-items: center; width: 1.45rem; height: 1.45rem; padding: 0; border-radius: 50%; border: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); background: transparent; cursor: help; font-size: .8rem; }
+.help-hint-button:focus-visible { outline: 2px solid var(--color-accent, #ffad00); outline-offset: 3px; }
+.help-hint-content { position: fixed; z-index: 1000; box-sizing: border-box; max-height: 50vh; overflow: auto; padding: .85rem; border: 1px solid var(--color-border-subtle); border-radius: .6rem; background: var(--color-bg-secondary, #24231e); color: var(--color-text-primary); font-size: .85rem; font-weight: normal; line-height: 1.5; box-shadow: 0 8px 28px #0005; }
+.help-hint-content[hidden] { display: none; }
+.help-hint-content .action-scope { margin-top: .5rem; }
+.availability-supplier .availability-actions > .action-control { flex-direction: row; align-items: center; }

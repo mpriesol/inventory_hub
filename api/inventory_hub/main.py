@@ -41,6 +41,7 @@ from inventory_hub.routers.shops import router as shops_router
 from inventory_hub.routers.suppliers import router as suppliers_router
 from inventory_hub.routers.logs import router as logs_router
 from inventory_hub.routers.logs_global import router as logs_global_router
+from inventory_hub.routers.operation_logs import router as operation_logs_router
 from inventory_hub.routers.imports import router as imports_router
 from inventory_hub.routers.receiving import router as receiving_router_legacy
 
@@ -165,6 +166,8 @@ async def supplier_prefix_error_response(_request, error: SupplierPrefixError):
 
 from inventory_hub.routers.auth import install as install_auth
 install_auth(app)
+from inventory_hub.operation_middleware import OperationMiddleware
+app.add_middleware(OperationMiddleware)
 # CORS handles preflight before the private API boundary; preflight never
 # executes a business endpoint or carries an authentication exemption.
 app.add_middleware(
@@ -203,6 +206,7 @@ app.include_router(shops_router)
 app.include_router(suppliers_router)
 app.include_router(logs_router)
 app.include_router(logs_global_router)
+app.include_router(operation_logs_router)
 app.include_router(imports_router)
 app.include_router(invoice_calendar_router)
 app.include_router(invoice_archive_router)
