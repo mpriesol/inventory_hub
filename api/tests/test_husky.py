@@ -276,6 +276,8 @@ class HuskyTests(unittest.TestCase):
                 return self.response
         cases=[(Response(302,{'Location':'https://evil.test/login'}),'husky_b2b_unsafe_redirect'),
             (Response(429),'husky_b2b_rate_limited'),
+            (requests.ReadTimeout('synthetic-private-password'),'husky_b2b_timeout'),
+            (requests.ConnectTimeout('synthetic-private-password'),'husky_b2b_timeout'),
             (requests.ConnectionError('synthetic-private-password'),'husky_b2b_unavailable'),
             (Response(raw=b'x'*(b2b.MAX_HTML_BYTES+1)),'husky_b2b_too_large')]
         for response,code in cases:
@@ -285,3 +287,46 @@ class HuskyTests(unittest.TestCase):
             self.assertEqual(str(caught.exception),code)
             self.assertEqual(len(client.calls),1)
             self.assertFalse(client.calls[0][1]['allow_redirects'])
+
+    def test_wrapped_network_failure_at_deadline_is_a_timeout_without_retry(self):
+        clock, calls = [100.0], []
+        def request(*args, **kwargs):
+            calls.append(kwargs['timeout'])
+            clock[0] = 103.0
+            raise requests.ConnectionError('synthetic-private-password')
+        client = SimpleNamespace(request=request)
+        with patch.object(b2b.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(b2b.time, 'sleep'):
+            with self.assertRaises(b2b.HuskyError) as caught:
+                b2b.Session(client, 102.0).read(b2b.LISTING)
+        self.assertEqual(str(caught.exception), 'husky_b2b_timeout')
+        self.assertEqual(calls, [(2.0, 2.0)])
+
+    def test_collection_budget_is_shared_across_feeds_and_b2b_and_stays_bounded(self):
+        cfg = deepcopy(self.cfg)
+        cfg['adapter_settings']['husky'] = {'b2b_enabled': True, 'username': 'synthetic-user', 'password': 'synthetic-password'}
+        cfg['feeds'] = {'sources': {key: {'mode': 'remote', 'remote': {'url': 'https://example.test/feed.xml'}} for key in ('products', 'stock')}}
+        for download_seconds in (100, b2b.MAX_COLLECTION_SECONDS + 1):
+            clock, budgets, deadlines = [100.0], [], []
+            def download(_supplier, _source, key, *, directory, max_elapsed_seconds):
+                budgets.append(max_elapsed_seconds)
+                clock[0] += download_seconds
+                path = directory / (key + '.xml')
+                path.write_text('<SHOP>' + (item() if key == 'products' else stock()) + '</SHOP>')
+                return path
+            def quotes(_username, _password, *, deadline):
+                deadlines.append(deadline)
+                return {'MPN-1': b2b.Quote('MPN-1', '2 ks', True, Decimal(2), 'exact', Decimal(100), Decimal(55))}
+            with patch.object(husky_sync.time, 'monotonic', side_effect=lambda: clock[0]), \
+                    patch.object(husky_sync.catalog, '_download', side_effect=download), \
+                    patch.object(husky_sync, 'fetch_quotes', side_effect=quotes):
+                if download_seconds == 100:
+                    result, _ = husky_sync.fetch({'config': cfg})
+                    self.assertEqual(result[0].quantity, Decimal(2))
+                    self.assertEqual(budgets, [b2b.MAX_COLLECTION_SECONDS, b2b.MAX_COLLECTION_SECONDS - 100])
+                    self.assertEqual(deadlines, [100 + b2b.MAX_COLLECTION_SECONDS])
+                else:
+                    with self.assertRaises(AvailabilityError) as caught:
+                        husky_sync.fetch({'config': cfg})
+                    self.assertEqual(caught.exception.code, 'husky_b2b_timeout')
+                    self.assertEqual(len(budgets), 1)
+                    self.assertEqual(deadlines, [])

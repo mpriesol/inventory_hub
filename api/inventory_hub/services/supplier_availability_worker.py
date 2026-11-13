@@ -64,7 +64,11 @@ async def cycle():
                 started = time.monotonic()
                 operation_log.emit("availability_pass_started")
                 try:
-                    timeout = 600 if plan["supplier"] == "husky" else 930 if (plan.get("source") or {}).get("mode") == "ariga-b2b" else 360
+                    if plan["supplier"] == "husky":
+                        from inventory_hub.adapters.husky_b2b import MAX_COLLECTION_SECONDS
+                        timeout = MAX_COLLECTION_SECONDS + 30
+                    else:
+                        timeout = 930 if (plan.get("source") or {}).get("mode") == "ariga-b2b" else 360
                     async with asyncio.timeout(timeout):
                         if plan["supplier"] == "sloger":
                             from inventory_hub.services.sloger_data import lookup_products

@@ -115,7 +115,11 @@ ASP.NET GridView pagination. Only login, search, tree selection and pagination
 fields are submitted. Quantity/cart/order buttons are never copied. Redirects
 are confined to login/home/catalog; POST redirects are not replayed. TLS is
 verified. Limits: one request per second, 2 MB per HTML page, 250 pages and a
-480-second collection deadline. No response HTML, cookie, token or submitted
+900-second collection deadline shared by both XML downloads and all B2B pages.
+The worker allows a further 30 seconds for network-thread cleanup; the shared
+lease is retained until that thread closes. Per-request connect/read timeouts
+remain at most 10/20 seconds and no request is retried automatically.
+No response HTML, cookie, token or submitted
 password is persisted or logged. A 429, challenge, expired session, changed table,
 repeated page/code or unexpected value stops the read with a fixed error code.
 
@@ -179,3 +183,11 @@ non-clickable leaf cell in each pager, allowing formatting wrappers without
 depending on their tag names. Each pager must independently identify exactly
 the requested page; missing, linked, conflicting or ambiguous markers still
 reject the entire candidate snapshot. Synthetic tests cover these cases.
+
+Live run #1242 then validated 172 pages (10,320 B2B rows) before the previous
+480-second collection deadline interrupted page 173. The bounded collection
+budget is now 900 seconds, with the same page, response-size and request-rate
+limits. Socket timeouts and deadline exhaustion report `husky_b2b_timeout`
+instead of a generic unavailable error. A failed/incomplete pass still retains
+the previous snapshot. Complete live acceptance is verified separately from
+the parser and timeout tests.
