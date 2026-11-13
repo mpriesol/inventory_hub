@@ -167,6 +167,7 @@ class HuskyTests(unittest.TestCase):
             if data:
                 self.assertEqual(data[b2b.SEARCH], '')
                 self.assertEqual(data[b2b.BRANCH], '')
+                self.assertEqual(data[b2b.LISTING_STATE], 'synthetic-listing-state')
                 self.assertFalse(any('Objednat' in key or 'Cart' in key or 'PouzeSkladem' in key for key in data))
         self.assertNotIn('synthetic-password', repr(quotes))
         documents[:] = [login(),page(),page(),page(next_page=2),page(current=2)]
@@ -174,7 +175,7 @@ class HuskyTests(unittest.TestCase):
             b2b.fetch_quotes('synthetic-user','synthetic-password')
         self.assertEqual(caught.exception.code,'husky_b2b_duplicate_identity')
 
-    def test_branch_context_survives_filter_reset_and_grid_postback(self):
+    def test_read_only_context_survives_filter_reset_and_grid_postback(self):
         for branch in ('', 'synthetic-branch-2'):
             posts = []
             def read(_session, url, data=None):
@@ -182,10 +183,14 @@ class HuskyTests(unittest.TestCase):
                     return b2b.document((login() if data is None else page(branch=branch)).encode())
                 if data is not None:
                     posts.append(deepcopy(data))
-                    # Missing dropdown data resets the selection/page during
-                    # ASP.NET post-data processing before the grid event.
-                    if data.get(b2b.BRANCH) == branch and data.get('__EVENTARGUMENT') == 'Page$2':
+                    # Require the observed read-only form contract, including
+                    # fresh page state from the preceding filter response.
+                    self.assertEqual(data[b2b.BRANCH], branch)
+                    if data.get('__EVENTARGUMENT') == 'Page$2':
+                        self.assertEqual(data[b2b.LISTING_STATE], 'synthetic-filtered-state')
                         return b2b.document(page(('MPN-2',), current=2, branch=branch).encode())
+                    self.assertEqual(data[b2b.LISTING_STATE], 'synthetic-listing-state')
+                    return b2b.document(page(next_page=2, branch=branch, page_state='synthetic-filtered-state').encode())
                 return b2b.document(page(next_page=2, branch=branch).encode())
             with patch.object(b2b.Session, 'read', read):
                 quotes = b2b.fetch_quotes('synthetic-user', 'synthetic-password')
@@ -193,6 +198,7 @@ class HuskyTests(unittest.TestCase):
             self.assertEqual([p[b2b.BRANCH] for p in posts], [branch, branch])
             self.assertEqual(posts[0][b2b.SEARCH_BUTTON], 'OK')
             self.assertEqual(posts[1]['__EVENTARGUMENT'], 'Page$2')
+            self.assertFalse(any('Objednat' in key or 'Cart' in key for post in posts for key in post))
 
     def test_missing_or_ambiguous_branch_selection_is_rejected(self):
         for content in (

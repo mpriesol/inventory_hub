@@ -93,11 +93,12 @@ verification is not a claim that a server-side B2B refresh has completed; inspec
 the current configuration and the latest completed run for that evidence.
 
 Read-only search and pager postbacks preserve the observed `cboPobocka` branch
-selection, including the empty **Vyberte pobočku** placeholder. Omitting a dropdown
-value can trigger ASP.NET selection-change handling and reset the grid to page
-one. The connector never chooses another branch, copies cart controls, or relaxes
+selection, including the empty **Vyberte pobočku** placeholder, and the listing's
+hidden `ctl00$ctl33` form field from the latest response. This is a narrow allowlist
+for the observed listing form, not permission to copy every control. The connector
+never chooses another branch, copies cart controls, persists form state, or relaxes
 the expected-page and duplicate-code checks. Synthetic transport tests exercise
-both empty and selected branch values across a two-page read.
+both empty and selected branches and updated page state across a two-page read.
 
 The catalog and public stock exports may be published at different times. A catalog
 code absent from stock remains in the catalog with an explicit unknown public
