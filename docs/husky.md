@@ -98,7 +98,7 @@ needed; database and files remain compatible. No deployed migrations are changed
 basis, public vs wholesale stock, safe form fields/pagination and secret redaction.
 `test_husky_db.py` uses an isolated localhost `*_catalog_test` database to check
 atomic catalog/observation writes, replay, revision fencing, coverage rejection,
-unchanged physical stock and missing-price semantics. Existing catalog and
+unchanged physical stock, new/updated/unchanged catalog counts and missing-price semantics. Existing catalog and
 availability tests cover the shared upsert and scheduling regressions.
 `frontend/tests/supplier-config-ui.cjs` covers the actual Husky form and source
 preservation; existing availability/catalog suites cover queue/schedule behavior.

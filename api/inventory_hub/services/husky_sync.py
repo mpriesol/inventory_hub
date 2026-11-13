@@ -169,7 +169,7 @@ async def store(db, plan, snapshot, row, run, observed, expires):
     for product, _ in snapshot.catalog_records:
         product.supplier_observation_expires_at = expires
     new, updated = await catalog.store_catalog_records(db, feed, run, snapshot.catalog_records, observed)
-    run.items_new, run.items_unchanged = new, len(snapshot.catalog_records) - new - updated
+    run.items_new, run.items_updated, run.items_unchanged = new, updated, len(snapshot.catalog_records) - new - updated
     feed.last_run_id, feed.last_run_at = run.id, observed
     feed.last_run_status, feed.last_run_items_count = FeedRunStatus.completed, snapshot.total
     feed.mapping_config = {**(feed.mapping_config or {}), "catalog_parser": "husky", "last_successful_run_id": run.id}

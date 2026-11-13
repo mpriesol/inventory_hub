@@ -89,12 +89,17 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)),1)
             self.assertEqual(await db.scalar(select(Product.sku)),'EXISTING-42')
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+            run=await db.get(SupplierFeedRun,plan['run_id'])
+            self.assertEqual((run.items_fetched,run.items_new,run.items_updated,run.items_unchanged),(1,1,0,0))
         with self.assertRaises(AvailabilityError):
             await self.accept(plan)
-        await self.accept(await self.plan())
+        repeat=await self.plan()
+        await self.accept(repeat)
         async with self.tx() as db:
             self.assertEqual(await db.scalar(select(SupplierProduct.id)),identity)
             self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierAvailabilityObservation)),1)
+            run=await db.get(SupplierFeedRun,repeat['run_id'])
+            self.assertEqual((run.items_fetched,run.items_new,run.items_updated,run.items_unchanged),(1,0,0,1))
 
     async def test_changed_config_and_schedule_reject_downloaded_snapshot(self):
         plan=await self.plan()

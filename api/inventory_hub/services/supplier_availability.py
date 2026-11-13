@@ -297,7 +297,9 @@ async def accept_run(db, plan, records, source_bytes=0):
             for item in records.issues[start:start + 500]]))
     completed = now()
     run.status, run.finished_at, run.items_fetched = FeedRunStatus.completed if records else FeedRunStatus.failed, completed, records.total
-    run.items_updated, run.source_size_bytes = len(records), source_bytes
+    if plan["supplier"] != "husky":
+        run.items_updated = len(records)
+    run.source_size_bytes = source_bytes
     run.items_error = len(records.issues)
     run.error_message = None if records else "supplier_availability_no_usable_rows"
     row.last_error = run.error_message
