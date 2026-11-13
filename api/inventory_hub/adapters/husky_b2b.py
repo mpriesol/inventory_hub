@@ -23,6 +23,7 @@ LISTING_STATE = "ctl00$ctl33"
 LOGIN_PREFIX = "ctl00$ctl00$MainContent$MainContent$loginPanel$lgLogin$"
 MAX_HTML_BYTES = 2_000_000
 MAX_PAGES = 250
+MAX_COLLECTION_SECONDS = 900
 
 
 class HuskyError(Exception):
@@ -233,9 +234,11 @@ class Session:
             except HuskyError as error:
                 code = error.code
                 raise
-            except requests.RequestException:
-                code = "husky_b2b_unavailable"
-                raise HuskyError("husky_b2b_unavailable") from None
+            except requests.RequestException as error:
+                # A socket timeout at the remaining collection deadline can
+                # also arrive wrapped in ConnectionError while streaming.
+                code = "husky_b2b_timeout" if isinstance(error, requests.Timeout) or time.monotonic() >= self.deadline else "husky_b2b_unavailable"
+                raise HuskyError(code) from None
             finally:
                 operation_log.emit("http_request", component="husky", supplier="husky", direction="outbound",
                     method=sent_method, target=target, status_code=status, phase=self.phase, page=self.page,
@@ -249,7 +252,7 @@ def fetch_quotes(username, password, *, deadline=None):
         raise HuskyError("husky_credentials_missing")
     with requests.Session() as client:
         client.headers.update({"User-Agent": "InventoryHub-Husky-ReadOnly/1.0", "Accept-Language": "sk-SK,sk;q=0.9"})
-        session = Session(client, deadline or time.monotonic() + 480)
+        session = Session(client, deadline if deadline is not None else time.monotonic() + MAX_COLLECTION_SECONDS)
         login = session.read(LOGIN)
         data = form_data(login, LOGIN)
         for field in ("UserName", "Password", "LoginButton"):

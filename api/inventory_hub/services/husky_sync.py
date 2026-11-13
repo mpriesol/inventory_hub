@@ -10,7 +10,7 @@ import time
 
 from sqlalchemy import select
 
-from inventory_hub.adapters.husky_b2b import fetch_quotes, HuskyError
+from inventory_hub.adapters.husky_b2b import fetch_quotes, HuskyError, MAX_COLLECTION_SECONDS
 from inventory_hub.adapters.husky_catalog import parse_catalog, read_stock
 from inventory_hub.db_models import Supplier
 from inventory_hub.services import catalog
@@ -117,7 +117,7 @@ def fetch(plan):
         with TemporaryDirectory(prefix="hub-husky-") as directory:
             paths = {}
             for key in ("products", "stock"):
-                remaining = 480 - (time.monotonic() - started)
+                remaining = MAX_COLLECTION_SECONDS - (time.monotonic() - started)
                 if remaining <= 0:
                     raise AvailabilityError("husky_b2b_timeout")
                 download_started = time.monotonic()
@@ -134,7 +134,7 @@ def fetch(plan):
             records = parse_catalog(paths["products"], "husky", cfg)
             stock = read_stock(paths["stock"])
             options = (cfg.get("adapter_settings") or {}).get("husky") or {}
-            quotes = fetch_quotes(options.get("username"), options.get("password"), deadline=started + 480) if options.get("b2b_enabled") else None
+            quotes = fetch_quotes(options.get("username"), options.get("password"), deadline=started + MAX_COLLECTION_SECONDS) if options.get("b2b_enabled") else None
             return combine(records, stock, quotes, cfg), sum(path.stat().st_size for path in paths.values())
     except HuskyError as error:
         raise AvailabilityError(error.code, 502) from None
