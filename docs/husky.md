@@ -170,3 +170,12 @@ pager/row/limit check; credentials and portal HTML are never logged. A fresh
 older snapshot no longer hides a more recent failed refresh on the settings card.
 This instrumentation preserves all completeness/identity guards and does not
 itself claim that a previously failing live read is fixed.
+
+The production diagnostic run #1241 on 13 November 2026 reached the catalog
+reset with HTTP 200 after a successful login, then failed on page 1 with
+`pager_marker_missing`. The previous parser required a direct pager table and
+direct text inside a `span`. Pager validation now reads the full text of the
+non-clickable leaf cell in each pager, allowing formatting wrappers without
+depending on their tag names. Each pager must independently identify exactly
+the requested page; missing, linked, conflicting or ambiguous markers still
+reject the entire candidate snapshot. Synthetic tests cover these cases.

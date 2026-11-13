@@ -259,6 +259,8 @@ async function input(element, value) {
   assert(husky('connector'));
   assert.equal(husky('password').type,'password');
   assert.equal(husky('password').value,'');
+  assert.equal(husky('price-basis').labels.length, 1, 'The price basis retains its accessible label beside the help button');
+  assert(!husky('price-basis').labels[0].querySelector('button'));
   await click(husky('setup'));
   await input(husky('username'),'synthetic-login');
   await input(husky('password'),'synthetic-password');

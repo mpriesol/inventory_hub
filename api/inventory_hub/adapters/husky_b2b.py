@@ -147,9 +147,16 @@ def parse_page(doc, page):
             raise HuskyError()
         next_pages.add(int(match[1]))
     if next_pages or page > 1:
-        current = table.xpath("./tr[td/table]//span/text()|./tbody/tr[td/table]//span/text()")
-        markers = set(value.strip() for value in current if value.strip())
-        if markers != {str(page)}:
+        # GridView may wrap the pager table/current number in formatting tags.
+        # Identify the non-clickable leaf cell, not a particular span/text node.
+        # Inspect each pager separately so a correct top pager cannot hide a
+        # missing or conflicting bottom marker. Never infer the page from links.
+        pagers = table.xpath("./tr[count(td)=1]/td[.//table]|./tbody/tr[count(td)=1]/td[.//table]")
+        current = [[text(cell) for cell in pager.xpath(
+            ".//td[not(.//td) and not(.//a) and not(.//input) and not(.//button) and not(.//select)]")
+            if text(cell)] for pager in pagers]
+        markers = {value for values in current for value in values}
+        if not current or any(values != [str(page)] for values in current):
             numeric = [int(value) for value in markers if value.isascii() and value.isdigit() and len(value) < 5]
             operation_log.emit("catalog_validation_failed", component="husky", supplier="husky", level="error",
                 phase="parse_page", page=page, error_code="husky_b2b_incomplete",

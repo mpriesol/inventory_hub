@@ -31,9 +31,9 @@ export function HuskyConnectorSettings({ config, updateConfig }: Props) {
       <label>{t('husky.username')}<input className="w-full p-2 border rounded" data-testid="husky-username" value={options.username || ''} maxLength={200} autoComplete="off" onChange={event => change({ username: event.target.value })} /></label>
       <label>{t('husky.password')}<input className="w-full p-2 border rounded" data-testid="husky-password" type="password" value={options.password || ''} maxLength={500} autoComplete="new-password" onChange={event => change({ password: event.target.value })} />{options.password_configured && <small>{t('husky.passwordSaved')}</small>}</label>
     </div>
-    <label className="block">{t('husky.priceBasis')}<HelpHint label={t('husky.priceBasis')}>{t('husky.priceHelp')}</HelpHint><select className="block p-2 border rounded" data-testid="husky-price-basis" value={options.purchase_price_basis || 'unknown'} onChange={event => change({ purchase_price_basis: event.target.value as 'unknown' | 'net' | 'gross' })}>
+    <div className="block"><label htmlFor="husky-price-basis">{t('husky.priceBasis')}</label><HelpHint label={t('husky.priceBasis')}>{t('husky.priceHelp')}</HelpHint><select id="husky-price-basis" className="block p-2 border rounded" data-testid="husky-price-basis" value={options.purchase_price_basis || 'unknown'} onChange={event => change({ purchase_price_basis: event.target.value as 'unknown' | 'net' | 'gross' })}>
       <option value="unknown">{t('husky.unknown')}</option><option value="net">{t('husky.net')}</option><option value="gross">{t('husky.gross')}</option>
-    </select></label>
+    </select></div>
     <Link className="underline" to="/settings/availability?supplier=husky">{t('husky.schedule')}</Link>
   </section>;
 }
