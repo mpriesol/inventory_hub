@@ -169,6 +169,30 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             status=await service.latest_run(db,self.supplier_id,'products')
             self.assertEqual(status['status'],'failed')
 
+    async def test_missing_stock_code_is_unknown_but_shrinking_stock_export_is_rejected(self):
+        self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')
+        self.stock.write_text('<SHOP>'+stock()+stock('EXTRA')+'</SHOP>')
+        await self.accept(await self.plan())
+        async with self.tx() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)),2)
+            source=await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku=='PUBLIC-2'))
+            self.assertIsNone(source.stock_qty)
+            value=await service.source_observation(db,'husky','PUBLIC-2')
+            self.assertIsNone(value['available'])
+            self.assertIsNone(value['quantity'])
+            result=await service.latest_run(db,self.supplier_id,'products')
+            self.assertEqual((result['report']['total'],result['report']['accepted'],result['report']['unknown']),(2,1,1))
+            self.assertIn('husky_public_stock_unmatched',result['report']['warnings'])
+        self.stock.write_text('<SHOP>'+stock()+'</SHOP>')
+        plan=await self.plan()
+        with self.assertRaises(AvailabilityError) as error:
+            await self.accept(plan)
+        self.assertEqual(error.exception.code,'husky_stock_incomplete')
+        async with self.tx() as db:
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)),2)
+            self.assertNotEqual((await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))).run_id,plan['run_id'])
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+
     async def test_b2b_price_and_unknown_replace_supplier_quote_without_physical_receipt(self):
         self.cfg['adapter_settings']['husky']['purchase_price_basis']='net'
         self.path.write_text(json.dumps(self.cfg))

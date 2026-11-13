@@ -85,6 +85,28 @@ class HuskyTests(unittest.TestCase):
         p = husky_sync.combine(self.records(), {'PUBLIC-1': True}, quotes, self.cfg).catalog_records[0][0]
         self.assertIsNone(p.supplier_available)  # public True cannot override unknown wholesale
 
+    def test_stock_export_lag_retains_catalog_code_with_unknown_availability(self):
+        snapshot=husky_sync.combine(self.records(item(),item('PUBLIC-2','MPN-2','4006381333931')),
+            {'PUBLIC-1':True},None,self.cfg)
+        product,raw=snapshot.catalog_records[1]
+        self.assertIsNone(product.supplier_available)
+        self.assertEqual(product.availability,'overíme')
+        self.assertIsNone(raw['public_stock'])
+        self.assertIsNone(snapshot[1].raw['stock'])
+        self.assertEqual(snapshot[1].quantity_kind,'unknown')
+        self.assertEqual((snapshot.report()['total'],snapshot.report()['accepted'],snapshot.report()['unknown']),(2,1,1))
+        self.assertIn('husky_public_stock_unmatched',snapshot.warnings)
+        self.assertEqual(snapshot.stock_count,1)
+
+    def test_b2b_evidence_remains_usable_for_code_missing_from_public_stock(self):
+        quotes={q.code:q for q in b2b.parse_page(b2b.document(page().encode()),1)[0]}
+        snapshot=husky_sync.combine(self.records(item(),item('PUBLIC-2','MPN-2','4006381333931')),
+            {'PUBLIC-2':True},quotes,self.cfg)
+        self.assertIsNone(snapshot.catalog_records[0][1]['public_stock'])
+        self.assertTrue(snapshot[0].available)
+        self.assertEqual((snapshot[0].quantity,snapshot[0].quantity_kind),(Decimal(11),'minimum'))
+        self.assertIsNone(snapshot[1].available)
+
     def test_duplicate_mpn_not_used_for_b2b_join(self):
         quotes = {q.code:q for q in b2b.parse_page(b2b.document(page().encode()), 1)[0]}
         with self.assertRaises(AvailabilityError) as caught:
