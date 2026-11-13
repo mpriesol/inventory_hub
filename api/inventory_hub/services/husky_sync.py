@@ -23,12 +23,13 @@ STOCK_URL = "https://www.huskysk.sk/data/partners/Katalog_export.xml"
 
 
 class Snapshot(ParsedAvailability):
-    def __init__(self, records, catalog_records, warnings=(), b2b_count=None):
+    def __init__(self, records, catalog_records, warnings=(), b2b_count=None, stock_count=None):
         issues = [{"row": i, "sku": row.sku, "stock": row.raw.get("stock"), "external_stock": None,
                    "code": "supplier_availability_unknown_quantity", "kind": "unknown"}
                   for i, row in enumerate(records, 1) if row.available is None]
         super().__init__(records, issues, total=len(records))
         self.b2b_count = b2b_count
+        self.stock_count = stock_count
         self.catalog_records = catalog_records
         self.warnings = list(warnings)
 
@@ -40,7 +41,7 @@ class Snapshot(ParsedAvailability):
 
 def combine(records, stock, quotes, cfg):
     """CODE joins the public stock; PRODUCTNO joins B2B. Never join by title."""
-    if any(product.code not in stock for product, _ in records):
+    if not any(product.code in stock for product, _ in records):
         raise AvailabilityError("husky_stock_incomplete", 422)
     options = (cfg.get("adapter_settings") or {}).get("husky") or {}
     basis = options.get("purchase_price_basis", "unknown")
@@ -50,12 +51,17 @@ def combine(records, stock, quotes, cfg):
     observations = []
     labels = (cfg.get("adapter_settings") or {}).get("availability") or {}
     warnings = ["husky_b2b_disabled"] if quotes is None else []
+    if any(product.code not in stock for product, _ in records):
+        warnings.append("husky_public_stock_unmatched")
     for product, raw in records:
-        raw["public_stock"] = stock[product.code]
+        public_stock = stock.get(product.code)
+        raw["public_stock"] = public_stock
+        if public_stock is None:
+            product.warnings.append("husky_public_stock_unmatched")
         product.warnings = [w for w in product.warnings if w != "supplier_stock_unverified"]
         if quotes is None:
-            available, quantity, kind = stock[product.code], None, "boolean"
-            stock_raw, source = str(available), "husky_public_stock"
+            available, quantity, kind = public_stock, None, "boolean" if public_stock is not None else "unknown"
+            stock_raw, source = str(available) if available is not None else None, "husky_public_stock"
             product.warnings.append("husky_public_stock_only")
         else:
             quote = quotes.get(product.manufacturer_code) if counts[product.manufacturer_code] == 1 else None
@@ -82,7 +88,7 @@ def combine(records, stock, quotes, cfg):
         product.supplier_stock_min = quantity if kind == "minimum" else None
         product.supplier_stock_raw, product.availability = stock_raw, label
         observations.append(Observation(product.code, available, quantity, kind,
-            {"source": source, "stock": stock_raw, "public_stock": stock[product.code], "availability": label}))
+            {"source": source, "stock": stock_raw, "public_stock": public_stock, "availability": label}))
         product.source_hash = hashlib.sha256(json.dumps({"source": raw, "prices": product.prices.model_dump(mode="json")},
             ensure_ascii=True, sort_keys=True).encode()).hexdigest()
     from inventory_hub.services.catalog_variants import normalize_singleton_groups
@@ -94,7 +100,7 @@ def combine(records, stock, quotes, cfg):
             warnings.append("husky_price_basis_unconfirmed")
         if any("husky_b2b_unmatched" in p.warnings for p, _ in records):
             warnings.append("husky_b2b_unmatched")
-    return Snapshot(observations, records, warnings, len(quotes) if quotes is not None else None)
+    return Snapshot(observations, records, warnings, len(quotes) if quotes is not None else None, len(stock))
 
 
 def fetch(plan):
@@ -165,7 +171,10 @@ async def store(db, plan, snapshot, row, run, observed, expires):
     previous_count = (previous.error_details or {}).get("husky_b2b_count") if previous else None
     if previous_count and snapshot.b2b_count is not None and snapshot.b2b_count * 100 < previous_count * row.min_coverage_percent:
         raise AvailabilityError("husky_b2b_incomplete", 422)
-    run.error_details = {**(run.error_details or {}), "husky_b2b_count": snapshot.b2b_count}
+    previous_stock_count = (previous.error_details or {}).get("husky_stock_count") if previous else None
+    if previous_stock_count and snapshot.stock_count is not None and snapshot.stock_count * 100 < previous_stock_count * row.min_coverage_percent:
+        raise AvailabilityError("husky_stock_incomplete", 422)
+    run.error_details = {**(run.error_details or {}), "husky_b2b_count": snapshot.b2b_count, "husky_stock_count": snapshot.stock_count}
     for product, _ in snapshot.catalog_records:
         product.supplier_observation_expires_at = expires
     new, updated = await catalog.store_catalog_records(db, feed, run, snapshot.catalog_records, observed)

@@ -62,6 +62,13 @@ on three Slovak stores is not claimed: these sources do not prove that store cou
 Expired observations project as unknown. Import lead times also check freshness,
 and Husky publication previews cannot outlive their fresh evidence.
 
+The catalog and public stock exports may be published at different times. A catalog
+code absent from stock remains in the catalog with an explicit unknown public
+observation and warning, never an inferred zero; a verified B2B quote still takes
+precedence. A stock export with no catalog matches is rejected. The first live
+read on 13 November 2026 exposed this case: 3,129 catalog rows, 9,940 stock rows,
+and one catalog code missing from stock. These are observations, not fixed counts.
+
 ## Boundaries, atomicity and recovery
 
 The scraper creates an ephemeral HTTP session, authenticates at the fixed HTTPS
@@ -84,7 +91,7 @@ Existing source identities and unrelated attributes are retained; no Hub cards,
 stock movements, receipts, FIFO costs or shop writes are created by the read.
 
 Husky uses the configured coverage threshold as an acceptance gate for catalog
-size and, after the first successful B2B read, B2B size. A smaller snapshot below
+size, public stock export size and, after the first successful B2B read, B2B size. A smaller snapshot below
 that threshold keeps the previous success, reports failure and retries only on
 the next scheduled/manual run. Default 100% is conservative; review legitimate
 supplier removals before lowering it. Explicit unknown B2B observations replace
@@ -107,7 +114,8 @@ atomic catalog/observation writes, replay, revision fencing, coverage rejection,
 unchanged physical stock, new/updated/unchanged catalog counts and missing-price semantics. Existing catalog and
 availability tests cover the shared upsert and scheduling regressions.
 The database tests also exercise rollback of a failed 034 installation and repeated
-deployment after an hourly Husky schedule is saved.
+deployment after an hourly Husky schedule is saved, partial catalog/stock joins
+and rejection of a shrinking stock export without losing the prior snapshot.
 `frontend/tests/supplier-config-ui.cjs` covers the actual Husky form and source
 preservation; existing availability/catalog suites cover queue/schedule behavior.
 These tests do not authenticate to production B2B. Deployment and an authenticated
