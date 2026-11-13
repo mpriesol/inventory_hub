@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { HelpHint } from '../../components/ui/HelpHint';
 import type { SupplierConfig } from '../../api/suppliers';
 
 type Props = { config: SupplierConfig; updateConfig: (update: (current: SupplierConfig) => SupplierConfig) => void };
@@ -23,19 +24,16 @@ export function HuskyConnectorSettings({ config, updateConfig }: Props) {
     });
   }
   return <section className="space-y-4 mt-6" data-testid="husky-connector">
-    <h3 className="text-lg font-semibold">{t('husky.title')}</h3>
-    <p>{t('husky.help')}</p>
-    <button type="button" className="underline" data-testid="husky-setup" onClick={setup}>{t('husky.setup')}</button>
-    <p className="text-sm">{t('husky.saveHelp')}</p>
+    <h3 className="text-lg font-semibold">{t('husky.title')}<HelpHint label={t('husky.title')}>{t('husky.help')}</HelpHint></h3>
+    <button type="button" className="underline" data-testid="husky-setup" onClick={setup}>{t('husky.setup')}</button><HelpHint label={t('husky.setup')}>{t('husky.saveHelp')}</HelpHint>
     <label className="flex items-center gap-2"><input type="checkbox" data-testid="husky-enabled" checked={options.b2b_enabled === true} onChange={event => change({ b2b_enabled: event.target.checked })} />{t('husky.enabled')}</label>
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <label>{t('husky.username')}<input className="w-full p-2 border rounded" data-testid="husky-username" value={options.username || ''} maxLength={200} autoComplete="off" onChange={event => change({ username: event.target.value })} /></label>
       <label>{t('husky.password')}<input className="w-full p-2 border rounded" data-testid="husky-password" type="password" value={options.password || ''} maxLength={500} autoComplete="new-password" onChange={event => change({ password: event.target.value })} />{options.password_configured && <small>{t('husky.passwordSaved')}</small>}</label>
     </div>
-    <label className="block">{t('husky.priceBasis')}<select className="block p-2 border rounded" data-testid="husky-price-basis" value={options.purchase_price_basis || 'unknown'} onChange={event => change({ purchase_price_basis: event.target.value as 'unknown' | 'net' | 'gross' })}>
+    <label className="block">{t('husky.priceBasis')}<HelpHint label={t('husky.priceBasis')}>{t('husky.priceHelp')}</HelpHint><select className="block p-2 border rounded" data-testid="husky-price-basis" value={options.purchase_price_basis || 'unknown'} onChange={event => change({ purchase_price_basis: event.target.value as 'unknown' | 'net' | 'gross' })}>
       <option value="unknown">{t('husky.unknown')}</option><option value="net">{t('husky.net')}</option><option value="gross">{t('husky.gross')}</option>
     </select></label>
-    <p>{t('husky.priceHelp')}</p>
     <Link className="underline" to="/settings/availability?supplier=husky">{t('husky.schedule')}</Link>
   </section>;
 }

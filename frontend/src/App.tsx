@@ -5,6 +5,7 @@ import { AtomerContentMigration } from './pages/AtomerContentMigration';
 import { SessionBootstrap } from './components/SessionBootstrap';
 import { RequireHubSession } from './components/RequireHubSession';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
+import { OperationLogsPage } from './pages/OperationLogsPage';
 import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
 import { ProductTracePage } from './pages/ProductTracePage';
@@ -87,6 +88,7 @@ const router = createBrowserRouter(createRoutesFromElements(
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/availability" element={<AvailabilitySyncPage />} />
+          <Route path="/settings/logs" element={<OperationLogsPage />} />
           <Route path="/settings/purchase-costs" element={<FifoCostSyncPage />} />
           <Route path="/settings/stock" element={<StockSettingsPage />} />
           <Route path="/settings/ai-content" element={<AiContentPage />} />

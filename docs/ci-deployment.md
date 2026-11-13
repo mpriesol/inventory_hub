@@ -30,7 +30,8 @@ warehouse database.
 
 Pip downloads are cached against `api/requirements.txt`. The frontend runs
 `npm ci`, `tsc --noEmit` through `npm run typecheck`, the Vite build and all
-33 current `frontend/tests/*.cjs` interaction suites explicitly listed in CI.
+`frontend/tests/*.cjs` interaction suites explicitly listed in CI, including the
+operational log filters and access checks.
 Type checking and jsdom checks cover different failures; neither verifies browser layout.
 The ordinary serial `unittest discover` command in [AGENTS.md](../AGENTS.md)
 remains useful for local diagnosis; disclose database skips in local results.
@@ -225,3 +226,8 @@ The release's API build/push step took 2:26, frontend build/push 0:34, and serve
 deployment 1:15. The original builds were sequential. Migration execution used
 nineteen container starts and took approximately 33 seconds. These are historical
 baseline values, not measurements of the current implementation.
+
+The generated production overlay bounds API stdout/stderr with Docker
+`json-file`, `max-size: 10m`, `max-file: 3`. This is applied by the ordinary API
+container recreation; the reference Compose mirrors it. Application diagnostic
+file rotation and its access boundaries are documented in [operation logs](operation-logs.md).

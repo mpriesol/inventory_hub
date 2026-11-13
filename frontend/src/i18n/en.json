@@ -3122,7 +3122,9 @@
     },
     "advancedSettings": "Advanced settings",
     "scopedPublication": "Availability → {{shop}} · {{brands}}. Verified: {{completed}}, needs review: {{uncertain}}, rejected: {{rejected}}.",
-    "dailyChangesOnly": "Scheduled feeds refresh at most once daily. Only changed availability is sent to a shop; the last confirmed state is tracked separately for each product and shop."
+    "dailyChangesOnly": "Scheduled feeds refresh at most once daily. Only changed availability is sent to a shop; the last confirmed state is tracked separately for each product and shop.",
+    "scheduleHelpLabel": "How refresh works",
+    "saveHelpLabel": "What will be saved"
   },
   "productPublication": {
     "intro": "Choose a saved product and fields. Review the proposed change first; the shop changes only after you confirm sending.",
@@ -5680,11 +5682,11 @@
     "prepareListing": "Prepare listing"
   },
   "husky": {
-    "publicNoQuantity": "B2B stock is unverified. Public availability is not used.",
+    "publicNoQuantity": "B2B stock has not been verified yet.",
     "stockUnknown": "Availability unknown",
     "stockExpired": "This observation is not current - refresh the source.",
     "title": "Husky catalog and B2B",
-    "help": "Products, specifications and images come primarily from XML. B2B adds wholesale stock and quotes. Public availability is not used as B2B stock. Own inventory and shops are unchanged.",
+    "help": "Load the catalog, supplier availability and purchase prices. Configure B2B access with your supplier credentials.",
     "setup": "Add official XML sources",
     "saveHelp": "Confirm using Save in supplier settings. Existing sources are preserved.",
     "enabled": "Also read Husky B2B",
@@ -5697,7 +5699,78 @@
     "gross": "Purchase price including VAT",
     "priceHelp": "Until the price basis is confirmed, the quote is retained only as source evidence and is not used as a purchase price.",
     "schedule": "Set interval and start synchronization",
-    "syncHelp": "Husky refreshes the full catalog, availability and wholesale quotes when B2B is enabled. Default: 24 hours; configurable from 1 to 168 hours. Without verified B2B stock, or with only one piece, availability requires verification.",
+    "syncHelp": "Loads the full Husky catalog and verifies B2B availability. The interval can be set from 1 to 168 hours.",
     "unknownRows": "Unknown B2B evidence is stored as unknown availability. It does not mean zero stock."
+  },
+  "operationLogs": {
+    "title": "Operation log",
+    "helpLabel": "About operation logs",
+    "help": "Records incoming Hub API requests, supplier refresh runs and Husky B2B communication. Other connectors will be added gradually. Passwords, tokens and request contents are excluded. The oldest events are overwritten when the size limit is reached.",
+    "all": "All",
+    "apply": "Apply filters",
+    "reset": "Clear filters",
+    "refresh": "Latest",
+    "older": "Older events",
+    "retention": "Automatic rotation · up to {{mb}} MB",
+    "loading": "Loading events…",
+    "empty": "No events match these filters.",
+    "viewRun": "View refresh log",
+    "run": "Run #{{id}}",
+    "page": "Page {{page}}",
+    "observedPage": "Returned page: {{page}}",
+    "rows": "Rows: {{count}}",
+    "request": "Request ID",
+    "fields": {
+      "component": "Component",
+      "supplier": "Supplier code",
+      "level": "Result",
+      "run_id": "Run ID",
+      "request_id": "Request ID",
+      "since": "From",
+      "until": "Until"
+    },
+    "level": {
+      "info": "OK / progress",
+      "warning": "Warning",
+      "error": "Error"
+    },
+    "component": {
+      "api": "Hub API",
+      "husky": "Husky",
+      "supplier_availability": "Supplier refresh"
+    },
+    "columns": {
+      "time": "Time",
+      "operation": "Operation",
+      "result": "Result",
+      "duration": "Duration",
+      "context": "Context"
+    },
+    "events": {
+      "http_request": "API request",
+      "availability_pass_started": "Refresh started",
+      "availability_pass_completed": "Processing completed",
+      "availability_pass_failed": "Refresh failed",
+      "feed_download_completed": "Feed downloaded",
+      "feed_download_failed": "Feed download failed",
+      "catalog_page_validated": "Page validated",
+      "catalog_validation_failed": "Catalog validation failed",
+      "catalog_parse_failed": "Page parsing failed"
+    },
+    "phases": {
+      "login_form": "Login form",
+      "login_submit": "Sign in",
+      "catalog_open": "Open catalog",
+      "catalog_reset": "Load full catalog",
+      "catalog_page": "Pagination",
+      "parse_page": "Validate page",
+      "feed_download": "Download feed"
+    },
+    "errors": {
+      "operation_log_cursor_expired": "These events have rotated out. Load the latest events.",
+      "operation_log_unavailable": "The log could not be read. Try refreshing.",
+      "operation_log_invalid_range": "Check the time range.",
+      "stock_settings_invalid_request": "Check the selected filters."
+    }
   }
 }

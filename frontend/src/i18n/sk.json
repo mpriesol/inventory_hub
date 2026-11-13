@@ -3122,7 +3122,9 @@
     },
     "advancedSettings": "Rozšírené nastavenia",
     "scopedPublication": "Dostupnosť → {{shop}} · {{brands}}. Overené: {{completed}}, na kontrolu: {{uncertain}}, odmietnuté: {{rejected}}.",
-    "dailyChangesOnly": "Automatické feedy sa načítavajú najviac raz denne. E-shopu sa odosielajú iba zmenené dostupnosti; posledný potvrdený stav sa sleduje samostatne pre každý produkt a e-shop."
+    "dailyChangesOnly": "Automatické feedy sa načítavajú najviac raz denne. E-shopu sa odosielajú iba zmenené dostupnosti; posledný potvrdený stav sa sleduje samostatne pre každý produkt a e-shop.",
+    "scheduleHelpLabel": "Ako funguje načítanie",
+    "saveHelpLabel": "Čo sa uloží"
   },
   "productPublication": {
     "intro": "Vyberte uložený produkt a polia. Najprv sa načíta a ukáže zmena; e-shop sa zmení až po potvrdení odoslania.",
@@ -5683,11 +5685,11 @@
     "prepareListing": "Pripraviť zalistovanie"
   },
   "husky": {
-    "publicNoQuantity": "B2B sklad nie je overený. Verejná dostupnosť sa nepoužíva.",
+    "publicNoQuantity": "B2B sklad nie je overený.",
     "stockUnknown": "Dostupnosť neznáma",
     "stockExpired": "Údaj nie je aktuálny - obnovte načítanie.",
     "title": "Husky: katalóg a B2B",
-    "help": "Produkty, parametre a obrázky sa načítajú primárne z XML. B2B doplní veľkoobchodný sklad a ceny. Verejná dostupnosť sa ako B2B zásoba nepoužíva. Vlastné zásoby ani e-shopy sa tým nemenia.",
+    "help": "Načítanie katalógu, dodávateľskej dostupnosti a nákupných cien. Prístup B2B nastavte prihlasovacími údajmi dodávateľa.",
     "setup": "Doplniť oficiálne XML zdroje",
     "saveHelp": "Zmeny potvrďte tlačidlom Uložiť v nastavení dodávateľa. Existujúce zdroje zostanú zachované.",
     "enabled": "Čítať aj Husky B2B",
@@ -5700,7 +5702,78 @@
     "gross": "Nákupná cena s DPH",
     "priceHelp": "Kým nepotvrdíte režim ceny, údaj sa uloží iba ako pôvodná ponuka dodávateľa. Ako nákupná cena sa nepoužije.",
     "schedule": "Nastaviť interval a spustiť synchronizáciu",
-    "syncHelp": "Husky obnovuje celý katalóg, dostupnosť a pri zapnutom B2B aj nákupné ponuky. Predvolený interval je 24 hodín; možno nastaviť 1 až 168 hodín. Bez overeného B2B skladu alebo pri jednom kuse zostáva dostupnosť overíme.",
+    "syncHelp": "Načíta celý katalóg Husky a overí dostupnosť v B2B. Interval možno nastaviť od 1 do 168 hodín.",
     "unknownRows": "Neznámy údaj B2B sa uloží ako neznáma dostupnosť. Neznamená nulový sklad."
+  },
+  "operationLogs": {
+    "title": "Prevádzkový log",
+    "helpLabel": "O prevádzkovom logu",
+    "help": "Zaznamenáva API požiadavky do Hubu, behy načítania dodávateľov a komunikáciu s Husky B2B. Ďalšie konektory sa budú pripájať postupne. Neukladá heslá, tokeny ani obsah požiadaviek. Staršie záznamy sa automaticky prepisujú po naplnení limitu.",
+    "all": "Všetky",
+    "apply": "Filtrovať",
+    "reset": "Zrušiť filtre",
+    "refresh": "Najnovšie",
+    "older": "Staršie záznamy",
+    "retention": "Automatická rotácia · najviac {{mb}} MB",
+    "loading": "Načítavam log…",
+    "empty": "Žiadne záznamy pre zvolené filtre.",
+    "viewRun": "Zobraziť log načítania",
+    "run": "Beh #{{id}}",
+    "page": "Stránka {{page}}",
+    "observedPage": "Vrátená stránka: {{page}}",
+    "rows": "Riadky: {{count}}",
+    "request": "ID požiadavky",
+    "fields": {
+      "component": "Oblasť",
+      "supplier": "Kód dodávateľa",
+      "level": "Výsledok",
+      "run_id": "ID behu",
+      "request_id": "ID požiadavky",
+      "since": "Od",
+      "until": "Do"
+    },
+    "level": {
+      "info": "OK / priebeh",
+      "warning": "Upozornenie",
+      "error": "Chyba"
+    },
+    "component": {
+      "api": "API Hubu",
+      "husky": "Husky",
+      "supplier_availability": "Načítanie dodávateľov"
+    },
+    "columns": {
+      "time": "Čas",
+      "operation": "Operácia",
+      "result": "Výsledok",
+      "duration": "Trvanie",
+      "context": "Súvislosti"
+    },
+    "events": {
+      "http_request": "API požiadavka",
+      "availability_pass_started": "Načítanie spustené",
+      "availability_pass_completed": "Spracovanie dokončené",
+      "availability_pass_failed": "Načítanie zlyhalo",
+      "feed_download_completed": "Feed stiahnutý",
+      "feed_download_failed": "Stiahnutie feedu zlyhalo",
+      "catalog_page_validated": "Stránka overená",
+      "catalog_validation_failed": "Kontrola katalógu zlyhala",
+      "catalog_parse_failed": "Spracovanie stránky zlyhalo"
+    },
+    "phases": {
+      "login_form": "Prihlasovací formulár",
+      "login_submit": "Prihlásenie",
+      "catalog_open": "Otvorenie katalógu",
+      "catalog_reset": "Načítanie celého katalógu",
+      "catalog_page": "Stránkovanie",
+      "parse_page": "Kontrola stránky",
+      "feed_download": "Stiahnutie feedu"
+    },
+    "errors": {
+      "operation_log_cursor_expired": "Tieto záznamy už boli rotované. Načítajte najnovšie záznamy.",
+      "operation_log_unavailable": "Log sa nedá prečítať. Skúste ho obnoviť.",
+      "operation_log_invalid_range": "Skontrolujte časový rozsah.",
+      "stock_settings_invalid_request": "Skontrolujte zadané filtre."
+    }
   }
 }

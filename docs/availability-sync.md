@@ -26,6 +26,20 @@ alebo politika vyvolá nové overenie; dočasná chyba pred zápisom sa opakuje
 s odstupom. Neistý zápis zostáva na osobitné vyriešenie. Podrobnosti a ohraničené
 ručné preoverenie sú v [dodávateľských dostupnostiach](supplier-availability.md#daily-refresh-and-delivery-of-changed-labels-28-october-2026).
 
+## Stav a diagnostika
+
+Najnovšie zlyhanie má na karte prednosť pred označením čerstvosti staršej snímky.
+Dátum posledného úspešného načítania zostáva viditeľný samostatne. Ak posledný
+prijatý výsledok obsahuje chybné alebo neznáme položky, karta ukazuje upozornenie.
+API čerstvosť naďalej opisuje vek poslednej snímky; nepredstavuje úspech posledného
+pokusu ani dostupnosť každého produktu. **Zobraziť log načítania** otvorí
+[prevádzkový log](operation-logs.md) s dodávateľom a ID behu. Záznamy vznikajú
+od nasadenia logovania; staré chyby sa spätne nedajú zrekonštruovať.
+
+Pomocné vysvetlenia na karte dodávateľa a v Husky nastaveniach sú pod otáznikom
+(ukázanie myšou, klávesnicový fokus alebo kliknutie; Escape zatvára).
+Chyby, upozornenia, stav a neuložené zmeny zostávajú viditeľné.
+
 ## Husky
 
 [Husky](husky.md) používa zdroj **Produkty** na spoločné obnovenie katalógu, verejnej dostupnosti a zapnutého B2B. Predvolený interval je 24 hodín, nastaviteľný od 1 hodiny do 7 dní. Pri neúplnom čítaní sa neprijme žiadna časť novej snímky. Prah pokrytia je pre Husky blokujúci. B2B prihlasovanie a režim nákupnej ceny sa nastavujú v konfigurácii dodávateľa. Verejné skladom bez počtu kusov ani jeden B2B kus nepotvrdzujú rýchlu dodaciu lehotu.

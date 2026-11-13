@@ -160,3 +160,13 @@ as wholesale availability, while actual B2B quantities remain usable.
 preservation; existing availability/catalog suites cover queue/schedule behavior.
 These tests do not authenticate to production B2B. Deployment and an authenticated
 live B2B pass must be reported separately from parser/test success.
+
+## Operational diagnostics
+
+The latest run links to the [unified operation log](operation-logs.md). Login,
+listing reset, each page request and parser validation share the feed run ID.
+`husky_b2b_incomplete` now has a separate safe diagnostic event describing its
+pager/row/limit check; credentials and portal HTML are never logged. A fresh
+older snapshot no longer hides a more recent failed refresh on the settings card.
+This instrumentation preserves all completeness/identity guards and does not
+itself claim that a previously failing live read is fixed.

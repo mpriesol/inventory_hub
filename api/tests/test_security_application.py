@@ -1,5 +1,6 @@
 """Verify the deployed application wiring, without workers or external I/O."""
 import importlib.util
+import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from pydantic import SecretStr
 
-from inventory_hub import database, logging_setup
+from inventory_hub import database, logging_setup, operation_log
 from inventory_hub.routers import auth
 from inventory_hub.settings import settings
 
@@ -26,6 +27,10 @@ class ApplicationSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(settings, "AI_CONTENT_ACCESS_TOKEN", SecretStr(TOKEN)))
         self.enterContext(patch.object(settings, "USE_POSTGRES", True))
         self.enterContext(patch.object(logging_setup, "setup_logging"))
+        # As with technical logging, capture diagnostics without file I/O. The
+        # real event writer/rotation is exercised by test_operation_logs. Keep
+        # the empty-directory assertion for every business handler unchanged.
+        self.events = self.enterContext(patch.object(operation_log, "emit"))
         self.database_init = self.enterContext(patch.object(database, "init_db", AsyncMock(
             side_effect=AssertionError("Security requests must not initialize a database"))))
 
@@ -42,6 +47,9 @@ class ApplicationSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.database_init.assert_not_awaited()
+        emitted = json.dumps([(call.args, call.kwargs) for call in self.events.call_args_list])
+        for secret in (TOKEN, "confidential-invalid-body", "private-input", "synthetic-private-password", "private-host"):
+            self.assertNotIn(secret, emitted, "Request metadata must exclude credentials, payloads and private paths")
 
     async def test_every_registered_private_endpoint_rejects_anonymous_requests_before_its_handler(self):
         attempted = set()

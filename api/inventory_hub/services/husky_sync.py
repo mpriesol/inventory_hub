@@ -16,6 +16,7 @@ from inventory_hub.db_models import Supplier
 from inventory_hub.services import catalog
 from inventory_hub.services.supplier_availability_source import AvailabilityError, Observation, ParsedAvailability
 from inventory_hub.supplier_availability_models import SupplierAvailabilitySettings
+from inventory_hub import operation_log
 
 
 PRODUCTS_URL = "https://www.huskysk.sk/feed/partners.xml"
@@ -119,7 +120,17 @@ def fetch(plan):
                 remaining = 480 - (time.monotonic() - started)
                 if remaining <= 0:
                     raise AvailabilityError("husky_b2b_timeout")
-                paths[key] = catalog._download("husky", sources[key], key, directory=Path(directory), max_elapsed_seconds=remaining)
+                download_started = time.monotonic()
+                try:
+                    paths[key] = catalog._download("husky", sources[key], key, directory=Path(directory), max_elapsed_seconds=remaining)
+                except Exception:
+                    operation_log.emit("feed_download_failed", component="husky", supplier="husky", level="error",
+                        direction="outbound", target="husky_" + key + "_feed", phase="feed_download",
+                        duration_ms=round((time.monotonic() - download_started) * 1000))
+                    raise
+                operation_log.emit("feed_download_completed", component="husky", supplier="husky",
+                    direction="outbound", target="husky_" + key + "_feed", phase="feed_download",
+                    duration_ms=round((time.monotonic() - download_started) * 1000))
             records = parse_catalog(paths["products"], "husky", cfg)
             stock = read_stock(paths["stock"])
             options = (cfg.get("adapter_settings") or {}).get("husky") or {}

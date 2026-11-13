@@ -24,6 +24,11 @@ services:
       - hubnet
 
   api:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: ghcr.io/mpriesol/inventory-hub-api:main
     environment:
       INVENTORY_DATA_ROOT: /data/inventory-data
