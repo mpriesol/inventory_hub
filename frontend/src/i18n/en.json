@@ -687,8 +687,8 @@
       "missing_purchase_price": "The feed does not provide an acquisition price.",
       "shop_code_conflict": "This shop code already belongs to a product, variant or parent. Review the existing listing before continuing.",
       "shop_identity_review_required": "An existing shop product matches this EAN. Review and confirm its link first.",
-      "husky_b2b_disabled": "B2B is disabled. Public catalog and availability were refreshed; wholesale prices are missing.",
-      "husky_public_stock_only": "Public availability has no piece count. Wholesale availability needs verification.",
+      "husky_b2b_disabled": "B2B is disabled. XML product data was loaded; B2B stock and purchase prices are unverified.",
+      "husky_public_stock_only": "Public XML availability is not B2B stock. Read wholesale stock from B2B.",
       "husky_public_stock_unmatched": "Public availability is unknown for some codes because they are absent from the stock XML.",
       "husky_price_basis_unconfirmed": "Confirm whether the B2B purchase price includes VAT in Husky settings.",
       "husky_b2b_unmatched": "Some products lack a unique PRODUCTNO match in B2B. Their wholesale availability and purchase prices remain unknown.",
@@ -2919,8 +2919,8 @@
       "stock_projection_item_not_stocked": "A service has no physical inventory to publish.",
       "stock_sync_order_notifications_pending": "Received order notifications await fetching or review. Complete their processing in the order inbox first.",
       "stock_sync_order_webhook_not_ready": "Order notification registration is not currently verified. Check the connection and restore registration in the order inbox.",
-      "husky_b2b_disabled": "B2B is disabled. Public catalog and availability were refreshed; wholesale prices are missing.",
-      "husky_public_stock_only": "Public availability has no piece count. Wholesale availability needs verification.",
+      "husky_b2b_disabled": "B2B is disabled. XML product data was loaded; B2B stock and purchase prices are unverified.",
+      "husky_public_stock_only": "Public XML availability is not B2B stock. Read wholesale stock from B2B.",
       "husky_public_stock_unmatched": "Public availability is unknown for some codes because they are absent from the stock XML.",
       "husky_price_basis_unconfirmed": "Confirm whether the B2B purchase price includes VAT in Husky settings.",
       "husky_b2b_unmatched": "Some products lack a unique PRODUCTNO match in B2B. Their wholesale availability and purchase prices remain unknown.",
@@ -5680,8 +5680,11 @@
     "prepareListing": "Prepare listing"
   },
   "husky": {
+    "publicNoQuantity": "B2B stock is unverified. Public availability is not used.",
+    "stockUnknown": "Availability unknown",
+    "stockExpired": "This observation is not current - refresh the source.",
     "title": "Husky catalog and B2B",
-    "help": "XML reads products, specifications, images and public availability. B2B adds wholesale stock and quotes. Own inventory and shops are unchanged.",
+    "help": "Products, specifications and images come primarily from XML. B2B adds wholesale stock and quotes. Public availability is not used as B2B stock. Own inventory and shops are unchanged.",
     "setup": "Add official XML sources",
     "saveHelp": "Confirm using Save in supplier settings. Existing sources are preserved.",
     "enabled": "Also read Husky B2B",
@@ -5694,7 +5697,7 @@
     "gross": "Purchase price including VAT",
     "priceHelp": "Until the price basis is confirmed, the quote is retained only as source evidence and is not used as a purchase price.",
     "schedule": "Set interval and start synchronization",
-    "syncHelp": "Husky refreshes the full catalog, availability and wholesale quotes when B2B is enabled. Default: 24 hours; configurable from 1 to 168 hours. Public in-stock without a count and a single piece require verification.",
+    "syncHelp": "Husky refreshes the full catalog, availability and wholesale quotes when B2B is enabled. Default: 24 hours; configurable from 1 to 168 hours. Without verified B2B stock, or with only one piece, availability requires verification.",
     "unknownRows": "Unknown B2B evidence is stored as unknown availability. It does not mean zero stock."
   }
 }

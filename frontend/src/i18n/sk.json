@@ -687,8 +687,8 @@
       "missing_purchase_price": "Nákupná cena vo feede nie je uvedená.",
       "shop_code_conflict": "Tento kód v e-shope už patrí produktu, variantu alebo rodičovi. Najprv skontrolujte existujúce prepojenie.",
       "shop_identity_review_required": "EAN zodpovedá existujúcemu produktu v e-shope. Najprv skontrolujte a potvrďte prepojenie.",
-      "husky_b2b_disabled": "B2B nie je zapnuté. Aktualizovaný je verejný katalóg a dostupnosť; nákupné ceny chýbajú.",
-      "husky_public_stock_only": "Verejná dostupnosť neuvádza počet kusov. Veľkoobchodnú dostupnosť treba overiť.",
+      "husky_b2b_disabled": "B2B nie je zapnuté. Produktové údaje z XML sú načítané; B2B sklad a nákupné ceny nie sú overené.",
+      "husky_public_stock_only": "Verejná dostupnosť z XML nie je B2B zásoba. Veľkoobchodný sklad treba načítať z B2B.",
       "husky_public_stock_unmatched": "Verejná dostupnosť niektorých kódov je neznáma, pretože chýbajú v skladovom XML.",
       "husky_price_basis_unconfirmed": "Nie je potvrdené, či je nákupná cena B2B bez DPH alebo s DPH. Nastavte to u dodávateľa Husky.",
       "husky_b2b_unmatched": "Niektoré produkty nemajú jednoznačnú zhodu PRODUCTNO v B2B. Ich veľkoobchodná dostupnosť a nákupná cena zostali neznáme.",
@@ -2919,8 +2919,8 @@
       "stock_projection_item_not_stocked": "Služba nemá fyzické skladové množstvo na odoslanie.",
       "stock_sync_order_notifications_pending": "Prijaté objednávkové oznámenia ešte čakajú na načítanie alebo kontrolu. Najprv dokončite ich spracovanie v prehľade objednávok.",
       "stock_sync_order_webhook_not_ready": "Registrácia objednávkových oznámení nie je aktuálne overená. Skontrolujte pripojenie a obnovte registráciu v prehľade objednávok.",
-      "husky_b2b_disabled": "B2B nie je zapnuté. Aktualizovaný je verejný katalóg a dostupnosť; nákupné ceny chýbajú.",
-      "husky_public_stock_only": "Verejná dostupnosť neuvádza počet kusov. Veľkoobchodnú dostupnosť treba overiť.",
+      "husky_b2b_disabled": "B2B nie je zapnuté. Produktové údaje z XML sú načítané; B2B sklad a nákupné ceny nie sú overené.",
+      "husky_public_stock_only": "Verejná dostupnosť z XML nie je B2B zásoba. Veľkoobchodný sklad treba načítať z B2B.",
       "husky_public_stock_unmatched": "Verejná dostupnosť niektorých kódov je neznáma, pretože chýbajú v skladovom XML.",
       "husky_price_basis_unconfirmed": "Nie je potvrdené, či je nákupná cena B2B bez DPH alebo s DPH. Nastavte to u dodávateľa Husky.",
       "husky_b2b_unmatched": "Niektoré produkty nemajú jednoznačnú zhodu PRODUCTNO v B2B. Ich veľkoobchodná dostupnosť a nákupná cena zostali neznáme.",
@@ -5683,8 +5683,11 @@
     "prepareListing": "Pripraviť zalistovanie"
   },
   "husky": {
+    "publicNoQuantity": "B2B sklad nie je overený. Verejná dostupnosť sa nepoužíva.",
+    "stockUnknown": "Dostupnosť neznáma",
+    "stockExpired": "Údaj nie je aktuálny - obnovte načítanie.",
     "title": "Husky: katalóg a B2B",
-    "help": "XML načíta produkty, parametre, obrázky a verejnú dostupnosť. B2B doplní veľkoobchodný sklad a ceny. Vlastné zásoby ani e-shopy sa tým nemenia.",
+    "help": "Produkty, parametre a obrázky sa načítajú primárne z XML. B2B doplní veľkoobchodný sklad a ceny. Verejná dostupnosť sa ako B2B zásoba nepoužíva. Vlastné zásoby ani e-shopy sa tým nemenia.",
     "setup": "Doplniť oficiálne XML zdroje",
     "saveHelp": "Zmeny potvrďte tlačidlom Uložiť v nastavení dodávateľa. Existujúce zdroje zostanú zachované.",
     "enabled": "Čítať aj Husky B2B",
@@ -5697,7 +5700,7 @@
     "gross": "Nákupná cena s DPH",
     "priceHelp": "Kým nepotvrdíte režim ceny, údaj sa uloží iba ako pôvodná ponuka dodávateľa. Ako nákupná cena sa nepoužije.",
     "schedule": "Nastaviť interval a spustiť synchronizáciu",
-    "syncHelp": "Husky obnovuje celý katalóg, dostupnosť a pri zapnutom B2B aj nákupné ponuky. Predvolený interval je 24 hodín; možno nastaviť 1 až 168 hodín. Verejné skladom bez počtu kusov a jeden kus znamenajú overíme.",
+    "syncHelp": "Husky obnovuje celý katalóg, dostupnosť a pri zapnutom B2B aj nákupné ponuky. Predvolený interval je 24 hodín; možno nastaviť 1 až 168 hodín. Bez overeného B2B skladu alebo pri jednom kuse zostáva dostupnosť overíme.",
     "unknownRows": "Neznámy údaj B2B sa uloží ako neznáma dostupnosť. Neznamená nulový sklad."
   }
 }

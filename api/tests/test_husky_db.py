@@ -17,6 +17,7 @@ from inventory_hub.supplier_availability_delivery_once_migrate import apply_once
 from inventory_hub.adapters import husky_b2b
 from inventory_hub.db_models import Product, Supplier, SupplierProduct, SupplierFeedRun, FeedRunStatus
 from inventory_hub.services import catalog, husky_sync, supplier_availability as service
+from inventory_hub.services.supplier_availability_publication import _effective_available
 from inventory_hub.services.supplier_availability_source import AvailabilityError
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
 from inventory_hub.supplier_availability_types import SupplierAvailabilityInput, SupplierAvailabilityRunInput
@@ -84,8 +85,9 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('<CODE>PUBLIC-1</CODE>',detail['source_xml'])
             self.assertEqual(detail['product'].availability,'overíme')
             obs=await db.scalar(select(SupplierAvailabilityObservation))
-            self.assertTrue(obs.available)
+            self.assertIsNone(obs.available)
             self.assertIsNone(obs.quantity)
+            self.assertTrue(obs.raw['public_stock'])
             settings=await db.get(SupplierAvailabilitySettings,self.supplier_id)
             self.assertEqual((settings.interval_seconds,settings.last_item_count),(86400,1))
             self.assertIsNotNone(settings.last_success_at)
@@ -181,7 +183,7 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(value['available'])
             self.assertIsNone(value['quantity'])
             result=await service.latest_run(db,self.supplier_id,'products')
-            self.assertEqual((result['report']['total'],result['report']['accepted'],result['report']['unknown']),(2,1,1))
+            self.assertEqual((result['report']['total'],result['report']['accepted'],result['report']['unknown']),(2,0,2))
             self.assertIn('husky_public_stock_unmatched',result['report']['warnings'])
         self.stock.write_text('<SHOP>'+stock()+'</SHOP>')
         plan=await self.plan()
@@ -219,3 +221,30 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(value['available'])
             self.assertEqual(value['label'],'overíme')
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+
+    async def test_legacy_public_boolean_cannot_drive_publication_or_live_catalog_reads(self):
+        await self.accept(await self.plan())
+        async with self.tx() as db:
+            source=await db.scalar(select(SupplierProduct))
+            observation=await db.scalar(select(SupplierAvailabilityObservation))
+            for flag in (True,False):
+                data=deepcopy(source.attributes)
+                data['catalog'].update(supplier_available=flag,supplier_stock_raw=str(flag))
+                source.attributes=data
+                observation.available,observation.quantity_kind=flag,'boolean'
+                await db.flush()
+                detail=await catalog.catalog_detail(db,'husky',source.id)
+                self.assertIsNone(detail['product'].supplier_available)
+                self.assertIsNone((await service.source_observation(db,'husky','PUBLIC-1'))['available'])
+                value=await db.scalar(select(_effective_available(SupplierAvailabilityObservation,SupplierAvailabilitySettings))
+                    .select_from(SupplierAvailabilityObservation)
+                    .join(SupplierAvailabilitySettings,SupplierAvailabilitySettings.supplier_id==SupplierAvailabilityObservation.supplier_id))
+                self.assertIsNone(value)
+                self.assertIs(source.attributes['catalog']['supplier_available'],flag)
+            # The same query still accepts actual wholesale evidence.
+            observation.raw={'source':'husky_b2b','stock':'4 ks'}
+            observation.available,observation.quantity,observation.quantity_kind=True,4,'exact'
+            await db.flush()
+            self.assertTrue(await db.scalar(select(_effective_available(SupplierAvailabilityObservation,SupplierAvailabilitySettings))
+                .select_from(SupplierAvailabilityObservation)
+                .join(SupplierAvailabilitySettings,SupplierAvailabilitySettings.supplier_id==SupplierAvailabilityObservation.supplier_id)))

@@ -4,13 +4,14 @@ from decimal import Decimal
 import requests
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from husky_fixtures import item, stock, login, page
 from inventory_hub.adapters import husky_catalog as parser, husky_b2b as b2b
 from inventory_hub.config_secrets import public_config, config_patch
-from inventory_hub.services import husky_sync, supplier_availability as availability
+from inventory_hub.services import catalog, husky_sync, supplier_availability as availability
 from inventory_hub.services.supplier_availability_source import AvailabilityError
 from inventory_hub.services.catalog_merchandising import apply_availability
 
@@ -60,13 +61,42 @@ class HuskyTests(unittest.TestCase):
             parser.parse_catalog(dtd, 'husky', self.cfg)
 
     def test_public_boolean_never_manufactures_count_or_purchase_price(self):
-        snapshot = husky_sync.combine(self.records(), {'PUBLIC-1': True}, None, self.cfg)
-        p = snapshot.catalog_records[0][0]
-        self.assertEqual((p.supplier_stock, p.supplier_stock_min, p.availability, p.prices.purchase_net), (None, None, 'overíme', None))
-        self.assertEqual((snapshot[0].available, snapshot[0].quantity_kind), (True, 'boolean'))
-        self.assertIsNone(p.group_code)  # singleton family becomes a fixed attribute
+        for flag in (True, False):
+            snapshot = husky_sync.combine(self.records(), {'PUBLIC-1': flag}, None, self.cfg)
+            p, raw = snapshot.catalog_records[0]
+            self.assertEqual((p.supplier_stock, p.supplier_stock_min, p.availability, p.prices.purchase_net), (None, None, 'overíme', None))
+            self.assertIsNone(p.supplier_available)
+            self.assertIsNone(p.supplier_stock_raw)
+            self.assertEqual((snapshot[0].available, snapshot[0].quantity_kind), (None, 'unknown'))
+            self.assertIs(raw['public_stock'], flag)
+            self.assertIs(snapshot[0].raw['public_stock'], flag)
+            self.assertIsNone(p.group_code)  # singleton family becomes a fixed attribute
         with self.assertRaises(AvailabilityError):
             husky_sync.combine(self.records(), {}, None, self.cfg)
+
+    def test_legacy_public_flags_remain_evidence_but_cannot_drive_b2b_stock_or_import(self):
+        at = datetime.now(timezone.utc)
+        for flag in (True, False):
+            product = self.records()[0][0]
+            product.warnings = ['husky_public_stock_only']
+            product.supplier_available = flag
+            product.supplier_stock_raw = str(flag)
+            product.supplier_observation_expires_at = at + timedelta(hours=1)
+            stored = product.model_dump(mode='json')
+            row = SimpleNamespace(id=123, attributes={'catalog': stored})
+            displayed = catalog.public_product(row, display=True)
+            self.assertIsNone(displayed.supplier_available)
+            self.assertIs(stored['supplier_available'], flag)
+            self.assertEqual(displayed.supplier_stock_raw, str(flag))
+            observation = SimpleNamespace(available=flag, quantity=None, quantity_kind='boolean',
+                observed_at=at, expires_at=at+timedelta(hours=1), raw={'source':'husky_public_stock'})
+            projected = availability.project_observation(observation, 'do 2-4 dní', 'husky', at)
+            self.assertEqual((projected['available'],projected['quantity'],projected['quantity_kind'],projected['availability_state']),
+                (None,None,'unknown','unknown'))
+            payload = {}
+            apply_availability(payload, [product], {'orderable':'do 2-4 dní','unavailable':'nedostupné','unknown':'overíme'})
+            self.assertEqual(payload['availability'], 'overíme')
+            self.assertTrue(payload['can_add_to_basket_yn'])
 
     def test_b2b_reg_number_join_lower_bound_price_basis_and_unknown(self):
         quotes = {q.code:q for q in b2b.parse_page(b2b.document(page().encode()), 1)[0]}
@@ -94,7 +124,7 @@ class HuskyTests(unittest.TestCase):
         self.assertIsNone(raw['public_stock'])
         self.assertIsNone(snapshot[1].raw['stock'])
         self.assertEqual(snapshot[1].quantity_kind,'unknown')
-        self.assertEqual((snapshot.report()['total'],snapshot.report()['accepted'],snapshot.report()['unknown']),(2,1,1))
+        self.assertEqual((snapshot.report()['total'],snapshot.report()['accepted'],snapshot.report()['unknown']),(2,0,2))
         self.assertIn('husky_public_stock_unmatched',snapshot.warnings)
         self.assertEqual(snapshot.stock_count,1)
 

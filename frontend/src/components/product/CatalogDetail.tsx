@@ -4,6 +4,7 @@ import { CatalogDetail as Detail, CatalogProduct, catalogRequest, catalogImageUr
 import { Modal } from '../ui/Modal';
 import { ProductThumb } from './ProductDisplay';
 import { Button } from '../ui/Button.new';
+import { CatalogStock } from './CatalogStock';
 
 export function CatalogDetail({ supplier, product, shop, onClose, onToggle, selected }: {
   supplier: string; product: CatalogProduct; shop: string; onClose: () => void; onToggle: (ids: number[]) => void; selected: Set<number>;
@@ -30,7 +31,7 @@ export function CatalogDetail({ supplier, product, shop, onClose, onToggle, sele
         <p>{t('catalog.supplierCode')}: <code>{p.code || '—'}</code></p>
         {p.group_code && <p className="catalog-muted">{t('catalog.groupCode')}: <code>{p.group_code}</code></p>}
         <p className="catalog-muted">{p.category || t('catalog.noCategory')}</p><p>EAN: {p.eans.join(', ') || '—'}</p>
-        <p>{t('catalog.supplierStock')}: {p.supplier_stock_raw ?? '—'} · {p.availability || '—'}</p>
+        <p>{t('catalog.supplierStock')}: <CatalogStock product={p} /></p>
         {p.supplier_stock_external_raw && <p>{t('catalog.externalAvailability')}: {p.supplier_stock_external_raw}</p>}
         {p.url && <a href={p.url} target="_blank" rel="noreferrer">{t('catalog.supplierLink')} ↗</a>}
         {p.listed && p.shop_url && <p><a href={p.shop_url} target="_blank" rel="noopener noreferrer">{t('catalog.openShop')} ↗</a></p>}

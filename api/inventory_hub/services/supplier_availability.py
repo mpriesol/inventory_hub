@@ -339,13 +339,15 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
         # Shortening TTL takes effect immediately; extending it never revives expired facts.
         expires = min(expires, observation.observed_at + timedelta(seconds=freshness_seconds))
     fresh = bool(observation and observation.observed_at <= at < expires)
-    available = observation.available if fresh else None
+    wholesale_evidence = not (supplier == "husky" and observation and
+        (observation.raw or {}).get("source") == "husky_public_stock")
+    available = observation.available if fresh and wholesale_evidence else None
     if supplier == "husky" and (not observation or observation.quantity is None or observation.quantity < 2):
         label = "overíme"
     return {"available": available, "fresh": fresh, "label": label if available is True else "overíme",
         "availability_state": "available" if available is True else "unavailable" if available is False else "unknown",
-        "source": supplier, "quantity": str(observation.quantity) if fresh and observation.quantity is not None else None,
-        "quantity_kind": observation.quantity_kind if fresh else "unknown",
+        "source": supplier, "quantity": str(observation.quantity) if fresh and wholesale_evidence and observation.quantity is not None else None,
+        "quantity_kind": observation.quantity_kind if fresh and wholesale_evidence else "unknown",
         "observed_at": observation.observed_at.isoformat() if observation else None,
         "expires_at": expires.isoformat() if expires else None, "orderable": True,
         "status": "fresh" if fresh else "stale" if observation else "missing_observation",
