@@ -1,7 +1,7 @@
 # Husky SK
 
 Husky uses the existing supplier catalog, supplier availability worker and protected
-supplier configuration. There is no new scheduler, database migration, dependency,
+supplier configuration. There is no new scheduler, schema migration, dependency,
 physical stock writer or automatic shop publication.
 
 ## Configuration in Hub
@@ -28,6 +28,12 @@ physical stock writer or automatic shop publication.
    refresh button both queue the same serialized worker. A queued response is not
    reported as a completed refresh. The synchronization card shows run outcome,
    errors, warnings, timestamps and next run.
+
+The deployment runner now uses a guarded installer for the unchanged migration 034.
+Its delivery table is created atomically with its one-time daily scheduling policy;
+once present, that policy is not replayed. This preserves a saved shorter Husky
+interval across deployments. First installation still executes the original SQL
+under its original advisory lock. No deployed SQL or old installer is edited.
 
 Enabling a schedule is an explicit live configuration action, not a code migration.
 With B2B disabled, XML still refreshes the full catalog and public availability,
@@ -100,6 +106,8 @@ basis, public vs wholesale stock, safe form fields/pagination and secret redacti
 atomic catalog/observation writes, replay, revision fencing, coverage rejection,
 unchanged physical stock, new/updated/unchanged catalog counts and missing-price semantics. Existing catalog and
 availability tests cover the shared upsert and scheduling regressions.
+The database tests also exercise rollback of a failed 034 installation and repeated
+deployment after an hourly Husky schedule is saved.
 `frontend/tests/supplier-config-ui.cjs` covers the actual Husky form and source
 preservation; existing availability/catalog suites cover queue/schedule behavior.
 These tests do not authenticate to production B2B. Deployment and an authenticated

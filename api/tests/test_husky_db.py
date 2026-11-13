@@ -3,14 +3,17 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 import json
 import os
+from pathlib import Path
 import unittest
 
 import asyncpg
+import psycopg2
 from sqlalchemy import func, select, text
 
 import test_catalog_db as catalog_tests
 from husky_fixtures import item, stock, page
 from inventory_hub import config_io
+from inventory_hub.supplier_availability_delivery_once_migrate import apply_once
 from inventory_hub.adapters import husky_b2b
 from inventory_hub.db_models import Product, Supplier, SupplierProduct, SupplierFeedRun, FeedRunStatus
 from inventory_hub.services import catalog, husky_sync, supplier_availability as service
@@ -120,6 +123,35 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await service.configure(db,'husky',SupplierAvailabilityInput(expected_revision=2,enabled=False,feed_key='products'))
         with self.assertRaises(AvailabilityError):
             await self.accept(plan,snapshot)
+
+    async def test_deployment_installs_daily_policy_once_then_preserves_hourly_choice(self):
+        sql_root=Path(__file__).resolve().parents[2]/'infra/db-init'
+        async with self.engine.begin() as connection:
+            raw=await connection.get_raw_connection()
+            await raw.driver_connection.execute((sql_root/'016_product_publication.sql').read_text())
+        sql=(sql_root/'034_supplier_availability_delivery.sql').read_text()
+        def install(source):
+            with psycopg2.connect(TEST_URL,options=f'-c search_path={self.schema}') as connection:
+                with connection.cursor() as cursor:
+                    return apply_once(cursor,source)
+        async with self.tx() as db:
+            settings=await db.get(SupplierAvailabilitySettings,self.supplier_id)
+            settings.interval_seconds,settings.freshness_seconds=3600,7200
+        # A failed installation must not leave a false completion checkpoint.
+        with self.assertRaises(psycopg2.errors.DivisionByZero):
+            install(sql+'\nSELECT 1/0;')
+        self.assertTrue(install(sql))
+        async with self.tx() as db:
+            settings=await db.get(SupplierAvailabilitySettings,self.supplier_id)
+            self.assertEqual((settings.interval_seconds,settings.freshness_seconds),(86400,172800))
+            configured=await service.configure(db,'husky',SupplierAvailabilityInput(expected_revision=settings.revision,
+                enabled=True,feed_key='products',interval_seconds=3600,freshness_seconds=7200))
+        self.assertFalse(install(sql))
+        self.assertFalse(install(sql))
+        async with self.tx() as db:
+            settings=await db.get(SupplierAvailabilitySettings,self.supplier_id)
+            self.assertEqual((settings.interval_seconds,settings.freshness_seconds),(3600,7200))
+            self.assertEqual((settings.revision,settings.next_run_at),(configured['revision'],configured['next_run_at']))
 
     async def test_incomplete_catalog_rolls_back_all_and_keeps_success(self):
         self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')
