@@ -1,6 +1,6 @@
 # Supplier products and shop import
 
-The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike, Schindler, Cyklo Zitny, Silvini and Bike Brothers. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
+The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike, Schindler, Cyklo Zitny, Silvini, Bike Brothers, Zookee and Husky. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
 
 [ARIGA](ariga.md) can be registered and process its verified PDF invoice format
 before a catalog source exists. Its feed/B2B catalog integration is still pending;
@@ -12,6 +12,8 @@ Open **Dodávatelia → Produkty dodávateľa**. Download the listing feed, brow
 For a listed item with saved shop content, the listing badge opens its storefront URL; a separate link opens shop administration. Detail responses and rows include `shop_url`, `shop_admin_url` and `shop_active` for the selected shop. Links come from the existing local content snapshot (preferring the Slovak URL); variants use their parent product's content. Missing URLs remain absent, and hidden products are labelled. No additional Upgates request is made to display or open these links.
 
 Catalog rows and detail show **SKU Hubu** only when current database evidence uniquely identifies an existing card: a supplier-scoped identifier, validated barcode or stored supplier-source binding. A batch projection checks conflicting identifiers, brand aliases and known variant axes, including current editor overrides. Unresolved or conflicting rows direct the operator to preparation; the supplier code remains separately visible. Collapsed groups show a supplier group code, never a physical card's SKU. The response fields `hub_identity_status`, `hub_product_id`, `hub_sku` and `hub_identity_reasons` describe this read-only projection. The historical `shop_code` proposal and cached shop match index cannot alone prove the Hub identity. Source snapshots, saved import digests, allocation, stock and shop data remain unchanged; the new fields are absent from import source snapshots.
+
+Husky uses a combined catalog/stock XML and optional B2B snapshot through the existing supplier worker. Its refresh button queues the same job used by the configurable daily schedule; see [Husky](husky.md).
 
 ## API
 

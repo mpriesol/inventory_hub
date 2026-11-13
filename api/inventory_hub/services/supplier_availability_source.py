@@ -30,6 +30,8 @@ def configuration(supplier, feed_key):
             raise AvailabilityError("supplier_availability_source_missing", 422)
         fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
         return cfg, {"type": "stock", "mode": "b2b"}, "sloger-b2b", fingerprint
+    if supplier == "husky" and feed_key != "products":
+        raise AvailabilityError("husky_select_products", 422)
     source = (cfg.get("feeds", {}).get("sources") or {}).get(feed_key)
     if not isinstance(source, dict):
         raise AvailabilityError("supplier_availability_source_missing", 422)
@@ -43,6 +45,16 @@ def configuration(supplier, feed_key):
         configured = bool((source.get("remote") or {}).get("url"))
     if not configured:
         raise AvailabilityError("supplier_availability_source_missing", 422)
+    if supplier == "husky":
+        from inventory_hub.adapters.husky_b2b import validate_options, HuskyError
+        try:
+            validate_options((cfg.get("adapter_settings") or {}).get("husky") or {})
+        except HuskyError as error:
+            raise AvailabilityError(error.code, 422) from None
+        if parser != "husky":
+            raise AvailabilityError("husky_custom_mapping_unsupported", 422)
+        if not catalog._source_configured((cfg.get("feeds", {}).get("sources") or {}).get("stock") or {}):
+            raise AvailabilityError("husky_stock_source_missing", 422)
     # This fingerprint is persisted, never the configured URL or credentials.
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
     return cfg, source, parser, fingerprint

@@ -44,7 +44,7 @@ global.fetch = async (path, init = {}) => {
   let data;
   let status = 200;
   if (url.pathname === '/api/suppliers') data = [];
-  else if (['/api/suppliers/fixture/config', '/api/suppliers/sloger/config'].includes(url.pathname)) {
+  else if (['/api/suppliers/fixture/config', '/api/suppliers/sloger/config', '/api/suppliers/husky/config'].includes(url.pathname)) {
     if (init.method === 'PUT') {
       const body = JSON.parse(init.body);
       writes.push(body);
@@ -251,6 +251,30 @@ async function input(element, value) {
   await click(button('Uložiť'));
   assert.equal(writes.at(-1).feeds.sources.products.remote.auth.basic_pass, '', 'Unchanged redacted secret stays empty for server-side preservation');
   assert.equal(writes.at(-1).feeds.sources.products.remote.url_configured, true);
+  stored = structuredClone(original);
+  stored.feeds = {current_key:'',sources:{}};
+  stored.adapter_settings.husky = { b2b_enabled:false, password:'', password_configured:true };
+  await mount('husky-connector', 'husky');
+  const husky = key => document.querySelector(`[data-testid="husky-${key}"]`);
+  assert(husky('connector'));
+  assert.equal(husky('password').type,'password');
+  assert.equal(husky('password').value,'');
+  await click(husky('setup'));
+  await input(husky('username'),'synthetic-login');
+  await input(husky('password'),'synthetic-password');
+  await input(husky('price-basis'),'net');
+  await click(husky('enabled'));
+  await click(button('Uložiť'));
+  assert.equal(writes.at(-1).feeds.sources.products.remote.url,'https://www.huskysk.sk/feed/partners.xml');
+  assert.equal(writes.at(-1).feeds.sources.stock.remote.url,'https://www.huskysk.sk/data/partners/Katalog_export.xml');
+  assert.equal(writes.at(-1).adapter_settings.husky.b2b_enabled,true);
+  assert.equal(writes.at(-1).adapter_settings.husky.purchase_price_basis,'net');
+  assert.deepEqual(writes.at(-1).invoices,original.invoices);
+  stored.feeds.sources.products.remote = {...stored.feeds.sources.products.remote,url:'',url_configured:true};
+  await mount('husky-keep-existing','husky');
+  await click(husky('setup'));
+  await click(button('JSON'));
+  assert.equal(JSON.parse(document.querySelector('textarea').value).feeds.sources.products.remote.url,'', 'Setup never overwrites a protected existing source');
   await act(async () => root.unmount());
   console.log('Supplier configuration UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -22,7 +22,7 @@ class MigrationRunnerTests(unittest.TestCase):
             "stock_tracking", "user_sessions", "product_feed_mapping",
             "product_import", "ai_content_settings", "upgates_api_budget", "stock_native", "stock_delta", "product_links",
             "supplier_card_links", "sku_policy", "shop_identity", "item_units", "supplier_authority", "invoice_archive",
-            "supplier_availability_delivery", "order_webhooks", "stock_sync_dirty", "atomer_progress", "atomer_review",
+            "supplier_availability_delivery_once", "order_webhooks", "stock_sync_dirty", "atomer_progress", "atomer_review",
             "shared_stock_sales", "product_consolidation", "atomer_catalog_control", "atomer_catalog_job_control", "atomer_catalog_handoff",
             "invoice_processing", "receiving_operation",
         )

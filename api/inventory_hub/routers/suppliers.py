@@ -560,6 +560,12 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
         raise HTTPException(422, detail=str(error)) from None
     _validate_price_coefficients(payload)
     adapter = payload.get("adapter_settings", {})
+    if supplier == "husky" and isinstance(adapter, dict) and "husky" in adapter:
+        from inventory_hub.adapters.husky_b2b import validate_options, HuskyError
+        try:
+            validate_options(adapter["husky"])
+        except HuskyError as error:
+            raise HTTPException(422, detail={"code": error.code, "message": error.code}) from None
     try:
         if not isinstance(adapter, dict):
             raise ValueError("adapter_settings must be an object")

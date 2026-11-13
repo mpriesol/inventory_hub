@@ -52,7 +52,7 @@ function SupplierRunResult({ supplier, run }: { supplier: string; run: SupplierF
       <dl className="availability-status availability-counts">{(['total', 'accepted', 'rejected', 'unknown'] as const).map(key => <div key={key}><dt>{t(`availabilitySync.counts.${key}`)}</dt><dd data-testid={`supplier-${supplier}-count-${key}`}>{report[key]}</dd></div>)}</dl>
       {report.warnings.map(code => <p key={code} className="opening-stock-notice">{t(`availabilitySync.errors.${code}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>)}
       {issueCount > 0 && <>
-        <p>{t('availabilitySync.preservedRows')}</p>
+        <p>{t(supplier === 'husky' ? 'husky.unknownRows' : 'availabilitySync.preservedRows')}</p>
         <Button data-testid={`supplier-${supplier}-failures`} variant="secondary" disabled={operation.busy} onClick={() => { setOpened(!opened); if (!opened && !failures) load(); }}>{t(opened ? 'availabilitySync.hideFailures' : 'availabilitySync.showFailures', { count: issueCount })}</Button>
         {opened && <div>
           <Feedback error={operation.error} uncertain={false} />
@@ -86,7 +86,8 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
   useEffect(() => { resetForm(value); }, [refreshVersion]);
   useEffect(() => { onBusy(value.supplier, operation.busy); return () => onBusy(value.supplier, false); }, [operation.busy, value.supplier]);
   const dirty = freshness !== String(baseline.freshness_seconds) || (!manualOnly && (enabled !== baseline.enabled || feed !== baseline.feed_key || interval !== String(baseline.interval_seconds) || coverage !== String(baseline.min_coverage_percent)));
-  const minInterval = enabled ? 86400 : 300;
+  const automaticMinimum = value.supplier === 'husky' ? 3600 : 86400;
+  const minInterval = enabled ? automaticMinimum : 300;
   const valid = integer(freshness, 300, 2592000) && (manualOnly || (value.feed_keys.includes(feed) && integer(interval, minInterval, 604800) && Number(freshness) >= Number(interval) + (enabled ? 3600 : 0) && integer(coverage, 1, 100)));
   const date = (stamp: string | null) => stamp ? new Date(stamp).toLocaleString(i18n.language) : '—';
   const stale = value.last_success_at ? Date.now() - new Date(value.last_success_at).getTime() > value.freshness_seconds * 1000 : true;
@@ -129,7 +130,7 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
     {status === 'not_loaded' && !value.last_error && <p data-testid={id('load-help')}>{t('availabilitySync.loadFirst')}</p>}
     {status === 'configuration_error' && <p role="alert">{t('availabilitySync.configurationHelp')}</p>}
     {value.publication?.enabled && <p data-testid={id('publication')}>{t('availabilitySync.scopedPublication', { shop: value.publication.shop_code, brands: value.publication.brands.join(', '), completed: value.publication.counts?.completed || 0, uncertain: value.publication.counts?.uncertain || 0, rejected: value.publication.counts?.rejected || 0 })}</p>}
-    {!manualOnly && <><p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { hours: value.interval_seconds / 3600 })}</p><p className="opening-stock-muted">{t('availabilitySync.dailyChangesOnly')}</p></>}
+    {!manualOnly && <><p data-testid={id('automation')}>{t(value.enabled ? 'availabilitySync.autoEnabled' : 'availabilitySync.automaticOff', { hours: value.interval_seconds / 3600 })}</p><p className="opening-stock-muted">{t(value.supplier === 'husky' ? 'husky.syncHelp' : 'availabilitySync.dailyChangesOnly')}</p></>}
     {value.latest_run && <SupplierRunResult key={value.latest_run.id} supplier={value.supplier} run={value.latest_run} />}
     <p><Link to={`/suppliers?edit=${encodeURIComponent(value.supplier)}`}>{t('availabilitySync.supplierConfig')}</Link></p>
     {manualOnly && <p data-testid={id('manual-help')}>{t('availabilitySync.manualB2bHelp')}</p>}
@@ -144,7 +145,7 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
     {!manualOnly && <label className="availability-check"><input data-testid={id('enabled')} type="checkbox" checked={enabled} disabled={blocked} onChange={event => {
       setEnabled(event.target.checked); setSaved(false);
       if (event.target.checked) {
-        const dailyInterval = Math.max(86400, Number(interval) || 86400);
+        const dailyInterval = Math.max(automaticMinimum, Number(interval) || 86400);
         setInterval(String(dailyInterval)); setFreshness(String(Math.max(dailyInterval + 3600, Number(freshness) || 172800)));
       }
     }} />{t('availabilitySync.supplierAuto')}</label>}

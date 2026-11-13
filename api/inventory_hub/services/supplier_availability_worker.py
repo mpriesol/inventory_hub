@@ -58,12 +58,15 @@ async def cycle():
                 from inventory_hub.services.supplier_availability_publication import cycle as publish_cycle
                 return await publish_cycle()
             try:
-                async with asyncio.timeout(360):
+                async with asyncio.timeout(600 if plan["supplier"] == "husky" else 360):
                     if plan["supplier"] == "sloger":
                         from inventory_hub.services.sloger_data import lookup_products
                         from inventory_hub.sloger_probe_types import SlogerBatchResult
                         batch = (await lookup_products(plan["skus"]) if plan["skus"] else
                                  SlogerBatchResult(items=[], aborted=False))
+                    elif plan["supplier"] == "husky":
+                        from inventory_hub.services.husky_sync import fetch_async
+                        records, size = await fetch_async(plan)
                     else:
                         records, size = await asyncio.to_thread(fetch, plan)
                 async with get_session_context() as db:

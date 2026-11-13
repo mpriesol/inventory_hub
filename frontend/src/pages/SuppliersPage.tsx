@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { Modal } from '../components/ui/Modal';
+import { HuskyConnectorSettings } from '../features/suppliers/HuskyConnectorSettings';
 import { SlogerCredentials } from '../features/suppliers/SlogerCredentials';
 import {
   listSuppliers,
@@ -677,7 +678,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
               updateConfig={updateConfig}
               showPasswords={showPasswords}
               setShowPasswords={setShowPasswords}
-            />{code === 'sloger' && <SlogerCredentials />}</>
+            />{code === 'sloger' && <SlogerCredentials />}{code === 'husky' && <HuskyConnectorSettings config={config} updateConfig={updateConfig} />}</>
           )}
           {activeTab === 'prices' && (
             <PricesTab config={config} updateConfig={updateConfig} />

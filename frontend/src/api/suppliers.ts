@@ -107,6 +107,13 @@ export interface SupplierConfig {
   adapter_settings: {
     currency?: string;
     vat_rate?: number;
+    husky?: {
+      b2b_enabled?: boolean;
+      username?: string;
+      password?: string;
+      password_configured?: boolean;
+      purchase_price_basis?: 'unknown' | 'net' | 'gross';
+    };
     price_coefficients?: Record<string, number | string>;
     availability?: {
       orderable?: string | null;

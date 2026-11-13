@@ -146,7 +146,14 @@ Migrations 034–036 add supplier delivery checkpoints, authenticated order
 notifications and a per-target stock wakeup queue. Migration 034 slows existing
 enabled sub-daily supplier schedules to 86400 seconds and increases freshness for
 future observations; disabled sources, weekly schedules and existing observation
-expiry are preserved. Migrations 035/036 do not enable collectors, webhooks,
+expiry are preserved. The runner invokes `supplier_availability_delivery_once_migrate`
+for 034: under the existing advisory lock it checks for the delivery table, which
+034 creates in the same transaction as its policy change. An already installed
+034 is skipped so later explicit Husky intervals survive deployment. A missing
+table runs the original packaged SQL; failure rolls back the table and policy
+together. The SQL and original installer remain unchanged. Do not manually replay
+the old installer to redeploy; use the guarded runner. All other upgrade entries
+retain their existing replay behavior. Migrations 035/036 do not enable collectors, webhooks,
 processing or stock authority. The existing private supplier-credential mount
 also holds generated webhook credentials; preserve it in backup and recovery.
 Rollback should pause webhook settings and supplier publication, retain all new
