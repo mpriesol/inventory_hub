@@ -285,6 +285,15 @@
     }
   },
   "suppliers": {
+    "ariga": {
+      "sourceMode": "ARIGA product source",
+      "mode": "ARIGA B2B - read catalogue",
+      "email": "ARIGA B2B email",
+      "password": "ARIGA B2B password",
+      "help": "Reads the signed-in EUR catalogue, including variants, descriptions and images. A browser login does not replace these server credentials.",
+      "prices": "Net purchase price with derived 23% VAT. Recommended gross retail price remains unchanged.",
+      "refresh": "After saving, open Supplier products and refresh the catalogue. Configure regular availability reads in Settings → Availability; the default interval is one day. Refreshing creates no physical stock or shop listings."
+    },
     "title": "Suppliers",
     "subtitle": "Manage suppliers and their configurations",
     "newSupplier": "New Supplier",
@@ -632,6 +641,12 @@
       "catalog_parser_unavailable": "This supplier feed parser is not available yet.",
       "feed_file_missing": "Configured local feed file does not exist.",
       "feed_too_large": "Feed exceeds the 100 MB limit.",
+      "ariga_credentials_missing": "Save the ARIGA B2B email and password under Suppliers → Ariga → Feeds → Products.",
+      "ariga_auth_failed": "ARIGA did not confirm login. Check the saved B2B credentials.",
+      "ariga_b2b_invalid_response": "ARIGA returned an incomplete or changed page. The previous catalogue was preserved.",
+      "ariga_b2b_unavailable": "ARIGA could not be read. The request was not automatically retried.",
+      "ariga_b2b_timeout": "ARIGA exceeded the read deadline. The previous catalogue was preserved.",
+      "ariga_currency_invalid": "ARIGA did not confirm EUR prices.",
       "feed_url_missing": "Feed URL is missing from configuration.",
       "feed_method_invalid": "Feed download supports GET or POST.",
       "feed_auth_invalid": "Unsupported feed authentication method.",

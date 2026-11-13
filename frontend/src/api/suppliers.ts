@@ -15,7 +15,7 @@ export interface SupplierSummary {
   product_prefix_lock_reason?: string | null;
   config_error?: string | null;
   invoice_count: number;
-  feed_mode: 'remote' | 'local' | 'none';
+  feed_mode: 'remote' | 'local' | 'none' | 'ariga-b2b';
   download_strategy: 'web' | 'manual' | 'api' | 'disabled' | 'paul-lange-web' | 'northfinder-web';
   last_invoice_date: string | null;
   last_feed_sync: string | null;
@@ -48,7 +48,7 @@ export interface SupplierConfig {
   feeds: {
     current_key: string;
     sources: Record<string, {
-      mode: 'remote' | 'local';
+      mode: 'remote' | 'local' | 'ariga-b2b';
       local_path: string | null;
       remote: {
         url: string;

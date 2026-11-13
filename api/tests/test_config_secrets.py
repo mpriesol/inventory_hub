@@ -19,6 +19,21 @@ from inventory_hub.routers import shops, suppliers
 
 
 class ConfigSecretsTests(unittest.TestCase):
+    def test_ariga_password_round_trip_remains_write_only(self):
+        config_io.save_supplier('ariga', {'name': 'ARIGA fixture', 'feeds': {'sources': {'products': {
+            'mode': 'ariga-b2b', 'remote': {'auth': {'mode': 'form', 'username': 'fixture@example.test',
+                                                  'password': 'synthetic-ariga-password'}}}}}})
+        public = suppliers.get_supplier_config('ariga')
+        auth = public['feeds']['sources']['products']['remote']['auth']
+        self.assertEqual(auth['password'], '')
+        self.assertTrue(auth['password_configured'])
+        self.assertNotIn('synthetic-ariga-password', json.dumps(public))
+        public['name'] = 'Edited ARIGA'
+        suppliers.put_supplier_config('ariga', public)
+        saved = config_io.load_supplier('ariga', write_back_on_load=False)
+        self.assertEqual(saved['feeds']['sources']['products']['remote']['auth']['password'], 'synthetic-ariga-password')
+        self.assertEqual(saved['feeds']['sources']['products']['mode'], 'ariga-b2b')
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

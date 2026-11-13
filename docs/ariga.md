@@ -15,14 +15,34 @@ Fenix/Ruike `1`. Predvolený e-shop nemusí byť vybraný; spoločná príprava 
 oba ciele. Existujúce SKU sa nemenia. Dodávateľský kód z faktúry sám nepotvrdzuje
 výrobný kód ani nové fyzické SKU; platí [politika identity](sku-policy.md).
 
-Katalógový feed zatiaľ nie je dodaný. ARIGA nemá v tejto implementácii hotový
-serverový B2B konektor ani natívny katalógový parser. URL B2B stránky nie je
-feed a nesmie sa vložiť ako `products` alebo `stock`. Prihlásenie v prehliadači
-nie je trvalé prihlásenie servera. Prístupové údaje patria iba do existujúcej
-chránenej konfigurácie, nikdy do Git-u.
+Katalógový feed zatiaľ nie je dodaný. Pri kontrole prihláseného B2B účtu a
+veľkoobchodných informácií nebol nájdený odkaz na XML/CSV export. To nevylučuje
+feed poskytovaný dodávateľom individuálne. Implementovaný náhradný zdroj je
+`ariga-b2b`, serverový scraper v `services/ariga_b2b.py` s natívnym parserom
+`adapters/ariga_catalog.py`. Používa existujúci katalóg aj prípravu oboch e-shopov.
 
-Pri dodaní feedu použiť existujúce mapovanie/normalizáciu a overiť konkrétne
-zdrojové polia, EUR, identity variantov, obrázky a dostupnosť. Cenový kontrakt:
+**Dodávatelia → Ariga → Upraviť → Feedy → Produkty → ARIGA B2B** umožňuje
+uložiť e-mail a heslo; výber nastaví `feeds.current_key: products`. Heslo je
+zapisovateľné, ale API ho späť nevydáva; prázdne pole ponechá uložené heslo.
+Používa existujúcu chránenú konfiguráciu dodávateľa. Prihlásenie v prehliadači
+neprihlási server. B2B URL sa nevkladá do poľa XML/CSV feedu. Základ konfigurácie:
+
+```json
+{"feeds":{"current_key":"products","sources":{"products":{
+  "mode":"ariga-b2b","remote":{"auth":{"mode":"form","username":"","password":""}}
+}}}}
+```
+
+V **Produktoch dodávateľa** sa katalóg obnoví existujúcim načítaním zdroja.
+Scraper po prihlásení potvrdí EUR, prejde hlavné kategórie a všetky strany,
+odstráni opakované odkazy a prečíta jednotlivé produkty vrátane všetkých
+explicitných variantov. Neobmedzuje značky iba na Fenix/Ruike. Uchová názov,
+technické parametre, zdrojový český popis, kategóriu a oficiálne obrázky;
+predajný obsah sa pripravuje po slovensky existujúcim postupom.
+
+Identitu určuje dodávateľský kód konkrétneho variantu. EAN ani výrobné číslo
+neodvodzuje z názvu či kódu; chýbajúce údaje ostanú prázdne. Existujúce SKU a
+pravidlá priraďovania identity sa nemenia. Cenový kontrakt:
 
 | Zdroj | Pravidlo |
 | --- | --- |
@@ -30,11 +50,35 @@ zdrojové polia, EUR, identity variantov, obrázky a dostupnosť. Cenový kontra
 | Odporúčaná MOC s DPH | Zachovať nominálnu sumu. Slovenský základ vypočítať delením 1,23; nepripočítať DPH k už hrubej MOC. |
 | Historická cena faktúry | Zachovať presnú fakturovanú cenu bez DPH; aktuálna ponuka ju nesmie prepísať. |
 
-Konvencie `catalog.purchase_price_basis: net`, `retail_price_basis: gross` a
-`retail_vat_policy: preserve_gross` zaznamenávajú dohodnutý budúci katalógový
-kontrakt. Samotné uloženie týchto hodnôt bez mapovania/parsera nespúšťa import
-ani nepreukazuje správnu normalizáciu neznámeho feedu. Overiť náhľady oboch
-e-shopov a ich skutočný režim ceny s/bez DPH pred prvým odoslaním.
+Parser tieto pravidlá vykonáva pomocou `Decimal` a `adapter_settings.vat_rate`
+(predvolene 23). Chýbajúca cena nie je nula. Testy preverujú aj spoločný
+Upgates cenový payload pre oba režimy s/bez DPH. Pred prvým odoslaním overiť
+náhľady oboch e-shopov a ich skutočné nastavenia. Prípadný budúci feed potrebuje
+overenie a mapovanie svojich polí; tieto konvencie ho automaticky neparsujú.
+
+### Dostupnosti a hranice čítania
+
+V **Dostupnosti a synchronizácia** možno použiť rovnaký zdroj `products`.
+Pravidelné načítanie je predvolene vypnuté, nastavenie ponúka denný interval.
+Obnovuje pozorovania dostupnosti; katalógové ceny a obsah sa naďalej obnovujú
+cez katalóg. `Skladem` znamená áno bez počtu kusov, `Není skladem` nie bez
+počtu; `Na cestě`, `Na dotaz` a iné nepotvrdené hodnoty sú neznáme. Nevytvárajú
+potvrdenú nulu ani nepredĺžia staršie pozorovanie. Import a načítanie dostupností
+nevytvárajú fyzický príjem, vlastné množstvo, FIFO pohyb ani zápis do e-shopov.
+
+Čítanie je obmedzené na HTTPS doménu B2B, známe kategórie/produkty, login a
+prepnutie EUR. POST je povolený iba na prihlásenie a stránkovanie; košík ani
+objednávky sa nepoužívajú. Medzi požiadavkami je najmenej 0,5 sekundy,
+limit celého behu 15 minút, 2 000 produktových stránok, 40 kategórií, 250
+strán katalógu, 4 MiB na odpoveď a 100 MiB spolu. Chyba prihlásenia, ochranná
+výzva, zmena meny/variantov alebo neúplné stránkovanie zastavia beh bez
+automatického opakovania. Posledný úspešný katalóg zostane zachovaný.
+
+Úplný XML snapshot obsahuje iba produktové fakty; heslo, cookies a HTML účtu
+sa neukladajú do snapshotov ani chýb. Dostupnosti používajú existujúci dočasný
+adresár a po spracovaní ho odstránia. Nie je potrebná migrácia ani nová
+závislosť. Testy používajú syntetické HTML; úspešné CI nenahrádza prvé úplné
+živé načítanie po uložení serverových prihlasovacích údajov.
 
 ## PDF faktúry bez feedu
 
