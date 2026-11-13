@@ -75,6 +75,7 @@ function SupplierCard({ supplier, onEdit, onCatalog, onMapping }: SupplierCardPr
 
   const feedModeLabels: Record<string, string> = {
     'remote': 'Online',
+    'ariga-b2b': 'ARIGA B2B',
     'local': 'Lokálny',
     'none': 'Žiadny',
   };
@@ -1009,6 +1010,7 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
       ...cfg,
       feeds: {
         ...cfg.feeds,
+        ...(updates.mode === 'ariga-b2b' ? { current_key: feedKey } : {}),
         sources: {
           ...cfg.feeds?.sources,
           [feedKey]: {
@@ -1022,12 +1024,13 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
 
   const FeedCard = ({ feedKey, label, description }: { feedKey: string; label: string; description: string }) => {
     const source: {
-      mode: 'remote' | 'local';
+      mode: 'remote' | 'local' | 'ariga-b2b';
       local_path?: string | null;
       remote?: Partial<SupplierConfig['feeds']['sources'][string]['remote']>;
     } = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
     const multiSource = supplier === 'sloger' && feedKey === 'products';
-    const configured = !!source.remote?.url || !!source.remote?.urls?.length ||
+    const configured = source.mode === 'ariga-b2b' ? !!source.remote?.auth?.username &&
+      (!!source.remote?.auth?.password || !!source.remote?.auth?.password_configured) : !!source.remote?.url || !!source.remote?.urls?.length ||
       !!source.remote?.url_configured || !!source.remote?.urls_configured ||
       (source.mode === 'local' && !!source.local_path);
     
@@ -1059,14 +1062,35 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
             Režim
           </label>
           <select
+            aria-label={supplier === 'ariga' && feedKey === 'products' ? t('suppliers.ariga.sourceMode') : undefined}
             value={source.mode || 'remote'}
             onChange={(e) => updateSource(feedKey, { mode: e.target.value })}
             className="w-full"
           >
             <option value="remote">Remote (URL)</option>
             <option value="local">Lokálny súbor</option>
+            {supplier === 'ariga' && feedKey === 'products' && <option value="ariga-b2b">{t('suppliers.ariga.mode')}</option>}
           </select>
         </div>
+
+        {source.mode === 'ariga-b2b' && supplier === 'ariga' && (
+          <div className="space-y-3">
+            <p className="text-sm">{t('suppliers.ariga.help')}</p>
+            <label className="block" htmlFor="ariga-b2b-username">{t('suppliers.ariga.email')}</label>
+            <input id="ariga-b2b-username" type="email" className="w-full" autoComplete="off"
+              value={source.remote?.auth?.username || ''}
+              onChange={e => updateSource(feedKey, { remote: { ...source.remote,
+                auth: { ...source.remote?.auth, mode: 'form', username: e.target.value } } })} />
+            <label className="block" htmlFor="ariga-b2b-password">{t('suppliers.ariga.password')}</label>
+            <input id="ariga-b2b-password" type="password" className="w-full" autoComplete="new-password"
+              value={source.remote?.auth?.password || ''}
+              placeholder={source.remote?.auth?.password_configured ? t('security.savedSecret') : ''}
+              onChange={e => updateSource(feedKey, { remote: { ...source.remote,
+                auth: { ...source.remote?.auth, mode: 'form', password: e.target.value } } })} />
+            <p className="text-xs">{t('suppliers.ariga.prices')}</p>
+            <p className="text-xs">{t('suppliers.ariga.refresh')}</p>
+          </div>
+        )}
 
         {source.mode === 'remote' && (
           <>

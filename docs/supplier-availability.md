@@ -48,6 +48,16 @@ Existujúci trvalý beh uchováva kurzor a počty spracovaných, úspešných a 
 
 Rovnaká služba uloží dodávateľské pozorovania aj pri príprave importu, aby sa po uložení produktu dali použiť v existujúcom prepočte dostupnosti. Tento čiastkový importný záznam nepredstiera úspech celého ručného refreshu. Sloger B2B nevolá AI, nemení vlastné zásoby, FIFO ani sám neposiela údaje do e-shopov. Dostupnosť dodávateľa **do 2-4 dní** platí iba pri potvrdenej čerstvej dostupnosti; bez nej ostáva **overíme**.
 
+## ARIGA B2B
+
+Po uložení prihlásenia v **Ariga → Feedy → Produkty → ARIGA B2B** je zdroj
+`products` dostupný aj pre existujúci worker dostupností. Úplné čítanie prejde
+kategórie, všetky strany a varianty; limit je 15 minút. Automatika zostáva
+vypnutá, kým ju obsluha nenastaví. Pravidelné behy obnovujú iba dostupnosti,
+nie katalógové ceny a popisy. `Skladem` je dostupné bez počtu, `Není skladem`
+nedostupné bez počtu; neznámy text nevytvára nulu. Chybný alebo neúplný crawl
+sa neprijme. Podrobnosti a limity sú v [ARIGA](ariga.md).
+
 ## Pre vývojárov
 
 ### Súbory načítania a miesto na disku

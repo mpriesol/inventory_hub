@@ -88,6 +88,41 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
+    async def test_ariga_refresh_is_idempotent_and_incomplete_snapshot_preserves_catalog(self):
+        from test_ariga_catalog import page, snapshot, URL
+        from inventory_hub.adapters import ariga_catalog
+        cfg_path = config_io.supplier_path('ariga')
+        cfg_path.parent.mkdir(parents=True)
+        cfg_path.write_text(json.dumps({'name': 'ARIGA fixture', 'feeds': {'sources': {'products': {
+            'mode': 'ariga-b2b', 'remote': {'auth': {'username': 'fixture@example.test', 'password': 'synthetic'}}}}},
+            'adapter_settings': {'vat_rate': 23}}))
+        source = cfg_path.parent / 'fixture.xml'
+        source.write_bytes(snapshot(ariga_catalog.product_evidence(ariga_catalog.document(page(variants=True)), URL)))
+        with patch.object(catalog, '_download', return_value=source):
+            async with self.sessions() as db:
+                first = await catalog.refresh_catalog(db, 'ariga')
+                await db.commit()
+                before = (await db.scalars(select(SupplierProduct).order_by(SupplierProduct.id))).all()
+                ids = [row.id for row in before]
+                facts = [row.attributes['catalog'] for row in before]
+                second = await catalog.refresh_catalog(db, 'ariga')
+                await db.commit()
+                self.assertEqual((first['new'], second['new'], second['updated']), (2, 0, 0))
+                self.assertEqual(list(await db.scalars(select(SupplierProduct.id).order_by(SupplierProduct.id))), ids)
+                self.assertEqual(facts[0]['prices']['purchase_net'], '92.50')
+                self.assertEqual(facts[0]['prices']['retail_gross'], '159.90')
+                current = (await db.scalars(select(SupplierProduct).order_by(SupplierProduct.id)
+                    .execution_options(populate_existing=True))).all()
+                facts = [row.attributes['catalog'] for row in current]
+                source.write_bytes(source.read_bytes().replace(b'complete="true"', b'complete="false"'))
+                with self.assertRaises(catalog.CatalogError): await catalog.refresh_catalog(db, 'ariga')
+                after = (await db.scalars(select(SupplierProduct).order_by(SupplierProduct.id))).all()
+                self.assertEqual([row.id for row in after], ids)
+                self.assertEqual([row.attributes['catalog'] for row in after], facts)
+                self.assertTrue(all(row.is_active for row in after))
+                self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+                self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+
     async def test_catalog_shows_current_hub_sku_without_mutating_supplier_snapshot(self):
         self.write_feed(xml_item(ean='5901234123457'))
         await self.refresh()

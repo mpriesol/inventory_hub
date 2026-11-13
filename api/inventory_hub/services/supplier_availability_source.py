@@ -39,7 +39,9 @@ def configuration(supplier, feed_key):
     parser = parser or (supplier if supplier in catalog.PARSERS else None)
     if parser not in catalog.PARSERS or parser == "silvini":
         raise AvailabilityError("supplier_availability_parser_unavailable", 422)
-    if source.get("mode", "remote") == "local":
+    if source.get("mode") == "ariga-b2b":
+        configured = supplier == "ariga" and parser == "ariga" and catalog._source_configured(source)
+    elif source.get("mode", "remote") == "local":
         configured = bool(source.get("local_path"))
     else:
         configured = bool((source.get("remote") or {}).get("url"))
@@ -221,8 +223,9 @@ def fetch(plan):
         directory = catalog.config_io.supplier_path(plan["supplier"]).parent / "feeds" / "xml"
         directory.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="availability-", dir=directory) as temporary:
+            deadline = 900 if plan["source"].get("mode") == "ariga-b2b" else 180
             path = catalog._download(plan["supplier"], plan["source"], plan["feed_key"],
-                                     max_elapsed_seconds=180, directory=Path(temporary))
+                                     max_elapsed_seconds=deadline, directory=Path(temporary))
             return parse(path, plan["supplier"], plan["config"], plan["feed_key"], plan["parser"]), path.stat().st_size
     except AvailabilityError:
         raise

@@ -44,7 +44,7 @@ global.fetch = async (path, init = {}) => {
   let data;
   let status = 200;
   if (url.pathname === '/api/suppliers') data = [];
-  else if (['/api/suppliers/fixture/config', '/api/suppliers/sloger/config', '/api/suppliers/husky/config'].includes(url.pathname)) {
+  else if (['/api/suppliers/fixture/config', '/api/suppliers/sloger/config', '/api/suppliers/husky/config', '/api/suppliers/ariga/config'].includes(url.pathname)) {
     if (init.method === 'PUT') {
       const body = JSON.parse(init.body);
       writes.push(body);
@@ -275,6 +275,33 @@ async function input(element, value) {
   await click(husky('setup'));
   await click(button('JSON'));
   assert.equal(JSON.parse(document.querySelector('textarea').value).feeds.sources.products.remote.url,'', 'Setup never overwrites a protected existing source');
+  assert(![...document.querySelectorAll('option')].some(option => option.value === 'ariga-b2b'), 'Other suppliers cannot select the ARIGA connector');
+  stored = structuredClone(original);
+  stored.feeds = { current_key: '', sources: {} };
+  await mount('ariga-b2b', 'ariga');
+  await click(button('Feedy'));
+  const sourceMode = document.querySelector('select[aria-label="Zdroj produktov ARIGA"]');
+  await input(sourceMode, 'ariga-b2b');
+  const email = document.getElementById('ariga-b2b-username');
+  const password = document.getElementById('ariga-b2b-password');
+  email.focus();
+  await input(email, 'fixture@example.test');
+  assert.equal(document.activeElement, email, 'Typing does not remount the credentials form');
+  await input(password, 'synthetic-password');
+  assert.equal(password.type, 'password');
+  await click(button('Uložiť'));
+  assert.equal(writes.at(-1).feeds.current_key, 'products');
+  assert.equal(writes.at(-1).feeds.sources.products.mode, 'ariga-b2b');
+  assert.equal(writes.at(-1).feeds.sources.products.remote.auth.password, 'synthetic-password');
+  assert.deepEqual(writes.at(-1).invoices, original.invoices);
+  assert.deepEqual(writes.at(-1).adapter_settings.mapping, original.adapter_settings.mapping);
+  stored.feeds.sources.products.remote.auth.password = '';
+  stored.feeds.sources.products.remote.auth.password_configured = true;
+  await mount('ariga-b2b-saved', 'ariga');
+  await click(button('Feedy'));
+  assert.equal(document.getElementById('ariga-b2b-password').value, '');
+  assert.equal(document.getElementById('ariga-b2b-password').placeholder, 'Uložené - ponechať bez zmeny');
+  assert(button('Uložiť').disabled, 'Reopening redacted ARIGA credentials creates no changes');
   await act(async () => root.unmount());
   console.log('Supplier configuration UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

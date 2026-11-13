@@ -31,6 +31,7 @@ from inventory_hub.adapters.silvini_catalog import parse_catalog as parse_silvin
 from inventory_hub.adapters.bike_brothers_catalog import parse_catalog as parse_bike_brothers
 from inventory_hub.adapters.zookee_catalog import parse_catalog as parse_zookee
 from inventory_hub.adapters.husky_catalog import parse_catalog as parse_husky
+from inventory_hub.adapters.ariga_catalog import parse_catalog as parse_ariga
 from inventory_hub.catalog_types import CatalogDisplayProduct, CatalogPage, CatalogProduct, CatalogRow, CatalogSelection
 from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedItemRaw, SupplierFeedRun, SupplierProduct
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
@@ -46,7 +47,8 @@ class CatalogError(Exception):
 
 PARSERS = {"paul-lange": parse_catalog, "northfinder": parse_northfinder, "sloger": parse_sloger,
            "sk-profi-bike": parse_sk_profi_bike, "schindler": parse_schindler, "cyklo-zitny": parse_cyklo_zitny,
-           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers, "zookee": parse_zookee, "husky": parse_husky}
+           "silvini": parse_silvini, "bike-brothers": parse_bike_brothers, "zookee": parse_zookee,
+           "husky": parse_husky, "ariga": parse_ariga}
 
 
 def folded(value: str) -> str:
@@ -65,15 +67,22 @@ def source_config(supplier: str, cfg: dict, feed_key: str, *, require_parser: bo
     source = (cfg.get("feeds", {}).get("sources", {}) or {}).get(feed_key)
     if not isinstance(source, dict) or feed_key == "stock" or source.get("type") == "stock":
         raise CatalogError("listing_feed_not_configured", "Select a configured listing feed")
+    if source.get("mode") == "ariga-b2b" and supplier != "ariga":
+        raise CatalogError("feed_mode_invalid", "ARIGA B2B is available only for ARIGA", 422)
     parser_name = source.get("catalog_parser") or (cfg.get("adapter_settings", {}).get("catalog") or {}).get("parser")
     if not parser_name and supplier in PARSERS:
         parser_name = supplier
+    if source.get("mode") == "ariga-b2b" and parser_name != "ariga":
+        raise CatalogError("feed_mode_invalid", "ARIGA B2B requires the ARIGA parser", 422)
     if require_parser and parser_name not in PARSERS:
         raise CatalogError("catalog_parser_unavailable", "A catalog parser is not available for this supplier", 422)
     return source, parser_name
 
 
 def _source_configured(source: dict) -> bool:
+    if source.get("mode") == "ariga-b2b":
+        from inventory_hub.services.ariga_b2b import configured
+        return configured(source)
     remote = source.get("remote") or {}
     if source.get("mode") != "local" and isinstance(remote.get("urls"), list) and remote["urls"]:
         return True
@@ -91,6 +100,11 @@ def _download(supplier: str, source: dict, feed_key: str, *, max_elapsed_seconds
     limit = min(max_size_bytes, 100 * 1024 * 1024)
     started_monotonic = time.monotonic()
     try:
+        if source.get("mode") == "ariga-b2b":
+            if supplier != "ariga":
+                raise CatalogError("feed_mode_invalid", "ARIGA B2B is available only for ARIGA", 422)
+            from inventory_hub.services.ariga_b2b import download
+            return download(source, destination, max_elapsed_seconds=max_elapsed_seconds, max_size_bytes=limit)
         if source.get("mode", "remote") != "local" and "urls" in (source.get("remote") or {}):
             if (source.get("catalog_parser") or supplier) != "sloger":
                 raise CatalogError("feed_urls_unsupported", "Multiple listing URLs are supported only by the Sloger parser")

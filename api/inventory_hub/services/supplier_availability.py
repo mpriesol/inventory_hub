@@ -39,6 +39,9 @@ def _feed_keys(cfg):
     for key, source in sources.items():
         if not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", key) or not isinstance(source, dict):
             continue
+        if source.get("mode") == "ariga-b2b" and catalog._source_configured(source):
+            result.append(key)
+            continue
         remote = source.get("remote") or {}
         location = source.get("local_path") if source.get("mode", "remote") == "local" else remote.get("url") if isinstance(remote, dict) else None
         if isinstance(location, str) and location.strip():

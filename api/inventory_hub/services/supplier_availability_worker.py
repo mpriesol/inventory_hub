@@ -58,7 +58,8 @@ async def cycle():
                 from inventory_hub.services.supplier_availability_publication import cycle as publish_cycle
                 return await publish_cycle()
             try:
-                async with asyncio.timeout(600 if plan["supplier"] == "husky" else 360):
+                timeout = 600 if plan["supplier"] == "husky" else 930 if (plan.get("source") or {}).get("mode") == "ariga-b2b" else 360
+                async with asyncio.timeout(timeout):
                     if plan["supplier"] == "sloger":
                         from inventory_hub.services.sloger_data import lookup_products
                         from inventory_hub.sloger_probe_types import SlogerBatchResult

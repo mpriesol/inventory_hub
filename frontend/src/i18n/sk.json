@@ -285,6 +285,15 @@
     }
   },
   "suppliers": {
+    "ariga": {
+      "sourceMode": "Zdroj produktov ARIGA",
+      "mode": "ARIGA B2B - načítať katalóg",
+      "email": "E-mail B2B ARIGA",
+      "password": "Heslo B2B ARIGA",
+      "help": "Katalóg sa načíta z prihláseného B2B v EUR vrátane variantov, popisov a obrázkov. Prihlásenie v prehliadači nenahrádza tento serverový prístup.",
+      "prices": "Nákupná cena bez DPH, odvodená DPH 23 %. Odporúčaná MOC s DPH zostáva zachovaná.",
+      "refresh": "Po uložení otvor Produkty dodávateľa a obnov katalóg. Pravidelné čítanie dostupnosti nastav v Nastavenia → Dostupnosti; predvolený interval je deň. Obnovenie nevytvára fyzický sklad ani produkty v e-shopoch."
+    },
     "title": "Dodávatelia",
     "subtitle": "Správa dodávateľov a ich konfigurácií",
     "newSupplier": "Nový dodávateľ",
@@ -632,6 +641,12 @@
       "catalog_parser_unavailable": "Spracovanie tohto dodávateľského feedu zatiaľ nie je dostupné.",
       "feed_file_missing": "Nastavený lokálny feed neexistuje.",
       "feed_too_large": "Feed prekračuje limit 100 MB.",
+      "ariga_credentials_missing": "Ulož e-mail a heslo B2B ARIGA v Dodávatelia → Ariga → Feedy → Produkty.",
+      "ariga_auth_failed": "ARIGA nepotvrdila prihlásenie. Skontroluj uložené B2B údaje.",
+      "ariga_b2b_invalid_response": "ARIGA vrátila neúplnú alebo zmenenú stránku. Predchádzajúci katalóg zostal zachovaný.",
+      "ariga_b2b_unavailable": "ARIGA sa nedala načítať. Požiadavka sa automaticky neopakovala.",
+      "ariga_b2b_timeout": "Načítanie ARIGA prekročilo časový limit. Predchádzajúci katalóg zostal zachovaný.",
+      "ariga_currency_invalid": "ARIGA nepotvrdila ceny v EUR.",
       "feed_url_missing": "V konfigurácii chýba adresa feedu.",
       "feed_method_invalid": "Sťahovanie feedu podporuje GET alebo POST.",
       "feed_auth_invalid": "Nepodporovaný spôsob prihlásenia k feedu.",
