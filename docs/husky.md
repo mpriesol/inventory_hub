@@ -87,10 +87,17 @@ Read-only browser verification on 13 November 2026 confirmed the signed-in
 counts and `>10 ks`, not only product membership. The connector reads the same
 stock column across the unfiltered catalog, so out-of-stock/unknown rows remain
 observable; absence from a filtered list is never inferred to be zero.
-Browser authentication does not save credentials for the server worker. At that
-check the live Hub setting had B2B disabled and no saved B2B password. Automatic
-wholesale reads still require the configuration steps above; browser verification
-is not a claim that a server-side B2B refresh has completed.
+Browser authentication does not save credentials for the server worker. Automatic
+wholesale reads require the saved Hub configuration described above. Browser
+verification is not a claim that a server-side B2B refresh has completed; inspect
+the current configuration and the latest completed run for that evidence.
+
+Read-only search and pager postbacks preserve the observed `cboPobocka` branch
+selection, including the empty **Vyberte pobočku** placeholder. Omitting a dropdown
+value can trigger ASP.NET selection-change handling and reset the grid to page
+one. The connector never chooses another branch, copies cart controls, or relaxes
+the expected-page and duplicate-code checks. Synthetic transport tests exercise
+both empty and selected branch values across a two-page read.
 
 The catalog and public stock exports may be published at different times. A catalog
 code absent from stock remains in the catalog with an explicit unknown public

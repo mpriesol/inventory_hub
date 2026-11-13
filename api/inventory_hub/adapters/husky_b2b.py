@@ -17,6 +17,7 @@ LISTING = ORIGIN + "/objednavky"
 GRID = "ctl00$MainContent$zbozi$grdList"
 SEARCH = "ctl00$TopSiteBoxContent$txtNazevQuery"
 SEARCH_BUTTON = "ctl00$TopSiteBoxContent$btnOk"
+BRANCH = "ctl00$loginInfo$lvLoginView$cboPobocka"
 LOGIN_PREFIX = "ctl00$ctl00$MainContent$MainContent$loginPanel$lgLogin$"
 MAX_HTML_BYTES = 2_000_000
 MAX_PAGES = 250
@@ -106,6 +107,18 @@ def form_data(doc, url):
 
 def listing_post(doc):
     data = form_data(doc, LISTING)
+    # ASP.NET compares posted dropdown values with ViewState. Omitting the
+    # branch (even its empty placeholder) can fire a selection change and
+    # reset the grid to page one. Preserve the observed selection, never pick
+    # another customer branch or copy cart/order controls.
+    branches = doc.xpath("//select[@name=$name]", name=BRANCH)
+    if len(branches) != 1:
+        raise HuskyError()
+    options = branches[0].xpath("./option")
+    selected = [option for option in options if option.get("selected") is not None] or options[:1]
+    if len(selected) != 1 or selected[0].get("value") is None:
+        raise HuskyError()
+    data[BRANCH] = selected[0].get("value")
     # Preserve only the catalogue tree. Never copy quantity, cart or order inputs.
     for node in doc.xpath("//input[@type='checkbox']"):
         name = node.get("name", "")
