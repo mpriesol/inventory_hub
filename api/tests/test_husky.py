@@ -175,6 +175,29 @@ class HuskyTests(unittest.TestCase):
             b2b.fetch_quotes('synthetic-user','synthetic-password')
         self.assertEqual(caught.exception.code,'husky_b2b_duplicate_identity')
 
+    def test_pager_formatting_preserves_exact_page_evidence(self):
+        source = page(current=1, next_page=2)
+        for marker in ('1', '<font color="black">1</font>', '<span><b>1</b></span>'):
+            content = source.replace('<span>1</span>', marker)
+            content = content.replace('<td colspan="7"><table>', '<td colspan="7"><font><table><tbody>')
+            content = content.replace('</tr></table></td>', '</tr></tbody></table></font></td>')
+            quotes, has_next = b2b.parse_page(b2b.document(content.encode()), 1)
+            self.assertEqual([q.code for q in quotes], ['MPN-1'])
+            self.assertTrue(has_next)
+
+        for bad_marker in ('', '<span>2</span>', '<span>1</span><span>2</span>',
+                '<a href="#"><span>1</span></a>', '<input value="1"><span>1</span>'):
+            # A good top marker cannot compensate for a bad bottom marker.
+            content = source.rsplit('<span>1</span>', 1)
+            content = bad_marker.join(content)
+            with self.subTest(marker=bad_marker), self.assertRaises(b2b.HuskyError) as caught:
+                b2b.parse_page(b2b.document(content.encode()), 1)
+            self.assertEqual(caught.exception.code, 'husky_b2b_incomplete')
+        # A product's unrelated span cannot serve as a missing pager marker.
+        content = source.replace('<span>1</span>', '').replace('Testovací produkt', '<span>1</span>')
+        with self.assertRaises(b2b.HuskyError):
+            b2b.parse_page(b2b.document(content.encode()), 1)
+
     def test_read_only_context_survives_filter_reset_and_grid_postback(self):
         for branch in ('', 'synthetic-branch-2'):
             posts = []
