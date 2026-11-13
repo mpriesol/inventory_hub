@@ -5685,7 +5685,7 @@
     "prepareListing": "Pripraviť zalistovanie"
   },
   "husky": {
-    "publicNoQuantity": "B2B sklad zatiaľ nie je overený.",
+    "publicNoQuantity": "B2B sklad nie je overený.",
     "stockUnknown": "Dostupnosť neznáma",
     "stockExpired": "Údaj nie je aktuálny - obnovte načítanie.",
     "title": "Husky: katalóg a B2B",
