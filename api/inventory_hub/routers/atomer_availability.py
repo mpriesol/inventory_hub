@@ -1,6 +1,6 @@
 """Authenticated local Atomer preview and download, with no Atomer writes."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 from fastapi import (
     APIRouter,
@@ -81,9 +81,10 @@ async def get_run(
     run_id: UUID,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    view: Literal["all", "changes", "issues"] = "all",
     db: AsyncSession = Depends(get_session),
 ):
-    return await call(service.get_run(db, str(run_id), offset, limit))
+    return await call(service.get_run(db, str(run_id), offset, limit, view))
 
 
 @router.post("/runs/{run_id}/export")

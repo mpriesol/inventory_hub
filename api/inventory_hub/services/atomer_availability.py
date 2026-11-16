@@ -320,20 +320,36 @@ async def list_runs(db, limit=30):
     return {"items": [dto(r) for r in rows]}
 
 
-async def get_run(db, identifier, offset=0, limit=100):
+async def get_run(db, identifier, offset=0, limit=100, view="all"):
     run = await db.get(Run, identifier)
     if run is None:
         raise ExportError("atomer_availability_run_missing", 404)
-    rows = (run.document or {}).get("rows", [])
+    all_rows = (run.document or {}).get("rows", [])
+    rows = all_rows
+    if view != "all":
+        statuses = {"changes": {"changed"}, "issues": {"blocked", "unmatched"}}[view]
+        parents = {
+            row["parent_code"]
+            for row in all_rows
+            if row["status"] in statuses and row.get("parent_code")
+        }
+        rows = [
+            row
+            for row in all_rows
+            if row["status"] in statuses
+            or row["kind"] == "parent"
+            and row["code"] in parents
+        ]
     return {
         **dto(run),
+        "view": view,
         "rows": rows[offset : offset + limit],
         "total": len(rows),
         "offset": offset,
         "availability_options": sorted(
             {
                 r[k]
-                for r in rows
+                for r in all_rows
                 for k in ("current_availability", "proposed_availability")
                 if r.get(k)
             }

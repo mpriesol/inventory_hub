@@ -29,8 +29,9 @@ export interface AtomerAvailabilityRow {
   proposed_visibility: boolean | null; proposed_availability: string; qty_available: string | null;
   status: 'changed' | 'unchanged' | 'blocked' | 'unmatched' | 'context'; reasons: string[];
 }
+export type AtomerAvailabilityView = 'all' | 'changes' | 'issues';
 export interface AtomerAvailabilityDetail extends AtomerAvailabilityRun {
-  rows: AtomerAvailabilityRow[]; total: number; offset: number; limit?: number;
+  rows: AtomerAvailabilityRow[]; total: number; offset: number; limit?: number; view: AtomerAvailabilityView;
   availability_options?: string[];
 }
 export interface AtomerAvailabilityOverride { code: string; visibility?: boolean; availability?: string }
@@ -57,10 +58,10 @@ export function uploadAtomerAvailabilityAdmin(file: File, complete: boolean) {
 }
 export const listAtomerAvailabilityRuns = (signal?: AbortSignal) => hubRequest<{ items: AtomerAvailabilityRun[] }>(`${base}/runs`, undefined, signal);
 export const createAtomerAvailabilityRun = async (body: AtomerAvailabilityCreate) => checkedRun(await hubRequest<AtomerAvailabilityRun>(`${base}/runs`, body), body.request_id);
-export const getAtomerAvailabilityRun = async (id: string, offset = 0, signal?: AbortSignal) => {
-  const value = await hubRequest<AtomerAvailabilityDetail>(`${base}/runs/${encodeURIComponent(id)}?offset=${offset}&limit=100`, undefined, signal);
+export const getAtomerAvailabilityRun = async (id: string, offset = 0, signal?: AbortSignal, view: AtomerAvailabilityView = 'all') => {
+  const value = await hubRequest<AtomerAvailabilityDetail>(`${base}/runs/${encodeURIComponent(id)}?offset=${offset}&limit=100&view=${view}`, undefined, signal);
   checkedRun(value, id);
-  if (!Array.isArray(value.rows) || value.offset !== offset || !Number.isSafeInteger(value.total) || value.total < 0) {
+  if (!Array.isArray(value.rows) || value.offset !== offset || value.view !== view || !Number.isSafeInteger(value.total) || value.total < 0) {
     throw new CatalogApiError('atomer_availability_response_invalid', 'The response does not match this preview page');
   }
   return value;

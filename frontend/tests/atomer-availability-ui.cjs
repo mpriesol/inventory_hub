@@ -25,7 +25,7 @@ const batch = '33333333-3333-4333-8333-333333333333';
 let options = { revision: 1, enabled: true, warehouse_code: 'main', source_configured: true, source_format: 'buyers', interval_seconds: 86400,
   last_started_at: null, last_completed_at: null, last_error: null, next_run_at: null,
   admin_source_configured: false, admin_complete: false, admin_upload: null, warehouses: [{ code: 'main', name: 'Main warehouse' }] };
-let runs = [], createMode = 'ok', exportMode = 'ok', settingsMode = 'ok', delayedRead;
+let runs = [], createMode = 'ok', exportMode = 'ok', settingsMode = 'ok', delayedRead, delayedDetail;
 const calls = [], exportBodies = [], configs = [];
 const rows = [
   { code: 'PARENT', name: 'Family jacket', image: 'https://images.example.test/parent.jpg', kind: 'parent', parent_code: '', product_id: null, sku: null,
@@ -35,7 +35,13 @@ const rows = [
   { code: 'UNKNOWN', name: 'Unmatched product', image: null, kind: 'standalone', parent_code: '', product_id: null, sku: null,
     current_visibility: true, current_availability: 'overíme', proposed_visibility: true, proposed_availability: 'overíme', qty_available: null, status: 'unmatched', reasons: ['hub_product_missing'] },
 ];
-function detail(run, offset = 0) { return { ...clone(run), rows: clone(run.rows || rows).slice(offset, offset + 100), total: (run.rows || rows).length, offset, availability_options: ['SKLADOM', 'do 5 dní', 'overíme'] }; }
+function detail(run, offset = 0, view = 'all') {
+  const all = clone(run.rows || rows);
+  const selected = all.filter(row => view === 'all' || (view === 'changes' ? row.status === 'changed' : ['blocked', 'unmatched'].includes(row.status)));
+  const parents = new Set(selected.map(row => row.parent_code).filter(Boolean));
+  const filtered = all.filter(row => selected.includes(row) || row.kind === 'parent' && parents.has(row.code));
+  return { ...clone(run), rows: filtered.slice(offset, offset + 100), total: filtered.length, offset, view, availability_options: ['SKLADOM', 'do 5 dní', 'overíme'] };
+}
 function ready(id, receiving = null) { return { id, status: 'ready', revision: 2, trigger: receiving ? 'receiving' : 'manual', receiving_batch_id: receiving,
   created_at: '2026-11-16T15:00:00Z', source_fetched_at: '2026-11-16T15:00:01Z', source_sha256: 'a'.repeat(64), completed_at: null, error: null,
   summary: { total: 3, changed: 2, blocked: 0, unmatched: 1 }, download_available: false, coverage: { kind: 'buyers_only', hidden_rows: 2, missing_parents: 0 }, warnings: [] }; }
@@ -87,7 +93,9 @@ global.fetch = async (path, init = {}) => {
     if (exportMode === 'lost') { exportMode = 'ok'; throw new TypeError('Synthetic lost export response after commit'); }
     return response(run);
   }
-  return response(detail(run, Number(url.searchParams.get('offset') || 0)));
+  const preview = detail(run, Number(url.searchParams.get('offset') || 0), url.searchParams.get('view') || 'all');
+  if (delayedDetail?.view === preview.view) { const wait = delayedDetail; delayedDetail = null; return new Promise(resolve => { wait.resolve = () => resolve(response(preview)); }); }
+  return response(preview);
 };
 async function render(key, path = '/sync/atomer') { await act(async () => { root.render(React.createElement(MemoryRouter, { key, initialEntries: [path], future: { v7_startTransition: true, v7_relativeSplatPath: true } }, React.createElement(AtomerAvailabilityPage))); await tick(); await tick(); }); }
 async function click(id) { await act(async () => { const element = required(id); assert(!element.disabled, `${id} is enabled`); element.click(); await tick(); await tick(); }); }
@@ -110,7 +118,11 @@ async function input(id, value) { await act(async () => { const target = require
   const tableRows = [...document.querySelectorAll('.atomer-table tbody tr')];
   assert(tableRows.findIndex(row => row.dataset.testid === 'atomer-row-PARENT') < tableRows.findIndex(row => row.dataset.testid === 'atomer-row-VARIANT-M'), 'Parent appears before its variant');
   assert.equal(required('atomer-row-VARIANT-M').querySelector('img').src, rows[1].image, 'Existing thumbnail component displays variant image');
+  assert.equal(required('atomer-view').value, 'changes', 'Preview defaults to changes that can be exported');
+  assert(!find('atomer-row-UNKNOWN'), 'Unmatched source rows do not crowd the change preview');
+  await input('atomer-view', 'issues');
   assert(required('atomer-visible-UNKNOWN').disabled, 'Unmatched identities cannot be manually forced into CSV');
+  await input('atomer-view', 'changes');
   await click('atomer-visible-VARIANT-M'); await input('atomer-availability-VARIANT-M', 'overíme');
   assert(required('atomer-create').disabled, 'A new preview cannot silently discard manual edits');
   await render('reload-edits', `/sync/atomer?receiving_batch=${batch}&run=${original.body.request_id}`);
@@ -150,15 +162,39 @@ async function input(id, value) { await act(async () => { const target = require
   assert.equal(calls.filter(call => call.method === 'POST' && call.path.endsWith('/runs')).length, creationCount, 'Refresh recovers creation without another POST');
 
   const paged = ready('55555555-5555-4555-8555-555555555555');
-  paged.rows = Array.from({ length: 102 }, (_, index) => ({ ...clone(rows[1]), code: `LEAF-${index}`, name: `Variant ${index}`, parent_code: 'BIG', parent_name: 'Large family', product_id: index + 30 }));
-  paged.summary = { total: 102, changed: 102, blocked: 0, unmatched: 0 }; runs.unshift(paged);
+  paged.rows = [{ ...clone(rows[0]), code: 'BIG', name: 'Large family', status: 'context' },
+    ...Array.from({ length: 102 }, (_, index) => ({ ...clone(rows[1]), code: `LEAF-${index}`, name: `Variant ${index}`, parent_code: 'BIG', parent_name: 'Large family', product_id: index + 30 })),
+    { ...clone(rows[1]), code: 'STABLE', kind: 'standalone', parent_code: '', status: 'unchanged', current_availability: 'SKLADOM', current_visibility: true },
+    { ...clone(rows[1]), code: 'BAD', parent_code: 'BIG', status: 'blocked', reasons: ['source_identity_invalid'] }];
+  paged.summary = { total: 105, changed: 102, blocked: 1, unmatched: 0 }; runs.unshift(paged);
   await render('paged', `/sync/atomer?run=${paged.id}`);
   await input('atomer-availability-LEAF-0', 'do 7 dní'); await click('atomer-next');
   assert(document.querySelector('.atomer-family-row').textContent.includes('Large family'), 'Second page retains parent context');
-  await click('atomer-visible-LEAF-100'); await click('atomer-previous');
+  await click('atomer-visible-LEAF-100'); await input('atomer-view', 'issues');
+  const issueRead = calls.at(-1); assert(issueRead.path.includes('offset=0') && issueRead.path.includes('view=issues'), 'Changing filter resets the server offset');
+  assert(required('atomer-row-BIG')); assert(required('atomer-row-BAD')); assert(!find('atomer-row-LEAF-0'), 'Issue view retains parent context without unrelated variants');
+  assert.equal(document.querySelector('.atomer-counts dd').textContent, '105', 'Summary counts remain global while filtered totals change');
+  assert(document.querySelector('.atomer-pagination').textContent.includes('2'), 'Pagination describes the filtered rows');
+  const staleFilter = { view: 'all' }; delayedDetail = staleFilter;
+  await input('atomer-view', 'all'); await input('atomer-view', 'issues');
+  await act(async () => { staleFilter.resolve(); await tick(); });
+  assert.equal(required('atomer-view').value, 'issues'); assert(required('atomer-row-BAD')); assert(!find('atomer-row-STABLE'), 'A late filter response cannot replace the current view');
+  await input('atomer-view', 'all'); await click('atomer-next');
+  await input('atomer-availability-STABLE', 'do 2 dní'); await input('atomer-view', 'changes');
+  assert(!find('atomer-row-STABLE'), 'An unchanged source row remains outside the default filter while its manual edit stays saved');
   assert.equal(required('atomer-availability-LEAF-0').value, 'do 7 dní', 'Edits survive pagination');
   await click('atomer-export');
-  assert.deepEqual(exportBodies.at(-1).overrides, [{ code: 'LEAF-0', availability: 'do 7 dní' }, { code: 'LEAF-100', visibility: false }], 'Export includes edits from all preview pages');
+  assert.deepEqual(exportBodies.at(-1).overrides, [{ code: 'LEAF-0', availability: 'do 7 dní' }, { code: 'LEAF-100', visibility: false }, { code: 'STABLE', availability: 'do 2 dní' }], 'Export includes edits from every page and filter');
+
+  const unchanged = ready('66666666-6666-4666-8666-666666666666');
+  unchanged.rows = [clone(paged.rows.find(row => row.code === 'STABLE'))];
+  unchanged.summary = { total: 1, changed: 0, blocked: 0, unmatched: 0 }; runs.unshift(unchanged);
+  await render('unchanged-only', `/sync/atomer?run=${unchanged.id}`);
+  assert(!find('atomer-row-STABLE'));
+  await input('atomer-view', 'all'); await input('atomer-availability-STABLE', 'do 4 dní'); await input('atomer-view', 'changes');
+  assert(!find('atomer-row-STABLE')); assert(!required('atomer-export').disabled, 'An empty filtered page cannot block a manual export');
+  await click('atomer-export');
+  assert.deepEqual(exportBodies.at(-1).overrides, [{ code: 'STABLE', availability: 'do 4 dní' }], 'A manual edit is exported even when changes view has no source rows');
 
   await act(async () => { setHubUser({ id: 20, username: 'operator', display_name: 'Operator', role: 'operator', active: true }); await tick(); });
   assert(required('atomer-feed-url').disabled, 'Operators cannot edit source configuration');

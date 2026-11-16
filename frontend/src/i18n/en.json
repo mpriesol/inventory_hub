@@ -42,6 +42,13 @@
     "recover": "Check stored result",
     "loading": "Working…",
     "resultTitle": "Changes preview",
+    "viewLabel": "Show",
+    "viewHelp": "The filter only changes the view. The CSV includes all changes and manual edits. Summary counts cover the entire preview.",
+    "views": {
+      "changes": "Changes to export",
+      "all": "All items",
+      "issues": "Issues"
+    },
     "sourceDate": "Source fetched: {{date}}",
     "notYet": "not yet",
     "editHelp": "You can edit visibility and availability before creating the CSV. Changes apply only to this export.",

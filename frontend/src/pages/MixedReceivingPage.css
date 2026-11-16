@@ -37,6 +37,8 @@
 .receiving-item-list { display: grid; gap: 12px; margin-top: 20px; }
 .receiving-item { padding: 16px; border: 1px solid var(--color-border-subtle); border-radius: 10px; }
 .receiving-item-heading { align-items: flex-start; }
+.receiving-item-heading > div, .receiving-last-scan > div { min-width: 0; overflow-wrap: anywhere; }
+.receiving-scan-list li > div { overflow-wrap: anywhere; }
 .receiving-item-heading > strong { white-space: nowrap; }
 .receiving-shop-list { display: flex; gap: 8px 20px; flex-wrap: wrap; font-size: .875rem; margin-top: 12px; }
 .receiving-invoice-progress li { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 10px 0; border-bottom: 1px solid var(--color-border-subtle); }

@@ -47,7 +47,7 @@ Všetky cesty začínajú `/api/atomer-availability` a vyžadujú operátora; ko
 
 - `GET /options`, `POST /configure`: revízne nastavenia; zmena má vlastné `request_id` UUID. Rovnaký posledný request/payload je bezpečne obnoviteľný, zmenený payload alebo neplatná revízia skončí konfliktom.
 - `POST /runs`: `request_id`, voliteľné `warehouse_code`, `product_ids` alebo `receiving_batch_id`. ID behu je request UUID. Rovnaký request sa znovu nezaradí.
-- `GET /runs`, `GET /runs/{id}?offset=0&limit=100`: história, stav, paginované riadky, číselník textov, súhrn a pokrytie. Každý variant nesie meno/obrázok a aktuálnu viditeľnosť rodiča aj pri rozdelení stránkovaním.
+- `GET /runs`, `GET /runs/{id}?offset=0&limit=100&view=all`: história, stav, paginované riadky, číselník textov, súhrn a pokrytie. `view=changes` zobrazí zmeny a ich rodičovský kontext, `view=issues` blokované a nespárované riadky s rodičmi. Filter sa použije pred stránkovaním, `total` označuje filtrovaný počet; súhrn a číselník dostupností zostávajú za celý náhľad. Predvolené `all` zachováva pôvodný kontrakt. Každý variant nesie meno/obrázok a aktuálnu viditeľnosť rodiča aj pri rozdelení stránkovaním.
 - `POST /runs/{id}/export`: `expected_revision` a `overrides` s `code`, voliteľnou `visibility` a `availability`. Opakovanie rovnakého zámeru vráti uložený výsledok; iný zámer nemení hotové CSV.
 - `GET /runs/{id}/download`: nemenné CSV alebo 404 po jeho expirácii.
 

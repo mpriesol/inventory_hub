@@ -532,6 +532,69 @@ class AtomerAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(exported.status, "ready")
             self.assertIsNone(exported.csv_content)
 
+    async def test_preview_filters_before_paging_keeps_parents_and_full_summary(self):
+        queued = await self.queue()
+        rows = [
+            {"code": "P", "kind": "parent", "parent_code": "", "status": "context"},
+            {
+                "code": "P-CHANGED",
+                "kind": "variant",
+                "parent_code": "P",
+                "status": "changed",
+            },
+            {
+                "code": "P-BLOCKED",
+                "kind": "variant",
+                "parent_code": "P",
+                "status": "blocked",
+            },
+            {
+                "code": "P-SAME",
+                "kind": "variant",
+                "parent_code": "P",
+                "status": "unchanged",
+            },
+            {
+                "code": "UNMATCHED",
+                "kind": "standalone",
+                "parent_code": "",
+                "status": "unmatched",
+            },
+            {"code": "Z", "kind": "parent", "parent_code": "", "status": "changed"},
+        ]
+        rows[3]["current_availability"] = "Source option outside filter"
+        expected_summary = service.summarize(rows)
+        async with self.sessions() as db:
+            run = await db.get(Run, queued["id"])
+            run.document = {"rows": rows, "summary": expected_summary}
+            await db.commit()
+        async with self.sessions() as db:
+            all_rows = await service.get_run(db, queued["id"])
+            changes = await service.get_run(db, queued["id"], view="changes")
+            page = await service.get_run(
+                db, queued["id"], offset=1, limit=1, view="changes"
+            )
+            issues = await service.get_run(db, queued["id"], view="issues")
+            self.assertEqual((all_rows["view"], all_rows["total"]), ("all", 6))
+            self.assertEqual(
+                [r["code"] for r in changes["rows"]], ["P", "P-CHANGED", "Z"]
+            )
+            self.assertEqual(
+                (page["view"], page["offset"], page["total"]), ("changes", 1, 3)
+            )
+            self.assertEqual([r["code"] for r in page["rows"]], ["P-CHANGED"])
+            self.assertEqual(
+                [r["code"] for r in issues["rows"]], ["P", "P-BLOCKED", "UNMATCHED"]
+            )
+            for result in (changes, page, issues):
+                self.assertEqual(result["summary"], expected_summary)
+                self.assertIn(
+                    "Source option outside filter", result["availability_options"]
+                )
+            run = await db.get(Run, queued["id"])
+            self.assertEqual(run.document["rows"], rows)
+            self.assertIsNone(run.csv_content)
+
     async def test_history_includes_latest_download_beyond_thirty_newer_failures(self):
         latest_id = str(uuid4())
         async with self.sessions() as db:

@@ -42,6 +42,13 @@
     "recover": "Overiť uložený výsledok",
     "loading": "Spracováva sa…",
     "resultTitle": "Náhľad zmien",
+    "viewLabel": "Zobraziť",
+    "viewHelp": "Filter mení iba zobrazenie. CSV obsahuje všetky zmeny vrátane ručných úprav. Súhrnné počty zahŕňajú celý náhľad.",
+    "views": {
+      "changes": "Zmeny na export",
+      "all": "Všetky položky",
+      "issues": "Problémy"
+    },
     "sourceDate": "Zdroj stiahnutý: {{date}}",
     "notYet": "zatiaľ nie",
     "editHelp": "Pred vytvorením CSV môžete upraviť viditeľnosť a dostupnosť. Úpravy platia iba pre tento export.",
