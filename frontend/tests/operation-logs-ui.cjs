@@ -34,7 +34,7 @@ async function input(id, value) {
 
 const calls = [];
 let mode = 'ok', finish;
-const event = { id: 'a'.repeat(32), timestamp: '2026-11-13T20:51:30.000000Z', component: 'husky', event: 'catalog_validation_failed', level: 'error', supplier: 'husky', run_id: 1240, phase: 'parse_page', page: 2, observed_page: 1, reason: 'pager_marker_mismatch', error_code: 'husky_b2b_incomplete' };
+let event = { id: 'a'.repeat(32), timestamp: '2026-11-13T20:51:30.000000Z', component: 'husky', event: 'catalog_validation_failed', level: 'error', supplier: 'husky', run_id: 1240, phase: 'parse_page', page: 2, observed_page: 1, reason: 'pager_marker_mismatch', error_code: 'husky_b2b_incomplete' };
 global.fetch = async (path, options) => {
   calls.push({ path, ...options });
   if (mode === 'pending') return new Promise(resolve => { finish = () => resolve({ ok: true, json: async () => ({ items: [event], next_cursor: null, max_bytes: 20000000 }) }); });
@@ -66,6 +66,27 @@ global.fetch = async (path, options) => {
   assert(!document.querySelector('tbody'), 'A failed read cannot show stale events as its result');
   mode = 'ok'; await click('log-refresh');
   await click('log-reset'); assert.equal(required('log-supplier').value, ''); assert(!calls.at(-1).path.includes('supplier='));
+  const base = { id: event.id, timestamp: event.timestamp, component: 'supplier_availability', supplier: 'husky', run_id: 1240, event: 'availability_pass_failed', level: 'error' };
+  event = { ...base, error_code: 'husky_stock_incomplete', phase: 'acceptance', reason: 'coverage_below_minimum', target: 'husky_stock_feed',
+    rows: 9939, previous_rows: 9940, required_rows: 9940, min_coverage_percent: 100, catalog_rows: 3125, stock_rows: 9939, b2b_rows: 10655, matched_rows: 3000, unknown: 200 };
+  await click('log-refresh');
+  const readable = () => document.querySelector('tbody').textContent.replace(/\s+/g, ' ');
+  assert(readable().includes('načítané 9 939, predtým 9 940'));
+  assert(readable().includes('Limit 100 % vyžaduje aspoň 9 940; do limitu chýba 1'));
+  assert(readable().includes('Nové dostupnosti sa neuložili'));
+  assert(readable().includes('10 655'));
+  assert(!readable().includes('nemá zhodné kódy'), 'Coverage failure must not be confused with a failed code join');
+  event = { ...base, error_code: 'supplier_availability_incomplete_feed' };
+  await click('log-refresh');
+  assert(readable().includes('Celá dávka bola odmietnutá'));
+  assert(readable().includes('Tento starší záznam neobsahuje počty'));
+  assert(!readable().includes('Platné údaje boli prijaté'), 'Historical Husky rejection cannot claim partial acceptance');
+  event = { ...event, supplier: 'paul-lange' };
+  await click('log-refresh'); assert(readable().includes('Platné údaje boli prijaté'), 'Ordinary partial-feed semantics are retained');
+  event = { ...base, event: 'snapshot_parsed', level: 'info', catalog_rows: 2, stock_rows: 3, b2b_rows: 10, matched_rows: 1, unknown: 2 };
+  await click('log-refresh');
+  assert(readable().includes('Zdroje spracované') && readable().includes('Údaje ešte neboli prijaté do Hubu'));
+  assert.equal(document.querySelectorAll('.operation-log-counts dd').length, 5);
   mode = 'pending'; await click('log-refresh'); const pending = calls.at(-1), resolveOld = finish;
   await act(async () => { unlockHub(''); await tick(); }); assert(pending.signal.aborted);
   await act(async () => { resolveOld(); await tick(); });

@@ -21,7 +21,8 @@ BACKUPS = 3
 MAX_LINE = 4096
 _context = ContextVar("operation_context", default={})
 _codes = {"component", "event", "supplier", "phase", "error_code", "reason"}
-_numbers = {"run_id", "status_code", "duration_ms", "page", "observed_page", "rows", "accepted", "rejected", "unknown", "redirect"}
+_numbers = {"run_id", "status_code", "duration_ms", "page", "observed_page", "rows", "accepted", "rejected", "unknown", "redirect",
+            "previous_rows", "required_rows", "min_coverage_percent", "catalog_rows", "stock_rows", "b2b_rows", "matched_rows"}
 
 
 class LogUnavailable(Exception):

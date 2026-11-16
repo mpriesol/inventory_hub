@@ -1,12 +1,13 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -140,6 +141,42 @@ class OperationLogTests(unittest.TestCase):
         entry = log.read()["items"][0]
         self.assertEqual((entry["status_code"], entry["target"], entry["level"]), (403, "husky_login", "error"))
         self.assertNotIn("secret", json.dumps(entry))
+
+    def test_worker_failure_keeps_counts_after_acceptance_rollback_without_payloads(self):
+        from inventory_hub import database
+        from inventory_hub.services import supplier_availability_worker as worker, husky_sync
+        from inventory_hub.services.supplier_availability_source import AvailabilityError
+        connection = SimpleNamespace(scalar=AsyncMock(return_value=True), commit=AsyncMock(), execute=AsyncMock())
+        db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+            scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [1])))
+        @asynccontextmanager
+        async def connect():
+            yield connection
+        @asynccontextmanager
+        async def transaction():
+            yield db
+        plan = {"supplier": "husky", "supplier_id": 1, "run_id": 99}
+        failure = AvailabilityError("husky_catalog_incomplete", 422, diagnostic={
+            "phase": "acceptance", "target": "husky_products_feed", "reason": "coverage_below_minimum",
+            "rows": 3125, "previous_rows": 3129, "required_rows": 3129, "min_coverage_percent": 100,
+            "catalog_rows": 3125, "stock_rows": 9939, "b2b_rows": 10655, "matched_rows": 3000, "unknown": 200,
+            "password": "private-password", "response": "private-response"})
+        with patch.object(database, "_engine", SimpleNamespace(connect=connect)), \
+             patch.object(worker, "get_session_context", transaction), \
+             patch.object(worker.service, "start_run", AsyncMock(return_value=plan)), \
+             patch.object(husky_sync, "fetch_async", AsyncMock(return_value=([], 0))), \
+             patch.object(worker.service, "accept_run", AsyncMock(side_effect=failure)), \
+             patch.object(worker.service, "fail_run", AsyncMock()) as fail:
+            self.assertTrue(asyncio.run(worker.cycle()))
+        fail.assert_awaited_once_with(db, 1, 99, "husky_catalog_incomplete")
+        entries = log.read(supplier="husky", run_id=99, level="error")["items"]
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual((entry['event'], entry['rows'], entry['required_rows'], entry['min_coverage_percent']),
+                         ('availability_pass_failed', 3125, 3129, 100))
+        self.assertEqual((entry['catalog_rows'], entry['stock_rows'], entry['b2b_rows']), (3125, 9939, 10655))
+        self.assertNotIn('private-', json.dumps(entry))
+        self.assertNotIn('availability_pass_completed', json.dumps(log.read()))
 
 
 if __name__ == "__main__":

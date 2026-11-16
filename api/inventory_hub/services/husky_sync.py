@@ -39,11 +39,25 @@ class Snapshot(ParsedAvailability):
         result["accepted"] -= result["unknown"]
         return result
 
+    def diagnostic(self):
+        return {"catalog_rows": self.total, "stock_rows": self.stock_count, "b2b_rows": self.b2b_count,
+                "matched_rows": sum("b2b" in raw for _, raw in self.catalog_records),
+                "unknown": sum(row.available is None for row in self)}
+
+    def require_coverage(self, count, baseline, percent, target, code):
+        if count * 100 < baseline * percent:
+            raise AvailabilityError(code, 422, diagnostic={**self.diagnostic(),
+                "phase": "acceptance", "reason": "coverage_below_minimum", "target": target,
+                "rows": count, "previous_rows": baseline, "required_rows": (baseline * percent + 99) // 100,
+                "min_coverage_percent": percent})
+
 
 def combine(records, stock, quotes, cfg):
     """CODE joins the public stock; PRODUCTNO joins B2B. Never join by title."""
     if not any(product.code in stock for product, _ in records):
-        raise AvailabilityError("husky_stock_incomplete", 422)
+        raise AvailabilityError("husky_stock_incomplete", 422, diagnostic={
+            "phase": "join_sources", "reason": "no_matching_codes", "target": "husky_stock_feed",
+            "catalog_rows": len(records), "stock_rows": len(stock), "matched_rows": 0})
     options = (cfg.get("adapter_settings") or {}).get("husky") or {}
     basis = options.get("purchase_price_basis", "unknown")
     if basis not in ("unknown", "net", "gross"):
@@ -99,7 +113,9 @@ def combine(records, stock, quotes, cfg):
     normalize_singleton_groups([product for product, _ in records])
     if quotes is not None:
         if not any("b2b" in raw for _, raw in records):
-            raise AvailabilityError("husky_b2b_no_matches", 422)
+            raise AvailabilityError("husky_b2b_no_matches", 422, diagnostic={
+                "phase": "join_sources", "reason": "no_matching_codes", "target": "husky_catalog",
+                "catalog_rows": len(records), "stock_rows": len(stock), "b2b_rows": len(quotes), "matched_rows": 0})
         if basis == "unknown":
             warnings.append("husky_price_basis_unconfirmed")
         if any("husky_b2b_unmatched" in p.warnings for p, _ in records):
@@ -135,7 +151,9 @@ def fetch(plan):
             stock = read_stock(paths["stock"])
             options = (cfg.get("adapter_settings") or {}).get("husky") or {}
             quotes = fetch_quotes(options.get("username"), options.get("password"), deadline=started + MAX_COLLECTION_SECONDS) if options.get("b2b_enabled") else None
-            return combine(records, stock, quotes, cfg), sum(path.stat().st_size for path in paths.values())
+            snapshot = combine(records, stock, quotes, cfg)
+            operation_log.emit("snapshot_parsed", component="husky", supplier="husky", phase="join_sources", **snapshot.diagnostic())
+            return snapshot, sum(path.stat().st_size for path in paths.values())
     except HuskyError as error:
         raise AvailabilityError(error.code, 502) from None
     except (ValueError, KeyError):
@@ -178,16 +196,18 @@ async def store(db, plan, snapshot, row, run, observed, expires):
     # Do not silently bypass a user-defined mapping in this combined workflow.
     if await feed_mapping.mapping_row(db, "husky", "products"):
         raise AvailabilityError("husky_custom_mapping_unsupported", 422)
-    if snapshot.total * 100 < row.last_item_count * row.min_coverage_percent:
-        raise AvailabilityError("supplier_availability_incomplete_feed", 422)
+    snapshot.require_coverage(snapshot.total, row.last_item_count, row.min_coverage_percent,
+                              "husky_products_feed", "husky_catalog_incomplete")
     feed = await db.get(SupplierFeed, plan["feed_id"])
     previous = await db.get(SupplierFeedRun, feed.last_run_id) if feed.last_run_id else None
     previous_count = (previous.error_details or {}).get("husky_b2b_count") if previous else None
-    if previous_count and snapshot.b2b_count is not None and snapshot.b2b_count * 100 < previous_count * row.min_coverage_percent:
-        raise AvailabilityError("husky_b2b_incomplete", 422)
+    if previous_count and snapshot.b2b_count is not None:
+        snapshot.require_coverage(snapshot.b2b_count, previous_count, row.min_coverage_percent,
+                                  "husky_catalog", "husky_b2b_incomplete")
     previous_stock_count = (previous.error_details or {}).get("husky_stock_count") if previous else None
-    if previous_stock_count and snapshot.stock_count is not None and snapshot.stock_count * 100 < previous_stock_count * row.min_coverage_percent:
-        raise AvailabilityError("husky_stock_incomplete", 422)
+    if previous_stock_count and snapshot.stock_count is not None:
+        snapshot.require_coverage(snapshot.stock_count, previous_stock_count, row.min_coverage_percent,
+                                  "husky_stock_feed", "husky_stock_incomplete")
     run.error_details = {**(run.error_details or {}), "husky_b2b_count": snapshot.b2b_count, "husky_stock_count": snapshot.stock_count}
     for product, _ in snapshot.catalog_records:
         product.supplier_observation_expires_at = expires

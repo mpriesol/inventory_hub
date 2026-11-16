@@ -98,7 +98,8 @@ async def cycle():
                     async with get_session_context() as db:
                         await service.fail_run(db, plan["supplier_id"], plan["run_id"], code)
                     operation_log.emit("availability_pass_failed", level="error", error_code=code,
-                        duration_ms=round((time.monotonic() - started) * 1000))
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                        **(error.diagnostic if isinstance(error, AvailabilityError) else {}))
             return True
         finally:
             await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})

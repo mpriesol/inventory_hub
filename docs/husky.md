@@ -175,6 +175,15 @@ older snapshot no longer hides a more recent failed refresh on the settings card
 This instrumentation preserves all completeness/identity guards and does not
 itself claim that a previously failing live read is fixed.
 
+The log also distinguishes parsed sources from accepted data. A coverage rejection
+records the exact source, observed and previous row counts, configured percentage
+and integer minimum, plus catalog/stock/B2B totals and matching/unknown counts.
+The final failed event retains these facts after the database transaction rolls
+back. Product XML coverage failures use `husky_catalog_incomplete`; historical
+Husky failures under the generic partial-feed code are displayed as full rejection,
+never as accepted values. Older missing counts are not reconstructed. Logging does
+not lower the saved threshold or change acceptance/publication behavior.
+
 The production diagnostic run #1241 on 13 November 2026 reached the catalog
 reset with HTTP 200 after a successful login, then failed on page 1 with
 `pager_marker_missing`. The previous parser required a direct pager table and

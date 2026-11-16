@@ -163,7 +163,9 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         plan=await self.plan()
         with self.assertRaises(AvailabilityError) as error:
             await self.accept(plan)
-        self.assertEqual(error.exception.code,'supplier_availability_incomplete_feed')
+        self.assertEqual(error.exception.code,'husky_catalog_incomplete')
+        self.assertEqual((error.exception.diagnostic['rows'], error.exception.diagnostic['required_rows']), (1, 2))
+        self.assertEqual(error.exception.diagnostic['target'], 'husky_products_feed')
         async with self.tx() as db:
             await service.fail_run(db,self.supplier_id,plan['run_id'],error.exception.code)
             self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct).where(SupplierProduct.is_active)),2)
@@ -190,6 +192,8 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AvailabilityError) as error:
             await self.accept(plan)
         self.assertEqual(error.exception.code,'husky_stock_incomplete')
+        self.assertEqual((error.exception.diagnostic['rows'], error.exception.diagnostic['previous_rows']), (1, 2))
+        self.assertEqual(error.exception.diagnostic['target'], 'husky_stock_feed')
         async with self.tx() as db:
             self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)),2)
             self.assertNotEqual((await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))).run_id,plan['run_id'])

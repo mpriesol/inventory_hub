@@ -142,6 +142,26 @@ class HuskyTests(unittest.TestCase):
         with self.assertRaises(AvailabilityError) as caught:
             husky_sync.combine(self.records(item(),item('PUBLIC-2',ean='4006381333931')), {'PUBLIC-1': True,'PUBLIC-2': True}, quotes, self.cfg)
         self.assertEqual(caught.exception.code,'husky_b2b_no_matches')
+        self.assertEqual(caught.exception.diagnostic['reason'], 'no_matching_codes')
+        self.assertEqual(caught.exception.diagnostic['matched_rows'], 0)
+
+    def test_coverage_reports_exact_requirement_without_relaxing_acceptance(self):
+        snapshot = husky_sync.combine(self.records(), {'PUBLIC-1': True}, None, self.cfg)
+        for count, baseline, percent, required in ((9939, 9940, 100, 9940), (99, 101, 99, 100)):
+            with self.subTest(count=count), self.assertRaises(AvailabilityError) as error:
+                snapshot.require_coverage(count, baseline, percent, 'husky_stock_feed', 'husky_stock_incomplete')
+            facts = error.exception.diagnostic
+            self.assertEqual((facts['rows'], facts['previous_rows'], facts['required_rows'], facts['min_coverage_percent']),
+                             (count, baseline, required, percent))
+            self.assertEqual((facts['reason'], facts['target']), ('coverage_below_minimum', 'husky_stock_feed'))
+            snapshot.require_coverage(required, baseline, percent, 'husky_stock_feed', 'husky_stock_incomplete')
+
+    def test_source_counts_distinguish_matched_b2b_from_known_availability(self):
+        quotes = {q.code:q for q in b2b.parse_page(b2b.document(page(stock_value='-').encode()), 1)[0]}
+        snapshot = husky_sync.combine(self.records(item(), item('PUBLIC-2', 'MPN-2', '4006381333931')),
+            {'PUBLIC-1': True, 'PUBLIC-2': True, 'EXTRA': False}, quotes, self.cfg)
+        self.assertEqual(snapshot.diagnostic(), {'catalog_rows': 2, 'stock_rows': 3, 'b2b_rows': 1,
+                                               'matched_rows': 1, 'unknown': 2})
 
     def test_stock_semantics_and_pagination_validation(self):
         self.assertEqual(b2b.stock_value('0 ks'),(False,Decimal(0),'exact'))
