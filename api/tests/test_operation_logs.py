@@ -163,6 +163,7 @@ class OperationLogTests(unittest.TestCase):
             "password": "private-password", "response": "private-response"})
         with patch.object(database, "_engine", SimpleNamespace(connect=connect)), \
              patch.object(worker, "get_session_context", transaction), \
+             patch.object(worker, "reconcile_attention", AsyncMock()), \
              patch.object(worker.service, "start_run", AsyncMock(return_value=plan)), \
              patch.object(husky_sync, "fetch_async", AsyncMock(return_value=([], 0))), \
              patch.object(worker.service, "accept_run", AsyncMock(side_effect=failure)), \

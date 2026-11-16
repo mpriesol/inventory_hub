@@ -21,11 +21,11 @@ The shared `operation_log.emit` / `operation_log.context` interface records:
   missing next page and the page limit. HTTP 200 does not prove valid content.
 - Husky source parsing records catalog/stock/B2B counts, uniquely matched B2B
   codes and unknown wholesale observations. `snapshot_parsed` explicitly means
-  parsed, not committed. On coverage rejection, the final **error** event carries
+  parsed, not committed. On a committed coverage warning, the **warning** event carries
   the exact source, current and previous counts, configured percentage and the
-  rounded-up minimum count. These facts survive the acceptance transaction's
-  rollback and remain visible with the error-only filter. A zero-code join is a
-  separate reason, not an alternative guessed from the coverage error.
+  rounded-up minimum count. These facts are logged after acceptance commits. Legacy
+  rejection events retain their original error severity and meaning. A zero-code
+  join is a separate reason, not an alternative guessed from a coverage warning.
 
 This is an initial integration of one common logger, not comprehensive outgoing
 HTTP coverage for every adapter. Add other shared API clients and workers to
@@ -64,7 +64,7 @@ rotation must never remove them.
 
 ## Query and UI behavior
 
-Filters: component, supplier, level, run ID, request ID and inclusive UTC
+Filters: component, supplier, level, run ID, request ID, attention ID and inclusive UTC
 `since`/`until` timestamps. The UI accepts dates in the operator's local time.
 `limit` is 1–200 (default 100); records are newest first. `before` is the returned
 opaque event ID. New writes do not shift a cursor page. If rotation removed the
@@ -73,18 +73,16 @@ starts again. Invalid ranges/filters are rejected without echoing input values.
 Read failures clear the table; access changes abort requests and clear retained
 events. No polling, automatic retries or external API calls occur when browsing.
 
-Coverage errors show the decisive comparison immediately; other source counts
-are expandable. The explanation states that the entire Husky snapshot was
-rejected and points to source completeness / advanced coverage settings. No
-threshold is changed by logging. Older events cannot be backfilled with numbers
-that were never recorded. Their missing diagnostics are explicit, and the old
-Husky `supplier_availability_incomplete_feed` text is rendered as a full rejection,
-without changing the partial-acceptance meaning for other suppliers. New Husky
-catalog-size failures use `husky_catalog_incomplete`.
+Coverage warnings show the decisive comparison immediately and state that valid
+rows were saved while missing/skipped rows retain their original expiry. Other
+source counts are expandable. Historical failed Husky events retain the full
+rejection explanation. Older events cannot be backfilled with numbers that were
+never recorded. No threshold is changed by logging.
 
 ## Deployment, verification and rollback
 
-No DB migration, credential change or extra dependency. Deploy through the
+The logger itself needs no DB migration, credential change or extra dependency.
+The attention center adds migration 053 as documented below. Deploy through the
 existing workflow. Reverting the implementation is compatible with existing data;
 it leaves only bounded diagnostic files. Keep Docker rotation when rolling back.
 
@@ -93,3 +91,18 @@ filtering, context propagation, secret exclusion, protected route handling,
 failed requests, Husky pager evidence, access changes and help controls. Existing
 Husky DB tests remain required in CI. Synthetic tests do not prove a live Husky
 refresh; verify a new run and its stored catalog results after deployment.
+
+## Shared attention state and partial imports
+
+The protected `/api/attention` API and `/settings/attention` use durable database
+state; see [attention.md](attention.md). The same incidents emit `attention_raised`,
+`attention_repeated`, `attention_resolved`, `attention_ignored`,
+`attention_restored` and `attention_rule_updated` after their transaction commits.
+`attention_id` filters connect a notification to its events. Disabled rules and
+ignored incidents still log. Raw business payloads, links and credentials are
+excluded by the existing metadata allowlist; rotation remains 5 MB × 4 files.
+
+Husky coverage shortfalls now emit `availability_coverage_warning` after valid
+rows commit, with the exact threshold comparison and partial-acceptance wording.
+They no longer emit the old whole-snapshot rejection. Parser/authentication/
+revision failures and historical events keep their failure meaning.

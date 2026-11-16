@@ -97,7 +97,7 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
   useEffect(() => { onLeaveBlocked(value.supplier, dirty || blocked); return () => onLeaveBlocked(value.supplier, false); }, [dirty, blocked, value.supplier]);
   const status = value.status || (value.revision === 0 ? 'unconfigured' : !value.last_success_at ? 'not_loaded' : stale ? 'stale' : 'fresh');
   const failed = !!value.last_error || value.latest_run?.status === 'failed';
-  const incomplete = !!value.latest_run?.report && (value.latest_run.report.rejected > 0 || value.latest_run.report.unknown > 0);
+  const incomplete = !!value.latest_run?.report && (value.latest_run.report.rejected > 0 || value.latest_run.report.unknown > 0 || value.latest_run.report.warnings.length > 0);
   const id = (suffix: string) => `supplier-${value.supplier}-${suffix}`;
   function discard() { resetForm(value); setSaved(false); }
   function save() {

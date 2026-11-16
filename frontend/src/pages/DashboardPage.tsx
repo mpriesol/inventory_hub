@@ -1,3 +1,4 @@
+import { AttentionCenter } from '../components/AttentionCenter';
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +37,7 @@ export function DashboardPage() {
       <p>{t('dashboard.subtitle')}</p>
       <ActionScope effects={['hub-read']} calls={{ kind: 'known', count: 0 }}>{t('dashboard.localOnly')}</ActionScope>
     </header>
+    <AttentionCenter compact />
     {loading && <p role="status">{t('dashboard.loading')}</p>}
     {error && <p role="alert">{t('dashboard.loadError')}</p>}
     {stats && <>

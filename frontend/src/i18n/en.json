@@ -3000,7 +3000,7 @@
     "rangeSeconds": "{{min}} to {{max}} seconds.",
     "freshness": "Data validity (seconds)",
     "freshnessHelp": "For automatic refresh, at least one hour longer than the interval; 172800 seconds (48 hours) is recommended for daily refresh. Stale or missing data remains unverified.",
-    "coverage": "Warn when item count drops below (%)",
+    "coverage": "Minimum coverage without warning (%)",
     "coverageHelp": "Compared with the last complete refresh. Valid items in smaller feeds are still accepted; missing items are never replaced with zeroes.",
     "supplierAuto": "Refresh this source automatically",
     "lastSuccess": "Last successful refresh",
@@ -3215,7 +3215,9 @@
       "husky_b2b_duplicate_identity": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
       "husky_b2b_unsafe_redirect": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
       "husky_b2b_too_large": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
-      "husky_catalog_incomplete": "The product XML contains fewer items than the configured coverage threshold allows. The entire snapshot was rejected; previous data was retained."
+      "husky_catalog_incomplete": "The product XML contains fewer items than the configured coverage threshold allows. The entire snapshot was rejected; previous data was retained.",
+      "husky_catalog_row_invalid": "An invalid product row was skipped.",
+      "husky_stock_rows_rejected": "Invalid rows in the auxiliary export were skipped. Verified B2B availability was processed."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",
@@ -3366,7 +3368,7 @@
     "runStatus": {
       "running": "Loading",
       "completed": "Loaded",
-      "partial": "Loaded with warnings",
+      "partial": "Updated with warnings",
       "failed": "Refresh failed"
     },
     "counts": {
@@ -5999,7 +6001,8 @@
       "run_id": "Run ID",
       "request_id": "Request ID",
       "since": "From",
-      "until": "Until"
+      "until": "Until",
+      "attention_id": "Notification ID"
     },
     "level": {
       "info": "OK / progress",
@@ -6009,7 +6012,8 @@
     "component": {
       "api": "Hub API",
       "husky": "Husky",
-      "supplier_availability": "Supplier refresh"
+      "supplier_availability": "Supplier refresh",
+      "attention": "Attention"
     },
     "columns": {
       "time": "Time",
@@ -6028,7 +6032,16 @@
       "catalog_page_validated": "Page validated",
       "catalog_validation_failed": "Catalog validation failed",
       "catalog_parse_failed": "Page parsing failed",
-      "snapshot_parsed": "Sources parsed"
+      "snapshot_parsed": "Sources parsed",
+      "availability_pass_partial": "Updated with warnings",
+      "availability_coverage_warning": "Lower source coverage",
+      "attention_raised": "Issue opened",
+      "attention_repeated": "Issue repeated",
+      "attention_resolved": "Issue resolved",
+      "attention_ignored": "Issue ignored",
+      "attention_restored": "Issue visibility restored",
+      "attention_rule_updated": "Notification rule updated",
+      "attention_reconcile_failed": "Notification update failed"
     },
     "phases": {
       "login_form": "Login form",
@@ -6057,7 +6070,8 @@
     "targets": {
       "husky_products_feed": "Product XML",
       "husky_stock_feed": "Stock XML",
-      "husky_catalog": "Husky B2B"
+      "husky_catalog": "Husky B2B",
+      "supplier_feed": "Supplier feed"
     },
     "metrics": {
       "catalog_rows": "XML products",
@@ -6065,6 +6079,68 @@
       "b2b_rows": "B2B items",
       "matched_rows": "Products with a matching B2B code",
       "unknown": "Unknown B2B availability"
+    },
+    "snapshotPartial": "Valid availability was stored. Missing and skipped items retain their original expiry.",
+    "coverageWarningAction": "The coverage threshold controls warnings; valid updates continue."
+  },
+  "attention": {
+    "title": "Needs attention",
+    "helpLabel": "About notifications",
+    "help": "Ignoring hides this incident until it is resolved. A new incident is shown again. Rules can be disabled for one resource or all resources. Processing and diagnostic logging continue. Percentage coverage is configured in supplier settings. Global disabling takes precedence over source-specific rules. Changes apply to the entire Hub.",
+    "all": "All notifications",
+    "events": "Issues",
+    "rules": "Rules",
+    "state": "State",
+    "source": "Service",
+    "allSources": "All resources",
+    "refresh": "Refresh",
+    "loading": "Loading notifications…",
+    "appliesTo": "Applies to",
+    "enabled": "Notification enabled",
+    "disabled": "Notification disabled",
+    "minimum": "Show from occurrence",
+    "sourceSettings": "Source and percentage coverage settings",
+    "save": "Save rule",
+    "cancel": "Cancel",
+    "configure": "Configure notification",
+    "repeatFrom": "From occurrence {{count}}",
+    "occurrences": "Occurrences: {{count}}",
+    "openService": "Open source",
+    "log": "Log",
+    "ignore": "Ignore this incident",
+    "restore": "Show again",
+    "reasons": "Notification details",
+    "partialSummary": "Updated availability: {{accepted}} · Skipped items: {{rejected}} · Unknown availability: {{unknown}}.",
+    "kinds": {
+      "supplier_availability": {
+        "failed": "Refresh failed",
+        "partial": "Updated with warnings"
+      }
+    },
+    "sources": {
+      "supplier_availability": "Supplier availability"
+    },
+    "states": {
+      "active": "Active",
+      "ignored": "Ignored",
+      "muted": "Suppressed by rule",
+      "resolved": "Resolved"
+    },
+    "severity": {
+      "warning": "Warning",
+      "error": "Error"
+    },
+    "empty": {
+      "active": "No active notifications.",
+      "ignored": "No ignored incidents.",
+      "muted": "No incidents suppressed by a rule.",
+      "resolved": "No resolved incidents."
+    },
+    "errors": {
+      "attention_load_failed": "Could not load notifications.",
+      "attention_write_failed": "Could not confirm the change. Refresh before trying again.",
+      "attention_changed": "The state changed. Refresh and select the action again.",
+      "attention_not_found": "The notification is no longer available."
     }
   }
 }

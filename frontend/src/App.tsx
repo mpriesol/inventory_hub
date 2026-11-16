@@ -7,6 +7,7 @@ import { MixedReceivingPage } from './pages/MixedReceivingPage';
 import { SessionBootstrap } from './components/SessionBootstrap';
 import { RequireHubSession } from './components/RequireHubSession';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
+import { AttentionCenter } from './components/AttentionCenter';
 import { OperationLogsPage } from './pages/OperationLogsPage';
 import { FifoCostSyncPage } from './pages/FifoCostSyncPage';
 import { AiContentPage } from './pages/AiContentPage';
@@ -92,6 +93,7 @@ const router = createBrowserRouter(createRoutesFromElements(
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/availability" element={<AvailabilitySyncPage />} />
+          <Route path="/settings/attention" element={<AttentionCenter />} />
           <Route path="/settings/logs" element={<OperationLogsPage />} />
           <Route path="/settings/purchase-costs" element={<FifoCostSyncPage />} />
           <Route path="/settings/stock" element={<StockSettingsPage />} />

@@ -42,6 +42,7 @@ from inventory_hub.routers.suppliers import router as suppliers_router
 from inventory_hub.routers.logs import router as logs_router
 from inventory_hub.routers.logs_global import router as logs_global_router
 from inventory_hub.routers.operation_logs import router as operation_logs_router
+from inventory_hub.routers.attention import router as attention_router
 from inventory_hub.routers.imports import router as imports_router
 from inventory_hub.routers.receiving import router as receiving_router_legacy
 
@@ -210,6 +211,7 @@ app.include_router(suppliers_router)
 app.include_router(logs_router)
 app.include_router(logs_global_router)
 app.include_router(operation_logs_router)
+app.include_router(attention_router)
 app.include_router(imports_router)
 app.include_router(invoice_calendar_router)
 app.include_router(invoice_archive_router)

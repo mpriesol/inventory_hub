@@ -1,6 +1,8 @@
 """Husky composite snapshots in the existing isolated catalog test database."""
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import replace
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -155,49 +157,59 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((settings.interval_seconds,settings.freshness_seconds),(3600,7200))
             self.assertEqual((settings.revision,settings.next_run_at),(configured['revision'],configured['next_run_at']))
 
-    async def test_incomplete_catalog_rolls_back_all_and_keeps_success(self):
+    async def test_smaller_catalog_accepts_valid_rows_and_preserves_missing_expiry(self):
         self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')
         self.stock.write_text('<SHOP>'+stock()+stock('PUBLIC-2')+'</SHOP>')
         await self.accept(await self.plan())
-        self.feed.write_text('<SHOP>'+item()+'</SHOP>')
-        plan=await self.plan()
-        with self.assertRaises(AvailabilityError) as error:
-            await self.accept(plan)
-        self.assertEqual(error.exception.code,'husky_catalog_incomplete')
-        self.assertEqual((error.exception.diagnostic['rows'], error.exception.diagnostic['required_rows']), (1, 2))
-        self.assertEqual(error.exception.diagnostic['target'], 'husky_products_feed')
         async with self.tx() as db:
-            await service.fail_run(db,self.supplier_id,plan['run_id'],error.exception.code)
-            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct).where(SupplierProduct.is_active)),2)
-            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierAvailabilityObservation)),2)
-            status=await service.latest_run(db,self.supplier_id,'products')
-            self.assertEqual(status['status'],'failed')
+            old = await db.get(SupplierAvailabilityObservation, (self.supplier_id, 'PUBLIC-2'))
+            original = (old.run_id, old.observed_at, old.expires_at, old.available)
+        self.feed.write_text('<SHOP>'+item()+'</SHOP>')
+        for _ in range(2):
+            plan = await self.plan()
+            await self.accept(plan)
+            async with self.tx() as db:
+                missing = await db.get(SupplierAvailabilityObservation, (self.supplier_id, 'PUBLIC-2'))
+                self.assertEqual((missing.run_id, missing.observed_at, missing.expires_at, missing.available), original)
+                self.assertEqual((await db.get(SupplierAvailabilityObservation, (self.supplier_id, 'PUBLIC-1'))).run_id, plan['run_id'])
+                self.assertEqual((await db.get(SupplierAvailabilitySettings, self.supplier_id)).last_item_count, 2)
+                result = await service.latest_run(db, self.supplier_id, 'products')
+                self.assertEqual(result['status'], 'partial')
+                self.assertEqual((result['report']['coverage'][0]['rows'], result['report']['coverage'][0]['required_rows']), (1, 2))
+                self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
 
-    async def test_missing_stock_code_is_unknown_but_shrinking_stock_export_is_rejected(self):
+    async def test_shrinking_stock_export_accepts_and_keeps_comparison_baseline(self):
         self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')
         self.stock.write_text('<SHOP>'+stock()+stock('EXTRA')+'</SHOP>')
         await self.accept(await self.plan())
-        async with self.tx() as db:
-            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)),2)
-            source=await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku=='PUBLIC-2'))
-            self.assertIsNone(source.stock_qty)
-            value=await service.source_observation(db,'husky','PUBLIC-2')
-            self.assertIsNone(value['available'])
-            self.assertIsNone(value['quantity'])
-            result=await service.latest_run(db,self.supplier_id,'products')
-            self.assertEqual((result['report']['total'],result['report']['accepted'],result['report']['unknown']),(2,0,2))
-            self.assertIn('husky_public_stock_unmatched',result['report']['warnings'])
         self.stock.write_text('<SHOP>'+stock()+'</SHOP>')
-        plan=await self.plan()
-        with self.assertRaises(AvailabilityError) as error:
+        for _ in range(2):
+            plan = await self.plan()
             await self.accept(plan)
-        self.assertEqual(error.exception.code,'husky_stock_incomplete')
-        self.assertEqual((error.exception.diagnostic['rows'], error.exception.diagnostic['previous_rows']), (1, 2))
-        self.assertEqual(error.exception.diagnostic['target'], 'husky_stock_feed')
+            async with self.tx() as db:
+                run = await db.get(SupplierFeedRun, plan['run_id'])
+                self.assertEqual(run.error_details['husky_stock_baseline'], 2)
+                report = run.error_details['availability_report']
+                check = next(c for c in report['coverage'] if c['target']=='husky_stock_feed')
+                self.assertEqual((check['rows'], check['previous_rows']), (1, 2))
+                self.assertEqual((await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))).run_id,plan['run_id'])
+                self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+
+    async def test_invalid_row_does_not_block_valid_catalog_or_renew_skipped_observation(self):
+        self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')
+        await self.accept(await self.plan())
         async with self.tx() as db:
-            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct)),2)
-            self.assertNotEqual((await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))).run_id,plan['run_id'])
-            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+            old = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-2'))
+            previous = (old.run_id, old.expires_at)
+        self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931').replace('<PRODUCTNAME>', '<PRODUCTNAME>'+ 'x'*501)+'</SHOP>')
+        plan = await self.plan()
+        await self.accept(plan)
+        async with self.tx() as db:
+            old = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-2'))
+            self.assertEqual((old.run_id, old.expires_at), previous)
+            result=await service.latest_run(db,self.supplier_id,'products')
+            self.assertEqual((result['report']['rejected'], result['report']['total']), (1,2))
+            self.assertEqual((await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))).run_id, plan['run_id'])
 
     async def test_b2b_price_and_unknown_replace_supplier_quote_without_physical_receipt(self):
         self.cfg['adapter_settings']['husky']['purchase_price_basis']='net'
@@ -225,6 +237,39 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(value['available'])
             self.assertEqual(value['label'],'overíme')
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+
+    async def test_missing_b2b_quote_preserves_previous_known_data_and_notifies_after_commit(self):
+        self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')
+        q = husky_b2b.parse_page(husky_b2b.document(page().encode()),1)[0][0]
+        plan = await self.plan(); public, _ = husky_sync.fetch(plan)
+        await self.accept(plan, husky_sync.combine(public.catalog_records, {'PUBLIC-1':True},
+            {q.code:q, 'MPN-2':replace(q, code='MPN-2')}, self.cfg))
+        async with self.tx() as db:
+            old = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-2'))
+            before = (old.run_id, old.quantity, old.available, old.expires_at)
+        plan = await self.plan(); public, _ = husky_sync.fetch(plan)
+        await self.accept(plan, husky_sync.combine(public.catalog_records, {'PUBLIC-1':True},
+            {q.code:replace(q, available=False, quantity=Decimal(0), kind='exact', stock='0 ks')}, self.cfg))
+        async with self.tx() as db:
+            missing = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-2'))
+            self.assertEqual((missing.run_id,missing.quantity,missing.available,missing.expires_at), before)
+            changed = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))
+            self.assertIs(changed.available, False); self.assertEqual(changed.quantity, 0)
+            result=await service.latest_run(db,self.supplier_id,'products')
+            self.assertEqual((result['status'], result['report']['accepted'], result['report']['rejected']), ('partial',1,1))
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+        from inventory_hub.services import supplier_attention, attention
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            await raw.driver_connection.execute((Path(__file__).resolve().parents[2]/'infra/db-init/053_attention.sql').read_text())
+        async with self.tx() as db:
+            await supplier_attention.reconcile(db)
+        async with self.tx() as db:
+            await supplier_attention.reconcile(db)
+            alerts=await attention.overview(db)
+            self.assertEqual(alerts['total'],1)
+            self.assertEqual(alerts['items'][0]['details']['accepted'],1)
+            self.assertEqual(alerts['items'][0]['occurrences'],1)
 
     async def test_legacy_public_boolean_cannot_drive_publication_or_live_catalog_reads(self):
         await self.accept(await self.plan())

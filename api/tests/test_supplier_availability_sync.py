@@ -196,15 +196,23 @@ class SlogerSchedulingTests(unittest.IsolatedAsyncioTestCase):
         ordinary = {"supplier": "paul-lange", "supplier_id": 1, "run_id": 100}
         with patch.object(database, "_engine", SimpleNamespace(connect=connect)), \
              patch.object(worker, "get_session_context", transaction), \
+             patch.object(worker, "reconcile_attention", AsyncMock()), \
              patch.object(service, "resume_run", AsyncMock(return_value=ongoing)), \
              patch.object(service, "start_run", AsyncMock(side_effect=[ordinary, None, None])), \
              patch.object(worker, "fetch", Mock(return_value=([], 0))) as fetch, \
-             patch.object(service, "accept_run", AsyncMock()) as accept_feed, \
+             patch.object(service, "accept_run", AsyncMock(return_value={"status": "completed", "total": 1, "accepted": 1,
+                 "rejected": 0, "unknown": 0, "warnings": ["supplier_availability_incomplete_feed"],
+                 "coverage": [{"target": "supplier_feed", "rows": 1, "previous_rows": 100, "required_rows": 100, "min_coverage_percent": 100}]})) as accept_feed, \
+             patch.object(worker.operation_log, "emit") as emit, \
              patch.object(sloger_data, "lookup_products", AsyncMock(return_value="source-result")) as lookup, \
              patch.object(b2b, "accept_batch", AsyncMock()) as accept_b2b:
             self.assertTrue(await worker.cycle())
             lookup.assert_not_awaited()
             accept_feed.assert_awaited_once_with(db, ordinary, [], 0)
+            entries = {call.args[0]: call.kwargs for call in emit.call_args_list}
+            self.assertEqual(entries["availability_pass_partial"]["accepted"], 1)
+            self.assertEqual(entries["availability_coverage_warning"]["previous_rows"], 100)
+            self.assertNotIn("availability_pass_failed", entries)
             self.assertTrue(await worker.cycle())
             fetch.assert_called_once_with(ordinary)
             lookup.assert_awaited_once_with(["7700860"])

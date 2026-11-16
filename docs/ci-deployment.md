@@ -110,8 +110,8 @@ The image must still be available from GHCR. The release's image tags, serial
 execution, migration order, phase errors and readiness checks are unchanged.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes forty-three upgrade
-modules: `005`–`038`, then `046`–`052`, `054` and `055`. The `atomer_review_migrate` module
+temporary API container. Its explicit list invokes forty-four upgrade
+modules: `005`–`038`, then `046`–`055`. The `atomer_review_migrate` module
 executes SQL `038`–`045` together in its transaction. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The runner retries only the failed module's `main()` when psycopg2 raises
@@ -134,9 +134,8 @@ It bounds attempt count, not SQL execution time; the existing deployment command
 timeout still limits the whole remote script. Persistent contention must be
 diagnosed from a failed release rather than triggering unlimited retries.
 
-The image packages all fifty upgrade SQL files `005`–`052`, `054` and `055`; the repository
-contains fifty-four SQL files including the initial `001`–`004` schema. SQL `053`
-is not part of this revision. New migrations
+The image packages all fifty-one upgrade SQL files `005`–`055`; the repository
+contains fifty-five SQL files including the initial `001`–`004` schema. New migrations
 require explicit runner and image-packaging updates. Initialization of an empty
 database and backup/recovery are covered by the [setup guide](../api/POSTGRES_SETUP.md).
 The warehouse model changes add `030_shop_identity.sql`, `031_item_units.sql` and

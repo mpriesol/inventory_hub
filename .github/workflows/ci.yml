@@ -212,6 +212,9 @@ jobs:
       - name: Operational log filters and access interactions
         run: node frontend/tests/operation-logs-ui.cjs
 
+      - name: Shared attention rules and lifecycle interactions
+        run: node frontend/tests/attention-ui.cjs
+
       - name: Physical stock correction interactions
         run: node frontend/tests/stock-adjustments-ui.cjs
 

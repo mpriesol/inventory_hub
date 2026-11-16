@@ -3000,7 +3000,7 @@
     "rangeSeconds": "{{min}} až {{max}} sekúnd.",
     "freshness": "Platnosť údajov (sekundy)",
     "freshnessHelp": "Pri automatike aspoň o hodinu dlhšia než interval; odporúčané 172800 sekúnd (48 hodín) pri dennom načítaní. Starý alebo chýbajúci údaj zostáva neoverený.",
-    "coverage": "Upozorniť pri poklese počtu položiek pod (%)",
+    "coverage": "Minimálne pokrytie bez upozornenia (%)",
     "coverageHelp": "Porovnáva sa s posledným úplným načítaním. Aj pri menšom súbore sa prijmú platné položky; chýbajúce sa neprepíšu nulami.",
     "supplierAuto": "Pravidelne načítavať tento zdroj",
     "lastSuccess": "Posledné úspešné načítanie",
@@ -3215,7 +3215,9 @@
       "husky_b2b_duplicate_identity": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
       "husky_b2b_unsafe_redirect": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
       "husky_b2b_too_large": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
-      "husky_catalog_incomplete": "Produktový XML má menej položiek, než povoľuje nastavený limit pokrytia. Celá dávka bola odmietnutá; predošlé údaje zostali zachované."
+      "husky_catalog_incomplete": "Produktový XML má menej položiek, než povoľuje nastavený limit pokrytia. Celá dávka bola odmietnutá; predošlé údaje zostali zachované.",
+      "husky_catalog_row_invalid": "Neplatný produktový riadok bol preskočený.",
+      "husky_stock_rows_rejected": "Neplatné riadky pomocného exportu boli preskočené. Overené B2B dostupnosti boli spracované."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
@@ -3366,7 +3368,7 @@
     "runStatus": {
       "running": "Načítava sa",
       "completed": "Načítané",
-      "partial": "Načítané s upozornením",
+      "partial": "Aktualizované s upozornením",
       "failed": "Načítanie sa nepodarilo"
     },
     "counts": {
@@ -6002,7 +6004,8 @@
       "run_id": "ID behu",
       "request_id": "ID požiadavky",
       "since": "Od",
-      "until": "Do"
+      "until": "Do",
+      "attention_id": "ID upozornenia"
     },
     "level": {
       "info": "OK / priebeh",
@@ -6012,7 +6015,8 @@
     "component": {
       "api": "API Hubu",
       "husky": "Husky",
-      "supplier_availability": "Načítanie dodávateľov"
+      "supplier_availability": "Načítanie dodávateľov",
+      "attention": "Upozornenia"
     },
     "columns": {
       "time": "Čas",
@@ -6031,7 +6035,16 @@
       "catalog_page_validated": "Stránka overená",
       "catalog_validation_failed": "Kontrola katalógu zlyhala",
       "catalog_parse_failed": "Spracovanie stránky zlyhalo",
-      "snapshot_parsed": "Zdroje spracované"
+      "snapshot_parsed": "Zdroje spracované",
+      "availability_pass_partial": "Aktualizované s upozornením",
+      "availability_coverage_warning": "Nižšie pokrytie zdroja",
+      "attention_raised": "Nový problém",
+      "attention_repeated": "Problém pretrváva",
+      "attention_resolved": "Problém vyriešený",
+      "attention_ignored": "Problém ignorovaný",
+      "attention_restored": "Zobrazenie problému obnovené",
+      "attention_rule_updated": "Pravidlo upozornenia zmenené",
+      "attention_reconcile_failed": "Nepodarilo sa aktualizovať upozornenia"
     },
     "phases": {
       "login_form": "Prihlasovací formulár",
@@ -6060,7 +6073,8 @@
     "targets": {
       "husky_products_feed": "Produktový XML",
       "husky_stock_feed": "Skladový XML",
-      "husky_catalog": "Husky B2B"
+      "husky_catalog": "Husky B2B",
+      "supplier_feed": "Dodávateľský feed"
     },
     "metrics": {
       "catalog_rows": "Produkty v XML",
@@ -6068,6 +6082,68 @@
       "b2b_rows": "Položky B2B",
       "matched_rows": "Produkty so zhodným B2B kódom",
       "unknown": "Neznáma B2B dostupnosť"
+    },
+    "snapshotPartial": "Platné dostupnosti boli uložené. Chýbajúce a preskočené položky si zachovali pôvodnú platnosť.",
+    "coverageWarningAction": "Limit pokrytia určuje upozornenie; nezastavuje aktualizáciu platných údajov."
+  },
+  "attention": {
+    "title": "Vyžaduje pozornosť",
+    "helpLabel": "O upozorneniach",
+    "help": "Ignorovanie skryje tento problém do jeho vyriešenia. Pri novom výskyte po vyriešení sa zobrazí znova. Pravidlá môžete vypnúť pre konkrétny zdroj alebo pre všetky zdroje. Spracovanie údajov aj technický log pokračujú. Percentuálne pokrytie sa nastavuje pri dodávateľovi. Globálne vypnutie má prednosť pred pravidlom konkrétneho zdroja. Zmeny platia pre celý Hub.",
+    "all": "Všetky upozornenia",
+    "events": "Problémy",
+    "rules": "Pravidlá",
+    "state": "Stav",
+    "source": "Služba",
+    "allSources": "Všetky zdroje",
+    "refresh": "Obnoviť",
+    "loading": "Načítavam upozornenia…",
+    "appliesTo": "Platí pre",
+    "enabled": "Upozornenie zapnuté",
+    "disabled": "Upozornenie vypnuté",
+    "minimum": "Zobraziť od výskytu",
+    "sourceSettings": "Nastavenie zdroja a percentuálneho pokrytia",
+    "save": "Uložiť pravidlo",
+    "cancel": "Zrušiť",
+    "configure": "Nastaviť upozornenie",
+    "repeatFrom": "Od výskytu {{count}}",
+    "occurrences": "Počet výskytov: {{count}}",
+    "openService": "Otvoriť zdroj",
+    "log": "Log",
+    "ignore": "Ignorovať tento problém",
+    "restore": "Znova zobrazovať",
+    "reasons": "Podrobnosti upozornenia",
+    "partialSummary": "Aktualizované dostupnosti: {{accepted}} · Preskočené položky: {{rejected}} · Neznáme dostupnosti: {{unknown}}.",
+    "kinds": {
+      "supplier_availability": {
+        "failed": "Načítanie zlyhalo",
+        "partial": "Aktualizované s upozornením"
+      }
+    },
+    "sources": {
+      "supplier_availability": "Dodávateľské dostupnosti"
+    },
+    "states": {
+      "active": "Aktívne",
+      "ignored": "Ignorované",
+      "muted": "Potlačené pravidlom",
+      "resolved": "Vyriešené"
+    },
+    "severity": {
+      "warning": "Upozornenie",
+      "error": "Chyba"
+    },
+    "empty": {
+      "active": "Žiadne aktívne upozornenia.",
+      "ignored": "Žiadne ignorované problémy.",
+      "muted": "Žiadne problémy potlačené pravidlom.",
+      "resolved": "Žiadne vyriešené problémy."
+    },
+    "errors": {
+      "attention_load_failed": "Upozornenia sa nepodarilo načítať.",
+      "attention_write_failed": "Zmenu sa nepodarilo potvrdiť. Obnovte stav pred ďalším pokusom.",
+      "attention_changed": "Stav sa medzičasom zmenil. Obnovte ho a zopakujte výber.",
+      "attention_not_found": "Upozornenie už nie je dostupné."
     }
   }
 }

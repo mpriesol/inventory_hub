@@ -48,7 +48,7 @@ Databázové testy používajú vlastnú localhost DB s názvom končiacim `_cat
 
 ## Nová prázdna databáza
 
-Repozitár obsahuje **54 SQL súborov: `001`–`052`, `054` a `055`** v [infra/db-init](../infra/db-init/). Číslo `053` nie je súčasťou tejto revízie. `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
+Repozitár obsahuje **55 SQL súborov: `001`–`055`** v [infra/db-init](../infra/db-init/). `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
 
 [Referenčný Compose](../infra/docker-compose.prod.yml) pripája celý adresár do `/docker-entrypoint-initdb.d`; inicializátor PostgreSQL ho použije iba pri prázdnom dátovom volume. Pri existujúcej databáze sa tento adresár znovu nespúšťa. Nevytvárať preto nové produkčné volume ako spôsob aktualizácie a nepúšťať `001` nad existujúcimi dátami.
 
@@ -78,9 +78,9 @@ Autoritatívne poradie je v [migrate.py](inventory_hub/migrate.py), SQL balenie 
 | Časť | Aktuálny rozsah |
 | --- | --- |
 | Základ schémy | SQL `001`–`004`; upgrade runner existujúci základ predpokladá. |
-| Upgrade runner | 43 Python modulov: `005`–`038`, potom `046`–`052`, `054` a `055`. |
+| Upgrade runner | 44 Python modulov: `005`–`038`, potom `046`–`055`. |
 | Spoločný Atomer krok | [atomer_review_migrate.py](inventory_hub/atomer_review_migrate.py) vykonáva SQL `038`–`045` spolu v jednej transakcii. |
-| SQL v API obraze | Všetkých 50 upgrade súborov `005`–`052`, `054` a `055`. |
+| SQL v API obraze | Všetkých 51 upgrade súborov `005`–`055`. |
 
 V existujúcom release workflow sa po stiahnutí obrazov vykoná `python -m inventory_hub.migrate` v jednom dočasnom API kontajneri, pred obnovením služieb. Každý modul zachováva vlastnú transakciu a advisory lock. Nie je to jedna transakcia cez celý upgrade: pri chybe sa runner zastaví, hotové moduly zostanú potvrdené a reštart API sa nedosiahne.
 
@@ -109,8 +109,12 @@ Pri neúspešnom upgrade najprv identifikovať fázu a modul. Dokončené migrá
 
 `051_invoice_processing.sql` pridáva ručné spracovanie faktúr, vratnú archiváciu a nemenné audity vrátane vyradenia chybných zdrojových testov. `052_receiving_operations.sql` pridáva náhľady a výsledky opráv príjemiek. Runner ich vykoná po 050 a API obraz balí oba súbory. Ani jedna migrácia neresetuje doklady, nemení zásoby ani nezapína prenos do e-shopov. Prevádzkové operácie sa vykonajú osobitne po overení kódu a konkrétneho náhľadu.
 
+### Rozšírenie 053
+
+`053_attention.sql` pridáva iba tabuľky spoločných upozornení a pravidiel. Je zapojená do explicitného runnera a API obrazu. Nemení sklad ani nastavenia dodávateľov. Stav upozornení sa naplní z existujúcich výsledkov workerom po štarte. Návrat predchádzajúceho kódu tabuľky ponechá; nevyžaduje sa spätná migrácia.
+
 ### Rozšírenie 054–055
 
-`054_mixed_receiving.sql` pridáva dávky zmiešaného príjmu, ich skeny, nemenné UUID výsledky a väzby na zaúčtované pohyby. `055_atomer_availability.sql` pridáva lokálne nastavenia, náhľady, administratívne podklady a CSV výsledky exportu dostupností. Runner ich vykoná po 052 a API obraz balí oba súbory. Inštalácia nepotvrdzuje staré množstvá, neprijíma faktúry, nezapína skladovú autoritu ani denné exporty. Zdrojové URL sa nastavujú osobitne cez chránenú konfiguráciu.
+`054_mixed_receiving.sql` pridáva dávky zmiešaného príjmu, ich skeny, nemenné UUID výsledky a väzby na zaúčtované pohyby. `055_atomer_availability.sql` pridáva lokálne nastavenia, náhľady, administratívne podklady a CSV výsledky exportu dostupností. Runner ich vykoná po 053 a API obraz balí oba súbory. Inštalácia nepotvrdzuje staré množstvá, neprijíma faktúry, nezapína skladovú autoritu ani denné exporty. Zdrojové URL sa nastavujú osobitne cez chránenú konfiguráciu.
 
 Po použití dávkového príjmu zachovať nové dôkazy pohybov aj pri oprave kódu; starší writer ich nemusí rozpoznať. Už ručne importovaný Atomer CSV sa návratom kódu nevráti. Použiť kompatibilnú doprednú opravu a existujúce [opravy príjmu](../docs/receiving-recovery.md), bez mazania histórie alebo exportných výsledkov.

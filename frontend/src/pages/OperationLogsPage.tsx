@@ -8,7 +8,7 @@ import { Button } from '../components/ui/Button.new';
 import { HelpHint } from '../components/ui/HelpHint';
 import './OperationLogsPage.css';
 
-const fields = ['component', 'supplier', 'level', 'run_id', 'request_id', 'since', 'until'] as const;
+const fields = ['component', 'supplier', 'level', 'run_id', 'request_id', 'attention_id', 'since', 'until'] as const;
 type Filters = Record<typeof fields[number], string>;
 
 function Diagnostic({ item }: { item: OperationEvent }) {
@@ -30,10 +30,13 @@ function Diagnostic({ item }: { item: OperationEvent }) {
       required: number(item.required_rows!), missing: number(Math.max(0, item.required_rows! - item.rows!)),
     })}</p> : noMatches ? <p className="operation-log-diagnostic">{t('operationLogs.noMatches', { source })}</p>
       : code && <p className="operation-log-diagnostic">{t(`availabilitySync.errors.${code}`, { defaultValue: code })}</p>}
-    {(coverage || noMatches) && <p>{t('operationLogs.snapshotRejected')}</p>}
-    {coverage && <small>{t('operationLogs.coverageAction')}</small>}
+    {(coverage || noMatches) && <p>{t(item.event === 'availability_coverage_warning' ? 'operationLogs.snapshotPartial' : 'operationLogs.snapshotRejected')}</p>}
+    {coverage && <small>{t(item.event === 'availability_coverage_warning' ? 'operationLogs.coverageWarningAction' : 'operationLogs.coverageAction')}</small>}
     {!!metrics.length && (item.event === 'snapshot_parsed' ? <>{counts}<small>{t('operationLogs.notStoredYet')}</small></>
       : <details><summary>{t('operationLogs.sourceCounts')}</summary>{counts}</details>)}
+    {item.event === 'availability_pass_partial' && <p>{t('attention.partialSummary', { accepted: item.accepted || 0, rejected: item.rejected || 0, unknown: item.unknown || 0 })}</p>}
+    {item.attention_id && <Link to="/settings/attention">{t('attention.title')} #{item.attention_id}</Link>}
+    {item.rule_code && <small>{t(`attention.kinds.${item.rule_code}`, { defaultValue: item.rule_code })} · {item.scope}</small>}
     {code && <code>{item.error_code}</code>}
     {item.reason && !coverage && !noMatches && <code>{item.reason}</code>}
     {!item.reason && item.supplier === 'husky' && ['husky_catalog_incomplete', 'husky_stock_incomplete'].includes(code || '')
@@ -82,8 +85,8 @@ function LogContent() {
     <form className="operation-log-filters" onSubmit={apply}>
       {fields.map(key => <label key={key}>{t(`operationLogs.fields.${key}`)}
         {key === 'level' || key === 'component' ? <select data-testid={`log-${key}`} value={filters[key]} onChange={event => setFilters({ ...filters, [key]: event.target.value })}>
-          <option value="">{t('operationLogs.all')}</option>{(key === 'level' ? ['info', 'warning', 'error'] : ['api', 'husky', 'supplier_availability']).map(value => <option key={value} value={value}>{t(`operationLogs.${key}.${value}`)}</option>)}
-        </select> : <input data-testid={`log-${key}`} value={filters[key]} type={key === 'run_id' ? 'number' : key === 'since' || key === 'until' ? 'datetime-local' : 'text'} min={key === 'run_id' ? 1 : undefined}
+          <option value="">{t('operationLogs.all')}</option>{(key === 'level' ? ['info', 'warning', 'error'] : ['api', 'husky', 'supplier_availability', 'attention']).map(value => <option key={value} value={value}>{t(`operationLogs.${key}.${value}`)}</option>)}
+        </select> : <input data-testid={`log-${key}`} value={filters[key]} type={(key === 'run_id' || key === 'attention_id') ? 'number' : key === 'since' || key === 'until' ? 'datetime-local' : 'text'} min={(key === 'run_id' || key === 'attention_id') ? 1 : undefined}
           maxLength={key === 'request_id' ? 32 : 100}
           onChange={event => setFilters({ ...filters, [key]: event.target.value })} />}
       </label>)}
