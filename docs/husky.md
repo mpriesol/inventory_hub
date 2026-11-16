@@ -144,7 +144,9 @@ failed run without advancing the last success.
 
 A missing or ambiguous B2B quote is skipped, preserving that product's catalog
 quote and availability observation including its original expiry. Missing catalog
-rows are likewise left untouched. The auxiliary retail export cannot override a
+rows are likewise left untouched. Husky availability batches do not deactivate
+omitted catalog products; shared catalog refreshes keep their existing retirement
+behavior. The auxiliary retail export cannot override a
 verified B2B quote, including if its code is absent. Explicit unknown B2B observations replace
 old wholesale claims with unknown; they never become zero. Arbitrary custom
 product feed mappings are rejected by the combined worker rather than silently

@@ -171,6 +171,7 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.tx() as db:
                 missing = await db.get(SupplierAvailabilityObservation, (self.supplier_id, 'PUBLIC-2'))
                 self.assertEqual((missing.run_id, missing.observed_at, missing.expires_at, missing.available), original)
+                self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct).where(SupplierProduct.is_active)), 2)
                 self.assertEqual((await db.get(SupplierAvailabilityObservation, (self.supplier_id, 'PUBLIC-1'))).run_id, plan['run_id'])
                 self.assertEqual((await db.get(SupplierAvailabilitySettings, self.supplier_id)).last_item_count, 2)
                 result = await service.latest_run(db, self.supplier_id, 'products')
@@ -207,6 +208,7 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.tx() as db:
             old = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-2'))
             self.assertEqual((old.run_id, old.expires_at), previous)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct).where(SupplierProduct.is_active)), 2)
             result=await service.latest_run(db,self.supplier_id,'products')
             self.assertEqual((result['report']['rejected'], result['report']['total']), (1,2))
             self.assertEqual((await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))).run_id, plan['run_id'])
@@ -253,6 +255,7 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.tx() as db:
             missing = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-2'))
             self.assertEqual((missing.run_id,missing.quantity,missing.available,missing.expires_at), before)
+            self.assertEqual(await db.scalar(select(func.count()).select_from(SupplierProduct).where(SupplierProduct.is_active)), 2)
             changed = await db.get(SupplierAvailabilityObservation,(self.supplier_id,'PUBLIC-1'))
             self.assertIs(changed.available, False); self.assertEqual(changed.quantity, 0)
             result=await service.latest_run(db,self.supplier_id,'products')

@@ -217,7 +217,9 @@ async def store(db, plan, snapshot, row, run, observed, expires):
         "husky_stock_count": snapshot.stock_count, "husky_b2b_baseline": b2b_baseline, "husky_stock_baseline": stock_baseline}
     for product, _ in snapshot.catalog_records:
         product.supplier_observation_expires_at = expires
-    new, updated = await catalog.store_catalog_records(db, feed, run, snapshot.catalog_records, observed)
+    # An availability batch cannot prove that omitted/unmatched products were retired.
+    new, updated = await catalog.store_catalog_records(db, feed, run, snapshot.catalog_records, observed,
+                                                      deactivate_missing=False)
     run.items_new, run.items_updated, run.items_unchanged = new, updated, len(snapshot.catalog_records) - new - updated
     feed.last_run_id, feed.last_run_at = run.id, observed
     feed.last_run_status, feed.last_run_items_count = FeedRunStatus.completed, snapshot.total
