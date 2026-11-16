@@ -12,7 +12,8 @@ import { ProductThumb } from '../components/product/ProductDisplay';
 import { StockCardLink } from '../components/product/StockCardLink';
 import './AtomerAvailabilityPage.css';
 
-const active = (run: AtomerAvailabilityRun | null) => !!run && ['queued', 'fetching'].includes(run.status);
+const active = (run: AtomerAvailabilityRun | null) => !!run && (['queued', 'fetching'].includes(run.status)
+  || (run.status === 'ready' && run.trigger === 'daily'));
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const errorCode = (error: unknown) => (error as { code?: string })?.code || 'request_failed';
 const rejected = (error: unknown) => (error as { knownUnapplied?: boolean }).knownUnapplied === true || (error as { status?: number }).status === 422;
@@ -158,7 +159,7 @@ export function AtomerAvailabilityPage() {
     operation(() => createAtomerAvailabilityRun(body), value => { setPendingRun(''); remember(pendingKey, null); selectRun(value.id); });
   }
   function change(row: AtomerAvailabilityRow, patch: Partial<AtomerAvailabilityOverride>) {
-    if (!run || run.status !== 'ready' || pendingExport || busy) return;
+    if (!run || run.status !== 'ready' || active(run) || pendingExport || busy) return;
     const next = { ...overrides }, item = { code: row.code, ...next[row.code], ...patch };
     if (item.visibility === row.proposed_visibility) delete item.visibility;
     if (item.availability === row.proposed_availability) delete item.availability;
@@ -167,7 +168,7 @@ export function AtomerAvailabilityPage() {
   }
   function discard() { if (!run || pendingExport) return; setOverrides({}); remember(draftKey(run.id), null); }
   function exportPreview() {
-    if (!run || run.status !== 'ready' || busy || inFlight.current || (pendingExport && !exportRecovered)) return;
+    if (!run || run.status !== 'ready' || active(run) || busy || inFlight.current || (pendingExport && !exportRecovered)) return;
     const payload = pendingExport || { expected_revision: run.revision, overrides: Object.values(overrides).sort((a, b) => a.code.localeCompare(b.code)) };
     setPendingExport(payload); setExportRecovered(false); remember(draftKey(run.id), { revision: run.revision, overrides, pending: payload });
     operation(async signal => { await exportAtomerAvailabilityRun(run.id, payload); return getAtomerAvailabilityRun(run.id, 0, signal, viewRef.current); },
@@ -178,7 +179,7 @@ export function AtomerAvailabilityPage() {
     const edit = overrides[row.code], visible = edit?.visibility ?? row.proposed_visibility;
     const availability = edit?.availability ?? row.proposed_availability;
     const blocked = ['blocked', 'unmatched'].includes(row.status) || row.reasons.length > 0 || row.current_visibility === null;
-    const editable = run?.status === 'ready' && !blocked && !pendingExport && !busy;
+    const editable = run?.status === 'ready' && !active(run) && !blocked && !pendingExport && !busy;
     return <tr key={row.code} className={row.kind === 'parent' ? 'atomer-family-row' : row.kind === 'variant' ? 'atomer-variant' : ''} data-testid={`atomer-row-${row.code}`}>
       <td><div className="atomer-product"><ProductThumb key={row.image || row.code} url={row.image} name={row.name} size={48} /><div className="atomer-product-text">
         <strong>{row.product_id ? <StockCardLink productId={row.product_id} sku={row.sku} warehouseCode={run?.warehouse_code || warehouse}>{row.name}</StockCardLink> : row.name}</strong>
@@ -238,7 +239,7 @@ export function AtomerAvailabilityPage() {
         {busy && <p role="status">{t('atomerAvailability.loading')}</p>}
       </section>
       {run && <section className="atomer-panel" data-testid="atomer-preview">
-        <div className="atomer-heading"><h2>{t('atomerAvailability.resultTitle')}</h2><span className="atomer-status" data-testid="atomer-run-status">{t(`atomerAvailability.runStatus.${run.status}`)}</span></div>
+        <div className="atomer-heading"><h2>{t('atomerAvailability.resultTitle')}</h2><span className="atomer-status" data-testid="atomer-run-status">{t(`atomerAvailability.runStatus.${run.status === 'ready' && active(run) ? 'exporting' : run.status}`)}</span></div>
         <p className="atomer-muted">{t('atomerAvailability.sourceDate', { date: date(run.source_fetched_at) })}</p>
         {run.coverage?.kind && <p className={run.coverage.kind === 'admin_complete' ? 'atomer-muted' : 'atomer-notice'} data-testid="atomer-coverage">{t(`atomerAvailability.coverage.${run.coverage.kind}`, { hidden: run.coverage.hidden_rows, parents: run.coverage.missing_parents })}</p>}
         {run.warnings?.map(code => <p className="atomer-notice" key={code}>{message(code)}{code === 'source_rows_blocked' && run.coverage?.source_blocked_rows !== undefined && ` (${run.coverage.source_blocked_rows})`}</p>)}
@@ -246,7 +247,7 @@ export function AtomerAvailabilityPage() {
         {run.error && <p role="alert" className="atomer-error">{message(run.error)}</p>}
         {run.summary && <dl className="atomer-counts">{(['total', 'changed', 'blocked', 'unmatched'] as const).map(key => <div key={key}><dt>{t(`atomerAvailability.counts.${key}`)}</dt><dd>{run.summary[key] ?? 0}</dd></div>)}</dl>}
         {['ready', 'exported'].includes(run.status) && <>
-          {run.status === 'ready' && <p className="atomer-muted">{t('atomerAvailability.editHelp')}</p>}
+          {run.status === 'ready' && <p className="atomer-muted">{t(active(run) ? 'atomerAvailability.dailyExportHelp' : 'atomerAvailability.editHelp')}</p>}
           {!!run.summary?.blocked && <p className="atomer-notice">{t('atomerAvailability.blockedHelp')}</p>}
           {pendingExport && <div className="atomer-notice" role="alert"><p>{t('atomerAvailability.exportUncertain')}</p><Button variant="secondary" disabled={busy} onClick={recoverRun} data-testid="atomer-recover-export">{t('atomerAvailability.recover')}</Button></div>}
           <div className="atomer-fields"><label>{t('atomerAvailability.viewLabel')}<select value={view} disabled={busy && !readingRows.current} data-testid="atomer-view" onChange={event => loadRows(event.target.value as AtomerAvailabilityView)}>
@@ -266,14 +267,14 @@ export function AtomerAvailabilityPage() {
             <Button variant="secondary" size="sm" disabled={busy || run.offset + (run.rows?.length || 0) >= run.total} onClick={() => loadRows(view, run.offset + 100)} data-testid="atomer-next">{t('atomerAvailability.next')}</Button></div>
           </>}
           <div className="atomer-actions">
-            {run.status === 'ready' && <Button disabled={busy || run.view !== view || (!!pendingExport && !exportRecovered) || !run.summary?.total || Object.values(overrides).some(value => value.availability !== undefined && !value.availability.trim())} onClick={exportPreview} data-testid="atomer-export">{t(pendingExport ? 'atomerAvailability.retryExport' : 'atomerAvailability.exportCsv')}</Button>}
+            {run.status === 'ready' && !active(run) && <Button disabled={busy || run.view !== view || (!!pendingExport && !exportRecovered) || !run.summary?.total || Object.values(overrides).some(value => value.availability !== undefined && !value.availability.trim())} onClick={exportPreview} data-testid="atomer-export">{t(pendingExport ? 'atomerAvailability.retryExport' : 'atomerAvailability.exportCsv')}</Button>}
             {run.download_available && <Button icon={<Download size={16} />} disabled={busy} onClick={() => operation(() => downloadAtomerAvailabilityRun(run.id), () => {})} data-testid="atomer-download">{t('atomerAvailability.download')}</Button>}
           </div>
           {run.status === 'exported' && <p>{t('atomerAvailability.manualImport')}</p>}
         </>}
       </section>}
       <section className="atomer-panel"><h2>{t('atomerAvailability.history')}</h2><p className="atomer-muted">{t('atomerAvailability.retention')}</p>
-        <div className="atomer-downloads">{visibleRuns.map(item => <div className="atomer-download" key={item.id}><div><strong>{date(item.created_at)}</strong><small>{t(`atomerAvailability.runStatus.${item.status}`)} · {t('atomerAvailability.changedCount', { count: item.summary?.changed || 0 })}</small></div>
+        <div className="atomer-downloads">{visibleRuns.map(item => <div className="atomer-download" key={item.id}><div><strong>{date(item.created_at)}</strong><small>{t(`atomerAvailability.runStatus.${item.status === 'ready' && active(item) ? 'exporting' : item.status}`)} · {t('atomerAvailability.changedCount', { count: item.summary?.changed || 0 })}</small></div>
           <div className="atomer-actions"><Button variant="secondary" size="sm" disabled={busy || dirty || !!pendingExport || !!pendingRun || item.id === run?.id} onClick={() => selectRun(item.id)} data-testid={`atomer-open-${item.id}`}>{t('atomerAvailability.open')}</Button>
             {item.download_available && <Button variant="secondary" size="sm" icon={<Download size={14} />} disabled={busy} onClick={() => operation(() => downloadAtomerAvailabilityRun(item.id), () => {})} data-testid={`atomer-download-${item.id}`}>CSV</Button>}</div></div>)}</div>
         {!visibleRuns.length && <p>{t('atomerAvailability.noHistory')}</p>}
