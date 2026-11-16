@@ -104,7 +104,8 @@ Dodávateľský worker pred a po spracovaní projektuje posledný dokončený v�
 aktuálne zvoleného feedu. ID behu je sekvencia. Po reštarte dobehne aj výsledok,
 ktorý sa stihol uložiť pred pádom procesu. Pri prvom zapojení sa neprehráva celá
 história: počty vychádzajú z projektovaných výsledkov. Nedokončený beh sa ešte
-nevyhodnocuje. Zlyhanie notifikácie nemení výsledok načítania; loguje bezpečný
+nevyhodnocuje; počas opakovaného načítania ostáva zdrojom upozornenia posledný
+dokončený výsledok. Zlyhanie notifikácie nemení výsledok načítania; loguje bezpečný
 typ/kód chyby a ďalší cyklus projekciu zopakuje. Neúspešné načítanie nevyrieši
 predchádzajúcu neúplnosť, pretože nepotvrdilo kvalitu nových dát.
 

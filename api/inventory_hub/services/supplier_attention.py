@@ -13,6 +13,7 @@ async def reconcile(db):
         JOIN suppliers s ON s.id=a.supplier_id JOIN supplier_feeds f ON f.supplier_id=s.id AND f.code=a.feed_key
         JOIN LATERAL (SELECT r.id,r.status,r.error_message,r.error_details,r.items_fetched,r.items_updated,r.items_error FROM supplier_feed_runs r
           WHERE r.feed_id=f.id AND r.error_details->>'workflow'='supplier_availability'
+            AND r.status::text IN ('completed','failed')
           ORDER BY r.id DESC LIMIT 1) latest ON true
         LEFT JOIN hub_attention_items failure ON failure.kind='supplier_availability.failed' AND failure.scope=s.code
         LEFT JOIN hub_attention_items partial ON partial.kind='supplier_availability.partial' AND partial.scope=s.code

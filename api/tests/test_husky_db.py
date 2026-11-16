@@ -265,6 +265,8 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
             await raw.driver_connection.execute((Path(__file__).resolve().parents[2]/'infra/db-init/053_attention.sql').read_text())
+        # Startup/recovery must still surface the last result during an ongoing retry.
+        await self.plan()
         async with self.tx() as db:
             await supplier_attention.reconcile(db)
         async with self.tx() as db:

@@ -80,6 +80,7 @@ class AttentionDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 await attention.action(db, item['id'], AttentionAction(expected_revision=1, action='restore'))
         await self.publish(3, False)
         self.assertEqual((await self.page('resolved'))['total'], 1)
+        self.assertEqual((await self.page('resolved'))['items'][0]['occurrences'], 2)
         new = await self.publish(4)
         visible = (await self.page())['items'][0]
         self.assertEqual(visible['id'], item['id']); self.assertEqual(visible['episode'], 2)

@@ -111,7 +111,7 @@ async def report(db, payload: AttentionEvent):
     stamp = datetime.now(timezone.utc)
     started = payload.active and (not old or not old["active"])
     values = {**args, "sequence": payload.sequence, "active": payload.active, "details": json.dumps(details), "stamp": stamp,
-        "occurrences": (old["occurrences"] + 1 if old and old["active"] else 1) if payload.active else 0,
+        "occurrences": (old["occurrences"] + 1 if old and old["active"] else 1) if payload.active else old["occurrences"] if old else 0,
         "episode": (old["episode"] if old else 0) + int(started),
         "first_seen": stamp if started or not old else old["first_seen"],
         "resolved_at": None if payload.active else stamp if old and old["active"] else old["resolved_at"] if old else stamp,
