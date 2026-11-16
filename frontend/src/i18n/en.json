@@ -713,7 +713,8 @@
       "husky_b2b_unsafe_redirect": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
       "husky_b2b_too_large": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
       "catalog_refresh_queued": "Husky refresh queued. Track progress and results in supplier synchronization.",
-      "invalid_ean": "An invalid EAN was kept only in the source; it is not used for matching."
+      "invalid_ean": "An invalid EAN was kept only in the source; it is not used for matching.",
+      "husky_catalog_incomplete": "The product XML contains fewer items than the configured coverage threshold allows. The entire snapshot was rejected; previous data was retained."
     },
     "tab": {
       "data": "Data and parameters",
@@ -2943,7 +2944,8 @@
       "husky_b2b_invalid_price": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
       "husky_b2b_duplicate_identity": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
       "husky_b2b_unsafe_redirect": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
-      "husky_b2b_too_large": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained."
+      "husky_b2b_too_large": "Husky B2B returned incomplete or invalid evidence. Synchronization stopped and previous data was retained.",
+      "husky_catalog_incomplete": "The product XML contains fewer items than the configured coverage threshold allows. The entire snapshot was rejected; previous data was retained."
     },
     "lastCompleted": "Last completed transfer",
     "itemsTruncated": "The detail shows a subset of items. Use pagination to view the rest.",
@@ -5755,7 +5757,8 @@
       "feed_download_failed": "Feed download failed",
       "catalog_page_validated": "Page validated",
       "catalog_validation_failed": "Catalog validation failed",
-      "catalog_parse_failed": "Page parsing failed"
+      "catalog_parse_failed": "Page parsing failed",
+      "snapshot_parsed": "Sources parsed"
     },
     "phases": {
       "login_form": "Login form",
@@ -5764,13 +5767,34 @@
       "catalog_reset": "Load full catalog",
       "catalog_page": "Pagination",
       "parse_page": "Validate page",
-      "feed_download": "Download feed"
+      "feed_download": "Download feed",
+      "acceptance": "Pre-save validation",
+      "join_sources": "Source matching"
     },
     "errors": {
       "operation_log_cursor_expired": "These events have rotated out. Load the latest events.",
       "operation_log_unavailable": "The log could not be read. Try refreshing.",
       "operation_log_invalid_range": "Check the time range.",
       "stock_settings_invalid_request": "Check the selected filters."
+    },
+    "coverageFailure": "{{source}}: read {{actual}}, previously {{previous}}. The {{percent}}% threshold requires at least {{required}}; {{missing}} more items are required.",
+    "noMatches": "{{source}}: no unique matching codes were found in the product catalog.",
+    "snapshotRejected": "The entire snapshot was rejected. New availability was not saved; previous data was retained.",
+    "coverageAction": "Check source completeness and the coverage threshold in the supplier advanced settings.",
+    "notStoredYet": "Sources have been parsed. The data has not yet been accepted into Hub.",
+    "sourceCounts": "Downloaded source counts",
+    "legacyDiagnostic": "This older record does not contain the counts or threshold used in the check.",
+    "targets": {
+      "husky_products_feed": "Product XML",
+      "husky_stock_feed": "Stock XML",
+      "husky_catalog": "Husky B2B"
+    },
+    "metrics": {
+      "catalog_rows": "XML products",
+      "stock_rows": "Stock XML items",
+      "b2b_rows": "B2B items",
+      "matched_rows": "Products with a matching B2B code",
+      "unknown": "Unknown B2B availability"
     }
   }
 }

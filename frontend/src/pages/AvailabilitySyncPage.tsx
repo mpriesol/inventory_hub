@@ -6,7 +6,7 @@ import { ActionScope } from '../components/ui/ActionScope';
 import { HelpHint } from '../components/ui/HelpHint';
 import { getUpgatesCapacity, UpgatesCapacity } from '../api/upgatesCapacity';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
-import { getSupplierAvailability, getSupplierFeedFailures, SupplierFeedRun, SupplierFeedFailures, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue } from '../api/supplierAvailability';
+import { getSupplierAvailability, getSupplierFeedFailures, SupplierFeedRun, SupplierFeedFailures, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue, supplierAvailabilityErrorCode } from '../api/supplierAvailability';
 import { getStockSyncOptions, getStockSyncRun, resolveStockSyncItem, runStockSync, saveStockSyncSettings, saveStockSyncWarehouse,
   STOCK_SYNC_FIELDS, StockSyncField, StockSyncOptions, StockSyncRunDetail, StockSyncValues, StockSyncResolution, StockSyncItem } from '../api/stockSync';
 import './OpeningStockPage.css';
@@ -157,7 +157,7 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
       <p>{t('availabilitySync.b2bProgress', value.refresh_progress)}</p>
       {!!value.refresh_progress.failures.length && <details><summary>{t('availabilitySync.b2bFailures')}</summary>{value.refresh_progress.failures.map((item, index) => <p key={`${item.sku}-${index}`}><code>{item.sku}</code>: {t(`availabilitySync.errors.${item.code}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>)}</details>}
     </div>}
-    {value.last_error && <p className="opening-stock-errors" role="alert">{t('availabilitySync.lastError')}: {t(`availabilitySync.errors.${value.last_error}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>}
+    {value.last_error && <p className="opening-stock-errors" role="alert">{t('availabilitySync.lastError')}: {t(`availabilitySync.errors.${supplierAvailabilityErrorCode(value.supplier, value.last_error)}`, { defaultValue: t('availabilitySync.requestFailed') })}</p>}
     {configChanged && <p role="alert">{t('availabilitySync.configChanged')}</p>}
     {dirty && <p className="availability-change" role="status">{t('availabilitySync.unsaved')} <Button data-testid={id('discard')} variant="secondary" disabled={blocked} onClick={discard}>{t('availabilitySync.discardChanges')}</Button></p>}
     {saved && !dirty && <p role="status" className="opening-stock-success">{t('availabilitySync.saved')}</p>}

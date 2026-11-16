@@ -2,13 +2,45 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { accessRevision, hubUnlocked, subscribeAccess } from '../api/access';
-import { getOperationLogs, OperationLogPage } from '../api/operationLogs';
+import { getOperationLogs, OperationEvent, OperationLogPage } from '../api/operationLogs';
+import { supplierAvailabilityErrorCode } from '../api/supplierAvailability';
 import { Button } from '../components/ui/Button.new';
 import { HelpHint } from '../components/ui/HelpHint';
 import './OperationLogsPage.css';
 
 const fields = ['component', 'supplier', 'level', 'run_id', 'request_id', 'since', 'until'] as const;
 type Filters = Record<typeof fields[number], string>;
+
+function Diagnostic({ item }: { item: OperationEvent }) {
+  const { t, i18n } = useTranslation();
+  const number = (value: number) => value.toLocaleString(i18n.language);
+  const source = t(`operationLogs.targets.${item.target}`, { defaultValue: item.target || '' });
+  const coverage = item.reason === 'coverage_below_minimum' && item.rows != null && item.previous_rows != null
+    && item.required_rows != null && item.min_coverage_percent != null;
+  const noMatches = item.reason === 'no_matching_codes';
+  const metrics = (['catalog_rows', 'stock_rows', 'b2b_rows', 'matched_rows', 'unknown'] as const)
+    .filter(key => item[key] != null && (key !== 'matched_rows' || item.b2b_rows != null));
+  const counts = <dl className="operation-log-counts">{metrics.map(key => <React.Fragment key={key}>
+    <dt>{t(`operationLogs.metrics.${key}`)}</dt><dd>{number(item[key]!)}</dd>
+  </React.Fragment>)}</dl>;
+  const code = item.error_code && supplierAvailabilityErrorCode(item.supplier, item.error_code);
+  return <>
+    {coverage ? <p className="operation-log-diagnostic">{t('operationLogs.coverageFailure', {
+      source, actual: number(item.rows!), previous: number(item.previous_rows!), percent: item.min_coverage_percent,
+      required: number(item.required_rows!), missing: number(Math.max(0, item.required_rows! - item.rows!)),
+    })}</p> : noMatches ? <p className="operation-log-diagnostic">{t('operationLogs.noMatches', { source })}</p>
+      : code && <p className="operation-log-diagnostic">{t(`availabilitySync.errors.${code}`, { defaultValue: code })}</p>}
+    {(coverage || noMatches) && <p>{t('operationLogs.snapshotRejected')}</p>}
+    {coverage && <small>{t('operationLogs.coverageAction')}</small>}
+    {!!metrics.length && (item.event === 'snapshot_parsed' ? <>{counts}<small>{t('operationLogs.notStoredYet')}</small></>
+      : <details><summary>{t('operationLogs.sourceCounts')}</summary>{counts}</details>)}
+    {code && <code>{item.error_code}</code>}
+    {item.reason && !coverage && !noMatches && <code>{item.reason}</code>}
+    {!item.reason && item.supplier === 'husky' && ['husky_catalog_incomplete', 'husky_stock_incomplete'].includes(code || '')
+      && <small>{t('operationLogs.legacyDiagnostic')}</small>}
+  </>;
+}
+
 function fromSearch(search: URLSearchParams): Filters {
   return Object.fromEntries(fields.map(key => {
     const value = search.get(key) || '';
@@ -68,7 +100,7 @@ function LogContent() {
       <tbody>{result.items.map(item => <tr key={item.id} data-level={item.level}>
         <td><time dateTime={item.timestamp}>{new Date(item.timestamp).toLocaleString(i18n.language)}</time></td>
         <td><strong>{t(`operationLogs.events.${item.event}`, { defaultValue: item.event })}</strong><small>{item.component}{item.supplier ? ` · ${item.supplier}` : ''}</small>{item.target && <code>{item.method} {item.target}</code>}</td>
-        <td><span>{t(`operationLogs.level.${item.level}`)}{item.status_code ? ` · HTTP ${item.status_code}` : ''}</span>{item.error_code && <small>{t(`availabilitySync.errors.${item.error_code}`, { defaultValue: item.error_code })}</small>}{item.reason && <code>{item.reason}</code>}</td>
+        <td><span>{t(`operationLogs.level.${item.level}`)}{item.status_code ? ` · HTTP ${item.status_code}` : ''}</span><Diagnostic item={item} /></td>
         <td>{item.duration_ms == null ? '—' : `${item.duration_ms} ms`}</td>
         <td>{item.run_id && <span>{t('operationLogs.run', { id: item.run_id })}</span>}{item.phase && <small>{t(`operationLogs.phases.${item.phase}`, { defaultValue: item.phase })}</small>}{item.page != null && <span>{t('operationLogs.page', { page: item.page })}</span>}{item.rows != null && <small>{t('operationLogs.rows', { count: item.rows })}</small>}{item.observed_page != null && <small>{t('operationLogs.observedPage', { page: item.observed_page })}</small>}{item.request_id && <details><summary>{t('operationLogs.request')}</summary><code>{item.request_id}</code></details>}</td>
       </tr>)}</tbody></table></div>}

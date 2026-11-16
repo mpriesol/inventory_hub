@@ -15,9 +15,11 @@ from inventory_hub.services import catalog
 
 
 class AvailabilityError(Exception):
-    def __init__(self, code, status=409):
+    def __init__(self, code, status=409, *, diagnostic=None):
         super().__init__(code)
         self.code, self.status = code, status
+        # Fixed codes/counts only; the operational logger also enforces its allowlist.
+        self.diagnostic = diagnostic or {}
 
 
 def configuration(supplier, feed_key):

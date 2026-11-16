@@ -1,5 +1,10 @@
 import { hubRequest } from './access';
 
+/** Older Husky failures reused a partial-feed code, although the whole snapshot rolled back. */
+export function supplierAvailabilityErrorCode(supplier: string | undefined, code: string) {
+  return supplier === 'husky' && code === 'supplier_availability_incomplete_feed' ? 'husky_catalog_incomplete' : code;
+}
+
 export type SupplierObservationStatus = 'unconfigured' | 'not_loaded' | 'missing_observation' | 'feed_mismatch' | 'configuration_error' | 'stale' | 'fresh' | 'unavailable_source' | 'missing_link' | 'conflict';
 export interface SupplierObservation {
   available: boolean | null; fresh: boolean; quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown';

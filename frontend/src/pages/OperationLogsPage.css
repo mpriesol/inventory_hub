@@ -13,6 +13,11 @@
 .operation-log-table td:first-child { white-space: nowrap; }
 .operation-log-table td > small, .operation-log-table td > code, .operation-log-table td > span { display: block; margin-top: .25rem; }
 .operation-log-table small { color: var(--color-text-secondary); }
+.operation-log-table td:nth-child(3) { min-width: 19rem; }
+.operation-log-diagnostic { margin: .4rem 0; line-height: 1.5; }
+.operation-log-counts { display: grid; grid-template-columns: minmax(8rem, 1fr) auto; gap: .2rem 1rem; margin: .5rem 0; }
+.operation-log-counts dt { color: var(--color-text-secondary); }
+.operation-log-counts dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
 .operation-log-table code { overflow-wrap: anywhere; font-size: .75rem; }
 .operation-log-table tr[data-level="error"] td:nth-child(3) > span { color: var(--color-error, #ef6464); }
 .operation-log-table tr[data-level="warning"] td:nth-child(3) > span { color: var(--color-accent, #ffad00); }

@@ -713,7 +713,8 @@
       "husky_b2b_unsafe_redirect": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
       "husky_b2b_too_large": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
       "catalog_refresh_queued": "Obnova Husky je zaradená. Priebeh a výsledok nájdete v synchronizácii dodávateľov.",
-      "invalid_ean": "Neplatný EAN zostal iba v pôvodnom zdroji; nepoužije sa na párovanie."
+      "invalid_ean": "Neplatný EAN zostal iba v pôvodnom zdroji; nepoužije sa na párovanie.",
+      "husky_catalog_incomplete": "Produktový XML má menej položiek, než povoľuje nastavený limit pokrytia. Celá dávka bola odmietnutá; predošlé údaje zostali zachované."
     },
     "tab": {
       "data": "Údaje a parametre",
@@ -2943,7 +2944,8 @@
       "husky_b2b_invalid_price": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
       "husky_b2b_duplicate_identity": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
       "husky_b2b_unsafe_redirect": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
-      "husky_b2b_too_large": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované."
+      "husky_b2b_too_large": "B2B Husky vrátilo neúplné alebo neplatné údaje. Synchronizácia bola zastavená a predošlé údaje zostali zachované.",
+      "husky_catalog_incomplete": "Produktový XML má menej položiek, než povoľuje nastavený limit pokrytia. Celá dávka bola odmietnutá; predošlé údaje zostali zachované."
     },
     "lastCompleted": "Posledný dokončený prenos",
     "itemsTruncated": "Detail zobrazuje iba časť položiek. Ďalšie nájdeš cez stránkovanie.",
@@ -5758,7 +5760,8 @@
       "feed_download_failed": "Stiahnutie feedu zlyhalo",
       "catalog_page_validated": "Stránka overená",
       "catalog_validation_failed": "Kontrola katalógu zlyhala",
-      "catalog_parse_failed": "Spracovanie stránky zlyhalo"
+      "catalog_parse_failed": "Spracovanie stránky zlyhalo",
+      "snapshot_parsed": "Zdroje spracované"
     },
     "phases": {
       "login_form": "Prihlasovací formulár",
@@ -5767,13 +5770,34 @@
       "catalog_reset": "Načítanie celého katalógu",
       "catalog_page": "Stránkovanie",
       "parse_page": "Kontrola stránky",
-      "feed_download": "Stiahnutie feedu"
+      "feed_download": "Stiahnutie feedu",
+      "acceptance": "Kontrola pred uložením",
+      "join_sources": "Párovanie zdrojov"
     },
     "errors": {
       "operation_log_cursor_expired": "Tieto záznamy už boli rotované. Načítajte najnovšie záznamy.",
       "operation_log_unavailable": "Log sa nedá prečítať. Skúste ho obnoviť.",
       "operation_log_invalid_range": "Skontrolujte časový rozsah.",
       "stock_settings_invalid_request": "Skontrolujte zadané filtre."
+    },
+    "coverageFailure": "{{source}}: načítané {{actual}}, predtým {{previous}}. Limit {{percent}} % vyžaduje aspoň {{required}}; do limitu chýba {{missing}}.",
+    "noMatches": "{{source}}: nenašiel sa ani jeden jednoznačný zhodný kód s produktovým katalógom.",
+    "snapshotRejected": "Celá dávka bola odmietnutá. Nové dostupnosti sa neuložili; predošlé údaje zostali zachované.",
+    "coverageAction": "Overte úplnosť zdroja a nastavený limit pokrytia v rozšírených nastaveniach dodávateľa.",
+    "notStoredYet": "Zdroje sú spracované. Údaje ešte neboli prijaté do Hubu.",
+    "sourceCounts": "Počty v načítaných zdrojoch",
+    "legacyDiagnostic": "Tento starší záznam neobsahuje počty ani limit použitý pri kontrole.",
+    "targets": {
+      "husky_products_feed": "Produktový XML",
+      "husky_stock_feed": "Skladový XML",
+      "husky_catalog": "Husky B2B"
+    },
+    "metrics": {
+      "catalog_rows": "Produkty v XML",
+      "stock_rows": "Položky skladového XML",
+      "b2b_rows": "Položky B2B",
+      "matched_rows": "Produkty so zhodným B2B kódom",
+      "unknown": "Neznáma B2B dostupnosť"
     }
   }
 }
