@@ -52,6 +52,7 @@
     "sourceDate": "Source fetched: {{date}}",
     "notYet": "not yet",
     "editHelp": "You can edit visibility and availability before creating the CSV. Changes apply only to this export.",
+    "dailyExportHelp": "The daily export is creating its CSV automatically. The result will appear when it finishes.",
     "blockedHelp": "Items with unresolved identities or missing data will not be exported.",
     "missingProducts": "Received products missing from the Atomer source",
     "exportUncertain": "The CSV creation outcome has not been confirmed. Your edits are saved; check the result first.",
@@ -86,6 +87,7 @@
       "queued": "Queued",
       "fetching": "Fetching source",
       "ready": "Ready to review",
+      "exporting": "Creating CSV",
       "exported": "CSV created",
       "failed": "Failed"
     },

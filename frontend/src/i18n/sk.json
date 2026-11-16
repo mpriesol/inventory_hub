@@ -52,6 +52,7 @@
     "sourceDate": "Zdroj stiahnutý: {{date}}",
     "notYet": "zatiaľ nie",
     "editHelp": "Pred vytvorením CSV môžete upraviť viditeľnosť a dostupnosť. Úpravy platia iba pre tento export.",
+    "dailyExportHelp": "Denný export vytvára CSV automaticky. Výsledok sa zobrazí po dokončení.",
     "blockedHelp": "Položky s nevyriešenou identitou alebo chýbajúcimi údajmi sa neexportujú.",
     "missingProducts": "Prijaté produkty, ktoré chýbajú v zdroji Atomeru",
     "exportUncertain": "Výsledok vytvorenia CSV ešte nie je potvrdený. Úpravy zostávajú uložené; najprv overte výsledok.",
@@ -86,6 +87,7 @@
       "queued": "Čaká na spracovanie",
       "fetching": "Načítava sa zdroj",
       "ready": "Pripravené na kontrolu",
+      "exporting": "Vytvára sa CSV",
       "exported": "CSV vytvorené",
       "failed": "Spracovanie zlyhalo"
     },

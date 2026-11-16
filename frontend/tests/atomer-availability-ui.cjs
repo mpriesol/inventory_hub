@@ -196,6 +196,40 @@ async function input(id, value) { await act(async () => { const target = require
   await click('atomer-export');
   assert.deepEqual(exportBodies.at(-1).overrides, [{ code: 'STABLE', availability: 'do 4 dní' }], 'A manual edit is exported even when changes view has no source rows');
 
+  const nativeTimeout = window.setTimeout, nativeClearTimeout = window.clearTimeout, polls = new Map();
+  let timerId = 100000;
+  window.setTimeout = (callback, delay, ...args) => {
+    if (delay !== 3000) return nativeTimeout.call(window, callback, delay, ...args);
+    const id = ++timerId; polls.set(id, callback); return id;
+  };
+  window.clearTimeout = id => { if (!polls.delete(id)) nativeClearTimeout.call(window, id); };
+  const poll = async () => { assert.equal(polls.size, 1, 'Exactly one status poll is scheduled'); const [id, callback] = polls.entries().next().value; polls.delete(id); await act(async () => { callback(); await tick(); await tick(); }); };
+  const daily = { ...ready('77777777-7777-4777-8777-777777777777'), trigger: 'daily', status: 'fetching' }; runs.unshift(daily);
+  const writesBeforeDaily = calls.filter(call => call.method === 'POST').length;
+  await render('daily-fetching', `/sync/atomer?run=${daily.id}`);
+  daily.status = 'ready'; await poll();
+  assert.equal(required('atomer-run-status').textContent, i18n.t('atomerAvailability.runStatus.exporting'));
+  assert(required('atomer-visible-VARIANT-M').disabled); assert(required('atomer-availability-VARIANT-M').disabled);
+  assert(!find('atomer-export'), 'Daily READY never offers a competing manual export');
+  assert(required('atomer-create').disabled, 'Daily READY is still active work');
+  await poll(); assert.equal(polls.size, 1, 'Daily READY continues polling while the worker generates CSV');
+  daily.status = 'exported'; daily.revision++; daily.download_available = true; await poll();
+  assert(required('atomer-download')); assert.equal(polls.size, 0, 'Export completion appears automatically and ends polling');
+  assert.equal(calls.filter(call => call.method === 'POST').length, writesBeforeDaily, 'Following daily progress performs only reads');
+
+  options.enabled = false; daily.status = 'ready'; daily.download_available = false;
+  await render('daily-resume-disabled', `/sync/atomer?run=${daily.id}`);
+  assert.equal(polls.size, 1, 'An existing daily run continues when future scheduling is disabled');
+  daily.status = 'failed'; daily.error = 'atomer_availability_source_changed'; await poll();
+  assert.equal(polls.size, 0); assert(document.body.textContent.includes(i18n.t('atomerAvailability.errors.atomer_availability_source_changed')));
+  assert(!find('atomer-export')); assert(!required('atomer-create').disabled, 'Failure allows a fresh preview without retrying the automatic export');
+
+  const manual = ready('88888888-8888-4888-8888-888888888888'); runs.unshift(manual);
+  await render('manual-ready', `/sync/atomer?run=${manual.id}`);
+  assert.equal(polls.size, 0, 'Manual READY waits for the user without automatic polling');
+  assert(!required('atomer-visible-VARIANT-M').disabled); assert(!required('atomer-availability-VARIANT-M').disabled); assert(!required('atomer-export').disabled);
+  window.setTimeout = nativeTimeout; window.clearTimeout = nativeClearTimeout;
+
   await act(async () => { setHubUser({ id: 20, username: 'operator', display_name: 'Operator', role: 'operator', active: true }); await tick(); });
   assert(required('atomer-feed-url').disabled, 'Operators cannot edit source configuration');
   const late = {}; delayedRead = late; await render('late-response');

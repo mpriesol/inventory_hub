@@ -39,6 +39,8 @@ Importný profil musí aktualizovať existujúce produkty/varianty a len tieto p
 
 Po nastavení zdroja a zapnutí denného exportu worker vykoná jednu dávku každých 24 hodín. Prvý beh je naplánovaný ihneď. Manuálny náhľad alebo dokončený príjem používa rovnaké služby. PostgreSQL advisory lock zabráni súbežnému spracovaniu vo viacerých procesoch. Rozpracované čítanie možno po reštarte bezpečne obnoviť, pretože neobsahuje externý zápis. Pripravený automatický náhľad po reštarte pokračuje vytvorením CSV. Chyba zachová posledný úspešný súbor a bezpečný kód dôvodu.
 
+Rozhranie sleduje denný beh až po hotové CSV alebo chybu; medzistav „Vytvára sa CSV“ je iba na čítanie, kým ručné náhľady vrátane príjmov zostávajú editovateľné.
+
 CSV bajty sú uložené transakčne spolu s výsledkom a SHA-256 v PostgreSQL. Súbory staršie ako sedem dní sa odstránia iba ak existuje novší úspešný export; posledný úspešný CSV sa zachová aj pri dlhšom výpadku. Novšia verzia musí pokrývať celý katalóg alebo rovnaký rozsah; príjmový export nezmaže posledný export celého katalógu ani inej dávky. Audit náhľadu a výsledku ostáva zachovaný. Rozhranie pre download používa konkrétne UUID behu, autentifikáciu a `Cache-Control: no-store`.
 
 ## API a nasadenie
