@@ -76,6 +76,13 @@ global.fetch = async (path, options) => {
   assert(readable().includes('Nové dostupnosti sa neuložili'));
   assert(readable().includes('10 655'));
   assert(!readable().includes('nemá zhodné kódy'), 'Coverage failure must not be confused with a failed code join');
+  event = { ...event, event: 'availability_coverage_warning', level: 'warning' };
+  await click('log-refresh');
+  assert(readable().includes('načítané 9 939, predtým 9 940'));
+  assert(readable().includes('Platné dostupnosti boli uložené'));
+  assert(!readable().includes('Nové dostupnosti sa neuložili'), 'A committed partial update is not a historical rejection');
+  await input('log-attention_id', '123'); await click('log-apply');
+  assert(calls.at(-1).path.includes('attention_id=123'));
   event = { ...base, error_code: 'supplier_availability_incomplete_feed' };
   await click('log-refresh');
   assert(readable().includes('Celá dávka bola odmietnutá'));

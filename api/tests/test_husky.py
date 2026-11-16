@@ -71,8 +71,9 @@ class HuskyTests(unittest.TestCase):
             self.assertIs(raw['public_stock'], flag)
             self.assertIs(snapshot[0].raw['public_stock'], flag)
             self.assertIsNone(p.group_code)  # singleton family becomes a fixed attribute
-        with self.assertRaises(AvailabilityError):
-            husky_sync.combine(self.records(), {}, None, self.cfg)
+        snapshot = husky_sync.combine(self.records(), {}, None, self.cfg)
+        self.assertIsNone(snapshot[0].available)
+        self.assertIn("husky_public_stock_unmatched", snapshot.warnings)
 
     def test_legacy_public_flags_remain_evidence_but_cannot_drive_b2b_stock_or_import(self):
         at = datetime.now(timezone.utc)
@@ -135,7 +136,8 @@ class HuskyTests(unittest.TestCase):
         self.assertIsNone(snapshot.catalog_records[0][1]['public_stock'])
         self.assertTrue(snapshot[0].available)
         self.assertEqual((snapshot[0].quantity,snapshot[0].quantity_kind),(Decimal(11),'minimum'))
-        self.assertIsNone(snapshot[1].available)
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot.report()["rejected"], 1)
 
     def test_duplicate_mpn_not_used_for_b2b_join(self):
         quotes = {q.code:q for q in b2b.parse_page(b2b.document(page().encode()), 1)[0]}
@@ -145,23 +147,34 @@ class HuskyTests(unittest.TestCase):
         self.assertEqual(caught.exception.diagnostic['reason'], 'no_matching_codes')
         self.assertEqual(caught.exception.diagnostic['matched_rows'], 0)
 
-    def test_coverage_reports_exact_requirement_without_relaxing_acceptance(self):
+    def test_coverage_warns_with_exact_requirement_and_preserves_baseline(self):
         snapshot = husky_sync.combine(self.records(), {'PUBLIC-1': True}, None, self.cfg)
-        for count, baseline, percent, required in ((9939, 9940, 100, 9940), (99, 101, 99, 100)):
-            with self.subTest(count=count), self.assertRaises(AvailabilityError) as error:
-                snapshot.require_coverage(count, baseline, percent, 'husky_stock_feed', 'husky_stock_incomplete')
-            facts = error.exception.diagnostic
+        for count, baseline, percent, required in ((9939, 9940, 100, 9940), (1, 101, 99, 100)):
+            self.assertEqual(snapshot.check_coverage(count, baseline, percent, 'husky_stock_feed'), baseline)
+            facts = snapshot.coverage[-1]
             self.assertEqual((facts['rows'], facts['previous_rows'], facts['required_rows'], facts['min_coverage_percent']),
                              (count, baseline, required, percent))
-            self.assertEqual((facts['reason'], facts['target']), ('coverage_below_minimum', 'husky_stock_feed'))
-            snapshot.require_coverage(required, baseline, percent, 'husky_stock_feed', 'husky_stock_incomplete')
+            self.assertEqual(snapshot.check_coverage(required, baseline, percent, 'husky_stock_feed'), required)
+        self.assertIn('supplier_availability_incomplete_feed', snapshot.warnings)
+
+    def test_tolerant_rows_reject_every_duplicate_and_keep_other_products(self):
+        path = self.xml('partial.xml', item()+item()+item('VALID-2','MPN-2','4006381333931'))
+        rows = parser.parse_catalog(path, 'husky', self.cfg, tolerant=True)
+        self.assertEqual([product.code for product, _ in rows], ['VALID-2'])
+        self.assertEqual((rows.total, len(rows.issues)), (3, 2))
+        snapshot = husky_sync.combine(rows, {'VALID-2': True}, None, self.cfg)
+        self.assertEqual((snapshot.report()['total'], snapshot.report()['rejected']), (3, 2))
+        for content in ('<SHOP><SHOPITEM>', '<!DOCTYPE SHOP><SHOP>'+item()+'</SHOP>'):
+            bad = self.root / 'malformed.xml'; bad.write_text(content)
+            with self.assertRaises(Exception):
+                parser.parse_catalog(bad, 'husky', self.cfg, tolerant=True)
 
     def test_source_counts_distinguish_matched_b2b_from_known_availability(self):
         quotes = {q.code:q for q in b2b.parse_page(b2b.document(page(stock_value='-').encode()), 1)[0]}
         snapshot = husky_sync.combine(self.records(item(), item('PUBLIC-2', 'MPN-2', '4006381333931')),
             {'PUBLIC-1': True, 'PUBLIC-2': True, 'EXTRA': False}, quotes, self.cfg)
         self.assertEqual(snapshot.diagnostic(), {'catalog_rows': 2, 'stock_rows': 3, 'b2b_rows': 1,
-                                               'matched_rows': 1, 'unknown': 2})
+                                               'matched_rows': 1, 'unknown': 1})
 
     def test_stock_semantics_and_pagination_validation(self):
         self.assertEqual(b2b.stock_value('0 ks'),(False,Decimal(0),'exact'))

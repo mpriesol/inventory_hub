@@ -243,7 +243,7 @@ def _lock_key(supplier: str) -> int:
     return int.from_bytes(hashlib.sha256(("supplier-catalog:" + supplier).encode()).digest()[:8], "big", signed=True)
 
 
-async def store_catalog_records(db, feed, run, records, observed_at):
+async def store_catalog_records(db, feed, run, records, observed_at, *, deactivate_missing=True):
     """Shared atomic catalog upsert; caller holds supplier and identity locks."""
     now = observed_at
     old = {row.supplier_sku: row for row in (await db.execute(
@@ -291,10 +291,11 @@ async def store_catalog_records(db, feed, run, records, observed_at):
             "raw_data": raw, "processed": True, "processed_at": now,
             "supplier_product_id": id_map[product.code], "fetched_at": now,
         } for product, raw in chunk])
-    await db.execute(update(SupplierProduct).where(
-        SupplierProduct.source_feed_id == feed.id,
-        SupplierProduct.last_seen_run_id != run.id,
-    ).values(is_active=False))
+    if deactivate_missing:
+        await db.execute(update(SupplierProduct).where(
+            SupplierProduct.source_feed_id == feed.id,
+            SupplierProduct.last_seen_run_id != run.id,
+        ).values(is_active=False))
     return new_count, updated_count
 
 

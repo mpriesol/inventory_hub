@@ -17,7 +17,7 @@ Tento prehľad opisuje aktuálnu implementáciu v repozitári. Výsledok konkré
 
 | Oblasť / cesta UI | Implementované | Kontrakt a hranice |
 | --- | --- | --- |
-| Dashboard `/` | Súhrny skladu a posledné pohyby | [História skladu](docs/stock-history.md); neznámy alebo chybný údaj nie je nula. |
+| Dashboard `/` | Súhrny skladu, posledné pohyby a blok Vyžaduje pozornosť | [História skladu](docs/stock-history.md); neznámy alebo chybný údaj nie je nula. |
 | Sklad `/stock`, karta `/products/card/:id` a pôvodné `/products/:sku` | Jedna responzívna karta zo skladu, faktúr, príjmu a histórie; dodávateľ, stock/FIFO, lokálne úpravy a publikovanie ceny do jedného či oboch e-shopov | [Karta](docs/stock-card.md), [editor](docs/product-editor.md); `/products` presmeruje na `/stock`. Uloženie v Hube je samostatné od odoslania do e-shopu. |
 | Väzby a zlučovanie kariet | Náhľad, potvrdenie, konflikty a obnova podľa UUID | [E-shopy](docs/product-links.md), [dodávatelia](docs/supplier-card-links.md), [konsolidácia](docs/product-consolidation.md). Ďalšie podporované zlúčenie nevyžaduje nový PR. |
 | Príjem `/receiving` | Mobilné EAN skenovanie do jednej dávky cez viaceré faktúry a dodávateľov, zmena priradenia a spoločný súhrn; jedno potvrdenie zaúčtuje iba nové množstvá a uzavrie úplné faktúry | [Zmiešaný príjem](docs/mixed-receiving.md), [identita príjmu](docs/receiving-identity.md), [potvrdený začiatok skladu](docs/stock-tracking.md). Príprava karty ani samotný sken nevytvára zásobu. |
@@ -39,6 +39,8 @@ Tento prehľad opisuje aktuálnu implementáciu v repozitári. Výsledok konkré
 | Atomer dostupnosti `/sync/atomer` | Rozdielové CSV z čerstvého buyers/admin zdroja, upraviteľný náhľad produktov a variantov, rozsah dokončeného príjmu a voliteľný denný export | [Atomer dostupnosti](docs/atomer-availability.md). CSV sa importuje ručne; príprava súboru nemení sklad ani e-shop. Neoverené identity a neúplné pokrytie zdroja sú viditeľné. |
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx) a [exporty stránok](frontend/src/pages/index.ts). Názov súboru `PlaceholderPages.tsx` sám neurčuje stav exportovanej stránky.
+
+Spoločné [upozornenia](docs/attention.md) sú na `/settings/attention` a v Prehľade: trvalý stav, ignorovanie incidentu, pravidlá podľa typu/zdroja a chránené API pre ďalšie služby. Prvým producentom sú výsledky dodávateľských načítaní; ostatné služby zatiaľ nie sú automaticky zapojené.
 
 ## Architektúra a aktívne moduly
 
@@ -82,7 +84,7 @@ Automatické Atomer katalógové workery vyžadujú `ATOMER_CATALOG_WORKER_ENABL
 
 ## Databázové migrácie
 
-Repozitár obsahuje 54 SQL súborov: `001`–`052`, `054` a `055`. Aktuálny upgrade runner má 43 modulov: `005`–`038`, potom `046`–`052`, `054` a `055`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 50 upgrade SQL súborov `005`–`052`, `054` a `055`. Číslo `053` nie je súčasťou tejto revízie.
+Repozitár obsahuje 55 SQL súborov: `001`–`055`. Aktuálny upgrade runner má 44 modulov: `005`–`038`, potom `046`–`055`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 51 upgrade SQL súborov `005`–`055`.
 
 Migrácia 054 pridáva rozpracované dávky zmiešaného príjmu a nemenné dôkazy účtovania, migrácia 055 lokálne nastavenia, náhľady a výsledné CSV dostupností Atomeru. Neprijímajú historické zásoby, nezapínajú skladovú autoritu ani nevykonávajú zápisy do e-shopov.
 

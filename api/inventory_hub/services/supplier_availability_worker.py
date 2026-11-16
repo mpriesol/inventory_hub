@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 WORKER_LOCK = 691432214
 
 
+async def reconcile_attention():
+    try:
+        from inventory_hub.services.supplier_attention import reconcile
+        async with get_session_context() as db:
+            await reconcile(db)
+    except Exception as error:
+        # Notification failure must not undo or mislabel an accepted feed.
+        operation_log.emit("attention_reconcile_failed", component="attention", level="error",
+            error_code=service._safe_error(getattr(error, "code", None)) or type(error).__name__)
+
+
 async def cycle():
     if database._engine is None:
         await database.init_db()
@@ -29,6 +40,7 @@ async def cycle():
         try:
             # End the transaction while retaining the session lock for the bounded network read.
             await connection.commit()
+            await reconcile_attention()
             async with get_session_context() as db:
                 interrupted = (await db.execute(select(SupplierAvailabilitySettings.supplier_id,
                     SupplierAvailabilitySettings.running_run_id).where(SupplierAvailabilitySettings.running_run_id.is_not(None)))).all()
@@ -81,12 +93,21 @@ async def cycle():
                         else:
                             records, size = await asyncio.to_thread(fetch, plan)
                     async with get_session_context() as db:
+                        report = None
                         if plan["supplier"] == "sloger":
                             from inventory_hub.services.supplier_availability_b2b import accept_batch
                             await accept_batch(db, plan, batch)
                         else:
-                            await service.accept_run(db, plan, records, size)
-                    operation_log.emit("availability_pass_completed", duration_ms=round((time.monotonic() - started) * 1000))
+                            report = await service.accept_run(db, plan, records, size)
+                    failed = bool(report and report.get("status") == "failed")
+                    partial = bool(not failed and report and (report.get("rejected") or report.get("unknown") or report.get("warnings")))
+                    operation_log.emit("availability_pass_failed" if failed else "availability_pass_partial" if partial else "availability_pass_completed",
+                        error_code="supplier_availability_no_usable_rows" if failed else None,
+                        level="error" if failed else "warning" if partial else "info", duration_ms=round((time.monotonic() - started) * 1000),
+                        **({"rows": report["total"], **{key: report[key] for key in ("accepted", "rejected", "unknown")}} if report else {}))
+                    for check in (report or {}).get("coverage", []):
+                        operation_log.emit("availability_coverage_warning", level="warning", phase="acceptance",
+                            reason="coverage_below_minimum", **check)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -100,6 +121,7 @@ async def cycle():
                     operation_log.emit("availability_pass_failed", level="error", error_code=code,
                         duration_ms=round((time.monotonic() - started) * 1000),
                         **(error.diagnostic if isinstance(error, AvailabilityError) else {}))
+                await reconcile_attention()
             return True
         finally:
             await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})

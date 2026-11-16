@@ -20,9 +20,9 @@ MAX_BYTES = 5_000_000
 BACKUPS = 3
 MAX_LINE = 4096
 _context = ContextVar("operation_context", default={})
-_codes = {"component", "event", "supplier", "phase", "error_code", "reason"}
+_codes = {"component", "event", "supplier", "phase", "error_code", "reason", "rule_code", "scope", "source"}
 _numbers = {"run_id", "status_code", "duration_ms", "page", "observed_page", "rows", "accepted", "rejected", "unknown", "redirect",
-            "previous_rows", "required_rows", "min_coverage_percent", "catalog_rows", "stock_rows", "b2b_rows", "matched_rows"}
+            "previous_rows", "required_rows", "min_coverage_percent", "catalog_rows", "stock_rows", "b2b_rows", "matched_rows", "attention_id", "occurrences"}
 
 
 class LogUnavailable(Exception):
@@ -109,7 +109,7 @@ def emit(event, *, component=None, level="info", **fields):
 
 
 def read(*, limit=100, before=None, component=None, supplier=None, level=None,
-         run_id=None, request_id=None, since=None, until=None):
+         run_id=None, request_id=None, attention_id=None, since=None, until=None):
     """Newest first, stable cursor across new writes; expired cursors are explicit."""
     try:
         chunks = []
@@ -130,7 +130,7 @@ def read(*, limit=100, before=None, component=None, supplier=None, level=None,
     except (OSError, LogUnavailable):
         raise LogUnavailable() from None
     filters = {k: v for k, v in {"component": component, "supplier": supplier, "level": level,
-                               "run_id": run_id, "request_id": request_id}.items() if v is not None}
+                               "run_id": run_id, "request_id": request_id, "attention_id": attention_id}.items() if v is not None}
     items, found = [], before is None
     for chunk in chunks:
         for raw in reversed(chunk.splitlines()):

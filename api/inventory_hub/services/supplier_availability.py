@@ -272,7 +272,15 @@ async def accept_run(db, plan, records, source_bytes=0):
         from inventory_hub.services.husky_sync import Snapshot, store
         if not isinstance(records, Snapshot):
             raise AvailabilityError("husky_catalog_invalid", 422)
-        await store(db, plan, records, row, run, observed, expires)
+        if records:
+            await store(db, plan, records, row, run, observed, expires)
+    report["warnings"] = list(dict.fromkeys(report["warnings"] + getattr(records, "warnings", [])))
+    report["coverage"] = getattr(records, "coverage", [])
+    if not covered and plan["supplier"] != "husky":
+        report["coverage"] = [{"target": "supplier_feed", "rows": records.total, "previous_rows": row.last_item_count,
+            "required_rows": (row.last_item_count * row.min_coverage_percent + 99) // 100,
+            "min_coverage_percent": row.min_coverage_percent}]
+    run.error_details = {**(run.error_details or {}), "availability_report": report}
     products = dict((await db.execute(select(SupplierProduct.supplier_sku, SupplierProduct.id)
                       .where(SupplierProduct.supplier_id == plan["supplier_id"]))).all())
     for start in range(0, len(records), 500):
@@ -319,6 +327,7 @@ async def accept_run(db, plan, records, source_bytes=0):
     run.error_details = {**(run.error_details or {}), "supplier_links": {
         "linked": sum(report["linked"] for report in reports),
         "conflicts": sum(len(report["conflicts"]) for report in reports)}}
+    return {**report, "status": run.status.value}
 
 
 async def fail_run(db, supplier_id, run_id, code):

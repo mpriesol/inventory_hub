@@ -20,6 +20,7 @@ def events(limit: int = Query(100, ge=1, le=200),
            supplier: str | None = Query(None, pattern=CODE),
            level: Literal["info", "warning", "error"] | None = None,
            run_id: int | None = Query(None, ge=1),
+           attention_id: int | None = Query(None, ge=1),
            request_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"),
            since: datetime | None = None, until: datetime | None = None):
     if any(value is not None and value.tzinfo is None for value in (since, until)) or (since and until and since > until):
@@ -27,7 +28,7 @@ def events(limit: int = Query(100, ge=1, le=200),
     stamp = lambda value: value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ") if value else None
     try:
         return operation_log.read(limit=limit, before=before, component=component, supplier=supplier,
-                                  level=level, run_id=run_id, request_id=request_id, since=stamp(since), until=stamp(until))
+                                  level=level, run_id=run_id, attention_id=attention_id, request_id=request_id, since=stamp(since), until=stamp(until))
     except operation_log.CursorExpired:
         raise HTTPException(409, detail={"code": "operation_log_cursor_expired"}) from None
     except operation_log.LogUnavailable:

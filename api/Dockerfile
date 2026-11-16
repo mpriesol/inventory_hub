@@ -72,6 +72,7 @@ COPY infra/db-init/049_atomer_catalog_job_control.sql /app/inventory_hub/migrati
 COPY infra/db-init/050_atomer_catalog_handoff.sql /app/inventory_hub/migrations/050_atomer_catalog_handoff.sql
 COPY infra/db-init/051_invoice_processing.sql /app/inventory_hub/migrations/051_invoice_processing.sql
 COPY infra/db-init/052_receiving_operations.sql /app/inventory_hub/migrations/052_receiving_operations.sql
+COPY infra/db-init/053_attention.sql /app/inventory_hub/migrations/053_attention.sql
 COPY infra/db-init/054_mixed_receiving.sql /app/inventory_hub/migrations/054_mixed_receiving.sql
 COPY infra/db-init/055_atomer_availability.sql /app/inventory_hub/migrations/055_atomer_availability.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py

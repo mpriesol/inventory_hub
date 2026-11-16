@@ -275,3 +275,12 @@ The availability batch tests additionally cover malformed/missing leaves among
 valid siblings, incomplete pages, preserved own-stock priority, isolated
 pre-write/readback failures and diagnostic selection followed by an explicit
 bounded recheck in PostgreSQL.
+
+## Spoločné upozornenia
+
+Dokončené výsledky načítaní sú zdrojom pre [Vyžaduje pozornosť](attention.md).
+Pravidelná projekcia používa ID behu na deduplikáciu a dobehne aj po reštarte.
+Upozornenie možno ignorovať alebo vypnúť bez vypnutia dodávateľa či logovania.
+Pri Husky je pokles pokrytia upozornením; platné riadky sa prijmú, chýbajúce
+a chybné riadky si zachovajú pôvodnú platnosť. Explicitný neznámy B2B stav
+sa naďalej aktualizuje ako neznámy, nie ako nula.

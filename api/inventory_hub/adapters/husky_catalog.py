@@ -41,18 +41,37 @@ def money(value):
         raise ValueError("Invalid Husky price") from None
 
 
-def read_stock(path):
-    result = {}
-    for item in read_export(path):
-        code = single(item, "KODVYROBCE", required=True, limit=100)
-        flag = single(item, "SKLADEM", required=True).casefold()
-        if code in result or flag not in ("true", "false"):
-            raise ValueError("Invalid Husky stock identity or flag")
-        result[code] = flag == "true"
+class StockRows(dict):
+    def __init__(self):
+        super().__init__()
+        self.issues = []
+
+
+class CatalogRows(list):
+    def __init__(self, total):
+        super().__init__()
+        self.issues, self.total = [], total
+
+
+def read_stock(path, *, tolerant=False):
+    items = list(read_export(path))
+    codes = Counter(_get_text(item, "KODVYROBCE") for item in items)
+    result = StockRows()
+    for index, item in enumerate(items, 1):
+        try:
+            code = single(item, "KODVYROBCE", required=True, limit=100)
+            flag = single(item, "SKLADEM", required=True).casefold()
+            if codes[code] != 1 or flag not in ("true", "false"):
+                raise ValueError("Invalid Husky stock identity or flag")
+            result[code] = flag == "true"
+        except ValueError:
+            if not tolerant:
+                raise
+            result.issues.append(index)
     return result
 
 
-def parse_catalog(path, supplier, cfg, feed_key="products"):
+def parse_catalog(path, supplier, cfg, feed_key="products", *, tolerant=False):
     if feed_key == "stock":
         raise ValueError("The Husky stock export is not a product catalog")
     adapter = cfg.get("adapter_settings") or {}
@@ -61,66 +80,81 @@ def parse_catalog(path, supplier, cfg, feed_key="products"):
         raise ValueError("Invalid configured Husky destination VAT")
     if adapter.get("currency", "EUR") != "EUR":
         raise ValueError("Husky SK prices require EUR")
-    output, seen = [], set()
-    for item in read_export(path):
-        code = single(item, "CODE", required=True, limit=100)
-        if code in seen:
-            raise ValueError("Duplicate Husky supplier code")
-        seen.add(code)
-        mpn = single(item, "PRODUCTNO", limit=100) or None
-        group = single(item, "MASTER_PRODUCT_ID", limit=100) or None
-        warnings = ["supplier_stock_unverified"]
-        ean_values = list(dict.fromkeys((node.text or "").strip() for node in item.findall("EAN") if (node.text or "").strip()))
-        eans = [value for value in ean_values if ProductIdentifierService.gtin_key(value)]
-        if len(eans) != len(ean_values):
-            warnings.append("invalid_ean")
-        if not eans:
-            warnings.append("missing_ean")
-        retail = money(single(item, "COMMON_PRICE_VAT"))
-        if retail is None:
-            retail = money(single(item, "PRICE_VAT"))
-        prices = CatalogPrices(currency="EUR", vat_percent=vat,
-            retail_gross=retail,
-            discount_gross=money(single(item, "PRICE_VAT")))
-        if prices.retail_gross is None:
-            warnings.append("missing_retail_price")
-        if vat is None:
-            warnings.append("missing_vat")
-        # The historical VAT/VALUE=20 in this export is not current destination VAT.
-        axes = [CatalogParameter(name=_get_text(p, "PARAM_NAME"), value=_get_text(p, "VAL"))
-                for p in item.findall("PARAM") if _get_text(p, "PARAM_NAME") and _get_text(p, "VAL")]
-        images = list(dict.fromkeys(url for image in item.findall("IMAGES/IMAGE")
-            if (url := http_url(_get_text(image, "DOWNLOAD_FROM") or _get_text(image, "URL")))))
-        if not images:
-            images = list(dict.fromkeys(url for tag in ("IMGURL", "IMGURL_ALTERNATIVE")
-                for node in item.findall(tag) if (url := http_url(node.text))))
-        if not images:
-            warnings.append("missing_images")
-        params = []
-        for attribute in item.findall("ATTRIBUTES/ATTRIBUTE"):
-            name = _get_text(attribute, "NAME")
-            values = [_get_text(v, "VALUE") for v in attribute.findall("ATTRIBUTE_ITEMS/ATTRIBUTE_ITEM")]
-            if name and any(values):
-                params.append(CatalogParameter(name=name, value="; ".join(v for v in values if v)))
-        name = single(item, "PRODUCTNAME", required=True)
-        product = CatalogProduct(supplier=supplier, feed_key=feed_key, code=code,
-            shop_code=canonical_supplier_sku(get_supplier_prefix(cfg), code), manufacturer_code=mpn,
-            name=name, brand=single(item, "PRODUCER") or None, eans=eans, images=images,
-            description=_get_text(item, "DESCRIPTION"), short_description=_get_text(item, "ANNOTATION"),
-            url=http_url(_get_text(item, "URL")), category=_get_text(item, "CATEGORYTEXT") or None,
-            category_code=_get_text(item, "CATEGORYTEXT") or None, parameters=params,
-            prices=prices, group_code=group, group_name=name if group else None,
-            variant_attributes=axes if group else [], variant_relationship="explicit" if group else "not_provided",
-            availability="overíme", warnings=warnings,
-            metadata={"husky_productno": mpn or "", "husky_id": single(item, "ID", limit=100)})
-        if not group:
-            product.parameters.extend(axes)
-        xml = etree.tostring(item, encoding="unicode", with_tail=False)
-        product.source_hash = hashlib.sha256(xml.encode()).hexdigest()
-        output.append((product, {"xml": xml, "fields": _source_fields(item)}))
+    items = list(read_export(path))
+    codes = Counter(_get_text(item, "CODE") for item in items)
+    output = CatalogRows(len(items))
+    output.manufacturer_counts = Counter(_get_text(item, "PRODUCTNO") for item in items)
+    for index, item in enumerate(items, 1):
+        code = None
+        try:
+            code = single(item, "CODE", required=True, limit=100)
+            if codes[code] != 1:
+                raise ValueError("Duplicate Husky supplier code")
+            product, raw = _catalog_item(item, supplier, cfg, feed_key, vat, code)
+            output.append((product, {**raw, "source_row": index}))
+        except ValueError:
+            if not tolerant:
+                raise
+            # No raw XML or prices in error output; ambiguous codes are all rejected.
+            output.issues.append({"row": index, "sku": code, "stock": None, "external_stock": None,
+                "code": "husky_catalog_row_invalid", "kind": "rejected"})
     counts = Counter(ean for product, _ in output for ean in product.eans)
     for product, _ in output:
         if any(counts[ean] > 1 for ean in product.eans):
             product.warnings.append("duplicate_supplier_ean")
             product.import_blockers.append("duplicate_supplier_ean")
     return output
+
+
+def _catalog_item(item, supplier, cfg, feed_key, vat, code):
+    mpn = single(item, "PRODUCTNO", limit=100) or None
+    group = single(item, "MASTER_PRODUCT_ID", limit=100) or None
+    warnings = ["supplier_stock_unverified"]
+    ean_values = list(dict.fromkeys((node.text or "").strip() for node in item.findall("EAN") if (node.text or "").strip()))
+    eans = [value for value in ean_values if ProductIdentifierService.gtin_key(value)]
+    if len(eans) != len(ean_values):
+        warnings.append("invalid_ean")
+    if not eans:
+        warnings.append("missing_ean")
+    retail = money(single(item, "COMMON_PRICE_VAT"))
+    if retail is None:
+        retail = money(single(item, "PRICE_VAT"))
+    prices = CatalogPrices(currency="EUR", vat_percent=vat,
+        retail_gross=retail,
+        discount_gross=money(single(item, "PRICE_VAT")))
+    if prices.retail_gross is None:
+        warnings.append("missing_retail_price")
+    if vat is None:
+        warnings.append("missing_vat")
+    # The historical VAT/VALUE=20 in this export is not current destination VAT.
+    axes = [CatalogParameter(name=_get_text(p, "PARAM_NAME"), value=_get_text(p, "VAL"))
+            for p in item.findall("PARAM") if _get_text(p, "PARAM_NAME") and _get_text(p, "VAL")]
+    images = list(dict.fromkeys(url for image in item.findall("IMAGES/IMAGE")
+        if (url := http_url(_get_text(image, "DOWNLOAD_FROM") or _get_text(image, "URL")))))
+    if not images:
+        images = list(dict.fromkeys(url for tag in ("IMGURL", "IMGURL_ALTERNATIVE")
+            for node in item.findall(tag) if (url := http_url(node.text))))
+    if not images:
+        warnings.append("missing_images")
+    params = []
+    for attribute in item.findall("ATTRIBUTES/ATTRIBUTE"):
+        name = _get_text(attribute, "NAME")
+        values = [_get_text(v, "VALUE") for v in attribute.findall("ATTRIBUTE_ITEMS/ATTRIBUTE_ITEM")]
+        if name and any(values):
+            params.append(CatalogParameter(name=name, value="; ".join(v for v in values if v)))
+    name = single(item, "PRODUCTNAME", required=True)
+    product = CatalogProduct(supplier=supplier, feed_key=feed_key, code=code,
+        shop_code=canonical_supplier_sku(get_supplier_prefix(cfg), code), manufacturer_code=mpn,
+        name=name, brand=single(item, "PRODUCER") or None, eans=eans, images=images,
+        description=_get_text(item, "DESCRIPTION"), short_description=_get_text(item, "ANNOTATION"),
+        url=http_url(_get_text(item, "URL")), category=_get_text(item, "CATEGORYTEXT") or None,
+        category_code=_get_text(item, "CATEGORYTEXT") or None, parameters=params,
+        prices=prices, group_code=group, group_name=name if group else None,
+        variant_attributes=axes if group else [], variant_relationship="explicit" if group else "not_provided",
+        availability="overíme", warnings=warnings,
+        metadata={"husky_productno": mpn or "", "husky_id": single(item, "ID", limit=100)})
+    if not group:
+        product.parameters.extend(axes)
+    xml = etree.tostring(item, encoding="unicode", with_tail=False)
+    product.source_hash = hashlib.sha256(xml.encode()).hexdigest()
+    return product, {"xml": xml, "fields": _source_fields(item)}

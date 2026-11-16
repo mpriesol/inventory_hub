@@ -132,11 +132,22 @@ observations are committed in one transaction through the shared catalog upsert.
 Existing source identities and unrelated attributes are retained; no Hub cards,
 stock movements, receipts, FIFO costs or shop writes are created by the read.
 
-Husky uses the configured coverage threshold as an acceptance gate for catalog
-size, public stock export size and, after the first successful B2B read, B2B size. A smaller snapshot below
-that threshold keeps the previous success, reports failure and retries only on
-the next scheduled/manual run. Default 100% is conservative; review legitimate
-supplier removals before lowering it. Explicit unknown B2B observations replace
+Husky uses the configured percentage as a warning threshold for catalog,
+auxiliary stock export and B2B sizes. A smaller complete document still updates
+all usable rows, even far below the threshold. The previous comparison baseline
+is retained while below the threshold, so the next small batch does not silently
+clear the warning. Accepted rows and warnings are committed together. Invalid
+catalog rows and every occurrence of a duplicate supplier code are skipped;
+malformed/incomplete XML, invalid document structure, B2B pagination/authentication
+failures and configuration changes still fail the read. No usable rows means a
+failed run without advancing the last success.
+
+A missing or ambiguous B2B quote is skipped, preserving that product's catalog
+quote and availability observation including its original expiry. Missing catalog
+rows are likewise left untouched. Husky availability batches do not deactivate
+omitted catalog products; shared catalog refreshes keep their existing retirement
+behavior. The auxiliary retail export cannot override a
+verified B2B quote, including if its code is absent. Explicit unknown B2B observations replace
 old wholesale claims with unknown; they never become zero. Arbitrary custom
 product feed mappings are rejected by the combined worker rather than silently
 ignored. Source raw XML remains available in catalog detail; ephemeral downloads
@@ -152,7 +163,7 @@ needed; database and files remain compatible. No deployed migrations are changed
 `test_husky.py` covers XML identities/GTIN, images, Decimal prices, uncertain VAT
 basis, public vs wholesale stock, safe form fields/pagination and secret redaction.
 `test_husky_db.py` uses an isolated localhost `*_catalog_test` database to check
-atomic catalog/observation writes, replay, revision fencing, coverage rejection,
+atomic catalog/observation writes, replay, revision fencing, partial coverage acceptance, retained missing-row expiry,
 unchanged physical stock, new/updated/unchanged catalog counts and missing-price semantics. Existing catalog and
 availability tests cover the shared upsert and scheduling regressions.
 The database tests also exercise rollback of a failed 034 installation and repeated
@@ -175,14 +186,14 @@ older snapshot no longer hides a more recent failed refresh on the settings card
 This instrumentation preserves all completeness/identity guards and does not
 itself claim that a previously failing live read is fixed.
 
-The log also distinguishes parsed sources from accepted data. A coverage rejection
-records the exact source, observed and previous row counts, configured percentage
-and integer minimum, plus catalog/stock/B2B totals and matching/unknown counts.
-The final failed event retains these facts after the database transaction rolls
-back. Product XML coverage failures use `husky_catalog_incomplete`; historical
-Husky failures under the generic partial-feed code are displayed as full rejection,
-never as accepted values. Older missing counts are not reconstructed. Logging does
-not lower the saved threshold or change acceptance/publication behavior.
+The log distinguishes parsing, committed partial updates and failures. Committed
+coverage warnings contain actual/previous counts, saved threshold and rounded
+minimum. `availability_pass_partial` includes accepted/skipped/unknown counts.
+Historical failed runs retain their original rejection meaning; their missing
+numbers are not invented. The shared [attention center](attention.md) projects
+committed supplier results into persistent, configurable notifications and links
+back to this supplier and its log. A log rotation cannot clear an open incident.
+
 
 The production diagnostic run #1241 on 13 November 2026 reached the catalog
 reset with HTTP 200 after a successful login, then failed on page 1 with
