@@ -145,6 +145,9 @@ jobs:
       - name: Atomer migration progress interactions
         run: node frontend/tests/atomer-progress-ui.cjs
 
+      - name: Atomer availability export and recovery interactions
+        run: node frontend/tests/atomer-availability-ui.cjs
+
       - name: Check supplier availability configuration
         run: |
           node frontend/tests/supplier-config-ui.cjs
@@ -198,6 +201,7 @@ jobs:
           node frontend/tests/receiving-scan-ui.cjs
           node frontend/tests/receiving-lookup-ui.cjs
           node frontend/tests/receiving-recovery-ui.cjs
+          node frontend/tests/receiving-mixed-ui.cjs
 
       - name: Movement history and dashboard interactions
         run: node frontend/tests/stock-history-ui.cjs

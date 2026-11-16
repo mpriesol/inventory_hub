@@ -2,9 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiResponseError } from '../api/client';
 import { scanCode, type ScanResult } from '../api/receiving';
 
-type Scan = { request_id: string; code: string; qty: number; line_id?: number };
-type ScanContext = { key: string; queue: Scan[]; sending: boolean; stopped: boolean; ambiguous?: { code: string; line_ids: number[] } | null };
-const restore = (key: string): Scan[] => {
+export type ReceivingScanCommand = { request_id: string; code: string; qty: number; line_id?: number; supplier?: string; invoice_no?: string };
+export type ScanInvoiceChoice = { supplier: string; invoice_no: string; line_id?: number };
+type InvoiceChoiceCandidate = { supplier: string; invoice_no: string; lines: { id: number | null }[]; [key: string]: unknown };
+type InvoiceChoice = { code: string; errorCode: string; candidates: InvoiceChoiceCandidate[] };
+const validCandidate = (value: unknown): value is InvoiceChoiceCandidate => {
+  const candidate = value as InvoiceChoiceCandidate;
+  return !!candidate && typeof candidate.supplier === 'string' && typeof candidate.invoice_no === 'string'
+    && Array.isArray(candidate.lines) && candidate.lines.every(line => !!line && (line.id === null || Number.isSafeInteger(line.id)));
+};
+type ScanContext = { key: string; queue: ReceivingScanCommand[]; sending: boolean; stopped: boolean; ambiguous?: { code: string; line_ids: number[] } | null; choice?: InvoiceChoice | null };
+const restore = (key: string): ReceivingScanCommand[] => {
   try {
     const value = JSON.parse(sessionStorage.getItem(key) || '[]');
     return Array.isArray(value) ? value.filter(row => row && /^[0-9a-f-]{36}$/i.test(row.request_id)
@@ -17,13 +25,15 @@ const persist = (context: ScanContext) => {
     else sessionStorage.removeItem(context.key);
   } catch { /* In-memory retry remains available. */ }
 };
-const snapshot = (context: ScanContext) => ({ context, pending: context.queue.length, busy: context.sending, uncertain: context.stopped && !context.ambiguous, ambiguous: context.ambiguous || null });
+const snapshot = (context: ScanContext) => ({ context, pending: context.queue.length, busy: context.sending, uncertain: context.stopped && !context.ambiguous && !context.choice, ambiguous: context.ambiguous || null, choice: context.choice || null });
 
 /** One UUID per physical scan, sequential delivery, identical payload on retry. */
-export function useReceivingScanner(supplier: string, sessionId: string,
-  accept: (result: ScanResult, code: string) => void | Promise<void>, reject: (message: string) => void) {
-  const key = `receiving-scans:${supplier}:${sessionId}`;
-  const callbacks = useRef({ accept, reject }); callbacks.current = { accept, reject };
+export function useReceivingScanner<Result = ScanResult>(supplier: string, sessionId: string,
+  accept: (result: Result, code: string) => void | Promise<void>,
+  reject: (message: string, error?: unknown, command?: ReceivingScanCommand) => void,
+  transport?: { key: string; send: (command: ReceivingScanCommand) => Promise<Result> }) {
+  const key = transport?.key || `receiving-scans:${supplier}:${sessionId}`;
+  const callbacks = useRef({ accept, reject, transport }); callbacks.current = { accept, reject, transport };
   const scope = useRef<ScanContext | null>(null);
   // The sender belongs to one context object, not a global busy flag. A late
   // response for receipt A must never block or alter receipt B (or a new A).
@@ -47,7 +57,9 @@ export function useReceivingScanner(supplier: string, sessionId: string,
         const command = context.queue[0];
         let acknowledged = false;
         try {
-          const result = await scanCode(supplier, sessionId, command.code, command.qty, command.request_id, command.line_id);
+          const result = callbacks.current.transport
+            ? await callbacks.current.transport.send(command)
+            : await scanCode(supplier, sessionId, command.code, command.qty, command.request_id, command.line_id) as Result;
           acknowledged = true;
           if (!current(context)) return;
           await callbacks.current.accept(result, command.code);
@@ -56,7 +68,13 @@ export function useReceivingScanner(supplier: string, sessionId: string,
         } catch (error) {
           if (!current(context)) return;
           const message = error instanceof Error ? error.message : '';
-          const detail = error instanceof ApiResponseError ? error.detail as { code?: string; line_ids?: number[] } : null;
+          const detail = error instanceof ApiResponseError ? error.detail as { code?: string; line_ids?: number[]; candidates?: unknown[] } : null;
+          if (!acknowledged && error instanceof ApiResponseError && error.status === 409
+            && ['mixed_receiving_invoice_choice', 'mixed_receiving_line_choice'].includes(detail?.code || '')
+            && Array.isArray(detail?.candidates) && detail.candidates.length && detail.candidates.every(validCandidate)) {
+            context.choice = { code: command.code, errorCode: detail.code!, candidates: detail.candidates };
+            context.stopped = true; reflect(context); break;
+          }
           if (!acknowledged && error instanceof ApiResponseError && error.status === 409 && detail?.code === 'scan_line_ambiguous' && Array.isArray(detail.line_ids) && detail.line_ids.length > 1 && detail.line_ids.every(id => Number.isSafeInteger(id) && id > 0)) {
             context.ambiguous = { code: command.code, line_ids: detail.line_ids };
             context.stopped = true; reflect(context); break;
@@ -67,7 +85,7 @@ export function useReceivingScanner(supplier: string, sessionId: string,
           if (rejected) { context.queue.shift(); persist(context); }
           else context.stopped = true;
           reflect(context);
-          callbacks.current.reject(rejected ? (message.includes('scan_line_ambiguous') ? 'ambiguous' : 'failed') : 'uncertain');
+          callbacks.current.reject(rejected ? (message.includes('scan_line_ambiguous') ? 'ambiguous' : 'failed') : 'uncertain', error, command);
         }
       }
     } finally {
@@ -81,7 +99,7 @@ export function useReceivingScanner(supplier: string, sessionId: string,
     persist(context); reflect(context); void drain();
   }
   function retry() {
-    if (context.sending || context.ambiguous || !context.queue.length || !current(context)) return;
+    if (context.sending || context.ambiguous || context.choice || !context.queue.length || !current(context)) return;
     context.stopped = false; reflect(context); void drain();
   }
   function resolveAmbiguity(lineId: number | null) {
@@ -93,7 +111,19 @@ export function useReceivingScanner(supplier: string, sessionId: string,
     else context.queue[0] = { ...context.queue[0], line_id: lineId };
     context.ambiguous = null; context.stopped = false; persist(context); reflect(context); void drain();
   }
+  function resolveChoice(selection: ScanInvoiceChoice | null) {
+    if (!current(context) || context.sending || !context.choice || !context.queue.length) return;
+    if (selection && !context.choice.candidates.some(candidate => candidate.supplier === selection.supplier
+      && candidate.invoice_no === selection.invoice_no && (selection.line_id === undefined || candidate.lines.some(line => line.id === selection.line_id)))) return;
+    // Only an explicit 409 rejection permits changing the original scan payload.
+    if (selection === null) context.queue.shift();
+    else {
+      const { line_id: previousLine, ...command } = context.queue[0];
+      context.queue[0] = { ...command, ...selection };
+    }
+    context.choice = null; context.stopped = false; persist(context); reflect(context); void drain();
+  }
   const visible = view.context === context ? view : snapshot(context);
-  return { enqueue, retry, resolveAmbiguity, ambiguous: visible.ambiguous, pending: visible.pending, busy: visible.busy, uncertain: visible.uncertain,
+  return { enqueue, retry, resolveAmbiguity, resolveChoice, choice: visible.choice, ambiguous: visible.ambiguous, pending: visible.pending, busy: visible.busy, uncertain: visible.uncertain,
     hasPending: () => context.queue.length > 0 };
 }

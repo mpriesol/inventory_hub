@@ -16,7 +16,7 @@ from inventory_hub.settings import settings
 def _rows(path, modified, size):
     # Reuse the canonical receiving CSV grammar; metadata invalidates the cache.
     from inventory_hub.routers.receiving_db import _parse_invoice_csv
-    return _parse_invoice_csv(path)
+    return [{**row, 'line_number': number} for number, row in enumerate(_parse_invoice_csv(path), 1)]
 
 
 def _files(suppliers):

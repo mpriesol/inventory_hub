@@ -2,6 +2,8 @@ import React from 'react';
 import { AccountPage } from './pages/AccountPage';
 import { AtomerMigrationProgress } from './pages/AtomerMigrationProgress';
 import { AtomerContentMigration } from './pages/AtomerContentMigration';
+import { AtomerAvailabilityPage } from './pages/AtomerAvailabilityPage';
+import { MixedReceivingPage } from './pages/MixedReceivingPage';
 import { SessionBootstrap } from './components/SessionBootstrap';
 import { RequireHubSession } from './components/RequireHubSession';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
@@ -53,7 +55,8 @@ const router = createBrowserRouter(createRoutesFromElements(
           <Route path="/invoices/:invoiceId" element={<InvoiceDetailPage />} />
 
           {/* Receiving */}
-          <Route path="/receiving" element={<ReceivingPage />} />
+          <Route path="/receiving" element={<MixedReceivingPage />} />
+          <Route path="/receiving/invoices" element={<ReceivingPage />} />
           <Route path="/receiving/:invoiceId" element={<ReceivingSessionPage />} />
 
           {/* Stock */}
@@ -82,6 +85,7 @@ const router = createBrowserRouter(createRoutesFromElements(
           <Route path="/shops" element={<ShopsPage />} />
           <Route path="/migration/atomer-progress" element={<AtomerMigrationProgress />} />
           <Route path="/migration/atomer" element={<AtomerContentMigration />} />
+          <Route path="/sync/atomer" element={<AtomerAvailabilityPage />} />
 
           <Route path="/login" element={<AccountPage />} />
           <Route path="/settings/users" element={<AccountPage />} />

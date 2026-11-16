@@ -335,6 +335,32 @@ class InvoiceProcessingDatabaseTests(InvoiceDatabaseCase):
         self.assertTrue(projected[0]['receiving_archived'])
         self.assertEqual(projected[0]['receiving_session_id'], str(session_id))
 
+    async def test_receiving_rejects_exact_retired_source_until_restore(self):
+        async with self.sessions() as db:
+            await db.execute(text('''INSERT INTO invoice_source_archive_events
+                (id,supplier_id,source_key,action,note,actor,request_hash)
+                VALUES(:id,:supplier,'RETIRED-LOCAL','archive','Retire test source','fixture',:hash)'''),
+                {'id': uuid4(), 'supplier': self.supplier_id, 'hash': 'b' * 64})
+            await db.commit()
+        async with self.sessions() as db:
+            with self.assertRaises(service.InvoiceProcessingError) as caught:
+                await service.assert_receiving_allowed(db, self.supplier_id, 'RETIRED-LOCAL')
+            self.assertEqual(caught.exception.code, 'invoice_source_archived')
+            await service.assert_receiving_allowed(db, self.other_supplier_id, 'RETIRED-LOCAL')
+            await service.assert_receiving_allowed(db, self.supplier_id, 'ACTIVE-LOCAL')
+            await db.execute(text('''INSERT INTO invoice_source_archive_events
+                (id,supplier_id,source_key,action,note,actor,request_hash,created_at)
+                VALUES(:id,:supplier,'RETIRED-LOCAL','restore','Restore test source','fixture',:hash,NOW()+INTERVAL '1 second')'''),
+                {'id': uuid4(), 'supplier': self.supplier_id, 'hash': 'c' * 64})
+            await service.assert_receiving_allowed(db, self.supplier_id, 'RETIRED-LOCAL')
+
+    def test_partial_mixed_stock_posting_does_not_finish_invoice(self):
+        record = {'id': 1, 'invoice_number': 'MIXED', 'status': 'in_progress',
+                  'session_data': {'mixed_receiving': True}, 'has_stock_movements': True}
+        self.assertFalse(service._receipt(record)['received'])
+        record['status'] = 'completed'
+        self.assertTrue(service._receipt(record)['received'])
+
     async def test_audit_is_immutable_and_reapplying_schema_keeps_original_operations(self):
         identifier, _ = await self.invoice()
         result = await self.perform(identifier, 'process_without_stock')

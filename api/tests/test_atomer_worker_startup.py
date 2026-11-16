@@ -23,6 +23,7 @@ WORKERS = {
     "stock_sync_worker": "stock-sync",
     "fifo_cost_worker": "fifo-cost-sync",
     "invoice_archive_worker": "invoice-archive",
+    "atomer_availability_worker": "atomer-availability",
 }
 ATOMER_WORKERS = {"atomer_catalog_engine", "atomer_catalog_source_cards"}
 

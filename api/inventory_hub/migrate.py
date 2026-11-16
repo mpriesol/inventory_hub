@@ -57,6 +57,8 @@ MIGRATIONS = (
     "atomer_catalog_handoff_migrate", # 050; no job lifecycle changes
     "invoice_processing_migrate",    # 051; invoice handling/archival, no stock writes
     "receiving_operation_migrate",   # 052; receipt correction audits, no automatic reset
+    "mixed_receiving_migrate",       # 054; mixed receipt batches, no automatic stock writes
+    "atomer_availability_migrate",   # 055; CSV previews/exports, no remote shop writes
 )
 
 

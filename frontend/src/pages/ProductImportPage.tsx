@@ -250,7 +250,10 @@ export function ProductImportPage() {
     }
     // Navigate after the saved state renders, so the unsaved-change guard sees
     // the persisted values and does not ask to discard them.
-    setReceiptDestination(`/receiving/${encodeURIComponent(origin.invoice_no)}?${new URLSearchParams({ supplier: origin.supplier, session: String(origin.session_id) })}`);
+    const receivingBatch = query.get('receiving_batch');
+    setReceiptDestination(receivingBatch && /^[0-9a-f-]{36}$/i.test(receivingBatch)
+      ? `/receiving?batch=${encodeURIComponent(receivingBatch)}`
+      : `/receiving/${encodeURIComponent(origin.invoice_no)}?${new URLSearchParams({ supplier: origin.supplier, session: String(origin.session_id) })}`);
   }
   const categories = draft?.categories || [];
   const leafCategories = categories.filter(category => category.assignable !== false);
@@ -260,7 +263,7 @@ export function ProductImportPage() {
   const previewPublishable = previewItems.length > 0 && previewItems.every(item => ['ready', 'exists'].includes(item.status));
   return <div className="product-import">
     {previewRow && <ImportProductPreview row={previewRow} onClose={() => setPreviewRow(null)} />}
-    <header className="import-heading"><div><button className="import-back" data-testid="import-back" disabled={!!busy || (!!draft?.receiving_origin && (!!editing || !!editor))} onClick={goBack}><ArrowLeft size={16} />{draft?.receiving_origin ? c('backToReceiving', { invoice: draft.receiving_origin.invoice_no }) : c('back')}</button><h1>{c('title')}</h1>{draft && <Link to="/product-import">{c('recent')}</Link>}<p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
+    <header className="import-heading"><div><button className="import-back" data-testid="import-back" disabled={!!busy || (!!draft?.receiving_origin && (!!editing || !!editor))} onClick={goBack}><ArrowLeft size={16} />{draft?.receiving_origin ? (query.get('receiving_batch') ? t('receiving.mixed.backToBatch') : c('backToReceiving', { invoice: draft.receiving_origin.invoice_no })) : c('back')}</button><h1>{c('title')}</h1>{draft && <Link to="/product-import">{c('recent')}</Link>}<p className="import-muted">{c('subtitle')}</p></div>{draft && <div className="import-batch-meta"><strong>{draft.supplier} · {chosenShopNames || c('hubOnly')}</strong><small>{c('batch', { id: draft.id.slice(0, 8) })} · {c('revision', { count: draft.revision })}</small><span className={`import-status ${draft.status === 'saved' && !dirty ? 'is-saved' : ''}`}>{deliveryState ? c(`delivery.${deliveryState}`) : c(dirty ? 'unsaved' : draft.status === 'saved' ? 'savedHub' : 'draft')}</span></div>}</header>
     {!unlocked ? <div className="import-panel"><p>{c('loginRequired')}</p><Link to="/login">{t('accounts.login')}</Link></div> : <>
       {error && <div className="import-error import-panel" role="alert">{errorText(error)}{draft ? <Button variant="secondary" size="sm" disabled={!!busy} onClick={reload}>{c('reload')}</Button> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setLoadAttempt(value => value + 1)}>{c('retry')}</Button>}{error.startsWith('sloger_credentials_') && <Link to="/suppliers?edit=sloger">{t('slogerProbe.settingsLink')}</Link>}</div>}
       {notice && !['continued', 'sourceRetried', 'sourceSkipped'].includes(notice) && !(notice === 'published' && !publicationBusy) && <div className="import-notice" role="status">{c(`notices.${notice}`)}</div>}
