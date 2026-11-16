@@ -48,13 +48,15 @@ Databázové testy používajú vlastnú localhost DB s názvom končiacim `_cat
 
 ## Nová prázdna databáza
 
-Repozitár obsahuje **52 SQL súborov `001`–`052`** v [infra/db-init](../infra/db-init/). `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
+Repozitár obsahuje **54 SQL súborov: `001`–`052`, `054` a `055`** v [infra/db-init](../infra/db-init/). Číslo `053` nie je súčasťou tejto revízie. `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
 
 [Referenčný Compose](../infra/docker-compose.prod.yml) pripája celý adresár do `/docker-entrypoint-initdb.d`; inicializátor PostgreSQL ho použije iba pri prázdnom dátovom volume. Pri existujúcej databáze sa tento adresár znovu nespúšťa. Nevytvárať preto nové produkčné volume ako spôsob aktualizácie a nepúšťať `001` nad existujúcimi dátami.
 
 **Overené 8. 11. 2026:** v novej izolovanej PostgreSQL 16.2 DB prešlo všetkých 50 SQL súborov `001`–`050` v poradí s `ON_ERROR_STOP=1`, potom aj skutočný 39-krokový `inventory_hub.migrate`. Overenie sa týkalo SQL a runnera; nebolo zostavením Docker obrazu ani testom celej novej serverovej inštalácie. Testovacia DB bola po kontrole odstránená, produkcia sa nemenila.
 
 **Overené 9. 11. 2026:** rovnakou izolovanou kontrolou v PostgreSQL 16.2 prešlo všetkých 52 SQL súborov `001`–`052` a následne skutočný 41-modulový `inventory_hub.migrate`. Testovacia DB bola odstránená; toto overenie ešte neznamená produkčné nasadenie migrácií 051 a 052.
+
+**Overené 16. 11. 2026:** v novej izolovanej localhost PostgreSQL 16.10 DB s príponou `_catalog_test` prešlo všetkých 54 SQL súborov `001`–`052`, `054` a `055` v poradí s `ON_ERROR_STOP=1`. Následne dvakrát úspešne prebehol skutočný 43-modulový `inventory_hub.migrate`, vrátane opakovania oboch nových migrácií. Testovací server bol potom zastavený. Overenie sa týka SQL a runnera; nie je zostavením Docker obrazu ani potvrdením produkčného nasadenia.
 
 Pre už vytvorenú **prázdnu lokálnu DB** nastav v prostredí `PGHOST=127.0.0.1`, správny `PGPORT`, `PGDATABASE`, `PGUSER` a bezpečný lokálny spôsob prihlásenia pre `psql`. Tieto hodnoty musia ukazovať na tú istú izolovanú DB ako `DB_*` v aplikácii. Potom z koreňa repozitára:
 
@@ -76,9 +78,9 @@ Autoritatívne poradie je v [migrate.py](inventory_hub/migrate.py), SQL balenie 
 | Časť | Aktuálny rozsah |
 | --- | --- |
 | Základ schémy | SQL `001`–`004`; upgrade runner existujúci základ predpokladá. |
-| Upgrade runner | 41 Python modulov: `005`–`038`, potom `046`–`052`. |
+| Upgrade runner | 43 Python modulov: `005`–`038`, potom `046`–`052`, `054` a `055`. |
 | Spoločný Atomer krok | [atomer_review_migrate.py](inventory_hub/atomer_review_migrate.py) vykonáva SQL `038`–`045` spolu v jednej transakcii. |
-| SQL v API obraze | Všetkých 48 upgrade súborov `005`–`052`. |
+| SQL v API obraze | Všetkých 50 upgrade súborov `005`–`052`, `054` a `055`. |
 
 V existujúcom release workflow sa po stiahnutí obrazov vykoná `python -m inventory_hub.migrate` v jednom dočasnom API kontajneri, pred obnovením služieb. Každý modul zachováva vlastnú transakciu a advisory lock. Nie je to jedna transakcia cez celý upgrade: pri chybe sa runner zastaví, hotové moduly zostanú potvrdené a reštart API sa nedosiahne.
 
@@ -106,3 +108,9 @@ Pri neúspešnom upgrade najprv identifikovať fázu a modul. Dokončené migrá
 ### Rozšírenie 051–052
 
 `051_invoice_processing.sql` pridáva ručné spracovanie faktúr, vratnú archiváciu a nemenné audity vrátane vyradenia chybných zdrojových testov. `052_receiving_operations.sql` pridáva náhľady a výsledky opráv príjemiek. Runner ich vykoná po 050 a API obraz balí oba súbory. Ani jedna migrácia neresetuje doklady, nemení zásoby ani nezapína prenos do e-shopov. Prevádzkové operácie sa vykonajú osobitne po overení kódu a konkrétneho náhľadu.
+
+### Rozšírenie 054–055
+
+`054_mixed_receiving.sql` pridáva dávky zmiešaného príjmu, ich skeny, nemenné UUID výsledky a väzby na zaúčtované pohyby. `055_atomer_availability.sql` pridáva lokálne nastavenia, náhľady, administratívne podklady a CSV výsledky exportu dostupností. Runner ich vykoná po 052 a API obraz balí oba súbory. Inštalácia nepotvrdzuje staré množstvá, neprijíma faktúry, nezapína skladovú autoritu ani denné exporty. Zdrojové URL sa nastavujú osobitne cez chránenú konfiguráciu.
+
+Po použití dávkového príjmu zachovať nové dôkazy pohybov aj pri oprave kódu; starší writer ich nemusí rozpoznať. Už ručne importovaný Atomer CSV sa návratom kódu nevráti. Použiť kompatibilnú doprednú opravu a existujúce [opravy príjmu](../docs/receiving-recovery.md), bez mazania histórie alebo exportných výsledkov.

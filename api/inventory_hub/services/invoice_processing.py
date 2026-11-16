@@ -65,7 +65,10 @@ def _receipt(record):
     archived = data.get('receiving_archive') or None
     reversed_posting = bool(data.get('receiving_reversed')) and not data.get('finalize_result')
     status = archived.get('previous_status', record['status']) if archived else record['status']
-    received = not reversed_posting and (status == 'completed' or record['has_stock_movements'])
+    # A mixed receipt posts in portions; a movement is not evidence that every
+    # invoice line has been received. Keep the invoice open until completion.
+    received = not reversed_posting and (status == 'completed' or
+        (record['has_stock_movements'] and not data.get('mixed_receiving')))
     return {'id': record['id'], 'invoice_number': record['invoice_number'], 'status': record['status'],
             'archived': bool(archived), 'received': received, 'reversed': reversed_posting,
             'posting_revision': data.get('posting_revision', 0)}
@@ -227,6 +230,14 @@ async def apply(db, identifier, request, *, actor):
 async def assert_receiving_allowed(db, supplier_id, invoice_number, session_id=None):
     """Caller holds the supplier lock before any receipt row; retain it to commit."""
     await lock_supplier(db, supplier_id)
+    # Source retirement is scoped to its exact reconciliation key. An alias of
+    # another archived source must not retire a distinct, valid local document.
+    source_action = await db.scalar(text('''SELECT action FROM invoice_source_archive_events
+        WHERE supplier_id=:supplier AND source_key=:number
+        ORDER BY created_at DESC,id DESC LIMIT 1'''),
+        {'supplier': supplier_id, 'number': invoice_number})
+    if source_action == 'archive':
+        raise InvoiceProcessingError('invoice_source_archived')
     rows = (await db.execute(text('''SELECT ui.id,ui.archived_at,ui.processing_status
         FROM uploaded_invoices ui WHERE ui.direction='purchase' AND ui.supplier_id=:supplier
           AND (ui.receiving_session_id=CAST(:session AS bigint) OR ui.invoice_number=:number OR ui.source_key=:number

@@ -1,5 +1,7 @@
 # Príjem tovaru a priame odoslanie do Upgates
 
+**Aktualizácia 16. 11. 2026:** aktuálny [zmiešaný príjem](mixed-receiving.md) používa spoločný skladový writer a existujúci `stock_sync_dirty`/delta_v1 worker. Súhrn ukazuje cieľové väzby a stav prenosu. Nasledujúci návrh zostáva historickým podkladom; jeho tvrdenie, že automatické odoslanie zásob po príjme chýba, už neplatí pre zapnuté a autorizované kanály. Faktúrové metapole v Upgates sa tým nezavádza.
+
 **Aktualizácia 13. 10. 2026:** založenie a doplnenie kariet priamo z príjemky vrátane položiek bez feedu už používa spoločný importný editor. Aktuálny kontrakt je v [príjme](receiving-identity.md) a [príprave importu](product-imports.md). Nasledujúci text zachováva pôvodný návrh zo 7. 10.; jeho tvrdenia o chýbajúcom prepojení na prípravu sú nahradené týmto rozšírením. Automatické odoslanie zásob po príjme a faktúrové metapole v Upgates zostávajú plánované.
 
 Stav overený čítaním kódu 7. 10. 2026 na obsahu `main` s tree

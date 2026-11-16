@@ -88,6 +88,7 @@ async def lifespan(app: FastAPI):
     stock_sync_worker = None
     fifo_cost_worker = None
     invoice_archive_worker = None
+    atomer_availability_worker = None
     if settings.USE_POSTGRES:
         if settings.ATOMER_CATALOG_WORKER_ENABLED:
             from inventory_hub.services.atomer_catalog_engine import run as migrate_atomer_catalog
@@ -112,6 +113,8 @@ async def lifespan(app: FastAPI):
         fifo_cost_worker = asyncio.create_task(sync_fifo_costs(), name="fifo-cost-sync")
         from inventory_hub.services.invoice_archive_worker import run as archive_invoices
         invoice_archive_worker = asyncio.create_task(archive_invoices(), name="invoice-archive")
+        from inventory_hub.services.atomer_availability_worker import run as prepare_atomer_availability
+        atomer_availability_worker = asyncio.create_task(prepare_atomer_availability(), name="atomer-availability")
     yield
     if worker:
         worker.cancel()
@@ -129,7 +132,7 @@ async def lifespan(app: FastAPI):
         publication_worker.cancel()
         with suppress(asyncio.CancelledError):
             await publication_worker
-    for background_worker in (catalog_worker, source_card_worker, supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker):
+    for background_worker in (catalog_worker, source_card_worker, supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker, atomer_availability_worker):
         if background_worker:
             background_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -217,6 +220,8 @@ app.include_router(shop_invoice_sync_router)
 
 # Receiving: Use PostgreSQL-backed router if enabled, otherwise legacy JSON
 if settings.USE_POSTGRES:
+    from inventory_hub.routers.mixed_receiving import router as mixed_receiving_router
+    app.include_router(mixed_receiving_router)
     app.include_router(receiving_router_db)
     from inventory_hub.routers.stock import router as stock_router
     app.include_router(stock_router)
@@ -248,6 +253,8 @@ if settings.USE_POSTGRES:
     app.include_router(atomer_progress_router)
     from inventory_hub.routers.atomer_content import router as atomer_content_router
     app.include_router(atomer_content_router)
+    from inventory_hub.routers.atomer_availability import router as atomer_availability_router
+    app.include_router(atomer_availability_router)
     from inventory_hub.routers.order_audit import router as order_audit_router
     app.include_router(order_audit_router)
     from inventory_hub.routers.order_stock import router as order_stock_router

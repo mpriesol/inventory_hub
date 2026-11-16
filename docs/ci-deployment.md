@@ -110,8 +110,8 @@ The image must still be available from GHCR. The release's image tags, serial
 execution, migration order, phase errors and readiness checks are unchanged.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes forty-one upgrade
-modules: `005`–`038`, then `046`–`052`. The `atomer_review_migrate` module
+temporary API container. Its explicit list invokes forty-three upgrade
+modules: `005`–`038`, then `046`–`052`, `054` and `055`. The `atomer_review_migrate` module
 executes SQL `038`–`045` together in its transaction. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The runner retries only the failed module's `main()` when psycopg2 raises
@@ -134,14 +134,24 @@ It bounds attempt count, not SQL execution time; the existing deployment command
 timeout still limits the whole remote script. Persistent contention must be
 diagnosed from a failed release rather than triggering unlimited retries.
 
-The image packages all forty-eight upgrade SQL files `005`–`052`; the repository
-contains fifty-two SQL files including the initial `001`–`004` schema. New migrations
+The image packages all fifty upgrade SQL files `005`–`052`, `054` and `055`; the repository
+contains fifty-four SQL files including the initial `001`–`004` schema. SQL `053`
+is not part of this revision. New migrations
 require explicit runner and image-packaging updates. Initialization of an empty
 database and backup/recovery are covered by the [setup guide](../api/POSTGRES_SETUP.md).
 The warehouse model changes add `030_shop_identity.sql`, `031_item_units.sql` and
 `032_supplier_authority.sql`; they retain historical data and leave publication
 authority switches unchanged. After new unit/identity writes, recovery uses a
 compatible forward fix, not old writers that ignore these fields.
+
+Migration 054 adds mixed receiving drafts and immutable posting evidence; 055 adds
+local Atomer availability settings, source evidence and CSV results. Both are
+additive and explicitly packaged and installed; neither posts stock, activates
+authority or writes to a shop. On 16 November 2026 all 54 schema files and two
+complete runs of the 43-module upgrade runner passed in an isolated localhost
+PostgreSQL 16.10 database. This establishes SQL/replay compatibility, not a Docker
+build or production deployment. Preserve batch posting evidence and completed
+export results during recovery; use a compatible forward fix after new writes.
 
 Migrations 034–036 add supplier delivery checkpoints, authenticated order
 notifications and a per-target stock wakeup queue. Migration 034 slows existing

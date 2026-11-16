@@ -1,0 +1,43 @@
+.atomer-availability { display: grid; gap: 1.25rem; max-width: 1600px; margin: auto; padding: 1.5rem; color: var(--color-text-primary); }
+.atomer-availability h1 { font-size: 1.65rem; font-weight: 650; margin: 0 0 .35rem; }
+.atomer-availability h2 { font-size: 1.1rem; font-weight: 600; }
+.atomer-availability header p, .atomer-availability small, .atomer-muted { color: var(--color-text-secondary); }
+.atomer-panel { border: 1px solid var(--color-border-subtle); border-radius: .75rem; padding: 1rem; background: var(--color-bg-secondary); }
+.atomer-actions, .atomer-fields, .atomer-heading, .atomer-counts, .atomer-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.atomer-heading { justify-content: space-between; }
+.atomer-fields { align-items: end; margin: 1rem 0; }
+.atomer-availability label { display: grid; gap: .3rem; font-size: .85rem; }
+.atomer-availability .atomer-check-label { display: flex; align-items: center; gap: .5rem; }
+.atomer-availability input:not([type=checkbox]), .atomer-availability select { padding: .5rem .65rem; border: 1px solid var(--color-border-subtle); border-radius: .4rem; color: inherit; background: var(--color-bg-primary); max-width: 100%; }
+.atomer-availability input:focus-visible, .atomer-availability select:focus-visible, .atomer-availability button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.atomer-availability input[type=checkbox] { width: 1.1rem; height: 1.1rem; accent-color: var(--color-accent); }
+.atomer-feed-field { flex: 1; min-width: min(300px, 100%); }
+.atomer-notice, .atomer-error { border-radius: .4rem; padding: .75rem; font-size: .9rem; }
+.atomer-notice { background: var(--color-warning-subtle, #fffbeb); color: var(--color-warning, #a16207); }
+.atomer-error { background: var(--color-error-subtle, #fef2f2); color: var(--color-error, #b91c1c); }
+.atomer-counts { margin: 1rem 0; gap: 1.5rem; }
+.atomer-counts div { display: grid; gap: .1rem; }
+.atomer-counts dt { font-size: .8rem; color: var(--color-text-secondary); }
+.atomer-counts dd { font-size: 1.35rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.atomer-table-scroll { overflow: auto; border: 1px solid var(--color-border-subtle); border-radius: .5rem; }
+.atomer-table { width: 100%; min-width: 850px; border-collapse: collapse; font-size: .85rem; }
+.atomer-table th, .atomer-table td { text-align: left; padding: .7rem; border-bottom: 1px solid var(--color-border-subtle); vertical-align: middle; }
+.atomer-table th { background: var(--color-bg-primary); font-size: .75rem; color: var(--color-text-secondary); font-weight: 550; }
+.atomer-table tbody:last-child tr:last-child td { border-bottom: 0; }
+.atomer-family-row { background: var(--color-bg-primary); }
+.atomer-product { display: flex; gap: .65rem; align-items: center; min-width: 240px; }
+.atomer-product-text { display: grid; gap: .2rem; }
+.atomer-product-text strong { font-weight: 550; }
+.atomer-variant .atomer-product { padding-left: 1.5rem; }
+.atomer-table code { font-size: .75rem; overflow-wrap: anywhere; }
+.atomer-before { display: block; margin-bottom: .35rem; color: var(--color-text-secondary); font-size: .75rem; }
+.atomer-table input:not([type=checkbox]) { width: 180px; }
+.atomer-table .atomer-visibility { display: flex; gap: .45rem; align-items: center; }
+.atomer-row-warning { display: grid; gap: .2rem; max-width: 240px; font-size: .75rem; color: var(--color-warning, #a16207); }
+.atomer-status { display: inline-flex; align-items: center; font-size: .75rem; padding: .2rem .5rem; border-radius: 1rem; background: var(--color-bg-primary); }
+.atomer-pagination { justify-content: flex-end; margin-top: .75rem; }
+.atomer-downloads { display: grid; gap: .5rem; margin-top: .75rem; }
+.atomer-download { display: flex; justify-content: space-between; gap: .75rem; align-items: center; padding: .6rem 0; border-bottom: 1px solid var(--color-border-subtle); }
+.atomer-download:last-child { border-bottom: 0; }
+.atomer-download small { display: block; }
+@media (max-width: 640px) { .atomer-availability { padding: .75rem; gap: .8rem; } .atomer-panel { padding: .75rem; } .atomer-heading { align-items: flex-start; } .atomer-actions { gap: .5rem; } .atomer-counts { gap: 1rem; } .atomer-download { flex-wrap: wrap; } }

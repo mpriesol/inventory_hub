@@ -6,7 +6,7 @@ Reversal consumes only this receipt's intact layers, never replacement stock.
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import selectinload
 
 from inventory_hub.db_models import MovementType, Product, ReceivingStatus, Supplier
@@ -110,6 +110,9 @@ async def _plan(db, session, action):
     if archived(session):
         reject("receiving_archived")
         return snapshot, view, context
+    if (session.session_data or {}).get("mixed_receiving_pending"):
+        reject("mixed_receiving_pending")
+        return snapshot, view, context
     if action == "archive":
         view["after_status"] = "cancelled"
         return snapshot, view, context
@@ -119,24 +122,53 @@ async def _plan(db, session, action):
         # An already compensated receipt may be opened for a new posting cycle;
         # reopening never compensates the same old receipt twice.
         return snapshot, view, context
-    if session.status != ReceivingStatus.completed:
+    mixed = bool((session.session_data or {}).get("mixed_receiving"))
+    if session.status != ReceivingStatus.completed and not (
+            mixed and session.status in (ReceivingStatus.in_progress, ReceivingStatus.paused)):
         reject("receiving_completed_required")
         return snapshot, view, context
 
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     keys = {movement_key(session, line.id): line for line in session.lines}
+    postings = []
+    if mixed:
+        postings = [dict(row) for row in (await db.execute(text('''
+            SELECT batch_id,line_id,purchase_quantity,movement_id
+            FROM mixed_receiving_postings WHERE session_id=:session AND posting_revision=:revision
+            ORDER BY movement_id'''), {"session": session.id, "revision": posting_revision(session)})).mappings()]
+    snapshot["receipt_postings"] = [{**row, "batch_id": str(row["batch_id"]),
+        "purchase_quantity": fifo.number(row["purchase_quantity"])} for row in postings]
     movements = list(await db.scalars(select(StockMovement).where(
         StockMovement.reference_type == "receiving_session", StockMovement.reference_id == str(session.id),
-        StockMovement.idempotency_key.in_(keys)).order_by(StockMovement.id)))
+        or_(StockMovement.idempotency_key.in_(keys),
+            StockMovement.id.in_([row["movement_id"] for row in postings]))).order_by(StockMovement.id)))
     context["movements"] = movements
     seen = {row.idempotency_key for row in movements}
+    by_movement = {row.id: row for row in movements}
+    by_line = {line.id: line for line in session.lines}
+    mixed_quantities = {}
+    for posting in postings:
+        movement, line = by_movement.get(posting["movement_id"]), by_line.get(posting["line_id"])
+        expected_key = f"mixed-receiving:{posting['batch_id']}:{posting['line_id']}:r{posting_revision(session)}"
+        if (movement is None or line is None or movement.idempotency_key != expected_key
+                or movement.product_id != line.product_id
+                or movement.quantity != posting["purchase_quantity"] * line.purchase_to_stock_factor):
+            reject("receiving_reversal_missing_movement", line.product_id if line else None)
+            continue
+        mixed_quantities[line.id] = mixed_quantities.get(line.id, Decimal(0)) + posting["purchase_quantity"]
     product_ids = {row.product_id for row in movements}
     products = {row.id: row for row in await db.scalars(select(Product).where(
         Product.id.in_(product_ids | {line.product_id for line in session.lines if line.product_id is not None})))}
     for key, line in keys.items():
         product = products.get(line.product_id)
-        if line.received_qty > 0 and (product is None or product.item_type != "service") and key not in seen:
+        if (line.received_qty > 0 and (product is None or product.item_type != "service")
+                and key not in seen and line.id not in mixed_quantities):
             reject("receiving_reversal_missing_movement", line.product_id)
+        if mixed and product is not None and product.item_type != "service":
+            legacy_quantity = sum((row.quantity for row in movements if row.idempotency_key == key), Decimal(0))
+            expected_quantity = (line.received_qty - mixed_quantities.get(line.id, Decimal(0))) * line.purchase_to_stock_factor
+            if legacy_quantity != expected_quantity:
+                reject("receiving_reversal_missing_movement", line.product_id)
     current_ids = set(await db.scalars(select(StockMovement.id).where(
         StockMovement.id.in_([row.id for row in movements]), stock_tracking.current_movement())))
     if any(row.id not in current_ids or row.movement_type != MovementType.RECEIVING_IN
@@ -307,6 +339,9 @@ async def apply(db, supplier_code, session_id, identifier, payload, actor):
         data["posting_revision"] = posting_revision(session) + 1
         data["receiving_reversed"] = {"operation_id": row.id, "at": stamp.isoformat()}
         data.pop("finalize_result", None)
+        data.pop("mixed_receiving", None)
+        data.pop("mixed_receiving_pending", None)
+        data.pop("mixed_receiving_previous_status", None)
         session.status = ReceivingStatus.paused if row.action == "reopen" else ReceivingStatus.cancelled
         session.finished_at = None if row.action == "reopen" else stamp
         session.paused_at = stamp if row.action == "reopen" else None

@@ -40,6 +40,7 @@ from inventory_hub.services import fifo
 from inventory_hub.services import stock_tracking
 from inventory_hub.services import receiving_source
 from inventory_hub.services import receiving_operations
+from inventory_hub.services.receiving_posting import write_stock_for_line as _write_stock_for_line
 from inventory_hub.receiving_operation_types import ReceivingOperationPreview, ReceivingOperationApply
 from inventory_hub.services.item_units import receipt_values, validate_stock_quantity, ItemUnitError
 from inventory_hub.services.stock_publication_gate import StockPublicationHoldError
@@ -333,6 +334,8 @@ ACTIVE_STATUSES = (ReceivingStatus.new, ReceivingStatus.in_progress, ReceivingSt
 
 
 def _require_mutable_session(session: ReceivingSession) -> None:
+    if any((getattr(session, "session_data", None) or {}).get(key) for key in ("mixed_receiving", "mixed_receiving_pending")):
+        raise HTTPException(409, detail={"code": "mixed_receiving_required"})
     if receiving_operations.archived(session):
         raise HTTPException(409, detail={"code": "receiving_archived"})
     if session.status == ReceivingStatus.paused:
@@ -480,91 +483,6 @@ async def _ensure_product_for_line(
     return product, created, None
 
 
-async def _write_stock_for_line(
-    db: AsyncSession,
-    session: ReceivingSession,
-    line: ReceivingLine,
-    product: Product,
-    supplier_code: str,
-    balance: StockBalance,
-    operator_name: str = "receiving",
-) -> StockMovement:
-    """
-    Append immutable RECEIVING_IN stock movement and update stock balance
-    (weighted-average cost) in the same transaction. Idempotent via
-    unique idempotency_key per (session, line).
-    """
-    if product.item_type != "stock":
-        raise HTTPException(409, detail={"code": "stock_item_required"})
-    try:
-        qty, unit_cost = receipt_values(line.received_qty, line.unit_price, line.purchase_to_stock_factor)
-        validate_stock_quantity(qty, product.stock_unit)
-        if line.conversion_stock_unit is not None and line.conversion_stock_unit != product.stock_unit:
-            raise ItemUnitError("receiving_unit_changed")
-    except ItemUnitError as error:
-        raise HTTPException(409, detail={"code": error.code, "line_id": line.id}) from None
-
-    try:
-        await stock_tracking.activate(db, balance, source_type="receiving_session", source_id=session.id,
-                                     operator_name=operator_name)
-    except fifo.FifoError as error:
-        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
-
-    old_qty = balance.qty_on_hand or Decimal("0")
-    old_avg = balance.avg_cost
-    state = await fifo.lock_state(db, balance)
-    if state is None and old_avg is None:
-        raise HTTPException(409, detail={"code": "fifo_cutover_required", "message": "fifo_cutover_required"})
-    new_qty = old_qty + qty
-    if new_qty > fifo.MAX_QUANTITY:
-        raise HTTPException(409, detail={"code": "fifo_value_out_of_range", "message": "fifo_value_out_of_range"})
-    if unit_cost is not None and new_qty > 0 and old_avg is not None:
-        new_avg = ((old_qty * old_avg) + (qty * unit_cost)) / new_qty
-    else:
-        new_avg = old_avg
-
-    try:
-        projected = await fifo.receipt_valuation(db, balance, qty, unit_cost)
-    except fifo.FifoError as error:
-        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
-    if projected is not None:
-        new_avg = Decimal(projected["avg_cost"]) if projected["avg_cost"] is not None else None
-    now = datetime.now(timezone.utc)
-    movement = StockMovement(
-        idempotency_key=receiving_operations.movement_key(session, line.id),
-        product_id=product.id,
-        warehouse_id=session.warehouse_id,
-        movement_type=MovementType.RECEIVING_IN,
-        quantity=qty,
-        unit_cost=unit_cost,
-        reference_type="receiving_session",
-        reference_id=str(session.id),
-        reference_source=f"{supplier_code}:{session.invoice_number}",
-        balance_after=new_qty,
-        avg_cost_after=new_avg,
-        created_by=operator_name,
-    )
-    db.add(movement)
-    await db.flush()
-
-    balance.qty_on_hand = new_qty
-    balance.avg_cost = new_avg
-    balance.total_value = new_qty * new_avg if new_avg is not None else None
-    if unit_cost is not None:
-        balance.last_purchase_price = unit_cost
-        balance.last_purchase_at = now
-    balance.last_movement_at = now
-    balance.last_movement_id = movement.id
-    try:
-        await fifo.add_receipt(db, balance, movement, now, unit_cost, "known",
-            {"kind": "receiving", "session_id": session.id, "line_id": line.id,
-             "supplier_code": supplier_code, "invoice_number": session.invoice_number,
-             "purchase_quantity": str(line.received_qty), "purchase_unit": line.purchase_unit or product.stock_unit,
-             "purchase_to_stock_factor": str(line.purchase_to_stock_factor), "stock_unit": product.stock_unit,
-             "unit_cost_at_receipt": str(unit_cost)})
-    except fifo.FifoError as error:
-        raise HTTPException(error.status, detail={"code": error.code, "message": error.code}) from None
-    return movement
 
 
 async def _lock_stock_balances(
@@ -820,51 +738,10 @@ async def scan_code(
 
     prefix = _product_code_prefix(supplier_code)
     identifier_service = ProductIdentifierService(db)
-    # A scan can name a listed invoice barcode, a supplier code or a canonical
-    # prefixed SKU. Multiple invoice lines need an explicit selection because
-    # their prices may differ even when the physical product is identical.
-    lines = _lines_sorted(session)
-    candidates = [line for line in lines if
-        code in {value for value, _kind in identifier_service.split_compound_ean(line.ean or "")}
-        or (line.supplier_sku and code in (line.supplier_sku.strip(), f"{prefix}{line.supplier_sku.strip()}"))]
-    # Also allow an alternative registered EAN for an already assigned product.
-    scan_identity = RemoteIdentity(0, code, barcodes=(code,),
-        supplier_id=session.supplier_id, supplier_sku=code)
-    index = await load_identity_index(db, 0, [scan_identity], local=True)
-    scan_resolution = index.resolve(scan_identity)
-    if scan_resolution.status == "conflict":
-        raise HTTPException(409, detail={"code": "receiving_identity_conflict",
-            "message": "Naskenovaný kód označuje viac produktov. Skontroluj identifikátory.",
-            "reasons": scan_resolution.reasons, "candidate_product_ids": scan_resolution.candidate_product_ids})
-    if scan_resolution.product_id is not None:
-        for line in lines:
-            if line.product_id == scan_resolution.product_id and line not in candidates:
-                candidates.append(line)
-    if not candidates:
-        displayed = await line_barcode_display(db, session.supplier_id, lines, prefix)
-        candidates = [line for line in lines if code in verified_barcodes((displayed[line.id]["display_ean"],))]
-    if request.line_id is not None:
-        matched_line = next((line for line in candidates if line.id == request.line_id), None)
-        if matched_line is None:
-            raise HTTPException(409, detail={"code": "scan_line_mismatch",
-                "message": "Vybraný riadok nepatrí k tomuto kódu a príjmu."})
-    elif len(candidates) > 1:
-        raise HTTPException(409, detail={"code": "scan_line_ambiguous",
-            "message": "Kód zodpovedá viacerým riadkom. Vyber konkrétny riadok alebo uprav jeho množstvo ručne.",
-            "line_numbers": [line.line_number for line in candidates], "line_ids": [line.id for line in candidates]})
-    else:
-        matched_line = candidates[0] if candidates else None
-    product = index.products.get(scan_resolution.product_id)
+    from inventory_hub.services.receiving_scan_identity import match_scan
+    matched_line, product = await match_scan(db, session, code, prefix,
+        line_id=request.line_id, resolve_line=_resolve_line)
     if matched_line is not None:
-        line_product, matched_by = await _resolve_line(db, session.supplier, matched_line, prefix)
-        if product is not None and line_product is not None and product.id != line_product.id:
-            raise HTTPException(409, detail={"code": "receiving_identity_conflict",
-                "message": "Naskenovaný kód a faktúrový riadok označujú odlišné produkty."})
-        product = line_product or product
-        if product is not None:
-            matched_line.product_id = product.id
-            matched_line.product = product
-            matched_line.match_method = matched_by or scan_resolution.matched_by
         if matched_line.received_qty + qty > fifo.MAX_QUANTITY:
             raise HTTPException(409, detail={"code": "scan_quantity_out_of_range", "message": "Prijaté množstvo je príliš veľké."})
         matched_line.received_qty += qty

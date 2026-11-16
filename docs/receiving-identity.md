@@ -1,12 +1,14 @@
 # Príjem: identita produktu a opakovanie skenov
 
+Aktuálny vstup `/receiving` má aj [zmiešaný príjem podľa EAN](mixed-receiving.md): jedna dávka môže obsahovať viac dodávateľov/faktúr a účtuje sa jedným potvrdením. Nasledujúci dokument opisuje aj pôvodný detail jednotlivej príjemky a zdieľané kontroly identity.
+
 Dokončenú príjemku možno bezpečne opraviť cez [storno, znovuotvorenie a vratný archív](receiving-recovery.md). Operácie vyžadujú dôvod a potvrdenie náhľadu; pôvodné pohyby ani skeny sa nemažú. Archív nemení množstvá.
 
 Príjem rozlišuje fyzický tovar a služby podľa `products.item_type`. Výslovný prepočet nákupného balenia na základnú skladovú jednotku zachová faktúrové množstvo/cenu; podrobný kontrakt vrátane presnosti, opakovania a migrácie 031 je v [jednotkách skladu](stock-units.md).
 
 Pri chýbajúcej karte použite **Založiť skladové karty** a [spoločnú politiku identity/SKU](sku-policy.md). Zaúčtovanie príjemky už nezakladá novú kartu z dodávateľskej predpony: vráti konkrétny riadok vyžadujúci prípravu. Existujúce overené karty a ich historické kódy zostávajú použiteľné. Uloženie karty, prijaté množstvá a publikovanie sú oddelené; návrat z prípravy nemení faktúrové ceny ani prijaté kusy.
 
-Táto časť príjmu pracuje iba s údajmi v Hube. Skenovanie, kontrola identity ani dokončenie príjmu nevolajú Upgates. Dokončenie príjmu zapíše pohyby a nákupné ceny do lokálneho skladu; samo nespúšťa publikovanie zásob do e-shopov.
+Skenovanie a kontrola identity pracujú s údajmi v Hube. Dokončenie príjmu zapíše pohyby a nákupné ceny do lokálneho skladu. Existujúci trigger `stock_sync_dirty` potom sprístupní zmenu pravidelnému delta_v1 workeru pre už autorizované a zapnuté e-shopy; HTTP finalizácia priamo nevolá Upgates a nič nezapína.
 
 Výslovná konsolidácia duplicitnej identity má predvolene vypnutú možnosť zachovať jednoznačné fakturačné väzby a pozastavený príjem na ponechanej karte. Kontroluje rovnakú surovú identitu ako finalizácia aj obohatené zobrazenie príjmu a nemení riadky, ceny, množstvá, stav ani uložené `NULL` priradenie. Priamy importný draft alebo identita vyradenej karty zostáva blokovaný. Fyzické prijatie je naďalej samostatná operácia; [kontrakt konsolidácie](product-consolidation.md#explicit-keeper-invoice-and-paused-receiving-preservation) opisuje dôkazy, zámky a obmedzenia. Ak inú operáciu blokuje krátky lease dodávateľskej konfigurácie, asynchrónna cesta vráti `supplier_configuration_busy` (409); obsluha zachová pôvodný request UUID a pravidlá obnovy konkrétnej operácie.
 

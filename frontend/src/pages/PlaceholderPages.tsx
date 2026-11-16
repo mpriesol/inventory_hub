@@ -17,6 +17,7 @@ export function ShopsPage() {
       <Link className="block" to="/product-import">{t('nav.productImport')}</Link>
       {shop === 'xtrek' && <Link className="block" to="/migration/atomer-progress">{t('atomerProgress.title')}</Link>}
       {shop === 'xtrek' && <Link className="block" to="/migration/atomer">{t('atomerContent.title')}</Link>}
+      {shop === 'xtrek' && <Link className="block" to="/sync/atomer">{t('atomerAvailability.title')}</Link>}
       <a className="block" href={`/api/migration/catalog-export?shop_code=${shop}&refresh=true`}>{t('shopsOverview.catalogExport')}</a>
       <Button variant="secondary" onClick={() => setPullShop(shop)}>{t('upgatesImport.title', { shop: shop === 'biketrek' ? 'BIKETREK' : 'xTrek' })}</Button>
     </section>)}</div>
@@ -40,6 +41,9 @@ export function SettingsPage() {
       </Link>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/logs">
         <strong>{t('operationLogs.title')}</strong>
+      </Link>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/sync/atomer">
+        <strong>{t('atomerAvailability.title')}</strong>
       </Link>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/purchase-costs">
         <strong>{t('fifoCostSync.title')}</strong><p>{t('fifoCostSync.subtitle')}</p>
