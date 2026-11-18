@@ -1,0 +1,73 @@
+name: SPS operations
+
+# A dedicated operational branch keeps the Hub application and release untouched.
+# Production application code is selected only from the SPS repository's main.
+on:
+  push:
+    branches: [codex/sps-deploy-20261118]
+    paths:
+      - .github/workflows/sps-operations.yml
+      - scripts/deploy_sps.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inventory-hub-production
+  cancel-in-progress: false
+
+jobs:
+  inspect-sps:
+    if: github.ref == 'refs/heads/codex/sps-deploy-20261118'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read existing SPS deployment metadata
+        shell: bash
+        env:
+          GITHUB: 'true'
+          INPUT_HOST: ${{ secrets.DEPLOY_HOST }}
+          INPUT_USERNAME: ${{ secrets.DEPLOY_USER }}
+          INPUT_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          INPUT_TIMEOUT: 30s
+          INPUT_COMMAND_TIMEOUT: 2m
+          INPUT_SCRIPT: |
+            set -eu
+            python3 - <<'PY'
+            import json, pathlib, subprocess, urllib.request
+            def read(*args):
+                return subprocess.check_output(args, text=True, stderr=subprocess.PIPE).strip()
+            ids = read('docker', 'ps', '-q', '--filter', 'label=com.docker.compose.project=sps', '--filter', 'label=com.docker.compose.service=sps').splitlines()
+            if len(ids) != 1:
+                raise SystemExit('Expected exactly one running SPS container')
+            spec = json.loads(read('docker', 'inspect', ids[0]))[0]
+            labels = spec['Config']['Labels']
+            cwd = labels.get('com.docker.compose.project.working_dir', '')
+            root = pathlib.Path(cwd)
+            mounts = [{'type': m['Type'], 'name': m.get('Name'), 'destination': m['Destination'], 'writable': m['RW']} for m in spec['Mounts'] if m['Destination'] == '/app/data']
+            origin = read('git', '-C', cwd, 'remote', 'get-url', 'origin')
+            allowed_origin = origin in ('https://github.com/mpriesol/sps.git', 'https://github.com/mpriesol/sps', 'git@github.com:mpriesol/sps.git')
+            print(json.dumps({
+                'user': read('id', '-un'), 'container': spec['Name'].lstrip('/'),
+                'working_dir': cwd, 'config_files': labels.get('com.docker.compose.project.config_files'),
+                'image': spec['Image'], 'health': spec['State'].get('Health', {}).get('Status', 'not-configured'),
+                'networks': sorted(spec['NetworkSettings']['Networks']), 'data_mounts': mounts,
+                'repo_origin_matches': allowed_origin,
+                'repo_head': read('git', '-C', cwd, 'rev-parse', 'HEAD'),
+                'tracked_checkout_clean': not read('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=no'),
+                'checkout_writable': __import__('os').access(root, __import__('os').W_OK),
+                'env_file_exists': (root / 'sps.env').is_file(),
+                'compose_version': read('docker', 'compose', 'version', '--short'),
+            }, sort_keys=True))
+            with urllib.request.urlopen('https://hub.biketrek.sk/sps/healthz', timeout=10) as response:
+                assert response.status == 200
+                assert json.load(response)['status'] == 'ok'
+            print('SPS_READ_ONLY_PREFLIGHT_PASSED')
+            PY
+        run: |
+          docker run --rm --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --env GITHUB --env INPUT_HOST --env INPUT_USERNAME \
+            --env INPUT_KEY --env INPUT_TIMEOUT --env INPUT_COMMAND_TIMEOUT \
+            --env INPUT_SCRIPT \
+            ghcr.io/appleboy/drone-ssh:1.8.0@sha256:cd14570676f022faf800e7a92ef26025fcb834e0943c199b6a6aa8d8802e383f
