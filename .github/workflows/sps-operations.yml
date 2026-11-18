@@ -68,6 +68,13 @@ jobs:
                 message = exc.stderr or ''
                 reason = 'dubious ownership' if 'dubious ownership' in message else 'not a git repository' if 'not a git repository' in message else 'permission denied' if 'Permission denied' in message else 'git metadata unavailable'
                 print(json.dumps({'git_error': reason, 'exit_code': exc.returncode}))
+            # The existing SPS checkout is root-owned. Check the configured
+            # administrator route without changing Git trust or server files.
+            elevated = subprocess.run(['sudo', '-n', 'python3', '-c', "import os,json,subprocess; p='/opt/sps'; r=lambda *a:subprocess.check_output(a,text=True,stderr=subprocess.PIPE).strip(); print(json.dumps({'effective_uid':os.geteuid(),'repo_head':r('git','-C',p,'rev-parse','HEAD'),'repo_origin_matches':r('git','-C',p,'remote','get-url','origin') in ('https://github.com/mpriesol/sps.git','https://github.com/mpriesol/sps','git@github.com:mpriesol/sps.git'),'tracked_checkout_clean':not r('git','-C',p,'status','--porcelain','--untracked-files=no')},sort_keys=True))"], capture_output=True, text=True)
+            if elevated.returncode == 0:
+                print(elevated.stdout.strip())
+            else:
+                print(json.dumps({'administrator_preflight_available': False, 'exit_code': elevated.returncode}))
             with urllib.request.urlopen('https://hub.biketrek.sk/sps/healthz', timeout=10) as response:
                 assert response.status == 200
                 assert json.load(response)['status'] == 'ok'
