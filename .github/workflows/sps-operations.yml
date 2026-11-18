@@ -45,20 +45,29 @@ jobs:
             cwd = labels.get('com.docker.compose.project.working_dir', '')
             root = pathlib.Path(cwd)
             mounts = [{'type': m['Type'], 'name': m.get('Name'), 'destination': m['Destination'], 'writable': m['RW']} for m in spec['Mounts'] if m['Destination'] == '/app/data']
-            origin = read('git', '-C', cwd, 'remote', 'get-url', 'origin')
-            allowed_origin = origin in ('https://github.com/mpriesol/sps.git', 'https://github.com/mpriesol/sps', 'git@github.com:mpriesol/sps.git')
             print(json.dumps({
                 'user': read('id', '-un'), 'container': spec['Name'].lstrip('/'),
                 'working_dir': cwd, 'config_files': labels.get('com.docker.compose.project.config_files'),
                 'image': spec['Image'], 'health': spec['State'].get('Health', {}).get('Status', 'not-configured'),
                 'networks': sorted(spec['NetworkSettings']['Networks']), 'data_mounts': mounts,
-                'repo_origin_matches': allowed_origin,
-                'repo_head': read('git', '-C', cwd, 'rev-parse', 'HEAD'),
-                'tracked_checkout_clean': not read('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=no'),
+                'checkout_owner_uid': root.stat().st_uid,
+                'checkout_owner_gid': root.stat().st_gid,
+                'git_directory_exists': (root / '.git').exists(),
                 'checkout_writable': __import__('os').access(root, __import__('os').W_OK),
                 'env_file_exists': (root / 'sps.env').is_file(),
                 'compose_version': read('docker', 'compose', 'version', '--short'),
             }, sort_keys=True))
+            try:
+                origin = read('git', '-C', cwd, 'remote', 'get-url', 'origin')
+                print(json.dumps({
+                    'repo_origin_matches': origin in ('https://github.com/mpriesol/sps.git', 'https://github.com/mpriesol/sps', 'git@github.com:mpriesol/sps.git'),
+                    'repo_head': read('git', '-C', cwd, 'rev-parse', 'HEAD'),
+                    'tracked_checkout_clean': not read('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=no'),
+                }, sort_keys=True))
+            except subprocess.CalledProcessError as exc:
+                message = exc.stderr or ''
+                reason = 'dubious ownership' if 'dubious ownership' in message else 'not a git repository' if 'not a git repository' in message else 'permission denied' if 'Permission denied' in message else 'git metadata unavailable'
+                print(json.dumps({'git_error': reason, 'exit_code': exc.returncode}))
             with urllib.request.urlopen('https://hub.biketrek.sk/sps/healthz', timeout=10) as response:
                 assert response.status == 200
                 assert json.load(response)['status'] == 'ok'
