@@ -55,6 +55,8 @@ jobs:
                 'git_directory_exists': (root / '.git').exists(),
                 'checkout_writable': __import__('os').access(root, __import__('os').W_OK),
                 'env_file_exists': (root / 'sps.env').is_file(),
+                'env_file_readable': __import__('os').access(root / 'sps.env', __import__('os').R_OK),
+                'effective_uid': __import__('os').geteuid(),
                 'compose_version': read('docker', 'compose', 'version', '--short'),
             }, sort_keys=True))
             try:
@@ -74,7 +76,8 @@ jobs:
             if elevated.returncode == 0:
                 print(elevated.stdout.strip())
             else:
-                print(json.dumps({'administrator_preflight_available': False, 'exit_code': elevated.returncode}))
+                reason = 'sudo password required' if 'password is required' in elevated.stderr else 'sudo command denied' if 'not allowed' in elevated.stderr else 'sudo unavailable' if 'not found' in elevated.stderr else 'administrator command failed'
+                print(json.dumps({'administrator_preflight_available': False, 'exit_code': elevated.returncode, 'reason': reason}))
             with urllib.request.urlopen('https://hub.biketrek.sk/sps/healthz', timeout=10) as response:
                 assert response.status == 200
                 assert json.load(response)['status'] == 'ok'
