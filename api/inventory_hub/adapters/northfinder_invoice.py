@@ -28,10 +28,11 @@ _TOTAL = re.compile(rf'^ *CELKOM(?: / TOTAL)? +({_AMOUNT}) +({_AMOUNT}) +({_AMOU
 _EUR_TOTAL = re.compile(rf'Celková čiastka(?: / Total amount)? +({_AMOUNT}) +EUR *(?:\n|$)')
 _ROW = re.compile(
     rf'^ *(?P<code>[A-Za-z0-9-]{{1,100}}) {{2,}}(?P<title>\S.*?) {{2,}}'
-    rf'(?P<quantity>{_INTEGER}(?:,[0-9]{{1,3}})?) +(?:(?:ks|pcs) +)?'
+    rf'(?P<quantity>{_INTEGER}(?:,[0-9]{{1,3}})?) +(?:(?:ks|pcs|pr) +)?'
     rf'(?P<price>{_PRICE}) +(?P<discount>{_PERCENT}) *% +(?P<final>{_PRICE}) +'
     rf'(?P<vat>{_PERCENT}) *% +(?P<net>{_AMOUNT}) +(?P<gross>{_AMOUNT}) +EUR *$')
 _GOODS_CODE = re.compile(r'[0-9]+-[0-9]+-[0-9]+')
+_ROW_START = re.compile(rf'^ *(?:{_GOODS_CODE.pattern}|ART[0-9]+) +\S', re.M)
 _SHIPPING = 'ART00784'
 _DISCOUNT = 'ART00930'
 
@@ -89,18 +90,26 @@ def _row(raw, number):
 def parse_invoice_pages(pages):
     if not 1 <= len(pages) <= 100:
         raise InvoiceParseError('Northfinder: podporované sú čitateľné PDF do 100 strán.')
-    lines, number = [], None
+    lines, summary_pages, number = [], [], None
     issued = due = None
     for page_no, page in enumerate(pages, 1):
         page = page.replace('\xa0', ' ').replace('\u202f', ' ').replace('−', '-')
         headers, numbers = list(_HEADER.finditer(page)), _NUMBER.findall(page)
         marker = _PAGE_NUMBER.findall(page)
-        last = page_no == len(pages)
-        endings = list((_TABLE_TOTAL if last else _PRINT_FOOTER).finditer(page))
-        if (len(headers) != 1 or len(numbers) != 1 or len(endings) != 1
-                or marker != [(str(page_no), str(len(pages)))] or endings[0].start() <= headers[0].end()
+        table_totals = list(_TABLE_TOTAL.finditer(page))
+        if (len(numbers) != 1 or len(table_totals) > 1
+                or marker != [(str(page_no), str(len(pages)))]
                 or (number is not None and numbers[0] != number)):
             raise InvoiceParseError('Northfinder: chýba strana, tabuľka alebo číslo dokladu nesúhlasí.')
+        if summary_pages:
+            if headers or table_totals:
+                raise InvoiceParseError('Northfinder: tovarová tabuľka pokračuje za svojím súčtom.')
+            summary_pages.append(page)
+            continue
+        endings = table_totals or list(_PRINT_FOOTER.finditer(page))
+        if (len(headers) != 1 or len(endings) != 1 or endings[0].start() <= headers[0].end()
+                or page_no == len(pages) and not table_totals):
+            raise InvoiceParseError('Northfinder: neúplná tovarová tabuľka.')
         if page_no == 1:
             header = page[:headers[0].start()]
             if not re.search(r'^ *NORTHFINDER +a\.s\.', header, re.M) or not re.search(r'\b35933011\b', header):
@@ -116,7 +125,11 @@ def parse_invoice_pages(pages):
             raise InvoiceParseError('Northfinder: tabuľka neobsahuje podporovaný počet riadkov.')
         for row in table:
             lines.append(_row(row, len(lines) + 1))
-    summary = page[endings[0].end():]
+        if table_totals:
+            summary_pages.append(page[table_totals[0].end():])
+    summary = '\n'.join(summary_pages)
+    if _ROW_START.search(summary):
+        raise InvoiceParseError('Northfinder: tovarová položka je uvedená za súčtom tabuľky.')
     totals, euro_totals = _TOTAL.findall(summary), _EUR_TOTAL.findall(summary)
     if len(totals) != 1 or len(euro_totals) != 1:
         raise InvoiceParseError('Northfinder: chýba jednoznačný súhrn faktúry v EUR.')
