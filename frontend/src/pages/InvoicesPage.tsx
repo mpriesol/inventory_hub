@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Download, RefreshCw, Upload, ChevronLeft, ChevronRight, FileText, BarChart3, ChevronDown, ChevronUp } from 'lucide-react';
 import { accessRevision, subscribeAccess } from '../api/access';
 import {
   ArchivedInvoice, InvoiceArchiveFilters, InvoiceArchivePage, InvoiceArchiveStats, ShopInvoiceSyncResult, InvoiceArchiveStatus,
-  downloadInvoiceArchive, getArchiveShops, getArchiveSuppliers, getInvoiceArchive, getInvoiceArchiveStats, getInvoiceSupplierOptions,
+  InvoiceSupplierOption, SupplierInvoiceDownloadResult,
+  downloadInvoiceArchive, downloadSupplierInvoices, getArchiveShops, getArchiveSuppliers, getInvoiceArchive, getInvoiceArchiveStats, getInvoiceSupplierOptions,
   invoiceArchiveDefaults, invoiceArchiveQuery, getInvoiceArchiveStatus, syncShopInvoiceArchive,
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, invoiceSourceDiagnostic, InvoicePaymentBadge } from './invoiceArchiveUi';
@@ -14,6 +15,18 @@ import { InvoiceUploadModal } from '../components/InvoiceUploadModal';
 import './invoiceArchive.css';
 
 const sortColumns = ['invoice_number', 'supplier_name', 'invoice_date', 'due_date', 'total_amount', 'outstanding_amount', 'payment_status', 'receiving_status', 'original_filename', 'created_at'];
+const batchId = (value: string | null) => value && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : '';
+
+export function LegacyInvoiceListRedirect() {
+  const [source] = useSearchParams();
+  const target = new URLSearchParams();
+  const supplier = source.get('supplier_code') || source.get('supplier');
+  const batch = batchId(source.get('batch'));
+  if (supplier && /^[a-z0-9_-]{1,50}$/i.test(supplier)) target.set('supplier_code', supplier);
+  if (batch) target.set('receiving_batch', batch);
+  if (source.get('include_archived') === 'true') target.set('include_archived', 'true');
+  return <Navigate replace to={{ pathname: '/invoices', search: target.toString() }} />;
+}
 
 function filtersFromUrl(params: URLSearchParams): InvoiceArchiveFilters {
   const result = { ...invoiceArchiveDefaults };
@@ -64,6 +77,7 @@ export function InvoicesPage() {
   const access = useSyncExternalStore(subscribeAccess, accessRevision);
   const [params, setParams] = useSearchParams();
   const query = params.toString();
+  const receivingBatch = batchId(params.get('receiving_batch'));
   const applied = useMemo(() => filtersFromUrl(new URLSearchParams(query)), [query]);
   const page = Math.max(1, Number.parseInt(params.get('page') || '1', 10) || 1);
   const [filters, setFilters] = useState(applied);
@@ -81,7 +95,9 @@ export function InvoicesPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [archiveStatus, setArchiveStatus] = useState<InvoiceArchiveStatus | null>(null);
   const [archiveStatusError, setArchiveStatusError] = useState(false);
-  const [suppliers, setSuppliers] = useState<{ code: string; name: string }[]>([]);
+  const [suppliers, setSuppliers] = useState<InvoiceSupplierOption[]>([]);
+  const [supplierDownload, setSupplierDownload] = useState<string | null>(null);
+  const [supplierResult, setSupplierResult] = useState<SupplierInvoiceDownloadResult | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [shops, setShops] = useState<{ code: string; name: string }[]>([]);
   const [sync, setSync] = useState({ shop: '', date_from: '', date_to: '' });
@@ -110,8 +126,8 @@ export function InvoicesPage() {
     const controller = new AbortController();
     Promise.allSettled([getArchiveSuppliers(controller.signal), getInvoiceSupplierOptions(controller.signal)]).then(results => {
       if (controller.signal.aborted) return;
-      const options = new Map<string, { code: string; name: string }>();
-      results.forEach(result => { if (result.status === 'fulfilled') result.value.forEach(row => options.set(row.code, row)); });
+      const options = new Map<string, InvoiceSupplierOption>();
+      results.forEach(result => { if (result.status === 'fulfilled') result.value.forEach(row => options.set(row.code, { ...options.get(row.code), ...row })); });
       setSuppliers([...options.values()].sort((a, b) => a.name.localeCompare(b.name, i18n.language) || a.code.localeCompare(b.code)));
       if (results.some(result => result.status === 'rejected')) setError(t('invoiceArchive.suppliersFailed'));
     });
@@ -143,7 +159,11 @@ export function InvoicesPage() {
   }, [applied.direction, access]);
 
   const update = (key: keyof InvoiceArchiveFilters, value: string) => { setFilters(old => ({ ...old, [key]: value })); setSelected(new Set()); };
-  const apply = (values: InvoiceArchiveFilters = filters, nextPage = 1) => setParams(invoiceArchiveQuery({ ...values, page: nextPage }));
+  const apply = (values: InvoiceArchiveFilters = filters, nextPage = 1) => {
+    const next = new URLSearchParams(invoiceArchiveQuery({ ...values, page: nextPage }));
+    if (receivingBatch) next.set('receiving_batch', receivingBatch);
+    setParams(next);
+  };
   const status = applied.is_overdue === 'true' ? 'overdue' : applied.payment_status || 'all';
   const statusFilter = (value: string) => apply({ ...applied, payment_status: ['all', 'overdue'].includes(value) ? '' : value, is_overdue: value === 'overdue' ? 'true' : '' });
   const download = async (ids: number | number[]) => {
@@ -164,6 +184,20 @@ export function InvoicesPage() {
     }
     finally { setWorking(false); }
   };
+  const downloadableSuppliers = suppliers.filter(option => option.is_active !== false
+    && ['paul-lange-web', 'northfinder-web'].includes(option.download_strategy || ''));
+  const downloadFromSupplier = async () => {
+    if (working || !supplierDownload || !downloadableSuppliers.some(option => option.code === supplierDownload)) return;
+    setWorking(true); setError(''); setMessage(''); setSupplierResult(null);
+    try {
+      const result = await downloadSupplierInvoices(supplierDownload);
+      setSupplierResult(result);
+      apply({ ...invoiceArchiveDefaults, supplier_code: supplierDownload });
+      setRefresh(value => value + 1);
+    } catch {
+      setError(t('invoiceArchive.supplierDownloadFailed'));
+    } finally { setWorking(false); }
+  };
   const invoiceTitle = (invoice: ArchivedInvoice) => invoice.invoice_number || invoice.original_filename;
   const rows = data?.items || [];
   const sortHeader = (label: string, key: string, amount = false) => <th key={key} className={amount ? 'amount' : undefined}
@@ -176,13 +210,18 @@ export function InvoicesPage() {
   </th>;
 
   return <div className="invoice-archive">
-    <header><div><h1>{t('invoiceArchive.title')}</h1><p className="muted">{t('invoiceArchive.subtitle')}</p></div>
+    <header><div>{receivingBatch && <Link data-testid="invoice-return-batch" to={`/receiving?${new URLSearchParams({ batch: receivingBatch })}`}>{t('invoiceArchive.returnToReceipt')}</Link>}
+      <h1>{t('invoiceArchive.title')}</h1><p className="muted">{t('invoiceArchive.subtitle')}</p></div>
       <div className="actions"><button data-testid="invoice-refresh" disabled={working || loading} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16} />{t('common.refresh')}</button>
-        {applied.direction === 'purchase' ? <><button className="primary" data-testid="invoice-upload-open" disabled={working} onClick={() => setUploadOpen(value => !value)}><Upload size={16} />{t('invoiceArchive.addInvoice')}</button></>
+        {applied.direction === 'purchase' ? <>
+          {downloadableSuppliers.length > 0 && <button type="button" data-testid="invoice-supplier-download-open" disabled={working} aria-expanded={supplierDownload !== null}
+            onClick={() => { setSupplierResult(null); setSupplierDownload(supplierDownload === null ? downloadableSuppliers.find(option => option.code === applied.supplier_code)?.code || '' : null); }}>
+            <Download size={16} />{t('invoiceArchive.supplierDownload')}</button>}
+          <button className="primary" data-testid="invoice-upload-open" disabled={working} onClick={() => setUploadOpen(value => !value)}><Upload size={16} />{t('invoiceArchive.addInvoice')}</button></>
           : <button className="primary" data-testid="invoice-sync-open" disabled={working} onClick={() => setSyncOpen(value => !value)}><Download size={16} />{t('invoiceArchive.syncShop')}</button>}</div>
     </header>
     <div className="status-tabs" aria-label={t('invoiceArchive.direction')}>
-      {(['purchase', 'sale'] as const).map(direction => <button key={direction} data-testid={`invoice-direction-${direction}`} disabled={working} aria-pressed={applied.direction === direction} onClick={() => { apply({ ...invoiceArchiveDefaults, direction }); setUploadOpen(false); setShowCalendar(false); setSyncOpen(false); }}>
+      {(['purchase', 'sale'] as const).map(direction => <button key={direction} data-testid={`invoice-direction-${direction}`} disabled={working} aria-pressed={applied.direction === direction} onClick={() => { apply({ ...invoiceArchiveDefaults, direction }); setUploadOpen(false); setShowCalendar(false); setSyncOpen(false); setSupplierDownload(null); setSupplierResult(null); }}>
         {t(`invoiceArchive.directionLabels.${direction}`)}</button>)}
     </div>
     <div className="invoice-view-tools"><button type="button" className="quiet" data-testid="invoice-summary-toggle" aria-expanded={showDashboard} aria-controls="invoice-financial-overview" onClick={() => setShowDashboard(value => !value)}>
@@ -193,6 +232,19 @@ export function InvoicesPage() {
     {error && <div role="alert" className="notice error" data-testid="invoice-error">{error}</div>}
     {message && <div role="status" className="notice success">{message}</div>}
     {applied.direction === 'purchase' && <p className="muted small">{t('invoiceArchive.automaticArchive')}</p>}
+    {applied.direction === 'purchase' && supplierDownload !== null && <form className="panel" onSubmit={event => { event.preventDefault(); void downloadFromSupplier(); }}>
+      <fieldset disabled={working}><div className="fields"><label>{t('invoiceArchive.supplier')}
+        <select data-testid="invoice-supplier-download-select" value={supplierDownload} onChange={event => { setSupplierDownload(event.target.value); setSupplierResult(null); }}>
+          <option value="">{t('invoiceArchive.chooseSupplier')}</option>
+          {downloadableSuppliers.map(option => <option key={option.code} value={option.code}>{option.name}</option>)}
+        </select></label></div><footer><button type="submit" className="primary" data-testid="invoice-supplier-download-start" disabled={!supplierDownload}>{t('invoiceArchive.supplierDownload')}</button></footer>
+      </fieldset>
+      {supplierResult && <div role="status" className={`notice ${supplierResult.ok && supplierResult.archive?.status === 'completed' ? 'success' : 'warning'}`}>
+        <p>{t('invoiceArchive.supplierDownloadResult', { downloaded: supplierResult.downloaded, skipped: supplierResult.skipped, failed: supplierResult.failed })}</p>
+        {!supplierResult.ok && <p>{t(supplierResult.errors?.some(error => /cloudflare|turnstile/i.test(error)) ? 'invoiceArchive.supplierDownloadBlocked' : 'invoiceArchive.supplierDownloadFailed')}</p>}
+        {supplierResult.archive?.status !== 'completed' && <p>{t('invoiceArchive.supplierArchivePending')}</p>}
+      </div>}
+    </form>}
     {applied.direction === 'purchase' && archiveStatusError && <p role="status" className="notice warning">{t('invoiceArchive.archiveStatusFailed')}</p>}
     {!!archiveStatus?.items.length && <section className="notice warning" data-testid="invoice-archive-status"><h2>{t('invoiceArchive.archiveProcessing')}</h2>
       {archiveStatus.items.map(item => <div key={item.supplier_code}><strong>{suppliers.find(row => row.code === item.supplier_code)?.name || item.supplier_code}</strong>

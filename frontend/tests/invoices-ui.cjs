@@ -18,7 +18,7 @@ const i18n = require('../src/i18n/index.ts').default;
 const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
 const { createMemoryRouter, RouterProvider } = require('react-router-dom');
-const { InvoicesPage } = require('../src/pages/InvoicesPage.tsx');
+const { InvoicesPage, LegacyInvoiceListRedirect } = require('../src/pages/InvoicesPage.tsx');
 const { InvoiceDetailPage } = require('../src/pages/InvoiceDetailPage.tsx');
 const { invoiceMoney, invoiceSourceDiagnostic } = require('../src/pages/invoiceArchiveUi.tsx');
 const { unlockHub, setHubUser, hubUser } = require('../src/api/access.ts');
@@ -49,6 +49,7 @@ async function render(path) {
     router = createMemoryRouter([
       { path: '/invoices', element: React.createElement(InvoicesPage) },
       { path: '/invoices/:invoiceId', element: React.createElement(InvoiceDetailPage) },
+      { path: '/receiving/invoices', element: React.createElement(LegacyInvoiceListRedirect) },
       { path: '*', element: React.createElement('div', null, 'Other route') },
     ], { initialEntries: [path] });
     root.render(React.createElement(RouterProvider, { router })); await tick();
@@ -119,7 +120,8 @@ global.fetch = async (path, init = {}) => {
   const body = init.body && typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
   calls.push({ path, method: init.method || 'GET', body: clone(body || null) });
   const url = new URL(path, dom.window.location.href);
-  if (url.pathname === '/api/suppliers') return reply([{ code: 'fixture-vendor', name: 'Fixture vendor' }, { code:'northfinder',name:'Northfinder' }]);
+  if (url.pathname === '/api/suppliers') return reply([{ code: 'fixture-vendor', name: 'Fixture vendor' },
+    { code: 'northfinder', name: 'Northfinder', download_strategy: 'northfinder-web', is_active: true }]);
   if (url.pathname === '/api/invoices/supplier-options') return reply([{ code: 'retired-vendor', name: 'Archived inactive vendor' }]);
   if (url.pathname === '/api/invoices/archive-status') return reply({ items: [{ supplier_code: 'fixture-vendor', status: 'attention', scanned: 100, conflicts: [{ source_key: 'BAD-1', code: 'invoice_index_ambiguous' }], uploads: [] }] });
   if (url.pathname === '/api/invoices/calendar') return reply({
@@ -131,6 +133,15 @@ global.fetch = async (path, init = {}) => {
     if (uploadNumberRequired && !body.get('invoice_number')) return failure(422,'invoice_number_required_for_receiving');
     uploadedFiles.push({ file: body.get('file'), supplier: body.get('supplier_code'), invoice_number:body.get('invoice_number') });
     return reply({ id:20,invoice_number:body.get('invoice_number'),processing:{status:'partial',parsed_lines:0,stored_lines:0,receiving_ready:false,issues:['invoice_parser_unavailable'],missing_fields:['invoice_number']} });
+  }
+  if (url.pathname === '/api/suppliers/northfinder/invoices/refresh') {
+    assert.equal(init.method, 'POST');
+    return reply({ ok: false, downloaded: 0, skipped: 0, failed: 0, errors: ['Cloudflare Turnstile'], archive: { status: 'completed' } });
+  }
+  if (url.pathname === '/api/invoices/15/reparse-northfinder-pdf') {
+    assert.equal(init.method, 'POST');
+    invoices.get(15).is_parsed = true;
+    return reply({ id: 15, processing: { status: 'complete', parsed_lines: 1, stored_lines: 1, receiving_ready: true } });
   }
   if (url.pathname === '/api/product-editor/options') return reply({ shops: [{ code: 'biketrek', name: 'BIKETREK' }] });
   if (url.pathname === '/api/invoices/stats') return reply({ ...stats(url.searchParams.get('direction')), include_archived: url.searchParams.get('include_archived') === 'true' });
@@ -409,6 +420,7 @@ global.fetch = async (path, init = {}) => {
   const originalFinance = clone(invoices.get(14).finance), paymentsBeforeProcessing = operations.size;
   await render('/invoices/14');
   assert.match(required('invoice-archived-receipts').textContent, /original receipt retained/i, 'Archived stock history remains visible without owning current handling');
+  assert.equal(required('invoice-archived-receipt-link').getAttribute('href'), '/receiving/OLD-TEST-RECEIPT?supplier=fixture-vendor&session=88');
   assert(required('invoice-processing-preview').disabled, 'A reason is mandatory even for a preview');
   assert(!element('invoice-processing-confirm'));
   await input('invoice-processing-note', '  Paperwork reviewed; no goods received  ');
@@ -504,6 +516,23 @@ global.fetch = async (path, init = {}) => {
     assert(!element('invoice-payment-pending')); assert.equal(operations.size, count + 1);
   }
   assert(!calls.some(call => /\/issue|\/billing|\/stock\/|\/payment$/.test(call.path)), 'Archive never issues documents or uses status-only payment shortcuts');
+  const batch = 'c2eba07d-4f31-4c6f-8c17-9ec20ec6057f';
+  await render(`/receiving/invoices?supplier=northfinder&batch=${batch}`);
+  assert.equal(router.state.location.pathname, '/invoices');
+  assert.equal(new URLSearchParams(router.state.location.search).get('supplier_code'), 'northfinder');
+  assert.equal(required('invoice-return-batch').getAttribute('href'), `/receiving?batch=${batch}`);
+  await click('invoice-supplier-download-open');
+  assert.equal(required('invoice-supplier-download-select').value, 'northfinder');
+  await click('invoice-supplier-download-start');
+  assert(document.body.textContent.includes(i18n.t('invoiceArchive.supplierDownloadBlocked')));
+  assert.equal(required('invoice-return-batch').getAttribute('href'), `/receiving?batch=${batch}`);
+  invoices.set(15, makeInvoice(15, { supplier_code: 'northfinder', is_parsed: false, receiving_status: 'not_started',
+    receiving_session_id: null, receiving_invoice_number: null, lines: [] }));
+  await render('/invoices/15');
+  await click('invoice-reparse-pdf');
+  assert(document.body.textContent.includes(i18n.t('invoiceArchive.reparseReady')));
+  assert(!element('invoice-reparse-pdf'));
+  assert(!calls.some(call => call.path.includes('/invoices/index')), 'All displayed invoices use the canonical archive');
   await act(async () => root.unmount());
   console.log('invoice UI: suppliers, financial overview, original uploads/exports, payment recovery, reasoned processing/archive, exact UUID retries, archived filters and receipt safeguards passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

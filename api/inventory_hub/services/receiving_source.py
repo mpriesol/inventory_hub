@@ -182,8 +182,8 @@ def _load_source(root, supplier, invoice_number, path, parse):
     adapter_cfg, invoice_cfg = cfg.get("adapter_settings") or {}, cfg.get("invoices") or {}
     mapping = adapter_cfg.get("mapping") or invoice_cfg.get("mapping") or {}
     rows = parse(path, mapping.get("invoice_to_canon") if supplier == "paul-lange" else None, content=raw_csv)
-    if supplier in invoice_pdf.PARSERS:
-        original = _source_path(root, supplier, entry.get("raw_path"))
+    original = _source_path(root, supplier, entry.get("raw_path")) if supplier in invoice_pdf.PARSERS else None
+    if original is not None and original.suffix.lower() == '.pdf':
         try:
             invoice = invoice_pdf.parse_invoice_pdf(supplier, original.read_bytes())
         except (ValueError, OSError):
@@ -193,9 +193,8 @@ def _load_source(root, supplier, invoice_number, path, parse):
             raise ReceivingSourceError("receiving_source_changed")
         source_hash = _digest((supplier + ":pdf:" + invoice.fingerprint()).encode())
         adapter = supplier + "_pdf"
-    elif supplier == "northfinder":
+    elif supplier == "northfinder" and original.suffix.lower() in ('.xls', '.xlsx'):
         from inventory_hub.adapters.northfinder_xlsx_parser import validated_receiving_rows
-        original = _source_path(root, supplier, entry.get("raw_path"))
         if entry.get("currency") not in (None, "EUR"):
             raise ReceivingSourceError("receiving_source_currency_unsupported")
         expected = validated_receiving_rows(original)

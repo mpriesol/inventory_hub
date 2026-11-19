@@ -2,7 +2,7 @@
 
 ## Prehľad
 
-Táto implementácia pridáva podporu pre dodávateľa Northfinder s automatickým sťahovaním faktúr cez Playwright (mode #2 - persistent session).
+Pôvodné textové PDF Northfinder nahrajte vo Faktúrach alebo v Príjme. Hub spracuje jedno- aj viacstranové doklady Money S5 a zachová originál. Pri pokuse 19. 11. 2026 prístup existujúceho B2B sťahovača zastavila ochrana dodávateľa. [Archív a ceny príjmu](../invoice-archive.md), [návrh e-mailového zberu](../invoice-email-intake.md).
 
 ## Čo je implementované
 
@@ -29,10 +29,9 @@ Táto implementácia pridáva podporu pre dodávateľa Northfinder s automatick�
 - Zobrazuje OBA feedy (products + stock) súčasne
 - Každý feed má vlastné nastavenia
 
-### E) Frontend - Fixed Supplier Code Bug
-- **Súbor**: `frontend/src/pages/ReceivingPage.tsx`
-- Používa `code` namiesto `supplier_code`
-- API calls teraz používajú správny lowercase code
+### E) Faktúry a Príjem
+- **Faktúry** zobrazujú spracované riadky, originál a súvisiace príjemky.
+- V **Príjme** použite ten istý modal a pokračujte skenovaním fyzických kusov.
 
 ### F) Frontend - i18n Scaffold
 - **Súbory**: `frontend/src/i18n/`
@@ -88,9 +87,9 @@ curl -X POST "https://hub.biketrek.sk/api/suppliers/northfinder/invoices/refresh
 
 ### Cez UI
 
-1. Otvorte `/receiving`
-2. Vyberte "Northfinder" z dropdown
-3. Faktúry sa zobrazia automaticky po refresh
+1. Otvorte `/invoices`.
+2. Ak je B2B prístup dostupný, zvoľte **Stiahnuť od dodávateľa** a Northfinder. Výsledok upozorní aj na stav archívu.
+3. Pri blokovanom prístupe použite **Pridať faktúru** a pôvodné PDF.
 
 ---
 
@@ -140,9 +139,8 @@ curl -X POST "https://hub.biketrek.sk/api/suppliers/northfinder/invoices/refresh
    ```
 
 5. **UI test**:
-   - Otvorte `/receiving`
-   - Vyberte "Northfinder"
-   - Mali by sa zobraziť faktúry
+   - Vo Faktúrach vyberte Northfinder a otvorte doklad.
+   - Overte počet riadkov, sumy, stiahnutie originálu a pripravenosť na príjem.
 
 ---
 

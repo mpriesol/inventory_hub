@@ -42,11 +42,12 @@ Kompletná administrácia opráv identifikátorov a priraďovanie neskôr prijat
 
 Bežný postup je **pôvodný dodávateľský doklad → konkrétny parser → uložené údaje → potvrdený fyzický príjem**. CSV je medzisúbor parsera. Samotný názov súboru, stĺpec `CURRENCY=EUR` alebo údaj od klienta nepotvrdzujú menu ani cenu bez DPH.
 
-`POST /suppliers/{supplier}/upload-invoice` odmietne priamy CSV upload pred uložením súboru. Excelový doklad na príjem podporuje iba konkrétny Northfinder parser. Uchovanie iného dokumentu vo **Faktúrach** cez `/invoices/upload` je samostatná archivačná operácia; nevytvára tým overený zdroj fyzického príjmu. Nepodporované alebo nedoložené podklady sa nesmú obísť premenovaním súboru.
+Nahratie vo Faktúrach, Príjme alebo Dodávateľoch používa spoločný archív a prípravu zdroja. Všeobecný CSV upload možno archivovať. Overený podklad na fyzický príjem vyžaduje konkrétny zdroj a parser z tabuľky.
 
 | Zdroj | Overenie pred založením príjmu |
 | --- | --- |
 | SK Profi Bike / Zookee / ARIGA PDF | Pôvodné uložené PDF sa znovu overí existujúcim dodávateľským parserom. Číslo a otlačok dokladu aj normalizované CSV musia zodpovedať pôvodnému dokumentu. Zookee zachová vlastný ISDOC prepočet doložených EUR hodnôt. [ARIGA](ariga.md) overí EUR tabuľku a poštovné; do príjmu vstupujú iba tovarové riadky s pôvodnou cenou bez DPH. |
+| Northfinder PDF | Money S5, textové PDF v EUR. Overuje sa každá strana, fakturované množstvo a čisté i hrubé sumy. Príjem použije cenu po zľave bez DPH vytlačenú pri tovare. Doprava a samostatná zľava patria k finančným riadkom v archíve. Ak v doklade chýba EAN, použije sa existujúca overená identita podľa kódu dodávateľa. |
 | Northfinder XLSX | Uložený originál musí obsahovať konkrétne stĺpce množstva, jednotkovej ceny v EUR, čistého a hrubého súčtu. Overuje sa presnosť čísiel, čistý súčet množstvo × cena, hrubý súčet a zhoda s medzisúborom. Všeobecný stĺpec `Price` ani nahradenie chyby nulou nestačia. |
 | Paul Lange CSV zo sťahovania | Vyžaduje sa dôkaz dodávateľského stiahnutia vrátane čísla dokladu, zhodný otlačok obsahu a výslovne uložená konfigurácia EUR/cena bez DPH. Číslo z dôkazu musí zodpovedať indexu; predvolené hodnoty normalizácie konfigurácie tento dôkaz nenahrádzajú. |
 
@@ -178,8 +179,8 @@ Rozšírenie z 13. 10. 2026 dopĺňa testy predvoleného zoznamu, zobrazeného E
 
 Pri `scan_line_ambiguous` klient ponechá sken vo fronte a ponúkne konkrétne faktúrové riadky s cenou a množstvom. Iba dokázané odmietnutie pred zápisom dovoľuje doplniť `line_id`; po neistom výsledku sa opakuje rovnaké UUID a celý payload. Kým výber nie je vyriešený, nemožno príjem zaúčtovať. Pred úplným aj čiastočným zaúčtovaním je súhrn skladu, množstva, hodnoty a dôsledkov; neznáma nákupná cena zostáva neznáma. Archív dokladov a nahratie faktúry na príjem majú odlišné názvy a prepojenie. [Súvislosti](ux-audit-followup.md).
 
-## Find an invoice from the landing-page scanner
+## Vyhľadanie faktúry pre sken
 
-`GET /receiving/lookup?code=...` is authenticated and read-only. It searches normalized receiving CSVs and database receipts across suppliers, including completed/cancelled sessions. It uses exact supplier/canonical codes and verified invoice, product or supplier barcodes; it does not finalize, reopen, create stock or guess from a title. CSV parsing reuses the receiving grammar and caches only unchanged files. Unreadable invoices are reported.
+`GET /receiving/lookup?code=...` číta normalizované CSV a databázové príjemky. Používa presné dodávateľské alebo interné kódy a overené EAN kódy. Tú istú službu používa [zmiešaný príjem](mixed-receiving.md), ktorý podľa výsledku priradí sken alebo vyžiada výber. Nečitateľné faktúry hlási osobitne.
 
-A unique complete result opens the corresponding session; multiple results or an incomplete search require an explicit invoice choice. A new/active receipt receives one UUID-preserving initial scan through the existing persistent queue. Reload/remount cannot generate a second operation for that scan. A completed/cancelled receipt opens read-only with matching rows highlighted, without adding quantity. Paused receipts resume through the existing endpoint. All scan identity and line-ambiguity checks still run before changing received quantity.
+Doklad a stav príjemky sú vo Faktúrach. Odkaz z detailu otvorí existujúcu príjemku. Pozastavenú príjemku možno obnoviť tlačidlom **Pokračovať v príjme** priamo v jej detaile.

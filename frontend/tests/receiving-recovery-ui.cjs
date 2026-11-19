@@ -14,8 +14,6 @@ require.extensions['.css'] = () => {};
 const React = require('react'), { act } = React, { createRoot } = require('react-dom/client');
 require('../src/i18n/index.ts');
 const { ReceivingRecoveryPanel } = require('../src/components/ReceivingRecoveryPanel.tsx');
-const { ReceivingPage } = require('../src/pages/ReceivingPage.tsx');
-const { MemoryRouter, Routes, Route, useLocation } = require('react-router-dom');
 const root = createRoot(document.getElementById('root'));
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const find = id => document.querySelector(`[data-testid="${id}"]`);
@@ -29,9 +27,6 @@ const impact = { product_id: 10, sku: 'PART', name: 'Part', stock_unit: 'pcs', b
 global.fetch = async (path, options = {}) => {
   const body = options.body ? JSON.parse(options.body) : undefined;
   calls.push({ path, body, method: options.method || 'GET' });
-  if (path === '/api/suppliers') return response([{ code: 'fixture', name: 'Fixture' }]);
-  if (path.includes('/invoices/index')) return response({ invoices: [{ invoice_id: 'INV', number: 'INV', issue_date: null,
-    csv_path: '', status: 'processed', receiving_session_id: '12', receiving_archived: path.includes('include_archived=true') }] });
   if (path.endsWith('/operations')) return response({ session_id: 12, limit: 50, operations: [...applied.values()].map(item => ({
     id: item.id, action: item.action, reason: item.reason, actor: item.actor, at: item.completed_at,
     stock_effect: item.stock_effect, impacts: item.impacts, status: item.status, archived: item.archived,
@@ -104,20 +99,6 @@ async function preview() { await reason(); await click('receiving-recovery-previ
   await render('restore', { status: 'cancelled', archived: true });
   assert.equal(find('receiving-recovery-action').options.length, 1); assert.equal(find('receiving-recovery-action').value, 'restore');
 
-  let location;
-  function Destination() { location = useLocation(); return React.createElement('p', null, 'Receipt detail'); }
-  await act(async () => { root.render(React.createElement(MemoryRouter, { initialEntries: ['/receiving?supplier=fixture'] },
-    React.createElement(Routes, null, React.createElement(Route, { path: '/receiving', element: React.createElement(ReceivingPage) }),
-      React.createElement(Route, { path: '/receiving/:id', element: React.createElement(Destination) })))); await tick(); });
-  await click('receiving-include-archived');
-  assert(calls.some(call => call.path.includes('include_archived=true'))); assert(find('receiving-archived-badge'));
-  const beforeNavigation = calls.length;
-  // Resolve translated text using the same catalog as the real page.
-  const label = require('../src/i18n/index.ts').default.t('receiving.recovery.openRecovery');
-  const open = [...document.querySelectorAll('button')].find(button => button.textContent.includes(label));
-  assert(open); await act(async () => { open.click(); await tick(); });
-  assert.equal(location.pathname, '/receiving/INV'); assert.equal(location.state.sessionId, '12');
-  assert.equal(calls.length, beforeNavigation, 'Opening recovery is read-only navigation');
   await act(async () => root.unmount());
-  console.log('receiving-recovery-ui: preview, exact effects, durable replay, stale review, guards, archive and read-only navigation passed');
+  console.log('receiving-recovery-ui: preview, exact effects, durable replay, stale review, guards and archive passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

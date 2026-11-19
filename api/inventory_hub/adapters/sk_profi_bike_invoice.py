@@ -87,11 +87,15 @@ class Invoice:
         # The accepted number grammar contains digits and slashes only.
         return self.number.replace("/", "_")
 
+    @property
+    def receiving_lines(self) -> tuple[InvoiceLine, ...]:
+        return self.lines
+
     def csv_bytes(self) -> bytes:
         output = io.StringIO(newline="")
         writer = csv.writer(output, delimiter=";", lineterminator="\n")
         writer.writerow(["SCM", "TITLE", "QTY", "PRICE", "EAN"])
-        for line in self.lines:
+        for line in self.receiving_lines:
             writer.writerow([line.sku, line.title, str(line.qty), str(line.price), line.ean])
         return output.getvalue().encode("utf-8")
 
@@ -319,7 +323,7 @@ def save_receiving_invoice(content: bytes, data_root: Path, supplier: str, overr
             "original_number": invoice.number, "issue_date": invoice.issue_date.isoformat(),
             "due_date": invoice.due_date.isoformat(), "currency": "EUR", "vat_included": False,
             "total_without_vat": str(invoice.net), "vat_amount": str(invoice.vat),
-            "total_with_vat": str(invoice.gross), "items_count": len(invoice.lines),
+            "total_with_vat": str(invoice.gross), "items_count": len(invoice.receiving_lines),
             "csv_path": csv_path.relative_to(data_root).as_posix(),
             "raw_path": raw.relative_to(data_root).as_posix(), "source_fingerprint": fingerprint,
             "status": "new", "downloaded_at": datetime.now(timezone.utc).isoformat(),
@@ -332,5 +336,5 @@ def save_receiving_invoice(content: bytes, data_root: Path, supplier: str, overr
             "success": True, "filename": raw.name, "path": raw.relative_to(data_root).as_posix(),
             "csv_path": csv_path.relative_to(data_root).as_posix(), "size_bytes": raw.stat().st_size,
             "invoice_id": invoice_id, "invoice_number": invoice.number,
-            "items_count": len(invoice.lines), "replayed": replayed,
+            "items_count": len(invoice.receiving_lines), "replayed": replayed,
         }

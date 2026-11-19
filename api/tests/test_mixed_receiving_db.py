@@ -16,19 +16,21 @@ from sqlalchemy import select, text
 
 import test_receiving_db as fixture
 from test_zookee import pdf, isdoc
+from test_northfinder_invoice import invoice_pages as northfinder_pages
+from inventory_hub.adapters import northfinder_invoice
 from inventory_hub.adapters.sk_profi_bike_invoice import save_receiving_invoice
 from inventory_hub.adapters.zookee_invoice import parse_invoice_pdf
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub import config_io
-from inventory_hub.db_models import MovementType, Product, ReceivingStatus, Supplier
+from inventory_hub.db_models import IdentifierType, MovementType, Product, ReceivingStatus, Supplier, SupplierProduct
 from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement
 from inventory_hub.fifo_models import FifoLayer
 from inventory_hub.receiving_operation_types import ReceivingOperationApply, ReceivingOperationPreview
 from inventory_hub.mixed_receiving_types import BatchScan, BatchFinalize, BatchManualScan
 from inventory_hub.routers import mixed_receiving as routes
 from inventory_hub.routers import receiving_db as receiving
-from inventory_hub.services import fifo, receiving_operations, invoice_processing, mixed_receiving
+from inventory_hub.services import fifo, receiving_operations, invoice_processing, invoice_upload, mixed_receiving
 from inventory_hub.services.identifiers import ProductIdentifierService
 
 
@@ -227,6 +229,38 @@ class MixedReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.balance())
         await self.confirm(batch["id"])
         self.assertEqual(await self.balance(), (D(1), D(10)))
+
+    async def test_northfinder_pdf_scan_and_fifo_use_line_discount_and_exclude_separate_charges(self):
+        config = Path(self.config_folder.name) / 'suppliers/northfinder/config.json'
+        config.parent.mkdir(parents=True)
+        config.write_text('{"product_code_prefix":"NF-"}')
+        invoice = northfinder_invoice.parse_invoice_pages(northfinder_pages())
+        raw = b'%PDF-1.7\nSynthetic Northfinder invoice\n%%EOF'
+        with patch.object(northfinder_invoice, 'parse_invoice_pdf', return_value=invoice):
+            async with self.sessions() as db:
+                supplier = Supplier(code='northfinder', name='Northfinder fixture')
+                db.add(supplier)
+                await db.flush()
+                code = invoice.receiving_lines[0].sku
+                db.add(SupplierProduct(supplier_id=supplier.id, supplier_sku=code,
+                    ean='4006381333931', name='Synthetic receipt item'))
+                await ProductIdentifierService(db).add_identifier(self.product_id, code, IdentifierType.supplier_sku, supplier.id)
+                await db.commit()
+                saved = await invoice_upload.upload(db, supplier_code='northfinder', filename='invoice.pdf', content=raw)
+                self.assertTrue(saved['processing']['receiving_ready'])
+            self.assertIsNone(await self.balance())
+            batch = await self.batch()
+            scanned = await self.scan(batch['id'], qty='2')
+            scan = scanned['summary']['scans'][0]
+            self.assertEqual((scan['supplier'], scan['invoice_no'], D(scan['unit_price'])),
+                             ('northfinder', invoice.number, D('18')))
+            self.assertIsNone(await self.balance())
+            await self.confirm(batch['id'])
+            self.assertEqual(await self.balance(), (D(2), D(36)))
+            self.assertEqual(len(await self.movements()), 1)
+            async with self.sessions() as db:
+                self.assertEqual(list(await db.scalars(select(ReceivingLine.supplier_sku).order_by(ReceivingLine.line_number))),
+                                 [line.sku for line in invoice.receiving_lines])
 
     async def test_scan_uuid_replay_and_simultaneous_replay_reserve_one_unit(self):
         await self.invoice()

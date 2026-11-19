@@ -203,7 +203,6 @@ jobs:
       - name: Receiving scanner replay and queue interactions
         run: |
           node frontend/tests/receiving-scan-ui.cjs
-          node frontend/tests/receiving-lookup-ui.cjs
           node frontend/tests/receiving-recovery-ui.cjs
           node frontend/tests/receiving-mixed-ui.cjs
 

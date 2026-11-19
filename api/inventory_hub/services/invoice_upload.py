@@ -118,7 +118,7 @@ async def _source_archived(db, supplier_id, invoice_number):
 
 
 async def upload(db, *, supplier_code, filename, content, invoice_number=None,
-                 invoice_date=None, due_date=None, vat_included=True):
+                 invoice_date=None, due_date=None, vat_included=True, expected_id=None, actor='operator'):
     if not filename or Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise archive.InvoiceArchiveError('invoice_file_type_unsupported', 422)
     if not content or len(content) > archive.MAX_FILE:
@@ -137,6 +137,9 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
         metadata, lines, parsed_csv = await asyncio.to_thread(_spreadsheet, code, filename, content)
     else:
         metadata, lines = await asyncio.to_thread(archive.parse_uploaded_document, code, filename, content)
+    verified_pdf = bool(lines and suffix == '.pdf' and code in invoice_pdf.PARSERS)
+    if expected_id is not None and not verified_pdf:
+        raise archive.InvoiceArchiveError('invoice_parse_failed', 422)
     for key, value in supplied.items():
         if value is not None and metadata.get(key) is not None and value != metadata[key]:
             raise archive.InvoiceArchiveError('invoice_source_metadata_conflict', 422)
@@ -151,9 +154,10 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
     result = await archive.ingest_invoice(db, direction='purchase', source_kind='upload',
         source_key='sha256:' + hashlib.sha256(content).hexdigest(), supplier_id=supplier_id,
         metadata=metadata, lines=lines, files=[{'filename': filename, 'content': content}],
-        source_data={'kind': 'manual-upload'})
+        source_data={'kind': 'manual-upload'}, actor=actor, expected_id=expected_id,
+        complete_unparsed_pdf=verified_pdf and code == 'northfinder')
     if not result['replayed']:
-        proven_net = bool(lines and ((code in invoice_pdf.PARSERS and suffix == '.pdf') or parsed_csv is not None))
+        proven_net = verified_pdf or parsed_csv is not None
         await db.execute(text('UPDATE uploaded_invoices SET vat_included=:included WHERE id=:id'),
                          {'id': result['id'], 'included': False if proven_net else vat_included})
     # Preserve original/source facts regardless of preparation. Exact original
@@ -201,3 +205,21 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
             'processing': {'status': 'partial' if issues or missing else 'complete',
                 'parsed_lines': len(lines), 'stored_lines': result.get('lines_count', len(lines)),
                 'receiving_ready': prepared is not None, 'issues': issues, 'missing_fields': missing}}
+
+
+async def reparse_northfinder_pdf(db, identifier, *, actor):
+    row = (await db.execute(text('''SELECT ui.original_filename,ui.file_path,ui.file_type,ui.source_kind
+        FROM uploaded_invoices ui JOIN suppliers s ON s.id=ui.supplier_id
+        WHERE ui.id=:id AND ui.direction='purchase' AND s.code='northfinder' '''),
+        {'id': identifier})).mappings().first()
+    if row is None:
+        raise archive.InvoiceArchiveError('invoice_not_found', 404)
+    if row['file_type'] != 'pdf' or row['source_kind'] not in ('upload', 'supplier'):
+        raise archive.InvoiceArchiveError('invoice_reparse_conflict')
+    try:
+        path = archive._source_path(Path(settings.INVENTORY_DATA_ROOT), 'northfinder', row['file_path'])
+        content = await asyncio.to_thread(archive._bytes, path)
+    except (OSError, TypeError):
+        raise archive.InvoiceArchiveError('invoice_document_missing', 404) from None
+    return await upload(db, supplier_code='northfinder', filename=row['original_filename'],
+                        content=content, expected_id=identifier, actor=actor)

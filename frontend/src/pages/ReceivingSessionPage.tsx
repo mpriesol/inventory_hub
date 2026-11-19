@@ -48,8 +48,7 @@ export function ReceivingSessionPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[];
-    entryScan?: { request_id: string; code: string; qty: number }; highlightLineIds?: number[]; closedScan?: boolean } | null;
+  const state = location.state as { sessionId?: string; supplier?: string; lines?: ReceivingLine[] } | null;
   const query = new URLSearchParams(location.search);
   const sessionId = String(state?.sessionId || query.get('session') || '');
   const supplier = state?.supplier || query.get('supplier') || 'paul-lange';
@@ -223,16 +222,6 @@ export function ReceivingSessionPage() {
     }
   }, kind => setError(t(`actions.receiving.${kind}`)));
   const loading = scanner.busy || scanner.pending > 0;
-  const entryHandled = useRef<string | null>(null);
-  useEffect(() => {
-    const command = state?.entryScan;
-    if (!command || !canEdit || entryHandled.current === command.request_id) return;
-    entryHandled.current = command.request_id;
-    const key = `receiving-entry:${command.request_id}`;
-    try { if (sessionStorage.getItem(key)) return; } catch { /* UUID remains stable in history state. */ }
-    scanner.enqueue(command.code, command.qty, command.request_id);
-    try { sessionStorage.setItem(key, 'queued'); } catch { /* Existing queue retains in-memory retry. */ }
-  }, [canEdit, state?.entryScan?.request_id]);
   const handleScan = () => {
     const code = scanInput.current.trim();
     if (!code || !sessionId || !canEdit || mutation.current || finalizing || finalizeResult || pausing) return;
@@ -527,7 +516,6 @@ export function ReceivingSessionPage() {
       {error && preparationLine !== null && <Button data-testid="receiving-prepare-missing-card" disabled={productActionsDisabled} onClick={() => { const line = preparationLine; setPreparationLine(null); void prepareProducts([line]); }}>{t('skuPolicy.prepareMissingCard')}</Button>}
       {quantityNeedsRefresh && <Button data-testid="receiving-quantity-refresh" disabled={savingEdit} onClick={refreshQuantities}>{t('receiving.refreshQuantities')}</Button>}
 
-      {state?.closedScan && inactive && <p role="status">{t('receiving.lookup.closed')}</p>}
       {inactive && <div role="status" data-testid="receiving-session-status" className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-bg-secondary)' }}>{t(receiptInfo.archived ? 'receiving.recovery.archivedReadOnly' : `receiving.sessionStatus.${sessionStatus}`)}</div>}
       {sessionStatus === 'paused' && !receiptInfo.archived && <Button data-testid="receiving-resume" disabled={recoveryLocked || pausing || scanner.pending > 0 || preparingProducts} onClick={resumeSession}>{t('receiving.products.resume')}</Button>}
       {sessionId && sessionStatus && <ReceivingRecoveryPanel key={receiptKey} supplier={supplier} sessionId={sessionId}
@@ -672,9 +660,9 @@ export function ReceivingSessionPage() {
                   const done    = isLineDone(line);
                   const partial = line.received_qty > 0 && line.received_qty < line.ordered_qty;
                   return (
-                    <tr key={idx} data-testid={`receiving-line-${idx}`} className="transition-colors" style={{ backgroundColor: state?.highlightLineIds?.includes(line.id!) ? 'var(--color-accent-subtle)' : 'transparent' }}
+                    <tr key={idx} data-testid={`receiving-line-${idx}`} className="transition-colors"
                       onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-bg-tertiary)'; }}
-                      onMouseLeave={e => { e.currentTarget.style.backgroundColor = state?.highlightLineIds?.includes(line.id!) ? 'var(--color-accent-subtle)' : 'transparent'; }}>
+                      onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}>
                       <td className="px-2 py-2 text-center"><input type="checkbox" data-testid={`receiving-product-select-${idx}`} aria-label={t('receiving.products.selectLine', { name: line.title })}
                         checked={!!line.id && selectedProducts.has(line.id)} disabled={productActionsDisabled || !product?.can_prepare}
                         onChange={event => { if (line.id === undefined) return; const checked = event.target.checked; setSelectedProducts(previous => { const next = new Set(previous); if (checked) next.add(line.id!); else next.delete(line.id!); return next; }); }} /></td>

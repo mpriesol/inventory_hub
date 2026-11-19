@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { accessRevision, hubUser } from '../api/access';
 import {
@@ -116,7 +117,9 @@ export function InvoiceProcessingPanel({ invoice, disabled, onChange, onLockChan
     {state.receipts.some(receipt => receipt.archived) && <div className="notice" data-testid="invoice-archived-receipts">
       <p>{t('invoiceArchive.processing.archivedReceiptHelp')}</p>
       <ul>{state.receipts.filter(receipt => receipt.archived).map(receipt => <li key={receipt.id}>
-        {receipt.invoice_number} · #{receipt.id} · {t(`invoiceArchive.processing.${receipt.received ? 'historicalReceived' : receipt.reversed ? 'historicalReversed' : 'historicalUnposted'}`)}
+        {invoice.supplier_code ? <Link data-testid="invoice-archived-receipt-link" to={`/receiving/${encodeURIComponent(receipt.invoice_number)}?${new URLSearchParams({ supplier: invoice.supplier_code, session: String(receipt.id) })}`}>
+          {receipt.invoice_number} · #{receipt.id}
+        </Link> : `${receipt.invoice_number} · #${receipt.id}`}{' · '}{t(`invoiceArchive.processing.${receipt.received ? 'historicalReceived' : receipt.reversed ? 'historicalReversed' : 'historicalUnposted'}`)}
       </li>)}</ul>
     </div>}
     {error && <p className="notice error" role="alert" data-testid="invoice-processing-error">{error}</p>}
