@@ -18,6 +18,9 @@ from inventory_hub.services.supplier_availability_source import AvailabilityErro
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
 
 
+ABSENCE_SOURCE = "supplier_feed_absence"
+
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -66,6 +69,8 @@ def public(supplier, cfg, settings=None):
         "interval_seconds": settings.interval_seconds if settings else 86400,
         "freshness_seconds": settings.freshness_seconds if settings else 172800,
         "min_coverage_percent": settings.min_coverage_percent if settings else 100,
+        "missing_visibility": getattr(settings, "missing_visibility", "keep"),
+        "missing_availability": getattr(settings, "missing_availability", "overíme"),
         "availability": normalize_supplier_availability((cfg.get("adapter_settings") or {}).get("availability")),
         "publication": (cfg.get("adapter_settings") or {}).get("availability_publication"),
         "last_item_count": settings.last_item_count if settings else 0,
@@ -146,6 +151,12 @@ async def configure(db, supplier, payload):
     if supplier == "sloger" and payload.enabled:
         raise AvailabilityError("supplier_availability_manual_only", 422)
     cfg, _source, _parser, _fingerprint = configuration(supplier, payload.feed_key)
+    labels = normalize_supplier_availability((cfg.get("adapter_settings") or {}).get("availability"))
+    if payload.missing_availability is not None and (
+            payload.missing_availability.casefold() == "skladom"
+            or (payload.missing_availability.casefold() == labels["orderable"].casefold()
+                and labels["orderable"].casefold() != labels["unknown"].casefold())):
+        raise AvailabilityError("supplier_availability_missing_label_available", 422)
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": catalog._lock_key(supplier)})
     feed = await catalog._feed(db, supplier, cfg, payload.feed_key, create=True)
     if payload.feed_key == "stock" or (_source.get("type") == "stock"):
@@ -158,13 +169,15 @@ async def configure(db, supplier, payload):
             revision=0, last_item_count=0, next_run_at=now())
         db.add(row)
     if row.feed_key != payload.feed_key:
-        row.last_item_count, row.last_success_at = 0, None
+        row.last_item_count, row.last_success_at, row.last_error = 0, None, None
     for key in ("enabled", "feed_key", "interval_seconds", "freshness_seconds", "min_coverage_percent"):
         setattr(row, key, getattr(payload, key))
+    for key in ("missing_visibility", "missing_availability"):
+        if (value := getattr(payload, key)) is not None:
+            setattr(row, key, value)
     row.interval_seconds, row.freshness_seconds = schedule_values(row.enabled, row.interval_seconds, row.freshness_seconds, supplier)
     row.revision += 1
     row.next_run_at = now()
-    row.last_error = None
     # SupplierFeed is the registry; only this workflow's settings activate automation.
     feed.fetch_interval_min = max(1, row.interval_seconds // 60)
     await db.flush()
@@ -205,8 +218,17 @@ async def start_run(db, supplier_id):
     try:
         cfg, source, parser, fingerprint = configuration(supplier.code, row.feed_key)
     except AvailabilityError as error:
+        failed_at = now()
+        feed_id = await db.scalar(select(SupplierFeed.id).where(
+            SupplierFeed.supplier_id == supplier.id, SupplierFeed.code == row.feed_key))
+        if feed_id is not None:
+            number = (await db.scalar(select(func.max(SupplierFeedRun.run_number)).where(SupplierFeedRun.feed_id == feed_id)) or 0) + 1
+            db.add(SupplierFeedRun(feed_id=feed_id, run_number=number, status=FeedRunStatus.failed,
+                started_at=failed_at, finished_at=failed_at, error_message=error.code,
+                error_details={"workflow": "supplier_availability", "revision": row.revision}))
         row.last_error, row.manual_requested_at = error.code, None
-        row.next_run_at = now() + timedelta(seconds=row.interval_seconds)
+        row.last_started_at = failed_at
+        row.next_run_at = failed_at + timedelta(seconds=row.interval_seconds)
         return None
     feed = await catalog._feed(db, supplier.code, cfg, row.feed_key, create=True)
     number = (await db.scalar(select(func.max(SupplierFeedRun.run_number)).where(SupplierFeedRun.feed_id == feed.id)) or 0) + 1
@@ -248,6 +270,33 @@ async def record_sloger_import(db, observations, draft_id):
 
 def coverage_ok(item_count, baseline, percent):
     return item_count > 0 and item_count * 100 >= baseline * percent
+
+
+async def record_absences(db, plan, records, observed, expires):
+    """A complete snapshot can disprove a previously known exact supplier SKU."""
+    seen = {item.sku for item in records}
+    seen.update(issue["sku"] for issue in records.issues if issue.get("sku"))
+    await db.execute(text("""
+        INSERT INTO supplier_availability_observations
+            (supplier_id, supplier_sku, feed_id, run_id, available, quantity, quantity_kind, raw, observed_at, expires_at)
+        SELECT p.supplier_id, p.supplier_sku, :feed_id, :run_id, NULL, NULL, 'unknown',
+               jsonb_build_object('source', CAST(:source AS text)), :observed, :expires
+        FROM supplier_products p
+        WHERE p.supplier_id = :supplier_id AND NOT p.is_discontinued
+          AND (p.is_active OR EXISTS (
+              SELECT 1 FROM product_supply_sources l
+              WHERE l.supplier_product_id = p.id AND l.is_active AND l.orderable
+          ))
+          AND NOT (p.supplier_sku = ANY(CAST(:seen AS varchar[])))
+        ON CONFLICT (supplier_id, supplier_sku) DO UPDATE SET
+            feed_id = EXCLUDED.feed_id, run_id = EXCLUDED.run_id,
+            available = NULL, quantity = NULL, quantity_kind = 'unknown', raw = EXCLUDED.raw,
+            observed_at = EXCLUDED.observed_at, expires_at = EXCLUDED.expires_at
+        WHERE supplier_availability_observations.observed_at <= EXCLUDED.observed_at
+          AND (supplier_availability_observations.feed_id IS DISTINCT FROM EXCLUDED.feed_id
+            OR supplier_availability_observations.raw->>'source' IS DISTINCT FROM :source)
+    """), {"supplier_id": plan["supplier_id"], "feed_id": plan["feed_id"], "run_id": plan["run_id"],
+           "source": ABSENCE_SOURCE, "observed": observed, "expires": expires, "seen": sorted(seen)})
 
 
 async def accept_run(db, plan, records, source_bytes=0):
@@ -306,6 +355,8 @@ async def accept_run(db, plan, records, source_bytes=0):
             "raw_data": {"workflow": "supplier_availability", **item}, "processed": True,
             "processing_error": item["code"], "processed_at": now(), "fetched_at": observed}
             for item in records.issues[start:start + 500]]))
+    if records and covered and not report["warnings"]:
+        await record_absences(db, plan, records, observed, expires)
     completed = now()
     run.status, run.finished_at, run.items_fetched = FeedRunStatus.completed if records else FeedRunStatus.failed, completed, records.total
     if plan["supplier"] != "husky":
@@ -379,7 +430,8 @@ def _source_projection(product, supplier, observation, settings, observed_feed_k
         if status == "unavailable_source":
             result["source"] = None
         return result
-    if not product.is_active or product.is_discontinued or not supplier.is_active:
+    missing = observation and (observation.raw or {}).get("source") == ABSENCE_SOURCE
+    if (not product.is_active and not missing) or product.is_discontinued or not supplier.is_active:
         return unavailable("unavailable_source", "supplier_source_disabled", "check_source")
     if config_error:
         return unavailable("configuration_error", config_error, "configure")
@@ -391,6 +443,11 @@ def _source_projection(product, supplier, observation, settings, observed_feed_k
         return unavailable("not_loaded", "supplier_availability_not_loaded", "refresh")
     if not observation:
         return unavailable("missing_observation", "supplier_observation_missing", "refresh")
+    if missing:
+        visibility = settings.missing_visibility
+        result.update(label=settings.missing_availability, expires_at=None, missing_visibility=visibility,
+            orderable=visibility != "archive")
+        return unavailable("missing_feed_item", "supplier_item_missing_from_feed", "refresh")
     result.update(project_observation(observation, label, supplier.code, at, settings.freshness_seconds))
     result["action"] = "wait" if refresh != "idle" else "refresh"
     return result
@@ -466,7 +523,9 @@ async def project(db, product_ids, at=None):
             candidate.update(status="unavailable_source", reason="supplier_source_disabled", action="check_source", source=None)
         # Prefer usable evidence, then supplier priority. A lower-priority fresh
         # available source may satisfy demand, but an expired one never can.
-        rank = 3 if candidate["available"] is True else 2 if candidate["fresh"] else 1 if candidate["status"] == "stale" else -1 if candidate["status"] == "unavailable_source" else 0
+        rank = (4 if candidate["available"] is True else 3 if candidate["fresh"] else
+                2 if candidate["last_error"] else 1 if candidate["status"] in ("stale", "missing_feed_item") else
+                -1 if candidate["status"] == "unavailable_source" else 0)
         if rank > ranks.get(product_id, -2):
             result[product_id], ranks[product_id] = candidate, rank
     from inventory_hub.services.supplier_links import missing_link_diagnostics

@@ -127,9 +127,39 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         plan = await self.accept([observation("SUP-2", "0")])
         async with self.transaction() as db:
             value = await service.source_observation(db, "paul-lange", "SUP-1")
-            self.assertEqual(value["status"], "missing_observation")
+            self.assertEqual(value["status"], "missing_feed_item")
+            self.assertEqual(value["label"], "overíme")
             self.assertEqual(value["last_success_at"], plan["observed_at"].isoformat())
-            self.assertIsNone(value["observed_at"])
+            self.assertEqual(value["observed_at"], plan["observed_at"].isoformat())
+            self.assertIsNone(value["expires_at"])
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_complete_feed_replaces_positive_offer_once_and_records_reappearance(self):
+        await self.accept()
+        async with self.transaction() as db:
+            await service.configure(db, "paul-lange", SupplierAvailabilityInput(expected_revision=1,
+                feed_key="stock", missing_visibility="archive", missing_availability="Mimo ponuky"))
+        absent = [observation("SUP-2", "0"), observation("NEW-1", "2")]
+        missing_run = await self.accept(absent, revision=2)
+        await self.accept(absent, revision=2)
+        failed = await self.start(revision=2)
+        async with self.transaction() as db:
+            await service.fail_run(db, self.supplier_id, failed["run_id"], "supplier_availability_parse_failed")
+        async with self.transaction() as db:
+            value = await service.source_observation(db, "paul-lange", "SUP-1")
+            self.assertEqual((value["status"], value["label"], value["orderable"]),
+                             ("missing_feed_item", "Mimo ponuky", False))
+            self.assertEqual(value["observed_at"], missing_run["observed_at"].isoformat())
+            self.assertEqual(value["last_error"], "supplier_availability_parse_failed")
+            self.assertIsNone(value["quantity"])
+        await self.accept(revision=2)
+        async with self.transaction() as db:
+            value = await service.source_observation(db, "paul-lange", "SUP-1")
+            self.assertTrue(value["available"])
+            self.assertIsNone(value["last_error"])
+            changes = (await db.execute(text("SELECT before_state, after_state FROM supplier_availability_changes "
+                                             "WHERE supplier_sku='SUP-1' ORDER BY id"))).all()
+            self.assertEqual(changes, [(None, "available"), ("available", "missing"), ("missing", "available")])
             self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
 
     async def test_changing_selected_feed_reports_mismatch_instead_of_missing_sku(self):

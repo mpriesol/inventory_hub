@@ -1,4 +1,5 @@
 import { ProductAvailabilityOverridePanel } from './ProductAvailabilityOverridePanel';
+import { ProductAvailabilityActivity } from './ProductAvailabilityActivity';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -358,7 +359,13 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
                 <div><dt>{c('typeUnit')}</dt><dd>{c(row.item_type === 'service' ? 'service' : 'goods')} / {unitLabel}</dd></div>
               </dl>
               <ProductAvailabilityOverridePanel key={`availability-${row.id}-${childVersion}`} row={row} disabled={mutationDisabled || draftDirty || !!tool} onChanged={refreshed} onDirtyChange={dirtyCallbacks.availability} onBusyChange={busyCallbacks.availability} />
-              {row.supplier_availability && <div className="stock-card__note stock-card__availability"><strong>{c('supplierAvailability')}</strong><p>{row.supplier_availability.label || c('unknown')}{!row.supplier_availability.fresh && ` · ${c('availabilityNotFresh')}`}</p></div>}
+              {row.supplier_availability && <div className="stock-card__note stock-card__availability"><strong>{c('supplierAvailability')}</strong>
+                <p>{row.supplier_availability.label || c('unknown')}
+                  {row.supplier_availability.status === 'missing_feed_item' ? ` · ${c('availabilityState.missing')}` : !row.supplier_availability.fresh && ` · ${c('availabilityNotFresh')}`}
+                </p>
+                {row.supplier_availability.last_error && <p>{c('supplierFeedFailed')}</p>}
+              </div>}
+              <ProductAvailabilityActivity key={row.id} productId={row.id} refresh={refresh} />
               <div className="stock-card__overview-notes">
                 <section className="stock-card__block"><h4>{c('description')}</h4><p className="stock-card__description">{stockCardDescription(row.common.description) || c('noDescription')}</p></section>
                 <section className="stock-card__block"><h4>{c('internalNote')}</h4><p className="stock-card__description">{row.common.internal_note || c('notSet')}</p></section>

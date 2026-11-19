@@ -62,6 +62,7 @@ MIGRATIONS = (
     "atomer_availability_migrate",   # 055; CSV previews/exports, no remote shop writes
     "receiving_manual_migrate",      # 056; explicit manual receipts and reversible draft archival
     "setting_catalogs_migrate",      # 057; shared dictionaries, no stock authority changes
+    "supplier_availability_policy_migrate",  # 058; missing-feed policy and evidence history
 )
 
 

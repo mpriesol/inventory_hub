@@ -28,14 +28,24 @@ WORKFLOW = 'supplier_availability'
 # pre-write failures get a delayed retry; uncertain writes retain the old fence.
 RETRYABLE = frozenset({'stock_publication_source_unavailable', 'stock_publication_rate_limited',
     'product_publication_remote_changed', 'product_editor_changed', 'product_publication_expired',
-    'supplier_availability_publication_stale', 'supplier_availability_publication_changed'})
+    'supplier_availability_publication_stale', 'supplier_availability_publication_changed',
+    'supplier_availability_feed_failed'})
+
+
+def _correct_feed(fact, setting):
+    return exists(select(SupplierFeed.id).where(SupplierFeed.id == fact.feed_id,
+        SupplierFeed.code == setting.feed_key)).correlate(fact, setting)
+
+
+def _missing(fact, setting):
+    return ((fact.raw['source'].astext == availability.ABSENCE_SOURCE) &
+            setting.last_success_at.is_not(None) & _correct_feed(fact, setting))
 
 
 def _effective_available(fact, setting):
-    correct_feed = exists(select(SupplierFeed.id).where(SupplierFeed.id == fact.feed_id,
-        SupplierFeed.code == setting.feed_key)).correlate(fact, setting)
     fresh = ((fact.observed_at <= editor.now()) & (fact.expires_at > editor.now()) &
-             (fact.observed_at + setting.freshness_seconds * text("interval '1 second'") > editor.now()) & correct_feed)
+             (fact.observed_at + setting.freshness_seconds * text("interval '1 second'") > editor.now()) &
+             _correct_feed(fact, setting))
     # Previously saved Husky public XML flags are not wholesale evidence.
     return case((fact.raw['source'].astext == 'husky_public_stock', None),
                 (fresh, fact.available), else_=None)
@@ -53,6 +63,18 @@ def _mapping_context(mapping):
         'cached_label': mapping.shop_availability}
 
 
+def _available_alternative():
+    link, item, source = (aliased(model) for model in (ProductSupplySource, SupplierProduct, Supplier))
+    fact, setting = (aliased(model) for model in (SupplierAvailabilityObservation, SupplierAvailabilitySettings))
+    return exists(select(link.id).join(item, item.id == link.supplier_product_id)
+        .join(source, source.id == item.supplier_id).join(setting, setting.supplier_id == source.id)
+        .join(fact, (fact.supplier_id == source.id) & (fact.supplier_sku == item.supplier_sku))
+        .where(link.product_id == Product.id, source.id != Supplier.id, source.is_active.is_(True),
+               link.is_active.is_(True), link.orderable.is_(True), item.is_active.is_(True),
+               item.is_discontinued.is_(False), _effective_available(fact, setting).is_(True))
+        ).correlate(Product, Supplier)
+
+
 def _context(policy, cfg, fingerprint):
     """SQL value compared before any remote read; feed timestamps/counts excluded."""
     values = {'supplier': Supplier.code, 'supplier_sku': SupplierProduct.supplier_sku,
@@ -60,6 +82,10 @@ def _context(policy, cfg, fingerprint):
         'policy': literal(editor._digest(policy), type_=String),
         'labels': literal(editor._digest((cfg.get('adapter_settings') or {}).get('availability') or {}), type_=String),
         'connection': literal(fingerprint, type_=String)}
+    missing = case((_missing(SupplierAvailabilityObservation, SupplierAvailabilitySettings), _json_object({
+        'missing_visibility': SupplierAvailabilitySettings.missing_visibility,
+        'missing_availability': SupplierAvailabilitySettings.missing_availability,
+        'alternative_available': _available_alternative()})), else_=_json_object({}))
     mapping = aliased(ShopProduct)
     scope = (mapping.product_id == Product.id, mapping.shop_id == Shop.id)
     shared = exists(select(mapping.id).where(*scope,
@@ -71,7 +97,7 @@ def _context(policy, cfg, fingerprint):
     # leaves individually would alternate permanent rejections on every tick.
     # Keep ordinary contexts byte-for-byte equivalent to avoid a blanket recheck.
     return case((shared, _json_object({**values, 'mappings': mappings})),
-                else_=_json_object({**values, **_mapping_context(ShopProduct)}))
+                else_=_json_object({**values, **_mapping_context(ShopProduct)})).op('||')(missing)
 
 
 async def _remember(db, record):
@@ -90,6 +116,8 @@ async def _remember(db, record):
         delivery.retry_at = editor.now()
     if record.state == 'completed':
         delivery.confirmed = deepcopy(context)
+        if record.document.get('visibility_restore'):
+            delivery.confirmed['visibility_restore'] = deepcopy(record.document['visibility_restore'])
         delivery.confirmed_label = record.document.get('after', {}).get('availability')
         delivery.confirmed_at = editor.now()
 
@@ -218,14 +246,15 @@ def _selected_source(configured):
         .join(link, link.supplier_product_id == item.id).join(setting, setting.supplier_id == supplier.id)
         .join(fact, (fact.supplier_id == supplier.id) & (fact.supplier_sku == item.supplier_sku))
         .where(link.product_id == Product.id,
-            link.is_active.is_(True), link.orderable.is_(True), item.is_active.is_(True),
+            link.is_active.is_(True), link.orderable.is_(True), or_(item.is_active.is_(True), _missing(fact, setting)),
             item.is_discontinued.is_(False), supplier.is_active.is_(True), setting.enabled.is_(True),
-            or_(*scopes)).order_by(case((effective.is_(True), 0), (effective.is_(False), 1), else_=2),
+            or_(*scopes)).order_by(case((effective.is_(True), 0), (effective.is_(False), 1),
+                (setting.last_error.is_not(None), 2), (_missing(fact, setting), 3), else_=4),
                 link.is_primary.desc(), link.priority, item.id)
         .limit(1).correlate(Product, Shop).scalar_subquery())
 
 
-def desired_label(remote_stock, available, labels, current_label=None):
+def desired_label(remote_stock, available, labels, current_label=None, missing_label=None):
     # Preserve own stock priority using the existing shop's exact quantity;
     # this mode deliberately does not assume Hub authority over that quantity.
     stock = transport.source._quantity(remote_stock)
@@ -233,6 +262,8 @@ def desired_label(remote_stock, available, labels, current_label=None):
         return current_label
     if int(stock) > 0:
         return 'SKLADOM'
+    if missing_label is not None:
+        return missing_label
     if available is True:
         return labels.get('orderable')
     if available is False:
@@ -240,12 +271,56 @@ def desired_label(remote_stock, available, labels, current_label=None):
     return labels.get('unknown', 'overíme')
 
 
+def missing_policy(observed):
+    if observed.get('status') == 'missing_feed_item':
+        return {'label': observed['label'], 'visibility': observed['missing_visibility']}
+    return None
+
+
+def alternative_label(offer, supplier):
+    if offer.get('available') is True and offer.get('supplier') != supplier:
+        return offer['label']
+    return None
+
+
+def visibility_patch(remote, archive, previous, fingerprint):
+    """Restore only the flag this publisher changed on this exact target."""
+    identity, leaf = remote['identity'], remote['leaf']
+    variant = identity['variant_code'] is not None
+    field = 'can_add_to_basket_yn' if variant else 'archived_yn'
+    managed = previous and previous['identity'] == identity and previous['fingerprint'] == fingerprint
+    if not archive and not managed:
+        return {}, None
+    current = leaf.get(field)
+    if type(current) is not bool:
+        raise transport.source.SourceError('supplier_availability_remote_visibility_unknown', 422)
+    closed = not variant
+    if archive:
+        restore = previous if managed else (
+            {'identity': identity, 'fingerprint': fingerprint, 'before': current} if current != closed else None)
+        return {field: closed}, restore
+    return {field: previous['before']}, None
+
+
+def publication_label(remote, document, labels):
+    missing = document.get('missing_policy')
+    fallback = document.get('alternative_label') or (missing['label'] if missing else None)
+    return desired_label(remote['leaf'].get('stock'), document['supplier_available'], labels,
+                         remote['leaf'].get('availability'), fallback)
+
+
 async def eligible_source(db, product_id, supplier, brands, sku=None):
     query = select(SupplierProduct).join(Supplier, Supplier.id == SupplierProduct.supplier_id)
     if sku is not None:
         query = query.where(SupplierProduct.supplier_sku == sku)
+    missing = exists(select(SupplierAvailabilityObservation.supplier_id).join(
+        SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == SupplierAvailabilityObservation.supplier_id)
+        .where(SupplierAvailabilityObservation.supplier_id == SupplierProduct.supplier_id,
+               SupplierAvailabilityObservation.supplier_sku == SupplierProduct.supplier_sku,
+               _missing(SupplierAvailabilityObservation, SupplierAvailabilitySettings)))
     return await db.scalar(query
-        .where(Supplier.code == supplier, Supplier.is_active.is_(True), SupplierProduct.is_active.is_(True),
+        .where(Supplier.code == supplier, Supplier.is_active.is_(True),
+            or_(SupplierProduct.is_active.is_(True), missing),
             SupplierProduct.is_discontinued.is_(False), func.upper(SupplierProduct.brand).in_(brands),
             exists(select(ProductSupplySource.id).where(ProductSupplySource.product_id == product_id,
                     ProductSupplySource.supplier_product_id == SupplierProduct.id,
@@ -266,9 +341,18 @@ async def validate(db, document, product_id):
     if source is None or source.supplier_sku != document['supplier_sku'] or (source.brand or '').upper() not in policy['brands']:
         raise editor.EditorError('supplier_availability_publication_changed')
     observed = await availability.source_observation(db, supplier, source.supplier_sku)
+    if observed.get('last_error'):
+        raise editor.EditorError('supplier_availability_feed_failed')
     effective = observed['available'] if observed['fresh'] else None
     if effective is not document['supplier_available']:
         raise editor.EditorError('supplier_availability_publication_stale')
+    observed_policy = missing_policy(observed)
+    if observed_policy != document.get('missing_policy'):
+        raise editor.EditorError('supplier_availability_publication_stale')
+    if observed_policy:
+        offer = (await availability.project(db, [product_id]))[product_id]
+        if alternative_label(offer, supplier) != document.get('alternative_label'):
+            raise editor.EditorError('supplier_availability_publication_changed')
     if document.get('delivery_context') is not None:
         winner = await db.scalar(select(_selected_source(policies())).select_from(Product).join(Shop, Shop.code == document['shop_code'])
                                  .where(Product.id == product_id))
@@ -393,7 +477,9 @@ async def cycle():
                     ShopProduct.is_listed.is_(True), SupplierAvailabilitySettings.enabled.is_(True),
                     ShopProduct.native_id.op('~')('^[1-9][0-9]{0,19}$'),
                     Product.item_type == "stock", Product.stock_unit != "m",
-                    SupplierProduct.is_active.is_(True), SupplierProduct.is_discontinued.is_(False))
+                    SupplierAvailabilitySettings.last_error.is_(None),
+                    or_(SupplierProduct.is_active.is_(True), _missing(SupplierAvailabilityObservation, SupplierAvailabilitySettings)),
+                    SupplierProduct.is_discontinued.is_(False))
                 .distinct().order_by(Product.id).limit(20))).all()
             contexts, rejected = [], False
             for product_id, shop_id, sku, brand, run_id, desired_context in candidates:
@@ -447,6 +533,11 @@ async def _prepare_and_send(db, product_id, shop_id, supplier, sku, run_id, poli
         document['delivery_context'] = desired_context
     observation = await availability.source_observation(db, supplier, sku)
     document['supplier_available'] = observation['available'] if observation['fresh'] else None
+    if (missing := missing_policy(observation)) is not None:
+        document['missing_policy'] = missing
+        document['alternative_label'] = alternative_label(row.get('supplier_availability') or {}, supplier)
+    prior = await db.get(Delivery, (product_id, shop_id))
+    restore = (prior.confirmed or {}).get('visibility_restore') if prior else None
     identifier = str(uuid4())
     record = ProductEditorPublication(id=identifier, product_id=product_id, shop_id=shop_id, state='rejected', document=document)
     # Durable diagnostics for read/validation failures; no sending claim yet.
@@ -477,16 +568,19 @@ async def _prepare_and_send(db, product_id, shop_id, supplier, sku, run_id, poli
         actual_id = remote['identity']['variant_id'] if identity['variant_code'] else remote['identity']['product_id']
         if not shop['mapping']['external_id'] or str(actual_id) != str(shop['mapping']['external_id']):
             raise editor.EditorError('product_publication_identity_changed')
-        desired = desired_label(remote['leaf'].get('stock'), document['supplier_available'],
-                                (cfg.get('adapter_settings') or {}).get('availability') or {},
-                                remote['leaf'].get('availability'))
+        desired = publication_label(remote, document, (cfg.get('adapter_settings') or {}).get('availability') or {})
         if desired is None:
             raise editor.EditorError('supplier_availability_publication_stale')
-        leaf = {'code': identity['code'], 'availability': desired}
+        archive = bool(missing and missing['visibility'] == 'archive' and not document.get('alternative_label')
+                       and desired.strip().casefold() != 'skladom')
+        flags, restore = visibility_patch(remote, archive, restore, fingerprint)
+        fields = ['availability', *flags]
+        leaf = {'code': identity['code'], 'availability': desired, **flags}
         payload = leaf if identity['variant_code'] is None else {'code': identity['parent_code'], 'variants': [leaf]}
-        before = transport.field_values(remote, ['availability'], None)
-        document.update(identity=remote['identity'], before=before, after={**before, 'availability': desired},
-                        desired_values={'availability': desired}, payload={'products': [payload]}, error=None)
+        before = transport.field_values(remote, fields, None)
+        desired_values = {'availability': desired, **flags}
+        document.update(identity=remote['identity'], fields=fields, before=before, after={**before, **desired_values},
+                        desired_values=desired_values, payload={'products': [payload]}, error=None, visibility_restore=restore)
         record = await publication._get(db, identifier, lock=True)
         record.document = document
         record.state = 'completed' if before == document['after'] else 'ready'
@@ -523,8 +617,12 @@ async def send_batch(db, identifiers):
     documents = {record.id: deepcopy(record.document) for record in records}
     first = next(iter(documents.values()))
     shop, fingerprint = first['shop_code'], first['fingerprint']
-    if any(d['shop_code'] != shop or d['fingerprint'] != fingerprint or d['fields'] != ['availability'] for d in documents.values()):
-        raise editor.EditorError('supplier_availability_invalid_batch', 422)
+    for document in documents.values():
+        variant = document['identity']['variant_code'] is not None
+        visibility = 'can_add_to_basket_yn' if variant else 'archived_yn'
+        if (document['shop_code'] != shop or document['fingerprint'] != fingerprint
+                or document['fields'] not in (['availability'], ['availability', visibility])):
+            raise editor.EditorError('supplier_availability_invalid_batch', 422)
     await db.rollback()
     try:
         # Source/config/revisions are checked under the same identity lock as
@@ -573,16 +671,16 @@ async def send_batch(db, identifiers):
                     raise remote
                 if remote is None:
                     raise transport.source.SourceError('stock_publication_source_missing', 409)
-                if (transport.field_values(remote, ['availability'], None) != document['before']
-                        or desired_label(remote['leaf'].get('stock'), document['supplier_available'],
-                            labels_by_supplier.get(document['supplier'], {}), remote['leaf'].get('availability'))
+                if (transport.field_values(remote, document['fields'], None) != document['before']
+                        or publication_label(remote, document, labels_by_supplier.get(document['supplier'], {}))
                         != document['after']['availability']):
                     raise transport.source.SourceError('product_publication_remote_changed', 409)
                 pending[identifier] = document
             except transport.source.SourceError as failure:
                 outcomes[identifier] = ('rejected', failure.code, None, 'before_write')
         if pending:
-            items = [{'identity': d['identity'], 'availability': d['after']['availability']} for d in pending.values()]
+            items = [{'identity': d['identity'], **{field: d['after'][field] for field in d['fields']}}
+                     for d in pending.values()]
             write_started = True
             if len(items) == 1:
                 document = next(iter(pending.values()))
@@ -597,7 +695,7 @@ async def send_batch(db, identifiers):
                         raise remote
                     if remote is None:
                         raise transport.source.SourceError('stock_publication_source_missing', 409)
-                    value = transport.field_values(remote, ['availability'], None)
+                    value = transport.field_values(remote, document['fields'], None)
                     outcomes[identifier] = (('completed', None, value, None) if value == document['after'] else
                         ('uncertain', 'product_publication_readback_mismatch', value, 'after_write'))
                 except transport.source.SourceError as failure:

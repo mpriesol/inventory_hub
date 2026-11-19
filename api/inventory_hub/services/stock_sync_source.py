@@ -63,7 +63,8 @@ def _batch_observations(payload, targets):
                 or row['can_add_to_basket_yn'] is not None and type(row['can_add_to_basket_yn']) is not bool):
             raise SourceError('stock_publication_invalid_response')
         observed[target['code']] = {'identity': observation['identity'], 'stock': observation['quantity'],
-            'availability': row['availability'], 'can_add_to_basket_yn': row['can_add_to_basket_yn']}
+            'availability': row['availability'], 'can_add_to_basket_yn': row['can_add_to_basket_yn'],
+            **({'archived_yn': row['archived_yn']} if type(row.get('archived_yn')) is bool else {})}
     return observed
 
 
@@ -105,8 +106,10 @@ def _read_many(shop_code, targets, fingerprint):
 
 
 def _fields(value):
-    if (not isinstance(value, dict) or set(value) != {'stock', 'availability', 'can_add_to_basket_yn'}
-            or value['can_add_to_basket_yn'] is not True or not isinstance(value['availability'], str)
+    required = {'stock', 'availability', 'can_add_to_basket_yn'}
+    if (not isinstance(value, dict) or not required <= set(value) <= required | {'archived_yn'}
+            or type(value['can_add_to_basket_yn']) is not bool or not isinstance(value['availability'], str)
+            or ('archived_yn' in value and type(value['archived_yn']) is not bool)
             or not 1 <= len(value['availability']) <= 100
             or any(ord(c) < 32 for c in value['availability'])):
         raise SourceError('stock_sync_invalid_payload', 422)
@@ -114,15 +117,15 @@ def _fields(value):
 
 
 def _delta_fields(value):
+    required = {'stock_increment', 'availability', 'can_add_to_basket_yn'}
     if (not isinstance(value, dict)
-            or set(value) != {'stock_increment', 'availability', 'can_add_to_basket_yn'}
+            or not required <= set(value) <= required | {'archived_yn'}
             or not isinstance(value['stock_increment'], str)
             or re.fullmatch(r'0|-?[1-9][0-9]{0,9}', value['stock_increment']) is None):
         raise SourceError('stock_sync_invalid_payload', 422)
     # Share metadata validation with the legacy transport without allowing an
     # absolute stock value into a delta request.
-    _fields({'stock': '0', 'availability': value['availability'],
-             'can_add_to_basket_yn': value['can_add_to_basket_yn']})
+    _fields({'stock': '0', **{key: field for key, field in value.items() if key != 'stock_increment'}})
     return dict(value)
 
 
@@ -138,7 +141,8 @@ def _read(shop_code, target, fingerprint):
         leaf = transport._one(payload, 'variants' if target['variant_code'] is not None else 'products')
         # Missing fields must not masquerade as a verified desired state.
         return {'identity': observation['identity'], 'stock': observation['quantity'],
-                'availability': leaf.get('availability'), 'can_add_to_basket_yn': leaf.get('can_add_to_basket_yn')}
+                'availability': leaf.get('availability'), 'can_add_to_basket_yn': leaf.get('can_add_to_basket_yn'),
+                **({'archived_yn': leaf['archived_yn']} if type(leaf.get('archived_yn')) is bool else {})}
     finally:
         client.session.close()
 
@@ -161,6 +165,8 @@ def _write_delta(shop_code, target, desired, fingerprint):
     try:
         leaf = {'code': target['code'], 'availability': desired['availability'],
                 'can_add_to_basket_yn': desired['can_add_to_basket_yn']}
+        if 'archived_yn' in desired:
+            leaf['archived_yn'] = desired['archived_yn']
         if desired['stock_increment'] != '0':
             leaf['stock_increment'] = int(desired['stock_increment'])
         product = leaf if target['variant_code'] is None else {'code': target['parent_code'], 'variants': [leaf]}

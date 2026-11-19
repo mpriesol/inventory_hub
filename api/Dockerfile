@@ -77,6 +77,7 @@ COPY infra/db-init/054_mixed_receiving.sql /app/inventory_hub/migrations/054_mix
 COPY infra/db-init/055_atomer_availability.sql /app/inventory_hub/migrations/055_atomer_availability.sql
 COPY infra/db-init/056_receiving_manual.sql /app/inventory_hub/migrations/056_receiving_manual.sql
 COPY infra/db-init/057_setting_catalogs.sql /app/inventory_hub/migrations/057_setting_catalogs.sql
+COPY infra/db-init/058_supplier_availability_policy.sql /app/inventory_hub/migrations/058_supplier_availability_policy.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

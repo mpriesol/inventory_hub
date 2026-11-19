@@ -6,7 +6,13 @@ V obrazovke **Dostupnosti a synchronizácia** má každý dodávateľ samostatn�
 
 Interval je od 5 minút po 7 dní. Platnosť údajov musí pokryť aspoň jeden interval; najviac môže byť 30 dní. Predvolené hodnoty sú 1 hodina a 6 hodín. Čas posledného úspechu je začiatok prijatého načítania, nie okamih neskoršieho uloženia. Pri staršom feede tak údaje nedostanú umelo dlhšiu platnosť.
 
-**Minimálne pokrytie** kontroluje pokles počtu riadkov. Nevie dokázať úplnosť prvého feedu ani zachytiť všetky výmeny položiek pri nezmenenom počte. Predvolene musí nový feed obsahovať aspoň 100 % počtu položiek z posledného úspechu. Ak dodávateľ legitímne zúži ponuku, môžete tento prah znížiť a spustiť nový pokus. Vynechané položky sa nikdy automaticky nemenia na nulu: posledná prijatá dostupnosť ostáva platná len do pôvodného termínu. Prázdny, chybný alebo podlimitný feed sa odmietne celý a posledný úspech sa zachová.
+**Minimálne pokrytie** kontroluje pokles počtu riadkov. Nevie dokázať úplnosť prvého feedu ani zachytiť všetky výmeny položiek pri nezmenenom počte. Predvolene musí nový feed obsahovať aspoň 100 % počtu položiek z posledného úplného behu. Ak dodávateľ zúži ponuku, po overení môžete znížiť prah a spustiť nový pokus. Pri podlimitnom feede sa prijmú použiteľné riadky a absencia ostatných zostane nepotvrdená.
+
+V nastavení **Ak položka chýba v načítanom feede** má každý dodávateľ vlastný text dostupnosti (predvolene **overíme**) a voľbu viditeľnosti (predvolene **ponechať v ponuke**). Pravidlo sa použije pri najbližšom povolenom prenose po úspešnom feede s dostatočným pokrytím. Chýbajúci presný kód okamžite nahradí staré skladové potvrdenie samostatným stavom bez množstva. Riadok s rozpoznateľným kódom a chybným množstvom sa považuje za prítomný. Ručný B2B refresh Sloger kontroluje iba vybrané položky a tento režim nepoužíva.
+
+Voľba **Vyradiť z ponuky a ponechať detail** archivuje samostatný produkt na jeho pôvodnej URL. Pri variante blokuje jeho objednanie a ponechá rodiča aj ostatné varianty. Po návrate položky môže synchronizácia vrátiť stav, ktorý sama zmenila na rovnakom cieľovom prepojení. Vlastná voľná zásoba a iný platný dostupný zdroj majú prednosť. Upgates na archivovanom detaile zobrazuje vlastné oznámenie o vyradení. [Archív produktov Upgates](https://www.upgates.sk/a/archivni-produkt)
+
+Po neúspešnom načítaní automatika odloží zmeny odvodené z dodávateľského feedu. Obsluha vidí chybu v **Vyžaduje pozornosť** a môže rozhodnúť o dostupnosti. Údaje o poslednom úspechu a ich pôvodná platnosť sa zachovajú.
 
 Dostupnosť dodávateľa je oddelená od fyzického skladu. Hodnota `6+` znamená najmenej šesť kusov, údaj áno/nie vyjadruje dostupnosť bez presného počtu. Ani jeden nevytvára príjem alebo vlastnú zásobu. Na e-shop sa publikuje iba vlastné overené voľné množstvo; dodávateľ môže ovplyvniť dodaciu dostupnosť.
 
@@ -27,6 +33,7 @@ Diagnostika rozlišuje tieto príčiny:
 | `unconfigured` | Dostupnosti dodávateľa ešte nemajú uložené nastavenia; vybrať zdroj a uložiť. |
 | `not_loaded` | Zdroj je nastavený, ale nebol úspešne načítaný; spustiť ručné načítanie a skontrolovať prípadnú chybu. |
 | `missing_observation` | Zdroj už bol načítaný, no pre presný prepojený dodávateľský kód nie je uložené pozorovanie. Samotný stav nedokazuje neprítomnosť v najnovšom externom súbore. |
+| `missing_feed_item` | Presný kód chýbal v načítanom feede, ktorý prešiel kontrolou pokrytia. Uplatní sa dodávateľom nastavená dostupnosť a viditeľnosť. |
 | `feed_mismatch` | Uložený údaj pochádza z iného feedu než aktuálne zvoleného; skontrolovať zdroj a načítať ho. |
 | `configuration_error` | Konfigurácia alebo zvolený zdroj nie je použiteľný; opraviť konfiguráciu dodávateľa. |
 | `stale` | Pozorovanie existuje, ale vypršala jeho platnosť; načítať nové údaje. |
@@ -106,6 +113,8 @@ API používa existujúci operator token a `Cache-Control: no-store`:
 | `PUT /supplier-availability/{supplier}` | Uloženie s `expected_revision`; striktne validované `enabled`, `feed_key`, `interval_seconds`, `freshness_seconds`, `min_coverage_percent` |
 | `POST /supplier-availability/{supplier}/run` | Trvalé zaradenie ručného behu s `expected_revision`; odpoveď 202 |
 | `POST /supplier-availability/{supplier}/links/reconcile` | Lokálna dávka prepojenia existujúcich údajov; `after_product_id`, limit 1–500, konflikty a pokračovací kurzor |
+| `POST /supplier-availability/{supplier}/links/confirmed-codes` | Správcom potvrdené väzby pre najviac 50 existujúcich kariet. Vyžaduje presné Hub ID, SKU, platný GTIN uložený na karte a raw dodávateľský kód. Každý konflikt má vlastný výsledok. |
+| `GET /product-editor/products/{product_id}/availability-status` | Desať posledných zmien stavu dodávateľa alebo potvrdeného textu v e-shope a posledná potvrdená synchronizácia po jednotlivých e-shopoch. |
 
 Revizia 0 znamená ešte neuložené nastavenia. Interval a plánovanie sú v PostgreSQL `supplier_availability_settings`; prihlasovacie údaje, parser a texty dostupnosti ostávajú v existujúcom súborovom dodávateľskom configu. Každý beh zachová hash celého configu a jeho revíziu. Pred prijatím sa znovu overia. Do auditu sa neukladá URL ani autentizácia.
 
@@ -125,7 +134,9 @@ Migrácia je aditívna, nevkladá aktivačné nastavenia a nemení skladový den
 
 ## Čiastočné prijatie a automatika
 
-Platný dokument sa spracuje po položkách. Súhrn obsahuje `total`, `accepted`, `rejected`, `unknown`, počty dôvodov a upozornenia. Chybný kód či množstvo sa preskočí; pri duplicitnom kóde sa preskočia všetky jeho výskyty, bez sčítania alebo výberu posledného riadka. Neznáme množstvo nie je nula. Preskočené alebo chýbajúce položky si ponechajú pôvodné pozorovanie aj pôvodnú expiráciu, ktorá sa nepredĺži. Po jej uplynutí dostupnosť ostáva neznáma. Platná nula sa prijíma.
+Platný dokument sa spracuje po položkách. Súhrn obsahuje `total`, `accepted`, `rejected`, `unknown`, počty dôvodov a upozornenia. Chybný kód či množstvo sa preskočí. Pri duplicitnom kóde sa preskočia všetky jeho výskyty. Rozpoznaný kód s chybným množstvom ponechá starý údaj do jeho pôvodnej expirácie. Pri spoľahlivom úplnom feede sa neprítomnosť známeho kódu uloží ako `supplier_feed_absence` bez množstva. Pri podlimitnom feede sa neprítomnosť nevyhodnotí. Platná nula sa prijíma ako samostatný stav.
+
+Migrácia `058_supplier_availability_policy.sql` pridáva nastavenia a kompaktnú históriu prechodov stavov od nasadenia. Rovnaká dostupnosť v novom feede ani zmena samotného množstva nevytvára nový záznam. Skladová karta pridáva historické potvrdené zmeny textu v cieľovom e-shope. Posledná synchronizácia vyžaduje potvrdenie presného mapovania zápisom alebo overujúcim čítaním.
 
 Pokles počtu položiek pod `min_coverage_percent` teraz vytvorí upozornenie, nezablokuje prijatie platných údajov. Základ porovnania sa pri takom poklese nezníži. Rozbitý XML, nedokončený download, zakázaná štruktúra, prázdny/prekročený zdroj alebo zmena konfigurácie počas načítania zostávajú dôvodom odmietnutia celého behu. Ak nie je použiteľná ani jedna položka, beh sa označí ako neúspešný, uloží podrobnosti a nezmení posledný úspech. Ďalší plánovaný termín sa posunie aj po zlyhaní, bez okamžitej slučky opakovaní.
 
@@ -156,7 +167,7 @@ Parser `bike-brothers` používa samostatne nakonfigurovaný úplný API export.
 
 ## Scoped supplier-to-shop labels
 
-[Zookee](zookee.md) introduces optional supplier/brand/shop `availability_publication` configuration. It uses the supplier worker and the existing durable editor publisher. It sends availability labels only, retains positive shop-stock priority and does not activate central stock authority. Unknown/stale source data uses the configured `unknown` label (normally **overíme**), never zero stock or a confirmed unavailable claim. Existing publication history/uncertain-write recovery applies. The configured scope and result totals appear on the availability settings screen.
+[Zookee](zookee.md) describes the optional supplier/brand/shop `availability_publication` configuration. It uses the supplier worker and the existing durable editor publisher for labels and the explicit missing-item visibility policy. Known own stock takes priority. Unknown or stale evidence uses the configured `unknown` label (normally **overíme**) during a healthy feed schedule. The configured scope and result totals appear on the availability settings screen.
 
 Optional `existing_card_matching` broadens only the explicitly requested manual supplier-link repair to same-brand listed products in one configured shop, using exact cached supplier codes/native leaf identity or unique verified barcodes. Automatic feed refresh keeps its prior narrow identity discovery. See the detailed matching, configuration and rollback rules in the supplier document.
 
@@ -192,9 +203,9 @@ unavailable, then unknown; primary source, configured priority and source ID bre
 ties. Exactly one source wins and the winner is checked again before sending.
 Competing unchanged suppliers cannot repeatedly overwrite each other's labels.
 
-Expiry is itself a semantic change. A previously supplier-orderable label becomes
-the configured **overíme** once when its evidence expires; subsequent checks make
-no upstream calls until the effective state changes. Supplier publication preserves
+Expiry is itself a semantic change during healthy collection. A failed collection
+holds supplier-driven publication until a successful run or an operator decision.
+Subsequent checks make no upstream calls until the effective state changes. Supplier publication preserves
 an existing **SKLADOM** label even when its imported quantity is zero/unconfirmed,
 as well as positive exact shop quantities. Retiring that pre-inventory promise
 belongs to the separately activated central-stock workflow. This publisher never

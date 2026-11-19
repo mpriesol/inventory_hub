@@ -15,7 +15,7 @@ class SupplierAvailabilityDiagnosticTests(unittest.TestCase):
         self.settings = SimpleNamespace(feed_key="stock", running_run_id=None, manual_requested_at=None,
             last_success_at=self.at, last_error=None, freshness_seconds=21600, enabled=False)
         self.observation = SimpleNamespace(observed_at=self.at, expires_at=self.at + timedelta(hours=6),
-            available=False, quantity=Decimal(0), quantity_kind="exact")
+            available=False, quantity=Decimal(0), quantity_kind="exact", raw={})
 
     def project(self, observation=True, settings=True, feed="stock", error=None):
         return service._source_projection(self.product, self.supplier, self.observation if observation else None,

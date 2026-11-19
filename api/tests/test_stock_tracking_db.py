@@ -35,7 +35,8 @@ class StockTrackingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             sql_root = Path(__file__).resolve().parents[2] / "infra/db-init"
             for name in ("004_shop_product_content.sql", "012_product_editor.sql",
-                         "014_supplier_availability.sql", "017_stock_adjustments.sql"):
+                         "014_supplier_availability.sql", "017_stock_adjustments.sql",
+                         "058_supplier_availability_policy.sql"):
                 await connection.execute((sql_root / name).read_text())
         finally:
             await connection.close()

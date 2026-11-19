@@ -18,6 +18,8 @@ CORE_MIGRATIONS = (
     "039_atomer_variant_repairs.sql",  # Shared merchandising write fence
     "046_shared_stock_sales.sql",
     "047_product_consolidation.sql",
+    "014_supplier_availability.sql",
+    "058_supplier_availability_policy.sql",
 )
 
 

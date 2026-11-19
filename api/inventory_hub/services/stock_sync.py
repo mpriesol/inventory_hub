@@ -329,13 +329,23 @@ async def desired(db, shop_code, sku, sale_key=''):
     offers = await project(db, [row['product_id']])
     offer = offers.get(row['product_id'], {})
     quantity = stock_projection.publication_quantity(row)
-    label = 'SKLADOM' if Decimal(quantity) > 0 else (
-        offer.get('label', 'do 5 dní') if offer.get('fresh') and offer.get('available') is True else 'overíme')
+    own_stock = Decimal(quantity) > 0
+    missing = offer.get('status') == 'missing_feed_item'
+    label = 'SKLADOM' if own_stock else (
+        offer['label'] if missing or (offer.get('fresh') and offer.get('available') is True) else 'overíme')
     from inventory_hub.services.availability_catalog import get_product_overrides
     manual = (await get_product_overrides(db, [row['product_id']])).get(row['product_id'], {})
     label = manual.get('label', label)
-    value = {'stock': quantity, 'availability': label, 'can_add_to_basket_yn': True}
+    hold_supplier = bool(offer.get('last_error') and not own_stock)
+    archive = not hold_supplier and missing and offer.get('missing_visibility') == 'archive' and not own_stock
+    value = {'stock': quantity, 'availability': label, 'can_add_to_basket_yn': not archive}
+    if archive and row['target']['variant_code'] is None:
+        value['archived_yn'] = True
     source._fields(value)
+    if hold_supplier:
+        value['hold_supplier_availability'] = True
+        if manual.get('label'):
+            value['manual_availability'] = True
     return row['target'], value
 
 

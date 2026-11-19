@@ -18,6 +18,8 @@ class SupplierAvailabilitySettings(Base):
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
     freshness_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=172800)
     min_coverage_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    missing_visibility: Mapped[str] = mapped_column(String(8), nullable=False, server_default="keep")
+    missing_availability: Mapped[str] = mapped_column(String(100), nullable=False, server_default="overíme")
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     manual_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

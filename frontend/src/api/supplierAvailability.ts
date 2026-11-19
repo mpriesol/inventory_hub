@@ -5,7 +5,8 @@ export function supplierAvailabilityErrorCode(supplier: string | undefined, code
   return supplier === 'husky' && code === 'supplier_availability_incomplete_feed' ? 'husky_catalog_incomplete' : code;
 }
 
-export type SupplierObservationStatus = 'unconfigured' | 'not_loaded' | 'missing_observation' | 'feed_mismatch' | 'configuration_error' | 'stale' | 'fresh' | 'unavailable_source' | 'missing_link' | 'conflict';
+export type MissingVisibility = 'keep' | 'archive';
+export type SupplierObservationStatus = 'unconfigured' | 'not_loaded' | 'missing_observation' | 'missing_feed_item' | 'feed_mismatch' | 'configuration_error' | 'stale' | 'fresh' | 'unavailable_source' | 'missing_link' | 'conflict';
 export interface SupplierObservation {
   available: boolean | null; fresh: boolean; quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown';
   availability_state: 'available' | 'unavailable' | 'unknown'; label: string; source: string | null;
@@ -27,6 +28,7 @@ export interface SupplierAvailabilitySettings {
   supplier: string; name: string; feed_keys: string[]; feed_key: string;
   revision: number; enabled: boolean; interval_seconds: number; freshness_seconds: number;
   min_coverage_percent: number; last_started_at: string | null; last_success_at: string | null;
+  missing_visibility?: MissingVisibility; missing_availability?: string;
   next_run_at: string | null; last_error: string | null; manual_requested_at: string | null;
   last_item_count: number | null; running: boolean; availability: { orderable: string; unknown: string };
   status?: SupplierObservationStatus; configuration_error?: string | null;
@@ -36,6 +38,7 @@ export interface SupplierAvailabilitySettings {
 export interface SupplierAvailabilityUpdate {
   expected_revision: number; enabled: boolean; feed_key: string; interval_seconds: number;
   freshness_seconds: number; min_coverage_percent: number;
+  missing_visibility?: MissingVisibility; missing_availability?: string;
 }
 export interface SupplierLinkIssue { product_id: number; sku: string; supplier_sku: string | null; reason: string }
 export interface SupplierLinkReconciliation {

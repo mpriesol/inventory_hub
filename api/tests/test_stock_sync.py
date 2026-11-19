@@ -51,6 +51,6 @@ class StockSyncContractTests(unittest.TestCase):
 
     def test_outgoing_fields_are_whitelisted_and_unknown_stock_is_not_zero(self):
         valid = {'stock':'0','availability':'overíme','can_add_to_basket_yn':True}
-        for value in ({**valid,'stock':None},{**valid,'price':1},{**valid,'can_add_to_basket_yn':False}):
+        for value in ({**valid,'stock':None},{**valid,'price':1},{**valid,'can_add_to_basket_yn':None}):
             with self.assertRaises(source.SourceError):
                 source._fields(value)
