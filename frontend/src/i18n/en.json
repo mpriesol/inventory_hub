@@ -5349,12 +5349,7 @@
     "hideSummary": "Hide overview and charts",
     "supplierSearch": "Supplier text search",
     "allSuppliers": "All suppliers",
-    "dropFile": "Drop an invoice or its scan here",
     "scanHelp": "PDF, photo or JPG/PNG scan. The original is saved; automatic scan recognition is not available yet.",
-    "chooseFile": "Choose file",
-    "changeFile": "Change file",
-    "noFile": "No file selected",
-    "dropOneFile": "Add one invoice at a time.",
     "unsupportedFile": "This format is not supported. Choose a PDF, image or supported document.",
     "fileSizeLimit": "The file must be nonempty and no larger than 50 MiB.",
     "sortColumn": "Sort: {{column}} · {{order}}",
@@ -5430,7 +5425,9 @@
     "operationStorageUnavailable": "The browser cannot safely retain this pending operation. Nothing was sent. Allow storage for this page and try again.",
     "operationActorChanged": "The signed-in user has changed. The original operation must be completed by the same user.",
     "errors": {
-      "invoice_number_required_for_receiving": "Enter the invoice number from the original document. It could not be verified from the file; the invoice has not been saved yet."
+      "invoice_number_required_for_receiving": "Enter the invoice number from the original document. It could not be verified from the file; the invoice has not been saved yet.",
+      "invoice_supplier_required": "The supplier could not be detected. Select it for this file.",
+      "invoice_supplier_ambiguous": "This file matches more than one supplier. Select its supplier."
     }
   },
   "invoiceCalendar": {
@@ -6288,16 +6285,21 @@
     }
   },
   "invoiceUpload": {
-    "help": "We save the original invoice, process it with the available parser and prepare it for receiving. Uploading an invoice does not change stock.",
+    "help": "Choose one or more documents. Hub can identify the supplier automatically for supported PDFs.",
+    "autoSupplier": "Detect from PDF",
+    "manualSupplier": "Select the supplier for this file.",
+    "dropFiles": "Drop invoices or scans here",
+    "chooseFiles": "Choose files",
+    "processFiles": "Process files",
     "metadata": "Add invoice details",
-    "processing": "Saving and processing the invoice…",
+    "processing": "Saving and processing documents…",
     "continue": "Close and continue",
     "analyze": "Investigate in operation logs (new tab)",
     "lineCount": "Parsed lines: {{parsed}}. Stored lines: {{stored}}.",
     "ready": "Invoice lines are ready for receiving.",
     "notReady": "The invoice is not ready for receiving yet. Review the listed issues.",
     "missingFields": "Missing data: {{fields}}",
-    "refreshFailed": "The invoice is saved, but the overview could not refresh. Refresh it after closing this dialog.",
+    "refreshFailed": "The overview could not refresh. Refresh it after closing this dialog.",
     "results": {
       "complete": "The invoice was saved and processed.",
       "partial": "The original was saved; processing needs review.",

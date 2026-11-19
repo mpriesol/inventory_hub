@@ -85,7 +85,7 @@ Automatické Atomer katalógové workery vyžadujú `ATOMER_CATALOG_WORKER_ENABL
 
 ### Spoločné príjmové ovládanie a číselníky
 
-Nahranie faktúry používa spoločný modal a backend `invoice_upload` z Faktúr, Príjmu aj Dodávateľov. Výsledok rozlišuje uložený originál, parsovanie a pripravenosť príjmu. História je samostatná navigácia s návratom do Príjmu. Dávka podporuje výber aktívneho skladu, výslovnú výnimku bez faktúry a vratné odstránenie prázdneho konceptu; neskoršia faktúra neopakuje ručný príjem automaticky.
+Faktúry, Príjem aj Dodávatelia používajú spoločný modal a backend `invoice_upload`. Modal spracuje viac súborov postupne s vlastným výsledkom pre každý doklad. Pri podporovanom PDF overí dodávateľa existujúci parser. Operátor môže dodávateľa doplniť ručne. História je samostatná navigácia s návratom do Príjmu. Dávka príjmu podporuje výber aktívneho skladu, výslovnú výnimku bez faktúry a vratné odstránenie prázdneho konceptu; neskoršia faktúra neopakuje ručný príjem automaticky.
 
 Northfinder textové PDF sa spracuje pri bežnom nahratí alebo výslovne z uloženého originálu vo Faktúrach. Príjem použije jednotkovú cenu po zľave z tovarového riadka v EUR bez DPH. [Archív a zdroje](docs/invoice-archive.md), [návrh e-mailového zberu](docs/invoice-email-intake.md).
 

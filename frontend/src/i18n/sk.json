@@ -5350,12 +5350,7 @@
     "hideSummary": "Skryť prehľad a grafy",
     "supplierSearch": "Text dodávateľa",
     "allSuppliers": "Všetci dodávatelia",
-    "dropFile": "Pretiahnite sem faktúru alebo jej sken",
     "scanHelp": "PDF, fotografia alebo sken JPG/PNG. Originál sa uloží; automatické rozpoznávanie skenov zatiaľ nie je dostupné.",
-    "chooseFile": "Vybrať súbor",
-    "changeFile": "Zmeniť súbor",
-    "noFile": "Nie je vybraný súbor",
-    "dropOneFile": "Pridajte jednu faktúru naraz.",
     "unsupportedFile": "Tento formát nepodporujeme. Vyberte PDF, obrázok alebo podporovaný dokument.",
     "fileSizeLimit": "Súbor musí byť neprázdny a mať najviac 50 MiB.",
     "sortColumn": "Zoradiť: {{column}} · {{order}}",
@@ -5431,7 +5426,9 @@
     "operationStorageUnavailable": "Prehliadač nedokáže bezpečne uložiť rozpracovanú operáciu. Nič sa neodoslalo. Povoľte úložisko pre túto stránku a skúste to znova.",
     "operationActorChanged": "Prihlásený používateľ sa zmenil. Pôvodnú operáciu musí dokončiť ten istý používateľ.",
     "errors": {
-      "invoice_number_required_for_receiving": "Doplňte číslo faktúry z originálneho dokladu. Zo súboru sa ho nepodarilo overiť; faktúra zatiaľ nebola uložená."
+      "invoice_number_required_for_receiving": "Doplňte číslo faktúry z originálneho dokladu. Zo súboru sa ho nepodarilo overiť; faktúra zatiaľ nebola uložená.",
+      "invoice_supplier_required": "Dodávateľa sa nepodarilo rozpoznať. Vyberte ho pri tomto súbore.",
+      "invoice_supplier_ambiguous": "Dodávateľa sa nepodarilo určiť jednoznačne. Vyberte ho pri tomto súbore."
     }
   },
   "invoiceCalendar": {
@@ -6291,16 +6288,21 @@
     }
   },
   "invoiceUpload": {
-    "help": "Originál faktúry uložíme, spracujeme dostupným parserom a pripravíme na príjem. Nahratie faktúry nemení skladové množstvá.",
+    "help": "Vyberte jeden alebo viac dokladov. Pri podporovaných PDF môže Hub rozpoznať dodávateľa automaticky.",
+    "autoSupplier": "Automaticky z PDF",
+    "manualSupplier": "Vyberte dodávateľa tohto súboru.",
+    "dropFiles": "Pretiahnite sem faktúry alebo skeny",
+    "chooseFiles": "Vybrať súbory",
+    "processFiles": "Spracovať súbory",
     "metadata": "Doplniť údaje faktúry",
-    "processing": "Ukladám a spracovávam faktúru…",
+    "processing": "Ukladám a spracovávam doklady…",
     "continue": "Zavrieť a pokračovať",
     "analyze": "Preskúmať v prevádzkových logoch (nová karta)",
     "lineCount": "Rozpoznané položky: {{parsed}}. Uložené položky: {{stored}}.",
     "ready": "Položky faktúry sú pripravené na príjem.",
     "notReady": "Faktúra zatiaľ nie je pripravená na príjem. Skontrolujte uvedené upozornenia.",
     "missingFields": "Chýbajúce údaje: {{fields}}",
-    "refreshFailed": "Faktúra je uložená, ale prehľad sa nepodarilo obnoviť. Obnovte ho po zatvorení okna.",
+    "refreshFailed": "Prehľad sa nepodarilo obnoviť. Obnovte ho po zatvorení okna.",
     "results": {
       "complete": "Faktúra bola uložená a spracovaná.",
       "partial": "Originál bol uložený, spracovanie vyžaduje kontrolu.",

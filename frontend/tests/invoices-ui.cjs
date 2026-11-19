@@ -131,8 +131,12 @@ global.fetch = async (path, init = {}) => {
   if (url.pathname === '/api/invoices/upload') {
     assert(body instanceof FormData);
     if (uploadNumberRequired && !body.get('invoice_number')) return failure(422,'invoice_number_required_for_receiving');
-    uploadedFiles.push({ file: body.get('file'), supplier: body.get('supplier_code'), invoice_number:body.get('invoice_number') });
-    return reply({ id:20,invoice_number:body.get('invoice_number'),processing:{status:'partial',parsed_lines:0,stored_lines:0,receiving_ready:false,issues:['invoice_parser_unavailable'],missing_fields:['invoice_number']} });
+    const file = body.get('file'), supplier = body.get('supplier_code');
+    if (!supplier && file.name === 'two.pdf') return failure(422, 'invoice_supplier_required');
+    uploadedFiles.push({ file, supplier, invoice_number:body.get('invoice_number') });
+    return reply({ id:19+uploadedFiles.length, invoice_number:body.get('invoice_number'),
+      supplier_code:supplier || (file.name === 'three.pdf' ? 'fixture-vendor' : 'northfinder'),
+      processing:{status:'partial',parsed_lines:0,stored_lines:0,receiving_ready:false,issues:['invoice_parser_unavailable'],missing_fields:['invoice_number']} });
   }
   if (url.pathname === '/api/suppliers/northfinder/invoices/refresh') {
     assert.equal(init.method, 'POST');
@@ -303,8 +307,20 @@ global.fetch = async (path, init = {}) => {
   await dropFiles([new File(['bad'], 'unsupported.exe')]);
   assert(element('invoice-upload-error')); assert(required('invoice-upload-save').disabled);
   assert.equal(uploadedFiles.length, 1, 'Invalid dropped formats never reach the upload API');
-  await dropFiles([new File(['1'], 'one.pdf'), new File(['2'], 'two.pdf')]);
-  assert(required('invoice-upload-error').textContent.includes('one invoice'));
+  assert(required('invoice-upload-file').multiple);
+  await dropFiles([new File(['1'], 'one.pdf'), new File(['2'], 'two.pdf'), new File(['3'], 'three.pdf')]);
+  assert.equal(document.querySelectorAll('[data-testid^="invoice-upload-entry"]').length, 3);
+  await click('invoice-upload-save');
+  assert.deepEqual(uploadedFiles.slice(1).map(row => [row.file.name, row.supplier]), [['one.pdf', null], ['three.pdf', null]]);
+  assert.equal(document.querySelectorAll('[data-testid^="invoice-upload-result"]').length, 2);
+  assert(document.querySelector('[data-testid^="invoice-upload-result"]').textContent.includes('Northfinder'));
+  const unmatched = [...document.querySelectorAll('[data-testid^="invoice-upload-entry"]')].find(row => row.textContent.includes('two.pdf'));
+  assert(unmatched.querySelector('[role="alert"]').textContent.includes(i18n.t('invoiceArchive.errors.invoice_supplier_required')));
+  assert(required('invoice-upload-save').disabled);
+  await input(unmatched.querySelector('select').dataset.testid, 'fixture-vendor'); await click('invoice-upload-save');
+  assert.deepEqual(uploadedFiles.slice(1).map(row => [row.file.name, row.supplier]),
+    [['one.pdf', null], ['three.pdf', null], ['two.pdf', 'fixture-vendor']], 'Only the corrected file is retried');
+  assert.equal(document.querySelectorAll('[data-testid^="invoice-upload-result"]').length, 3);
   await dropFiles([new File([], 'empty.pdf')]); assert(required('invoice-upload-error').textContent.includes('nonempty'));
   const oversized = new File(['synthetic'], 'large.pdf'); Object.defineProperty(oversized, 'size', { value: 50 * 1024 * 1024 + 1 });
   await dropFiles([oversized]); assert(required('invoice-upload-save').disabled);

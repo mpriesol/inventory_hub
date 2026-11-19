@@ -292,8 +292,8 @@ function ReceivingBatchWorkspace() {
       </div>
     </header>
     <InvoiceUploadModal open={showUpload} initialSupplier={uploadSupplier} context={missing ? c('missingInvoice', { code: missing.code }) : undefined}
-      onClose={() => { setShowUpload(false); focusNeeded.current = true; }} onUploaded={async result => {
-        if (result.processing?.receiving_ready && missing && id) scanner.enqueue(missing.code, missing.qty, missing.request_id);
+      onClose={() => { setShowUpload(false); focusNeeded.current = true; }} onUploaded={results => {
+        if (results.some(result => result.processing?.receiving_ready) && missing && id) scanner.enqueue(missing.code, missing.qty, missing.request_id);
       }} />
     {history && <section className="receiving-panel" data-testid="mixed-history-list"><h2>{c('history')}</h2>
       {!history.length && <p>{c('historyEmpty')}</p>}{history.map(value => <Link key={value.id} className="receiving-open-batch" to={`/receiving?batch=${encodeURIComponent(value.id)}`}><span>{date(value.created_at)} · {value.warehouse_code}</span><strong>{number(value.total_qty)} {c('pieces')}</strong></Link>)}
