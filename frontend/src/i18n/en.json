@@ -583,7 +583,7 @@
         "mixed_receiving_legacy_pending": "This invoice has unposted scans from previous receiving. Complete or reset the original receipt first.",
         "receiving_identity_conflict": "The product identity is ambiguous. Check the stock card and EAN.",
         "stock_item_required": "Only stock items can be received.",
-        "mixed_receiving_not_empty": "This receipt contains items. Only an empty receipt can be removed.",
+        "mixed_receiving_not_empty": "The receipt contains items. Cancel its scans before removing it.",
         "mixed_receiving_archived": "This receipt is archived."
       },
       "shopStatus": {
@@ -6048,7 +6048,12 @@
       "xtrek_price": "xTrek · Selling price including VAT",
       "xtrek_inherit": "xTrek · Use the shared Hub price",
       "restore_links": "Restore original source links",
-      "restore_description": "Restore the source description"
+      "restore_description": "Restore the source description",
+      "availability": {
+        "label": "Manual availability",
+        "visible": "Manual visibility",
+        "actor": "Changed by"
+      }
     },
     "restoreDescription": "Restore the source description",
     "operationScopeChanged": "This operation belongs to another card or warehouse. Open its original card to verify the result.",
@@ -6262,6 +6267,71 @@
       "complete": "The invoice was saved and processed.",
       "partial": "The original was saved; processing needs review.",
       "saved": "The invoice was saved. Processing is not confirmed."
+    },
+    "issues": {
+      "invoice_parser_unavailable": "No parser is available for this supplier format. The original is saved.",
+      "invoice_parse_failed": "The invoice could not be fully parsed. The original is saved; review the source and log.",
+      "invoice_not_available_for_receiving": "The invoice is archived or already processed. Review its state in invoices.",
+      "invoice_source_archived": "The invoice source was retired. The original is saved; receiving was not prepared.",
+      "receiving_source_unverified": "The data is saved, but this format is not yet verified for physical receiving.",
+      "invoice_receiving_preparation_conflict": "The original is saved. Receiving preparation conflicts with an existing source; review the log.",
+      "invoice_receiving_preparation_failed": "The original is saved, but receiving preparation failed. Review the log.",
+      "receiving_source_vat_unverified": "The purchase-price tax basis is unverified. Review the original invoice.",
+      "receiving_csv_invalid": "Parsed lines are not in a verified receiving format. Review the source and log."
+    },
+    "fields": {
+      "invoice_number": "invoice number",
+      "invoice_date": "issue date",
+      "due_date": "due date",
+      "currency": "currency",
+      "total_with_vat": "total including VAT"
+    }
+  },
+  "catalogs": {
+    "availabilityTitle": "Availability and delivery times",
+    "warehousesTitle": "Warehouses",
+    "availabilityHelp": "Shared choices for manual settings and exports. Disabled values remain in historical records.",
+    "warehouseHelp": "Add or edit a warehouse. Disabling removes it from new selections and keeps its history. Choose another active warehouse to change the default.",
+    "name": "Name",
+    "code": "Code",
+    "state": "State",
+    "default": "Default warehouse",
+    "active": "Active",
+    "inactive": "Disabled",
+    "edit": "Edit",
+    "add": "Add new",
+    "order": "Order",
+    "address": "Address",
+    "save": "Save",
+    "saved": "Saved.",
+    "failed": "The request could not be completed.",
+    "uncertain": "The write result is not confirmed. Check the saved result first.",
+    "recover": "Check result",
+    "retry": "Retry the same request",
+    "overrideTitle": "Manual availability and visibility",
+    "manual": "Set manually",
+    "automatic": "Automatic",
+    "automaticAvailability": "Availability is determined automatically.",
+    "all": "All",
+    "availability": "Availability",
+    "visibility": "Shop visibility",
+    "visible": "Visible",
+    "hidden": "Hidden",
+    "overrideHelp": "Manual availability applies to future synchronization and exports. Visibility applies to Atomer CSV. Physical quantities stay unchanged. Clear the override to restore automatic values.",
+    "clearOverride": "Restore automatic settings",
+    "errors": {
+      "catalog_changed": "The data changed. Reload before editing.",
+      "catalog_duplicate": "This value already exists.",
+      "catalog_value_missing": "This value is no longer available.",
+      "catalog_request_reused": "The request was already used with different values.",
+      "catalog_request_missing": "The write was not found. You can retry the same request.",
+      "availability_value_missing": "Add this availability to the shared settings dictionary first.",
+      "warehouse_default_inactive": "The default warehouse must be active.",
+      "warehouse_default_required": "Choose another default warehouse first.",
+      "warehouse_in_use": "This warehouse has stock, open receipts or an active shop assignment. Resolve them before disabling it.",
+      "product_editor_product_missing": "The stock card was not found.",
+      "product_editor_save_missing": "The write was not found. You can retry the same request.",
+      "catalog_storage_unavailable": "Recovery data could not be stored in this browser. No write was sent."
     }
   }
 }

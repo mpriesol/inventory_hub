@@ -583,7 +583,7 @@
         "mixed_receiving_legacy_pending": "Táto faktúra má staré nezaúčtované skeny. Najprv dokončite alebo vynulujte pôvodnú príjemku.",
         "receiving_identity_conflict": "Identita produktu nie je jednoznačná. Skontrolujte skladovú kartu a EAN.",
         "stock_item_required": "Na sklad možno prijať iba skladový tovar.",
-        "mixed_receiving_not_empty": "Príjem už obsahuje položky. Odstrániť možno iba prázdny príjem.",
+        "mixed_receiving_not_empty": "Príjem obsahuje položky. Pred odstránením zrušte jeho skeny.",
         "mixed_receiving_archived": "Tento príjem bol archivovaný."
       },
       "shopStatus": {
@@ -6051,7 +6051,12 @@
       "xtrek_price": "xTrek · Predajná cena s DPH",
       "xtrek_inherit": "xTrek · Použiť spoločnú cenu Hubu",
       "restore_links": "Obnoviť pôvodné odkazy zo zdroja",
-      "restore_description": "Obnoviť popis zo zdroja"
+      "restore_description": "Obnoviť popis zo zdroja",
+      "availability": {
+        "label": "Ručná dostupnosť",
+        "visible": "Ručná viditeľnosť",
+        "actor": "Upravil"
+      }
     },
     "restoreDescription": "Obnoviť popis zo zdroja",
     "operationScopeChanged": "Operácia patrí inej karte alebo skladu. Otvor pôvodnú kartu a over výsledok tam.",
@@ -6265,6 +6270,71 @@
       "complete": "Faktúra bola uložená a spracovaná.",
       "partial": "Originál bol uložený, spracovanie vyžaduje kontrolu.",
       "saved": "Faktúra bola uložená. Stav spracovania nie je potvrdený."
+    },
+    "issues": {
+      "invoice_parser_unavailable": "Pre tento formát dodávateľa nie je dostupný parser. Originál je uložený.",
+      "invoice_parse_failed": "Faktúru sa nepodarilo úplne rozpoznať. Originál je uložený; skontrolujte podklad a log.",
+      "invoice_not_available_for_receiving": "Faktúra je archivovaná alebo už spracovaná. Skontrolujte jej stav v prehľade faktúr.",
+      "invoice_source_archived": "Zdroj faktúry bol vyradený. Originál je uložený, príjem nebol pripravený.",
+      "receiving_source_unverified": "Údaje sú uložené, ale tento formát zatiaľ nie je overený pre fyzický príjem.",
+      "invoice_receiving_preparation_conflict": "Originál je uložený. Prípravu príjmu zastavil konflikt so skôr uloženým zdrojom; skontrolujte log.",
+      "invoice_receiving_preparation_failed": "Originál je uložený, príjem sa nepodarilo pripraviť. Podrobnosti sú v logu.",
+      "receiving_source_vat_unverified": "Nie je overené, či nákupné ceny obsahujú DPH. Skontrolujte originál faktúry.",
+      "receiving_csv_invalid": "Rozpoznané položky nemajú overený formát pre príjem. Skontrolujte podklad a log."
+    },
+    "fields": {
+      "invoice_number": "číslo faktúry",
+      "invoice_date": "dátum vystavenia",
+      "due_date": "dátum splatnosti",
+      "currency": "mena",
+      "total_with_vat": "celková suma s DPH"
+    }
+  },
+  "catalogs": {
+    "availabilityTitle": "Dostupnosti a dodacie doby",
+    "warehousesTitle": "Sklady",
+    "availabilityHelp": "Spoločný číselník možností pre ručné nastavenia a exporty. Vypnuté hodnoty zostanú v historických údajoch.",
+    "warehouseHelp": "Pridajte alebo upravte sklad. Vypnutie ho odstráni z nových výberov, história zostane zachovaná. Predvolený sklad zmeníte označením iného aktívneho skladu.",
+    "name": "Názov",
+    "code": "Kód",
+    "state": "Stav",
+    "default": "Predvolený sklad",
+    "active": "Aktívny",
+    "inactive": "Vypnutý",
+    "edit": "Upraviť",
+    "add": "Pridať nový",
+    "order": "Poradie",
+    "address": "Adresa",
+    "save": "Uložiť",
+    "saved": "Uložené.",
+    "failed": "Požiadavku sa nepodarilo dokončiť.",
+    "uncertain": "Výsledok zápisu ešte nie je potvrdený. Najprv overte uložený výsledok.",
+    "recover": "Overiť výsledok",
+    "retry": "Zopakovať tú istú požiadavku",
+    "overrideTitle": "Ručná dostupnosť a viditeľnosť",
+    "manual": "Ručne nastavené",
+    "automatic": "Automaticky",
+    "automaticAvailability": "Dostupnosť sa určuje automaticky.",
+    "all": "Všetky",
+    "availability": "Dostupnosť",
+    "visibility": "Viditeľnosť v e-shope",
+    "visible": "Viditeľný",
+    "hidden": "Skrytý",
+    "overrideHelp": "Ručná dostupnosť platí pre ďalšie synchronizácie a exporty. Viditeľnosť sa použije v Atomer CSV. Počet fyzických kusov sa nemení. Odstránením obnovíte automatické určenie.",
+    "clearOverride": "Obnoviť automatické nastavenie",
+    "errors": {
+      "catalog_changed": "Údaje medzitým niekto zmenil. Načítajte ich znova.",
+      "catalog_duplicate": "Takáto hodnota už existuje.",
+      "catalog_value_missing": "Hodnota už nie je dostupná.",
+      "catalog_request_reused": "Požiadavka už bola použitá s inými údajmi.",
+      "catalog_request_missing": "Zápis sa nenašiel. Možno zopakovať tú istú požiadavku.",
+      "availability_value_missing": "Najprv pridajte dostupnosť do spoločného číselníka v nastaveniach.",
+      "warehouse_default_inactive": "Predvolený sklad musí byť aktívny.",
+      "warehouse_default_required": "Najprv nastavte iný predvolený sklad.",
+      "warehouse_in_use": "Sklad má zásoby, rozpracované príjmy alebo aktívne priradenie k e-shopu. Pred vypnutím ich vyriešte.",
+      "product_editor_product_missing": "Skladová karta sa nenašla.",
+      "product_editor_save_missing": "Zápis sa nenašiel. Možno zopakovať tú istú požiadavku.",
+      "catalog_storage_unavailable": "Prehliadač neumožnil uložiť údaje na obnovu. Zápis sa nespustil."
     }
   }
 }

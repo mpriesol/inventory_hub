@@ -28,7 +28,7 @@ from inventory_hub.routers import invoices_unified as routes
 from inventory_hub.routers import receiving_db, suppliers
 from inventory_hub.services import invoice_archive as archive
 from inventory_hub.services import invoice_export
-from inventory_hub.services import invoice_processing, receiving_source
+from inventory_hub.services import invoice_processing, invoice_upload, receiving_source
 from test_sk_profi_bike_invoice import invoice_text
 
 
@@ -765,6 +765,36 @@ class InvoiceUploadDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 0)
         self.assertEqual(await self.scalar('SELECT count(*) FROM invoice_files'), 0)
         self.assertFalse(self.index_path().exists())
+        await self.assert_no_inventory_effects()
+
+    async def test_source_retired_after_archive_commit_cannot_prepare_receiving(self):
+        original_lock = invoice_upload.lock_supplier
+        lock_calls = 0
+
+        async def retire_before_preparation(db, supplier_id):
+            nonlocal lock_calls
+            lock_calls += 1
+            if lock_calls == 2:
+                async with self.sessions() as retirement:
+                    await retirement.execute(text('''INSERT INTO invoice_source_archive_events
+                        (id,supplier_id,source_key,action,note,actor,request_hash)
+                        VALUES(:id,:supplier,:key,'archive','Retire between upload phases','fixture',:hash)'''),
+                        {'id': uuid4(), 'supplier': supplier_id, 'key': self.invoice.number, 'hash': 'b' * 64})
+                    await retirement.commit()
+            await original_lock(db, supplier_id)
+
+        with patch.object(invoice_upload, 'lock_supplier', side_effect=retire_before_preparation):
+            response = await self.upload()
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(lock_calls, 2)
+        self.assertEqual(result['processing']['status'], 'partial')
+        self.assertEqual(result['processing']['issues'], ['invoice_source_archived'])
+        self.assertFalse(result['processing']['receiving_ready'])
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 1)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 3)
+        self.assertFalse(self.index_path().exists())
+        await self.assert_original(result['id'], self.content)
         await self.assert_no_inventory_effects()
 
     async def test_archived_invoice_replay_retains_original_and_cannot_prepare_receiving(self):

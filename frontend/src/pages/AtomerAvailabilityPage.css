@@ -2,7 +2,7 @@
 .atomer-availability h1 { font-size: 1.65rem; font-weight: 650; margin: 0 0 .35rem; }
 .atomer-availability h2 { font-size: 1.1rem; font-weight: 600; }
 .atomer-availability header p, .atomer-availability small, .atomer-muted { color: var(--color-text-secondary); }
-.atomer-panel { border: 1px solid var(--color-border-subtle); border-radius: .75rem; padding: 1rem; background: var(--color-bg-secondary); }
+.atomer-panel { min-width: 0; border: 1px solid var(--color-border-subtle); border-radius: .75rem; padding: 1rem; background: var(--color-bg-secondary); }
 .atomer-actions, .atomer-fields, .atomer-heading, .atomer-counts, .atomer-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
 .atomer-heading { justify-content: space-between; }
 .atomer-fields { align-items: end; margin: 1rem 0; }

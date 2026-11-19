@@ -185,12 +185,18 @@ async def apply_product_overrides(db, changes, request_id, actor):
             raise CatalogError('catalog_request_reused')
         return prior.result
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
-    found = list(await db.scalars(select(Product.id).where(Product.id.in_(ids), current_product_condition())
-        .order_by(Product.id).with_for_update()))
+    found, existing = [], {}
+    ordered_ids = sorted(ids)
+    # A filtered export can span more rows than a single HTTP editor save.
+    # Keep lock order deterministic and stay below driver bind-parameter limits.
+    for offset in range(0, len(ordered_ids), 1000):
+        chunk = ordered_ids[offset:offset + 1000]
+        found.extend(await db.scalars(select(Product.id).where(Product.id.in_(chunk), current_product_condition())
+            .order_by(Product.id).with_for_update()))
+        existing.update({row.product_id: row for row in await db.scalars(select(ProductEditorOverride)
+            .where(ProductEditorOverride.product_id.in_(chunk)).execution_options(populate_existing=True))})
     if len(found) != len(ids):
         raise CatalogError('product_editor_product_missing', 404)
-    existing = {row.product_id: row for row in await db.scalars(select(ProductEditorOverride)
-        .where(ProductEditorOverride.product_id.in_(ids)).execution_options(populate_existing=True))}
     for change in changes:
         revision = existing[change['product_id']].revision if change['product_id'] in existing else 0
         if revision != change['expected_revision']:

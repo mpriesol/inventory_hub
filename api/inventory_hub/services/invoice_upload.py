@@ -107,6 +107,16 @@ def _prepare_spreadsheet(root, supplier, filename, content, parsed, metadata):
             'csv_path': csv.relative_to(root).as_posix(), 'invoice_id': identifier}
 
 
+async def _source_archived(db, supplier_id, invoice_number):
+    """Read the exact reconciliation key while the caller holds its supplier lock."""
+    if not invoice_number:
+        return False
+    action = await db.scalar(text('''SELECT action FROM invoice_source_archive_events
+        WHERE supplier_id=:supplier AND source_key=:key ORDER BY created_at DESC,id DESC LIMIT 1'''),
+        {'supplier': supplier_id, 'key': invoice_number})
+    return action == 'archive'
+
+
 async def upload(db, *, supplier_code, filename, content, invoice_number=None,
                  invoice_date=None, due_date=None, vat_included=True):
     if not filename or Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
@@ -136,12 +146,8 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
     if parsed_csv is not None and not metadata.get('invoice_number'):
         raise archive.InvoiceArchiveError('invoice_number_required_for_receiving', 422)
     await lock_supplier(db, supplier_id)
-    if metadata.get('invoice_number'):
-        retired = await db.scalar(text('''SELECT action FROM invoice_source_archive_events
-            WHERE supplier_id=:supplier AND source_key=:key ORDER BY created_at DESC,id DESC LIMIT 1'''),
-            {'supplier': supplier_id, 'key': metadata['invoice_number']})
-        if retired == 'archive':
-            raise archive.InvoiceArchiveError('invoice_source_archived')
+    if await _source_archived(db, supplier_id, metadata.get('invoice_number')):
+        raise archive.InvoiceArchiveError('invoice_source_archived')
     result = await archive.ingest_invoice(db, direction='purchase', source_kind='upload',
         source_key='sha256:' + hashlib.sha256(content).hexdigest(), supplier_id=supplier_id,
         metadata=metadata, lines=lines, files=[{'filename': filename, 'content': content}],
@@ -163,7 +169,12 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
             await lock_supplier(db, supplier_id)
             state = (await db.execute(text('SELECT archived_at,processing_status FROM uploaded_invoices WHERE id=:id'),
                                       {'id': result['id']})).mappings().first()
-            if state and (state['archived_at'] is not None or state['processing_status'] != 'unprocessed'):
+            # Archiving a source does not necessarily archive its document.
+            # The first commit released the supplier fence, so recheck before
+            # publishing any receiving file, while retaining the saved original.
+            if await _source_archived(db, supplier_id, metadata.get('invoice_number')):
+                issues.append('invoice_source_archived')
+            elif state and (state['archived_at'] is not None or state['processing_status'] != 'unprocessed'):
                 issues.append('invoice_not_available_for_receiving')
             elif code in invoice_pdf.PARSERS and suffix == '.pdf':
                 prepared = await asyncio.to_thread(save_receiving_invoice, content,

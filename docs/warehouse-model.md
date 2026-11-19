@@ -134,3 +134,15 @@ jednotky alebo nové ID, nie je bezpečná obnova.
 Súvisiace kontrakty: [SKU](sku-policy.md), [e-shopové väzby](product-links.md),
 [dodávateľské väzby](supplier-card-links.md), [príjem](receiving-identity.md),
 [FIFO](fifo.md), [editor](product-editor.md) [jednotky](stock-units.md) a [spustenie skladu](stock-start-plan.md).
+
+## Warehouse dictionary
+
+`/settings/stock#warehouses` and `GET/POST /api/settings/catalogs/warehouses` manage
+existing `warehouses` records. Codes remain stable; name, address, active/default
+status are editable with an expected update timestamp and request UUID. Select
+another active default before removing the current default. Removal is reversible
+deactivation, retaining identities and every ledger/reference. A warehouse with
+nonzero balances/reservations/quarantine, active shop assignments or open receipts
+cannot be disabled. No shop assignment, authority, stock balance or receiving
+movement is created when adding a warehouse. The active default is used by receipt
+and stock selectors. Settings recovery: `GET /settings/catalogs/requests/{uuid}`.

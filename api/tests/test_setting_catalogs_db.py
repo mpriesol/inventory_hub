@@ -151,3 +151,24 @@ class SettingCatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             inactive = await service.save_warehouse(db, request, actor='test')
             self.assertFalse(inactive['is_active'])
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM mixed_receiving_batches')), 1)
+
+    async def test_migration_replay_preserves_renamed_default_choice(self):
+        async with self.sessions() as db:
+            choices = (await service.list_values(db))['items']
+            original = next(item for item in choices if item['label'] == 'SKLADOM')
+            await service.save_value(db, AvailabilityChange(request_id=uuid4(), id=original['id'],
+                expected_revision=original['revision'], label='Na predajni', is_active=False), actor='test')
+        root = Path(__file__).resolve().parents[2] / 'infra' / 'db-init'
+        conn = await asyncpg.connect(TEST_URL)
+        try:
+            await conn.execute(f'SET search_path TO "{self.schema}"')
+            await conn.execute((root / '057_setting_catalogs.sql').read_text())
+        finally:
+            await conn.close()
+        async with self.sessions() as db:
+            choices = (await service.list_values(db, include_inactive=True))['items']
+            self.assertEqual(len(choices), 4)
+            self.assertNotIn('SKLADOM', [item['label'] for item in choices])
+            renamed = next(item for item in choices if item['id'] == original['id'])
+            self.assertEqual(renamed['label'], 'Na predajni')
+            self.assertFalse(renamed['is_active'])

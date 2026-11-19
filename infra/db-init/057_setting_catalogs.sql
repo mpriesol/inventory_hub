@@ -1,15 +1,21 @@
 -- Reusable local dictionaries. No stock, shop authority or legacy quantities change.
-CREATE TABLE IF NOT EXISTS availability_values (
- id BIGSERIAL PRIMARY KEY,
- label VARCHAR(100) NOT NULL CHECK (length(btrim(label)) > 0),
- is_active BOOLEAN NOT NULL DEFAULT true,
- sort_order INTEGER NOT NULL DEFAULT 0,
- revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
- updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- Table creation is the transactional proof of one-time default initialization.
+-- Later deployments must not recreate renamed/deactivated operator choices.
+DO $$ BEGIN
+ IF to_regclass('availability_values') IS NULL THEN
+  CREATE TABLE availability_values (
+   id BIGSERIAL PRIMARY KEY,
+   label VARCHAR(100) NOT NULL CHECK (length(btrim(label)) > 0),
+   is_active BOOLEAN NOT NULL DEFAULT true,
+   sort_order INTEGER NOT NULL DEFAULT 0,
+   revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  INSERT INTO availability_values(label, sort_order) VALUES
+   ('SKLADOM',0),('do 5 dní',10),('overíme',20),('Na predobjednanie',30);
+ END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS availability_values_label ON availability_values(lower(btrim(label)));
-INSERT INTO availability_values(label, sort_order) VALUES
- ('SKLADOM',0),('do 5 dní',10),('overíme',20),('Na predobjednanie',30) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS setting_catalog_requests (
  request_id VARCHAR(36) PRIMARY KEY,
  input_hash VARCHAR(64) NOT NULL,

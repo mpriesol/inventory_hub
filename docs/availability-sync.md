@@ -85,3 +85,32 @@ Obnovenie nastavení nahrádza neuložené zmeny formulára. Zmenené nastavenia
 ## Overenie implementácie
 
 Interakcie sú pokryté syntetickým testom `node frontend/tests/availability-sync-ui.cjs`: hranice intervalov, platnosť, revízie nastavení, skutočné preberanie hodnôt, potvrdenie autority, ručné spustenie pri vypnutej automatike, strata odpovede bez automatického opakovania, obnova neistého zápisu a ignorovanie odpovedí zo starého prístupu. Test neodosiela produkčné zásoby ani neoveruje skutočné nastavenie Upgates.
+
+## Shared availability dictionary and manual card override
+
+`/settings/availability#dictionary` manages active delivery/availability labels in
+PostgreSQL (`availability_values`, migration 057). The same protected API is
+`GET/POST /api/settings/catalogs/availabilities`. Add, rename, order or deactivate a
+choice; existing reviewed intent/history retains its exact label. Deactivation
+prevents a new manual selection, not deletion of historical evidence. Changes
+use request UUID recovery and expected revisions.
+
+The stock card has a manual availability/visibility panel, provenance and reset
+action. Values reuse `product_editor_overrides.data.availability` and the existing
+revision, save UUID and audit tables. The product list filter
+`availability_override=all|manual|automatic` applies before count/pagination.
+Overrides are desired labels, never quantities, supplier observations, stock
+confirmation or permission to publish. Authorized regular stock sync uses the
+manual label; Atomer CSV uses manual label and visibility. Other shop visibility
+still requires its explicit publication workflow. Changing or clearing a label
+wakes only already enabled, authorized delta synchronization via the existing
+`stock_sync_mark_dirty`; visibility alone does not enqueue stock publication.
+
+`POST /api/settings/catalogs/product-availability` accepts a request UUID and
+changes with product ID, expected card revision, optional label/visible, or
+`clear: true`. Null removes that field; false is a real visibility choice.
+Successful changes are read through the existing product-editor save recovery
+API. Both settings forms and the card freeze their request in account-scoped
+session storage before sending; after reopening, read the stored result before
+retrying the same request. Atomer uses the same transactional service when
+exporting reviewed persistent choices, rather than a separate Atomer card store.

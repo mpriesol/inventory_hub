@@ -30,7 +30,7 @@ const calls = [], exportBodies = [], editBodies = [], configs = [], editResults 
 const labels = ['SKLADOM', 'do 2 dní', 'do 3 dní', 'do 4 dní', 'do 5 dní', 'do 7 dní', 'overíme'];
 const rows = [
   { code: 'PARENT', name: 'Family jacket', image: 'https://images.example.test/parent.jpg', kind: 'parent', parent_code: '', product_id: null, sku: null,
-    current_visibility: false, current_availability: 'overíme', proposed_visibility: true, proposed_availability: 'overíme', qty_available: null, status: 'changed', reasons: [] },
+    current_visibility: false, current_availability: 'overíme', proposed_visibility: true, proposed_availability: 'overíme', qty_available: null, status: 'changed', reasons: [], manual_override: true },
   { code: 'VARIANT-M', name: 'Jacket M', image: 'https://images.example.test/variant.jpg', kind: 'variant', parent_code: 'PARENT', parent_name: 'Family jacket', parent_image: 'https://images.example.test/parent.jpg', product_id: 10, sku: 'BR-JACKET-M',
     current_visibility: false, current_availability: 'do 5 dní', proposed_visibility: true, proposed_availability: 'SKLADOM', qty_available: '2', status: 'changed', reasons: [] },
   { code: 'UNKNOWN', name: 'Unmatched product', image: null, kind: 'standalone', parent_code: '', product_id: null, sku: null,
@@ -151,6 +151,9 @@ async function input(id, value) { await act(async () => { const target = require
   const tableRows = [...document.querySelectorAll('.atomer-table tbody tr')];
   assert(tableRows.findIndex(row => row.dataset.testid === 'atomer-row-PARENT') < tableRows.findIndex(row => row.dataset.testid === 'atomer-row-VARIANT-M'));
   assert.equal(required('atomer-row-VARIANT-M').querySelector('img').src, rows[1].image);
+  assert(!find('atomer-persist-PARENT'), 'Parent context cannot persist a stock-card override');
+  assert(required('atomer-row-PARENT').textContent.includes(i18n.t('atomerAvailability.edited')));
+  assert(!required('atomer-row-PARENT').textContent.includes(i18n.t('atomerAvailability.manualOverride')), 'Draft-only parent edit is not described as a saved stock-card override');
   assert.equal(required('atomer-availability-VARIANT-M').tagName, 'SELECT', 'Availability is chosen from the dictionary, not arbitrary text');
   assert.equal(required('atomer-view').value, 'changes'); assert(!find('atomer-row-UNKNOWN'));
   await input('atomer-view', 'issues'); assert(required('atomer-visible-UNKNOWN').disabled);
@@ -193,6 +196,21 @@ async function input(id, value) { await act(async () => { const target = require
   assert.deepEqual(editBodies.at(-1), unsavedEdit, 'Only a confirmed absent edit retries with its exact UUID/payload');
   editMode = 'rejected'; await input('atomer-availability-VARIANT-M', 'do 7 dní');
   assert(!required('atomer-availability-VARIANT-M').disabled, 'Definite rejection permits correction');
+
+  const changingFilter = ready('99999999-9999-4999-8999-999999999999');
+  changingFilter.rows = ['A', 'B', 'C'].map(code => ({ ...clone(rows[1]), code, name: code, kind: 'standalone', parent_code: '',
+    current_visibility: true, proposed_visibility: true }));
+  changingFilter.summary = { total: 3, changed: 3, exportable: 3, blocked: 0, unmatched: 0 }; runs.unshift(changingFilter);
+  await render('selection-filter-membership', `/sync/atomer?run=${changingFilter.id}`);
+  await click('atomer-select-all'); await click('atomer-select-A');
+  assert.equal(document.querySelector('.atomer-bulk strong').textContent, i18n.t('atomerAvailability.selectedCount', { count: 2 }));
+  await input('atomer-availability-A', 'do 5 dní');
+  assert(!find('atomer-row-A'), 'The excluded row leaves the changes filter after its edit');
+  assert.equal(document.querySelector('.atomer-bulk strong').textContent, i18n.t('atomerAvailability.selectedCount', { count: 0 }), 'Confirmed edits clear the completed selection instead of subtracting stale exclusions');
+  assert.equal(required('atomer-select-B').checked, false); assert(required('atomer-clear-selection').disabled);
+  await click('atomer-select-all');
+  assert.equal(document.querySelector('.atomer-bulk strong').textContent, i18n.t('atomerAvailability.selectedCount', { count: 2 }), 'Fresh selection uses the new full filtered total');
+  assert(required('atomer-select-B').checked); assert(required('atomer-select-C').checked);
 
   const paged = ready('55555555-5555-4555-8555-555555555555');
   paged.rows = [{ ...clone(rows[0]), code: 'BIG', name: 'Large family', status: 'context' },

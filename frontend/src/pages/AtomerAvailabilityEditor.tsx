@@ -36,7 +36,9 @@ export function AtomerAvailabilityEditor({ run, query, canEdit, busy, canRead, l
   const [bulkPersistent, setBulkPersistent] = useState(false);
   const { sort, direction, ...filter } = query, filterKey = JSON.stringify(filter);
   const clearSelection = () => { setSelected(new Set()); setExcluded(new Set()); setAllFiltered(false); };
-  useEffect(clearSelection, [run.id, filterKey]);
+  // A confirmed edit can change filter membership, including rows excluded on other pages.
+  // Finish the previous selection instead of subtracting stale exceptions from new totals.
+  useEffect(clearSelection, [run.id, run.revision, filterKey]);
   useEffect(() => setSearch(query.search || ''), [query.search]);
   const count = allFiltered ? Math.max(0, (run.selectable_total ?? run.total) - excluded.size) : selected.size;
   const pageRows = run.rows.filter(row => atomerRowEditable(row) && row.matches_filter !== false);
@@ -104,7 +106,7 @@ export function AtomerAvailabilityEditor({ run, query, canEdit, busy, canRead, l
   };
   return <>
     <form className="atomer-fields" onSubmit={event => { event.preventDefault(); patchQuery({ search: search.trim() }); }}>
-      <label className="atomer-search">{t('atomerAvailability.search')}<input type="search" value={search} disabled={!canRead} data-testid="atomer-search" onChange={event => setSearch(event.target.value)} /></label>
+      <label className="atomer-search">{t('atomerAvailability.search')}<input type="search" maxLength={255} value={search} disabled={!canRead} data-testid="atomer-search" onChange={event => setSearch(event.target.value)} /></label>
       <Button type="submit" variant="secondary" disabled={!canRead} data-testid="atomer-search-submit">{t('atomerAvailability.searchAction')}</Button>
       <label>{t('atomerAvailability.viewLabel')}<select value={query.view} disabled={!canRead} data-testid="atomer-view" onChange={event => patchQuery({ view: event.target.value as AtomerAvailabilityQuery['view'] })}>
         {(['changes', 'all', 'issues'] as const).map(value => <option key={value} value={value}>{t(`atomerAvailability.views.${value}`)}</option>)}

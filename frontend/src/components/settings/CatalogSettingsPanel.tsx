@@ -41,7 +41,7 @@ export function CatalogSettingsPanel({ kind, disabled = false, onChanged }: { ki
       if (recover) await getCatalogRequest(body.request_id);
       else if ('label' in body) await saveAvailabilityOption(body); else await saveWarehouseOption(body);
       if (!mounted.current || accessRevision() !== started) return;
-      clearCatalogPending(pendingKey, body); setPending(null); setMissing(false); select(null); setSaved(true); await load(); onChanged?.();
+      clearCatalogPending(pendingKey, body); setPending(null); setMissing(false); select(null); setSaved(true); onChanged?.(); await load();
     } catch (e) {
       if (!mounted.current || accessRevision() !== started) return;
       const failure = e as { code?: string; status?: number };
