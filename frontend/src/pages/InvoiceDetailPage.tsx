@@ -169,7 +169,8 @@ export function InvoiceDetailPage() {
   const receipts = invoice?.processing?.receipts.filter(receipt => !receipt.archived) ?? [];
   const activeReceipt = receipts.find(receipt => receipt.id === invoice?.receiving_session_id) || receipts[0];
   const canReparse = invoice?.direction === 'purchase' && invoice.supplier_code === 'northfinder'
-    && invoice.file_type === 'pdf' && !invoice.is_parsed && invoice.source_kind === 'upload'
+    && invoice.file_type === 'pdf' && !invoice.is_parsed
+    && (invoice.source_kind === 'upload' || invoice.source_kind === 'supplier')
     && !invoice.archived_at && invoice.processing_status !== 'processed_without_stock'
     && !invoice.receiving_session_id && !invoice.processing?.receipts.length;
 

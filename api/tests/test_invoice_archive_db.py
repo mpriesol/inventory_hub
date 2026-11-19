@@ -766,6 +766,64 @@ class InvoiceUploadDatabaseTests(InvoiceDatabaseCase):
         await self.assert_original(identifier, self.content)
         await self.assert_no_inventory_effects()
 
+    async def test_northfinder_pdf_completion_reconciles_older_supplier_original_and_retries(self):
+        invoice = nf.parse_invoice_pages(invoice_pages())
+        original = self.index_path('northfinder').parent / 'raw' / 'legacy-supplier-pdf.pdf'
+        original.parent.mkdir(parents=True)
+        original.write_bytes(self.content)
+        upload_result = {'path': original.relative_to(self.data_root).as_posix(), 'filename': original.name}
+
+        @asynccontextmanager
+        async def session_context():
+            async with self.sessions() as db:
+                yield db
+                await db.commit()
+
+        with patch("inventory_hub.database.get_session_context", session_context), patch.object(
+                archive.settings, "USE_POSTGRES", True), patch.object(nf, 'parse_invoice_pdf', return_value=invoice):
+            archived = await archive.archive_after_upload('northfinder', upload_result, queued=True)
+            self.assertEqual(archived['status'], 'completed')
+            identifier = archived['id']
+            self.assertEqual(archived['source_key'], original.stem)
+            path = f'/invoices/{identifier}/reparse-northfinder-pdf'
+            for action in ('archive', 'restore'):
+                async with self.sessions() as db:
+                    await db.execute(text('''INSERT INTO invoice_source_archive_events
+                        (id,supplier_id,source_key,action,note,actor,request_hash)
+                        VALUES(:id,:supplier,:key,:action,'Fixture lifecycle event','fixture',:hash)'''),
+                        {'id': uuid4(), 'supplier': self.other_supplier_id, 'key': original.stem,
+                         'action': action, 'hash': 'a' * 64})
+                    await db.commit()
+                response = await self.client.post(path)
+                if action == 'archive':
+                    self.assertEqual(response.status_code, 409, response.text)
+                    self.assertEqual(response.json()['detail']['code'], 'invoice_source_archived')
+                else:
+                    self.assertEqual(response.status_code, 200, response.text)
+                    saved = response.json()
+                    self.assertEqual((saved['id'], saved['source_key']), (identifier, invoice.number))
+                    self.assertTrue(saved['processing']['receiving_ready'])
+            replay = await self.client.post(path)
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertEqual((replay.json()['id'], replay.json()['source_key']), (identifier, invoice.number))
+            async with self.sessions() as db:
+                report = await archive.reconcile_supplier(db, InvoiceReconcileInput(supplier_code='northfinder'))
+                await db.commit()
+            self.assertEqual((report['created'], report['existing'], report['conflicts']), (0, 1, []))
+            queue_replay = await archive.archive_after_upload('northfinder', upload_result, queued=True)
+            self.assertEqual((queue_replay['status'], queue_replay['id'], queue_replay['replayed']),
+                             ('completed', identifier, True))
+            original.write_bytes(self.content + b'changed')
+            conflict = await archive.archive_after_upload('northfinder', upload_result, queued=True)
+            self.assertEqual(conflict, {'status': 'pending', 'code': 'invoice_source_changed'})
+        row = (await self.rows('SELECT * FROM uploaded_invoices'))[0]
+        self.assertEqual((row['source_kind'], row['source_key'], row['invoice_number'], row['items_count']),
+                         ('supplier', invoice.number, invoice.number, 4))
+        self.assertEqual(row['source_data']['pdf_parse_completion']['previous_source_key'], original.stem)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 1)
+        await self.assert_original(identifier, self.content)
+        await self.assert_no_inventory_effects()
+
     async def test_northfinder_pdf_completion_refuses_changed_existing_facts(self):
         invoice = nf.parse_invoice_pages(invoice_pages())
         with patch.object(nf, 'parse_invoice_pdf', side_effect=nf.InvoiceParseError('Old parser unavailable')):

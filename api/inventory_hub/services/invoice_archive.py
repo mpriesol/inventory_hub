@@ -171,15 +171,29 @@ async def _legacy_candidate(db, supplier_id, header, files, source_kind):
     return row
 
 
+async def source_is_archived(db, supplier_id, source_key):
+    if not source_key:
+        return False
+    action = await db.scalar(text('''SELECT action FROM invoice_source_archive_events
+        WHERE supplier_id=:supplier AND source_key=:key ORDER BY created_at DESC,id DESC LIMIT 1'''),
+        {'supplier': supplier_id, 'key': source_key})
+    return action == 'archive'
+
+
 async def _complete_unparsed_pdf(db, row, header, stored, fingerprint, source_key, actor):
     """Fill missing facts only on the same original, before any receiving."""
     old_number = row['invoice_number']
+    old_key = row['source_key']
+    filename_stem = Path(row['original_filename']).stem
+    supplier_original = row['source_kind'] == 'supplier'
+    allowed_keys = (None, header.invoice_number, filename_stem) if supplier_original else (None, source_key)
     if (row['archived_at'] is not None or row['processing_status'] != 'unprocessed'
-            or row['receiving_session_id'] is not None or row['source_kind'] != 'upload'
+            or row['receiving_session_id'] is not None or row['source_kind'] not in ('upload', 'supplier')
             or row['document_type'] != header.document_type or row['file_type'] != 'pdf'
-            or row['source_key'] not in (None, source_key)
-            or old_number not in (None, header.invoice_number, Path(row['original_filename']).stem)):
+            or old_key not in allowed_keys or old_number not in (None, header.invoice_number, filename_stem)):
         raise InvoiceArchiveError('invoice_reparse_conflict')
+    if supplier_original and await source_is_archived(db, row['supplier_id'], old_key):
+        raise InvoiceArchiveError('invoice_source_archived')
     for field in ('invoice_date', 'due_date', 'currency', 'total_amount', 'total_without_vat', 'vat_amount', 'total_with_vat'):
         if row[field] is not None and row[field] != getattr(header, field):
             raise InvoiceArchiveError('invoice_reparse_conflict')
@@ -192,22 +206,26 @@ async def _complete_unparsed_pdf(db, row, header, stored, fingerprint, source_ke
         OR (EXISTS(SELECT 1 FROM invoice_files WHERE invoice_id=:id AND role='original')
             AND NOT EXISTS(SELECT 1 FROM invoice_files WHERE invoice_id=:id AND role='original' AND sha256=:sha256))
         OR EXISTS(SELECT 1 FROM receiving_sessions WHERE supplier_id=:supplier
-            AND invoice_number IN (:number,:old_number))
+            AND invoice_number IN (:number,:old_number,:old_key))
         OR EXISTS(SELECT 1 FROM uploaded_invoices WHERE supplier_id=:supplier AND direction='purchase'
             AND id<>:id AND (invoice_number=:number OR source_key=:number))'''),
         {'id': row['id'], 'supplier': row['supplier_id'], 'number': header.invoice_number,
-         'old_number': old_number, 'sha256': stored[0]['sha256']})
+         'old_number': old_number, 'old_key': old_key, 'sha256': stored[0]['sha256']})
     if conflicts:
         raise InvoiceArchiveError('invoice_reparse_conflict')
+    # Supplier reconciliation uses the printed number as its canonical key.
+    archive_key = header.invoice_number if supplier_original else source_key
     audit = {'actor': actor, 'previous_hash': row['source_hash'], 'previous_number': old_number,
+             'previous_source_key': old_key,
              'sha256': stored[0]['sha256'], 'at': datetime.now(timezone.utc).isoformat()}
     await db.execute(text('''UPDATE uploaded_invoices SET source_key=:key,source_hash=:hash,
         source_data=source_data || CAST(:audit AS jsonb), invoice_number=:invoice_number,invoice_date=:invoice_date,
         due_date=:due_date,currency=:currency,total_amount=:total_amount,total_without_vat=:total_without_vat,
         vat_amount=:vat_amount,total_with_vat=:total_with_vat,vat_included=false,is_parsed=true,
         parse_error=NULL,payment_revision=payment_revision+1,source_seen_at=NOW(),updated_at=NOW() WHERE id=:id'''),
-        {**header.model_dump(), 'id': row['id'], 'key': source_key, 'hash': fingerprint,
+        {**header.model_dump(), 'id': row['id'], 'key': archive_key, 'hash': fingerprint,
          'audit': _json({'pdf_parse_completion': audit})})
+    return archive_key
 
 
 async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, lines=(), files=(),
@@ -256,10 +274,11 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
     if expected_id is not None and (identity is None or identity['id'] != expected_id):
         raise InvoiceArchiveError('invoice_reparse_conflict')
     completing = bool(identity and not identity['is_parsed'] and complete_unparsed_pdf)
+    result_key = identity['source_key'] if preserve_source else source_key
     if completing:
         if not parsed or len(stored) != 1 or stored[0]['file_type'] != 'pdf':
             raise InvoiceArchiveError('invoice_reparse_conflict')
-        await _complete_unparsed_pdf(db, identity, header, stored, fingerprint, source_key, actor)
+        result_key = await _complete_unparsed_pdf(db, identity, header, stored, fingerprint, source_key, actor)
     if identity is None:
         primary = stored[0] if stored else {}
         values = {**header.model_dump(exclude={'parse_error'}), 'supplier': supplier_id, 'shop': shop_id,
@@ -333,7 +352,7 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         await db.execute(text('UPDATE uploaded_invoices SET items_count=:count WHERE id=:id'),
                          {'count': len(parsed), 'id': identifier})
     await db.flush()
-    return {'id': identifier, 'replayed': existing is not None or adopted is not None, 'source_key': source_key,
+    return {'id': identifier, 'replayed': existing is not None or adopted is not None, 'source_key': result_key,
         'files_count': await db.scalar(text('SELECT count(*) FROM invoice_files WHERE invoice_id=:id'), {'id': identifier}),
         'lines_count': await db.scalar(text('SELECT count(*) FROM uploaded_invoice_lines WHERE invoice_id=:id'), {'id': identifier})}
 
@@ -640,10 +659,7 @@ async def _archive_upload(supplier_code, result, invoice_number=None):
             # A source archived while this job waited must not be recreated by
             # the original-only path, or endlessly retried as a missing CSV.
             await lock_supplier(db, supplier.id)
-            latest = await db.scalar(text('''SELECT action FROM invoice_source_archive_events
-                WHERE supplier_id=:supplier AND source_key=:key
-                ORDER BY created_at DESC,id DESC LIMIT 1'''), {'supplier': supplier.id, 'key': key})
-            if latest == 'archive':
+            if await source_is_archived(db, supplier.id, key):
                 return {'status': 'completed', 'source_key': key, 'created': 0, 'archived_skipped': 1,
                         'code': 'invoice_source_archived'}
             if result.get('csv_path'):
@@ -652,6 +668,19 @@ async def _archive_upload(supplier_code, result, invoice_number=None):
                     raise InvoiceArchiveError('invoice_index_entry_missing', 404)
                 return {'status': 'completed' if not report['conflicts'] else 'attention', **report}
             path = _source_path(Path(settings.INVENTORY_DATA_ROOT), supplier_code, result['path'])
+            if supplier_code == 'northfinder' and path is not None and path.suffix.lower() == '.pdf':
+                # An original-only retry queued before completion can still
+                # carry the historical filename as its key.
+                completed = (await db.execute(text('''SELECT id,source_key,
+                    source_data->'pdf_parse_completion'->>'sha256' AS sha256 FROM uploaded_invoices
+                    WHERE supplier_id=:supplier AND direction='purchase' AND source_kind='supplier'
+                    AND is_parsed AND source_data->'pdf_parse_completion'->>'previous_source_key'=:key'''),
+                    {'supplier': supplier.id, 'key': key})).mappings().all()
+                if completed:
+                    if len(completed) != 1 or hashlib.sha256(_bytes(path)).hexdigest() != completed[0]['sha256']:
+                        raise InvoiceArchiveError('invoice_source_changed')
+                    return {'status': 'completed', 'id': completed[0]['id'], 'replayed': True,
+                            'source_key': completed[0]['source_key']}
             saved = await ingest_invoice(db, direction='purchase', source_kind='supplier', source_key=key,
                 supplier_id=supplier.id, metadata={'invoice_number': key}, files=[{'path': path, 'role': 'original'}],
                 actor='supplier-upload')
