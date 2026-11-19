@@ -36,6 +36,9 @@ export function SettingsPage() {
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/ai-content">
         <strong>{t('ai.title')}</strong><p>{t('ai.settingsDescription')}</p>
       </Link>
+      <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/sku-brands">
+        <strong>{t('skuPolicy.registry.title')}</strong><p>{t('skuPolicy.registry.help')}</p>
+      </Link>
       <Link className="block rounded-xl border p-6" style={{ borderColor: 'var(--color-border-subtle)', background: 'var(--color-bg-secondary)' }} to="/settings/availability">
         <strong>{t('availabilitySync.title')}</strong><p>{t('availabilitySync.subtitle')}</p>
       </Link>

@@ -64,7 +64,14 @@ global.fetch = async (path, init) => {
   assert.equal(init.cache, 'no-store'); assert.equal(init.credentials, 'same-origin');
   assert.equal(init.headers.Authorization, 'Bearer synthetic-identity-token');
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, method: init.method, body });
-  if (path === '/api/product-imports/identity-draft') { assert.equal(init.method, 'GET'); return response(server); }
+  if (path === '/api/product-imports/identity-draft') {
+    if (init.method === 'PUT') {
+      assert.equal(body.expected_revision, server.revision);
+      for (const patch of body.rows) Object.assign(server.rows.find(row => row.id === patch.id).values, patch.values);
+      server.revision++;
+    } else assert.equal(init.method, 'GET');
+    return response(server);
+  }
   assert.equal(init.method, 'POST');
   if (path.endsWith('/identity-review')) { assert.equal(body.expected_revision, server.revision); return response(review()); }
   assert(path.endsWith('/identity-decisions'), 'Identity review must not silently continue into Hub save, AI or publication');
@@ -156,7 +163,19 @@ async function chooseAll() {
   server = initialDraft(); decisionMode = 'normal'; await mountPage();
   const hubSave = () => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Uložiť produkty do Hubu');
   assert(hubSave() && hubSave().disabled, 'The import page blocks Hub registration while identity review is unresolved');
+  const cell = document.querySelector('tr[data-row="1"] td[data-field="name"]');
+  await act(async () => { cell.querySelector('button').click(); await tick(); });
+  await act(async () => {
+    const input = cell.querySelector('input');
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'Edited jacket name');
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+  await act(async () => { cell.querySelector('input').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+  assert.equal(required('import-identity-review').textContent, i18n.t('importIdentity.saveAndOpen'));
+  const beforeReview = calls.length;
   await click('import-identity-review'); await chooseAll();
+  assert.deepEqual(calls.slice(beforeReview).map(call => call.method), ['PUT', 'POST'], 'The draft saves before loading the identity review');
+  assert.equal(server.rows[0].values.name, 'Edited jacket name');
   const beforePageDecisions = decisions().length; await click('identity-review-save');
   assert.equal(decisions().length, beforePageDecisions + 1);
   assert(hubSave() && !hubSave().disabled, 'Accepted decisions unlock a separate explicit Hub save');

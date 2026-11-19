@@ -20,6 +20,14 @@ The catalog starts with **Automaticky podľa mapovania dodávateľa**: each sele
 
 New physical product SKUs combine the registered two-letter manufacturer abbreviation with the exact confirmed manufacturer product code. The resulting SKU is read-only; manufacturer identity can be corrected before saving through the identity form. A source field named `manufacturer_code` alone is unverified. A shared feed binding with `manufacturer_code_confirmed=true` keeps its field path, mapping revision and exact value as evidence; it never reuses the supplier code. Routine refreshes of the same confirmed mapping keep that assertion, while a missing/changed source or edited manufacturer fact requires fresh review. Explicit manual manufacturer confirmation corrects the row's manufacturer-code field and keeps its supplier alias separate. Existing resolved cards retain canonical SKU and parent; contradictory evidence blocks saving. Prices remain decimal strings, unknown values remain unknown, and supplier availability never creates physical stock.
 
+**Nastaviť SKU → Uložiť SKU do konceptu** saves the correction with pending
+table edits in the same revision-checked request. The table shows the SKU
+returned by the server. **Uložiť koncept a skontrolovať skladové karty** opens
+identity review after the draft edits are saved. Both actions work on the
+draft. If automation paused over possible duplicate cards after applying AI
+content, the operator can continue the import after reviewing the cards with
+the AI content already saved in the draft.
+
 An automatically recognized but unsaved existing card can also be explicitly marked **Použiť iba dodávateľskú väzbu** in identity review (enable **Zobraziť aj nové a už prepojené položky**). This keeps the verified match fixed and excludes that leaf from new family grouping and shop publication. It is useful when a supplier family includes a card already sold as a standalone product. The choice only saves the draft decision; the subsequent Hub save adds the supplier association using the reviewed evidence hash and preserves the existing SKU, grouping, merchandising, prices and physical stock. Changed evidence requires a fresh review. Saved cards and conflicting identities cannot use this action.
 
 ## Sloger B2B before import preparation
