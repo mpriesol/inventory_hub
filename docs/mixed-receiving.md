@@ -16,6 +16,8 @@ Pred založením dávky možno zvoliť aktívny sklad; predvolený je sklad ozna
 
 Nahratie faktúry je dostupné aj pred založením dávky v zdieľanom modale, bez odchodu z aktuálnej práce. História dokončených dávok je samostatný rozbaliteľný prehľad; nahrávanie ju neotvára. Po začatí alebo obnovení príjmu sa zaostrí EAN vstup s bežným vnútorným odsadením. Chýbajúci doklad ponúka nahratie alebo výslovnú ručnú výnimku. Klient zachová UUID a celý payload neistej ručnej operácie či odstránenia konceptu a pri obnove zopakuje tú istú operáciu.
 
+Zoznam dokladov je vo [Faktúrach](invoice-archive.md). Tam je aj stav a odkaz na súvisiacu príjemku. Starý prehľad `/receiving/invoices` presmeruje na `/invoices` a zachová návrat do dávky, ak ho odkaz obsahuje.
+
 ### Výslovný príjem bez faktúry
 
 Ak faktúra chýba, obsluha môže výslovne potvrdiť **Pridať bez faktúry**, uviesť dôvod a prípadne doloženú nákupnú cenu v EUR bez DPH. Chýbajúca cena zostáva `NULL` s príznakom `unknown`; predbežná cena je `provisional`. Táto výnimka obchádza chýbajúci doklad, nie konflikt skladovej identity. Produkt musí mať jednoznačnú existujúcu fyzickú skladovú kartu, overenú spoločným resolverom podľa EAN alebo presného SKU. Množstvo je v základnej skladovej jednotke karty.

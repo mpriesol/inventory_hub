@@ -276,7 +276,7 @@ async def invoices_refresh(supplier: str, months_back: Optional[int] = Query(Non
 
     mb = int(months_back or _cfg_get(cfg, "invoices", "months_back_default", default=6) or 3)
     data_root = Path(settings.INVENTORY_DATA_ROOT).expanduser()
-    prev_map = _load_prev_index_map(supplier)
+    prev_map = _load_prev_index_map(supplier) if strat != 'northfinder-web' else {}
 
     if strat == "paul-lange-web":
         res = await asyncio.to_thread(_dispatch_paul_lange, cfg, data_root, supplier, mb)
@@ -291,7 +291,7 @@ async def invoices_refresh(supplier: str, months_back: Optional[int] = Query(Non
 
     # carry-over processed status from previous index
     idx_path = _index_latest_path(supplier)
-    if idx_path.is_file():
+    if strat != 'northfinder-web' and idx_path.is_file():
         try:
             idx_data = json.loads(idx_path.read_text(encoding="utf-8"))
         except Exception:

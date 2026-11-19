@@ -180,6 +180,17 @@ async def upload_invoice(
         raise HTTPException(error.status, detail={"code": error.code, "known_unapplied": True}) from None
 
 
+@router.post("/{invoice_id}/reparse-northfinder-pdf")
+async def reparse_northfinder_pdf(invoice_id: int, request: Request, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import invoice_upload
+    from inventory_hub.services.invoice_archive import InvoiceArchiveError
+    try:
+        return await invoice_upload.reparse_northfinder_pdf(db, invoice_id, actor=_actor(request))
+    except InvoiceArchiveError as error:
+        await db.rollback()
+        raise HTTPException(error.status, detail={"code": error.code, "known_unapplied": True}) from None
+
+
 @router.get("")
 async def list_invoices(
     direction: Literal["purchase", "sale"] = Query("purchase"),

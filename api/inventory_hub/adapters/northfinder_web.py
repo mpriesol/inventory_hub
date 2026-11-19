@@ -18,6 +18,7 @@ Flow:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import re
@@ -29,6 +30,8 @@ from typing import Dict, List, Any, Optional
 from urllib.parse import urljoin
 
 import requests
+
+from inventory_hub.adapters.sk_profi_bike_invoice import _write_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -534,8 +537,8 @@ class NorthfinderInvoiceDownloader:
         
         try:
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        except (OSError, ValueError):
+            raise ValueError('Northfinder: existujúci index faktúr sa nedá prečítať.') from None
         
         # Already a mapping: { "<invoice_id>": {entry}, ... }
         if isinstance(data, dict):
@@ -566,12 +569,14 @@ class NorthfinderInvoiceDownloader:
     
     def _save_index(self, index: Dict[str, Any]) -> None:
         """Save invoice index as dict mapping invoice_id -> entry (canonical format)."""
-        self.index_path.write_text(
-            json.dumps(index, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        _write_atomic(self.index_path, json.dumps(index, ensure_ascii=False, indent=2).encode('utf-8'))
     
     def refresh(self) -> RefreshResult:
+        with (self.index_path.parent / '.upload.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._refresh_locked()
+
+    def _refresh_locked(self) -> RefreshResult:
         """
         Main refresh method - downloads all new invoices.
         
@@ -600,7 +605,8 @@ class NorthfinderInvoiceDownloader:
             
             # Load existing index (now returns dict mapping invoice_id -> entry)
             index = self._load_existing_index()
-            existing_numbers = {v.get("number") for v in index.values() if isinstance(v, dict) and v.get("number")}
+            prepared_numbers = {str(value.get("original_number") or value.get("number"))
+                                for value in index.values() if value.get("source_fingerprint")}
             
             # Fetch invoice list
             invoice_list = self._fetch_invoice_list()
@@ -612,6 +618,10 @@ class NorthfinderInvoiceDownloader:
                 
                 if not inv_number:
                     logger.warning(f"Skipping invoice with empty number, row_id={row_id}")
+                    continue
+
+                if inv_number in prepared_numbers:
+                    self.result.skipped += 1
                     continue
                 
                 safe_name = _safe_filename(inv_number)
@@ -629,7 +639,6 @@ class NorthfinderInvoiceDownloader:
                     if invoice_id not in index:
                         index_entry = self._build_index_entry(inv, xlsx_path, csv_path, pdf_path)
                         index[invoice_id] = index_entry
-                        existing_numbers.add(inv_number)
                     continue
                 
                 logger.info(f"Processing invoice {inv_number} (row_id={row_id})")
@@ -673,8 +682,10 @@ class NorthfinderInvoiceDownloader:
                     # Add to index (use row_id as key)
                     invoice_id = str(row_id)
                     index_entry = self._build_index_entry(inv, xlsx_path, csv_path, pdf_path if pdf_downloaded else None)
+                    previous = index.get(invoice_id, {})
+                    if previous.get('status') == 'processed':
+                        index_entry.update({key: previous[key] for key in ('status', 'processed_at', 'stats', 'outputs', 'note') if key in previous})
                     index[invoice_id] = index_entry
-                    existing_numbers.add(inv_number)
                     
                 except Exception as e:
                     logger.exception(f"Failed to process invoice {inv_number}: {e}")

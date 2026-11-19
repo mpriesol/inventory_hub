@@ -93,10 +93,20 @@ export interface InvoiceUploadResult {
     receiving_ready: boolean; issues: string[]; missing_fields: string[] };
 }
 export const uploadArchivedInvoice = (body: FormData) => hubUpload<InvoiceUploadResult>(`${base}/upload`, body);
-export async function getArchiveSuppliers(signal?: AbortSignal): Promise<{ code: string; name: string }[]> {
-  const value = await hubRequest<{ code: string; name: string }[] | { suppliers?: { code: string; name: string }[]; items?: { code: string; name: string }[] }>('/api/suppliers', undefined, signal);
+export const reparseNorthfinderPdf = (id: number) => hubRequest<InvoiceUploadResult>(`${base}/${id}/reparse-northfinder-pdf`, { method: 'POST' });
+
+export type InvoiceSupplierOption = { code: string; name: string; download_strategy?: string; is_active?: boolean };
+export async function getArchiveSuppliers(signal?: AbortSignal): Promise<InvoiceSupplierOption[]> {
+  const value = await hubRequest<InvoiceSupplierOption[] | { suppliers?: InvoiceSupplierOption[]; items?: InvoiceSupplierOption[] }>('/api/suppliers', undefined, signal);
   return Array.isArray(value) ? value : value.suppliers || value.items || [];
 }
+export interface SupplierInvoiceDownloadResult {
+  ok: boolean; downloaded: number; skipped: number; failed: number; errors?: string[];
+  archive?: { status: 'completed' | 'attention' | 'pending' | 'disabled'; conflicts?: { source_key: string; code: string }[] };
+}
+export const downloadSupplierInvoices = (supplier: string) => hubRequest<SupplierInvoiceDownloadResult>(
+  `/api/suppliers/${encodeURIComponent(supplier)}/invoices/refresh`, { method: 'POST' },
+);
 export const getInvoiceSupplierOptions = (signal?: AbortSignal) => hubRequest<{ code: string; name: string }[]>(`${base}/supplier-options`, undefined, signal);
 export interface InvoiceMetadataChange {
   expected_revision: number; invoice_number?: string | null; invoice_date?: string | null; due_date?: string | null;

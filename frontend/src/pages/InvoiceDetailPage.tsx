@@ -6,7 +6,7 @@ import { accessRevision, hubUser, subscribeAccess } from '../api/access';
 import {
   ArchivedInvoiceDetail, InvoiceMetadataChange, InvoicePaymentRequest, InvoicePaymentResult, InvoiceReversalRequest,
   addInvoicePayment, downloadInvoiceArchive, getArchivedInvoice,
-  getInvoicePaymentOperation, reverseInvoicePayment, updateArchivedInvoice,
+  getInvoicePaymentOperation, reparseNorthfinderPdf, reverseInvoicePayment, updateArchivedInvoice,
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
 import { todayDate } from '../utils/format';
@@ -143,12 +143,35 @@ export function InvoiceDetailPage() {
     try { await downloadInvoiceArchive(id); } catch (reason) { setError(invoiceError(reason, t('invoiceArchive.downloadFailed'))); }
     finally { working.current = false; setBusy(false); }
   };
+  const reparse = async () => {
+    if (working.current) return;
+    const startedAccess = accessRevision();
+    working.current = true; setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await reparseNorthfinderPdf(id);
+      await fresh();
+      if (currentId.current !== id || startedAccess !== accessRevision()) return;
+      if (result.processing?.receiving_ready) setMessage(t('invoiceArchive.reparseReady'));
+      else setError(t('invoiceArchive.reparsePartial'));
+    } catch (reason) {
+      if (currentId.current !== id || startedAccess !== accessRevision()) return;
+      const code = (reason as { detail?: { code?: string }; code?: string });
+      setError(t(code?.detail?.code === 'invoice_reparse_conflict' || code?.code === 'invoice_reparse_conflict'
+        ? 'invoiceArchive.reparseConflict' : 'invoiceArchive.reparseFailed'));
+    } finally { working.current = false; setBusy(false); }
+  };
   const locked = busy || !!pending || conflict || processingLocked || !!invoice?.archived_at;
   const money = (value: string | number | null | undefined) => invoiceMoney(value, invoice?.currency, i18n.language);
   const finance = invoice?.finance;
   const sourceReadOnly = ['supplier', 'shop'].includes(invoice?.source_kind || '');
   const amountLocked = sourceReadOnly || !!finance?.payments.length;
   const paymentValid = positiveMoney(payment.amount) && !!payment.paid_at && (!finance?.opening_required || signedMoney(payment.opening_paid_amount));
+  const receipts = invoice?.processing?.receipts.filter(receipt => !receipt.archived) ?? [];
+  const activeReceipt = receipts.find(receipt => receipt.id === invoice?.receiving_session_id) || receipts[0];
+  const canReparse = invoice?.direction === 'purchase' && invoice.supplier_code === 'northfinder'
+    && invoice.file_type === 'pdf' && !invoice.is_parsed && invoice.source_kind === 'upload'
+    && !invoice.archived_at && invoice.processing_status !== 'processed_without_stock'
+    && !invoice.receiving_session_id && !invoice.processing?.receipts.length;
 
   return <div className="invoice-archive">
     <header><div><Link to="/invoices"><ArrowLeft size={15} style={{ display: 'inline', marginRight: '.35rem' }} />{t('invoiceArchive.back')}</Link>
@@ -187,8 +210,13 @@ export function InvoiceDetailPage() {
           }
           setPaymentOpen(value => !value);
         }}>{t('invoiceArchive.managePayment')}</button>
-      </section>{invoice.direction !== 'sale' && <section className="panel"><h2>{t('invoiceArchive.receiving')}</h2><p>{t(`invoiceArchive.receivingStatus.${invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</p>
-        {!!invoice.receiving_session_id && invoice.receiving_invoice_number && invoice.supplier_code && <Link data-testid="invoice-receiving-link" to={`/receiving/${encodeURIComponent(invoice.receiving_invoice_number)}?supplier=${encodeURIComponent(invoice.supplier_code)}&session=${encodeURIComponent(invoice.receiving_session_id)}`}>{t('invoiceArchive.openReceiving')}</Link>}
+      </section>{invoice.direction !== 'sale' && <section className="panel"><h2>{t('invoiceArchive.receiving')}</h2><p>{t(`invoiceArchive.receivingStatus.${activeReceipt?.status || invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</p>
+        {receipts.length > 0 && invoice.supplier_code ? <ul>{receipts.map(receipt => <li key={receipt.id}>
+          <Link data-testid={receipt.id === activeReceipt?.id ? 'invoice-receiving-link' : undefined}
+            to={`/receiving/${encodeURIComponent(receipt.invoice_number)}?${new URLSearchParams({ supplier: invoice.supplier_code!, session: String(receipt.id) })}`}>
+            {t('invoiceArchive.openReceiving')} · {receipt.invoice_number} · {t(`invoiceArchive.receivingStatus.${receipt.status}`, { defaultValue: receipt.status })}
+          </Link>
+        </li>)}</ul> : !invoice.processing?.receipts.length && !!invoice.receiving_session_id && invoice.receiving_invoice_number && invoice.supplier_code && <Link data-testid="invoice-receiving-link" to={`/receiving/${encodeURIComponent(invoice.receiving_invoice_number)}?supplier=${encodeURIComponent(invoice.supplier_code)}&session=${encodeURIComponent(invoice.receiving_session_id)}`}>{t('invoiceArchive.openReceiving')}</Link>}
       </section>}</div></div>
       <InvoiceProcessingPanel key={invoice.id} invoice={invoice} disabled={busy || !!pending || conflict || editing}
         onLockChange={setProcessingLocked} onChange={async result => {
@@ -216,7 +244,9 @@ export function InvoiceDetailPage() {
           submitPayment({ invoice_id: id, actor: currentActor(), payment_id: reverseId, body: { request_id: crypto.randomUUID(), expected_revision: finance.payment_revision, note: reverseNote.trim() } });
         }}><fieldset disabled={locked}><p>{t('invoiceArchive.reverseHelp')}</p><label>{t('invoiceArchive.reason')}<input data-testid="invoice-reverse-note" required value={reverseNote} onChange={event => setReverseNote(event.target.value)} /></label><footer><button type="button" onClick={() => setReverseId(null)}>{t('common.cancel')}</button><button className="danger" data-testid="invoice-reverse-confirm" disabled={!reverseNote.trim()}>{t('invoiceArchive.confirmReversal')}</button></footer></fieldset></form>}
       </section>
-      <section className="panel"><h2>{t('invoiceArchive.lines', { count: invoice.lines.length })}</h2>{invoice.parse_error && <p className="notice warning">{t('invoiceArchive.parseIncomplete')}</p>}
+      <section className="panel"><header><h2>{t('invoiceArchive.lines', { count: invoice.lines.length })}</h2>
+        {canReparse && <button type="button" data-testid="invoice-reparse-pdf" disabled={locked || editing} onClick={reparse}>{t('invoiceArchive.reparsePdf')}</button>}
+      </header>{invoice.parse_error && <p className="notice warning">{t('invoiceArchive.parseIncomplete')}</p>}
         {!invoice.lines.length ? <p className="muted">{t('invoiceArchive.noLines')}</p> : <div className="table-scroll"><table><thead><tr>{['line', 'ean', 'code', 'description', 'quantity', 'unitPrice', 'total_amount', 'linkedProduct'].map(key => <th key={key} className={['quantity', 'unitPrice', 'total_amount'].includes(key) ? 'amount' : ''}>{t(`invoiceArchive.${key}`)}</th>)}</tr></thead><tbody>{invoice.lines.map(line => <tr key={line.id}>
           <td>{line.line_number}</td><td>{line.ean || '—'}</td><td>{line.supplier_sku || '—'}</td><td>{line.matched_product_id ? <StockCardLink productId={line.matched_product_id} sku={line.product_sku}>{line.product_name || line.product_sku}</StockCardLink> : line.product_name || '—'}</td><td className="amount">{line.quantity ?? '—'} {line.unit || '—'}</td>
           <td className="amount">{money(invoice.vat_included ? line.unit_price_with_vat ?? line.unit_price : line.unit_price)}</td><td className="amount">{money(invoice.vat_included ? line.total_price_with_vat ?? line.total_price : line.total_price)}</td>

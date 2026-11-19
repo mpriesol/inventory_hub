@@ -4,6 +4,7 @@ import { AtomerMigrationProgress } from './pages/AtomerMigrationProgress';
 import { AtomerContentMigration } from './pages/AtomerContentMigration';
 import { AtomerAvailabilityPage } from './pages/AtomerAvailabilityPage';
 import { MixedReceivingPage } from './pages/MixedReceivingPage';
+import { LegacyInvoiceListRedirect } from './pages/InvoicesPage';
 import { SessionBootstrap } from './components/SessionBootstrap';
 import { RequireHubSession } from './components/RequireHubSession';
 import { AvailabilitySyncPage } from './pages/AvailabilitySyncPage';
@@ -27,7 +28,6 @@ import { Layout } from './components/layout';
 // Pages
 import {
   DashboardPage,
-  ReceivingPage,
   ReceivingSessionPage,
   StockHistoryPage,
   OpeningStockPage,
@@ -58,7 +58,7 @@ const router = createBrowserRouter(createRoutesFromElements(
 
           {/* Receiving */}
           <Route path="/receiving" element={<MixedReceivingPage />} />
-          <Route path="/receiving/invoices" element={<ReceivingPage />} />
+          <Route path="/receiving/invoices" element={<LegacyInvoiceListRedirect />} />
           <Route path="/receiving/:invoiceId" element={<ReceivingSessionPage />} />
 
           {/* Stock */}

@@ -289,7 +289,6 @@ function ReceivingBatchWorkspace() {
       <div className="receiving-header-actions">
         <Button type="button" variant="secondary" data-testid="mixed-upload-open" disabled={blocked} onClick={() => setShowUpload(true)}><Upload size={16} />{c('upload')}</Button>
         <Button type="button" variant="ghost" data-testid="mixed-history" disabled={!!busy} onClick={() => void showHistory()}><FileText size={17} />{c('history')}</Button>
-        <Link to={`/receiving/invoices${id ? `?batch=${encodeURIComponent(id)}` : ''}`} className="receiving-text-link">{c('invoiceOverview')}</Link>
       </div>
     </header>
     <InvoiceUploadModal open={showUpload} initialSupplier={uploadSupplier} context={missing ? c('missingInvoice', { code: missing.code }) : undefined}

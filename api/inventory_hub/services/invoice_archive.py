@@ -171,8 +171,48 @@ async def _legacy_candidate(db, supplier_id, header, files, source_kind):
     return row
 
 
+async def _complete_unparsed_pdf(db, row, header, stored, fingerprint, source_key, actor):
+    """Fill missing facts only on the same original, before any receiving."""
+    old_number = row['invoice_number']
+    if (row['archived_at'] is not None or row['processing_status'] != 'unprocessed'
+            or row['receiving_session_id'] is not None or row['source_kind'] != 'upload'
+            or row['document_type'] != header.document_type or row['file_type'] != 'pdf'
+            or row['source_key'] not in (None, source_key)
+            or old_number not in (None, header.invoice_number, Path(row['original_filename']).stem)):
+        raise InvoiceArchiveError('invoice_reparse_conflict')
+    for field in ('invoice_date', 'due_date', 'currency', 'total_amount', 'total_without_vat', 'vat_amount', 'total_with_vat'):
+        if row[field] is not None and row[field] != getattr(header, field):
+            raise InvoiceArchiveError('invoice_reparse_conflict')
+    root = Path(settings.INVENTORY_DATA_ROOT)
+    original = stored_document_path(root, row['file_path'])
+    if hashlib.sha256(_bytes(original)).hexdigest() != stored[0]['sha256']:
+        raise InvoiceArchiveError('invoice_reparse_conflict')
+    conflicts = await db.scalar(text('''SELECT
+        EXISTS(SELECT 1 FROM uploaded_invoice_lines WHERE invoice_id=:id)
+        OR (EXISTS(SELECT 1 FROM invoice_files WHERE invoice_id=:id AND role='original')
+            AND NOT EXISTS(SELECT 1 FROM invoice_files WHERE invoice_id=:id AND role='original' AND sha256=:sha256))
+        OR EXISTS(SELECT 1 FROM receiving_sessions WHERE supplier_id=:supplier
+            AND invoice_number IN (:number,:old_number))
+        OR EXISTS(SELECT 1 FROM uploaded_invoices WHERE supplier_id=:supplier AND direction='purchase'
+            AND id<>:id AND (invoice_number=:number OR source_key=:number))'''),
+        {'id': row['id'], 'supplier': row['supplier_id'], 'number': header.invoice_number,
+         'old_number': old_number, 'sha256': stored[0]['sha256']})
+    if conflicts:
+        raise InvoiceArchiveError('invoice_reparse_conflict')
+    audit = {'actor': actor, 'previous_hash': row['source_hash'], 'previous_number': old_number,
+             'sha256': stored[0]['sha256'], 'at': datetime.now(timezone.utc).isoformat()}
+    await db.execute(text('''UPDATE uploaded_invoices SET source_key=:key,source_hash=:hash,
+        source_data=source_data || CAST(:audit AS jsonb), invoice_number=:invoice_number,invoice_date=:invoice_date,
+        due_date=:due_date,currency=:currency,total_amount=:total_amount,total_without_vat=:total_without_vat,
+        vat_amount=:vat_amount,total_with_vat=:total_with_vat,vat_included=false,is_parsed=true,
+        parse_error=NULL,payment_revision=payment_revision+1,source_seen_at=NOW(),updated_at=NOW() WHERE id=:id'''),
+        {**header.model_dump(), 'id': row['id'], 'key': source_key, 'hash': fingerprint,
+         'audit': _json({'pdf_parse_completion': audit})})
+
+
 async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, lines=(), files=(),
-                         supplier_id=None, shop_id=None, source_data=None, source_fingerprint=None, actor='operator'):
+                         supplier_id=None, shop_id=None, source_data=None, source_fingerprint=None, actor='operator',
+                         complete_unparsed_pdf=False, expected_id=None):
     """Caller commits. Replays never replace commercial facts or manual payments."""
     try:
         header = metadata if isinstance(metadata, ArchiveMetadata) else ArchiveMetadata.model_validate(metadata)
@@ -194,6 +234,7 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         raise InvoiceArchiveError('invoice_owner_invalid', 422)
     if owner is None:
         raise InvoiceArchiveError('invoice_owner_missing', 404)
+    complete_unparsed_pdf = complete_unparsed_pdf and direction == 'purchase' and owner.code == 'northfinder' and source_kind == 'upload'
     fingerprint = source_fingerprint or source_hash(header, parsed)
     if not isinstance(fingerprint, str) or not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
         raise InvoiceArchiveError('invoice_source_invalid', 422)
@@ -202,7 +243,7 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
     existing = (await db.execute(text(f'''SELECT * FROM uploaded_invoices WHERE direction=:direction
         AND source_kind=:kind AND {column}=:owner AND source_key=:key FOR UPDATE'''),
         {'direction': direction, 'kind': source_kind, 'owner': owner_id, 'key': source_key})).mappings().first()
-    if existing and existing['source_hash'] != fingerprint:
+    if existing and existing['source_hash'] != fingerprint and (existing['is_parsed'] or not complete_unparsed_pdf):
         raise InvoiceArchiveError('invoice_source_changed')
     stored = [_file(Path(settings.INVENTORY_DATA_ROOT), area, owner.code, value) for value in files]
     stored.sort(key=lambda row: (row['role'] != 'original', row['file_type'] != 'pdf'))
@@ -212,6 +253,13 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
     preserve_source = bool(adopted and source_kind == 'upload' and adopted['source_kind'] != 'upload'
                            and adopted['source_key'] is not None)
     identity = existing or adopted
+    if expected_id is not None and (identity is None or identity['id'] != expected_id):
+        raise InvoiceArchiveError('invoice_reparse_conflict')
+    completing = bool(identity and not identity['is_parsed'] and complete_unparsed_pdf)
+    if completing:
+        if not parsed or len(stored) != 1 or stored[0]['file_type'] != 'pdf':
+            raise InvoiceArchiveError('invoice_reparse_conflict')
+        await _complete_unparsed_pdf(db, identity, header, stored, fingerprint, source_key, actor)
     if identity is None:
         primary = stored[0] if stored else {}
         values = {**header.model_dump(exclude={'parse_error'}), 'supplier': supplier_id, 'shop': shop_id,
@@ -232,10 +280,14 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
            :file_type,:size,:actor,:parsed,:parse_error,:count,NULL,NULL) RETURNING id'''), values)
     else:
         identifier = identity['id']
-        if adopted and not preserve_source:
+        if adopted and not preserve_source and not completing:
             if adopted['payment_revision'] and any(adopted[key] != getattr(header, key) for key in
                     ('currency', 'total_amount', 'total_without_vat', 'vat_amount', 'total_with_vat')):
                 raise InvoiceArchiveError('invoice_source_changed')
+            data = dict(source_data or {})
+            completion = (adopted['source_data'] or {}).get('pdf_parse_completion')
+            if completion:
+                data['pdf_parse_completion'] = completion
             await db.execute(text('''UPDATE uploaded_invoices SET source_kind=:kind,source_key=:key,
                 source_hash=:hash,source_data=CAST(:data AS jsonb),document_type=:document_type,
                 invoice_number=:invoice_number,invoice_date=COALESCE(:invoice_date,invoice_date),
@@ -244,9 +296,9 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
                 vat_amount=COALESCE(:vat_amount,vat_amount),total_with_vat=COALESCE(:total_with_vat,total_with_vat),
                 is_parsed=:parsed,parse_error=:parse_error,items_count=:count WHERE id=:id'''),
                 {**header.model_dump(), 'id': identifier, 'kind': source_kind, 'key': source_key,
-                 'hash': fingerprint, 'data': _json(source_data or {}), 'parsed': bool(parsed), 'count': len(parsed)})
+                 'hash': fingerprint, 'data': _json(data), 'parsed': bool(parsed), 'count': len(parsed)})
     # Refresh observations independently of document facts and the manual ledger.
-    if not preserve_source:
+    if not preserve_source and not completing:
         await db.execute(text('''UPDATE uploaded_invoices SET source_seen_at=NOW(),
         payment_revision=payment_revision + CASE WHEN
           (source_payment_status IS DISTINCT FROM :status OR source_paid_amount IS DISTINCT FROM :amount
@@ -266,7 +318,7 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
     # original bytes (proved above), source facts and exact number of rows.
     retain_adopted_lines = bool(adopted_lines and adopted['source_hash'] == fingerprint
                                and adopted_lines == len(parsed))
-    if existing is None and not preserve_source:
+    if completing or existing is None and not preserve_source:
         if adopted_lines and not retain_adopted_lines:
             raise InvoiceArchiveError('invoice_archive_existing_lines')
         for line in ([] if retain_adopted_lines else await _resolved_lines(db, parsed, supplier_id)):
@@ -277,6 +329,9 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
                  :unit_price,:total_price,:vat_rate,:unit_price_with_vat,:total_price_with_vat,:matched_product_id,:matched_supplier_product_id,CAST(:raw_data AS jsonb))'''),
                 {**line, 'invoice': identifier, 'raw_data': _json({key: value for key, value in line.items() if key not in
                     ('matched_product_id', 'matched_supplier_product_id', 'barcode_values')})})
+    if completing:
+        await db.execute(text('UPDATE uploaded_invoices SET items_count=:count WHERE id=:id'),
+                         {'count': len(parsed), 'id': identifier})
     await db.flush()
     return {'id': identifier, 'replayed': existing is not None or adopted is not None, 'source_key': source_key,
         'files_count': await db.scalar(text('SELECT count(*) FROM invoice_files WHERE invoice_id=:id'), {'id': identifier}),
@@ -437,8 +492,13 @@ def _indexed_document(root, supplier, key, entry):
     # Validated PDF parsers carry source tax amounts; normalized CSV intentionally
     # carries acquisition values only and must not be used to invent invoice VAT.
     original_pdf = next((file['path'] for file in files if file['path'].suffix.lower() == '.pdf'), None)
-    if supplier in invoice_pdf.PARSERS and original_pdf:
+    # Older Northfinder B2B entries used spreadsheet rows for the archive and
+    # carry PDF as an additional original. Keep that document's existing facts.
+    nf_spreadsheet = supplier == 'northfinder' and 'raw_path' in paths and paths['raw_path'].suffix.lower() in ('.xls', '.xlsx')
+    if supplier in invoice_pdf.PARSERS and original_pdf and not nf_spreadsheet:
         metadata, lines = _parsed_pdf(supplier, _bytes(original_pdf))
+        if supplier == 'northfinder' and metadata['invoice_number'] != key:
+            raise InvoiceArchiveError('invoice_source_changed')
         return metadata, lines, files
     # Only source-proven dates are accepted. Generic uploads historically put
     # today's date in their index, which is an upload date, not an invoice date.
