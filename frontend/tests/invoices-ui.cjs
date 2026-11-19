@@ -526,7 +526,7 @@ global.fetch = async (path, init = {}) => {
   await click('invoice-supplier-download-start');
   assert(document.body.textContent.includes(i18n.t('invoiceArchive.supplierDownloadBlocked')));
   assert.equal(required('invoice-return-batch').getAttribute('href'), `/receiving?batch=${batch}`);
-  invoices.set(15, makeInvoice(15, { supplier_code: 'northfinder', is_parsed: false, receiving_status: 'not_started',
+  invoices.set(15, makeInvoice(15, { supplier_code: 'northfinder', source_kind: 'supplier', is_parsed: false, receiving_status: 'not_started',
     receiving_session_id: null, receiving_invoice_number: null, lines: [] }));
   await render('/invoices/15');
   await click('invoice-reparse-pdf');
