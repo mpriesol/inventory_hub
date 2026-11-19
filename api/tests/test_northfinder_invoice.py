@@ -48,6 +48,16 @@ class NorthfinderPdfTests(unittest.TestCase):
         self.assertEqual([(row.sku, row.price, row.qty, row.ean) for row in parsed.receiving_lines],
                          [('990001-101-102', D('18.00'), D(2), ''), ('990002-101-103', D('24.00'), D(1), '')])
 
+    def test_accepts_pairs_and_preserves_the_invoiced_quantity_and_price(self):
+        pair = '990001-101-102  Synthetic footwear  2 pr  20,00  10,0%  18,00  23%  36,00  44,28 EUR'
+        page = _page(pair + '\n' + SECOND, 1, 1, totals=('60,00', '13,80', '73,80'))
+        parsed = adapter.parse_invoice_pages([page])
+        self.assertEqual([(row.qty, row.price, row.net) for row in parsed.receiving_lines],
+                         [(D(2), D('18.00'), D('36.00')), (D(1), D('24.00'), D('24.00'))])
+        self.assertIn(b'990001-101-102;Synthetic footwear;2;18.00;', parsed.csv_bytes())
+        with self.assertRaises(adapter.InvoiceParseError):
+            adapter.parse_invoice_pages([page.replace('2 pr ', '2 box ')])
+
     def test_multipage_invoice_keeps_charges_and_vat_but_receives_only_printed_goods_cost(self):
         pages = [SimpleNamespace(extract_text=Mock(return_value=value)) for value in invoice_pages()]
         with patch.object(adapter, 'PdfReader', return_value=SimpleNamespace(is_encrypted=False, pages=pages)):
@@ -59,6 +69,23 @@ class NorthfinderPdfTests(unittest.TestCase):
         self.assertNotIn(b'ART0', parsed.csv_bytes())
         for page in pages:
             page.extract_text.assert_called_once_with(extraction_mode='layout')
+
+    def test_accepts_a_final_vat_summary_page_after_the_goods_table_closes(self):
+        first = _page(FIRST + '\n' + SECOND, 1, 2).replace(
+            '\nProcess by', '\nCelkom / Total:  3  73,80 EUR\nZaúčtovanie / Posting\nProcess by', 1)
+        summary = ('FAKTÚRA VYSTAVENÁ č. - INVOICE no.:  9900010\n'
+                   'CELKOM / TOTAL  60,00  13,80  73,80\n'
+                   'Celková čiastka / Total amount  73,80 EUR\n'
+                   'Process by  Money S5\n'
+                   '2/2')
+        parsed = adapter.parse_invoice_pages([first, summary])
+        self.assertEqual((parsed.net, parsed.vat, parsed.gross), (D('60.00'), D('13.80'), D('73.80')))
+        self.assertEqual([row.qty for row in parsed.receiving_lines], [D(2), D(1)])
+        for invalid in (summary.replace('2/2', '1/2'), summary.replace('9900010', '9900011'),
+                        summary.replace('CELKOM / TOTAL', SECOND + '\nCELKOM / TOTAL'),
+                        summary.replace('CELKOM / TOTAL', HEADER + '\nCELKOM / TOTAL')):
+            with self.assertRaises(adapter.InvoiceParseError):
+                adapter.parse_invoice_pages([first, invalid])
 
     def test_invoice_rounding_by_tax_rate_is_supported(self):
         goods = '\n'.join(f'990001-101-{i}  Fixture  1  0,02  0%  0,02  23%  0,02  0,02 EUR' for i in range(2))
