@@ -28,7 +28,7 @@ PREVIEWS = {'product_link_previews', 'shared_stock_sale_previews', 'supplier_car
 JSON_READ_ONLY = PRESERVED | KEEPER_ONLY | {
     'products', 'supplier_products', 'supplier_feeds', 'supplier_feed_items_raw', 'supplier_feed_runs',
     'supplier_availability_observations', 'shop_product_content', 'config_versions', 'sync_log',
-    'product_editor_saves', 'receiving_scan_requests', 'invoice_payment_operations',
+    'product_editor_saves', 'setting_catalog_requests', 'receiving_scan_requests', 'invoice_payment_operations',
     'uploaded_invoices', 'uploaded_invoice_lines', 'ai_rule_versions', 'ai_content_revisions',
     'product_feed_mapping_revisions', 'product_feed_mappings', 'order_collection_runs',
     'order_stock_policies', 'order_webhook_settings', 'stock_shop_settings', 'stock_warehouse_settings',

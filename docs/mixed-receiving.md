@@ -65,6 +65,8 @@ Migrácia **054_mixed_receiving.sql** pridáva `mixed_receiving_batches`, `mixed
 
 Migrácia **056_receiving_manual.sql** aditívne dopĺňa archivačné údaje dávky, oddelené `mixed_receiving_manual_scans` a nemenné väzby `mixed_receiving_manual_postings` na skutočné pohyby. Povinné faktúrové väzby pôvodných skenov sa neuvoľňujú. Migrácia sama nič nearchivuje ani neprijíma.
 
+Ručné skeny používajú existujúcu databázovú ochranu pred zápisom na vyradenú skladovú identitu. Ich prítomnosť na niektorej zo zlučovaných kariet blokuje konsolidáciu aj po zrušení skenu; história, zaúčtovanie a FIFO sa pri zlučovaní nepresúvajú ani nemažú. Prázdna tabuľka ručných skenov konsolidáciu neblokuje.
+
 Zámky finalizácie: UUID operácie → dávka → dodávatelia v poradí ID → príjemky → faktúry → identita → aktívny sklad → skladové bilancie/FIFO. Založenie a obnovenie otvorenej dávky zamyká iba UUID a sklad pred zápisom dávky, nie identitu. Zdieľaný riadkový zámok skladu bráni súbežnej deaktivácii počas vytvorenia alebo potvrdenia príjmu. Sken aj ručná zmena dodržiavajú existujúci dodávateľský/príjemkový zámok. Uložené potvrdenia obsahujú iba potrebný výsledok operácie; rastúci súhrn sa nekopíruje do každej historickej požiadavky.
 
 Databázové regresie `test_mixed_receiving_db.py` overujú opakovaný čiastočný príjem, dokončené čiastočné doklady, súbeh skenov/finalizácie, uvoľnenie kapacity, výber dátumu a cenového riadka, prepočty balení, obnovu, rollback celej dávky a jednoznačný exportný rozsah. `test_mixed_receiving_routes.py` overuje autorizáciu a zákaz cache. Ide o izolované testy, nie potvrdenie produkčného príjmu alebo externých skladových zápisov.

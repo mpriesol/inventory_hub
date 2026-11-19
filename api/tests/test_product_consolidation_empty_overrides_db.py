@@ -10,8 +10,9 @@ from sqlalchemy.exc import IntegrityError
 
 import test_product_consolidation_db as fixture
 from inventory_hub.product_editor_types import ProductEditorSaveRequest
+from inventory_hub.setting_catalog_types import AvailabilityChange
 from inventory_hub.services import product_consolidation as service
-from inventory_hub.services import product_editor, product_links as links
+from inventory_hub.services import availability_catalog, product_editor, product_links as links
 
 
 @unittest.skipUnless(fixture.TEST_URL, 'Dedicated localhost *_catalog_test database required')
@@ -66,6 +67,8 @@ class EmptyEditorOverrideDatabaseTests(unittest.IsolatedAsyncioTestCase):
         for value in ({'common': {'name': 'Manual'}}, {'common': {'name': None}},
                 {'variant': {'sale_price_gross': '0'}}, {'shops': {'biketrek': {'visible': False}}},
                 {'warehouses': {'hlavny-sklad': {'location': 'A1'}}},
+                {'availability': {'label': 'SKLADOM', 'source': 'manual'}},
+                {'availability': {'visible': False, 'source': 'manual'}},
                 {'published': {'biketrek': {'name': {'value': 'Synthetic'}}}},
                 {'future_scope': {}}, {'common': {}}):
             with self.subTest(document=value):
@@ -76,6 +79,22 @@ class EmptyEditorOverrideDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     and row.get('table') == 'product_editor_overrides' and row.get('count') == 1
                     for row in preview['dependencies']['blockers']))
                 self.assertNotIn('preserved_empty_editor_overrides', preview['dependencies']['facts'])
+
+    async def test_completed_dictionary_result_matching_sku_is_preserved_without_blocking(self):
+        request_id = uuid4()
+        async with self.transaction() as db:
+            await availability_catalog.save_value(db, AvailabilityChange(request_id=request_id,
+                expected_revision=0, label='SYN-OLD'), actor='synthetic')
+        async with self.transaction() as db:
+            before = await db.scalar(text('SELECT to_jsonb(t) FROM setting_catalog_requests t WHERE request_id=:id'),
+                {'id': str(request_id)})
+        preview = await self.preview()
+        self.assertTrue(preview['eligible'], preview['dependencies']['blockers'])
+        self.assertEqual((await self.apply(preview))['status'], 'completed')
+        async with self.transaction() as db:
+            after = await db.scalar(text('SELECT to_jsonb(t) FROM setting_catalog_requests t WHERE request_id=:id'),
+                {'id': str(request_id)})
+        self.assertEqual(before, after)
 
     async def test_malformed_documents_and_metadata_fail_closed_in_dependency_inventory(self):
         # Exercise the dependency guard directly: the existing display-context

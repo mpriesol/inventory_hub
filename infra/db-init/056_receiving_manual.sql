@@ -21,6 +21,17 @@ CREATE TABLE IF NOT EXISTS mixed_receiving_manual_scans (
         (cost_status<>'unknown' AND unit_cost IS NOT NULL AND unit_cost>=0))
 );
 CREATE INDEX IF NOT EXISTS ix_mixed_receiving_manual_batch ON mixed_receiving_manual_scans(batch_id,created_at,id);
+-- This product FK is installed after 047's catalog-wide guard registration.
+-- Reuse its protection for direct writers and consolidation's dependency proof.
+-- Minimal receiving-only schemas have no consolidation module/function.
+DO $$ BEGIN
+ IF to_regprocedure('hub_retired_reference_guard()') IS NOT NULL THEN
+  DROP TRIGGER IF EXISTS trg_retired_reference_product_id ON mixed_receiving_manual_scans;
+  CREATE TRIGGER trg_retired_reference_product_id
+   BEFORE INSERT OR UPDATE OR DELETE ON mixed_receiving_manual_scans
+   FOR EACH ROW EXECUTE FUNCTION hub_retired_reference_guard('product_id');
+ END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS mixed_receiving_manual_postings (
  scan_id UUID PRIMARY KEY REFERENCES mixed_receiving_manual_scans(id) ON DELETE RESTRICT,
  movement_id BIGINT NOT NULL UNIQUE REFERENCES stock_movements(id) ON DELETE RESTRICT
