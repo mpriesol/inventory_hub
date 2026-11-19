@@ -88,7 +88,7 @@ export const getInvoiceArchiveStats = (direction: InvoiceDirection, signal?: Abo
   hubRequest<InvoiceArchiveStats>(`${base}/stats?direction=${direction}${includeArchived ? '&include_archived=true' : ''}`, undefined, signal);
 export const getArchiveShops = (signal?: AbortSignal) => hubRequest<{ shops: { code: string; name: string }[] }>('/api/product-editor/options', undefined, signal);
 export interface InvoiceUploadResult {
-  id: number; invoice_number: string | null;
+  id: number; invoice_number: string | null; supplier_code: string;
   processing?: { status: 'complete' | 'partial'; parsed_lines: number; stored_lines: number;
     receiving_ready: boolean; issues: string[]; missing_fields: string[] };
 }

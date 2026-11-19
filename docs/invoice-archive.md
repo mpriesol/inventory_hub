@@ -33,6 +33,8 @@ Manual upload uses one service, `services/invoice_upload.py`, from canonical `PO
 
 The shared flow validates the file and source facts, saves the exact original and parsed invoice rows, commits the archive, then prepares the existing supplier receiving CSV/index under its supplier lock. This does not create a receiving session, physical stock, payment or shop update. The result reports `complete` or `partial`, parsed/stored line counts, missing fields, preparation readiness and issue codes. A preparation failure retains the committed original and reports partial success; it is not a successful physical receipt or an automatically queued preparation retry. Existing file-first recovery records and supplier refresh/index reconciliation remain supported separately.
 
+The modal accepts several files and submits them in order through the same upload API. Each file has its own supplier, optional document metadata and result. A failed file can be corrected and retried independently of the files already saved. For a PDF, omitting `supplier_code` requests detection from the supported invoice parsers. Exactly one parser must validate the original. An unreadable, unknown or ambiguous PDF needs a manual supplier selection before archival. Other formats use manual selection.
+
 | Supplier | Implemented invoice input |
 | --- | --- |
 | ARIGA | Validated text PDF via the existing supplier parser. |

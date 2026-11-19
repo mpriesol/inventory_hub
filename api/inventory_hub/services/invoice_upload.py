@@ -107,12 +107,34 @@ def _prepare_spreadsheet(root, supplier, filename, content, parsed, metadata):
             'csv_path': csv.relative_to(root).as_posix(), 'invoice_id': identifier}
 
 
+def _detect_pdf_supplier(filename, content):
+    """Accept a supplier only when its existing parser validates the original."""
+    match = None
+    for code in invoice_pdf.PARSERS:
+        metadata, lines = archive.parse_uploaded_document(code, filename, content)
+        if lines:
+            if match is not None:
+                raise archive.InvoiceArchiveError('invoice_supplier_ambiguous', 422)
+            match = (code, metadata, lines)
+    if match is None:
+        raise archive.InvoiceArchiveError('invoice_supplier_required', 422)
+    return match
+
+
 async def upload(db, *, supplier_code, filename, content, invoice_number=None,
                  invoice_date=None, due_date=None, vat_included=True, expected_id=None, actor='operator'):
     if not filename or Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise archive.InvoiceArchiveError('invoice_file_type_unsupported', 422)
     if not content or len(content) > archive.MAX_FILE:
         raise archive.InvoiceArchiveError('invoice_file_invalid', 422)
+    suffix = Path(filename).suffix.lower()
+    automatic = not supplier_code
+    if automatic:
+        if suffix != '.pdf':
+            raise archive.InvoiceArchiveError('invoice_supplier_required', 422)
+        if not content.startswith(b'%PDF-'):
+            raise archive.InvoiceArchiveError('invoice_file_invalid', 422)
+        supplier_code, metadata, lines = await asyncio.to_thread(_detect_pdf_supplier, filename, content)
     supplier = await archive.resolve_supplier(db, supplier_code)
     supplier_id, code = supplier.id, supplier.code
     try:
@@ -122,10 +144,9 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
     except ValueError:
         raise archive.InvoiceArchiveError('invoice_date_invalid', 422) from None
     parsed_csv = None
-    suffix = Path(filename).suffix.lower()
     if code == 'northfinder' and suffix in ('.xlsx', '.xls'):
         metadata, lines, parsed_csv = await asyncio.to_thread(_spreadsheet, code, filename, content)
-    else:
+    elif not automatic:
         metadata, lines = await asyncio.to_thread(archive.parse_uploaded_document, code, filename, content)
     verified_pdf = bool(lines and suffix == '.pdf' and code in invoice_pdf.PARSERS)
     if expected_id is not None and not verified_pdf:

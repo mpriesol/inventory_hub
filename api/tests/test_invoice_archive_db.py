@@ -552,7 +552,8 @@ class InvoiceUploadDatabaseTests(InvoiceDatabaseCase):
         files = {'file': (filename, self.content if content is None else content)}
         if legacy:
             return await self.client.post(f'/suppliers/{supplier}/upload-invoice', files=files, params=fields)
-        return await self.client.post('/invoices/upload', files=files, data={'supplier_code': supplier, **fields})
+        data = {'supplier_code': supplier, **fields} if supplier is not None else fields
+        return await self.client.post('/invoices/upload', files=files, data=data)
 
     def index_path(self, supplier='sk-profi-bike'):
         return self.data_root / 'suppliers' / supplier / 'invoices/index.latest.json'
@@ -569,6 +570,51 @@ class InvoiceUploadDatabaseTests(InvoiceDatabaseCase):
             'Jednotková cena v EUR': 0, 'Spolu v EUR': 0, 'Spolu v EUR s DPH': 0,
             'EAN': '0012345678905'}]).to_excel(data, index=False)
         return data.getvalue()
+
+    async def test_auto_supplier_uses_validated_content_and_is_idempotent(self):
+        northfinder = nf.parse_invoice_pages(invoice_pages())
+        other_pdf = b'%PDF-1.7\nAnother synthetic supplier document\n%%EOF'
+
+        def only(content, expected, invoice):
+            if content != expected:
+                raise nf.InvoiceParseError('Different issuer')
+            return invoice
+
+        with (patch.object(nf, 'parse_invoice_pdf', side_effect=lambda raw: only(raw, self.content, northfinder)),
+              patch.object(skp, 'parse_invoice_pdf', side_effect=lambda raw: only(raw, other_pdf, self.invoice))):
+            auto_nf = await self.upload(supplier=None, filename='misleading-sk-profi-bike.pdf')
+            auto_skp = await self.upload(supplier=None, filename='misleading-northfinder.pdf', content=other_pdf)
+            repeat = await self.upload(supplier=None, filename='renamed.pdf')
+        for response, code, document, expected_content in (
+                (auto_nf, 'northfinder', northfinder, self.content),
+                (auto_skp, 'sk-profi-bike', self.invoice, other_pdf)):
+            self.assertEqual(response.status_code, 200, response.text)
+            saved = response.json()
+            self.assertEqual((saved['supplier_code'], saved['invoice_number']), (code, document.number))
+            self.assertTrue(saved['processing']['receiving_ready'])
+            await self.assert_original(saved['id'], expected_content)
+        self.assertEqual(repeat.status_code, 200, repeat.text)
+        self.assertEqual(repeat.json()['id'], auto_nf.json()['id'])
+        self.assertTrue(repeat.json()['replayed'])
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 2)
+        await self.assert_no_inventory_effects()
+
+    async def test_auto_supplier_requires_manual_selection_without_archiving_ambiguous_or_unknown_input(self):
+        pdf = nf.parse_invoice_pages(invoice_pages())
+        with patch.object(nf, 'parse_invoice_pdf', return_value=pdf):
+            ambiguous = await self.upload(supplier=None)
+        self.assertEqual(ambiguous.status_code, 422, ambiguous.text)
+        self.assertEqual(ambiguous.json()['detail']['code'], 'invoice_supplier_ambiguous')
+        with patch.object(skp, 'parse_invoice_pdf', side_effect=skp.InvoiceParseError('Unsupported issuer')):
+            unknown = await self.upload(supplier=None)
+        self.assertEqual(unknown.status_code, 422, unknown.text)
+        self.assertEqual(unknown.json()['detail']['code'], 'invoice_supplier_required')
+        scan = await self.upload(supplier=None, filename='scan.png', content=b'synthetic scan')
+        self.assertEqual(scan.status_code, 422, scan.text)
+        self.assertEqual(scan.json()['detail']['code'], 'invoice_supplier_required')
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 0)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM invoice_files'), 0)
+        await self.assert_no_inventory_effects()
 
     async def test_canonical_then_legacy_reuses_original_identity_and_verified_receiving_csv(self):
         first = await self.upload()

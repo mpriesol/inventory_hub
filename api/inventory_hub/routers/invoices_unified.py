@@ -159,7 +159,7 @@ async def list_all_suppliers(db: AsyncSession = Depends(get_session), include_ar
 
 @router.post("/upload")
 async def upload_invoice(
-    supplier_code: str = Form(...),
+    supplier_code: Optional[str] = Form(None),
     file: UploadFile = File(...),
     invoice_number: Optional[str] = Form(None),
     invoice_date: Optional[str] = Form(None),

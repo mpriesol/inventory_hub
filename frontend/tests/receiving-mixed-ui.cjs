@@ -48,7 +48,7 @@ global.fetch = async (path, options = {}) => {
   if (path === '/api/receiving/batches' && options.method === 'POST') { chosenWarehouse = JSON.parse(options.body).warehouse_code; return response(summary()); }
   if (path === `/api/receiving/batches/${id}`) return response(summary());
   if (path.endsWith('/preview')) return response({ ...summary(), preview_hash: 'a'.repeat(64) });
-  if (path === '/api/invoices/upload') { uploadCount++; return response({ id:2, invoice_number:'INV-2', processing:{status:'complete',parsed_lines:1,stored_lines:1,receiving_ready:true,issues:[],missing_fields:[]} }); }
+  if (path === '/api/invoices/upload') { uploadCount++; return response({ id:uploadCount+1, invoice_number:'INV-'+(uploadCount+1), supplier_code:'fixture', processing:{status:'complete',parsed_lines:1,stored_lines:1,receiving_ready:true,issues:[],missing_fields:[]} }); }
   if (path.includes('/manual-product?')) return response({ product_id:91,sku:'AA-TEST',title:'Synthetic manual',stock_unit:'pcs' });
   if (path.endsWith('/manual-scan')) {
     const body=JSON.parse(options.body); requests.push(body);
@@ -153,14 +153,18 @@ async function scan(code) {
     const select = find('upload-supplier'); select.value = 'fixture'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick();
   });
   await act(async () => {
-    const input = find('invoice-upload-file'); Object.defineProperty(input, 'files', { value: [new File(['synthetic'], 'fixture.pdf', { type: 'application/pdf' })], configurable: true });
+    const input = find('invoice-upload-file');
+    Object.defineProperty(input, 'files', { value: ['fixture.pdf', 'second.pdf'].map(name => new File(['synthetic'], name, { type: 'application/pdf' })), configurable: true });
     input.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); await tick();
   });
+  const beforeUploadReplay = requests.length;
   await click('invoice-upload-save');
-  assert(find('invoice-upload-result'), 'Processing feedback remains in modal');
+  assert.equal(document.querySelectorAll('[data-testid^="invoice-upload-result"]').length, 2, 'Processing feedback remains in modal');
   assert.equal(location.search, '?batch='+id, 'Upload never leaves receiving');
   await click('invoice-upload-close'); assert.equal(document.activeElement,find('mixed-code'));
-  assert.equal(uploadCount, 1); assert.equal(requests.at(-1).request_id, missingRequest.request_id, 'Upload retries the rejected scan without losing its operation identity');
+  assert.equal(uploadCount, 2);
+  assert.equal(requests.length, beforeUploadReplay+1, 'Successful files trigger one replay after the batch');
+  assert.equal(requests.at(-1).request_id, missingRequest.request_id, 'Upload retries the rejected scan without losing its operation identity');
   const reassignment = [...document.querySelectorAll('button')].find(button => button.textContent.includes(i18n.t('receiving.mixed.changeInvoice')));
   await act(async () => { reassignment.click(); await tick(); });
   await click('mixed-invoice-choice');

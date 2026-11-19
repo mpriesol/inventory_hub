@@ -4,5 +4,8 @@
 .invoice-upload-dialog > header { margin-bottom: 12px; }
 .invoice-upload-dialog > header h2 { margin: 0; }
 .invoice-upload-dialog .invoice-dropzone { margin-top: 16px; }
+.invoice-upload-file-entry { margin-top: 16px; }
+.invoice-upload-file-entry + .invoice-upload-file-entry { padding-top: 12px; border-top: 1px solid var(--color-border-subtle); }
+.invoice-upload-file-entry .upload-selected { overflow-wrap: anywhere; }
 .invoice-upload-dialog details { margin-top: 16px; }
 @media(max-width: 600px) { .invoice-upload-overlay { padding: 0; } .invoice-upload-dialog.panel { min-height: 100dvh; max-height: 100dvh; border-radius: 0; } }
