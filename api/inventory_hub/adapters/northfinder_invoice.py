@@ -108,7 +108,7 @@ def parse_invoice_pages(pages):
             continue
         endings = table_totals or list(_PRINT_FOOTER.finditer(page))
         if (len(headers) != 1 or len(endings) != 1 or endings[0].start() <= headers[0].end()
-                or page_no == len(pages) and not table_totals):
+                or (page_no == len(pages) and not table_totals)):
             raise InvoiceParseError('Northfinder: neúplná tovarová tabuľka.')
         if page_no == 1:
             header = page[:headers[0].start()]
@@ -128,7 +128,7 @@ def parse_invoice_pages(pages):
         if table_totals:
             summary_pages.append(page[table_totals[0].end():])
     summary = '\n'.join(summary_pages)
-    if _ROW_START.search(summary):
+    if len(summary_pages) > 1 and _ROW_START.search(summary):
         raise InvoiceParseError('Northfinder: tovarová položka je uvedená za súčtom tabuľky.')
     totals, euro_totals = _TOTAL.findall(summary), _EUR_TOTAL.findall(summary)
     if len(totals) != 1 or len(euro_totals) != 1:
