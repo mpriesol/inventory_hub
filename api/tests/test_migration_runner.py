@@ -25,7 +25,7 @@ class MigrationRunnerTests(unittest.TestCase):
             "supplier_availability_delivery_once", "order_webhooks", "stock_sync_dirty", "atomer_progress", "atomer_review",
             "shared_stock_sales", "product_consolidation", "atomer_catalog_control", "atomer_catalog_job_control", "atomer_catalog_handoff",
             "invoice_processing", "receiving_operation", "attention", "mixed_receiving", "atomer_availability",
-            "receiving_manual", "setting_catalogs",
+            "receiving_manual", "setting_catalogs", "supplier_availability_policy",
         )
         calls = []
 
@@ -43,8 +43,8 @@ class MigrationRunnerTests(unittest.TestCase):
             (action, f"inventory_hub.{name}_migrate")
             for name in expected for action in ("import", "run")
         ])
-        self.assertIn("[migrations] done completed=46/46 elapsed_s=", output.getvalue())
-        self.assertEqual(output.getvalue().count("done module="), 46)
+        self.assertIn(f"[migrations] done completed={len(expected)}/{len(expected)} elapsed_s=", output.getvalue())
+        self.assertEqual(output.getvalue().count("done module="), len(expected))
 
     def test_migration_failure_stops_before_importing_the_next_upgrade(self):
         completed = Mock()
@@ -63,7 +63,7 @@ class MigrationRunnerTests(unittest.TestCase):
         self.assertEqual(load.call_count, 2)
         self.assertIn("failed module=opening_stock_migrate", stderr.getvalue())
         self.assertIn("error_type=RuntimeError", stderr.getvalue())
-        self.assertIn("failed completed=1/46 elapsed_s=", stderr.getvalue())
+        self.assertIn(f"failed completed=1/{len(migrate.MIGRATIONS)} elapsed_s=", stderr.getvalue())
         self.assertNotIn("done completed=", stdout.getvalue())
         self.assertNotIn(str(failure), stdout.getvalue() + stderr.getvalue())
 
@@ -80,7 +80,7 @@ class MigrationRunnerTests(unittest.TestCase):
                 load.assert_called_once_with("inventory_hub.ai_content_migrate")
                 wait.assert_not_called()
                 self.assertIn(f"error_type={type(failure).__name__}", stderr.getvalue())
-                self.assertIn("failed completed=0/46", stderr.getvalue())
+                self.assertIn(f"failed completed=0/{len(migrate.MIGRATIONS)}", stderr.getvalue())
                 self.assertNotIn("private detail", stdout.getvalue() + stderr.getvalue())
 
     def test_deadlock_retry_waits_for_rollback_and_preserves_migration_order(self):
